@@ -1082,6 +1082,273 @@ def test_fused_and_nonfused_iterators_emit_same_dict_shape(seed_table_fixture):
 
     assert collect_keys(fused=True) == collect_keys(fused=False)
 
+# ---------------------------------------------------------------------------
+# Feature projection pushdown, end to end through the wheel.
+#
+# The `projections` argument of `RuntimeIndex.iter()` narrows what the
+# engine materializes per node type. Absent => select all; `[]` => select
+# NOTHING (the type is skipped outright).
+#
+# PROJECTION PUSHDOWN IS NON-FUSED ONLY: `fused=True` combined with a
+# non-empty `projections` is rejected outright (see
+# `test_fused_true_rejects_non_empty_projections`), and `fused=None` (auto)
+# is forced to non-fused whenever `projections` is non-empty (see
+# `test_fused_auto_is_forced_non_fused_when_projections_supplied`) rather than
+# silently returning all columns from a heuristically-chosen fused path. The
+# narrowing/equivalence/skip tests below therefore all run non-fused.
+# ---------------------------------------------------------------------------
+
+
+def _projected_batch(
+    seed_table_fixture: dict[str, Any],
+    *,
+    fused: bool | None,
+    projections: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    # `projections` is an ARGUMENT to iter(), not a key inside the plan:
+    # the plan describes the traversal, this describes what the caller consumes.
+    it, _ = make_runtime_batch_iterator(
+        dataset_ref=seed_table_fixture["manifest_path"],
+        stage="train",
+        entity_node_type="users",
+        sampling_plan=_sampling_plan(),
+        projections=projections,
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        rnd_seed=42,
+        epoch=0,
+        batch_size=6,
+        drop_last=False,
+        fused=fused,
+    )
+    return next(iter(it))
+
+
+def _namespace_columns(
+    batch: dict[str, Any], namespace: str
+) -> dict[str, list[Any]] | None:
+    """`column name -> flat list of values` for a raw_features namespace."""
+    block = batch["raw_features"].get(namespace)
+    if block is None:
+        return None
+    out: dict[str, list[Any]] = {}
+    for rb in block["record_batches"]:
+        for name in rb.schema.names:
+            out.setdefault(name, []).extend(rb.column(name).to_pylist())
+    return out
+
+
+def test_feature_projection_narrows_columns(seed_table_fixture: dict[str, Any]) -> None:
+    """`orders` stores order_id / user_id / order_time; ask for two of three."""
+    full = _projected_batch(seed_table_fixture, fused=False)
+    projected = _projected_batch(
+        seed_table_fixture,
+        fused=False,
+        projections={"orders": ["order_id", "order_time"]},
+    )
+
+    full_orders = _namespace_columns(full, "orders")
+    proj_orders = _namespace_columns(projected, "orders")
+    assert proj_orders is not None
+    assert full_orders is not None, "fixture must sample `orders`"
+    assert set(full_orders) == {"order_id", "user_id", "order_time"}, (
+        f"select-all must materialize every stored column; got {set(full_orders)}"
+    )
+    assert set(proj_orders) == {"order_id", "order_time"}, (
+        f"projection must drop `user_id`; got {set(proj_orders)}"
+    )
+
+
+def test_feature_projection_is_value_equivalent(
+    seed_table_fixture: dict[str, Any],
+) -> None:
+    """EQUIVALENCE: same seeds, same plan, projected vs select-all.
+
+    Every retained column must be value-identical, and the task bag (labels /
+    weights / entity ids, which ride the FULL seed rowpack) must be untouched.
+    """
+    full = _projected_batch(seed_table_fixture, fused=False)
+    projected = _projected_batch(
+        seed_table_fixture,
+        fused=False,
+        projections={"orders": ["order_id", "order_time"]},
+    )
+
+    full_orders = _namespace_columns(full, "orders")
+    proj_orders = _namespace_columns(projected, "orders")
+    assert proj_orders is not None
+    assert full_orders is not None
+    for column, values in proj_orders.items():
+        assert values, f"{column} must be non-empty to be a real check"
+        assert values == full_orders[column], (
+            f"projection changed the VALUES of {column}"
+        )
+
+    # Topology and the task bag are untouched by a feature projection.
+    assert list(full["task"]["input_ids"]) == list(projected["task"]["input_ids"])
+    assert list(full["task"]["seed_node_ids"]) == list(
+        projected["task"]["seed_node_ids"]
+    )
+    assert sorted(full["graphs"]["main"].keys()) == sorted(
+        projected["graphs"]["main"].keys()
+    )
+    # NOTE: sets, not lists -- the engine's per-type maps are Rust hash maps and
+    # their iteration order is not stable across processes.
+    assert set(full["graphs"]["main"]["node_ids"]) == set(
+        projected["graphs"]["main"]["node_ids"]
+    )
+    for namespace, ids in full["graphs"]["main"]["node_ids"].items():
+        assert list(ids) == list(projected["graphs"]["main"]["node_ids"][namespace]), (
+            f"sampled node ids for {namespace} changed"
+        )
+
+    # Namespaces with no projection entry stay at select-all.
+    for namespace in full["raw_features"]:
+        if namespace == "orders":
+            continue
+        assert _namespace_columns(full, namespace) == _namespace_columns(
+            projected, namespace
+        ), f"unprojected namespace {namespace} changed"
+
+
+def test_fused_true_rejects_non_empty_projections(
+    seed_table_fixture: dict[str, Any],
+) -> None:
+    """`fused=True` explicitly combined with a non-empty projection is a
+    checked configuration error, not a silently-ignored projection: fused
+    dispatch cannot narrow columns today, so accepting the combination would
+    return all columns while the caller believes it narrowed them."""
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="fused"):
+        _projected_batch(
+            seed_table_fixture,
+            fused=True,
+            projections={"orders": ["order_id"]},
+        )
+
+
+def test_fused_auto_is_forced_non_fused_when_projections_supplied(
+    seed_table_fixture: dict[str, Any],
+) -> None:
+    """`fused=None` (auto) with a non-empty projection must still narrow: DG
+    forces non-fused dispatch rather than letting the fused heuristic silently
+    return every column."""
+    projected = _projected_batch(
+        seed_table_fixture,
+        fused=None,
+        projections={"orders": ["order_id", "order_time"]},
+    )
+    proj_orders = _namespace_columns(projected, "orders")
+    assert proj_orders is not None
+    assert set(proj_orders) == {"order_id", "order_time"}, (
+        f"fused=None with a projection must narrow, not silently select-all; "
+        f"got {set(proj_orders)}"
+    )
+
+
+@pytest.mark.parametrize("fused", [True, False])
+def test_absent_projections_means_select_all(
+    seed_table_fixture: dict[str, Any], fused: bool
+) -> None:
+    """`None` and `{}` mean select-all: the "no projection" identity.
+
+    A per-type `[]` deliberately does NOT belong here -- see
+    `test_empty_list_means_select_nothing`. It DID under the older
+    `feature_columns` name, and inverting it is the whole reason for the
+    rename."""
+    without_key = _projected_batch(seed_table_fixture, fused=fused)
+    empty_map = _projected_batch(seed_table_fixture, fused=fused, projections={})
+    for namespace in without_key["raw_features"]:
+        assert _namespace_columns(without_key, namespace) == _namespace_columns(
+            empty_map, namespace
+        ), namespace
+
+
+def test_empty_list_means_select_nothing(seed_table_fixture: dict[str, Any]) -> None:
+    """A per-type `[]` skips the type: NO block at all, not a zero-column one.
+
+    This is the state a pure link table uses -- all keys, no features, nothing
+    the encoders read. A zero-column block is not an option: Arrow cannot carry
+    a row count with no fields, which is why the engine drops the namespace
+    instead of emitting an empty one."""
+    full = _projected_batch(seed_table_fixture, fused=False)
+    skipped = _projected_batch(
+        seed_table_fixture, fused=False, projections={"orders": []}
+    )
+    assert _namespace_columns(full, "orders") is not None, "fixture must sample orders"
+    assert _namespace_columns(skipped, "orders") is None, (
+        f"a skipped type must emit NO raw_features block; got "
+        f"{sorted(_namespace_columns(skipped, 'orders') or {})}"
+    )
+    # Every OTHER namespace is untouched -- skipping is per-type, not global.
+    for namespace in full["raw_features"]:
+        if namespace == "orders":
+            continue
+        assert _namespace_columns(full, namespace) == _namespace_columns(
+            skipped, namespace
+        ), f"skipping orders changed {namespace}"
+
+
+def test_skipped_type_is_still_traversed(seed_table_fixture: dict[str, Any]) -> None:
+    """THE load-bearing invariant: `[]` declines a type's FEATURES, never its
+    topology.
+
+    `orders` is the hop-1 type here, so if skipping it also skipped the
+    traversal the graph would collapse to the seeds. Edges live in the relation
+    segments and are walked by `EdgeUnpacker`, which never touches a
+    `RowPackDecoder`."""
+    full = _projected_batch(seed_table_fixture, fused=False)
+    skipped = _projected_batch(
+        seed_table_fixture, fused=False, projections={"orders": []}
+    )
+    main_full = full["graphs"]["main"]
+    main_skipped = skipped["graphs"]["main"]
+
+    assert "orders" in main_full["node_ids"], "fixture must sample orders as a node"
+    assert set(main_full["node_ids"]) == set(main_skipped["node_ids"])
+    for namespace, ids in main_full["node_ids"].items():
+        assert list(ids) == list(main_skipped["node_ids"][namespace]), (
+            f"sampled node ids for {namespace} changed"
+        )
+
+    edges_full = main_full["edge_index_dict"]
+    edges_skipped = main_skipped["edge_index_dict"]
+    assert len(edges_full) == len(edges_skipped)
+    total = 0
+    for left, right in zip(edges_full, edges_skipped):
+        assert list(left["src"]) == list(right["src"])
+        assert list(left["dst"]) == list(right["dst"])
+        total += len(left["src"])
+    assert total > 0, "fixture must produce edges for this to prove anything"
+
+    assert list(full["task"]["input_ids"]) == list(skipped["task"]["input_ids"])
+    assert list(full["task"]["seed_node_ids"]) == list(skipped["task"]["seed_node_ids"])
+
+
+def test_feature_projection_of_the_seed_namespace_is_ignored(
+    seed_table_fixture: dict[str, Any],
+) -> None:
+    """The seed/stage rowpack is CONSUMED (labels, weights, entity ids), so it
+    is read in full and never projected. Naming it must be a no-op, not a
+    truncation."""
+    baseline = _projected_batch(seed_table_fixture, fused=False)
+    named = _projected_batch(
+        seed_table_fixture,
+        fused=False,
+        projections={"tt_e2e/train_seeds": ["TARGET1"]},
+    )
+    assert list(baseline["task"]["seed_node_ids"]) == list(
+        named["task"]["seed_node_ids"]
+    )
+    assert (baseline["task"].get("target") is None) == (
+        named["task"].get("target") is None
+    )
+    for namespace in baseline["raw_features"]:
+        assert _namespace_columns(baseline, namespace) == _namespace_columns(
+            named, namespace
+        ), namespace
+
+
 @pytest.mark.parametrize("weighted", [False, True])
 def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path, weighted):
     import json

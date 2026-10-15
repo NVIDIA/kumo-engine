@@ -65,7 +65,7 @@ def _stage_tables(manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     if not isinstance(raw, Mapping):
         raise DiskgraphConfigError("manifest.stages must be an object")
 
-    out: dict[str, dict[str, str]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for stage, value in raw.items():
         if not isinstance(value, Mapping):
             raise DiskgraphConfigError(
@@ -371,6 +371,7 @@ class RuntimeIndex:
         selected_stage_node_ids: Any = None,
         pseudo_seed_time: Optional[int] = None,
         disable_pseudo_time: bool = False,
+        projections: dict[str, list[str]] | None = None,
     ) -> tuple[Any, int]:
         """Iterate one (stage, epoch, shard) of this index.
 
@@ -380,6 +381,25 @@ class RuntimeIndex:
         almost always want; pass it explicitly only to vary the shuffle
         independently of the engine seed. Static LP cutoffs default to the
         manifest stage. Prediction can set ``disable_pseudo_time=True``.
+
+        ``projections`` maps a node type to the columns the caller will
+        actually consume, and is resolved once when the iterator is built:
+
+        * ``None`` (the default) -- select all, everywhere. Pre-pushdown
+          behavior.
+        * a node type ABSENT from the mapping -- select all for that type.
+        * ``{"users": []}`` -- select NOTHING for ``users``. The type is skipped
+          outright: no rowpack decode, and no ``raw_features`` block for it in
+          the emitted batch. Its EDGES are untouched, so it is still traversed
+          normally; this declines a type's features, never its topology.
+        * ``{"users": ["a", "b"]}`` -- materialize exactly those, intersected
+          with what the snapshot actually stores.
+
+        Was named ``feature_columns``, under which ``[]`` meant select-all. The
+        rename is deliberate and unaliased: the two signatures are otherwise
+        identical, so the parameter NAME is the only thing that makes a new
+        caller against an old wheel fail loudly instead of silently reverting
+        to select-all.
         """
         seed = self._rnd_seed if rnd_seed is _UNSET else rnd_seed
         _validate_worker_iterator_inputs(
@@ -425,6 +445,7 @@ class RuntimeIndex:
             _use_seed_timestamps(self._manifest),
             int(pseudo_seed_time) if pseudo_seed_time is not None else None,
             bool(disable_pseudo_time),
+            projections,
         )
         return iterator, iterator.num_samples()
 
