@@ -1,10 +1,8 @@
 <p align="center">
-  <img height="180" src="https://kumo-sdk-public.s3.us-west-2.amazonaws.com/kumo-logo-pink.svg" />
+  <img height="180" src="ui/src/images/kumologo.svg" alt="Kumo" />
 </p>
 
 ---
-
-![Full Tests](https://github.com/kumo-ai/kumo/actions/workflows/testing.yml/badge.svg?branch=master) ![UI Tests](https://github.com/kumo-ai/kumo/actions/workflows/testing_ui.yml/badge.svg?branch=master) ![Linting](https://github.com/kumo-ai/kumo/actions/workflows/linting.yml/badge.svg?branch=master) ![Install](https://github.com/kumo-ai/kumo/actions/workflows/install.yml/badge.svg?branch=master)
 
 # Kumo
 
