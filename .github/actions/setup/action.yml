@@ -66,7 +66,7 @@ runs:
         ref: ${{ inputs.ref || (steps.working-directory.outputs.working-directory == '' && github.sha) || '' }}
 
     - name: Set up Python ${{ inputs.python-version }}
-      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
       with:
         python-version: ${{ inputs.python-version }}
         activate-environment: true
