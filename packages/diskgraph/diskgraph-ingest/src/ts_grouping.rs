@@ -25,22 +25,25 @@
 //!
 //! ## Merge
 //! After the index is finalized (shard offsets / min-ids known), [`merge_stage`]
-//! performs two bounded streaming passes over the timestamp spills:
+//! performs two bounded parallel passes over fixed-size chunks of the spills:
 //!   1. count timestamps up to a fixed cardinality cap; prefix-sum (ascending
 //!      ts) → per-bucket `offset[ts]`.
 //!   2. preallocate `bucket_index.bin` = `total * 8` bytes; `cursor = offset`.
-//!   3. stream each shard's spill once; for record `k` with timestamp `ts`,
-//!      write `(shard.min_id + k) as u64` at `cursor[ts]++`.
+//!   3. per chunk, in node order, claim `count[ts]` slots at `cursor[ts]`;
+//!      counting-sort the chunk's node ids in memory and write one run per ts.
 //!   4. emit the [`TsBucket`] list.
 //!
-//! Encode retains no per-timestamp maps. Merge RAM is capped by
-//! [`MAX_TIMESTAMP_BUCKETS`] plus a fixed-size write-buffer cache.
+//! Encode retains no per-timestamp maps. Merge RAM is one count map capped by
+//! [`MAX_TIMESTAMP_BUCKETS`] plus one chunk per worker; write waves shrink as
+//! timestamp cardinality grows.
 
 use std::collections::HashMap;
-use std::io::{BufReader, Read, Write};
+use std::io::Write;
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
+use rayon::prelude::*;
 
 /// Relative temp path of a stage's per-shard timestamp spill file.
 pub(crate) fn spill_rel_path(table: &str, shard: usize) -> String {
@@ -85,31 +88,39 @@ pub(crate) struct ShardSpill {
 /// per row is not a useful sampling grouping and must fail before publication
 /// rather than turn input cardinality into unbounded memory.
 const MAX_TIMESTAMP_BUCKETS: usize = 1_000_000;
-const BUCKET_BUFFER_BYTES: usize = 64 * 1024;
-const MAX_BUFFERED_BUCKETS: usize = 64;
+const SPILL_BUFFER_BYTES: usize = 64 * 1024;
+const CHUNK_RECORDS: u64 = 1 << 19;
+const WORKER_COUNT_ENTRIES: usize = 1 << 16;
 
-/// Read one shard's spill into a borrowed reader. Kept tiny so the merge stays
-/// a streaming loop (no full-file slurp).
-fn open_spill(path: &Path) -> Result<BufReader<std::fs::File>> {
-    let f = std::fs::File::open(path)
-        .with_context(|| format!("open ts-group spill {}", path.display()))?;
-    Ok(BufReader::new(f))
+struct Chunk {
+    file: usize,
+    start: u64,
+    len: u64,
+    first_node_id: u64,
+}
+
+struct LoadedChunk {
+    slot_of: Vec<u32>,
+    counts: Vec<(i64, u64)>,
 }
 
 /// Build a stage's `bucket_index.bin` + bucket list from its per-shard spills.
 ///
 /// `bucket_index_path` is the absolute output path; `bucket_index_rel_path` is
-/// what the manifest records. Reads each spill in two bounded passes; RAM is
-/// O(D), where D is the number of distinct timestamps.
+/// what the manifest records. RAM is O(D + CHUNK_RECORDS * threads), where D
+/// is the number of distinct timestamps.
 pub(crate) fn merge_stage(
     shards: &[ShardSpill],
     bucket_index_path: &Path,
     bucket_index_rel_path: String,
+    threads: usize,
 ) -> Result<StageGrouping> {
     merge_stage_with_limit(
         shards,
         bucket_index_path,
         bucket_index_rel_path,
+        threads,
+        CHUNK_RECORDS,
         MAX_TIMESTAMP_BUCKETS,
     )
 }
@@ -118,44 +129,74 @@ fn merge_stage_with_limit(
     shards: &[ShardSpill],
     bucket_index_path: &Path,
     bucket_index_rel_path: String,
+    threads: usize,
+    chunk_records: u64,
     maximum_buckets: usize,
 ) -> Result<StageGrouping> {
-    // 1. Count directly from the disk spills. Encode intentionally retains no
-    // cardinality-sized count map, so its byte budget remains authoritative.
-    let mut global_counts: HashMap<i64, u64> = HashMap::new();
-    for shard in shards {
-        let length = std::fs::metadata(&shard.spill_path)?.len();
+    let threads = threads.max(1);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .context("build ts-group merge pool")?;
+    let mut chunks = Vec::new();
+    for (file, shard) in shards.iter().enumerate() {
+        let length = std::fs::metadata(&shard.spill_path)
+            .with_context(|| format!("stat ts-group spill {}", shard.spill_path.display()))?
+            .len();
         if length % 8 != 0 {
             return Err(anyhow!(
                 "truncated ts-group spill {}",
                 shard.spill_path.display()
             ));
         }
-        let mut reader = open_spill(&shard.spill_path)?;
-        let mut buf = [0u8; 8];
-        loop {
-            match reader.read_exact(&mut buf) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(error) => {
-                    return Err(anyhow!(
-                        "read ts-group spill {}: {error}",
-                        shard.spill_path.display()
-                    ))
-                }
-            }
-            let ts = i64::from_le_bytes(buf);
-            if !global_counts.contains_key(&ts) && global_counts.len() >= maximum_buckets {
-                return Err(anyhow!(
-                    "timestamp grouping exceeds the supported limit of {maximum_buckets} distinct timestamps"
-                ));
-            }
-            let entry = global_counts.entry(ts).or_insert(0);
-            *entry = entry
-                .checked_add(1)
-                .ok_or_else(|| anyhow!("timestamp bucket row count overflowed"))?;
+        let records = length / 8;
+        let mut start = 0;
+        while start < records {
+            let len = chunk_records.min(records - start);
+            chunks.push(Chunk {
+                file,
+                start,
+                len,
+                first_node_id: shard.min_id.saturating_add(start),
+            });
+            start += len;
         }
     }
+    let read = |chunk: &Chunk| -> Result<Vec<u8>> {
+        let path = &shards[chunk.file].spill_path;
+        let mut bytes = vec![0u8; chunk.len as usize * 8];
+        std::fs::File::open(path)
+            .and_then(|spill| spill.read_exact_at(&mut bytes, chunk.start * 8))
+            .with_context(|| format!("read ts-group spill {}", path.display()))?;
+        Ok(bytes)
+    };
+
+    // 1. Count directly from the disk spills. Encode intentionally retains no
+    // cardinality-sized count map, so its byte budget remains authoritative.
+    let shared_counts = std::sync::Mutex::new(HashMap::new());
+    let flush = |counts: &mut HashMap<i64, u64>| -> Result<()> {
+        let mut shared = shared_counts.lock().expect("count map lock");
+        for (ts, count) in counts.drain() {
+            add_count(&mut shared, ts, count, maximum_buckets)?;
+        }
+        Ok(())
+    };
+    let workers = threads.min(chunks.len()).max(1);
+    let flush_entries = WORKER_COUNT_ENTRIES.min(chunk_records as usize);
+    let count = |worker: usize| -> Result<()> {
+        let mut counts: HashMap<i64, u64> = HashMap::new();
+        for chunk in chunks.iter().skip(worker).step_by(workers) {
+            for ts in records(&read(chunk)?) {
+                *counts.entry(ts).or_insert(0) += 1;
+                if counts.len() >= flush_entries {
+                    flush(&mut counts)?;
+                }
+            }
+        }
+        flush(&mut counts)
+    };
+    pool.install(|| (0..workers).into_par_iter().try_for_each(count))?;
+    let mut global_counts = shared_counts.into_inner().expect("count map lock");
     // Deterministic bucket order: ascending timestamp.
     let mut tss: Vec<i64> = global_counts.keys().copied().collect();
     tss.sort_unstable();
@@ -169,9 +210,9 @@ fn merge_stage_with_limit(
             offset: acc,
             count,
         });
-        // Reuse the count map allocation as the byte cursor map so merge does
-        // not retain counts, offsets, and cursors simultaneously.
-        global_counts.insert(*ts, acc.saturating_mul(8));
+        // Reuse the count map allocation as the node-id cursor map so merge
+        // does not retain counts, offsets, and cursors simultaneously.
+        global_counts.insert(*ts, acc);
         acc = acc
             .checked_add(count)
             .ok_or_else(|| anyhow!("timestamp grouping row count overflowed"))?;
@@ -184,9 +225,8 @@ fn merge_stage_with_limit(
         std::fs::create_dir_all(parent)
             .with_context(|| format!("mkdir for {}", bucket_index_path.display()))?;
     }
-    let mut out = std::fs::OpenOptions::new()
+    let out = std::fs::OpenOptions::new()
         .create(true)
-        .read(true)
         .write(true)
         .truncate(true)
         .open(bucket_index_path)
@@ -194,70 +234,65 @@ fn merge_stage_with_limit(
     out.set_len(total.saturating_mul(8))
         .with_context(|| format!("preallocate {}", bucket_index_path.display()))?;
 
-    // 3. Scatter through a fixed-size cache. Common low-cardinality stages
-    // amortize writes in 64 KiB blocks, while adversarial cardinality can never
-    // allocate one buffer per timestamp.
-    use std::os::unix::fs::FileExt;
+    // 3. Each chunk is counting-sorted in memory and written as one contiguous
+    // run per timestamp. Runs are claimed in chunk order, which is node order.
+    // A chunk holds one count slot per distinct timestamp, so high-cardinality
+    // stages get fewer concurrent chunks.
+    let wave_threads = threads.min((chunk_records as usize * 4 / buckets.len().max(1)).max(1));
     let mut cursor = global_counts;
-    let mut pending: HashMap<i64, Vec<u8>> = HashMap::with_capacity(MAX_BUFFERED_BUCKETS);
-
-    let mut buf = [0u8; 8];
-    for shard in shards {
-        let mut reader = open_spill(&shard.spill_path)?;
-        let mut local: u64 = 0;
-        loop {
-            match reader.read_exact(&mut buf) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => {
-                    return Err(anyhow!(
-                        "read ts-group spill {}: {e}",
-                        shard.spill_path.display()
-                    ))
-                }
-            }
-            let ts = i64::from_le_bytes(buf);
-            let node_id = shard.min_id.saturating_add(local);
-            // The cursor map mirrors the count map's key set; an absent ts means
-            // a spill record with no corresponding count (an invariant break).
-            if !cursor.contains_key(&ts) {
-                return Err(anyhow!(
-                    "ts {ts} present in spill but absent from cursor map"
-                ));
-            }
-            if !pending.contains_key(&ts) && pending.len() == MAX_BUFFERED_BUCKETS {
-                let evicted_ts = *pending.keys().next().expect("non-empty buffer cache");
-                let block = pending.remove(&evicted_ts).expect("cached bucket");
-                let pos = cursor[&evicted_ts];
-                out.write_all_at(&block, pos)
-                    .with_context(|| format!("write {}", bucket_index_path.display()))?;
-                *cursor.get_mut(&evicted_ts).expect("timestamp cursor") =
-                    pos.saturating_add(block.len() as u64);
-            }
-            let block = pending
-                .entry(ts)
-                .or_insert_with(|| Vec::with_capacity(BUCKET_BUFFER_BYTES));
-            block.extend_from_slice(&node_id.to_le_bytes());
-            if block.len() >= BUCKET_BUFFER_BYTES {
-                let pos = cursor[&ts];
-                out.write_all_at(block, pos)
-                    .with_context(|| format!("write {}", bucket_index_path.display()))?;
-                *cursor.get_mut(&ts).unwrap() = pos.saturating_add(block.len() as u64);
-                block.clear();
-            }
-            local = local.saturating_add(1);
+    let load = |chunk: &Chunk| -> Result<LoadedChunk> {
+        let mut slots = HashMap::new();
+        let mut counts = Vec::new();
+        let slot_of = records(&read(chunk)?)
+            .map(|ts| {
+                let slot = *slots.entry(ts).or_insert_with(|| {
+                    counts.push((ts, 0u64));
+                    counts.len() as u32 - 1
+                });
+                counts[slot as usize].1 += 1;
+                slot
+            })
+            .collect();
+        Ok(LoadedChunk { slot_of, counts })
+    };
+    let write = |(chunk, loaded, starts): (&Chunk, LoadedChunk, Vec<u64>)| -> Result<()> {
+        let mut ends = Vec::with_capacity(loaded.counts.len());
+        let mut acc = 0usize;
+        for (_, count) in &loaded.counts {
+            ends.push(acc);
+            acc += *count as usize;
         }
-    }
-    // Flush every remaining (non-empty) bucket buffer.
-    for (ts, block) in pending {
-        if block.is_empty() {
-            continue;
+        let mut bytes = vec![0u8; loaded.slot_of.len() * 8];
+        for (local, slot) in loaded.slot_of.iter().enumerate() {
+            let end = &mut ends[*slot as usize];
+            let node_id = chunk.first_node_id.saturating_add(local as u64);
+            bytes[*end * 8..*end * 8 + 8].copy_from_slice(&node_id.to_le_bytes());
+            *end += 1;
         }
-        let pos = cursor[&ts];
-        out.write_all_at(&block, pos)
-            .with_context(|| format!("write {}", bucket_index_path.display()))?;
+        for ((_, count), (end, start)) in loaded.counts.iter().zip(ends.iter().zip(starts)) {
+            let begin = end - *count as usize;
+            out.write_all_at(&bytes[begin * 8..end * 8], start * 8)
+                .with_context(|| format!("write {}", bucket_index_path.display()))?;
+        }
+        Ok(())
+    };
+    for wave in chunks.chunks(wave_threads) {
+        let loaded: Vec<LoadedChunk> =
+            pool.install(|| wave.par_iter().map(load).collect::<Result<_>>())?;
+        let mut work = Vec::with_capacity(wave.len());
+        for (chunk, loaded) in wave.iter().zip(loaded) {
+            let mut starts = Vec::with_capacity(loaded.counts.len());
+            for (ts, count) in &loaded.counts {
+                let next = cursor.get_mut(ts).ok_or_else(|| {
+                    anyhow!("ts {ts} present in spill but absent from cursor map")
+                })?;
+                starts.push(*next);
+                *next += count;
+            }
+            work.push((chunk, loaded, starts));
+        }
+        pool.install(|| work.into_par_iter().try_for_each(write))?;
     }
-    out.flush().ok();
 
     // 4. Buckets already built (step 1). Delete spills.
     for shard in shards {
@@ -270,13 +305,39 @@ fn merge_stage_with_limit(
     })
 }
 
+fn records(bytes: &[u8]) -> impl Iterator<Item = i64> + '_ {
+    bytes
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|record| i64::from_le_bytes(*record))
+}
+
+fn add_count(
+    counts: &mut HashMap<i64, u64>,
+    ts: i64,
+    count: u64,
+    maximum_buckets: usize,
+) -> Result<()> {
+    if !counts.contains_key(&ts) && counts.len() >= maximum_buckets {
+        return Err(anyhow!(
+            "timestamp grouping exceeds the supported limit of {maximum_buckets} distinct timestamps"
+        ));
+    }
+    let entry = counts.entry(ts).or_insert(0);
+    *entry = entry
+        .checked_add(count)
+        .ok_or_else(|| anyhow!("timestamp bucket row count overflowed"))?;
+    Ok(())
+}
+
 /// Append a batch of timestamps (LE `i64`, in write order) to a shard's spill
 /// file, creating it on first use. Used by the node-writer worker.
 pub(crate) fn append_spill(file: &mut std::fs::File, timestamps: &[i64]) -> Result<()> {
     // Pack in a fixed-size window: one large Encode batch must not allocate a
     // second cardinality-sized timestamp buffer outside the shared budget.
-    let mut buf = Vec::with_capacity(BUCKET_BUFFER_BYTES);
-    for chunk in timestamps.chunks(BUCKET_BUFFER_BYTES / 8) {
+    let mut buf = Vec::with_capacity(SPILL_BUFFER_BYTES);
+    for chunk in timestamps.chunks(SPILL_BUFFER_BYTES / 8) {
         buf.clear();
         for ts in chunk {
             buf.extend_from_slice(&ts.to_le_bytes());
@@ -359,6 +420,7 @@ mod tests {
             }],
             &out,
             "stage/bucket_index.bin".to_string(),
+            4,
         )
         .unwrap();
 
@@ -404,6 +466,7 @@ mod tests {
             ],
             &out,
             "stage/bucket_index.bin".to_string(),
+            4,
         )
         .unwrap();
 
@@ -439,6 +502,7 @@ mod tests {
             ],
             &out,
             "s/bucket_index.bin".to_string(),
+            4,
         )
         .unwrap();
         let bin = read_bin(&out);
@@ -474,6 +538,7 @@ mod tests {
             ],
             &out,
             "s/bucket_index.bin".to_string(),
+            4,
         )
         .unwrap();
         let tss: Vec<i64> = g.buckets.iter().map(|b| b.ts).collect();
@@ -484,37 +549,68 @@ mod tests {
         assert_eq!(bin[b99.offset as usize], 11, "node 11 (10+1) has ts=99");
     }
 
-    // Test 6 (bounded RAM, structural): merge never materializes a Vec of all
-    // node-ids — it streams the spill and only holds O(D) maps. We assert the
-    // peak in-RAM collections are sized by distinct-ts, not by N, by feeding a
-    // large N with tiny D and checking the result is still correct (a Vec<N>
-    // approach would be the only alternative, and this exercises the streaming
-    // path end to end).
     #[test]
-    fn merge_streams_large_n_small_d() {
+    fn parallel_chunked_merge_matches_sequential_layout() {
         let tmp = tempfile::tempdir().unwrap();
-        let n = 100_000usize;
-        let tss: Vec<i64> = (0..n).map(|i| (i % 3) as i64).collect();
-        let path = write_spill(tmp.path(), 0, &tss);
-        let out = tmp.path().join("bucket_index.bin");
-        let g = merge_stage(
-            &[ShardSpill {
-                min_id: 0,
-                spill_path: path,
-            }],
-            &out,
-            "s/bucket_index.bin".to_string(),
-        )
-        .unwrap();
-        assert_eq!(g.buckets.len(), 3);
-        let total: u64 = g.buckets.iter().map(|b| b.count).sum();
-        assert_eq!(total as usize, n);
-        let bin = read_bin(&out);
-        assert_eq!(bin.len(), n);
-        // Spot-check contiguity: bucket for ts=0 holds exactly node-ids ≡0 mod 3.
-        let b0 = g.buckets.iter().find(|b| b.ts == 0).unwrap();
-        for i in b0.offset..b0.offset + b0.count {
-            assert_eq!(bin[i as usize] % 3, 0);
+        let mut state = 0x9e3779b97f4a7c15u64;
+        let mut shards = Vec::new();
+        let mut expected: Vec<(i64, u64)> = Vec::new();
+        for (shard, (min_id, rows)) in [(1_000u64, 2_000usize), (0, 1_501), (5_000, 0), (40_000, 7)]
+            .into_iter()
+            .enumerate()
+        {
+            let tss: Vec<i64> = (0..rows)
+                .map(|_| {
+                    state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    ((state >> 33) % 101) as i64 * 86_400
+                })
+                .collect();
+            expected.extend(
+                tss.iter()
+                    .enumerate()
+                    .map(|(k, ts)| (*ts, min_id + k as u64)),
+            );
+            shards.push((min_id, tss, shard));
+        }
+        expected.sort_by_key(|(ts, _)| *ts);
+        let mut expected_buckets: Vec<TsBucket> = Vec::new();
+        for (index, (ts, _)) in expected.iter().enumerate() {
+            match expected_buckets.last_mut() {
+                Some(bucket) if bucket.ts == *ts => bucket.count += 1,
+                _ => expected_buckets.push(TsBucket {
+                    ts: *ts,
+                    offset: index as u64,
+                    count: 1,
+                }),
+            }
+        }
+        assert_eq!(expected_buckets.len(), 101);
+        let expected_bytes: Vec<u8> = expected
+            .iter()
+            .flat_map(|(_, node_id)| node_id.to_le_bytes())
+            .collect();
+        for (threads, chunk_records) in [(1, CHUNK_RECORDS), (4, 3), (3, 64), (8, 500)] {
+            let spills = shards
+                .iter()
+                .map(|(min_id, tss, shard)| ShardSpill {
+                    min_id: *min_id,
+                    spill_path: write_spill(tmp.path(), *shard, tss),
+                })
+                .collect::<Vec<_>>();
+            let out = tmp
+                .path()
+                .join(format!("bucket_index-{threads}-{chunk_records}.bin"));
+            let grouping = merge_stage_with_limit(
+                &spills,
+                &out,
+                "s/bucket_index.bin".to_string(),
+                threads,
+                chunk_records,
+                MAX_TIMESTAMP_BUCKETS,
+            )
+            .unwrap();
+            assert_eq!(std::fs::read(&out).unwrap(), expected_bytes);
+            assert_eq!(grouping.buckets, expected_buckets);
         }
     }
 
@@ -523,17 +619,66 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = write_spill(tmp.path(), 0, &[1, 2, 3]);
         let out = tmp.path().join("bucket_index.bin");
-        let error = merge_stage_with_limit(
+        for (threads, chunk_records) in [(4, CHUNK_RECORDS), (3, 1)] {
+            let error = merge_stage_with_limit(
+                &[ShardSpill {
+                    min_id: 0,
+                    spill_path: path.clone(),
+                }],
+                &out,
+                "s/bucket_index.bin".to_string(),
+                threads,
+                chunk_records,
+                2,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("2 distinct timestamps"));
+            assert!(!out.exists());
+        }
+        let grouping = merge_stage_with_limit(
             &[ShardSpill {
                 min_id: 0,
                 spill_path: path,
             }],
             &out,
             "s/bucket_index.bin".to_string(),
-            2,
+            3,
+            1,
+            3,
         )
-        .unwrap_err();
-        assert!(error.to_string().contains("2 distinct timestamps"));
-        assert!(!out.exists());
+        .unwrap();
+        assert_eq!(grouping.buckets.len(), 3);
+    }
+
+    #[test]
+    fn merge_open_files_do_not_scale_with_shards() {
+        let Some(dir) = std::env::var_os("TS_GROUPING_NOFILE_CHILD") else {
+            let tmp = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "ts_grouping::tests::merge_open_files_do_not_scale_with_shards",
+                ])
+                .env("TS_GROUPING_NOFILE_CHILD", tmp.path())
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let limit = libc::rlimit {
+            rlim_cur: 64,
+            rlim_max: 64,
+        };
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+        let shards: Vec<ShardSpill> = (0..100)
+            .map(|shard| ShardSpill {
+                min_id: shard as u64,
+                spill_path: write_spill(&dir, shard, &[shard as i64 % 3]),
+            })
+            .collect();
+        let grouping =
+            merge_stage(&shards, &dir.join("bucket_index.bin"), String::new(), 4).unwrap();
+        assert_eq!(grouping.buckets.len(), 3);
     }
 }

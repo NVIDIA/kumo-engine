@@ -1768,6 +1768,7 @@ dependencies = [
  "parquet",
  "pprof",
  "ratatui",
+ "rayon",
  "serde",
  "serde_json",
  "serial_test",
