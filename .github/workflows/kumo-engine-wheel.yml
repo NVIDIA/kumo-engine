@@ -168,7 +168,7 @@ jobs:
   kitmaker:
     needs: [attach-to-release]
     if: ${{ github.event_name == 'release' }}
-    runs-on: ubuntu-24.04
+    runs-on: linux-amd64-cpu8
     timeout-minutes: 180
     environment: kumo-engine-release
     permissions:
