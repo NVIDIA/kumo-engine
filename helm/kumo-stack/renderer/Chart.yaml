@@ -6,5 +6,5 @@ apiVersion: v2
 name: kumo-stack-renderer
 description: Local-only values renderer for independent Kumo releases
 type: application
-version: 1.0.0-dev.0
-appVersion: "1.0.0-dev.0"
+version: 1.0.0
+appVersion: "1.0.0"

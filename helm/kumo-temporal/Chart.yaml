@@ -6,7 +6,7 @@ apiVersion: v2
 name: kumo-temporal
 description: Kumo's production-shaped Temporal release for managed PostgreSQL
 type: application
-version: 1.0.0-dev.0
+version: 1.0.0
 appVersion: "1.31.2"
 dependencies:
   - name: temporal

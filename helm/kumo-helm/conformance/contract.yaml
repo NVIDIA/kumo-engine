@@ -23,7 +23,7 @@
 # blocking failure. Each item lists:
 #   id · what (capability) · reads (which value drives it) · probe · depends_on · satisfied_by
 # Phases: prereq = must exist before `helm install`; health = after install.
-version: 1.0.0-dev.0
+version: 1.0.0
 tenant_default: from values.global.tenant
 namespace: the Helm release namespace (helm -n)
 

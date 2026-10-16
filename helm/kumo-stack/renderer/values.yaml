@@ -80,7 +80,7 @@ images:
   kumo:
     registry: nvcr.io
     repoPath: 1000161941370113/kumo-3
-    tag: 1.0.0-dev.0
+    tag: 1.0.0
     pullSecretName: ""
   temporal:
     serverRepository: docker.io/temporalio/server

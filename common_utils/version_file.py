@@ -21,7 +21,7 @@ from kumo_core.version import installed_distribution_version
 
 VERSION_FILE = '~/kumo_version.txt'
 #: Stamped from the root VERSION file; do not edit by hand.
-RELEASE_VERSION = "1.0.0.dev0"
+RELEASE_VERSION = "1.0.0"
 
 
 def container_version() -> Optional[str]:
