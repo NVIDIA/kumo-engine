@@ -1,5 +1,5 @@
 <p align="center">
-  <img height="180" src="ui/src/images/kumologo.svg" alt="Kumo" />
+  <img height="180" src="ui/src/images/kumo_logo_green.svg" alt="Kumo" />
 </p>
 
 ---
