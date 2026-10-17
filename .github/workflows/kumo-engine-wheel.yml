@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Builds x86_64 and ARM64 `kumo-engine` wheels (packages/kumo-engine/scripts/
+# Builds the x86_64 `kumo-engine` wheel (packages/kumo-engine/scripts/
 # build_wheel.sh).
 #
 # Release flow:
@@ -13,8 +13,7 @@
 #      PyPI, alone and with each extra, on every Python version it claims.
 #   4. Once the `kumo-engine-release` environment approves it, `kitmaker`
 #      publishes the attached x86_64 wheel to PyPI and pypi.nvidia.com through
-#      Kitmaker (scripts/kitmaker_release.py). The ARM64 wheel stays on the
-#      release.
+#      Kitmaker (scripts/kitmaker_release.py).
 # A manual run only builds the wheel (as `<version>+<commit>`) and stores it as
 # a workflow artifact. The wheel bundles kumo-api, kumo-pql, kumo-core and
 # every provider; kumo-glove-6b-50d stays on PyPI.
@@ -54,8 +53,6 @@ jobs:
         include:
           - arch: x86_64
             runner: ubuntu-22.04
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
 
     steps:
