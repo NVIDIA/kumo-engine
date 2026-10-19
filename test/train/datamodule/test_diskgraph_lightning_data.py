@@ -4036,6 +4036,484 @@ def test_suppress_iterable_len_warning_only_scopes_to_the_context() -> None:
         assert len(caught) == 1
 
 
+# ---------------------------------------------------------------------------
+# Feature projection pushdown (the ``projections`` argument of
+# ``RuntimeIndex.iter()``).
+#
+# The engine materializes every stored rowpack column for a sampled node
+# unless the plan names the ones the caller wants. The projection is what makes
+# it stop doing that -- but it is also the single most dangerous kind of change
+# available here, because the node ``time`` column is read out of the SAME
+# RecordBatch as the features and its absence is silent (see
+# ``_attach_pkeys_and_times``). These tests pin the needed set.
+# ---------------------------------------------------------------------------
+
+
+def _feature_config(
+    columns: list[str], time_column: str | None, mapper_key: str
+) -> dict[str, Any]:
+    """One ``feature_schema.node_types`` entry in the shape production uses.
+
+    ``TaskDatasetMaterializeSpec`` requires EXACTLY these four fields, with
+    ``column_specs`` column names matching ``feature_columns`` element for
+    element. In particular there is no ``pkey_column``: the primary key is
+    read from index_metadata.json, never from the feature schema.
+    """
+    return {
+        "feature_columns": columns,
+        "column_specs": [{"column_name": column} for column in columns],
+        "time_column": time_column,
+        "mapper_key": mapper_key,
+    }
+
+
+def _projection_feature_schema() -> dict[str, Any]:
+    """A schema with a temporal node type, a PK and a non-feature column."""
+    return {
+        "node_types": {
+            "User": _feature_config(["age", "country"], None, "users_v1"),
+            # NOTE: ``created_at`` is deliberately NOT in feature_columns --
+            # pquery excludes the time column from the encoder set. It must
+            # still be requested, or ``.time`` disappears.
+            "Transaction": _feature_config(["amount"], "created_at", "txns_v1"),
+            # A PURE LINK TABLE: all keys, no encoder columns, no time column.
+            # `_feature_schema` produces exactly this shape for a join table
+            # (pquery excludes the pkey and every fkey), and it is the most
+            # common table in a real graph after the entity tables -- 30 of
+            # them across the 27 production replay cases.
+            "Ownership": _feature_config([], None, "links_v1"),
+        },
+        "edge_types": {},
+        "raw_feature_format": "arrow_columnar_v1",
+        "provenance_mode": "node_id_time_keyed_v1",
+        "metadata": {},
+    }
+
+
+def _projection_manifest(tmp_path: Any) -> DiskgraphTaskManifest:
+    """A manifest whose ``index_metadata.json`` supplies pk / time columns."""
+    index_dir = tmp_path / "index"
+    index_dir.mkdir(exist_ok=True)
+    (index_dir / "index_metadata.json").write_text(
+        json.dumps(
+            {
+                "node_types": [
+                    {
+                        "name": "User",
+                        "primary_key_map": {"column": "user_id"},
+                    },
+                    {
+                        "name": "Transaction",
+                        "primary_key_map": {"column": "txn_id"},
+                        "create_time_col": "created_at",
+                    },
+                    {
+                        "name": "Ownership",
+                        "primary_key_map": {"column": "ownership_id"},
+                    },
+                ],
+                "edge_relations": [],
+            }
+        )
+    )
+    return DiskgraphTaskManifest(
+        manifest_path=str(tmp_path / "manifest.json"),
+        runtime_manifest_path=str(tmp_path / "runtime_manifest.json"),
+        manifest={},
+        metadata={
+            "train_table_name": "train_table",
+            "seed_node_type": "User",
+            "task_type": "binary_classification",
+            "train_table_columns": {
+                "seed_id_column": "ENTITY",
+                "target_column": "TARGET",
+                "time_column": "TIMESTAMP",
+                "weight_column": "WEIGHT",
+            },
+            "stage_counts": {
+                "train": 6,
+                "val": 3,
+                "test": 3,
+            },
+        },
+        feature_schema=_projection_feature_schema(),
+        graph_runtime_metadata={
+            "graph_index_path": str(index_dir),
+            "node_types": ["User", "Transaction", "Ownership"],
+            "edge_types": [],
+        },
+    )
+
+
+def _projection_mapper_bank() -> dict[str, dict[str, TensorMapper]]:
+    """The bank ``_build_mapper_bank_from_encoders`` produces for
+    ``_projection_feature_schema()``: one entry per ``mapper_key``, holding
+    exactly the columns with a non-``Null`` fitted encoder.
+
+    The projection is DERIVED from this, so the fixture has to carry every
+    mapper key the schema names -- a missing key is the "encoders went
+    missing" case, which has its own tests.
+    """
+    return {
+        "users_v1": {
+            "age": _numerical_mapper([18.0, 25.0, 30.0, 50.0]),
+            "country": TensorMapper.from_stype(
+                Stype.categorical, pd.Series(["US", "DE"])
+            ),
+        },
+        "txns_v1": {
+            "amount": _numerical_mapper([1.0, 2.0]),
+        },
+        # Pure link table: no encoder columns at all.
+        "links_v1": {},
+    }
+
+
+def _projection_datamodule(
+    tmp_path: Any,
+    mapper_bank: dict[str, dict[str, TensorMapper]] | None = None,
+) -> DiskgraphLightningDataModule:
+    return DiskgraphLightningDataModule(
+        _projection_manifest(tmp_path),
+        _projection_mapper_bank() if mapper_bank is None else mapper_bank,
+        sampling_plan={"layers": [{"fanouts": {}}]},
+        train_batch_size=2,
+        eval_batch_size=2,
+    )
+
+
+def test_feature_projection_keeps_node_time_column(tmp_path) -> None:
+    """THE regression guard.
+
+    ``created_at`` is the ``Transaction`` time column and is deliberately NOT
+    in ``feature_columns`` (pquery excludes it). A naive "just send the encoder
+    columns" projection would request only ``amount``; the engine would honor
+    it, ``_attach_pkeys_and_times`` would find no ``created_at`` in the batch,
+    skip the ``.time`` attach without raising, and the temporal encoder would
+    silently lose ``rel_time``. Assert the time column survives.
+    """
+    dm = _projection_datamodule(tmp_path)
+
+    for attach_pkeys in (True, False):
+        projection = dm._feature_projection(attach_pkeys=attach_pkeys)
+        naive = set(dm._feature_schema["node_types"]["Transaction"]["feature_columns"])
+        assert "created_at" not in naive, (
+            "fixture must model the real shape: the time column is NOT an "
+            "encoder feature column"
+        )
+        assert "created_at" in projection["Transaction"], (
+            f"attach_pkeys={attach_pkeys}: the node time column must be "
+            "requested or `.time` silently disappears"
+        )
+
+
+def test_feature_projection_includes_pkey_only_when_attached(tmp_path) -> None:
+    dm = _projection_datamodule(tmp_path)
+
+    with_pk = dm._feature_projection(attach_pkeys=True)
+    without_pk = dm._feature_projection(attach_pkeys=False)
+
+    assert set(with_pk["User"]) == {"age", "country", "user_id"}
+    assert set(with_pk["Transaction"]) == {"amount", "created_at", "txn_id"}
+    # The train loader runs attach_pkeys=False, so the PK is dead weight there.
+    assert set(without_pk["User"]) == {"age", "country"}
+    assert set(without_pk["Transaction"]) == {"amount", "created_at"}
+
+
+def test_pure_link_table_projects_to_empty_not_absent(tmp_path) -> None:
+    """A type the model reads NOTHING from must be requested as ``[]``.
+
+    ``[]`` and "absent" are different requests: the wheel reads an absent key
+    as SELECT ALL and ``[]`` as SELECT NOTHING. Omitting the key here -- which
+    is what the first cut of this method did, via an ``if needed:`` guard --
+    silently reverts to decoding every stored column of exactly the tables that
+    have the most rows to decode and nothing the encoders want.
+    """
+    dm = _projection_datamodule(tmp_path)
+    train = dm._feature_projection(attach_pkeys=False)
+
+    assert "Ownership" in train, (
+        "a pure link table must be PRESENT in the projection; omitting it is "
+        "read by the wheel as select-all, the exact opposite of the intent"
+    )
+    assert train["Ownership"] == [], (
+        f"expected an empty request, got {train['Ownership']!r}"
+    )
+
+
+def test_pure_link_table_still_projects_its_pkey_when_attached(tmp_path) -> None:
+    """The one place train and eval genuinely diverge.
+
+    ``attach_pkeys=True`` makes the needed set non-empty for a link table, so
+    eval asks for ``[pkey]`` where train skips outright. Both are correct; the
+    asymmetry is real and must not be "fixed" into agreement.
+    """
+    dm = _projection_datamodule(tmp_path)
+
+    assert dm._feature_projection(attach_pkeys=True)["Ownership"] == ["ownership_id"]
+    assert dm._feature_projection(attach_pkeys=False)["Ownership"] == []
+
+
+def test_schema_entries_without_an_index_node_type_are_dropped(tmp_path) -> None:
+    """A schema entry the ENGINE has no node type for must not reach the wheel.
+
+    ``pquery._feature_schema`` adds a synthetic ``train_table`` entry for the
+    forecasting family, and ``TaskDatasetMaterializeSpec`` expects it, but the
+    index has no such node type. Passing it through makes the wheel report
+    EVERY key as unmatched and warn that those types fall back to fetching all
+    columns -- both false, and pointing at a typo that is not there.
+    """
+    dm = _projection_datamodule(tmp_path)
+    schema = dict(dm._feature_schema)
+    schema["node_types"] = {
+        **schema["node_types"],
+        "train_table": _feature_config(["FUTURE_LABELS"], None, "train_table"),
+    }
+    dm._feature_schema = schema
+
+    for attach_pkeys in (True, False):
+        projection = dm._feature_projection(attach_pkeys=attach_pkeys)
+        assert "train_table" not in projection, (
+            f"attach_pkeys={attach_pkeys}: a namespace absent from "
+            f"index_metadata.json must be dropped; got {sorted(projection)}"
+        )
+        # ...and the real node types are untouched.
+        assert set(projection) == {"User", "Transaction", "Ownership"}
+
+
+def test_projection_is_unfiltered_when_index_node_types_are_unknown(tmp_path) -> None:
+    """Empty ``index_node_types`` means "could not read index_metadata.json",
+    NOT "the graph has no node types".
+
+    Treating it as the latter would drop every key, silently turning the
+    projection off. Costing a spurious warning is the right failure direction;
+    costing the whole optimization is not.
+    """
+    dm = _projection_datamodule(tmp_path)
+    dm.task_manifest.graph_runtime_metadata.pop("graph_index_path")
+
+    projection = dm._feature_projection(attach_pkeys=False)
+    assert set(projection) == {"User", "Transaction", "Ownership"}
+
+
+def test_pkey_comes_from_index_metadata_not_the_feature_schema(tmp_path) -> None:
+    """The feature schema has no ``pkey_column`` field to read.
+
+    ``TaskDatasetMaterializeSpec`` requires each entry to be exactly
+    ``{column_specs, feature_columns, mapper_key, time_column}``, so a
+    projection that depended on a schema-side pkey would silently stop
+    requesting it. index_metadata.json is the only source.
+    """
+    dm = _projection_datamodule(tmp_path)
+    for meta in dm._feature_schema["node_types"].values():
+        assert "pkey_column" not in meta, (
+            "fixture must model the validated schema shape"
+        )
+
+    assert "user_id" in dm._feature_projection(attach_pkeys=True)["User"]
+    assert dm.pk_col_dict["User"] == "user_id"
+
+
+def test_no_type_with_a_time_column_is_ever_skipped(tmp_path) -> None:
+    """A skipped type must never have a node time column.
+
+    ``_attach_pkeys_and_times`` reads ``.time`` out of the same RecordBatch as
+    the features, guarded by ``if time_col in column_names``. Skipping a type
+    that has one drops ``rel_time`` with no exception and no log line, so the
+    absence of that combination is pinned here rather than left to review.
+    """
+    dm = _projection_datamodule(tmp_path)
+
+    for attach_pkeys in (True, False):
+        projection = dm._feature_projection(attach_pkeys=attach_pkeys)
+        for namespace, columns in projection.items():
+            if columns:
+                continue
+            assert not dm.time_col_dict.get(namespace), (
+                f"attach_pkeys={attach_pkeys}: {namespace!r} is skipped but "
+                f"has time column {dm.time_col_dict[namespace]!r}"
+            )
+            assert not (
+                dm._feature_schema["node_types"][namespace].get("time_column")
+            ), (
+                f"attach_pkeys={attach_pkeys}: {namespace!r} is skipped "
+                "but the feature schema gives it a time column"
+            )
+
+
+def test_null_encoded_column_is_not_projected(tmp_path) -> None:
+    """A ``Null``-encoded column is in ``feature_columns`` but NOT in the bank.
+
+    ``TensorMapper.from_encoder(Null())`` is an ``UnsupportedTensorMapper``
+    whose output is a zero-width tensor, so ``_build_mapper_bank_from_encoders``
+    drops the column outright. Requesting it anyway would decode a column and
+    ship it across pybind for a feature the model cannot see -- and the
+    projection must stay in lockstep with the bank, which is the contract
+    ``_record_batch_to_tf`` enforces.
+    """
+    bank = _projection_mapper_bank()
+    # `country` had a Null encoder -> absent from the bank, still in
+    # `feature_columns`.
+    del bank["users_v1"]["country"]
+    dm = _projection_datamodule(tmp_path, bank)
+
+    projection = dm._feature_projection(attach_pkeys=False)
+    assert "country" in dm._feature_schema["node_types"]["User"]["feature_columns"], (
+        "fixture must model the real shape: a Null column is still a feature column"
+    )
+    assert projection["User"] == ["age"], (
+        f"a Null-encoded column must not be requested; got {projection['User']}"
+    )
+    # ...and the request is still a subset of the bank + time/pkey, which is
+    # the invariant that makes `_record_batch_to_tf` unable to fire.
+    assert set(projection["User"]) <= set(bank["users_v1"])
+
+
+def test_all_null_table_collapses_to_the_skip_state(tmp_path) -> None:
+    """Every column ``Null`` => empty mapper => the pure-link-table path.
+
+    The empty mapper is what makes ``_record_batch_to_tf`` take its
+    ``if not mapper_dict`` branch instead of erroring, and the matching
+    projection is ``[]`` -- SKIP, not "select all".
+    """
+    bank = _projection_mapper_bank()
+    bank["users_v1"] = {}  # both encoders were Null
+    dm = _projection_datamodule(tmp_path, bank)
+
+    assert dm._feature_projection(attach_pkeys=False)["User"] == []
+    # `[]` must still be PRESENT: absent means select-all to the wheel.
+    assert "User" in dm._feature_projection(attach_pkeys=False)
+    # attach_pkeys still widens it, exactly as for any other feature-less type.
+    assert dm._feature_projection(attach_pkeys=True)["User"] == ["user_id"]
+
+
+def test_null_encoded_column_never_costs_the_time_column(tmp_path) -> None:
+    """Deriving from the bank must not drop the node time column.
+
+    The time column is not an encoder column, so a bank-derived projection
+    would lose it and `_attach_pkeys_and_times` would skip `.time` silently.
+    """
+    bank = _projection_mapper_bank()
+    bank["txns_v1"] = {}
+    dm = _projection_datamodule(tmp_path, bank)
+
+    for attach_pkeys in (True, False):
+        projection = dm._feature_projection(attach_pkeys=attach_pkeys)
+        assert "created_at" in projection["Transaction"], (
+            f"attach_pkeys={attach_pkeys}: the node time column must survive "
+            "an empty mapper"
+        )
+
+
+def test_missing_encoders_project_empty(tmp_path) -> None:
+    """An empty bank entry projects ``[]`` regardless of why it is empty.
+
+    ``_build_mapper_bank_from_encoders`` writes ``{}`` both for a table with no
+    encoder columns and for one whose encoders never arrived. Widening the
+    request back to ``feature_columns`` would not recover any features either
+    way -- ``attach_tensor_frames`` builds the ``TensorFrame`` from the
+    (empty) bank entry, not from whatever gets fetched.
+    """
+    bank = _projection_mapper_bank()
+    bank["users_v1"] = {}
+    dm = _projection_datamodule(tmp_path, bank)
+
+    projection = dm._feature_projection(attach_pkeys=False)
+    assert projection["User"] == [], (
+        "widening to feature_columns cannot recover features that have no "
+        f"fitted encoder; got {projection['User']!r}"
+    )
+
+
+def test_mapper_key_absent_from_the_bank_projects_empty(tmp_path) -> None:
+    """The bank cannot speak for a namespace it has no entry for.
+
+    ``attach_tensor_frames`` raises ``KeyError`` downstream for this case
+    regardless of what gets fetched here, so widening to ``feature_columns``
+    would not help -- it would only waste a fetch before the same crash.
+    """
+    bank = _projection_mapper_bank()
+    del bank["users_v1"]
+    dm = _projection_datamodule(tmp_path, bank)
+
+    projection = dm._feature_projection(attach_pkeys=False)
+    assert projection["User"] == []
+
+
+def test_sampling_plan_is_passed_through_untouched(tmp_path) -> None:
+    """The projection no longer rides on the plan, so the plan the wheel sees
+    must be the caller's object, unmodified -- no copy, no injected key."""
+    dm = _projection_datamodule(tmp_path)
+
+    assert "projections" not in dm.sampling_plan
+    assert "feature_columns" not in dm.sampling_plan
+    assert dm.sampling_plan["layers"] == [{"fanouts": {}}]
+
+
+def test_feature_projection_is_empty_without_a_schema(tmp_path) -> None:
+    """No feature schema => no projection => the wheel selects all.
+
+    ``{}`` and ``None`` both have to mean "everything", never "nothing".
+    """
+    dm = DiskgraphLightningDataModule(
+        _manifest(),
+        _mapper_bank(),
+        sampling_plan={"layers": []},
+        train_batch_size=2,
+        eval_batch_size=1,
+    )
+    dm._feature_schema = {"node_types": {}}
+
+    assert dm._feature_projection(attach_pkeys=True) == {}
+
+
+def test_train_and_eval_loaders_send_different_projections(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both loaders must project, and the train loader must NOT ask for PKs.
+
+    Asserts on the ``projections`` ARGUMENT to ``RuntimeIndex.iter``, which is
+    where the projection travels -- not on the sampling plan.
+    """
+    calls = _install_fake_diskgraph(monkeypatch)
+    dm = _projection_datamodule(tmp_path)
+
+    list(dm.train_dataloader())
+    train_kwargs = dict(calls["kwargs"])
+    list(dm.val_dataloader())
+    val_kwargs = dict(calls["kwargs"])
+
+    train_proj = train_kwargs["projections"]
+    val_proj = val_kwargs["projections"]
+
+    assert "user_id" not in train_proj["User"]
+    assert "user_id" in val_proj["User"]
+    # ...and both keep the time column.
+    for proj in (train_proj, val_proj):
+        assert "created_at" in proj["Transaction"]
+
+    # The link table reaches the wheel as a SKIP on train and a pkey-only
+    # request on eval -- the split has to survive the whole plumbing, not just
+    # `_feature_projection`.
+    assert train_proj["Ownership"] == []
+    assert val_proj["Ownership"] == ["ownership_id"]
+
+    # The plan itself must arrive clean, with no projection smuggled into it.
+    for kwargs in (train_kwargs, val_kwargs):
+        assert "projections" not in kwargs["sampling_plan"]
+        assert "feature_columns" not in kwargs["sampling_plan"]
+
+
+def test_schema_time_column_widens_index_time_projection(tmp_path: Any) -> None:
+    """Keep both time columns when schema and index metadata disagree."""
+    dm = _projection_datamodule(tmp_path)
+    dm._feature_schema["node_types"]["Transaction"]["time_column"] = "event_time"
+
+    projection = dm._feature_projection(attach_pkeys=False)
+
+    assert set(projection["Transaction"]) == {"amount", "created_at", "event_time"}
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--shutdown-probe-consumer":
         _run_shutdown_probe_consumer(int(sys.argv[2]), int(sys.argv[3]))

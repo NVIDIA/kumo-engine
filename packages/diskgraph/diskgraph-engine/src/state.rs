@@ -173,6 +173,65 @@ impl TypeState {
     }
 }
 
+/// The feature projection for ONE plan, resolved against ONE graph, indexed by
+/// engine `type_id`.
+///
+/// Resolving means turning the caller's `HashMap<node type name, Vec<column
+/// name>>` into a per-type answer the non-fused `fetch_features_for_type` path
+/// can index into. This is a pure function of (graph, request), so it is
+/// computed ONCE per iterator and shared by `Arc` across every batch, rather
+/// than being re-derived from strings at four sites per batch.
+///
+/// Fused-mode dispatch does not consult this at all: projection pushdown is
+/// non-fused-only for now (see `RuntimeBatchIterator::build`, which forces
+/// non-fused whenever a caller supplies a non-empty projection). It is not
+/// carried on `SamplingState`: it is resolved once per iterator (in
+/// `RuntimeBatchIterator::build`) and threaded explicitly into
+/// `sample_runtime_batch` / `sample_node_range_batch`, the only two callers
+/// that need it -- `sample()` itself never sees one.
+#[derive(Debug, Default)]
+pub struct ResolvedProjection {
+    /// Per-`type_id` column names for the non-fused path, as a TRI-STATE:
+    ///
+    /// * `None` -- the request named no entry for this type: SELECT ALL, the
+    ///   pre-pushdown behavior.
+    /// * `Some([])` -- the caller explicitly asked for NOTHING. The type is
+    ///   SKIPPED: no rowpack decode, no `raw_features` block emitted at all.
+    /// * `Some([..])` -- materialize exactly these.
+    ///
+    /// The optionality lives here rather than on the wire type because this
+    /// `Vec` is DENSE over `type_id` and so has no "absent" state of its own.
+    /// The caller-facing map expresses "select all" by omitting the key.
+    pub names: Vec<Option<Vec<String>>>,
+}
+
+impl ResolvedProjection {
+    /// Column names for the non-fused path, or `None` for SELECT ALL.
+    /// Out-of-range ids yield `None`, matching the old per-call helper's
+    /// tolerance.
+    pub fn names_for(&self, type_id: usize) -> Option<&[String]> {
+        self.names.get(type_id).and_then(|n| n.as_deref())
+    }
+
+    /// `true` when the caller consumes NO column of this type, so the whole
+    /// type can be skipped: no decode, no emitted block.
+    ///
+    /// DERIVED from `names` rather than stored alongside it, so the skip set
+    /// and the name list cannot drift apart.
+    pub fn skips(&self, type_id: usize) -> bool {
+        matches!(self.names.get(type_id), Some(Some(names)) if names.is_empty())
+    }
+
+    /// `true` when this projection is the select-all identity for every type
+    /// (equivalent to resolving an empty caller map). Used to detect when a
+    /// caller handed a non-trivial projection directly into a fused-dispatch
+    /// request, bypassing the pybind-level guard that normally rejects or
+    /// forces that combination -- see `RuntimeBatchIterator::build`.
+    pub fn is_trivial(&self) -> bool {
+        self.names.iter().all(|n| n.is_none())
+    }
+}
+
 /// The main context for a single sampling request.
 /// Pooled to avoid allocation churn.
 pub struct SamplingState {

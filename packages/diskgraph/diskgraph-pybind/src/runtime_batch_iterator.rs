@@ -1339,6 +1339,12 @@ pub struct RuntimeBatchIterator {
     stage_table_catalog_key: String,
     stage_table: Arc<TableReader>,
     plan: SamplingPlan,
+    /// The plan's feature projection, resolved against this graph ONCE at build
+    /// time and shared by every batch this iterator yields (`Arc` clone =
+    /// refcount bump). Resolving per batch would redo the same node-type and
+    /// column-name string matching for every batch and every layer, and would
+    /// also re-emit the build-time projection diagnostics on every batch.
+    feature_projection: std::sync::Arc<diskgraph_engine::state::ResolvedProjection>,
     flags: SamplingFlags,
     /// This worker's slice of the epoch, generated on demand rather
     /// than materialised. See `ShardStream`.
@@ -1473,6 +1479,7 @@ impl RuntimeIndex {
         use_seed_timestamps=true,
         pseudo_seed_time=None,
         disable_pseudo_time=false,
+        projections=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn iter(
@@ -1504,6 +1511,34 @@ impl RuntimeIndex {
         use_seed_timestamps: bool,
         pseudo_seed_time: Option<i64>,
         disable_pseudo_time: bool,
+        // Feature projection pushdown: `node type -> the columns the caller
+        // will actually consume`. Resolved ONCE in `build()` into a
+        // `ResolvedProjection` shared by every batch this iterator yields.
+        //
+        // A plain parameter rather than a key inside `sampling_plan_json`:
+        // `SamplingPlan` describes the TRAVERSAL, is embedded in
+        // `BatchSamplingRequest`, is deep-cloned per batch and is bincode-
+        // serialized -- none of which should be true of a caller-intent hint
+        // that is read exactly once. Being a parameter also means a NEW kumo
+        // against an OLD pinned wheel fails LOUDLY (`TypeError: ... unexpected
+        // keyword argument 'projections'`) at iterator construction, rather
+        // than silently degrading to select-all the way an ignored JSON key
+        // would. A silently-inert projection is precisely the failure mode this
+        // feature guards against everywhere else, so failing loud is correct.
+        //
+        // Per-type states, and ONLY these three (see
+        // `SamplerEngine::resolve_projection`):
+        //   * key ABSENT      -> select all for that type
+        //   * `[]`            -> select NOTHING; the type is skipped entirely
+        //   * `["a", "b"]`    -> materialize exactly these
+        // and `None` for the whole argument => select all, everywhere.
+        //
+        // `[]` meaning "nothing" is why this parameter is `projections`
+        // and not the earlier `feature_columns`: under that name `[]` meant
+        // select-all. The two spellings are structurally identical
+        // (`Option<HashMap<String, Vec<String>>>`), so the NAME is the entire
+        // skew tripwire and must never be aliased back.
+        projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<RuntimeBatchIterator> {
         RuntimeBatchIterator::build(
             Arc::clone(&self.reader),
@@ -1536,6 +1571,7 @@ impl RuntimeIndex {
             use_seed_timestamps,
             pseudo_seed_time,
             disable_pseudo_time,
+            projections,
         )
     }
 }
@@ -1613,6 +1649,8 @@ impl RuntimeBatchIterator {
         use_seed_timestamps: bool,
         pseudo_seed_time: Option<i64>,
         disable_pseudo_time: bool,
+        // See `RuntimeIndex::iter`; `None` => select-all, `[]` per key => skip.
+        projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<Self> {
         if batch_size == 0 {
             return Err(DiskgraphConfigError::new_err("batch_size must be >= 1"));
@@ -1807,11 +1845,36 @@ impl RuntimeBatchIterator {
             pseudo_seed_time,
             disable_pseudo_time,
         )?;
-        // `fused=None` → DG picks via heuristic. Explicit override wins.
+        // Feature projection pushdown is NON-FUSED ONLY (see
+        // `SamplerEngine::resolve_projection`): fused dispatch always fetches
+        // every non-reserved column, so silently accepting `projections` under
+        // an explicit or heuristically-chosen fused mode would return all
+        // columns while the caller believes it narrowed them.
+        let projections_non_empty = projections.as_ref().is_some_and(|p| !p.is_empty());
+        // `fused=None` → DG picks via heuristic. Explicit override wins, EXCEPT
+        // `fused=True` combined with a non-empty projection, which is rejected
+        // outright rather than silently downgraded: the caller explicitly asked
+        // for fused and the two requests are incompatible today.
         // Telemetry so trainers can see what was chosen and why.
-        let chosen_fused = match fused {
-            Some(v) => v,
-            None => {
+        let chosen_fused = match (fused, projections_non_empty) {
+            (Some(true), true) => {
+                return Err(DiskgraphConfigError::new_err(
+                    "fused=True cannot be combined with a non-empty `projections`: \
+                     feature projection pushdown is non-fused-only today. Pass \
+                     fused=False (or leave fused=None) when using `projections`.",
+                ));
+            }
+            (Some(v), _) => v,
+            (None, true) => {
+                tracing::info!(
+                    batch_size = batch_size,
+                    stage_table = %stage_catalog_key,
+                    "Feature projection supplied; forcing non-fused dispatch \
+                     (fused-mode projection pushdown is not supported)"
+                );
+                false
+            }
+            (None, false) => {
                 let h = diskgraph_engine::engine::choose_fused_mode(
                     reader.as_ref(),
                     &sampling_plan,
@@ -1826,11 +1889,20 @@ impl RuntimeBatchIterator {
                 h
             }
         };
+        // Resolve the plan's feature projection ONCE, here, against this graph.
+        // Doing it before the struct literal keeps `engine` borrowable (the
+        // literal moves it) and, more importantly, means the projection
+        // diagnostics in `resolve_projection` are emitted exactly once per
+        // iterator instead of once per batch.
+        let feature_projection = std::sync::Arc::new(
+            engine.resolve_projection(&projections.unwrap_or_default()),
+        );
         Ok(Self {
             reader,
             engine,
             stage_table_catalog_key: stage_catalog_key,
             stage_table: stage_table_arc,
+            feature_projection,
             plan: sampling_plan,
             flags: SamplingFlags {
                 replace,
@@ -1899,6 +1971,7 @@ impl RuntimeBatchIterator {
         use_seed_timestamps=true,
         pseudo_seed_time=None,
         disable_pseudo_time=false,
+        projections=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -1932,6 +2005,8 @@ impl RuntimeBatchIterator {
         use_seed_timestamps: bool,
         pseudo_seed_time: Option<i64>,
         disable_pseudo_time: bool,
+        // See `RuntimeIndex::iter`; `None` => select-all, `[]` per key => skip.
+        projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<Self> {
         let index = RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)?;
         Self::build(
@@ -1965,6 +2040,7 @@ impl RuntimeBatchIterator {
             use_seed_timestamps,
             pseudo_seed_time,
             disable_pseudo_time,
+            projections,
         )
     }
 
@@ -2061,6 +2137,7 @@ impl RuntimeBatchIterator {
                         self.use_seed_timestamps,
                         None,
                         pseudo_time,
+                        Some(std::sync::Arc::clone(&self.feature_projection)),
                     )
                     .map_err(map_engine_err)?;
                 Ok(Some(rb))
@@ -2106,6 +2183,7 @@ impl RuntimeBatchIterator {
                         self.use_seed_timestamps,
                         None,
                         pseudo_time,
+                        Some(std::sync::Arc::clone(&self.feature_projection)),
                     )
                 })
                 .map_err(map_engine_err)?;
@@ -2147,6 +2225,7 @@ impl RuntimeBatchIterator {
                         self.use_seed_timestamps,
                         None,
                         pseudo_time,
+                        Some(std::sync::Arc::clone(&self.feature_projection)),
                     )
                 })
                 .map_err(map_engine_err)?;
@@ -2182,6 +2261,7 @@ impl RuntimeBatchIterator {
             let plan = &self.plan;
             let flags = &self.flags;
             let pseudo_time = self.pseudo_time.as_ref().map(PseudoTimeSeed::filter);
+            let projection = &self.feature_projection;
             let runtime_batch = py
                 .detach(|| {
                     engine.sample_runtime_batch(
@@ -2201,6 +2281,7 @@ impl RuntimeBatchIterator {
                             seed_time,
                         }),
                         pseudo_time,
+                        Some(std::sync::Arc::clone(projection)),
                     )
                 })
                 .map_err(map_engine_err)?;
@@ -2254,6 +2335,7 @@ impl RuntimeBatchIterator {
                     self.use_seed_timestamps,
                     None, // node_range off (stage-table path)
                     pseudo_time,
+                    Some(std::sync::Arc::clone(&self.feature_projection)),
                 )
             })
             .map_err(map_engine_err)?;

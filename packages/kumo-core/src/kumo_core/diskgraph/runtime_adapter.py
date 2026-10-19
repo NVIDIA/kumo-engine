@@ -355,7 +355,9 @@ def attach_tensor_frames(
                 f"for namespace {namespace!r}, but mapper_bank has no "
                 f"such key.  Available: {sorted(mapper_bank)}")
         mapper_dict = dict(mapper_bank[mapper_key])
-        hetero[namespace].tf = _record_batch_to_tf(record_batch, mapper_dict)
+        hetero[namespace].tf = _record_batch_to_tf(
+            record_batch, mapper_dict, namespace=namespace
+        )
 
     # Schema types present (back-filled) but without raw features: build an
     # empty mapper-shaped TF so the encoder finds its expected stypes.
@@ -375,7 +377,9 @@ def attach_tensor_frames(
         empty_rb = pa.RecordBatch.from_pydict(
             {col: pa.array([], type=pa.string())
              for col in mapper_dict})
-        hetero[namespace].tf = _record_batch_to_tf(empty_rb, mapper_dict)
+        hetero[namespace].tf = _record_batch_to_tf(
+            empty_rb, mapper_dict, namespace=namespace
+        )
 
 
 def _attach_pkeys_and_times(
@@ -474,21 +478,34 @@ def _attach_placeholder_tensor_frames(
 def _record_batch_to_tf(
     record_batch: pa.RecordBatch,
     mapper_dict: dict[str, TensorMapper],
-):
-    # ``get_tf`` accepts a pandas DataFrame or a pa.RecordBatch/pa.Table
-    # directly, so the RecordBatch can be passed through without a pandas
-    # round trip.
-    columns = set(record_batch.schema.names)
-    relevant = {col: m for col, m in mapper_dict.items() if col in columns}
-    if not relevant:
-        # No overlap — empty DataFrame with the mapper columns so the TF has
-        # the right schema for the encoder path.
-        empty = pd.DataFrame(
-            {col: pd.Series(dtype="object")
-             for col in mapper_dict})
-        return get_tf(empty, dict(mapper_dict))
-    selected = record_batch.select(list(relevant.keys()))
-    return get_tf(selected, relevant)
+    *,
+    namespace: str | None = None,
+) -> TensorFrame:
+    """Encode mapper columns, ignoring auxiliary time and primary key columns.
+
+    Args:
+        record_batch: Features and optional auxiliary columns for one namespace.
+        mapper_dict: Fitted mappers defining the required encoder inputs.
+        namespace: Node type included in missing-column diagnostics.
+
+    Returns:
+        Encoded features, or an empty frame for a type without fitted encoders.
+
+    Raises:
+        RuntimeError: If a required encoder column is absent from the batch.
+    """
+    missing = sorted(set(mapper_dict) - set(record_batch.schema.names))
+    if missing:
+        raise RuntimeError(
+            f"feature batch for namespace {namespace or '<unknown>'!r} is "
+            f"missing {len(missing)} column(s) the fitted encoders require: "
+            f"{missing!r}. Present: {record_batch.schema.names!r}. Either the "
+            "projection handed to RuntimeIndex.iter() omits an encoder "
+            "column, or the graph snapshot lacks a fitted encoder column."
+        )
+    if not mapper_dict:
+        return TensorFrame({}, {}, num_rows=0)
+    return get_tf(record_batch, dict(mapper_dict))
 
 
 def _channel(batch: RuntimeBatch, channel: str) -> GraphChannel:
