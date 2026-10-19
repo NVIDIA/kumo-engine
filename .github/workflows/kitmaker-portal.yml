@@ -1,0 +1,108 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kitmaker Portal via Charon
+
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      project:
+        type: string
+        required: true
+      project_id:
+        type: number
+        required: true
+      platform:
+        type: string
+        required: true
+      artifact:
+        type: string
+        required: true
+      release_tag:
+        type: string
+        required: true
+      upload:
+        description: Publish after validation; false only runs Kitmaker validation.
+        type: boolean
+        default: false
+  workflow_dispatch:
+  # Exercise the branch YAML before workflow_dispatch is registered on main.
+  push:
+    branches: [automate-kitmaker, 'kitmaker/**']
+    paths:
+      - .github/workflows/kitmaker-portal.yml
+      - scripts/kitmaker_release.py
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  portal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment: kumo-engine-release
+    env:
+      KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+      KITMAKER_PIC: ${{ vars.KITMAKER_PIC }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PROJECT: ${{ inputs.project || 'kumo-engine' }}
+      PROJECT_ID: ${{ inputs.project_id || 6903 }}
+      PLATFORM: ${{ inputs.platform || 'manylinux_2_34_x86_64' }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      UPLOAD: ${{ inputs.upload || false }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: false
+
+      - name: Install Teleport
+        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+        with:
+          version: auto
+          proxy: nv-stg-ps.teleport.sh:443
+
+      - name: Start Ferry tunnel
+        uses: teleport-actions/application-tunnel@bb7a8fbfb67b85d26013554f10d71dd032c1c764 # v1.0.1
+        with:
+          proxy: nv-stg-ps.teleport.sh:443
+          token: charon-gha-runners
+          app: charon
+          listen: tcp://127.0.0.1:8888
+
+      - name: Check Kitmaker connectivity (no publication)
+        if: ${{ github.event_name != 'release' }}
+        run: >-
+          uv run --no-project --with 'orjson>=3.10,<4'
+          scripts/kitmaker_release.py --ferry --check-connectivity
+          --portal http://127.0.0.1:8888/kitmaker-portal/api/v0
+          --project-id "$PROJECT_ID" --project "$PROJECT" --platform "$PLATFORM"
+
+      - name: Download wheel
+        if: ${{ github.event_name == 'release' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.artifact }}
+          path: dist
+
+      - name: Release through Kitmaker
+        if: ${{ github.event_name == 'release' }}
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          args=(--dry-run)
+          if [ "$UPLOAD" = true ]; then
+            args=()
+          fi
+          uv run --no-project --with 'orjson>=3.10,<4' scripts/kitmaker_release.py \
+            --ferry --portal http://127.0.0.1:8888/kitmaker-portal/api/v0 \
+            --project-id "$PROJECT_ID" --project "$PROJECT" \
+            --platform "$PLATFORM" --repo "$REPO" --tag "$RELEASE_TAG" \
+            "${args[@]}" dist/*.whl

@@ -110,7 +110,7 @@ platform's `release-version`.
    has the expected name and owner and that the attached wheel is the one this
    run built, has Kitmaker dry-run it, and only then publishes it to PyPI and
    pypi.nvidia.com, where it confirms both serve exactly those bytes. Only the
-   x86_64 wheel goes to PyPI; the ARM64 wheel stays on the GitHub release. A publication cannot be recalled, and PyPI never
+   x86_64 wheel is currently built and published. A publication cannot be recalled, and PyPI never
    accepts the same file name twice.
 6. **Smoke-test the published wheel** in a clean virtualenv:
 
@@ -171,3 +171,41 @@ needs:
 - the variable `KITMAKER_PIC`, that owner's email address.
 
 Review the license metadata: the wheel carries the `License-Expression` derived by `scripts/gen_third_party.py` and ships `LICENSE` and `THIRD-PARTY.txt`.
+
+## Charon connectivity and validation
+
+The engine and GloVe release jobs call
+[Kitmaker Portal via Charon](../../.github/workflows/kitmaker-portal.yml).
+It runs on GitHub-hosted Ubuntu, opens a Teleport application tunnel to Charon
+Ferry, and authenticates each Portal request with a fresh GitHub OIDC token
+plus the Kitmaker bearer token. Portal credentials stay in the
+`kumo-engine-release` environment. Charon/Teleport must authorize this repository,
+workflow, and ref; authorization for cuOpt does not grant access to Kumo.
+The tunnel currently uses the staging proxy from the cuOpt integration.
+
+To test connectivity before merging, push the workflow and script changes on
+`automate-kitmaker` or a `kitmaker/**` branch. That push runs the branch's YAML.
+It only reads project 6903 and verifies its name and owner; it does not build
+wheels, create a Kitmaker release, or publish packages. A successful check
+confirms connectivity and project-read access, not permission to submit a
+release or fetch a wheel.
+
+Once the workflow exists on the default branch, the same check can be dispatched
+against a selected branch:
+
+```bash
+gh workflow run kitmaker-portal.yml --repo NVIDIA/kumo-engine --ref <branch>
+```
+
+Branch checks also require Charon/Teleport to allow branch refs. A tag-only
+policy must be extended before these checks can succeed. Release authorization
+must cover `kumo-engine-v*` and `kumo-glove-6b-50d-v*` tags.
+
+The reusable workflow defaults `upload` to false. Release callers explicitly
+set it to true after the release environment permits the job. For a standalone
+Kitmaker validation without publication, run the script with `--dry-run` and
+its usual release arguments. Add `--ferry` and the local tunnel Portal URL when
+using Charon; this needs GitHub Actions OIDC variables and `id-token: write`.
+The script requires `orjson`, already declared through the root project's
+dynamic dependencies in `setup.py`; the workflow installs it in an isolated
+`uv run` environment.
