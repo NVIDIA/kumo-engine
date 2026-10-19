@@ -443,6 +443,7 @@ fn test_resolution_runtime_batch_label_path() {
             true,                 // preserve old behavior: use seed timestamps when present
             None,                 // node_range: stage-table seeding (NodeRange off)
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch must succeed on the resolution label path");
 
@@ -571,6 +572,7 @@ fn test_resolution_runtime_batch_orphan_dropped_at_ingest() {
             true,
             None,
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("clean post-drop stage must sample");
 
@@ -674,6 +676,7 @@ fn test_resolution_rhs_not_rooted() {
             true, // preserve old behavior: use seed timestamps when present
             None, // node_range off
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch must succeed");
 
@@ -860,6 +863,7 @@ fn test_resolution_exclude_hydrate() {
             true,
             None,
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch on the exclude path");
 
@@ -947,6 +951,7 @@ fn test_resolution_exclude_absent_when_all_empty() {
             true,
             None,
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch");
     assert!(
@@ -1027,6 +1032,7 @@ fn run_two_tower(tmp: &tempfile::TempDir, tt_id: &str, neg_rnd_seed: u64) -> cra
             true,              // preserve old behavior: use seed timestamps when present
             None,              // node_range off
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("two-tower sample_runtime_batch must succeed");
 
@@ -1276,6 +1282,7 @@ fn test_node_range_seeds_full_catalog() {
                     seed_time,
                 }),
                 None,
+                None, // projection: resolved per call in tests
             )
             .expect("NodeRange sample_runtime_batch must succeed");
 

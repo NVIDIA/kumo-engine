@@ -73,6 +73,10 @@ jobs:
           PREVIOUS_SHA: ${{ steps.source.outputs.previous }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
+          if ! git -C .diskgraph-upstream cat-file -e "${PREVIOUS_SHA}^{commit}" 2>/dev/null; then
+            git -C .diskgraph-upstream fetch \
+              "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "$PREVIOUS_SHA"
+          fi
           {
             echo 'message<<EOF'
             echo "Sync DiskGraph at ${SOURCE_SHA:0:12}"

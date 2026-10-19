@@ -838,6 +838,72 @@ def test_record_batch_to_tf_uses_arrow_mapper_contract(
     assert len(calls) == 1
 
 
+def test_record_batch_to_tf_ignores_columns_no_mapper_claims() -> None:
+    """The batch is EXPECTED to carry non-encoder columns -- the node time
+    column always, the primary key on the eval path -- and they must not reach
+    the TensorFrame.
+
+    ``get_tf`` iterates the mapper and looks columns up by name, so no
+    projection of the batch is needed to achieve that. This pins the property
+    the removed ``.select()`` used to appear to provide, so that deleting it
+    stays safe if ``get_tf`` is ever reimplemented.
+    """
+    record_batch = pa.RecordBatch.from_arrays(
+        [
+            pa.array([41.0, 22.0], type=pa.float64()),
+            pa.array([1_700_000_000, 1_700_000_100], type=pa.int64()),
+            pa.array([7, 8], type=pa.int64()),
+        ],
+        names=["age", "created_at", "user_id"],
+    )
+    tf = runtime_adapter._record_batch_to_tf(
+        record_batch, {"age": _numerical_mapper([18.0, 25.0, 30.0, 50.0])}
+    )
+
+    assert [c for cols in tf.col_names_dict.values() for c in cols] == ["age"]
+    assert tf.num_rows == 2
+
+
+def test_record_batch_to_tf_raises_when_a_mapper_column_is_missing() -> None:
+    """A projection narrower than the mapper bank must FAIL, not silently
+    encode fewer features than the model was fitted on.
+
+    Before projection pushdown this could only mean the snapshot did not store
+    the column; the batch always carried everything else. Now it can also mean
+    `_feature_projection` did not ask for it, and that failure is otherwise
+    invisible -- no exception, no log line, just a model quietly training on
+    fewer inputs.
+    """
+    record_batch = pa.RecordBatch.from_arrays(
+        [pa.array([41.0, 22.0], type=pa.float64())], names=["age"]
+    )
+    mapper = _numerical_mapper([18.0, 25.0, 30.0, 50.0])
+
+    with pytest.raises(RuntimeError, match="income"):
+        runtime_adapter._record_batch_to_tf(
+            record_batch,
+            {
+                "age": mapper,
+                "income": mapper,
+            },
+            namespace="User",
+        )
+
+
+def test_record_batch_to_tf_zero_mapper_type_is_not_an_error() -> None:
+    """A pure link table has NO fitted encoders, so an empty mapper is the
+    normal case, not a missing-column one. It must yield the same zero-row,
+    zero-stype TF the back-fill pass builds when the projection skips the type
+    outright -- that equivalence is what makes skipping safe."""
+    record_batch = pa.RecordBatch.from_arrays(
+        [pa.array([7, 8], type=pa.int64())], names=["ownership_id"]
+    )
+
+    tf = runtime_adapter._record_batch_to_tf(record_batch, {}, namespace="Ownership")
+    assert len(tf.feat_dict) == 0
+    assert tf.num_rows == 0
+
+
 def test_backfilled_type_with_mapper_gets_empty_shaped_tf() -> None:
     """A schema type with a ``mapper_key`` that the batch did NOT sample (so it
     is parity back-filled as an empty block, with no raw RecordBatch) must still
@@ -1561,3 +1627,343 @@ def test_attach_pkeys_does_not_fabricate_for_nonempty_unreached_block() -> None:
     _attach_pkeys_and_times(hetero, {}, pk_col_dict, {})
 
     assert "pkey" not in hetero["loan"]
+
+
+# ---------------------------------------------------------------------------
+# Feature projection pushdown: what the adapter sees when the engine narrows
+# the RecordBatch to the plan's `feature_columns`.
+#
+# The whole safety argument is equivalence: for the SAME sampled batch, a
+# projected RecordBatch and a select-all RecordBatch must produce identical
+# `.tf`, `.time` and `.pkey`. The dangerous direction is the projected one
+# silently losing a column the adapter reads by name, because every such read
+# is guarded by `if <col> in column_names` and therefore fails SILENTLY.
+# ---------------------------------------------------------------------------
+
+_PROJECTION_STORED_COLUMNS = [
+    "txn_id",  # primary key    -> hetero[ns].pkey
+    "amount",  # encoder feature -> hetero[ns].tf
+    "created_at",  # node time  -> hetero[ns].time  (NOT an encoder column)
+    "user_id",  # foreign key    -> dead weight, projected away
+    "receipt_url",  # ImageUrl   -> dead weight, projected away
+]
+
+
+def _txn_record_batch(columns: list[str]) -> pa.RecordBatch:
+    """A `Transaction` feature batch restricted to `columns`, simulating what
+    the engine emits under a given projection."""
+    all_columns = {
+        "txn_id": pa.array([9001, 9002, 9003, 9004], type=pa.int64()),
+        "amount": pa.array([10.0, 20.0, 30.0, 40.0], type=pa.float64()),
+        "created_at": pa.array(
+            [1_700_000_000, 1_700_000_100, 1_700_000_200, 1_700_000_300],
+            type=pa.int64(),
+        ),
+        "user_id": pa.array([1, 2, 3, 4], type=pa.int64()),
+        "receipt_url": pa.array(["a", "b", "c", "d"], type=pa.string()),
+    }
+    return pa.RecordBatch.from_arrays([all_columns[c] for c in columns], names=columns)
+
+
+def _txn_batch(columns: list[str]) -> dict[str, Any]:
+    batch = _populated_batch()
+    batch["graphs"]["main"]["node_ids"]["Transaction"] = pa.array(
+        [200, 201, 202, 203], type=pa.uint64()
+    )
+    batch["graphs"]["main"]["batch_dict"]["Transaction"] = pa.array(
+        [0, 1, 2, 0], type=pa.uint32()
+    )
+    batch["graphs"]["main"]["num_sampled_nodes_dict"]["Transaction"] = pa.array(
+        [3, 1], type=pa.uint64()
+    )
+    batch["raw_features"]["Transaction"] = {
+        "key": "Transaction",
+        "num_rows": 4,
+        "columns": columns,
+        "metadata": {},
+        "node_ids": pa.array([200, 201, 202, 203], type=pa.uint64()),
+        "record_batches": [_txn_record_batch(columns)],
+    }
+    return batch
+
+
+def _txn_feature_schema() -> dict[str, Any]:
+    schema = _user_feature_schema()
+    schema["node_types"]["Transaction"] = {
+        # `created_at` is the time column and is deliberately absent here:
+        # pquery excludes the time column from the encoder feature set.
+        "feature_columns": ["amount"],
+        "time_column": "created_at",
+        "pkey_column": "txn_id",
+        "mapper_key": "txns_v1",
+    }
+    return schema
+
+
+def _txn_mapper_bank() -> dict[str, dict[str, TensorMapper]]:
+    bank = _user_mapper_bank()
+    bank["txns_v1"] = {
+        "amount": _numerical_mapper([10.0, 20.0, 30.0, 40.0]),
+    }
+    return bank
+
+
+def _to_hetero_with_txns(
+    columns: list[str], *, attach_pkeys: bool = True
+) -> HeteroData:
+    hetero, _, _ = runtime_batch_to_hetero(
+        _txn_batch(columns),
+        train_table_name="train_table",
+        mapper_bank=_txn_mapper_bank(),
+        feature_schema=_txn_feature_schema(),
+        pk_col_dict={"Transaction": "txn_id"},
+        time_col_dict={"Transaction": "created_at"},
+        attach_pkeys=attach_pkeys,
+    )
+    return hetero
+
+
+def _link_batch() -> dict[str, Any]:
+    """A batch where `Ownership` is SAMPLED but emits NO raw_features block.
+
+    This is exactly what the engine produces for a type requested as `[]`:
+    topology and node ids are present, the feature block is simply absent.
+    """
+    batch = _populated_batch()
+    batch["graphs"]["main"]["node_ids"]["Ownership"] = pa.array(
+        [300, 301], type=pa.uint64()
+    )
+    batch["graphs"]["main"]["batch_dict"]["Ownership"] = pa.array(
+        [0, 1], type=pa.uint32()
+    )
+    batch["graphs"]["main"]["num_sampled_nodes_dict"]["Ownership"] = pa.array(
+        [2], type=pa.uint64()
+    )
+    return batch
+
+
+def _link_feature_schema() -> dict[str, Any]:
+    schema = _user_feature_schema()
+    # A pure link table: no encoder columns, no time column. pquery emits
+    # exactly this for a join table.
+    schema["node_types"]["Ownership"] = {
+        "feature_columns": [],
+        "time_column": None,
+        "pkey_column": "ownership_id",
+        "mapper_key": "links_v1",
+    }
+    return schema
+
+
+def test_skipped_namespace_still_gets_a_tensor_frame() -> None:
+    """A type requested as `[]` emits NO raw_features block, and the adapter
+    has to survive that.
+
+    `attach_tensor_frames`' back-fill pass builds a mapper-shaped empty TF for
+    a schema type with no RecordBatch. For a link table the mapper bank entry
+    is `{}` (no encoders were fitted), so this lands on the same
+    `get_tf(empty, {})` call the select-all path already reached through
+    `_record_batch_to_tf`'s no-overlap branch -- the two routes must agree,
+    because that equivalence is the entire safety argument for skipping.
+    """
+    hetero, raw_features, _ = runtime_batch_to_hetero(
+        _link_batch(),
+        train_table_name="train_table",
+        mapper_bank={
+            **_user_mapper_bank(),
+            "links_v1": {},
+        },
+        feature_schema=_link_feature_schema(),
+    )
+
+    assert "Ownership" not in raw_features, (
+        "fixture must model a SKIPPED type: no raw_features block at all"
+    )
+    assert "Ownership" in hetero.node_types, (
+        "skipping features must not remove the type from the graph"
+    )
+    assert "tf" in hetero["Ownership"], (
+        "the back-fill pass must still attach a TensorFrame, or the feature "
+        "encoder KeyErrors on a type it expects to encode"
+    )
+    assert len(hetero["Ownership"].tf.feat_dict) == 0, (
+        "a link table has no encoders, so its TF carries no stypes"
+    )
+
+
+def test_skipping_a_namespace_leaves_topology_untouched() -> None:
+    """`[]` declines a type's FEATURES, never its participation in the graph.
+
+    The node ids and edges for a skipped type must be identical to what the
+    select-all path produces -- edges come from the index's relation segments,
+    which no projection can reach.
+    """
+    hetero, _, _ = runtime_batch_to_hetero(
+        _link_batch(),
+        train_table_name="train_table",
+        mapper_bank={
+            **_user_mapper_bank(),
+            "links_v1": {},
+        },
+        feature_schema=_link_feature_schema(),
+    )
+
+    assert hetero["Ownership"].num_nodes == 2
+    for edge_type in hetero.edge_types:
+        assert hetero[edge_type].edge_index.shape[0] == 2
+
+
+def test_naive_encoder_only_projection_silently_drops_node_time() -> None:
+    """The failure mode this feature has to avoid, pinned as a fact.
+
+    A projection built from `feature_columns` alone omits the node time
+    column. `_attach_pkeys_and_times` guards its `.time` attach with
+    `if time_col in column_names`, so nothing raises -- the temporal encoder
+    just stops receiving `rel_time = node.time - seed_time`. If this test ever
+    starts failing because `.time` IS present, the guard changed and the
+    projection contract should be revisited.
+    """
+    hetero = _to_hetero_with_txns(["amount"])
+
+    assert "time" not in hetero["Transaction"], (
+        "the encoder-only projection is expected to lose `.time` silently; "
+        "that is precisely why the time column must be requested explicitly"
+    )
+
+
+def test_projection_including_time_and_pkey_preserves_them() -> None:
+    """The needed set: feature_columns + time_column + primary key."""
+    hetero = _to_hetero_with_txns(["amount", "created_at", "txn_id"])
+
+    block = hetero["Transaction"]
+    assert "time" in block, "the node time column must survive projection"
+    assert torch.equal(
+        block.time,
+        torch.tensor(
+            [
+                1_700_000_000_000_000_000,
+                1_700_000_100_000_000_000,
+                1_700_000_200_000_000_000,
+                1_700_000_300_000_000_000,
+            ],
+            dtype=torch.long,
+        ),
+    )
+    assert block.pkey.tolist() == [9001, 9002, 9003, 9004]
+
+
+def test_every_non_empty_namespace_keeps_time_after_projection() -> None:
+    """Sweep: every namespace that has rows and a known time column must come
+    out of the projected path with `.time` attached."""
+    hetero = _to_hetero_with_txns(["amount", "created_at", "txn_id"])
+    time_col_dict = {"Transaction": "created_at"}
+
+    checked = 0
+    for namespace in hetero.node_types:
+        if time_col_dict.get(namespace) is None:
+            continue
+        block = hetero[namespace]
+        n_id = getattr(block, "n_id", None)
+        if n_id is None or int(n_id.numel()) == 0:
+            continue
+        assert "time" in block, (
+            f"namespace {namespace} is non-empty but lost `.time` under projection"
+        )
+        checked += 1
+    assert checked, "the sweep must actually inspect a namespace"
+
+
+@pytest.mark.parametrize("attach_pkeys", [True, False])
+def test_projected_batch_equals_select_all(attach_pkeys: bool) -> None:
+    """EQUIVALENCE: same seeds, same plan, projected vs select-all.
+
+    Every retained artifact -- the TensorFrame, `.time`, `.pkey` -- must be
+    identical. Only the columns the model never reads may differ.
+    """
+    needed = ["amount", "created_at"]
+    if attach_pkeys:
+        needed.append("txn_id")
+
+    select_all = _to_hetero_with_txns(
+        _PROJECTION_STORED_COLUMNS, attach_pkeys=attach_pkeys
+    )
+    projected = _to_hetero_with_txns(needed, attach_pkeys=attach_pkeys)
+
+    assert set(select_all.node_types) == set(projected.node_types)
+    for namespace in select_all.node_types:
+        lhs, rhs = select_all[namespace], projected[namespace]
+
+        assert ("tf" in lhs) == ("tf" in rhs)
+        if "tf" in lhs:
+            assert lhs.tf.col_names_dict == rhs.tf.col_names_dict, namespace
+            assert lhs.tf.num_rows == rhs.tf.num_rows, namespace
+            for stype, feat in lhs.tf.feat_dict.items():
+                other = rhs.tf.feat_dict[stype]
+                if isinstance(feat, MultiNestedTensor):
+                    assert torch.equal(feat.values, other.values), namespace
+                else:
+                    assert torch.equal(feat, other), namespace
+
+        assert ("time" in lhs) == ("time" in rhs), namespace
+        if "time" in lhs:
+            assert torch.equal(lhs.time, rhs.time), namespace
+
+        assert hasattr(lhs, "pkey") == hasattr(rhs, "pkey"), namespace
+        if hasattr(lhs, "pkey"):
+            assert lhs.pkey.tolist() == rhs.pkey.tolist(), namespace
+
+        assert ("n_id" in lhs) == ("n_id" in rhs), namespace
+        if "n_id" in lhs:
+            assert torch.equal(lhs.n_id, rhs.n_id), namespace
+
+
+def test_forecasting_alias_matching_survives_a_narrowed_batch() -> None:
+    """`_alias_forecasting_seed_features` matches the seed namespace by
+    intersecting the schema's `feature_columns` with `record_batch.column_names`.
+
+    Narrowing a GRAPH namespace must not disturb that: the candidate set is
+    restricted to namespaces absent from `feature_schema["node_types"]`, and
+    the seed namespace rides the FULL seed rowpack (`fetch_seed_rowpack_full`),
+    which projection never touches.
+    """
+    future = pa.array(
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], type=pa.list_(pa.float64())
+    )
+    feature_schema = _txn_feature_schema()
+    feature_schema["node_types"]["train_table"] = {
+        "feature_columns": [FUTURE_LABELS_COL],
+        "mapper_key": "train_table",
+    }
+    mapper_bank = _txn_mapper_bank()
+    mapper_bank["train_table"] = {
+        FUTURE_LABELS_COL: SequenceTensorMapper(min_length=3, max_length=3),
+    }
+
+    for columns in (_PROJECTION_STORED_COLUMNS, ["amount", "created_at", "txn_id"]):
+        batch = _txn_batch(columns)
+        batch["raw_features"]["train_seeds"] = {
+            "key": "train_seeds",
+            "num_rows": 3,
+            "columns": [FUTURE_LABELS_COL],
+            "metadata": {},
+            "record_batches": [
+                pa.RecordBatch.from_arrays([future], names=[FUTURE_LABELS_COL])
+            ],
+        }
+
+        hetero, _, _ = runtime_batch_to_hetero(
+            batch,
+            train_table_name="train_table",
+            mapper_bank=mapper_bank,
+            feature_schema=feature_schema,
+            task_type="forecasting",
+            pk_col_dict={"Transaction": "txn_id"},
+            time_col_dict={"Transaction": "created_at"},
+        )
+
+        tf = hetero["train_table"].tf
+        assert tf.col_names_dict["sequence"] == [FUTURE_LABELS_COL], columns
+        assert torch.equal(
+            tf.feat_dict["sequence"].values,
+            torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]),
+        )

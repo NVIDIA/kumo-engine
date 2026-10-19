@@ -1,7 +1,7 @@
 {
   "source_repository": "kumo-ai/kumo-diskgraph",
-  "source_sha": "79b6b9dfd2c80dce281a70c6d4e6b9bcd901f506",
-  "source_reachable_commit_count": 1103,
+  "source_sha": "f857d5776e2fd6ef9b69fed31a0aaf5389c63047",
+  "source_reachable_commit_count": 1105,
   "import_prefix": "packages/diskgraph",
   "file_count": 389,
   "entries": [
@@ -570,7 +570,7 @@
       "destination_path": "packages/diskgraph/diskgraph-engine/src/engine.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "9d7548e8a0ed0cae7fcb24b7417732738a5a6e5a"
+      "blob": "991265dfa4c15df659dd196306e7f8e08f13528a"
     },
     {
       "source_path": "diskgraph-engine/src/errors.rs",
@@ -612,14 +612,14 @@
       "destination_path": "packages/diskgraph/diskgraph-engine/src/state.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "267c727025b736236afb9b75826f25e8240452a2"
+      "blob": "238721d4c64f69edaac0ee2532215a65f32cf2dc"
     },
     {
       "source_path": "diskgraph-engine/src/tests_unit.rs",
       "destination_path": "packages/diskgraph/diskgraph-engine/src/tests_unit.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "7a49c159fd28951e502f47bc05e6389715b2f3e1"
+      "blob": "85d56eea127eb765f268b16a8f96872363682639"
     },
     {
       "source_path": "diskgraph-explain/Cargo.toml",
@@ -1564,7 +1564,7 @@
       "destination_path": "packages/diskgraph/diskgraph-ingest/tests/resolution_runtime_batch.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "c307bf1dd3a3f421e3d0b591783c6e79f99e6d4a"
+      "blob": "c3836bb2b60a9342d51611f1da92c648d6d7a918"
     },
     {
       "source_path": "diskgraph-ingest/tests/resume_equivalence.rs",
@@ -1578,7 +1578,7 @@
       "destination_path": "packages/diskgraph/diskgraph-ingest/tests/seed_table_ingest.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "ede7a7152177c3a53d1d41b5583536a33a07db82"
+      "blob": "4c30304990ea9e1a4ff48dd762d530ecb1d8d0f7"
     },
     {
       "source_path": "diskgraph-limits/Cargo.toml",
@@ -1795,7 +1795,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/python/diskgraph/runtime_batch_iterator.py",
       "mode": "100644",
       "type": "blob",
-      "blob": "f9fb21cda1aa632cec31176e2ac2c1320cf1d13f"
+      "blob": "ae7e924025e3360a643ed6a1ebaea4741dbaf606"
     },
     {
       "source_path": "diskgraph-pybind/python/diskgraph/split_contract.py",
@@ -1914,7 +1914,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/python/tests/test_runtime_batch_iterator_e2e.py",
       "mode": "100644",
       "type": "blob",
-      "blob": "64273532e8697a12dec22c7c67fae1cf3ba038cd"
+      "blob": "7ec1dfcad69518432f49f95a6284ce4e91678cfb"
     },
     {
       "source_path": "diskgraph-pybind/python/tests/test_sampling.py",
@@ -1928,7 +1928,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/python/tests/test_task_dataset_mock.py",
       "mode": "100644",
       "type": "blob",
-      "blob": "112971a421a7a4055add0dd188eecd5421a5ea63"
+      "blob": "2a98382c0c71dcb096420a2c356705dc545826c0"
     },
     {
       "source_path": "diskgraph-pybind/python/tests/test_time_unit_pickle.py",
@@ -2026,7 +2026,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/src/runtime_batch_iterator.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "03b2e6dce394b1c61d183055cc12d6e223cf5bfb"
+      "blob": "37c106116a438b811db19bb4658a7af830457ff4"
     },
     {
       "source_path": "diskgraph-pybind/src/success_marker.rs",
@@ -2075,7 +2075,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/src/tt_executor/pseudo_time_tests.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "d455d39b207538c70cb67ade6cfc3fa50d0aa0cd"
+      "blob": "334cbc1375051b786f393713a2e6fea374d01ff5"
     },
     {
       "source_path": "diskgraph-pybind/src/tt_executor/tests.rs",

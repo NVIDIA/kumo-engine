@@ -554,6 +554,7 @@ impl Sampled {
                     false,
                     None,
                     filter,
+                    None,
                 )
             }
             None => self.engine.sample_runtime_batch(
@@ -572,6 +573,7 @@ impl Sampled {
                     seed_time: 0,
                 }),
                 filter,
+                None,
             ),
         }
         .unwrap();
@@ -1078,6 +1080,7 @@ fn empty_last_shard_does_not_hide_truncated_fact_coverage() {
             false,
             None,
             Some(filter),
+            None,
         )
         .unwrap_err();
     assert!(error.to_string().contains("pseudo times cover 1"));
