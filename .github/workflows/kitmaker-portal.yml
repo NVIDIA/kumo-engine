@@ -79,11 +79,21 @@ jobs:
 
       - name: Check Kitmaker connectivity (no publication)
         if: ${{ github.event_name != 'release' }}
-        run: >-
-          uv run --no-project --with 'orjson>=3.10,<4'
-          scripts/kitmaker_release.py --ferry --check-connectivity
-          --portal http://127.0.0.1:8888/kitmaker-portal/api/v0
-          --project-id "$PROJECT_ID" --project "$PROJECT" --platform "$PLATFORM"
+        run: |
+          identity=$(curl --fail --silent --show-error --max-time 30 \
+            --header "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=charon.nvidia.com" | jq -er '.value')
+          echo "::add-mask::$identity"
+          # A nonexistent status tests an allowed read route without submitting a job.
+          curl --silent --show-error --max-time 60 \
+            --header "X-Charon-GHA-Token: $identity" \
+            --header "Authorization: Bearer $KITMAKER_API_TOKEN" \
+            --write-out '\nStatus probe HTTP %{http_code}\n' \
+            http://127.0.0.1:8888/kitmaker-portal/api/v0/status/00000000-0000-0000-0000-000000000000
+          uv run --no-project --with 'orjson>=3.10,<4' \
+            scripts/kitmaker_release.py --ferry --check-connectivity \
+            --portal http://127.0.0.1:8888/kitmaker-portal/api/v0 \
+            --project-id "$PROJECT_ID" --project "$PROJECT" --platform "$PLATFORM"
 
       - name: Download wheel
         if: ${{ github.event_name == 'release' }}
