@@ -3,15 +3,17 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Synchronous local model training, prediction, and bundle loading."""
 
+import functools
 import gc
 import hashlib
 import json
 import logging
 import time
+import warnings
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Mapping, Optional, cast
+from typing import Any, Callable, Dict, Mapping, Optional, TypeVar, cast
 
 import pandas as pd
 from kumo_core.embedding_models import EmbeddingModelStore
@@ -198,6 +200,31 @@ def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
     return stage_model_bundle(artifacts, dest)
 
 
+_F = TypeVar('_F', bound=Callable[..., Any])
+
+
+def _without_torch_scatter_hint(method: _F) -> _F:
+    r"""Runs ``method`` without PyTorch Geometric's GPU hint that min/max
+    aggregation "can be accelerated via the 'torch-scatter' package".
+
+    kumo-engine uses PyTorch's own scatter instead of that optional extension
+    (see ``test_wheel_uses_torch_fallbacks_without_native_extensions``), so
+    the hint, which PyG raises for every such aggregation, is not actionable.
+    """
+    @functools.wraps(method)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore',
+                message=r"The usage of `scatter\(reduce='\w+'\)` can be "
+                r"accelerated via the 'torch-scatter' package",
+                category=UserWarning,
+            )
+            return method(*args, **kwargs)
+
+    return cast(_F, wrapper)
+
+
 class Trainer:
     r"""Trains and runs a GNN model in-process.
 
@@ -243,6 +270,7 @@ class Trainer:
     def scratch_dir(self) -> Path:
         return trainer_scratch_dir(self._id)
 
+    @_without_torch_scatter_hint
     def fit(
         self,
         train_table: TrainingTable,
@@ -508,6 +536,7 @@ class Trainer:
 
         return training_result
 
+    @_without_torch_scatter_hint
     def predict(
         self,
         prediction_table: PredictionTable,

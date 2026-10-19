@@ -23,6 +23,7 @@ import torch
 from kumo_core.diskgraph.lightning_data import (
     DiskgraphLightningDataModule,
     suppress_batch_indices_warning,
+    suppress_checkpoint_callback_state_warnings,
     suppress_iterable_len_warning,
 )
 from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
@@ -1646,7 +1647,8 @@ class DiskgraphNestedTrainer(Trainer):
             with _defer_predict_worker_shutdown(self.datamodule):
                 with temporary_callbacks(self.pl_trainer, callbacks), \
                      suppress_iterable_len_warning(), \
-                     suppress_batch_indices_warning():
+                     suppress_batch_indices_warning(), \
+                     suppress_checkpoint_callback_state_warnings():
                     returned_outputs = self.pl_trainer.predict(
                         model=self.pl_model,
                         datamodule=self.datamodule,
@@ -2034,7 +2036,8 @@ class DiskgraphNestedTrainer(Trainer):
             with _defer_predict_worker_shutdown(self.datamodule):
                 with temporary_callbacks(self.pl_trainer, _cbs), \
                      suppress_iterable_len_warning(), \
-                     suppress_batch_indices_warning():
+                     suppress_batch_indices_warning(), \
+                     suppress_checkpoint_callback_state_warnings():
                     returned_outputs = self.pl_trainer.predict(
                         model=self.pl_model,
                         datamodule=self.datamodule,

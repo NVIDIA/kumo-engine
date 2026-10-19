@@ -14,7 +14,7 @@ import re
 import sys
 import warnings
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from functools import wraps
 from typing import IO, Any, Literal, Optional
@@ -2281,10 +2281,14 @@ class Trainer(PortableConfigMixin):
         if valid_rhs_node_idx is not None:
             self.pl_model.valid_rhs_node_idx = valid_rhs_node_idx
         from kumo_core.diskgraph.lightning_data import (
+            suppress_explain_workers_warning,
             suppress_iterable_len_warning,
         )
+        capture_workers_warning = (suppress_explain_workers_warning()
+                                   if explain_capture_datamodule is not None
+                                   else nullcontext())
         try:
-            with suppress_iterable_len_warning():
+            with suppress_iterable_len_warning(), capture_workers_warning:
                 step_outputs = eval_fn(
                     model=self.pl_model,
                     datamodule=self.datamodule,
@@ -2398,7 +2402,11 @@ class Trainer(PortableConfigMixin):
 
         if valid_rhs_node_idx is not None:
             self.pl_model.valid_rhs_node_idx = valid_rhs_node_idx
-        with suppress_iterable_len_warning():
+        # Only the selected-seed loader built above runs without workers.
+        replay_workers_warning = (suppress_explain_workers_warning()
+                                  if stage != TrainingStage.PRED else
+                                  nullcontext())
+        with suppress_iterable_len_warning(), replay_workers_warning:
             eval_fn(
                 model=self.pl_model,
                 dataloaders=loader,
