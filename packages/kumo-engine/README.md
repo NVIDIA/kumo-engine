@@ -1,62 +1,50 @@
 <p align="center">
-  <img height="180" src="https://kumo-sdk-public.s3.us-west-2.amazonaws.com/kumo-logo-pink.svg" />
+  <img height="180" src="https://raw.githubusercontent.com/NVIDIA/kumo-engine/main/ui/src/images/kumo_logo_green.svg" alt="Kumo" />
 </p>
 
 ______________________________________________________________________
 
-`kumo.engine` (local) is a local-only, in-process implementation of the Kumo
-relational deep learning pipeline: define tables and graphs, materialize a
-snapshot with `kumo-core`, and train/predict with a GNN — all without a Kumo
-account or a network call. It has no notion of a remote backend, a project, or
-a hosted job.
-
-For a configured Kumo service (`kumoai_studio.init(url=..., api_key=...)`
-and service-managed training), use the separate `kumo-sdk` package instead.
+`kumo.engine` runs relational deep learning in-process: define tables and graphs,
+materialize a snapshot, and train or predict with a GNN. No Kumo account is required.
 
 ## Object model
 
-Pass connectors, tables, graphs, and trainers directly as Python objects;
-there is no backend selection or hosted project/job registry. A `Table`
-holds its source and schema, and a `Graph` holds tables and edges.
-Import the graph-building types together with
-`from kumo.engine import Column, Edge, Graph, Table`. `Column` and `Edge`
-are re-exports of the shared `kumoapi` schema classes.
-`Table.from_source_table()` reads source metadata and may sample rows to
-infer column types; `Graph.snapshot()` performs graph ingestion.
+Pass connectors, tables, graphs, and trainers directly as Python objects.
+A `Table` holds its source and schema, and a `Graph` holds tables and edges.
+Import these types with `from kumo.engine import Column, Edge, Graph, Table`.
+`Column` and `Edge` come from `kumoapi`. `Table.from_source_table()` reads metadata
+and may sample rows to infer column types; `Graph.snapshot()` ingests the graph.
 
 `Graph.snapshot()`, `Trainer.fit()`, and `Trainer.predict()` are synchronous.
-Training and prediction require an explicit `snapshot=`; retained table rows
-can be used with another snapshot as described under
+Training and prediction require `snapshot=`; reuse table rows with another
+snapshot as described under
 [local storage and results](#local-storage-and-results).
 
-Training-table generation rejects classification targets with fewer than two
-classes or more than the configured class limit, including custom training
-tables. Temporal training requires `train_end_offset < train_start_offset`
-when both are supplied. Prediction anchors before the query's source-data
-range are rejected; future anchors are allowed. These checks share the same
-validation rules as Kumo Studio.
-
+Classification targets must have between two and the configured maximum number
+of classes, including custom training tables. Temporal training requires
+`train_end_offset < train_start_offset` when both are supplied. Prediction
+anchors may be in the future, but cannot precede the query's source-data range.
 
 Temporal PQL windows support calendar months, for example
 `PREDICT COUNT(events.*, 0, 1, months) FOR EACH users.id`. Month windows and
-integer time options use calendar offsets, including month-end and leap-year
-boundaries, through the same timestamp generator as Kumo Studio.
+integer time options respect month-end and leap-year boundaries.
 
-The package reuses `kumoapi` model plans and connector plugin contracts.
-Its [output configurations](kumo/engine/trainer/output_config.py) hold live
-connector objects rather than the connector IDs used by service requests.
+The package uses `kumoapi` model plans and connector plugin contracts.
+[Output configurations](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/kumo/engine/trainer/output_config.py)
+take connector objects directly.
 
 ## Installation
 
-The instructions below are for Linux x86_64. For ARM64 on DGX Spark, follow
-the [DGX Spark installation guide](dgx-spark.md).
+Requires Linux x86_64, CPython 3.11 or newer, and glibc 2.34 or newer.
+For ARM64, see the
+[DGX Spark installation guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md).
 
 ```
 pip install kumo-engine
 ```
 
-Connector plugins (Snowflake, S3, GCS, BigQuery, Databricks) are installed as
-extras, mirroring `kumo-sdk`:
+Install connector dependencies with the `snowflake`, `s3`, `gcs`, `bigquery`,
+or `databricks` extra:
 
 ```
 pip install "kumo-engine[snowflake]"
@@ -64,14 +52,13 @@ pip install "kumo-engine[snowflake]"
 
 ## Text columns
 
-Text columns are encoded with word vectors. The default model, `glove.6B-50d`,
-ships as the `text` extra:
+Text columns use word vectors. Install the default model, `glove.6B-50d`, with:
 
 ```
 pip install "kumo-engine[text]"
 ```
 
-For any other model, register it in a store and pass the store to the trainer:
+Register other models in a store and pass it to the trainer:
 
 ```python
 from kumo.engine import EmbeddingModelStore, GloVeVectors, Trainer
@@ -85,13 +72,11 @@ plan.column_processing.encoder_overrides = {
 trainer = Trainer(plan, embedding_models=store)
 ```
 
-`GloVeVectors` takes an official Stanford release `.zip`
-(https://nlp.stanford.edu/projects/glove/), converted once on first use, or a
-directory of converted files; pass `dim=` for zips that hold several sizes.
-Load a trained model with `Trainer.load(bundle, embedding_models=store)`;
-it finds the vectors by content, whatever name they are registered under.
-Custom models implement `kumo.engine.TokenEmbeddingModel`. Kumo never downloads word
-vectors itself.
+`GloVeVectors` accepts an [official Stanford ZIP](https://nlp.stanford.edu/projects/glove/)
+or converted directory. ZIPs are converted on first use; pass `dim=` for archives
+with several sizes. Reload with `Trainer.load(bundle, embedding_models=store)`;
+vectors are matched by content. Custom models implement `TokenEmbeddingModel`.
+Kumo does not download vectors automatically.
 
 ## Local files
 
@@ -108,26 +93,19 @@ users = Table.from_source_table(files["users"], primary_key="id")
 snapshot = Graph(tables=[users], edges=[]).snapshot()
 ```
 
-Integer and string columns with identifier-like names, such as `user_id`, are
-automatically assigned the `ID` semantic type, including columns that are not
-primary keys. Floating-point columns without a matching name are inferred from
-sampled values.
-Names that indicate numerical quantities, such as `num_items`, `price`, and
-`score`, assign the numerical semantic type to integer and floating-point
-columns, even when the sample contains only a few distinct values.
-Types supplied by the source or set with `with_column()` take precedence over
-automatic inference.
+Identifier names such as `user_id` give integer and string columns the `ID`
+semantic type, even for non-primary keys. Quantity names such as `num_items`,
+`price`, and `score` give integer and floating-point columns the numerical type,
+even with few distinct values. Other floating-point columns use sampled values.
+Source types and `with_column()` overrides take precedence over inference.
 
-Columns used as foreign keys in supported `Edge` relationships have the `ID`
-semantic type in the graph, even if the source table inferred them as numerical
-or categorical. The source `Table` object retains its original column types.
-Omitted self-relations leave their columns' semantic types unchanged.
+Foreign keys in supported `Edge` relationships receive the `ID` type in the graph;
+the source `Table` keeps its original types. Omitted self-relations leave types
+unchanged.
 
 Use a table mapping when graph names differ from source names, such as
 `Graph(tables={"users": users})` for a table read from `users.parquet`.
 Edges and PQL use the mapping keys; connector reads keep the original source names.
-
-
 Table names are relative paths, optionally with a `.csv`/`.parquet` suffix,
 or directories of parts in one format. Absolute paths, URIs, traversal and
 globs are unsupported. For CSV timestamps, set `dtype=Dtype.time` (from
@@ -142,24 +120,20 @@ Source identities use canonical paths and are not portable across machines.
 Use a separate output root for artifacts. Single-file outputs overwrite; use
 an empty directory for partitioned outputs. Append is unsupported. Model
 publication copies bundles to an empty destination and rejects symlinks and
-overlap. It does not register models; reload a published bundle by path with
+overlap. Reload a published bundle with
 `Trainer.load_from_connector(connector, path=...)`.
 
 ## Local storage and results
 
-Snapshots, generated tables, trained model bundles, and unexported predictions
-are written below the configured scratch root. It defaults to
-`~/.cache/kumo-engine`; call `configure(scratch_dir=...)` once, before creating
-graphs or trainers, to place it on a larger local disk. `Graph.snapshot()`
-warns if it is on network-backed storage such as EBS. Each `fit()` and
-`predict()` call uses a separate run directory, so a later call does not
-overwrite an earlier result.
+Snapshots, generated tables, model bundles, and unexported predictions live under
+`~/.cache/kumo-engine`. Call `configure(scratch_dir=...)` before creating graphs
+or trainers to choose another local disk. `Graph.snapshot()` warns about
+network-backed storage such as EBS. Each `fit()` and `predict()` uses a separate
+run directory.
 
-Snapshot indexes are keyed by the graph definition and connector-reported
-source versions. A completed index with the same key is reused; a changed
-version gets a separate directory. Snapshot builds for the same graph are
-serialized with a filesystem lock. See [the implementation](kumo/engine/graph.py)
-for the fingerprint and locking rules.
+Snapshot indexes are reused by graph definition and source version; changed
+versions get separate directories. Builds for the same graph use a filesystem
+lock. See the [implementation](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/kumo/engine/graph.py).
 
 The return values expose the retained files directly:
 
@@ -178,27 +152,21 @@ predictions = prediction_result.frame  # collect them into a pandas DataFrame
 
 ### Holdout predictions
 
-`fit_result.holdout_df()` reads the test-split predictions as a pandas
-DataFrame, like `holdout_df()` on a hosted training job. The file is
-`fit_result.holdout_path`; it is not part of the published model bundle.
-Link-prediction tasks produce no holdout: `holdout_path` is `None` and
-`holdout_df()` raises `FileNotFoundError`. The same holds for results from
-`Trainer.load`. Holdouts above 1 GiB in memory are cut to fit, and
-`fit_result.holdout_truncated` is then `True` (`None` if the size record
-is unreadable; `fit()` still succeeds).
+`fit_result.holdout_df()` reads test predictions from `holdout_path` into a pandas
+DataFrame. Holdouts are excluded from published bundles. Link-prediction tasks
+and loaded trainers have no holdout; `holdout_df()` raises `FileNotFoundError`.
+Holdouts are capped at 1 GiB in memory. `holdout_truncated` is `True` if rows were
+dropped, or `None` if the size record is unreadable; training still succeeds.
 
-`fit()` requires an explicit graph snapshot. To keep an existing table's rows
-and labels but train with updated graph features, pass the updated snapshot:
+To reuse table rows and labels with updated graph features, pass a new snapshot:
 
 ```python
 updated_snapshot = graph.snapshot()
 fit_result = trainer.fit(training_table, snapshot=updated_snapshot)
 ```
 
-Each fit builds its training task from the selected snapshot and the saved
-training-table artifacts. The table retains its rows, labels, splits, and
-generation settings; it does not retain a graph-bound training plan. Fitting
-does not regenerate or mutate the table.
+Each fit uses the selected snapshot and saved table artifacts, preserving the
+table's rows, labels, splits, and generation settings.
 
 ### Warm-start training
 
@@ -212,25 +180,19 @@ result = trainer.fit(training_table, snapshot=snapshot, warm_start=previous)
 ```
 
 Warm start reuses weights, optimizer state, fitted encoders, architecture, and
-neighbor sampling. The destination plan still controls training and refits.
-Its configured `model_plan` remains unchanged for subsequent ordinary fits;
-the effective warm-start plan is saved in the result's bundle. New bundles
-select the same checkpoint as hosted warm start: full refit, then train/validation
-refit, then the original fit, according to which modes completed.
-The bundle's persisted selected plan is authoritative, even if the source
-trainer's public `model_plan` was subsequently edited. Task types must match;
-forecasting warm starts are unsupported. Graph data is supplied by `snapshot`.
-The source bundle remains unchanged; the result is a separate reloadable bundle.
+neighbor sampling. The destination plan controls training and refits; its
+`model_plan` stays unchanged. The effective plan is saved in a new bundle, leaving
+the source intact. Checkpoint priority is full refit, train/validation refit, then
+original fit, depending on which completed. The saved plan takes precedence over
+later edits to the source trainer's plan. Task types must match; forecasting warm
+starts are unsupported.
 
-If the source checkpoint was refitted on train/validation or all rows,
-warm-starting on overlapping data can reuse rows that the destination treats
-as held out. Validation or test metrics on those rows can be optimistic.
-For independent evaluation, use held-out rows that were not used to train
-or refit the source model.
+If source training or refitting included the destination's held-out rows,
+validation and test metrics may be optimistic. Use independent held-out data
+for evaluation.
 
-Bundles produced before selected trial plans were persisted may contain an
-AutoML search space instead of the fitted architecture; those bundles are
-still loadable for prediction but are not reliable warm-start sources.
+Older bundles may contain an AutoML search space instead of the fitted
+architecture. They support prediction but are unreliable warm-start sources.
 
 ### Caller-supplied training and prediction rows
 
@@ -252,9 +214,8 @@ training_table = TrainingTable.from_source_table(
 result = trainer.fit(training_table, snapshot=snapshot)
 ```
 
-When the source has no split column, the task's normal inferred split assigns
-the supplied rows. Pass `TrainingTableGenerationPlan(split=...)` to select a
-different split explicitly.
+Without a split column, rows use the task's inferred split. Override it with
+`TrainingTableGenerationPlan(split=...)`.
 
 ### Exporting a generated training table
 
@@ -292,20 +253,14 @@ weighted = TrainingTable.from_source_table(
 trainer.fit(weighted, snapshot=snapshot)
 ```
 
-Replace the constant `1.0` with your own per-row weights. Each exported part
-is read and rewritten one batch at a time, so the table never has to fit in
-memory. When the export goes to a Snowflake or Databricks
-table, add the `WEIGHT` column in the warehouse instead and load that table.
+Replace `1.0` with per-row weights. The example processes one batch at a time.
+For Snowflake or Databricks exports, add `WEIGHT` in the warehouse and reload.
 
-The export holds exactly the rows of the generated train, validation and test
-stages: `ENTITY1`, `TIMESTAMP`, `TARGET1`, any sequence columns the task needs
-(link-prediction target frequencies, forecasting labels), and `SPLIT` (`0`
-train, `1` validation, `2` test). Loading it with `split_col="SPLIT"` keeps
-every row in its original stage. File and object-store destinations (local,
-S3, GCS) are written as a directory of Parquet parts; exporting the same table
-again replaces it, and a different table needs an empty directory. Snowflake
-and Databricks destinations are tables, with `write_mode` choosing overwrite
-or append.
+Exports preserve generated train, validation, and test rows, including entity,
+target, timestamp, task-specific columns, and `SPLIT`. Reload with
+`split_col="SPLIT"` to preserve each stage. File, S3, and GCS exports use Parquet
+directories: the same table can replace its export; a different table needs an
+empty directory. Warehouse exports use `write_mode` for overwrite or append.
 
 - For link prediction, `WEIGHT` must be a list with one weight per element of
   `TARGET1`.
@@ -317,9 +272,8 @@ or append.
 - Snowflake stores list columns as JSON strings, so export link-prediction
   and forecasting tables to files.
 
-A custom prediction table similarly supplies the exact entities and anchor
-times to score. It contains `ENTITY1` and, for a temporal query, `TIMESTAMP`;
-no target column is needed:
+A custom prediction table supplies `ENTITY1` and, for temporal queries,
+`TIMESTAMP`, with no target column:
 
 ```python
 from kumo.engine import PredictionTable
@@ -333,21 +287,16 @@ prediction_table = PredictionTable.from_source_table(
 predictions = trainer.predict(prediction_table, snapshot=snapshot)
 ```
 
-Both constructors stage and validate their source rows immediately. Their
-results retain local artifact paths and query/generation metadata, without a
-connector registry, backend IDs, or a graph-bound plan. The later `fit` or
-`predict` call selects its graph data independently with `snapshot=`.
+Both constructors stage and validate rows immediately, retaining local paths and
+query/generation metadata. Select graph data at `fit` or `predict` with `snapshot=`.
 
-Keep the scratch directory for as long as those paths must remain usable.
-`ModelOutputConfig` and `PredictionOutputConfig` can additionally copy results
-through a connector when they need storage outside the scratch root.
+Keep the scratch directory while those paths are needed. Use `ModelOutputConfig`
+or `PredictionOutputConfig` to copy results elsewhere through a connector.
 
-For forecasting, custom rows must also carry the precomputed sequence columns
-that the corresponding generated table would contain: `future_labels` for
-training, `autoregression_labels` when lag features are enabled, and
-`year_over_year_labels` when year-over-year features are enabled. The custom
-constructors preserve these columns; they do not derive historical or future
-sequences from `ENTITY1`, `TARGET1`, and `TIMESTAMP` alone.
+Custom forecasting rows must include precomputed `future_labels` for training,
+`autoregression_labels` for lag features, and `year_over_year_labels` for
+year-over-year features when enabled. Constructors preserve these sequences;
+they do not derive them from entity, target, and timestamp columns.
 
 ## BigQuery staged ingestion
 
@@ -365,9 +314,8 @@ events = BigQueryConnector(
 )
 ```
 
-`require_staged=True` fails if that prefix cannot be used; it never silently
-falls back to streaming. Supplying `staging_uri` without `require_staged`
-keeps staged-first behavior with the existing read-time streaming fallback.
+`require_staged=True` fails if staging is unavailable. With only `staging_uri`,
+reads try staging first and can fall back to streaming.
 
 ## Databricks staged ingestion
 
@@ -392,16 +340,14 @@ events = DatabricksConnector(
 )
 ```
 
-`require_staged=True` propagates staging failures without streaming fallback.
-Supplying only `staging_volume_path` keeps the backend's staged-first behavior
-and existing fallback policy. The configured identity needs access to the
-volume as well as the source table.
+`require_staged=True` disables streaming fallback. With only
+`staging_volume_path`, reads try staging first and retain streaming fallback.
+The identity needs access to both the volume and source table.
 
 ## Custom SQL tables
 
-A Snowflake, Databricks or BigQuery connector can define a table from a
-read-only `SELECT`. The query runs in the warehouse and only its result is
-ingested, through the same reader (and staging options) as a named table:
+Snowflake, Databricks, and BigQuery connectors accept read-only `SELECT` queries.
+Results use the same ingestion and staging options as named tables:
 
 ```python
 from kumo.engine import Edge, Graph, Table
@@ -418,20 +364,17 @@ graph = Graph({"active_users": active_users, "orders": orders},
 snapshot = graph.snapshot()
 ```
 
-`events.sql(query)` returns the `SQLSourceTable` to pass to
-`Table.from_source_table` instead. The query must be one statement with
-named output columns and may only read tables inside the connector's own
-database/catalog/project and schema/dataset; these checks are shared with
-the cloud platform. Schema inference samples the query's result, and on
-BigQuery a query estimated to scan more than 10 GiB is not sampled. To skip
+Alternatively, pass `events.sql(query)` to `Table.from_source_table`. Queries must
+be one statement with named output columns, restricted to the connector's
+database/catalog/project and schema/dataset. Inference samples query results;
+BigQuery skips sampling queries estimated to scan more than 10 GiB. To skip
 inference, pass `Table(events, name, definition=kumoapi.table.TableDefinition(
 cols=..., source_table=events.sql(query).to_source_table(), ...))`.
 
 ## Model-plan suggestions
 
-Given a `pquery = PredictiveQuery(graph, query)` and its existing
-`snapshot = graph.snapshot()`, suggest a plan locally, inspect it and customize
-it before constructing a trainer:
+Given `pquery = PredictiveQuery(graph, query)` and `snapshot = graph.snapshot()`,
+suggest and customize a plan before training:
 
 ```python
 from kumo.engine import Trainer
@@ -443,35 +386,25 @@ plan.optimization.max_epochs = 5
 trainer = Trainer(plan)
 ```
 
-Suggestions use graph/query metadata without starting training or generating
-a training table.
-Inferred settings are resolved during training.
+Suggestions use graph/query metadata. Inferred settings resolve during training.
 
 ## Status
 
-The core pipeline is implemented and runs real `kumo-core`/DiskGraph
-training and batch prediction, in-process: `Table`/`Graph`/`Graph.snapshot()`,
-`PredictiveQuery.validate`/`get_task_type`/`suggest_model_plan`/
-`generate_training_table`/`generate_prediction_table`, and
-`Trainer.fit`/`predict`/`load` (direct local bundle reload) and
-`load_from_connector` (model reload from local/S3/GCS paths or Snowflake).
+The pipeline supports graph ingestion, query validation, plan suggestions,
+training/prediction table generation, GNN training, batch prediction, and model
+reload from local files, S3, GCS, or Snowflake.
 
-Not yet implemented, or explicitly out of scope for this package:
+Limitations:
 
 - `PredictiveQuery.suggest_prediction_table_plan`/`suggest_distilled_model_plan`
-  -- deferred by design, not merely unimplemented.
-- BigQuery stores predictions and embeddings only: it can't be an
-  `export_config` connector or a `Trainer.load_from_connector(...)` target.
+  are deferred.
+- BigQuery cannot publish or reload model bundles.
 - Scoped per-table ingest credentials, and a table staged across multiple
   directories, both raise `NotImplementedError` in `Graph.snapshot()`.
 
-See inline `TODO(local-sdk)` markers for the specifics of each gap.
-
 ### Reloading a local model
 
-Every successful `Trainer.fit(training_table, snapshot=snapshot)` returns a
-result whose `bundle_dir` already exists on local disk, with the training metadata needed
-for reload. No export is required:
+Every successful fit writes a reloadable bundle to `result.bundle_dir`:
 
 ```python
 result = trainer.fit(training_table, snapshot=snapshot)
@@ -485,12 +418,9 @@ For an exported model, use
 the live graph and snapshot before generating prediction inputs. Bundles
 contain trained artifacts, not source data or graph storage.
 
-When `fit(..., export_config=...)` publishes a model, its result also exposes
-`published_model`, the connector's `PublishedModel` with the actual name,
-version and URI. Without an export this is `None`. Training metrics and a
-small projection of the training metadata are passed to the connector;
-Snowflake records them for Kumo model discovery and registry comparison.
-For a registry-assigned version, retain that exact version for later reload:
+With `export_config`, `result.published_model` records the assigned name, version,
+and URI; otherwise it is `None`. Snowflake also records training metrics and
+metadata for model discovery and comparison. Retain the assigned version for reload:
 
 ```python
 result = trainer.fit(
@@ -504,8 +434,7 @@ restored = Trainer.load_from_connector(snowflake, location=ModelRegistryLocation
     published.name, version=published.version))
 ```
 
-S3, GCS and file connectors expose their published path/URI through the same
-result; this does not add registry versioning to those destinations.
+S3, GCS, and file connectors expose the published path or URI in the same result.
 
 ## Prediction and embedding destinations
 
@@ -527,30 +456,22 @@ result = trainer.predict(prediction_table, snapshot=snapshot,
                          output_config=outputs)
 ```
 
-Use the connector's existing identity configuration, or its ambient credential
-chain. Engine supports this interface with S3, GCS, and local file connectors;
-ADLS is currently available through the hosted SDK only. Rooted connectors also
-accept relative destinations. Do not combine `output_paths` with `artifact_type`
-or `table_name`. Existing single-artifact configurations remain supported.
+S3, GCS, and file connectors support `output_paths` using configured or ambient
+credentials. Rooted connectors accept relative paths. Do not combine
+`output_paths` with `artifact_type` or `table_name`. ADLS is unsupported.
 
-`result.files`, `result.frame`, and `result.num_rows` refer to predictions when
-both artifacts were requested, or embeddings for an embeddings-only request.
-`result.export(outputs)` exports existing artifacts without rerunning inference;
-it cannot generate artifacts absent from the original run, and rejects
-`extra_fields` (pass them to `Trainer.predict(output_config=...)`). Directory exports
-retain the existing ownership checks: retries can reuse their own output, but
-a different export requires an empty destination. Explicit `.parquet`/`.csv`
-paths retain existing single-file/multipart export behavior.
+`result.files`, `result.frame`, and `result.num_rows` select predictions when both
+artifacts are requested, or embeddings for embeddings-only requests.
+`result.export(outputs)` copies existing artifacts without rerunning inference.
+Choose `extra_fields` during `predict`; `export()` rejects them. Directory retries
+can reuse their own output; different exports need an empty destination. Explicit
+`.parquet`/`.csv` paths retain single-file/multipart behavior.
 
-Prediction and embedding destinations are exported independently. If a later
-output fails, earlier outputs may already be complete and the failed directory
-may contain partial parts without `_SUCCESS`. Retry the retained result's
-`export()` with the same destinations. Directory retries remove an existing
-`_SUCCESS` before copying and publish it again only after that destination
-completes; this requires permission to delete that marker. Readers should wait
-for `_SUCCESS` before consuming a directory. Exports do not provide a
-transaction across destinations, atomic single-file replacement, or isolation
-from concurrent writers or readers.
+Destinations export independently; failures may leave completed outputs and partial
+directories. Retry `result.export()` with the same destinations. Directory retries
+delete `_SUCCESS` before copying and restore it on completion, so delete permission
+is required. Readers should wait for `_SUCCESS`. Exports are not transactional
+across destinations, atomic for single files, or isolated from concurrent access.
 
 ## BigQuery prediction output
 
@@ -592,36 +513,24 @@ result.export(PredictionOutputConfig(
 
 - `table_name` is an unqualified table ID. Each configuration writes one
   artifact; `output_paths` is for file and object-store connectors.
-- `OVERWRITE` replaces the table's rows and schema. `APPEND` adds rows and is
-  strict: every output column must be a column of the existing table with the
-  same type (integers may also go into `FLOAT` or `NUMERIC` columns, and an
-  all-null column fits any type); otherwise it fails before writing and names
-  each mismatched column and its types.
-- Every export commits at once, so a failed export leaves the table's rows
-  unchanged. Rerunning an `APPEND` adds the rows again; an `APPEND` to a
-  missing table creates it first.
-- Output is written the way BigQuery input is read. With a usable
-  `staging_uri`, output files are uploaded under
-  `<staging_uri>/_kumo.export/<id>/`, loaded by one load job and deleted.
-  Otherwise they are streamed through the BigQuery Storage Write API into
-  pending streams committed in one call; `OVERWRITE` commits into an expiring
-  `_kumo_export_*` table and replaces the destination with one
-  `WRITE_TRUNCATE` query over it. `require_staged=True` fails instead of
-  streaming when staging is unusable. A bucket outside the dataset's location
-  is not used for staging.
-- Cost: load jobs are free; the Storage Write API is billed per GB beyond its
-  monthly free tier, and a streamed `OVERWRITE` also bills the query over the
-  output. Prefer staging for large or frequent exports.
-- Rows written through the Storage Write API are queryable immediately, but
-  table metadata such as `num_rows` lags, and a copy job run right after may
-  miss them.
-- `OVERWRITE` keeps the table's partitioning and clustering, and the
-  descriptions and policy tags of columns that keep their name and type. A
-  streamed `OVERWRITE` restores them just after replacing the rows.
+- `OVERWRITE` replaces rows and schema. `APPEND` requires matching destination
+  columns and types; integers also fit `FLOAT`/`NUMERIC`, and all-null columns fit
+  any type. Schema mismatches fail before writing.
+- Rows commit together. Retrying `APPEND` duplicates rows; appending to a missing
+  table creates it.
+- With a usable `staging_uri`, files are uploaded under
+  `<staging_uri>/_kumo.export/<id>/`, loaded in one job, then deleted. Otherwise,
+  the Storage Write API commits pending streams together. Streamed `OVERWRITE`
+  uses an expiring table and a `WRITE_TRUNCATE` query. `require_staged=True`
+  disables streaming fallback; staging requires a colocated bucket.
+- Prefer staging for large exports. Streaming and the overwrite query can incur
+  charges. Streamed rows are queryable immediately, but table metadata can lag
+  and immediate copy jobs may miss rows.
+- `OVERWRITE` preserves partitioning, clustering, and column descriptions and
+  policy tags for unchanged names/types. Streamed overwrites restore column
+  metadata after replacing rows.
 - Embeddings land as `REPEATED FLOAT` columns, timestamps as `TIMESTAMP`.
-- `predict` checks the destination before scoring: the dataset exists in the
-  connector's `location`, the identity can create or update the table and run
-  load jobs or write streams, and staging is usable when required. The
-  identity needs `roles/bigquery.dataEditor` on the dataset,
-  `roles/bigquery.jobUser` on the billing project and, with staging,
-  `roles/storage.objectAdmin` on the bucket.
+- Before scoring, `predict` checks dataset location, write access, and required
+  staging. Grant `roles/bigquery.dataEditor` on the dataset,
+  `roles/bigquery.jobUser` on the billing project, and
+  `roles/storage.objectAdmin` on the staging bucket when used.
