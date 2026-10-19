@@ -12,6 +12,7 @@ from pytorch_lightning.utilities.warnings import PossibleUserWarning
 from kumo_core.diskgraph.lightning_data import (
     suppress_checkpoint_callback_state_warnings,
     suppress_explain_workers_warning,
+    suppress_lightning_leafspec_warning,
 )
 
 # Messages as Lightning 2.6 formats them.
@@ -28,12 +29,16 @@ DIRPATH = ("The dirpath has changed from '/runs/fit/checkpoints' to "
            "`kth_best_model_path`, `kth_value`, `last_model_path` and "
            "`best_k_models` won't be reloaded. Only `best_model_path` will be "
            "reloaded.")
+# As torch 2.10+ raises it from Lightning's pytree helper.
+LEAFSPEC = ("`isinstance(treespec, LeafSpec)` is deprecated, use "
+            "`isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.")
 
 
 @pytest.mark.parametrize(('suppress', 'message', 'category'), [
     (suppress_explain_workers_warning, WORKERS, PossibleUserWarning),
     (suppress_checkpoint_callback_state_warnings, CALLBACKS, UserWarning),
     (suppress_checkpoint_callback_state_warnings, DIRPATH, UserWarning),
+    (suppress_lightning_leafspec_warning, LEAFSPEC, FutureWarning),
 ])
 def test_suppresses_only_its_lightning_messages(
     suppress: Callable[[], AbstractContextManager[None]],
@@ -49,3 +54,17 @@ def test_suppresses_only_its_lightning_messages(
     assert [str(warning.message) for warning in caught] == [
         'an unrelated warning', message
     ]
+
+
+def test_leafspec_warning_from_lightning_is_suppressed() -> None:
+    from pytorch_lightning.utilities._pytree import _tree_flatten
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        _tree_flatten(1)
+        with suppress_lightning_leafspec_warning():
+            _tree_flatten(1)
+    raised = [w for w in caught if 'LeafSpec' in str(w.message)]
+    if not raised:
+        pytest.skip('this torch does not deprecate LeafSpec')
+    assert len(raised) == 1

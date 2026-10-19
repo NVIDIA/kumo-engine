@@ -25,6 +25,7 @@ from kumo_core.diskgraph.lightning_data import (
     suppress_batch_indices_warning,
     suppress_checkpoint_callback_state_warnings,
     suppress_iterable_len_warning,
+    suppress_lightning_leafspec_warning,
 )
 from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
 from kumo_core.diskgraph.stores import iter_primary_key_batches
@@ -1193,7 +1194,8 @@ class DiskgraphNestedTrainer(Trainer):
 
         self.pl_model.eval_top_k = None
 
-        with suppress_iterable_len_warning():
+        with suppress_iterable_len_warning(), \
+                suppress_lightning_leafspec_warning():
             if stage == TrainingStage.VAL:
                 metric_results = self.pl_trainer.validate(
                     model=self.pl_model,
@@ -1648,7 +1650,8 @@ class DiskgraphNestedTrainer(Trainer):
                 with temporary_callbacks(self.pl_trainer, callbacks), \
                      suppress_iterable_len_warning(), \
                      suppress_batch_indices_warning(), \
-                     suppress_checkpoint_callback_state_warnings():
+                     suppress_checkpoint_callback_state_warnings(), \
+                     suppress_lightning_leafspec_warning():
                     returned_outputs = self.pl_trainer.predict(
                         model=self.pl_model,
                         datamodule=self.datamodule,
@@ -2037,7 +2040,8 @@ class DiskgraphNestedTrainer(Trainer):
                 with temporary_callbacks(self.pl_trainer, _cbs), \
                      suppress_iterable_len_warning(), \
                      suppress_batch_indices_warning(), \
-                     suppress_checkpoint_callback_state_warnings():
+                     suppress_checkpoint_callback_state_warnings(), \
+                     suppress_lightning_leafspec_warning():
                     returned_outputs = self.pl_trainer.predict(
                         model=self.pl_model,
                         datamodule=self.datamodule,

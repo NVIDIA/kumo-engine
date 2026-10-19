@@ -131,6 +131,26 @@ def suppress_checkpoint_callback_state_warnings() -> Iterator[None]:
         yield
 
 
+@contextmanager
+def suppress_lightning_leafspec_warning() -> Iterator[None]:
+    r"""Silences torch's ``LeafSpec`` deprecation warning for the duration of
+    a Lightning ``fit``/``validate``/``test``/``predict`` call.
+
+    From torch 2.10, constructing ``torch.utils._pytree.LeafSpec`` raises a
+    ``FutureWarning``. Lightning's ``CombinedLoader`` flattens dataloaders with
+    its own ``tree_flatten`` copy (``pytorch_lightning/utilities/_pytree.py``),
+    which still constructs one in every release, including 2.6.6; upstream
+    treats the warning as harmless. Kumo cannot act on it.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message=r'`isinstance\(treespec, LeafSpec\)` is deprecated',
+            category=FutureWarning,
+        )
+        yield
+
+
 _WORKER_COOPERATIVE_GRACE_SECONDS = 5.0
 _WORKER_TERM_GRACE_SECONDS = 5.0
 _WORKER_SHUTDOWN_DEADLINE_SECONDS = 90.0
