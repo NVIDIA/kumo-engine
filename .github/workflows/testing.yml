@@ -77,9 +77,7 @@ jobs:
 
   pytest:
     needs: [diskgraph-wheel]
-    # The service matrix requires Kumo's private AWS test environment.
-    # Public Engine tests run in public-connectors.yml.
-    if: ${{ !cancelled() && github.repository == 'kumo-ai/kumo' }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     continue-on-error: true
     environment:

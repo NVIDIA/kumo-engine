@@ -23,8 +23,6 @@ permissions:
 
 jobs:
   import:
-    # Service imports use Kumo's private AWS test environment.
-    if: github.repository == 'kumo-ai/kumo'
     environment: gha-kumo-workflow-tests
     runs-on: ubuntu-24.04
     env:
