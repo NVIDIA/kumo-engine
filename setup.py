@@ -288,7 +288,7 @@ test_requires = [
     "rocksdict",
     "respx==0.22.0",
     "pytorch-frame==0.3.0",
-    "pytorch-lightning==2.6.5",
+    "pytorch-lightning==2.6.6",
 ]
 
 dev_requires = test_requires + [

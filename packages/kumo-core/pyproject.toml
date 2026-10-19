@@ -48,7 +48,7 @@ dependencies = [
   # `packages/kumo-core/tests/test_custom_sql_golden.py`.
   "sqlglot==30.17.*",
   "torch>=2.7.0,<3",
-  "pytorch-lightning==2.6.5",
+  "pytorch-lightning==2.6.6",
   "psutil==7.2.2",
   "tabulate==0.8.10",
   "tensorboard>=2.16.2,<3",
