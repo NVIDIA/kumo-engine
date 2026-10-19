@@ -181,12 +181,15 @@ Ferry, and authenticates each Portal request with a fresh GitHub OIDC token
 plus the Kitmaker bearer token. Portal credentials stay in the
 `kumo-engine-release` environment. Charon/Teleport must authorize this repository,
 workflow, and ref; authorization for cuOpt does not grant access to Kumo.
-The tunnel currently uses the staging proxy from the cuOpt integration.
+The tunnel uses `ext-nv-prd-apps.teleport.sh:443`. The original cuOpt PR
+used an older staging proxy; its replacement is documented in
+[cuOpt PR #2161](https://github.com/NVIDIA/cuopt/pull/2161).
 
 To test connectivity before merging, push the workflow and script changes on
 `automate-kitmaker` or a `kitmaker/**` branch. That push runs the branch's YAML.
-It only reads project 6903 and verifies its name and owner; it does not build
-wheels, create a Kitmaker release, or publish packages. A successful check
+It first probes the status of the nil UUID, then reads project 6903 and
+verifies its name and owner. It does not build wheels, create a Kitmaker
+release, or publish packages. A successful check
 confirms connectivity and project-read access, not permission to submit a
 release or fetch a wheel.
 
@@ -209,3 +212,19 @@ using Charon; this needs GitHub Actions OIDC variables and `id-token: write`.
 The script requires `orjson`, already declared through the root project's
 dynamic dependencies in `setup.py`; the workflow installs it in an isolated
 `uv run` environment.
+
+### Connectivity failures
+
+`token expired or not found` from the original `nv-stg-ps` proxy can indicate
+an outdated proxy, rather than an expired Kitmaker API token. Use the current
+Teleport proxy before investigating Portal credentials.
+
+A successful Teleport tunnel does not establish Charon backend authorization.
+For HTTP 403, ask the Charon owner to check this repository's tenant grant
+against the run's actual ref and requested routes. The branch check needs
+`refs/heads/automate-kitmaker` (or the selected test branch),
+`GET /api/v0/status/*`, and `GET /api/v0/projects/6903`. Release jobs also need
+project reads for 6903 and 6904, POST access to each project's `/releases`, and
+the corresponding release tag refs. Preserve the error response's request ID
+for tracing. A denied read alone does not establish whether Portal credentials
+are valid.
