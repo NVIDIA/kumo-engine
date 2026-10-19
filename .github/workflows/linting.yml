@@ -490,6 +490,12 @@ jobs:
       - name: Check uv.lock is up to date
         run: uv lock --check
 
+      - name: Test Docker scripts and dependency profiles
+        run: |
+          uv run --no-project --with pytest==9.0.3 --with packaging==26.3 \
+            python -m pytest -q -c /dev/null --rootdir=. \
+            --confcutdir=test/docker test/docker
+
   dependency-boundaries:
     # Replaces Pants's per-package dependency-boundary enforcement (removed
     # with pants_check): a uv workspace shares one lock/environment, so uv

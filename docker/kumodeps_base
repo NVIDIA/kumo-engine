@@ -9,6 +9,7 @@
 #
 #   CUDA_VERSION=cpu     -> CPU torch wheel  (default)
 #   CUDA_VERSION=cu130   -> CUDA 13.0 torch wheel
+#   CUDA_VERSION=cu132   -> CUDA 13.2 torch wheel (GPU backend images)
 #
 # This script targets the BASE image. It installs the heavy slow-changing
 # layers (Python toolchain, torch) so backend images stacked on

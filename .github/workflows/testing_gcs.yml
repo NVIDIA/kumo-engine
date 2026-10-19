@@ -39,6 +39,8 @@ env:
 
 jobs:
   pytest-gcs:
+    # Live provider tests require Kumo's private cloud credentials.
+    if: github.repository == 'kumo-ai/kumo'
     environment:
       name: gha-kumo-workflow-tests
       # This job uses environment-scoped OIDC; it does not deploy an application.
