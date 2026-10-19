@@ -5,7 +5,7 @@
 ______________________________________________________________________
 
 `kumo.engine` runs relational deep learning in-process: define tables and graphs,
-materialize a snapshot, and train or predict with a GNN. No Kumo account is required.
+materialize a snapshot, and train or predict with a GNN.
 
 ## Object model
 
