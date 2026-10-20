@@ -9,13 +9,13 @@
 #   1. Change the root VERSION file and run scripts/stamp_version.py, merge it.
 #   2. Create and publish a GitHub release tagged `kumo-engine-v<version>`.
 #   3. This workflow builds the wheels at that tag and attaches them to the
-#      release once `check-requirements` shows the x86_64 wheel installs from
-#      PyPI, alone and with each extra, on every Python version it claims.
+#      release once `check-requirements` resolves each Python version/extra
+#      and `wheel-smoke` installs, trains, predicts, and reloads on x64 CPU.
 #   4. Once the `kumo-engine-release` environment approves it, `kitmaker`
 #      publishes the attached x86_64 wheel to PyPI and pypi.nvidia.com through
 #      Kitmaker (scripts/kitmaker_release.py).
-# A manual run only builds the wheel (as `<version>+<commit>`) and stores it as
-# a workflow artifact. The wheel bundles kumo-api, kumo-pql, kumo-core and
+# A manual run builds and tests the wheel (as `<version>+<commit>`) and stores
+# it as a workflow artifact. The wheel bundles kumo-api, kumo-pql, kumo-core and
 # every provider; kumo-glove-6b-50d stays on PyPI.
 
 name: Kumo Engine - Build and publish wheel
@@ -143,8 +143,14 @@ jobs:
           python3 packages/kumo-engine/scripts/check_pypi_requirements.py
           dist/kumo_engine-*.whl --platform x86_64-manylinux_2_34
 
+  wheel-smoke:
+    needs: [build]
+    uses: ./.github/workflows/kumo-engine-wheel-smoke.yml
+    with:
+      wheel_artifact: kumo-engine-wheel-x86_64-${{ github.sha }}
+
   attach-to-release:
-    needs: [build, check-requirements]
+    needs: [build, check-requirements, wheel-smoke]
     if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-24.04
     permissions:
