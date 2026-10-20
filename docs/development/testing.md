@@ -29,72 +29,42 @@ It builds its prerequisites and runs without cloud credentials. The
 
 ## Finished Kumo Engine wheel
 
-The wheel smoke test runs after each manual or release wheel build.
-A failure blocks release attachment and Kitmaker publication.
-This test uses Linux x64, Python 3.12, and CPU execution.
-It installs the selected wheel with dependencies from public PyPI in a fresh
-virtual environment outside the source checkout.
-Current dependencies include CUDA libraries, but this test requires no GPU.
-The launcher removes inherited `PIP_*` variables and disables pip configuration
-files for child processes, including installers for source-build requirements.
+The wheel test runs after every manual or release build on Linux x64, Python 3.12, CPU.
+Failure blocks release attachment and Kitmaker publication. The limit is 20 minutes.
+It installs in a fresh environment outside the checkout, uses PyPI, and ignores
+host pip settings. CUDA libraries still install, but no GPU is required.
 
-From the repository root, use Python 3.12 and a new output directory:
+From the repository root, use a new output directory:
 
 ```bash
 python3.12 packages/kumo-engine/scripts/smoke_wheel.py /absolute/path/to/kumo_engine-SELECTED.whl \
   --output-dir /absolute/path/to/new-evidence
 ```
 
-Success requires all of these results:
+Exit code zero requires all of these results:
 
-1. The installed version and SHA-256 fingerprint match the selected wheel.
-   SHA-256 identifies the exact file contents. Dependency checks also pass.
-2. The graph contains 50 entities, 3,000 events, and 6,000 directed edges.
-   Each event links to one entity. The graph stores both edge directions.
-3. Training completes and prediction returns each entity exactly once.
-   Probabilities are finite, range from zero to one, and sum to one.
-   Each label matches its probability at the 0.5 threshold.
-4. A saved model loads and returns the same entity IDs and labels.
-   Each probability difference satisfies `abs(a-b) <= 1e-6 + 1e-5 * abs(b)`.
-5. The command exits with zero. Every failed assertion returns a nonzero exit code.
+- The installed version and SHA-256 (file fingerprint) match the selected wheel. Dependencies pass `pip check`.
+- The graph has 50 entities, 3,000 events, and 6,000 directed edges.
+- Training completes. Prediction returns each of the 50 entity IDs once. Probabilities are finite, within
+  `[0, 1]`, and sum to one. Labels match the `> 0.5` probability threshold.
+- Reloaded IDs and labels match. Probability differences satisfy
+  `abs(a-b) <= 1e-6 + 1e-5 * abs(b)`.
 
-The fixture uses seed zero and generated data without a learning-quality target.
-Training uses one epoch and two steps per epoch for each trial and refit.
-This checks the workflow. It does not measure learning quality or performance
-regressions, or establish support for other platforms.
+[Settings and the approved reference](../../packages/kumo-engine/test/wheel_workflow.json)
+fix the data, query, seed `0`, and one epoch with two steps per trial and refit.
+This checks workflow correctness. Learning quality, speed limits, and other
+platforms need separate tests.
 
-CI keeps results and logs after success or failure. `summary.json` records the
-wheel identity, configuration, failed step, and total runtime. Other evidence
-includes the pip installation report, dependency checks, installed versions,
-model configuration, graph statistics, and predictions before and after reload.
-`workflow-result.json` records required checks. The job has a 20-minute limit.
-These times do not define a performance baseline.
+CI saves `summary.json`, `workflow-result.json`, settings, installation and
+dependency reports, model configuration, graph statistics, predictions, and logs
+after success or failure.
 
-### Test requirements and approved reference
+Add `--reference` to require the approved wheel and dependency versions.
+PRs test both modes against the approved release. To replace the reference,
+first pass the ordinary test and save its evidence. Obtain the release owner's
+approval. Update the settings file. Repeat with `--reference`.
 
-[The requirements file](../../packages/kumo-engine/test/wheel_workflow.json)
-defines the environment, data, seed, query, training limits, required checks, and
-approved reference. Package tests and wheel tests share its graph builder in
-`packages/kumo-engine/test/wheel_workflow.py`. Incomplete settings, failed
-reference evidence, and missing results fail the wheel command.
-
-An Le approved the recorded `1.0.0` wheel for this basic workflow. The reference
-records its identity, approval, passing evidence, and 96 dependency versions.
-To repeat that test, add `--reference` to the command above. The runner requires
-the exact wheel and dependency versions. Ordinary new-wheel tests resolve fresh
-dependencies from public PyPI. This reference sets no quality or speed limits.
-
-Pull requests test both modes against the approved release. The manual
-`Kumo Engine - Wheel smoke` workflow accepts an existing release tag. A blank
-tag selects the approved reference and runs both modes. A different tag runs
-only the ordinary test. This workflow does not publish packages.
-
-To replace the reference, test the candidate in an ordinary fresh environment.
-Save its identity, dependency report, workflow results, and CI link. Obtain the
-release owner's approval, update the record, and repeat with `--reference`.
-Git history keeps the prior record.
-
-Run the small runner tests without engine dependencies:
+Run the runner tests without engine dependencies:
 
 ```bash
 python3.12 -m unittest discover -s test/scripts -p test_engine_wheel_smoke.py
