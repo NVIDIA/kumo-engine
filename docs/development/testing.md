@@ -63,44 +63,36 @@ Training uses one epoch and two steps per epoch for each trial and refit.
 This checks the workflow. It does not measure learning quality or performance
 regressions, or establish support for other platforms.
 
-The output directory contains `summary.json`, the pip installation report,
-dependency checks, installed package versions, and the full workflow log.
-`workflow-result.json` records graph counts, prediction checks, and stage times.
-`requirements.json` preserves the exact test settings. The summary records its
-SHA-256 fingerprint. `model-plan.json` records the model configuration.
-Prediction files preserve values before and after reload.
-CI uploads these files after success or failure.
-The job has a 20-minute limit. Measure its duration in CI before accepting the
-under-20-minute target. Stage times are diagnostic, not a performance baseline.
+CI keeps results and logs after success or failure. `summary.json` records the
+wheel identity, configuration, failed step, and total runtime. Other evidence
+includes the pip installation report, dependency checks, installed versions,
+model configuration, graph statistics, and predictions before and after reload.
+`workflow-result.json` records required checks. The job has a 20-minute limit.
+These times do not define a performance baseline.
 
 ### Test requirements and approved reference
 
-[The requirements file](../../tools/ci/kumo_engine_artifact_smoke.json) defines
-the environment, generated data, seed, query, training limits, required results,
-and reference. The runner and training script read this file. Incomplete settings,
-failed reference evidence, and missing required results fail the command.
+[The requirements file](../../packages/kumo-engine/test/wheel_workflow.json)
+defines the environment, data, seed, query, training limits, required checks, and
+approved reference. Package tests and wheel tests share its graph builder in
+`packages/kumo-engine/test/wheel_workflow.py`. Incomplete settings, failed
+reference evidence, and missing results fail the wheel command.
 
-An Le approved the recorded version `1.0.0` wheel for the basic workflow on
-October 20, 2026. Its record includes the filename, SHA-256 fingerprint,
-approval, [passing CI evidence](https://github.com/NVIDIA/kumo-engine/actions/runs/39471254770),
-and 96 dependency versions. This reference does not set quality or speed limits.
+An Le approved the recorded `1.0.0` wheel for this basic workflow. The reference
+records its identity, approval, passing evidence, and 96 dependency versions.
+To repeat that test, add `--reference` to the command above. The runner requires
+the exact wheel and dependency versions. Ordinary new-wheel tests resolve fresh
+dependencies from public PyPI. This reference sets no quality or speed limits.
 
-To repeat the reference test, add `--reference` to the command above. The runner
-requires the approved wheel identity, constrains dependencies to the recorded
-versions, and rejects any installed dependency mismatch. Dependencies still come
-from public PyPI. Ordinary new-wheel tests resolve dependencies from PyPI without
-these constraints. A new wheel can have a different version and fingerprint.
+Pull requests test both modes against the approved release. The manual
+`Kumo Engine - Wheel smoke` workflow accepts an existing release tag. A blank
+tag selects the approved reference and runs both modes. A different tag runs
+only the ordinary test. This workflow does not publish packages.
 
-Pull requests run both modes against the approved release wheel. These runs test
-the harness. The manual `Kumo Engine - Wheel smoke` workflow accepts an existing
-release tag and does not publish anything. A blank tag selects the approved
-reference and runs both modes. A different tag runs the ordinary wheel test.
-
-To replace the reference, first test the selected wheel in an ordinary fresh
-environment. Save its identity, dependency report, workflow results, and CI link.
-Obtain the release owner's approval, then update the reference record and repeat
-the test with `--reference`. Keep the prior record in Git history. Reviewer and
-backup release owner assignments remain separate follow-up work.
+To replace the reference, test the candidate in an ordinary fresh environment.
+Save its identity, dependency report, workflow results, and CI link. Obtain the
+release owner's approval, update the record, and repeat with `--reference`.
+Git history keeps the prior record.
 
 Run the small runner tests without engine dependencies:
 

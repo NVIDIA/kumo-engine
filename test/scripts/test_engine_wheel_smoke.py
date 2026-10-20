@@ -213,18 +213,8 @@ class WheelSmokeTest(unittest.TestCase):
     def test_reference_dependency_versions_must_match_the_complete_report(self):
         report = {
             'install': [
-                {
-                    'metadata': {
-                        'name': 'kumo-engine',
-                        'version': '1.0.0'
-                    }
-                },
-                {
-                    'metadata': {
-                        'name': 'Some_Package',
-                        'version': '1.2.3'
-                    }
-                },
+                dict(metadata=dict(name='kumo-engine', version='1.0.0')),
+                dict(metadata=dict(name='Some_Package', version='1.2.3')),
             ]
         }
         self.runner.verify_reference_dependencies(report,
@@ -241,33 +231,16 @@ class WheelSmokeTest(unittest.TestCase):
 
     def test_missing_or_failed_workflow_checks_cannot_report_success(self):
         self.runner.verify_workflow_result(
-            {
-                'status': 'PASS',
-                'checks': {
-                    'training': 'PASS'
-                }
-            }, ['training'])
-        for result in (
-            {
-                'status': 'FAIL',
-                'checks': {
-                    'training': 'PASS'
-                }
-            },
-            {
-                'status': 'PASS',
-                'checks': {}
-            },
-            {
-                'status': 'PASS',
-                'checks': {
-                    'training': 'FAIL'
-                }
-            },
-        ):
-            with self.subTest(result=result):
-                with self.assertRaises(ValueError):
-                    self.runner.verify_workflow_result(result, ['training'])
+            dict(status='PASS', checks=dict(training='PASS')), ['training'])
+        for status, checks in [
+            ('FAIL', dict(training='PASS')),
+            ('PASS', {}),
+            ('PASS', dict(training='FAIL')),
+        ]:
+            with self.subTest(status=status, checks=checks):
+                with self.assertRaisesRegex(ValueError, 'missing or failed'):
+                    self.runner.verify_workflow_result(
+                        dict(status=status, checks=checks), ['training'])
 
 
 if __name__ == '__main__':

@@ -21,8 +21,7 @@ from pathlib import Path
 
 from check_pypi_requirements import read_metadata
 
-REQUIREMENTS = Path(
-    __file__).resolve().parents[3] / 'tools/ci/kumo_engine_artifact_smoke.json'
+REQUIREMENTS = Path(__file__).resolve().parents[1] / 'test/wheel_workflow.json'
 
 
 def load_requirements(path):
@@ -58,9 +57,9 @@ def load_requirements(path):
         reference = requirements['reference']
         if not reference['approved_by'] or not reference['approved_on']:
             raise ValueError('Reference approval is required')
-        if not reference['wheel']['filename'] or not reference[
-                'wheel']['version'] or not re.fullmatch(
-                    '[0-9a-f]{64}', reference['wheel']['sha256']):
+        wheel = reference['wheel']
+        if not wheel['filename'] or not wheel['version'] or not re.fullmatch(
+                '[0-9a-f]{64}', wheel['sha256']):
             raise ValueError(
                 'Reference filename, version, and SHA-256 are required')
         evidence = reference['evidence']
@@ -156,19 +155,14 @@ def main():
         'status': 'RUNNING',
         'stage': 'wheel_identity',
         'python': sys.version,
-        'platform': platform.platform(),
-        'stage_seconds': {}
+        'platform': platform.platform()
     }
 
     def run(stage, command, cwd, timeout=60):
         summary['stage'] = stage
         print(stage, flush=True)
         (output / 'summary.json').write_text(json.dumps(summary, indent=2))
-        begin = time.monotonic()
-        try:
-            run_command(command, cwd, output / f'{stage}.log', timeout)
-        finally:
-            summary['stage_seconds'][stage] = round(time.monotonic() - begin, 3)
+        run_command(command, cwd, output / f'{stage}.log', timeout)
 
     try:
         identity = wheel_identity(wheel)
@@ -223,8 +217,7 @@ def main():
             run('packages',
                 [python, '-I', '-m', 'pip', '--isolated', 'freeze', '--all'],
                 root)
-            source = Path(__file__).resolve(
-            ).parents[3] / 'tools/ci/kumo_engine_artifact_smoke.py'
+            source = REQUIREMENTS.with_suffix('.py')
             exercise = root / source.name
             shutil.copyfile(source, exercise)
             shutil.copyfile(REQUIREMENTS, exercise.with_suffix('.json'))

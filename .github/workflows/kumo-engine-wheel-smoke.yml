@@ -22,8 +22,9 @@ on:  # yamllint disable-line rule:truthy
       - .github/workflows/kumo-engine-wheel*.yml
       - packages/kumo-engine/scripts/smoke_wheel.py
       - packages/kumo-engine/scripts/check_pypi_requirements.py
-      - tools/ci/kumo_engine_artifact_smoke.py
-      - tools/ci/kumo_engine_artifact_smoke.json
+      - packages/kumo-engine/test/wheel_workflow.py
+      - packages/kumo-engine/test/conftest.py
+      - packages/kumo-engine/test/wheel_workflow.json
       - test/scripts/test_engine_wheel_smoke.py
       - docs/development/testing.md
 
@@ -77,7 +78,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          reference_tag="$(python -c 'import json; print("kumo-engine-v" + json.load(open("tools/ci/kumo_engine_artifact_smoke.json"))["reference"]["wheel"]["version"])')"
+          reference_tag="$(python -c 'import json; print("kumo-engine-v" + json.load(open("packages/kumo-engine/test/wheel_workflow.json"))["reference"]["wheel"]["version"])')"
           RELEASE_TAG="${RELEASE_TAG:-$reference_tag}"
           gh release download "$RELEASE_TAG" --pattern 'kumo_engine-*x86_64.whl' --dir dist
           if [[ "$RELEASE_TAG" == "$reference_tag" ]]; then
