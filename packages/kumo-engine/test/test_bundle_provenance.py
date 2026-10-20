@@ -102,9 +102,13 @@ def test_fit_records_listed_provenance(two_trials):
     assert provenance['bundle_format_version'] == 1
     assert provenance['parents'] == {
         'training_table': table.tt_id,
-        'training_table_content_sha256': None,
         'snapshot': snapshot.id,
         'warm_start': None,
+    }
+    assert provenance['training_table'] == {
+        'id': table.tt_id,
+        'derived_from': None,
+        'modified': None,
     }
     assert provenance['seed'] is None
     assert provenance['fit']['seconds'] >= 0
@@ -118,6 +122,8 @@ def test_fit_records_listed_provenance(two_trials):
     params = [trial['params'] for trial in provenance['trials']]
     assert params[0] and params[0].keys() == params[1].keys()
     assert all(params[0][key] != params[1][key] for key in params[0])
+    assert not any(isinstance(value, list) and len(value) == 1
+                   for value in params[0].values())
     assert provenance['environment']['kumo_engine'] == kumo.__version__
     assert trainer.bundle_id == result.bundle_id
 
@@ -164,31 +170,40 @@ def test_bundle_without_provenance_loads_and_predicts_identically(
     assert stray.bundle_id == result.bundle_id
 
 
-def test_provenance_failure_warns_and_still_publishes(tmp_path, monkeypatch):
-    from kumo.engine.trainer import _provenance
-
+def _finish_stub_fit(tmp_path, trainer):
     bundle = tmp_path / 'bundle'
     (bundle / 'model').mkdir(parents=True)
-    (bundle / 'model' / 'config.json').write_text('{"root_dir": "automl"}')
+    (bundle / 'model' / 'config.json').write_text('{}')
     (bundle / MANIFEST_FILE).write_text(json.dumps({'artifacts': []}))
     add_bundle_file(bundle, 'trainer_config', 'model/config.json')
+    table = type('Table', (), {'tt_id': 'tt-1', 'manifest': None})()
+    return trainer._finish_fit(
+        TrainingResult({}, {}, bundle), predictive_query='PREDICT x',
+        snapshot_id='snap', export_config=None,
+        training_table_generation=TrainingTableGenerationPlan(),
+        provenance=dict(train_table=table, snapshot_id='snap',
+                        warm_start_bundle_id=None,
+                        started_at=datetime.now(timezone.utc),
+                        home_dir=tmp_path))
+
+
+def test_provenance_without_trial_logs_still_records_parents(tmp_path):
+    result = _finish_stub_fit(tmp_path, kumo.Trainer(ModelPlan()))
+    assert result.provenance['trials'] == []
+    assert result.provenance['parents']['training_table'] == 'tt-1'
+
+
+def test_provenance_failure_warns_and_still_publishes(tmp_path, monkeypatch):
+    from kumo.engine.trainer import _provenance
 
     def fail(*args):
         raise RuntimeError('unreadable trials')
 
     monkeypatch.setattr(_provenance, '_trials', fail)
-    table = type('Table', (), {'tt_id': 'tt-1', 'manifest': None})()
     trainer = kumo.Trainer(ModelPlan())
     with pytest.warns(UserWarning, match='unreadable trials'):
-        result = trainer._finish_fit(
-            TrainingResult({}, {}, bundle), predictive_query='PREDICT x',
-            snapshot_id='snap', export_config=None,
-            training_table_generation=TrainingTableGenerationPlan(),
-            provenance=dict(train_table=table, snapshot_id='snap',
-                            warm_start_bundle_id=None,
-                            started_at=datetime.now(timezone.utc),
-                            home_dir=tmp_path))
-    assert 'provenance' not in _roles(bundle)
+        result = _finish_stub_fit(tmp_path, trainer)
+    assert 'provenance' not in _roles(result.bundle_dir)
     assert result.provenance is None
     assert re.fullmatch('[0-9a-f]{64}', result.bundle_id)
     assert trainer._training_result is result

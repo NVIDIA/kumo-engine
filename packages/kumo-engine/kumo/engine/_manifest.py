@@ -128,7 +128,7 @@ class SourceTableEntry(Record):
 class Manifest(Record):
     kind: str
     schema_version: int = SCHEMA_VERSION
-    id: str
+    id: Optional[str]
     created_at: Optional[str]
     environment: Optional[Environment]
     scheduler: Optional[SchedulerContext]
