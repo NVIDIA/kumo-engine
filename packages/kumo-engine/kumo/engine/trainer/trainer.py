@@ -22,6 +22,7 @@ from kumo_core.pquery import (
     build_generated_training_task_dataset,
     resolve_query_forecast,
 )
+from kumo_core.runtime_progress import operation
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
 from kumo_core.training.explain_aggregation import aggregate_subgraph_features
 from kumo_core.training.workflow import TrainingWorkflowRequest
@@ -242,6 +243,7 @@ class Trainer:
     def scratch_dir(self) -> Path:
         return trainer_scratch_dir(self._id)
 
+    @operation('training', 'kumo.engine.Trainer.fit', 'Training')
     def fit(
         self,
         train_table: TrainingTable,
@@ -473,6 +475,7 @@ class Trainer:
 
         return training_result
 
+    @operation('prediction', 'kumo.engine.Trainer.predict', 'Predicting')
     def predict(
         self,
         prediction_table: PredictionTable,

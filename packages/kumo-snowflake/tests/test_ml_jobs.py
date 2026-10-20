@@ -2203,3 +2203,23 @@ def test_engine_bundle_validation(tmp_path: Path, missing: str | None,
         }[missing]
         with pytest.raises(RuntimeError, match=expected):
             validate_wheel(path)
+
+
+def test_explicit_training_boundary_accepts_reconstructed_progress() -> None:
+    observer = _RemoteObserver(StageStore(_Session(), STAGE), {
+        'execution_id': 'execution-1',
+        'progress_location': 'progress.json',
+    })
+    token = runtime_progress.install(observer)
+    try:
+        with runtime_progress.operation('training', 'fit-1', 'Training'):
+            for _ in range(2):
+                runtime_progress.progress_updated('training', AutoTrainerProgress(
+                    total_trials=1, completed_trials=1))
+        with runtime_progress.operation('prediction', 'predict-1', 'Predicting'):
+            runtime_progress.progress_updated('prediction', PredictionProgress(
+                total_iterations=1, completed_iterations=1))
+        observer.raise_for_policy_violation()
+    finally:
+        runtime_progress.reset(token)
+    assert observer._payload(JobStatus.DONE)['prediction']['completed_iterations'] == 1
