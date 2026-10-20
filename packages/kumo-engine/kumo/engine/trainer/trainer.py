@@ -46,6 +46,7 @@ from kumo.engine._embeddings import (
 from kumo.engine._events import Event, EventEmitter, query_sha256
 from kumo.engine._manifest import BundleProvenance
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
+from kumo.engine._tracking import FitContext, Tracking, TrackingSession
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
@@ -292,6 +293,7 @@ class Trainer:
         export_config: Optional[ModelOutputConfig] = None,
         warm_start: Optional[Self] = None,
         callbacks: Sequence[Callable[[Event], None]] = (),
+        tracking: Optional[Tracking] = None,
     ) -> TrainingResult:
         r"""Train a model against `train_table`.
 
@@ -319,6 +321,9 @@ class Trainer:
                 match. Forecasting warm starts are unsupported.
             callbacks: called with each progress `Event`; a callback that
                 raises is logged and not called again.
+            tracking: records this fit in an experiment tracker, e.g.
+                `kumo.engine.integrations.mlflow.MlflowTracking`. Tracking
+                errors are logged as warnings and never fail the fit.
         """
         if export_config is not None and not callable(
                 getattr(export_config.connector.sink_backend, 'publish_model',
@@ -327,7 +332,10 @@ class Trainer:
                 f'{type(export_config.connector).__name__} cannot publish '
                 f'models')
         run_id = f'{self._id}-fit-{new_run_id()}'
-        events = EventEmitter(run_id, callbacks)
+        session = TrackingSession(tracking)
+        events = EventEmitter(
+            run_id,
+            [*callbacks, session.on_event] if session.enabled else callbacks)
         fit_start = time.monotonic()
         try:
             started = {
@@ -341,16 +349,18 @@ class Trainer:
             result = self._fit(train_table, snapshot=snapshot,
                                export_config=export_config,
                                warm_start=warm_start, run_id=run_id,
-                               events=events)
+                               events=events, tracking=session)
         except BaseException as error:
             events.emit('fit_ended', params={
                 'status': 'failed',
                 'error': format_error(error),
             })
+            session.finish(None, error)
             raise
         events.emit('fit_ended', metrics={
             **result.metrics, 'seconds': time.monotonic() - fit_start
         }, params={'status': 'succeeded'})
+        session.finish(result, None)
         return result
 
     def _fit(
@@ -362,12 +372,13 @@ class Trainer:
         warm_start: Optional[Self],
         run_id: str,
         events: EventEmitter,
+        tracking: TrackingSession,
     ) -> TrainingResult:
         from kumo_core.automl.runtime import (
             inherit_warm_start_model_plan,
             validate_warm_start_task_type,
         )
-        from kumo_core.io.json import load_json
+        from kumo_core.io.json import load_json, to_json_dict
         from kumo_core.training.orchestration import (
             CallableTrainingOptions,
             ResolvedTrainingInput,
@@ -435,7 +446,8 @@ class Trainer:
         from kumoapi.pquery import QueryType
         from pyarrow import parquet
 
-        parts = stage_parts(read_spec(str(train_table.staging_dir)))
+        train_table_spec = read_spec(str(train_table.staging_dir))
+        parts = stage_parts(train_table_spec)
         seed_part = next(part for paths in parts.values() for part in paths)
         seed_schema = parquet.read_schema(train_table.staging_dir / seed_part)
         entity_tables = [workflow.query.entity_table]
@@ -491,6 +503,14 @@ class Trainer:
             tt_id=ingest_tt_id,
         )
         del task_dataset
+        tracking.start(lambda: FitContext(
+            run_id=run_id,
+            task_type=TaskType(workflow.query.task_type).value,
+            snapshot_id=snapshot.id,
+            training_table_id=str(train_table_spec['tt_id']),
+            query=train_table.query,
+            model_plan=to_json_dict(materialized.model_plan),
+        ))
         training_input = ResolvedTrainingInput(
             task=materialized.task,
             model_plan=materialized.model_plan,
@@ -503,7 +523,9 @@ class Trainer:
             bindings=local_training_bindings(
                 training_input, run_name=run_id,
                 embedding_models=self._embedding_models,
-                instrumentation=events),
+                instrumentation=events,
+                trial_logger=(tracking.trial_logger
+                              if tracking.enabled else None)),
             options=CallableTrainingOptions(),
         )
 

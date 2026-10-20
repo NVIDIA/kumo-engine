@@ -17,7 +17,7 @@ import traceback
 import warnings
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 import torch
@@ -210,6 +210,8 @@ class AutoTrainer:
         home_dir: The home directory used to resolve ``root_dir`` and to
             load/save :class:`TrainStatus`. If ``None``, the runtime supplies
             its default.
+        trial_logger: Called with ``(trial, attempt)`` for each search trial;
+            a returned Lightning logger also receives that trial's metrics.
     """
     def __init__(
         self,
@@ -222,6 +224,7 @@ class AutoTrainer:
         checkpoint_path: str | None = None,
         home_dir: str | None = None,
         checkpoint_encoder_dir: str | None = None,
+        trial_logger: Callable[[int, int], Any] | None = None,
         **kwargs: Any,
     ) -> None:
         if not isinstance(task, ResolvedNumericalTask):
@@ -230,6 +233,7 @@ class AutoTrainer:
         self.task = task
         self.runtime = runtime
         self.instrumentation = instrumentation
+        self.trial_logger = trial_logger
         self.checkpoint_path = checkpoint_path
         self.checkpoint_encoder_dir = checkpoint_encoder_dir
         self.max_tries = max_tries
@@ -460,6 +464,7 @@ class AutoTrainer:
         pruning: Callback | None = None,
         status: TrainStatus | None = None,
         trial: int | None = None,
+        attempt: int | None = None,
     ) -> list[float]:
         r"""Config-driven training function.
 
@@ -660,6 +665,11 @@ class AutoTrainer:
             "TT-NG requires a diskgraph task-dataset bundle")
         extra_trainer_kwargs['diskgraph_task_dataset_bundle_dir'] = (
             self.diskgraph_task_dataset_bundle_dir)
+        if (self.trial_logger is not None and trial is not None
+                and attempt is not None):
+            pl_logger = self.trial_logger(trial, attempt)
+            if pl_logger is not None:
+                extra_trainer_kwargs['logger'] = pl_logger
 
         with self.instrumentation.timing(
                 "auto_trainer.train.construct_trainer"):
@@ -893,6 +903,7 @@ class AutoTrainer:
                             pruning=pruning,
                             status=status,
                             trial=i + 1,
+                            attempt=j + 1,
                         )
                     trial_seconds = time.monotonic() - trial_start
                     best_performance = _eval_fn[tune_mode](val_performance)
