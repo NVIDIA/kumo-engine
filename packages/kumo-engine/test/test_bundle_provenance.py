@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -18,7 +19,7 @@ from kumoapi.typing import Stype
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.trainer._spec import MANIFEST_FILE
-from kumo.engine.trainer.trainer import TrainingResult
+from kumo.engine.trainer.trainer import TrainingResult, _published_fit_mode
 
 
 @pytest.fixture(scope='module')
@@ -115,6 +116,7 @@ def test_fit_records_listed_provenance(two_trials):
     assert [trial['trial'] for trial in provenance['trials']] == [0, 1]
     assert {trial['status'] for trial in provenance['trials']} == {'succeeded'}
     assert provenance['selected_trial'] in (0, 1)
+    assert provenance['published_model'] == 'refit_trainval'
     for trial in provenance['trials']:
         assert trial['best_epoch'] == 1
         assert trial['seconds'] > 0
@@ -184,13 +186,27 @@ def _finish_stub_fit(tmp_path, trainer):
         provenance=dict(train_table=table, snapshot_id='snap',
                         warm_start_bundle_id=None,
                         started_at=datetime.now(timezone.utc),
-                        home_dir=tmp_path))
+                        home_dir=tmp_path, published_model=None))
 
 
 def test_provenance_without_trial_logs_still_records_parents(tmp_path):
     result = _finish_stub_fit(tmp_path, kumo.Trainer(ModelPlan()))
     assert result.provenance['trials'] == []
     assert result.provenance['parents']['training_table'] == 'tt-1'
+    assert result.provenance['published_model'] is None
+
+
+@pytest.mark.parametrize('flags,mode', [
+    ({}, None),
+    ({'fitted': True}, 'fit'),
+    ({'fitted': True, 'refitted_trainval': True}, 'refit_trainval'),
+    ({'fitted': True, 'refitted_full': True}, 'refit_full'),
+    ({'fitted': True, 'refitted_trainval': True, 'refitted_full': True},
+     'refit_full'),
+])
+def test_published_fit_mode_follows_refit_flags(flags, mode):
+    trainer = SimpleNamespace(refit_cfg=SimpleNamespace(**flags))
+    assert _published_fit_mode(trainer) == mode
 
 
 def test_provenance_failure_warns_and_still_publishes(tmp_path, monkeypatch):
