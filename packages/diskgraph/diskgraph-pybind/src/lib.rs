@@ -45,7 +45,7 @@ create_exception!(diskgraph, DiskgraphSystemError, PyException);
 // ``_MANIFEST.json``.
 create_exception!(diskgraph, DiskgraphCorruptionError, PyException);
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::thread;
 use tracing::{error, info};
@@ -1569,8 +1569,8 @@ fn validated_index_resume_progress(output_dir: &str) -> PyResult<Option<Vec<Stri
 
 /// On-disk format versions this build writes and accepts.
 #[pyfunction]
-fn format_versions() -> std::collections::BTreeMap<&'static str, u32> {
-    std::collections::BTreeMap::from([
+fn format_versions() -> BTreeMap<&'static str, u32> {
+    BTreeMap::from([
         ("layout", diskgraph_index::layout::LAYOUT_VERSION),
         ("shard_commit", diskgraph_index::graph::INDEX_SHARD_COMMIT_VERSION),
         ("temp_meta", u32::from(diskgraph_index::graph::TEMP_META_VERSION)),

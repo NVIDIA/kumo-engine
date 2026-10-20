@@ -87,7 +87,7 @@ def _flatten(value: Mapping[str, Any], prefix: str = '') -> Dict[str, Any]:
         name = f'{prefix}{key}'
         if isinstance(item, Mapping) and item:
             flat.update(_flatten(item, f'{name}.'))
-        else:
+        elif item is not None:
             flat[name] = item
     return flat
 

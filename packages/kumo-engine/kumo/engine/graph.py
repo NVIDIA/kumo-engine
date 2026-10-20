@@ -225,18 +225,26 @@ class GraphSnapshot:
         return read_manifest(Path(self.index_path) / SNAPSHOT_MANIFEST_FILE)
 
 
-def _write_snapshot_manifest(index_path: Path, snapshot_id: str,
-                             graph_key: str, data_version: str,
+def _ingest_stats(result: Any) -> Dict[str, Any]:
+    try:
+        stats = json.loads(Path(
+            result.ingest_stats_path).read_text()).get('stats')
+    except (AttributeError, OSError, TypeError, ValueError):
+        return {}
+    return stats if isinstance(stats, dict) else {}
+
+
+def _write_snapshot_manifest(result: Any, snapshot_id: str, graph_key: str,
+                             data_version: str,
                              source_tables: Dict[str, Dict[str, str]], *,
                              fresh: bool) -> None:
-    path = index_path / SNAPSHOT_MANIFEST_FILE
+    path = Path(result.index_path) / SNAPSHOT_MANIFEST_FILE
     if not fresh and path.exists():
         return
     try:
         from diskgraph import format_versions
 
-        stats = json.loads(
-            (index_path / 'ingest_stats.json').read_text()).get('stats', {})
+        stats = _ingest_stats(result)
         rows = stats.get('source_rows_by_table', {})
         fields = {
             'graph_id': graph_key,
@@ -558,7 +566,7 @@ class Graph:
 
             snapshot_id = f'{graph_key}@{data_version[:16]}'
             index_path = Path(result.index_path)
-            _write_snapshot_manifest(index_path, snapshot_id, graph_key,
+            _write_snapshot_manifest(result, snapshot_id, graph_key,
                                      data_version, source_tables,
                                      fresh=existing is None)
 
