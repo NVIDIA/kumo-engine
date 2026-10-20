@@ -241,6 +241,39 @@ def _loaded(path: str) -> Optional[Any]:
     return marker
 
 
+_HOUR_SECONDS = 3600
+
+
+def _comparable(stamp: Any) -> bool:
+    r"""Hour-aligned epoch seconds are what `hour_version()` stamps views and
+    unversioned sources with; `-1` marks an undated source."""
+    return (isinstance(stamp, str) and stamp != '-1'
+            and not (stamp.isdigit() and int(stamp) % _HOUR_SECONDS == 0))
+
+
+def _source_change(table: Table, recorded: Any) -> Dict[str, Any]:
+    from kumoapi.source_table import CustomSQLSourceTable
+
+    recorded = recorded if isinstance(recorded, dict) else {}
+    before, current, same_source = recorded.get('version'), None, False
+    try:
+        source = table.definition.source_table
+        if not isinstance(source, CustomSQLSourceTable):
+            connector = table.connector
+            same_source = recorded.get('source') == (
+                f'{connector.source_type}:{table.table_name}')
+            stamp = connector.source_backend.get_data_version(
+                connector, table.table_name)
+            current = None if stamp is None else str(stamp)
+    except Exception:
+        current = None
+    if not (same_source and _comparable(before) and _comparable(current)):
+        status = 'unknown'
+    else:
+        status = 'unchanged' if before == current else 'changed'
+    return {'status': status, 'recorded': before, 'current': current}
+
+
 @dataclass(frozen=True)
 class GraphSnapshot:
     r"""The materialized artifact produced by `Graph.snapshot()`: an on-disk
@@ -279,7 +312,15 @@ class GraphSnapshot:
     def export(self, connector: Connector, path: str) -> str:
         r"""Copy the index to `<path>/<graph id>/<data version[:16]>` under an
         S3, GCS or file connector and return that location. Re-running
-        resumes."""
+        resumes.
+
+        Where there is no dedicated connector: on Databricks compute, use a
+        `FileConnector` rooted at `/Volumes/<catalog>/<schema>/<volume>`; in
+        SPCS services, or ML Jobs where a stage volume is mounted, a
+        `FileConnector` on that stage volume (not yet tested with multi-GB
+        indexes); otherwise the S3 or
+        GCS connector on the bucket behind an external volume or stage.
+        """
         from kumo.engine._snapshot_io import export
 
         return export(self, connector, path)
@@ -288,7 +329,14 @@ class GraphSnapshot:
     def load_from_connector(cls, connector: Connector, *, path: str,
                             graph: Optional['Graph'] = None) -> 'GraphSnapshot':
         r"""Copy the snapshot exported at `path` (the location `export`
-        returned) into the local snapshot store."""
+        returned) into the local snapshot store.
+
+        Given `graph`, reads each table's source version (one metadata call
+        per table, so this machine needs source credentials) and warns once
+        if any changed since the snapshot was built (see `source_changes`). A scoring job should
+        build a fresh snapshot or load one whose `source_changes` are all
+        `unchanged`, unless it deliberately scores an older snapshot.
+        """
         from kumo_core.diskgraph.snapshot import DiskgraphSnapshotHandle
 
         from kumo.engine._snapshot_io import load_into, read
@@ -312,9 +360,45 @@ class GraphSnapshot:
             if result is None:
                 load_into(connector, path, root, manifest, Path(target))
                 result = _loaded(target)
-        return cls(id=manifest['snapshot_id'],
-                   index_path=Path(result.index_path),
-                   graph_config=manifest['graph_config'])
+        snapshot = cls(id=manifest['snapshot_id'],
+                       index_path=Path(result.index_path),
+                       graph_config=manifest['graph_config'])
+        if graph is not None:
+            changed = [
+                alias
+                for alias, change in snapshot.source_changes(graph).items()
+                if change['status'] == 'changed'
+            ]
+            if changed:
+                warnings.warn(
+                    f"Snapshot at {path} predates the current data of "
+                    f"source table(s) {', '.join(changed)}; see "
+                    "`snapshot.source_changes(graph)`.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        return snapshot
+
+    def source_changes(self, graph: 'Graph') -> Dict[str, Dict[str, Any]]:
+        r"""Compare each of `graph`'s tables' current source version, read
+        from metadata only, with the version this snapshot recorded. Never
+        raises."""
+        try:
+            manifest = self.manifest
+            recorded = ({} if not manifest or manifest.get('reconstructed') else
+                        manifest['parents']['source_tables'])
+        except Exception:
+            recorded = {}
+        if not isinstance(recorded, dict):
+            recorded = {}
+        try:
+            tables = graph._named_tables
+        except Exception:
+            return {}
+        return {
+            alias: _source_change(table, recorded.get(alias))
+            for alias, table in tables.items()
+        }
 
     @property
     def manifest(self) -> SnapshotManifest | None:

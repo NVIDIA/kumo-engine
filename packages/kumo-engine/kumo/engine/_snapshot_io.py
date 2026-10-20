@@ -29,9 +29,13 @@ _ATTEMPTS = 3
 _KEY = re.compile('[0-9a-f]{64}')
 _PROGRESS_SECONDS = 30
 _UNSUPPORTED = {
-    'SNOWFLAKE': 'Snowflake stages are not supported',
-    'DATABRICKS': ('for a Unity Catalog Volume, use an S3Connector or '
-                   "GCSConnector on the volume's backing cloud path"),
+    'SNOWFLAKE': ('Snowflake stages are not supported; in SPCS services, or '
+                  'ML Jobs where a stage volume is mounted, use a '
+                  'FileConnector on that volume'),
+    'DATABRICKS': ('for a Unity Catalog Volume, use a FileConnector on '
+                   '/Volumes/<catalog>/<schema>/<volume> from Databricks '
+                   "compute, or an S3Connector or GCSConnector on the "
+                   "volume's backing cloud path"),
     'BIGQUERY': 'BigQuery cannot hold files',
 }
 
