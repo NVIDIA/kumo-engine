@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Measure learning on generated data; limits remain provisional."""
+"""Measure learning on generated data. Limits remain provisional."""
 
 import argparse
 import gc
@@ -108,6 +108,11 @@ def run_case(root, evidence, seed, independent):
     data = root / 'data'
     data.mkdir()
     values, split = create_data(seed, independent)
+    pd.DataFrame({
+        'ENTITY': values['ID'],
+        'TARGET': values['LABEL'],
+        'SPLIT': split
+    }).to_parquet(evidence / 'split.parquet', index=False)
     pd.DataFrame(values).to_parquet(data / 'entities.parquet')
     pd.DataFrame({
         'ID': range(20),
@@ -156,28 +161,25 @@ def run_case(root, evidence, seed, independent):
     plan.model_architecture.channels = [16]
     trainer = kumo.Trainer(plan)
     result = trainer.fit(table, snapshot=snapshot)
-    assert result.holdout_truncated is False
+    (evidence / 'reported-metrics.json').write_text(
+        json.dumps(result.metrics, indent=2))
+    (evidence / 'model-plan.json').write_text(
+        Path(result.artifact_paths['resolved_model_plan']).read_text())
     frame = result.holdout_df()
+    frame.to_parquet(evidence / 'holdout.parquet', index=False)
+    assert result.holdout_truncated is False
     expected = {
         key: label
         for key, label, stage in zip(values['ID'], values['LABEL'], split)
         if stage == 2
     }
+    # Reported metrics precede calibration. Score the saved probabilities.
     score = score_predictions(frame, expected)
-    assert math.isclose(score, result.metrics['test_auroc'], abs_tol=1e-6)
     [schema_path] = trainer.scratch_dir.glob(
         'runs/*-fit-*/task_dataset/feature_schema.json')
     schema = json.loads(schema_path.read_text())
-    assert 'LABEL' not in schema['node_types']['entities']['feature_columns']
     (evidence / 'feature-schema.json').write_text(json.dumps(schema, indent=2))
-    (evidence / 'model-plan.json').write_text(
-        Path(result.artifact_paths['resolved_model_plan']).read_text())
-    frame.to_parquet(evidence / 'holdout.parquet', index=False)
-    pd.DataFrame({
-        'ENTITY': values['ID'],
-        'TARGET': values['LABEL'],
-        'SPLIT': split
-    }).to_parquet(evidence / 'split.parquet', index=False)
+    assert 'LABEL' not in schema['node_types']['entities']['feature_columns']
     # Exercise the actual scorer with deliberately useless and leaked outputs.
     control = frame.copy()
     control['True_PROB'] = control['False_PROB'] = .5

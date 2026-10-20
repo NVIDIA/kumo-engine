@@ -110,6 +110,16 @@ class WheelLearningTest(unittest.TestCase):
         expected = {0: False, 1: False, 2: True, 3: True}
         score = self.worker['score_predictions']
         self.assertEqual(score(frame, expected), .75)
+        # Calibration can round distinct scores into ties. Use saved values.
+        tied = frame.copy()
+        tied['True_PROB'] = [
+            2.06115369216775e-9, 4.539787187241018e-5, 4.5397911890177056e-5, 1.
+        ]
+        tied['False_PROB'] = 1 - tied['True_PROB']
+        self.assertEqual(score(tied, expected), 1.)
+        tied['True_PROB'] = [0., 0., 0., 1.]
+        tied['False_PROB'] = 1 - tied['True_PROB']
+        self.assertEqual(score(tied, expected), .75)
         wrong_label = frame.copy()
         wrong_label.loc[0, 'TARGET'] = True
         wrong_probability = frame.copy()

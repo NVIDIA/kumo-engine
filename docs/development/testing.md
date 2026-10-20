@@ -75,7 +75,7 @@ One case has a known relationship. The other keeps the graph but uses independen
 Both use seeds `0–4`, 1,200 training rows, 400 validation rows, and 400 evaluation rows.
 Evaluation rows stay out of training. The target column stays out of model features.
 
-AUROC measures ranking quality. Constant scores give `0.50`.
+The test computes AUROC, a ranking score, from saved probabilities. Constant scores give `0.50`.
 Provisional limits require mean AUROC of at least `0.75` for learnable labels
 and `0.45–0.55` for independent labels. These limits need release-owner approval.
 This option does not change release gates. It does not compare a candidate with a quality reference yet.
