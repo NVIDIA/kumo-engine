@@ -586,7 +586,7 @@ class Trainer:
             training_result = replace(
                 training_result,
                 bundle_id=verify_model_bundle(training_result.bundle_dir))
-        except (OSError, ValueError) as error:
+        except Exception as error:
             warnings.warn(f"Could not compute the bundle id: {error}",
                           UserWarning, stacklevel=3)
         if export_config is not None:

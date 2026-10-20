@@ -43,10 +43,10 @@ def write_provenance(
 
     config = _read_json(bundle_dir / 'model' / 'config.json') or {}
     finished_at = datetime.now(timezone.utc)
+    tt_id = train_table.tt_id
+    table_manifest = train_table.manifest or {}
     parents = {
-        'training_table': train_table.tt_id,
-        'training_table_content_sha256':
-        (train_table.manifest or {}).get('content_sha256'),
+        'training_table': tt_id,
         'snapshot': snapshot_id,
         'warm_start': warm_start_bundle_id,
     }
@@ -62,8 +62,14 @@ def write_provenance(
                 'seconds': round((finished_at - started_at).total_seconds(),
                                  3),
             },
+            training_table={
+                'id': tt_id,
+                'derived_from':
+                (table_manifest.get('parents') or {}).get('derived_from'),
+                'modified': table_manifest.get('modified'),
+            },
             selected_trial=config.get('version'),
-            trials=_trials(home_dir, Path(config['root_dir'])),
+            trials=_trials(home_dir, config.get('root_dir')),
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
 
@@ -76,7 +82,11 @@ def read_provenance(bundle_dir: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _trials(home_dir: Path, automl_dir: Path) -> List[Dict[str, Any]]:
+def _trials(home_dir: Path,
+            root_dir: Optional[str]) -> List[Dict[str, Any]]:
+    automl_dir = Path(root_dir) if root_dir else None
+    if automl_dir is None or not automl_dir.is_dir():
+        return []
     status = {
         entry['trial']: entry
         for entry in (_read_json(home_dir / 'status.json') or {}).get(
@@ -115,10 +125,14 @@ def _trials(home_dir: Path, automl_dir: Path) -> List[Dict[str, Any]]:
     for entry in trials:
         plan = plans[entry['trial']]
         entry['params'] = {
-            key: json.loads(plan[key]) if key in plan else None
+            key: _unwrap(json.loads(plan[key])) if key in plan else None
             for key in varying
         }
     return trials
+
+
+def _unwrap(value: Any) -> Any:
+    return value[0] if isinstance(value, list) and len(value) == 1 else value
 
 
 def _val_metrics(path: Path) -> Dict[str, float]:
