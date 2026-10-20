@@ -88,7 +88,11 @@ class TrainingResult:
 
     @property
     def provenance(self) -> Optional[Dict[str, Any]]:
-        """The bundle's recorded fit provenance; None for older bundles."""
+        """The bundle's recorded fit provenance; None for older bundles.
+
+        Its `published_model` is the shipped checkpoint's fit mode, unlike
+        the registry record in `TrainingResult.published_model`.
+        """
         from kumo.engine.trainer._provenance import read_provenance
 
         return read_provenance(self.bundle_dir)
@@ -198,6 +202,16 @@ def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
                     'the test split, so it has no holdout predictions.')
         return None, False
     return _find_holdout(trainer.get_log_dir(fit_mode=published))
+
+
+def _published_fit_mode(trainer: Any) -> Optional[str]:
+    refit = getattr(trainer, 'refit_cfg', None)
+    for mode, flag in (('refit_full', 'refitted_full'),
+                       ('refit_trainval', 'refitted_trainval'),
+                       ('fit', 'fitted')):
+        if getattr(refit, flag, False) is True:
+            return mode
+    return None
 
 
 def _collect_garbage(stage: str) -> None:
@@ -479,6 +493,7 @@ class Trainer:
 
         holdout_path, holdout_truncated = _published_holdout(
             result.best_trainer)
+        published_model = _published_fit_mode(result.best_trainer)
         training_result = TrainingResult(
             metrics=dict(result.metrics),
             artifact_paths=dict(result.artifact_paths),
@@ -498,7 +513,8 @@ class Trainer:
             provenance=dict(train_table=train_table,
                             snapshot_id=snapshot.id,
                             warm_start_bundle_id=warm_start_bundle_id,
-                            started_at=started_at, home_dir=run_dir),
+                            started_at=started_at, home_dir=run_dir,
+                            published_model=published_model),
         )
 
     def _finish_fit(

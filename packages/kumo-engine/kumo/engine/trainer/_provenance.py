@@ -38,6 +38,7 @@ def write_provenance(
     warm_start_bundle_id: Optional[str],
     started_at: datetime,
     home_dir: Path,
+    published_model: Optional[str],
 ) -> None:
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
 
@@ -69,6 +70,7 @@ def write_provenance(
                 'modified': table_manifest.get('modified'),
             },
             selected_trial=config.get('version'),
+            published_model=published_model,
             trials=_trials(home_dir, config.get('root_dir')),
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
