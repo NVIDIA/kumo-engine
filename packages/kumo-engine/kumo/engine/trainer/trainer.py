@@ -7,6 +7,8 @@ import gc
 import hashlib
 import json
 import logging
+import os
+import shutil
 import time
 import warnings
 from dataclasses import dataclass, replace
@@ -57,6 +59,7 @@ from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
+from kumo.engine.trainer._scoring import ScoringDefaults, read_scoring_defaults
 from kumo.engine.trainer._spec import (
     read_bundle_artifact_paths,
     read_training_spec,
@@ -224,6 +227,38 @@ def _to_core_model_plan(model_plan: ModelPlan) -> CoreModelPlan:
     return internal_model_plan_from_public(model_plan)
 
 
+def _link_or_copy(source: str, destination: str) -> None:
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
+
+
+def _require_publisher(export_config: ModelOutputConfig) -> None:
+    if not callable(
+            getattr(export_config.connector.sink_backend, 'publish_model',
+                    None)):
+        raise NotImplementedError(
+            f'{type(export_config.connector).__name__} cannot publish '
+            f'models')
+
+
+def _publish(training_result: TrainingResult,
+             export_config: ModelOutputConfig) -> PublishedModel:
+    spec = read_training_spec(training_result.bundle_dir)
+    return export_config.connector.sink_backend.publish_model(
+        export_config.connector,
+        str(training_result.bundle_dir),
+        path=export_config.path,
+        location=export_config.location,
+        metadata={
+            name: str(getattr(spec, name))
+            for name in ('spec_version', 'predictive_query', 'snapshot_id')
+        },
+        metrics=training_result.metrics,
+    )
+
+
 def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
     from kumo_core.artifacts import stage_model_bundle
     return stage_model_bundle(artifacts, dest)
@@ -254,6 +289,7 @@ class Trainer:
         self._training_query: Optional[str] = None
         self._training_table_generation_plan: Optional[
             TrainingTableGenerationPlan] = None
+        self._scoring_defaults = ScoringDefaults()
 
     @property
     def model_plan(self) -> ModelPlan:
@@ -289,6 +325,56 @@ class Trainer:
         """Fit provenance of the fitted or loaded bundle, if recorded."""
         result = self._training_result
         return None if result is None else result.provenance
+
+    @property
+    def scoring_defaults(self) -> ScoringDefaults:
+        """Prediction defaults carried by the fitted or loaded bundle."""
+        return self._scoring_defaults
+
+    def _fitted(self, method: str) -> TrainingResult:
+        if self._training_result is None:
+            raise RuntimeError(
+                f"Trainer.{method}() requires a prior Trainer.fit() call on "
+                "this same Trainer instance.")
+        return self._training_result
+
+    def with_scoring_defaults(self, defaults: ScoringDefaults) -> Self:
+        r"""Return a trainer whose new bundle carries ``defaults``.
+
+        ``defaults`` replace any the bundle already carries; empty defaults
+        remove them. The bundle is copied, so this trainer's bundle and
+        ``bundle_id`` are unchanged. The copy records this bundle's id as
+        ``provenance['parents']['derived_from']`` and gets its own
+        ``bundle_id``. ``predict`` uses a default only when its argument is
+        omitted.
+        """
+        from kumo.engine.trainer._provenance import record_derivation
+        from kumo.engine.trainer._scoring import (
+            bundle_task_type,
+            validate_scoring_defaults,
+            write_scoring_defaults,
+        )
+
+        training_result = self._fitted('with_scoring_defaults')
+        validate_scoring_defaults(
+            defaults, bundle_task_type(training_result.artifact_paths))
+        bundle_dir = trainer_scratch_dir(new_run_id()) / 'derived-model'
+        shutil.copytree(training_result.bundle_dir, bundle_dir,
+                        copy_function=_link_or_copy)
+        write_scoring_defaults(bundle_dir, defaults)
+        try:
+            record_derivation(bundle_dir, training_result.bundle_id)
+        except Exception as error:
+            warnings.warn(
+                f"Could not record the parent bundle in provenance.json: "
+                f"{error}", UserWarning, stacklevel=2)
+        return self._load_bundle(bundle_dir, self._embedding_models)
+
+    def export(self, config: ModelOutputConfig) -> PublishedModel:
+        """Publish the fitted or loaded model bundle."""
+        training_result = self._fitted('export')
+        _require_publisher(config)
+        return _publish(training_result, config)
 
     def fit(
         self,
@@ -331,12 +417,8 @@ class Trainer:
                 `kumo.engine.integrations.snowflake.SnowflakeTracking`;
                 tracking errors are logged, never raised.
         """
-        if export_config is not None and not callable(
-                getattr(export_config.connector.sink_backend, 'publish_model',
-                        None)):
-            raise NotImplementedError(
-                f'{type(export_config.connector).__name__} cannot publish '
-                f'models')
+        if export_config is not None:
+            _require_publisher(export_config)
         run_id = f'{self._id}-fit-{new_run_id()}'
         session = TrackingSession(tracking)
         events = EventEmitter(
@@ -620,23 +702,12 @@ class Trainer:
                     f"Publishing the model bundle without provenance.json: "
                     f"{error}", UserWarning, stacklevel=3)
         if export_config is not None:
-            spec = read_training_spec(training_result.bundle_dir)
-            published = export_config.connector.sink_backend.publish_model(
-                export_config.connector,
-                str(training_result.bundle_dir),
-                path=export_config.path,
-                location=export_config.location,
-                metadata={
-                    name: str(getattr(spec, name))
-                    for name in ('spec_version', 'predictive_query',
-                                 'snapshot_id')
-                },
-                metrics=training_result.metrics,
-            )
-            training_result = replace(training_result,
-                                      published_model=published)
+            training_result = replace(
+                training_result,
+                published_model=_publish(training_result, export_config))
 
         self._training_result = training_result
+        self._scoring_defaults = ScoringDefaults()
         self._snapshot_id = snapshot_id
         self._training_query = predictive_query
         self._training_table_generation_plan = training_table_generation
@@ -720,6 +791,10 @@ class Trainer:
         Binary classification requires an explicit threshold. Multilabel
         classification defaults to 0.5. Both accept thresholds from 0 to 1;
         thresholds change predicted labels without changing class scores.
+
+        An omitted ``binary_classification_threshold`` falls back to the
+        bundle's :attr:`scoring_defaults`; an omitted ``num_classes_to_return``
+        does too when the query has no ``TOP k``.
         """
         from kumo_core.prediction_options import (
             validate_num_classes_to_return,
@@ -728,10 +803,10 @@ class Trainer:
 
         validate_prediction_workers(num_workers)
         validate_num_classes_to_return(num_classes_to_return)
-        if self._training_result is None:
-            raise RuntimeError(
-                "Trainer.predict() requires a prior Trainer.fit() call on "
-                "this same Trainer instance.")
+        training_result = self._fitted('predict')
+        if binary_classification_threshold is None:
+            binary_classification_threshold = (
+                self._scoring_defaults.binary_classification_threshold)
         from kumo_core.pquery import normalize_graph, parse_and_validate_query
         from kumo_core.prediction_options import (
             prediction_query_contract,
@@ -765,6 +840,8 @@ class Trainer:
         # population and anchors still come from the immutable PredictionTable.
         native_graph = normalize_graph(graph_config)
         parsed = parse_and_validate_query(prediction_table.query, native_graph)
+        if num_classes_to_return is None and parsed.query.top_k is None:
+            num_classes_to_return = self._scoring_defaults.num_classes_to_return
         num_classes_to_return = resolve_num_classes_to_return(
             task_type,
             num_classes_to_return,
@@ -791,7 +868,7 @@ class Trainer:
         from kumo_core.io.json import load_json
 
         # Loaded once: the embedding check and the in-process scorer share it.
-        encoders_path = self._training_result.artifact_paths.get('encoders')
+        encoders_path = training_result.artifact_paths.get('encoders')
         encoders = (load_json(encoders_path, EncodersConfig) if encoders_path
                     and Path(encoders_path).is_file() else None)
         require_trained_embedding_models(self._embedding_models, encoders)
@@ -855,7 +932,7 @@ class Trainer:
 
         model_dir = str(
             _stage_model_bundle(
-                self._training_result.artifact_paths,
+                training_result.artifact_paths,
                 run_dir / 'model_bundle',
             ))
 
@@ -961,4 +1038,5 @@ class Trainer:
             spec.training_table_generation, TrainingTableGenerationPlan)
         trainer._training_result = TrainingResult(metrics, paths, bundle_dir,
                                                   bundle_id=bundle_id)
+        trainer._scoring_defaults = read_scoring_defaults(bundle_dir, paths)
         return trainer

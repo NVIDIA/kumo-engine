@@ -72,6 +72,21 @@ def _training_table(train_table: TrainingTable) -> BundleTrainingTable:
         if manifest is None else manifest.parents.source_table)
 
 
+def record_derivation(bundle_dir: Path, parent_bundle_id: Optional[str]) -> None:
+    from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
+
+    provenance = read_provenance(bundle_dir)
+    if provenance is None:
+        provenance = new_manifest('model_bundle', None, {},
+                                  created_at=None, environment=None,
+                                  scheduler=None, reconstructed=True)
+    provenance['parents'] = {
+        **(provenance.get('parents') or {}), 'derived_from': parent_bundle_id
+    }
+    write_manifest(bundle_dir / PROVENANCE_FILE, provenance)
+    add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
+
+
 def read_provenance(bundle_dir: Path) -> Optional[BundleProvenance]:
     path = listed_file(bundle_dir, PROVENANCE_ROLE)
     return None if path is None else read_manifest(path, BundleProvenance)

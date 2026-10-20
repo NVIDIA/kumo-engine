@@ -17,6 +17,7 @@ from kumo_core.artifacts import (
     VitalArtifactSources,
     add_bundle_file,
     bundle_id_from_manifest,
+    remove_bundle_file,
     resolve_vital_artifact_sources,
     verify_model_bundle,
 )
@@ -263,3 +264,18 @@ def test_bundle_id_ignores_provenance_only(tmp_path: Path) -> None:
     (bundle / "metrics.json").write_text('{"auc": 0}')
     add_bundle_file(bundle, "metrics", "metrics.json")
     assert verify_model_bundle(bundle) != bundle_id
+
+
+def test_remove_bundle_file_restores_the_bundle_id(tmp_path: Path) -> None:
+    sources, _ = _vital_sources(tmp_path)
+    bundle = tmp_path / "bundle"
+    VitalArtifactPublicationPolicy().publish(sources, bundle)
+    expected = verify_model_bundle(bundle)
+    (bundle / "extra.json").write_text("{}")
+    add_bundle_file(bundle, "extra", "extra.json")
+    assert verify_model_bundle(bundle) != expected
+
+    remove_bundle_file(bundle, "extra")
+    remove_bundle_file(bundle, "extra")
+    assert not (bundle / "extra.json").exists()
+    assert verify_model_bundle(bundle) == expected

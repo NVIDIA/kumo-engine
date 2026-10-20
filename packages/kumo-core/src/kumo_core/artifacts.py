@@ -378,8 +378,35 @@ def add_bundle_file(bundle_dir: Path, role: str, relative_path: str) -> None:
             sha256=VitalArtifactPublicationPolicy._sha256(path),
         ).to_dict()
     ]
+    _write_bundle_manifest(bundle_dir, manifest)
+
+
+def remove_bundle_file(bundle_dir: Path, role: str) -> None:
+    """Delete the file listed under ``role`` and its manifest entry."""
+    from .sources import layout
+
+    bundle_dir = Path(bundle_dir)
+    manifest_path = bundle_dir / VitalArtifactPublicationPolicy.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    entries = manifest.get('artifacts') or []
+    removed = [entry for entry in entries if entry.get('role') == role]
+    if not removed:
+        return
+    manifest['artifacts'] = [
+        entry for entry in entries if entry.get('role') != role
+    ]
+    _write_bundle_manifest(bundle_dir, manifest)
+    for entry in removed:
+        (bundle_dir / layout.confined(entry['relative_path'])).unlink(
+            missing_ok=True)
+
+
+def _write_bundle_manifest(bundle_dir: Path,
+                           manifest: Mapping[str, Any]) -> None:
     payload = json.dumps(manifest, indent=2, sort_keys=True) + '\n'
-    atomic_write_bytes(manifest_path, payload.encode('utf-8'))
+    atomic_write_bytes(
+        bundle_dir / VitalArtifactPublicationPolicy.MANIFEST_NAME,
+        payload.encode('utf-8'))
 
 
 @runtime_checkable
