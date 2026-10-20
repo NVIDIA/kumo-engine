@@ -37,8 +37,8 @@ test=[
     "pytest-mock",
     "torch>=2.9,<2.13",
 ]
-# kumo-core (Torch/PyG/DiskGraph/faiss-gpu included, via the `gpu` extra) is
-# a required dependency of this package now, not an extra -- see setup.py.
+# kumo-core (Torch/PyG/DiskGraph included) and platform-selected Faiss are
+# required dependencies of this package, not extras -- see setup.py.
 # Unlike kumo-sdk, where the equivalent `core` extra is optional because
 # CloudBackend is the default path, this package has no non-training use
 # case. These per-vendor extras only need to add their own plugin package on
