@@ -96,6 +96,7 @@ class TrainingBindings:
     artifact_publisher: VitalArtifactPublisher
     before_evaluate: Callable[[], None] = _no_op
     load_validation_metrics: MetricsLoader = _empty_metrics
+    on_event: Callable[[dict[str, Any]], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +287,7 @@ def _create_auto_trainer(
         task=training_input.task,
         runtime=bindings.runtime,
         instrumentation=bindings.instrumentation,
+        on_event=bindings.on_event,
         random_state_seed=options.random_state_seed,
         checkpoint_path=checkpoint_path,
         checkpoint_encoder_dir=checkpoint_encoder_dir,

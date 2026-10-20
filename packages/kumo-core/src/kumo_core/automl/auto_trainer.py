@@ -12,11 +12,12 @@ import logging
 import math
 import os
 import os.path as osp
+import time
 import traceback
 import warnings
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 import torch
@@ -33,11 +34,13 @@ from kumo_core.automl.runtime import (
     resolve_warm_start,
     with_na_strategy,
 )
+from kumo_core.automl.searcher import searched_params
 from kumo_core.callbacks.stopper import TopKEarlyStopping
 from kumo_core.embedding_models import require_encoder_models
 from kumo_core.callbacks.train_progress_logger import (
     AutoTrainerProgress,
     AutoTrainingProgressLogger,
+    EpochEventEmitter,
 )
 from kumo_core.instrumentation import TrainingInstrumentation
 from kumo_core.io import filesystem
@@ -209,6 +212,8 @@ class AutoTrainer:
         home_dir: The home directory used to resolve ``root_dir`` and to
             load/save :class:`TrainStatus`. If ``None``, the runtime supplies
             its default.
+        on_event: Receives ``trial_started``, ``epoch_ended`` and
+            ``trial_ended`` progress events as plain dicts.
     """
     def __init__(
         self,
@@ -221,6 +226,7 @@ class AutoTrainer:
         checkpoint_path: str | None = None,
         home_dir: str | None = None,
         checkpoint_encoder_dir: str | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
         **kwargs: Any,
     ) -> None:
         if not isinstance(task, ResolvedNumericalTask):
@@ -229,6 +235,7 @@ class AutoTrainer:
         self.task = task
         self.runtime = runtime
         self.instrumentation = instrumentation
+        self.on_event = on_event
         self.checkpoint_path = checkpoint_path
         self.checkpoint_encoder_dir = checkpoint_encoder_dir
         self.max_tries = max_tries
@@ -458,6 +465,7 @@ class AutoTrainer:
         metrics_client_job_name: str,
         pruning: Callback | None = None,
         status: TrainStatus | None = None,
+        trial: int | None = None,
     ) -> list[float]:
         r"""Config-driven training function.
 
@@ -715,6 +723,10 @@ class AutoTrainer:
         # Add progress logging callback:
         self.training_progress_logger.set_current_trainer(trainer)
         trainer.pl_trainer.callbacks.append(self.training_progress_logger)
+        epoch_events = None
+        if self.on_event is not None and trial is not None:
+            epoch_events = EpochEventEmitter(self.on_event, trial)
+            trainer.pl_trainer.callbacks.append(epoch_events)
 
         # Save AutoTrainer YAML (Trainer YAML will be saved within
         # Trainer itself). The AutoTrainer configuration contains relevant
@@ -741,6 +753,8 @@ class AutoTrainer:
         del self.training_progress_logger.log
         del self.training_progress_logger.log_dict
         trainer.pl_trainer.callbacks.remove(self.training_progress_logger)
+        if epoch_events is not None:
+            trainer.pl_trainer.callbacks.remove(epoch_events)
 
         if pruning is not None:
             # Prevent keeping old trainer state around.
@@ -872,12 +886,20 @@ class AutoTrainer:
                     logger.info(f"Starting AutoML experiment "
                                 f"{i + 1}/{self.num_experiments}")
 
+                    self._emit('trial_started', lambda: {
+                        'trial': i + 1,
+                        'params': {
+                            **searched_params(self.space, cfg),
+                            'attempt': j + 1,
+                        },
+                    })
                     batch_size = cfg.optimization.batch_size[0]
                     with self.instrumentation.timing(
                             "auto_trainer.run.status_add_trial", trial=i + 1):
                         status.add_trial(batch_size)
                         status.save(self.home_dir)
 
+                    trial_start = time.monotonic()
                     with self.instrumentation.timing(
                             "auto_trainer.run.train_trial", trial=i + 1):
                         val_performance = self._train(
@@ -885,8 +907,20 @@ class AutoTrainer:
                             metrics_client_job_name=metrics_job_name,
                             pruning=pruning,
                             status=status,
+                            trial=i + 1,
                         )
                     best_performance = _eval_fn[tune_mode](val_performance)
+                    self._emit('trial_ended', lambda: {
+                        'trial': i + 1,
+                        'metrics': {
+                            self.val_tune_metric: float(best_performance),
+                            'seconds': time.monotonic() - trial_start,
+                        },
+                        'params': {
+                            'status': 'succeeded',
+                            'attempt': j + 1,
+                        },
+                    })
                     logger.info(f"AutoML experiment "
                                 f"{i + 1}/{self.num_experiments} finished "
                                 f"with validation performance: "
@@ -905,6 +939,14 @@ class AutoTrainer:
                     break
 
                 except RuntimeError as e:
+                    self._emit('trial_ended', lambda: {
+                        'trial': i + 1,
+                        'params': {
+                            'status': 'failed',
+                            'attempt': j + 1,
+                            'error': type(e).__name__,
+                        },
+                    })
                     stacktrace = ''.join(
                         traceback.format_exception(e, e, e.__traceback__))
                     logger.warning(stacktrace)
@@ -956,6 +998,15 @@ class AutoTrainer:
         with self.instrumentation.timing("auto_trainer.run.get_best_trainer",
                                          should_init=init_best_trainer):
             return self.get_best_trainer(should_init=init_best_trainer)
+
+    def _emit(self, name: str, fields: Callable[[], dict[str, Any]]) -> None:
+        if self.on_event is None:
+            return
+        try:
+            self.on_event({'name': name, **fields()})
+        except Exception:
+            logger.warning(f"Could not report progress event '{name}'",
+                           exc_info=True)
 
     def _handle_oom_retry(
         self,

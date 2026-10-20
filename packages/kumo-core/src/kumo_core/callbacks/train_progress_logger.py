@@ -5,7 +5,7 @@
 import logging
 import os.path as osp
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import kumoapi.jobs as jobs_api
 from kumo_core.io.json import load_json, save_json
@@ -187,3 +187,29 @@ class AutoTrainingProgressLogger(MonitoringCallback):  # pragma: no cover
     def on_validation_end(self, pl_trainer, pl_module):
         if pl_trainer.state.fn == TrainerFn.VALIDATING:
             save_json(self.progress, self.path)
+
+
+class EpochEventEmitter(MonitoringCallback):
+    r"""Reports each finished training epoch's metrics to ``on_event``,
+    best-effort."""
+    def __init__(self, on_event: Callable[[dict[str, Any]], None],
+                 trial: int):
+        super().__init__()
+        self.on_event = on_event
+        self.trial = trial
+
+    def on_train_epoch_end(self, pl_trainer, pl_module):
+        try:
+            self.on_event({
+                'name': 'epoch_ended',
+                'trial': self.trial,
+                'epoch': pl_trainer.current_epoch + 1,
+                'metrics': {
+                    key: float(value)
+                    for key, value in pl_trainer.progress_bar_metrics.items()
+                    if key.startswith(('train_', 'val_'))
+                },
+            })
+        except Exception:
+            logger.warning("Could not report progress event 'epoch_ended'",
+                           exc_info=True)

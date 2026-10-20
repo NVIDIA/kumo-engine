@@ -99,3 +99,25 @@ class Searcher(ABC, Generic[PlanT]):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}()"
+
+
+def searched_params(space: SearchPlan, cfg: SearchPlan) -> dict[str, Any]:
+    """Returns the values ``cfg`` took for fields ``space`` searches over."""
+    def is_searched(value: Any, metadata: Any) -> bool:
+        if not metadata.tunable or isinstance(value, MissingType):
+            return False
+        return len(value) > 1 or any(
+            is_searched(subvalue, submetadata) for plan in value
+            if isinstance(plan, PlanMixin)
+            for _, subvalue, submetadata in plan.items())
+
+    params: dict[str, Any] = {}
+    for field in fields(space):
+        for key, value, metadata in getattr(space, field.name).items():
+            if is_searched(value, metadata):
+                chosen = getattr(getattr(cfg, field.name), key)[0]
+                params[f"{field.name}.{key}"] = (
+                    chosen if chosen is None
+                    or isinstance(chosen, (bool, int, float, str)) else
+                    str(chosen))
+    return params
