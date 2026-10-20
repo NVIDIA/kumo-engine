@@ -128,8 +128,9 @@ push and pull request. The wheel contains the extension and the standalone
 `ingest` binary.
 
 Kumo builds and distributes that artifact from its in-tree
-`packages/diskgraph` mirror. DiskGraph does not publish independently versioned
-or development wheels.
+`packages/diskgraph` source. This repository is the sole source of truth for
+DiskGraph; make changes here directly. DiskGraph does not publish independently
+versioned or development wheels.
 
 See `diskgraph-pybind/README.md` for local and portable Linux build commands.
 

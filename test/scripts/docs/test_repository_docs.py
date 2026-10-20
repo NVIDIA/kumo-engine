@@ -202,11 +202,11 @@ class RepositoryDocsTest(unittest.TestCase):
         self.write('docs/linked.md', '[Missing](absent.md)\n')
         self.assertIn('absent.md', self.check().stdout)
 
-    def test_upstream_mirror_links_are_reported_without_blocking(self):
+    def test_diskgraph_links_are_reported_without_blocking(self):
         self.write('packages/diskgraph/docs/guide.md', '[Upstream](missing.md)\n')
         result = self.check()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('Upstream mirror:', result.stdout)
+        self.assertIn('DiskGraph documentation:', result.stdout)
         self.assertIn('missing.md', result.stdout)
         self.write('packages/owned/docs/guide.md', '[Owned](missing.md)\n')
         result = self.check()

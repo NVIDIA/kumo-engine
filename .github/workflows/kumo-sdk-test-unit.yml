@@ -12,15 +12,11 @@ on:  # yamllint disable-line rule:truthy
       - 'packages/kumo-api/**'
       - 'packages/kumo-sdk/**'
       - '.github/workflows/kumo-sdk-*'
-      # The fat wheel bundles these; test_fat_wheel_vendored_tags.py checks
-      # they still match its default target, so a retag has to run this.
-      - '3rdparty/kumo-wheels/**'
   pull_request:
     paths:
       - 'packages/kumo-api/**'
       - 'packages/kumo-sdk/**'
       - '.github/workflows/kumo-sdk-*'
-      - '3rdparty/kumo-wheels/**'
   merge_group:
   workflow_dispatch:
 
