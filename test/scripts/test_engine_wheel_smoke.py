@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -103,6 +104,33 @@ class WheelSmokeTest(unittest.TestCase):
                     str(venv / 'bin/python'), '-I', '-m', 'pip', '--isolated',
                     'install', '--no-cache-dir', '--no-index',
                     str(wheel)
+                ], self.root, log)
+        self.assertIn(
+            'No matching distribution found for '
+            'smoke-local-only-dependency', log.read_text())
+
+        # Build requirements use another pip process. Keep them isolated too.
+        source = self.root / 'source'
+        source.mkdir()
+        shutil.copyfile(self.wheel(),
+                        source / 'kumo_engine-1.2.3-py3-none-any.whl')
+        (source / 'pyproject.toml').write_text(
+            '[build-system]\nrequires = ["smoke-local-only-dependency==1.2.3"]\n'
+            'build-backend = "backend"\nbackend-path = ["."]\n')
+        (source / 'backend.py').write_text(
+            'import importlib.metadata, pathlib, shutil\n'
+            'assert importlib.metadata.version("smoke-local-only-dependency") == "1.2.3"\n'
+            'def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):\n'
+            '    wheel = next(pathlib.Path(__file__).parent.glob("*.whl"))\n'
+            '    shutil.copyfile(wheel, pathlib.Path(wheel_directory) / wheel.name)\n'
+            '    return wheel.name\n')
+        log = self.root / 'source-build.log'
+        with patch.dict(os.environ, {'PIP_FIND_LINKS': str(self.root)}):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.runner.run_command([
+                    str(venv / 'bin/python'), '-I', '-m', 'pip', '--isolated',
+                    'install', '--no-cache-dir', '--no-index',
+                    str(source)
                 ], self.root, log)
         self.assertIn(
             'No matching distribution found for '

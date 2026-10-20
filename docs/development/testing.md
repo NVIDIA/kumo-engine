@@ -35,6 +35,8 @@ This test uses Linux x64, Python 3.12, and CPU execution.
 It installs the selected wheel with dependencies from public PyPI in a fresh
 virtual environment outside the source checkout.
 Current dependencies include CUDA libraries, but this test requires no GPU.
+The launcher removes inherited `PIP_*` variables and disables pip configuration
+files for child processes, including installers for source-build requirements.
 
 From the repository root, use Python 3.12 and a new output directory:
 

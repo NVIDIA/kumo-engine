@@ -118,7 +118,7 @@ jobs:
           # connection (devapp AWS SM creds or TEMPORAL_SERVER=cloud); it
           # has no local-dev-server fallback, so it can't run in this matrix.
           "test/pool --ignore=test/pool/test_provision_terminal_nonretry.py",
-          "test/api_contract test/release_tests/test_build_kumo_images.py test/release_tests/test_check_updated_release_branches.py test/release_tests/test_make_kumo3_hotfix_release.py test/release_tests/test_release_v3_guards.py test/release_tests/test_start_kumo3_release.py",
+          "test/api_contract test/scripts/test_engine_wheel.py test/release_tests/test_build_kumo_images.py test/release_tests/test_check_updated_release_branches.py test/release_tests/test_make_kumo3_hotfix_release.py test/release_tests/test_release_v3_guards.py test/release_tests/test_start_kumo3_release.py",
 
           # Public API tests
           "-k graph-saas_static_multiclassclassification_base test/rest/integ/test_e2e_public_api.py",

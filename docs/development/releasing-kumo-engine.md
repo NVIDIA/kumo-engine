@@ -64,7 +64,9 @@ an engine release is cut at the same version as the SDK's. PyPI never accepts a
 re-upload of a version, so a bad release is fixed by releasing the next
 version.
 
-`kumo.engine.__version__` is the stamped value.
+During assembly, `merge_wheels.py` writes the final bundle version into
+`kumo.engine._version`. In manual builds, both wheel metadata and
+`kumo.engine.__version__` include the calculated commit suffix.
 
 `kumo_core.version.get_kumo_version()` asks version providers, registered in the
 `kumo_core.version_providers` entry-point group, in entry-point name order and

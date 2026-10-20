@@ -127,11 +127,16 @@ def verify_install(report, identity):
 
 
 def run_command(command, cwd, log, timeout=60):
+    # Build-dependency pip installers do not inherit --isolated.
+    environment = {
+        key: value
+        for key, value in os.environ.items() if not key.startswith('PIP_')
+    }
+    environment['PIP_CONFIG_FILE'] = os.devnull
     with log.open('w') as stream:
-        # --isolated still reads PIP_CONFIG_FILE. Disable all pip config files.
         subprocess.run(command, cwd=cwd, stdout=stream,
                        stderr=subprocess.STDOUT, check=True, timeout=timeout,
-                       env=dict(os.environ, PIP_CONFIG_FILE=os.devnull))
+                       env=environment)
 
 
 def main():

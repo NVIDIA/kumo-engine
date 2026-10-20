@@ -201,6 +201,26 @@ def _read_wheel(tmp_path):
     return metadata, manifest, names
 
 
+@pytest.mark.parametrize('version', ['1.0', '1.0+abc1234', '2.5.0'])
+def test_engine_exports_the_assembled_wheel_version(tmp_path, monkeypatch,
+                                                    version):
+    monkeypatch.setitem(
+        COMPONENTS, 'kumo-engine',
+        dict(
+            COMPONENTS['kumo-engine'], files={
+                'kumo/engine/_version.py':
+                '# Version fixture\n__version__ = "1.0"\n'
+            }))
+    result = _merge(tmp_path, CORE_COMPONENTS, '--version', version)
+    assert result.returncode == 0, result.stderr
+    with ZipFile(result.stdout.strip()) as archive:
+        namespace = {}
+        exec(archive.read('kumo/engine/_version.py'), namespace)
+        metadata = BytesParser().parsebytes(
+            archive.read(f'kumo_engine-{version}.dist-info/METADATA'))
+    assert namespace['__version__'] == metadata['Version'] == version
+
+
 @pytest.mark.parametrize('providers', [
     ['kumo-databricks', 'kumo-s3', 'kumo-snowflake'],
     ['kumo-databricks'],
