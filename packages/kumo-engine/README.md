@@ -43,6 +43,16 @@ Extras combine, for example `pip install "kumo-engine[s3,text]"`.
 
 The wheels on PyPI are for Linux x86_64 and for macOS on Apple silicon. To build and install on Linux ARM64 (DGX Spark), follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md).
 
+### Optional: faster training on NVIDIA GPUs
+
+On an NVIDIA GPU, PyTorch Geometric's optional `torch-scatter` extension accelerates the min and max aggregations used in training. Its wheels are built for a specific PyTorch and CUDA version, so install it from PyG's wheel index for your environment, for example for PyTorch 2.9 with CUDA 12.8:
+
+```bash
+pip install torch-scatter --only-binary torch-scatter -f https://data.pyg.org/whl/torch-2.9.0+cu128.html
+```
+
+Check your versions with `python -c "import torch; print(torch.__version__, torch.version.cuda)"`, and see [PyG's installation guide](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html) for the available combinations.
+
 ## Quickstart
 
 Predict which users will place an order in the next 30 days, using a sample dataset of users and their orders.
