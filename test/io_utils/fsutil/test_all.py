@@ -50,10 +50,14 @@ def root_ucv(temp_ucv) -> Generator[str, None, None]:
 
 @pytest.fixture(
     params=[
-        "root_s3",
-        "root_gcs",
-        "root_ucv",
-        "root_adls",
+        pytest.param('root_s3', marks=pytest.mark.private_resource('aws')),
+        pytest.param('root_gcs', marks=pytest.mark.private_resource('gcp')),
+        pytest.param(
+            'root_ucv', marks=[
+                pytest.mark.private_resource('databricks'),
+                pytest.mark.ci_profile('databricks-pat'),
+            ]),
+        pytest.param('root_adls', marks=pytest.mark.private_resource('azure')),
     ],
     ids=["s3", "gcs", "ucv", "adls"],
 )

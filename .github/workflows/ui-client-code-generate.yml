@@ -25,7 +25,6 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
 env:
-  AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
   GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
   GITHUB_REF: ${{secrets.GITHUB_REF}}
   GITHUB_API_URL: ${{secrets.GITHUB_API_URL}}
@@ -41,12 +40,10 @@ permissions:
 
 jobs:
   check-openapi-changes:
-    environment: gha-kumo-workflow-tests
     name: Check OpenAPI Changes
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
     permissions:
-      id-token: write # Required for configure-aws-credentials OIDC.
       contents: read
       pull-requests: write
       issues: write
@@ -80,13 +77,6 @@ jobs:
             rest/scripts/download_schema.py
             rest/utils/routers.py
             ui/src/gen/spec/**
-
-      - name: Configure AWS credentials
-        if: steps.backend-changes.outputs.any_changed == 'true'
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
-        with:
-          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
-          aws-region: us-west-2
 
       - name: Set up backend packages
         if: steps.backend-changes.outputs.any_changed == 'true'
@@ -175,11 +165,9 @@ jobs:
             }
 
   trigger-codegen:
-    environment: gha-kumo-workflow-tests
     name: Trigger UI Codegen
     runs-on: ubuntu-24.04
     permissions:
-      id-token: write # Required for configure-aws-credentials OIDC.
       contents: write
       pull-requests: write
       issues: write
@@ -270,12 +258,6 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
-        with:
-          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
-          aws-region: us-west-2
 
       - name: Set up backend packages
         uses: ./.github/actions/setup
@@ -372,11 +354,9 @@ jobs:
           git push origin HEAD:${{ steps.pr-details.outputs.ref }}
 
   codegen:
-    environment: gha-kumo-workflow-tests
     name: Manual Codegen (workflow_dispatch)
     runs-on: ubuntu-24.04
     permissions:
-      id-token: write # Required for configure-aws-credentials OIDC.
       contents: write
       pull-requests: write
       packages: read
@@ -396,12 +376,6 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
-        with:
-          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
-          aws-region: us-west-2
 
       - name: Set up backend packages
         uses: ./.github/actions/setup

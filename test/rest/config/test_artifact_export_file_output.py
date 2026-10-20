@@ -142,7 +142,9 @@ def test_prediction_artifact_preserves_multiple_destinations():
      'abfss://data@account.dfs.core.windows.net/output/'),
 ])
 def test_destination_resolves_for_matching_connector_mode(
-        connector, config, expected):
+        connector, config, expected, monkeypatch):
+    monkeypatch.setattr(
+        'io_utils.fsutil.s3_filesystem.select_s3_region', lambda path: None)
     assert resolve_file_output_path(config, connector) == expected
 
 

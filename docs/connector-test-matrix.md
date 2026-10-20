@@ -86,18 +86,12 @@ The existing hosted workflows have different triggers and failure policies:
 
 | Workflow / coverage | When tests run | Failure behavior |
 | --- | --- | --- |
-| [Testing and Coverage](../.github/workflows/testing.yml): hosted S3, ADLS and GCP tests | PR, master push, merge queue, manual or reusable-workflow invocation, subject to test-file filters and selected shards. ADLS/GCP authentication is limited to configured repository/shard and same-repository PR conditions. | The hosted `pytest` job has `continue-on-error: true`. Package-suite failures fail the separate `packages` job. |
-| [GCS Testing](../.github/workflows/testing_gcs.yml): hosted GCS and BigQuery end-to-end tests | PR, master push, merge queue or manual run; test steps require matching changed files. GCP authentication also requires the configured repository and a same-repository PR for PR events. | Test job has `continue-on-error: true`. |
-| [Snowflake Testing](../.github/workflows/testing_snowflake.yml): hosted Snowflake tests | PR, master push, merge queue or manual run; each shard's test steps require matching changed files. | Test job has `continue-on-error: true`. |
-| [Databricks Testing](../.github/workflows/testing_databricks.yml): hosted REST and DiskGraph tests | PR, master push, merge queue, manual or reusable-workflow invocation; test steps apply changed-file and full/minimal-mode conditions. Durations recording can force a minimal run. | Test job has `continue-on-error: true`. |
+| [Testing and Coverage](../.github/workflows/testing.yml): public local/mocked Python tests | PR, main push, merge queue, manual or reusable invocation; resource-backed cases are deselected before fixture setup. | Test failures fail their jobs. |
+| [Private resource tests](../.github/workflows/testing_private.yml): AWS, GCP, Azure, Snowflake, and Databricks | Approved copy-pr-bot branch push, main push, or manual dispatch on NVIDIA private runners; expensive provider E2E selections retain change filters. | Failures and missing-credential skips fail verification. |
 
-These workflows exclude pushes that only change `ui/` or `tools/`.
-Their existence does not mean every PR runs cloud tests. Jobs marked
-`continue-on-error` are informational for workflow failure propagation, not
-evidence of a required merge gate. The package job does not enable the
-Snowflake, Databricks or BigQuery live flags. Their source-reader/sink suites
-remain distinct from the hosted workflows above. Access approvals and merge
-rules are separate from these workflow triggers.
+Public tests do not configure cloud identities. Private jobs use the shared resource classification and retain selections and results as artifacts. Workflow success does not establish coverage for a selection that was filtered out or intentionally skipped. Required merge checks are configured separately. Use `python -m pytest --resource-group public <paths>` for local public selection; the private workflow uses `python -m tools.run_private_tests <group>` to run isolated provider sessions. Package source-reader/sink live suites retain their separate opt-in flags.
+
+Private discovery scans component test subdirectories. Root-level script tests, release tooling, and package suites retain separate entry points. Resource decorators and `private_resource` marks declare cloud access; `ci_profile`, `ci_group`, and `ci_gate` marks declare process environments, balanced workloads, and provider change gates. Fixture metadata propagates through dependency chains without resolving credentials.
 
 ## Real cloud tests on Kumo resources
 
