@@ -43,8 +43,7 @@ trainer = Trainer(model_plan, accelerator="cpu")
 
 Accepted values are `auto` (default), `cpu`, `gpu`, and `mps`, using Lightning's
 device selection. The choice applies to training, refits, explanations, and
-prediction, and overrides `KUMO_ACCELERATOR` for this instance. An explicitly
-requested accelerator must be available on the host.
+prediction. An explicitly requested accelerator must be available on the host.
 
 Device selection is local to the instance and is not saved in model bundles.
 Select it again when loading, for example

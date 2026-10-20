@@ -464,7 +464,7 @@ def _run_prediction_workers(
 
 def _prediction_worker_devices(
     num_workers: int,
-    accelerator: Optional[str] = None,
+    accelerator: str = 'auto',
 ) -> Tuple[Optional[int], ...]:
     r"""Assign concurrent scorers to distinct visible CUDA devices.
 
@@ -474,8 +474,6 @@ def _prediction_worker_devices(
     """
     if num_workers == 1:
         return (None, )
-    accelerator = (accelerator if accelerator is not None else
-                   os.environ.get('KUMO_ACCELERATOR', 'auto')).lower()
     if accelerator in {'cpu', 'mps'}:
         return (None, ) * num_workers
 
@@ -512,7 +510,7 @@ class _PredictionWorkerConfig(NamedTuple):
     forecast_options: Optional[Dict[str, int]]
     embedding_models: Optional[EmbeddingModelStore] = None
     ignore_time_col: bool = False
-    accelerator: Optional[str] = None
+    accelerator: str = 'auto'
 
 
 def _score_prediction_shard(
@@ -540,9 +538,7 @@ def _score_prediction_shard(
         name=config.run_id,
         **(config.forecast_options or {}),
     )
-    load_options = {}
-    if config.accelerator is not None:
-        load_options['accelerator'] = config.accelerator
+    load_options = {'accelerator': config.accelerator}
     device = config.devices[worker_id]
     if device is not None:
         load_options['devices'] = [device]
@@ -614,7 +610,7 @@ def score_prediction(
     forecast_options: Mapping[str, int] | None = None,
     embedding_models: EmbeddingModelStore | None = None,
     encoders: Any = None,
-    accelerator: str | None = None,
+    accelerator: str = 'auto',
 ) -> Any:
     """Score partitions and publish bounded metadata using the hosted protocol.
 

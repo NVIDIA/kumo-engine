@@ -143,7 +143,7 @@ class LocalAutoTrainingRuntime:
         resolved_task: Any,
         run_name: Optional[str] = None,
         embedding_models: Optional[EmbeddingModelStore] = None,
-        accelerator: Optional[str] = None,
+        accelerator: str = 'auto',
     ) -> None:
         self.home_dir = str(Path(home_dir))
         self.resolved_task = resolved_task
@@ -185,8 +185,7 @@ class LocalAutoTrainingRuntime:
 
     def trainer_runtime_kwargs(self) -> Dict[str, Any]:
         return {
-            **({'accelerator': self.accelerator}
-               if self.accelerator is not None else {}),
+            'accelerator': self.accelerator,
             'artifact_runtime': self.artifact_runtime,
             'diskgraph_runtime': self.diskgraph_runtime,
             'explain_runtime': self.explain_runtime,
@@ -206,7 +205,7 @@ def local_training_bindings(
     training_input: Any,
     run_name: Optional[str] = None,
     embedding_models: Optional[EmbeddingModelStore] = None,
-    accelerator: Optional[str] = None,
+    accelerator: str = 'auto',
 ) -> Any:
     r"""Binds one resolved training input to this process.
 

@@ -482,7 +482,7 @@ def test_forecast_materialization_keeps_checkpoint_table_identity(
 
 
 def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id,
-                          accelerator=None):
+                          accelerator='auto'):
     r"""Run one real prediction-worker load into ``create_pl_trainer``."""
     from kumo_core.encoders.tensor_frame_encoder import (
         HeteroTensorFrameEncoder,
@@ -550,7 +550,7 @@ def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id,
 
 def test_prediction_worker_pins_lightning_to_its_device(monkeypatch, tmp_path):
     import pytorch_lightning as pl
-    monkeypatch.delenv("KUMO_ACCELERATOR", raising=False)
+    monkeypatch.setenv("KUMO_ACCELERATOR", "cpu")
     monkeypatch.setattr(pl, "Trainer", lambda **kwargs: kwargs)
 
     trainers = _score_shard_on_device(monkeypatch, tmp_path, (None, 3), 1)

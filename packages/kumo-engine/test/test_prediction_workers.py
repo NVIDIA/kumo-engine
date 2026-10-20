@@ -123,7 +123,7 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
 @pytest.mark.parametrize('population,requested,expected', [(7, 3, 3), (1, 3, 1),
                                                            (0, 3, 0)])
 @pytest.mark.parametrize('extra_fields', [None, {'PREDICTIONS': []}])
-@pytest.mark.parametrize('accelerator', [None, 'cpu', 'gpu', 'mps', 'auto'])
+@pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
 def test_partition_counts_devices_and_runtime_allocation(
         tmp_path, monkeypatch, population, requested, expected, extra_fields,
         accelerator):
@@ -195,7 +195,9 @@ def test_cuda_device_admission(monkeypatch):
         prediction._prediction_worker_devices(2)
     assert prediction._prediction_worker_devices(1) == (None, )
     monkeypatch.setenv('KUMO_ACCELERATOR', 'cpu')
-    assert prediction._prediction_worker_devices(2) == (None, None)
+    with pytest.raises(ValueError, match='only 1 are visible'):
+        prediction._prediction_worker_devices(2)
+    assert prediction._prediction_worker_devices(2, 'cpu') == (None, None)
 
 
 @pytest.mark.parametrize('accelerator', ['cpu', 'mps'])

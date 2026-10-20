@@ -94,7 +94,7 @@ def test_default_bindings_supply_shared_runtimes(tmp_path):
     kwargs = bindings.runtime.trainer_runtime_kwargs()
     assert kwargs['artifact_runtime'] is bindings.runtime.artifact_runtime
     assert kwargs['embedding_models'] is store
-    assert 'accelerator' not in kwargs
+    assert kwargs['accelerator'] == 'auto'
 
 
 @pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
