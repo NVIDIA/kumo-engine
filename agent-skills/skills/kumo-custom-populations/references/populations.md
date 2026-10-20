@@ -10,7 +10,7 @@ source schema. The query `pq` and `snapshot` describe the already confirmed grap
 | --- | --- |
 | `ENTITY1` | Non-null entity key, with numeric/string type compatible with the graph entity PK |
 | `TARGET1` | Required for training; scalar for binary, regression and multiclass. Multilabel uses a scalar string encoded with the target's multicategorical delimiter |
-| `TIMESTAMP` | Required temporal anchor; also required for a static task, training or prediction, when the entity table has a time column. A static task on an entity without a time column omits it, and so does static link prediction with a scalar (non-array) target |
+| `TIMESTAMP` | Required temporal anchor. For a static node task it is required, training or prediction, when the entity table has a time column, and omitted when it has none. For static link prediction, training never needs it; prediction needs it when the entity table has a time column |
 | Named weight | Optional training-only finite nonnegative scalar for scalar targets; at least one positive weight is required |
 | Named split | Optional training-only values 0=train, 1=validation, 2=test (numeric values or digit strings) |
 
@@ -31,8 +31,8 @@ Exact forecast prediction still needs enabled lag and year-over-year sequences.
 A prediction population must not contain numbered target columns (`TARGET1`, `TARGET2`, etc.).
 Keep evaluation labels separately rather than leaking them into the scoring population.
 If the supplied table carries a target column, keep the entity column, the `TIMESTAMP` where the
-task needs one (a temporal task, or a static task on a timestamped entity other than static
-link prediction with a scalar target), and any sequence columns the task requires
+task needs one (a temporal task, or a static task, node or link, on an entity table with a time
+column), and any sequence columns the task requires
 (`autoregression_labels`, `year_over_year_labels`). Drop the numbered target columns
 (`TARGET1`, ...) in a read-only `connector.sql(...)` source (Snowflake, Databricks and BigQuery
 only), and say you left the target out. A temporal prediction population with no
@@ -71,12 +71,12 @@ caller-supplied weight column by passing `TrainingTableSpec` to generation.
 
 `split_col` reads only 0 (train), 1 (validation), 2 (test), as numbers or digit strings. A column
 holding labels such as `'train'` / `'val'` / `'test'` is accepted as a string column if passed
-as is, then routes no rows, so every row is dropped silently. Map the labels the user gave you,
-without inventing a mapping, in a read-only query; the result is a source table, so nothing is
-written. Ingestion skips rows it cannot read
-(`ingest_on_error="skip_row_on_error"`), so an unmapped label would shrink the training table
-without any error. Look at the labels first, with the host's SQL tool, and map only after every
-value is accounted for:
+as is, but no row matches a split. Ingestion skips every row it cannot read, so the build then
+fails with `custom-TT source kept no rows`. When only some labels are unreadable, those rows are
+skipped: the build succeeds on fewer rows and logs a warning with the skipped count per reason
+(also recorded in `row_failures`). Map the labels the user gave you, without inventing a
+mapping, in a read-only query; the result is a source table, so nothing is written. Look at the
+labels first, with the host's SQL tool, and map only after every value is accounted for:
 
 ```sql
 SELECT SPLIT_LABEL, COUNT(*) AS N FROM CURATED_LABELS GROUP BY SPLIT_LABEL;
@@ -94,8 +94,8 @@ training_table = kumo.TrainingTable.from_source_table(
 ```
 
 Any value in that result that matches no branch (including NULL) becomes a NULL `SPLIT` and the
-row is dropped: ask the user how to map it before building the training table, and never leave it
-out silently. List the labels you mapped with their counts. Create a mapped copy of the table only
+row is skipped: ask the user how to map it before building the training table, and never leave it
+out unreported. List the labels you mapped with their counts. Create a mapped copy of the table only
 when the user approves writing one.
 
 ## Export a generated training table
@@ -143,10 +143,13 @@ rows. Preserve every requested anchor; do not replace row anchors with one globa
 
 ## Actionable validation
 
-Empty sources, missing required columns, null entities/anchors, incompatible key types,
-list/scalar target mismatch, and nonfinite or disallowed negative weights are errors. Split values
-outside 0/1/2 are not: those rows are dropped silently, so check them before building. Report
-the offending field and required representation before proposing a correction.
+Empty sources, missing required columns, incompatible key types and list/scalar target mismatch
+are errors. Row-level problems are not: a null entity or anchor, a nonfinite or disallowed
+negative weight, a null split, or a split value outside 0/1/2 skips that row. The build logs a
+warning with the skipped count per reason, records it in `row_failures`, and continues on the
+remaining rows; if no row remains it fails with `custom-TT source kept no rows`. Check these
+values before building, and report the offending field and required representation before
+proposing a correction.
 Verify that non-null IDs actually exist in the intended graph when exact coverage matters;
 schema validation alone does not guarantee membership or prediction coverage.
 
