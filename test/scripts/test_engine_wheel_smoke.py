@@ -123,14 +123,17 @@ class WheelSmokeTest(unittest.TestCase):
         self.assertIn('kumo-engine', report['error'])
 
     def test_reference_mode_rejects_a_different_wheel_before_installation(self):
+        reference_name = json.loads(self.runner.REQUIREMENTS.read_text()
+                                    )['reference']['wheel']['filename']
         for version in ('1.2.3', '1.0.0'):
             with self.subTest(version=version):
                 output = self.root / f'reference-evidence-{version}'
+                wheel = self.wheel(version=version).rename(self.root /
+                                                           reference_name)
                 completed = subprocess.run([
                     sys.executable,
                     str(RUNNER),
-                    str(self.wheel(version=version)), '--reference',
-                    '--output-dir',
+                    str(wheel), '--reference', '--output-dir',
                     str(output)
                 ], capture_output=True, text=True)
                 self.assertNotEqual(completed.returncode, 0)
