@@ -481,7 +481,8 @@ def test_forecast_materialization_keeps_checkpoint_table_identity(
         "feature_columns"] == [FUTURE_LABELS_COL, AUTOREGRESSION_COL]
 
 
-def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id):
+def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id,
+                          accelerator=None):
     r"""Run one real prediction-worker load into ``create_pl_trainer``."""
     from kumo_core.encoders.tensor_frame_encoder import (
         HeteroTensorFrameEncoder,
@@ -541,7 +542,8 @@ def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id):
             pred_time_col_name=None, output_dir=str(tmp_path / "output"),
             attempt_id="attempt", graph_snapshot_id="snapshot",
             source_config_sha256="0" * 64, runtime_config_sha256="1" * 64,
-            binary_threshold=None, forecast_options=None),
+            binary_threshold=None, forecast_options=None,
+            accelerator=accelerator),
     )
     return trainers
 
@@ -555,6 +557,25 @@ def test_prediction_worker_pins_lightning_to_its_device(monkeypatch, tmp_path):
 
     assert [(t["accelerator"], t["devices"])
             for t in trainers] == [("auto", [3])] * 2
+
+
+@pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
+def test_prediction_worker_accelerator_overrides_environment(
+        monkeypatch, tmp_path, accelerator):
+    import pytorch_lightning as pl
+    monkeypatch.setenv('KUMO_ACCELERATOR', 'cpu')
+    monkeypatch.setattr(pl, 'Trainer', lambda **kwargs: kwargs)
+    trainers = _score_shard_on_device(monkeypatch, tmp_path, (None,), 0,
+                                    accelerator=accelerator)
+    assert [trainer['accelerator'] for trainer in trainers] == [accelerator] * 2
+
+
+def test_explicit_cpu_runs_lightning_on_cpu(monkeypatch, tmp_path):
+    monkeypatch.setenv('KUMO_ACCELERATOR', 'mps')
+    trainers = _score_shard_on_device(monkeypatch, tmp_path, (None,), 0,
+                                    accelerator='cpu')
+    assert all(trainer.strategy.root_device.type == 'cpu'
+               for trainer in trainers)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
@@ -592,7 +613,7 @@ def test_score_prediction_metadata_options(monkeypatch, tmp_path, task_type,
                         lambda _: 'runtime-hash')
     monkeypatch.setattr(artifact_manifest, 'publish_prediction_selection',
                         lambda references, **kwargs: references[0])
-    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda _:
+    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda _, accelerator=None:
                         (None, ))
     monkeypatch.setattr(prediction, '_score_prediction_shard',
                         lambda *, worker_id, config, **_: config)
@@ -686,7 +707,7 @@ def test_in_process_scoring_parses_the_task_manifest_once(
                         lambda references, **kwargs: references[0])
     monkeypatch.setattr(prediction, '_publish_scored_shard',
                         lambda *_, **__: None)
-    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda _:
+    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda _, accelerator=None:
                         (None, ))
     encoders = object()
 

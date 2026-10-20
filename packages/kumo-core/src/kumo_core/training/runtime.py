@@ -143,11 +143,13 @@ class LocalAutoTrainingRuntime:
         resolved_task: Any,
         run_name: Optional[str] = None,
         embedding_models: Optional[EmbeddingModelStore] = None,
+        accelerator: Optional[str] = None,
     ) -> None:
         self.home_dir = str(Path(home_dir))
         self.resolved_task = resolved_task
         self.run_name = run_name
         self.embedding_models = embedding_models
+        self.accelerator = accelerator
         self.artifact_runtime = LocalTrainingArtifactRuntime(self.home_dir)
         self.diskgraph_runtime = LocalDiskgraphTrainingRuntime()
         self.explain_runtime = LocalExplainRuntime()
@@ -183,6 +185,8 @@ class LocalAutoTrainingRuntime:
 
     def trainer_runtime_kwargs(self) -> Dict[str, Any]:
         return {
+            **({'accelerator': self.accelerator}
+               if self.accelerator is not None else {}),
             'artifact_runtime': self.artifact_runtime,
             'diskgraph_runtime': self.diskgraph_runtime,
             'explain_runtime': self.explain_runtime,
@@ -202,6 +206,7 @@ def local_training_bindings(
     training_input: Any,
     run_name: Optional[str] = None,
     embedding_models: Optional[EmbeddingModelStore] = None,
+    accelerator: Optional[str] = None,
 ) -> Any:
     r"""Binds one resolved training input to this process.
 
@@ -218,7 +223,8 @@ def local_training_bindings(
         runtime=LocalAutoTrainingRuntime(home_dir=training_input.home_dir,
                                          resolved_task=training_input.task,
                                          run_name=run_name,
-                                         embedding_models=embedding_models),
+                                         embedding_models=embedding_models,
+                                         accelerator=accelerator),
         instrumentation=NoOpTrainingInstrumentation(),
         resolve_vital_artifacts=resolve_vital_artifact_sources,
         # The vital bundle lands beside the run. A platform backend would then
