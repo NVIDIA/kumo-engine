@@ -29,21 +29,14 @@ It builds its prerequisites and runs without cloud credentials. The
 
 ## CI for fork PRs
 
-Fork PRs run the existing public checks. Jobs that require AWS setup skip fork
-PRs: the main Python matrix, Snowflake, Databricks, GCS, and installation.
-Their test commands and file filters still apply to same-repository PRs and
-other supported events. These jobs also cover local tests outside public CI.
+Fork PRs skip the Python matrix, Snowflake, Databricks, GCS, and installation
+jobs that need AWS setup. Public checks still run. Those jobs also cover local
+tests outside public CI.
 
-For private validation before merge:
-
-1. Review the exact commit from the fork.
-2. Push that reviewed commit to a branch inside `NVIDIA/kumo-engine`.
-3. Open a PR from that branch to `main` and inspect the relevant test results.
-4. If the code changes, repeat review and validation for the new revision.
-
-A skipped job does not mean its tests passed. The internal PR has separate
-results, which do not update the fork PR. This manual process does not add an
-automatic requirement for private validation before merge.
+Before merge, push the reviewed commit to a branch in `NVIDIA/kumo-engine` and
+open a PR to `main`. Inspect its results. Repeat after code changes.
+Results stay on that PR. Skipped jobs do not prove passing tests.
+CI does not enforce this private validation.
 
 ## Report evidence
 
