@@ -24,13 +24,6 @@ evidence.mkdir(parents=True, exist_ok=True)
 result = {
     'status': 'RUNNING',
     'wheel_version': args.version,
-    'seed': 0,
-    'entities': 50,
-    'events': 3000,
-    'epochs': 1,
-    'steps_per_epoch': 2,
-    'reload_atol': 1e-6,
-    'reload_rtol': 1e-5,
     'started_at_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
     'checks': {},
     'stage_seconds': {}
@@ -52,6 +45,14 @@ def stage(name):
 
 
 try:
+    stage('configuration')
+    requirements = json.loads(Path(__file__).with_suffix('.json').read_text())
+    fixture = requirements['fixture']
+    result.update(fixture)
+    seed = fixture['seed']
+    num_entities = fixture['entities']
+    num_events = fixture['events']
+    tolerance = {'atol': fixture['reload_atol'], 'rtol': fixture['reload_rtol']}
     stage('import')
     import numpy as np
     import pandas as pd
@@ -66,10 +67,10 @@ try:
     assert Path(kumo.__file__).resolve().is_relative_to(Path(
         sys.prefix)), kumo.__file__
     assert not torch.cuda.is_available(), 'This test is specifically CPU-only'
-    torch.set_num_threads(4)
-    random.seed(0)
-    np.random.seed(0)
-    torch.manual_seed(0)
+    torch.set_num_threads(requirements['configuration']['threads'])
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     result['import_path'] = kumo.__file__
     result['torch_version'] = torch.__version__
     result['device'] = 'cpu'
@@ -80,16 +81,18 @@ try:
     stage('create_synthetic_data')
     data = root / 'data'
     data.mkdir()
-    rng = np.random.default_rng(0)
-    pd.DataFrame({'ID': np.arange(50)}).to_parquet(data / 'ents.parquet')
+    rng = np.random.default_rng(seed)
+    pd.DataFrame({
+        'ID': np.arange(num_entities)
+    }).to_parquet(data / 'ents.parquet')
     pd.DataFrame({
         'EID':
-        np.arange(3000),
+        np.arange(num_events),
         'ENT_ID':
-        rng.integers(0, 50, 3000),
+        rng.integers(0, num_entities, num_events),
         'TS':
-        pd.Timestamp('2024-01-01') +
-        pd.to_timedelta(rng.integers(0, 120, 3000), unit='D')
+        pd.Timestamp(fixture['start_time']) +
+        pd.to_timedelta(rng.integers(0, fixture['days'], num_events), unit='D')
     }).to_parquet(data / 'events.parquet')
     connector = kumo.FileConnector(root_dir=str(data))
     events = kumo.Table.from_source_table(
@@ -109,11 +112,14 @@ try:
     stats_path = snapshot.index_path / 'ingest_stats.json'
     stats = json.loads(stats_path.read_text())['stats']
     (evidence / 'ingest_stats.json').write_bytes(stats_path.read_bytes())
-    assert stats['total_nodes'] == 3050, stats
-    assert stats['total_edges'] == 6000, stats
-    assert stats['source_rows_by_table'] == {'ents': 50, 'events': 3000}, stats
+    assert stats['total_nodes'] == num_entities + num_events, stats
+    assert stats['total_edges'] == 2 * num_events, stats
+    assert stats['source_rows_by_table'] == {
+        'ents': num_entities,
+        'events': num_events
+    }, stats
     result['checks']['graph_counts_and_relationships'] = 'PASS'
-    query = 'PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH ents.ID'
+    query = fixture['query']
     pquery = kumo.PredictiveQuery(graph=graph, query=query)
     result['query'] = query
 
@@ -121,10 +127,12 @@ try:
     training_table = pquery.generate_training_table(snapshot)
     plan = ModelPlan()
     plan.training_job.disable_explain = True
-    plan.training_job.manual_seed = 0
+    plan.training_job.manual_seed = seed
     # These limits apply to each trial and refit, not to the whole search.
-    plan.optimization.max_epochs = 1
-    plan.optimization.max_steps_per_epoch = 2
+    plan.optimization.max_epochs = fixture['epochs']
+    plan.optimization.max_steps_per_epoch = fixture['steps_per_epoch']
+    (evidence / 'model-plan.json').write_text(
+        json.dumps(plan.as_json(), indent=2))
     trainer = kumo.Trainer(model_plan=plan)
 
     stage('training')
@@ -142,15 +150,16 @@ try:
 
     stage('prediction_table')
     prediction_table = pquery.generate_prediction_table(snapshot)
-    assert prediction_table.row_count == 50, prediction_table.row_count
+    assert prediction_table.row_count == num_entities, prediction_table.row_count
 
     stage('prediction')
-    random.seed(0)
-    np.random.seed(0)
-    torch.manual_seed(0)
-    predicted = trainer.predict(prediction_table, snapshot=snapshot,
-                                binary_classification_threshold=0.5)
-    assert predicted.num_rows == 50
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    predicted = trainer.predict(
+        prediction_table, snapshot=snapshot,
+        binary_classification_threshold=fixture['threshold'])
+    assert predicted.num_rows == num_entities
     before = predicted.frame.sort_values('ENTITY').reset_index(drop=True)
     before.to_parquet(evidence / 'predictions-before.parquet', index=False)
     result['checks']['prediction_execution'] = 'PASS'
@@ -159,31 +168,30 @@ try:
 
     stage('reload_and_predict')
     restored = kumo.Trainer.load(saved)
-    random.seed(0)
-    np.random.seed(0)
-    torch.manual_seed(0)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     after = restored.predict(
         prediction_table, snapshot=snapshot,
-        binary_classification_threshold=0.5).frame.sort_values(
+        binary_classification_threshold=fixture['threshold']).frame.sort_values(
             'ENTITY').reset_index(drop=True)
     after.to_parquet(evidence / 'predictions-after.parquet', index=False)
     for frame in (before, after):
         assert list(frame.columns) == [
             'ENTITY', 'TARGET_PRED', 'False_PROB', 'True_PROB'
         ], list(frame.columns)
-        assert len(frame) == 50 and frame['ENTITY'].is_unique
+        assert len(frame) == num_entities and frame['ENTITY'].is_unique
         assert frame['ENTITY'].tolist() == list(
-            range(50)), frame['ENTITY'].tolist()
+            range(num_entities)), frame['ENTITY'].tolist()
         probs = frame[['False_PROB', 'True_PROB']].to_numpy()
         assert np.isfinite(probs).all()
         assert ((probs >= 0) & (probs <= 1)).all()
-        np.testing.assert_allclose(probs.sum(axis=1), 1, atol=1e-6, rtol=1e-5)
+        np.testing.assert_allclose(probs.sum(axis=1), 1, **tolerance)
         np.testing.assert_array_equal(frame['TARGET_PRED'], frame['True_PROB']
-                                      > 0.5)
+                                      > fixture['threshold'])
     result['checks']['prediction_rows_and_values'] = 'PASS'
     np.testing.assert_allclose(before[['False_PROB', 'True_PROB']],
-                               after[['False_PROB',
-                                      'True_PROB']], atol=1e-6, rtol=1e-5)
+                               after[['False_PROB', 'True_PROB']], **tolerance)
     np.testing.assert_array_equal(before['TARGET_PRED'], after['TARGET_PRED'])
     result['max_reload_probability_difference'] = float(
         np.abs(before[['False_PROB', 'True_PROB']].to_numpy() -

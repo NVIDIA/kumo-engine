@@ -122,6 +122,122 @@ class WheelSmokeTest(unittest.TestCase):
         self.assertEqual(report['stage'], 'wheel_identity')
         self.assertIn('kumo-engine', report['error'])
 
+    def test_reference_mode_rejects_a_different_wheel_before_installation(self):
+        for version in ('1.2.3', '1.0.0'):
+            with self.subTest(version=version):
+                output = self.root / f'reference-evidence-{version}'
+                completed = subprocess.run([
+                    sys.executable,
+                    str(RUNNER),
+                    str(self.wheel(version=version)), '--reference',
+                    '--output-dir',
+                    str(output)
+                ], capture_output=True, text=True)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertTrue((output / 'summary.json').is_file(),
+                                completed.stderr)
+                report = json.loads((output / 'summary.json').read_text())
+                self.assertEqual(report['status'], 'FAIL')
+                self.assertEqual(report['stage'], 'reference')
+                self.assertIn('approved reference', report['error'])
+                self.assertFalse((output / 'install.log').exists())
+
+    def test_missing_or_invalid_requirements_are_rejected(self):
+        original = json.loads(self.runner.REQUIREMENTS.read_text())
+        invalid = [
+            ('fixture', 'seed', None),
+            ('fixture', 'entities', 0),
+            ('configuration', 'device', 'cuda'),
+            ('required_checks', None, []),
+            ('reference', 'dependencies', {}),
+        ]
+        for section, key, value in invalid:
+            with self.subTest(section=section, key=key):
+                requirements = json.loads(json.dumps(original))
+                if key is None:
+                    requirements[section] = value
+                elif value is None:
+                    del requirements[section][key]
+                else:
+                    requirements[section][key] = value
+                path = self.root / 'requirements.json'
+                path.write_text(json.dumps(requirements))
+                with self.assertRaises(ValueError):
+                    self.runner.load_requirements(path)
+
+    def test_reference_evidence_must_pass_and_have_an_exact_fingerprint(self):
+        original = json.loads(self.runner.REQUIREMENTS.read_text())
+        for section, field, value in [
+            ('evidence', 'status', 'FAIL'),
+            ('wheel', 'sha256', 'not-a-fingerprint'),
+        ]:
+            with self.subTest(field=field):
+                requirements = json.loads(json.dumps(original))
+                requirements['reference'][section][field] = value
+                path = self.root / 'requirements.json'
+                path.write_text(json.dumps(requirements))
+                with self.assertRaises(ValueError):
+                    self.runner.load_requirements(path)
+
+    def test_reference_dependency_versions_must_match_the_complete_report(self):
+        report = {
+            'install': [
+                {
+                    'metadata': {
+                        'name': 'kumo-engine',
+                        'version': '1.0.0'
+                    }
+                },
+                {
+                    'metadata': {
+                        'name': 'Some_Package',
+                        'version': '1.2.3'
+                    }
+                },
+            ]
+        }
+        self.runner.verify_reference_dependencies(report,
+                                                  {'some-package': '1.2.3'})
+        for expected in ({}, {
+                'some-package': '9.9.9'
+        }, {
+                'some-package': '1.2.3',
+                'missing': '1.0'
+        }):
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(ValueError, 'dependencies'):
+                    self.runner.verify_reference_dependencies(report, expected)
+
+    def test_missing_or_failed_workflow_checks_cannot_report_success(self):
+        self.runner.verify_workflow_result(
+            {
+                'status': 'PASS',
+                'checks': {
+                    'training': 'PASS'
+                }
+            }, ['training'])
+        for result in (
+            {
+                'status': 'FAIL',
+                'checks': {
+                    'training': 'PASS'
+                }
+            },
+            {
+                'status': 'PASS',
+                'checks': {}
+            },
+            {
+                'status': 'PASS',
+                'checks': {
+                    'training': 'FAIL'
+                }
+            },
+        ):
+            with self.subTest(result=result):
+                with self.assertRaises(ValueError):
+                    self.runner.verify_workflow_result(result, ['training'])
+
 
 if __name__ == '__main__':
     unittest.main()

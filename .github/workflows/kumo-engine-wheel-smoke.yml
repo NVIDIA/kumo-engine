@@ -14,15 +14,16 @@ on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing release to test without building or publishing.
+        description: Existing release to test; blank uses the approved reference.
         type: string
-        default: kumo-engine-v1.0.0
+        default: ''
   pull_request:
     paths:
       - .github/workflows/kumo-engine-wheel*.yml
       - packages/kumo-engine/scripts/smoke_wheel.py
       - packages/kumo-engine/scripts/check_pypi_requirements.py
       - tools/ci/kumo_engine_artifact_smoke.py
+      - tools/ci/kumo_engine_artifact_smoke.json
       - test/scripts/test_engine_wheel_smoke.py
       - docs/development/testing.md
 
@@ -69,18 +70,32 @@ jobs:
 
       # PR runs test the harness against a released wheel, not PR source code.
       - name: Download an existing release wheel
+        id: release
         if: ${{ inputs.wheel_artifact == '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag || 'kumo-engine-v1.0.0' }}
-        run: gh release download "$RELEASE_TAG" --pattern 'kumo_engine-*x86_64.whl' --dir dist
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          reference_tag="$(python -c 'import json; print("kumo-engine-v" + json.load(open("tools/ci/kumo_engine_artifact_smoke.json"))["reference"]["wheel"]["version"])')"
+          RELEASE_TAG="${RELEASE_TAG:-$reference_tag}"
+          gh release download "$RELEASE_TAG" --pattern 'kumo_engine-*x86_64.whl' --dir dist
+          if [[ "$RELEASE_TAG" == "$reference_tag" ]]; then
+            echo 'check_reference=true' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install, train, predict, and reload
         timeout-minutes: 17
         run: >-
           python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
           --output-dir "$RUNNER_TEMP/wheel-smoke"
+
+      - name: Verify the approved reference with fixed dependencies
+        if: ${{ steps.release.outputs.check_reference == 'true' }}
+        timeout-minutes: 17
+        run: >-
+          python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
+          --reference --output-dir "$RUNNER_TEMP/wheel-smoke-reference"
 
       - name: Preserve results and logs
         if: ${{ always() }}
@@ -89,6 +104,7 @@ jobs:
           name: kumo-engine-wheel-smoke-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/wheel-smoke/
+            ${{ runner.temp }}/wheel-smoke-reference/
             ${{ runner.temp }}/wheel-smoke-unit.log
           retention-days: 14
           if-no-files-found: warn
