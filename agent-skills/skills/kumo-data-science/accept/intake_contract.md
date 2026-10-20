@@ -53,7 +53,7 @@ Ask only if the request genuinely reads both ways.
 
 | Field | What it must include |
 |---|---|
-| **`source_scope`** | A connector name, **or** a Snowflake database + schema (warehouse optional), **or** a fully qualified semantic view (`DB.SCHEMA.VIEW`). This is where tables are enumerated; a semantic view contributes exactly its base tables, which must share one schema (`semantic_view.md`). Credentials are never requested in chat. |
+| **`source_scope`** | Where the tables live, in a form the active host accepts (`hosts/<host>/adapter.md`, *Source scope*): for example a database + schema, a dataset, a catalog + schema, a bucket prefix or a directory of files, or a connector name the host knows. On a host that supports them, a fully qualified semantic view (`DB.SCHEMA.VIEW`) contributes exactly its base tables, which must share one schema (`semantic_view.md`). This is where tables are enumerated. Credentials are never requested in chat. |
 | **`prediction_entity`** | What receives one prediction — "each account", "each customer". A physical table/key is welcome but not required; preflight resolves it. |
 | **`prediction_target`** | The observable outcome (classification/regression) or the positive interaction (link prediction), **stated by the user**. For classification this includes the positive-label condition — "at least one fraud event"; "predict fraud" alone leaves it missing. For link prediction and ranking it includes the **item** being recommended and the **interaction** that counts as positive — "spare-part families the customer ordered"; "recommend to customers" alone leaves both missing. |
 | **`time_window`** | Tri-state. `specified` ("next 30 days") → pass. `not_critical` → the task is static (no temporal component: static link prediction, static regression/classification) → pass, do not ask. `missing` → the task is temporal and no window was given → ASK BACK. Decide static vs. temporal with the test below. |
@@ -76,7 +76,7 @@ If the task is static, restate `Window: static` at the task gate and do not ask.
 may still be used as the graph's time column — that is structure, not a window.
 
 A request that names the dataset ("the e-commerce fraud dataset", a schema name) has supplied
-`source_scope` if that name resolves to a database and schema, or to a semantic view. Do not ask the user to restate a
+`source_scope` if that name resolves to a location the host accepts. Do not ask the user to restate a
 location they have already given in an earlier turn.
 
 ## `train` — inferred, then confirmed (never ask)
@@ -103,9 +103,11 @@ confirmed **before** any PQL is written.
 
 If the user supplies an `output_location`, carry it verbatim into the task interpretation gate
 and the generated artifact — the notebook's predict call writes there. If none is supplied,
-predictions stay local and the notebook shows how to add a destination. **The table is written with exactly the name passed** — no suffix,
-no case change (`hosts/snowflake-coco/runtime.md` §7, `kumoai-reference/references/kumo_finetuning_sdk.md`
-§9.1). Older SDK builds appended `_predictions`; the current one does not.
+predictions stay local and the notebook shows how to add a destination. The destination must be
+one the host can write (`hosts/<host>/adapter.md`, *Destinations*). **It is written with exactly
+the name passed** — no suffix, no case change (the host's `runtime.md`,
+`kumoai-reference/references/kumo_finetuning_sdk.md` §9.1). Older SDK builds appended
+`_predictions`; the current one does not.
 
 ---
 
@@ -148,7 +150,7 @@ What makes it good:
 > "Use my sales data to figure out which customers are risky."
 
 What is missing:
-- `source_scope`: "sales data" does not resolve to a database and schema ✗
+- `source_scope`: "sales data" does not resolve to a location ✗
 - `prediction_target`: "risky" is not an observable outcome ✗
 - `time_window`: `missing` for what reads as a temporal question ✗
 
@@ -167,7 +169,7 @@ about columns or values for the fields that *are* present — those are confirme
 `[inferred]`. Example:
 
 > "To proceed I need:
-> 1. **Where the data lives** — a Snowflake database and schema (or a connector name).
+> 1. **Where the data lives** — for example a database and schema, or a folder of files.
 > 2. **The prediction window** — e.g. 'in the next 30 days'."
 
 Ask only for missing, ambiguous, or contradictory inputs, restate the resolved contract, and never

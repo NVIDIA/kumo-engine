@@ -49,11 +49,14 @@ keys: edges and PQL reference the **source table names** — `Edge(src_table='Ra
 
 ---
 
-## Step 1: connect (Snowflake)
+## Step 1: connect
 
-**Setup and authentication are NOT documented here.** See `kumoai-reference/references/kumo_finetuning_sdk.md` §3.
+**Setup and authentication are NOT documented here.** The host's `runtime.md` says how the
+connector is built; the SDK facts are in `kumoai-reference/references/kumo_finetuning_sdk.md` §3
+(Snowflake) and §3.4 (`FileConnector`, `S3Connector`, `GCSConnector`, `BigQueryConnector`,
+`DatabricksConnector`). There is no backend and no identity registry.
 
-Build the connector directly from a factory — there is no backend and no identity registry:
+For Snowflake, build the connector from a factory:
 
 ```python
 connector = kumo.SnowflakeConnector.from_spcs_env(
@@ -70,8 +73,8 @@ connector reaches no tables. Take the Snowpark session once, before any connecto
 Never emit `kumo.init(...)` — hosted editions only, out of scope. Never construct
 `SnowflakeConnector` with `name=`, `account=` or `credentials=`; none is a parameter.
 
-Only `SnowflakeConnector` is relevant here. `S3Connector`, `BigQueryConnector`,
-`DatabricksConnector`, `GCSConnector` and `FileConnector` exist but are out of scope.
+Everything after this step — tables, graph, query, training, prediction — is the same for every
+connector.
 
 ### Accessing source tables
 
@@ -142,8 +145,8 @@ Inspect resolved types via the table definition:
    it only exists because of an edge. Inference sees one table at a time, so it judges an FK
    column on its values alone and calls it `numerical`. It is a key; say so with
    `.with_column('<fk>', stype=Stype.ID)` for every FK column in every table.
-2. **A time column must be a real date.** If the column is stored as `TEXT` in Snowflake the
-   catalog reports a string, and the table will not have a usable timeline. Declaring
+2. **A time column must be a real date.** If the column is stored as text in the source (a
+   Snowflake `TEXT`, a CSV string) the catalog reports a string, and the table will not have a usable timeline. Declaring
    `.with_column('<time_col>', dtype=Dtype.date)` is what makes staging cast it. Check the
    catalog dtype (section above) before assuming a `time_column=` argument is sufficient.
 
@@ -349,7 +352,7 @@ import kumo.engine as kumo
 from kumo.engine import Edge
 from kumoapi.typing import Dtype, Stype
 
-# `connector` is the SnowflakeConnector built per Step 1; the table names below are placeholders
+# `connector` is the connector built per Step 1; the table names below are placeholders
 # for tables that exist behind it.
 
 account_profile = kumo.Table.from_source_table(

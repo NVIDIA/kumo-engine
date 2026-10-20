@@ -9,7 +9,8 @@ wants it to score data. A training request never needs it. It adds to `SKILL.md`
 **`batch_inference` — required (ask if missing):**
 - `model_address` — the model the user names: a name or ID, a registry location with a version, or
   a retained local bundle directory
-- `output_location` — a Snowflake table; a connector plus a table name is complete
+- `output_location` — a destination the active host can write (`hosts/<host>/adapter.md`,
+  *Destinations*); a connector plus a table name is complete
 
 **`batch_inference` — resolved, never asked** (`accept/intake_contract.md`):
 - `source_scope`: a source the user named, else the connector named for this request, else the
@@ -31,7 +32,7 @@ the user already said, or defaulted — and shown at the gates for confirmation.
 | Field | What it must include |
 |---|---|
 | **`model_address`** | The model the user names, in their words: a model name or ID ("trainingjob-benchmark-001", "the benchmark model"), a registry location with a version, or a retained local bundle directory |
-| **`output_location`** | Where scores are written: a Snowflake table. A connector plus a table name ("connector `benchmark_sf`, table `MODEL_SCORES`") is complete, because the connector supplies the database and schema. A fully qualified `DB.SCHEMA.TABLE` is also complete. |
+| **`output_location`** | Where scores are written, in a form the active host can write (`hosts/<host>/adapter.md`, *Destinations*). A connector plus a table name ("connector `benchmark_sf`, table `MODEL_SCORES`") is complete, because the connector supplies the database and schema. A fully qualified table (`DB.SCHEMA.TABLE`), or a path on a host that writes files, is also complete. |
 
 Both pass the quote test through earlier turns too. "Run the benchmark model again and put the
 preds in the scores table", after a turn that named the model and the table, supplies both.
@@ -41,7 +42,7 @@ preds in the scores table", after a turn that named the model and the table, sup
 | Field | How it is obtained | Shown as |
 |---|---|---|
 | **task** — entity, outcome, window, task type | Reused from the model unchanged. Never reopened. | restated at 1d |
-| **`source_scope`** | In order: a source the user named → the connector the user named for this request (one Snowflake connector reads the source and writes the scores unless the user separates them) → the source scope recorded with the model at publication. Ask only if none of the three exists. | `[supplied]` / `[inferred]` at 1c |
+| **`source_scope`** | In order: a source the user named → the connector the user named for this request (one connector reads the source and writes the scores unless the user separates them) → the source scope recorded with the model at publication. Ask only if none of the three exists. | `[supplied]` / `[inferred]` at 1c |
 | **graph** | Rebuilt from the model's recorded graph definition inside `source_scope`, then confirmed | `[inferred]` at 1c |
 | **`scoring_population`** | Default: every entity of the trained entity table, anchored at the latest timestamp in the rebuilt snapshot ("current predictions"). A static task has no anchor. If the user names a subset or an anchor date, use theirs. | `[default]` / `[supplied]` at 1d |
 | **model version** | The version the user named. If the address resolves to more than one version and none was named, ask which one. Never pick the latest yourself. | `[supplied]` at 1d |
@@ -62,7 +63,7 @@ tagged, so the user can correct it at confirmation.
 | Condition | Response |
 |---|---|
 | `model_address` does not resolve in the registry or as a bundle directory, or the user calls it rejected/invalid | Name it as unusable and ask for a corrected model identifier. Do not guess a similarly named model. |
-| `output_location` is not a Snowflake table (an `s3://`, `gs://` or file path) | Name it as unusable here, since scores are written to Snowflake tables, and ask for a Snowflake destination. Do not silently swap in another one. |
+| `output_location` is a kind the host cannot write (the adapter's *Destinations* lists what it can) | Name it as unusable here, say what the host writes instead, and ask for such a destination. Do not silently swap in another one. |
 
 When one field is invalid and the other is valid, ask only about the invalid one. When one is
 missing and the other is present, ask only for the missing one. Do not also list the resolved
@@ -71,7 +72,7 @@ fields as questions.
 | Condition | Transition |
 |---|---|
 | `batch_inference`: `model_address` does not resolve, or the user calls it rejected | ASK BACK — name it as unusable, ask for a corrected identifier; do not guess |
-| `batch_inference`: `output_location` is not a Snowflake table (`s3://`, file path) | ASK BACK — name it as unusable, ask for a Snowflake destination; do not substitute |
+| `batch_inference`: `output_location` is a kind the host cannot write | ASK BACK — name it as unusable, ask for a destination the host writes; do not substitute |
 
 ## Node 1c — rebuilt graph
 
@@ -148,10 +149,12 @@ With "…export the entity and target-item embeddings" added, the gate also carr
   accounts at the latest snapshot timestamp, the default), and the task. The task is never
   reopened.
 
-> "Where should the scores be written? A Snowflake table, e.g. a connector plus a table name, or
+> "Where should the scores be written? For example a connector plus a table name, or
 > `DB.SCHEMA.TABLE`."
 
 ### Destination unusable → ASK BACK
+
+On a host whose *Destinations* are Snowflake tables only:
 
 > "Score with `trainingjob-abc123` and write predictions to `s3://tmp/scores`."
 
