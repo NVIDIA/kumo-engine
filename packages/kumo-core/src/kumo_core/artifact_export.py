@@ -139,6 +139,11 @@ def _renderable(column: "pd.Series") -> bool:
             or pa.types.is_fixed_size_list(arrow))
 
 
+def content_sha256(part_digests) -> str:
+    """Digest of an export's parts from their sha256 hex digests, any order."""
+    return hashlib.sha256(''.join(sorted(part_digests)).encode()).hexdigest()
+
+
 class ArtifactDestinationConflict(ValueError):
     """A directory belongs to another export."""
 
