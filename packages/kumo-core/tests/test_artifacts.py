@@ -15,7 +15,9 @@ from kumo_core.artifacts import (
     FilesystemVitalArtifactPublisher,
     VitalArtifactPublicationPolicy,
     VitalArtifactSources,
+    add_bundle_file,
     resolve_vital_artifact_sources,
+    verify_model_bundle,
 )
 from kumo_core.config import NativeRuntimeConfig
 from kumo_core.manifest import RunManifest, RunPaths
@@ -237,3 +239,43 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path, refit) -> None:
     assert sources.selected_checkpoint == checkpoints[selected_mode]
     assert sources.graph_manifest == bundle / "graph.json"
     assert json.loads(sources.metrics.read_text()) == {"test_accuracy": 0.8}
+
+
+def test_bundle_id_covers_listed_files_except_provenance(
+        tmp_path: Path) -> None:
+    sources, _ = _vital_sources(tmp_path)
+    bundle = tmp_path / "bundle"
+    VitalArtifactPublicationPolicy().publish(sources, bundle)
+    (bundle / "training-spec.json").write_text("{}")
+    entries = json.loads(
+        (bundle / "publication-manifest.json").read_text())["artifacts"]
+    pairs = sorted([entry["relative_path"], entry["sha256"]]
+                   for entry in entries)
+    pairs = sorted(pairs + [[
+        "training-spec.json",
+        hashlib.sha256(b"{}").hexdigest(),
+    ]])
+    expected = hashlib.sha256(
+        json.dumps(pairs, separators=(",", ":")).encode()).hexdigest()
+
+    assert verify_model_bundle(bundle) == expected
+    add_bundle_file(bundle, "training_spec", "training-spec.json")
+    assert verify_model_bundle(bundle) == expected
+
+    (bundle / "provenance.json").write_text('{"a": 1}')
+    add_bundle_file(bundle, "provenance", "provenance.json")
+    assert verify_model_bundle(bundle) == expected
+    (bundle / "provenance.json").write_text('{"a": 2}')
+    with pytest.raises(ValueError, match="provenance.json"):
+        verify_model_bundle(bundle)
+    add_bundle_file(bundle, "provenance", "provenance.json")
+    assert verify_model_bundle(bundle) == expected
+
+    roles = [
+        entry["role"] for entry in json.loads(
+            (bundle / "publication-manifest.json").read_text())["artifacts"]
+    ]
+    assert roles.count("provenance") == 1
+    (bundle / "metrics.json").write_text('{"auc": 0}')
+    add_bundle_file(bundle, "metrics", "metrics.json")
+    assert verify_model_bundle(bundle) != expected
