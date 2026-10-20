@@ -395,6 +395,9 @@ class RuntimeIndex:
         * ``{"users": ["a", "b"]}`` -- materialize exactly those, intersected
           with what the snapshot actually stores.
 
+        Explicit ``fused=True`` ignores non-empty projections with a warning.
+        With ``fused=None``, non-empty projections select non-fused sampling.
+
         Was named ``feature_columns``, under which ``[]`` meant select-all. The
         rename is deliberate and unaliased: the two signatures are otherwise
         identical, so the parameter NAME is the only thing that makes a new

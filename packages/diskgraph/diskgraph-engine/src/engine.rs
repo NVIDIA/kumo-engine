@@ -903,10 +903,9 @@ impl DiskGraphEngine {
     ///
     /// PROJECTION PUSHDOWN IS NON-FUSED ONLY. Fused-mode dispatch always
     /// fetches every non-reserved column and never consults a
-    /// `ResolvedProjection`. `RuntimeBatchIterator::build` enforces this by
-    /// forcing non-fused dispatch whenever the caller supplies a non-empty
-    /// projection, rather than silently returning all columns from a
-    /// heuristically-chosen fused path.
+    /// `ResolvedProjection`. `RuntimeBatchIterator::build` warns and ignores
+    /// projections for explicit fused mode. With automatic mode selection,
+    /// a non-empty projection forces non-fused dispatch.
     ///
     /// `projections` is a map from node type name to the columns the
     /// caller will consume. Its states, and ONLY these:
@@ -1324,22 +1323,12 @@ impl DiskGraphEngine {
         // behavior, which is exactly what the Rust integration tests want.
         let projection = projection
             .unwrap_or_else(|| Arc::new(self.resolve_projection(&HashMap::new())));
-        // Projection pushdown is non-fused only (see `resolve_projection`'s doc
-        // comment). `RuntimeBatchIterator::build` is the ONLY place that
-        // enforces that today, by rejecting/forcing the mode before it ever
-        // reaches here -- this engine entry point has no way to reject the
-        // combination without breaking direct callers that intentionally rely
-        // on fused ignoring a projection (see
-        // `test_feature_projection_fused_mode_ignores_projection`). Log it so
-        // the silent full-column fallback is at least diagnosable.
+        // Direct engine callers can bypass the iterator's projection handling.
         if flags.fused_feature_fetching && !projection.is_trivial() {
             warn!(
                 "sample_runtime_batch called with fused=true AND a non-trivial \
                  feature projection; fused dispatch does not consult the \
-                 projection and will fetch every non-reserved column. This \
-                 combination is normally rejected at the pybind boundary \
-                 (RuntimeBatchIterator::build) -- a caller that reached here \
-                 directly bypassed that guard."
+                 projection and will fetch every non-reserved column."
             );
         }
 
