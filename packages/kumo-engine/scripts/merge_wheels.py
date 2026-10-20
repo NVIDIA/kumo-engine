@@ -49,7 +49,7 @@ DEV_EXTRAS = {'test'}
 NEVER_BUNDLED = {'kumo-glove-6b-50d'}
 # Headers copied from kumo-engine's own metadata so the bundle's PyPI page is
 # kumo-engine's.
-PASSTHROUGH_HEADERS = ('Summary', 'Keywords', 'Author-email',
+PASSTHROUGH_HEADERS = ('Summary', 'Keywords', 'Author', 'Author-email',
                        'Description-Content-Type', 'Classifier', 'Project-URL')
 
 
