@@ -114,6 +114,8 @@ def withBigQueryCredentials(func: Optional[Callable] = None,
 
     def decorator(inner_func: Callable):
         def _setup():
+            if os.getenv('KUMO_RUN_GCP_TESTS') == '0':
+                pytest.skip('GCP integration tests are disabled')
             setup_bigquery_credentials(service_account_key)
             if (not os.getenv(ENV_GOOGLE_CREDENTIALS_JSON) and
                     not os.path.exists(ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH)):

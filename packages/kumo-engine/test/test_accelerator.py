@@ -29,8 +29,9 @@ def test_accelerator_defaults_to_auto_and_is_instance_local(monkeypatch):
 
 def test_cpu_fit_refit_reload_and_predict_override_environment(
         tmp_path, monkeypatch):
-    import kumo.engine as kumo
     from kumo_core.train.trainer import Trainer as CoreTrainer
+
+    import kumo.engine as kumo
 
     devices = []
     original = CoreTrainer.create_pl_trainer

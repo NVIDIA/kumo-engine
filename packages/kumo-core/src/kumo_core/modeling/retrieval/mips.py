@@ -6,6 +6,7 @@ import warnings
 from abc import ABC, abstractmethod
 
 import faiss
+import faiss.contrib.torch_utils
 import torch
 from torch import Tensor
 from torch_geometric.utils import scatter
@@ -141,8 +142,6 @@ class MIPSFaiss(MIPSStructure):
         if sys.platform == 'darwin' and self.device.type == 'cpu':
             self._cpu_index = MIPSBruteForce(self._key)
             return
-
-        import faiss.contrib.torch_utils
 
         if self._key.is_cuda:
             self._res = faiss.StandardGpuResources()

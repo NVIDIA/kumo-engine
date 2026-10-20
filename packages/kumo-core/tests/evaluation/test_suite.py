@@ -153,7 +153,10 @@ def test_large_classification_metrics(
             metric.update(batch_pred.to(device), batch_target.to(device))
 
         metric = store.get_metric_collection(stage)
+        assert isinstance(metric, torchmetrics.MetricCollection)
         for member in metric.values(copy_state=False):
+            assert isinstance(
+                member, torchmetrics.classification.BinaryPrecisionRecallCurve)
             assert member.compute_on_cpu == (device == 'mps')
             assert member.preds[0].device.type == (
                 'cpu' if device == 'mps' else device)
