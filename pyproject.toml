@@ -68,11 +68,17 @@ name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cpu", group = "public-tests" },
   { index = "pytorch-cu130", extra = "cu130" },
+  { index = "pytorch-cu132", extra = "cu132" },
 ]
 kumo-api = { workspace = true }
 kumo-pql = { workspace = true }
@@ -87,7 +93,7 @@ kumo-glove-6b-50d = { workspace = true }
 
 [tool.uv]
 # Exactly one torch build per environment.
-conflicts = [[{ extra = "cpu" }, { extra = "cu130" }, { group = "public-tests" }]]
+conflicts = [[{ extra = "cpu" }, { extra = "cu130" }, { extra = "cu132" }, { group = "public-tests" }]]
 # Delay newly uploaded artifacts long enough for compromised releases to be
 # detected or yanked before local and CI installs resolve them.
 exclude-newer = "7 days"

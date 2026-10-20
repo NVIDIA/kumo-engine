@@ -185,6 +185,13 @@ def resolve_python_requirement(components):
     if not compatible:
         fail('bundled Requires-Python constraints allow no common stable '
              'CPython 3 version:\n    ' + '\n    '.join(constraints))
+    minimums = [specifier for specifier in combined
+                if specifier.operator == '>=']
+    if minimums:
+        strongest = max(minimums, key=lambda specifier: Version(specifier.version))
+        combined = SpecifierSet(','.join(
+            str(specifier) for specifier in combined
+            if specifier.operator != '>=' or specifier == strongest))
     log(f'combined Requires-Python: {combined}')
     return str(combined), compatible[0].release[1]
 
@@ -420,16 +427,6 @@ def main():
             entry_points.write(handle)
 
     description = engine['message'].get_payload() or ''
-    description = description.rstrip() + '\n\n' if description else ''
-    description += '\n'.join([
-        '## Bundled distributions',
-        '',
-        *(f"- {c['name']} {c['version']}  ({c['origin']})" for c in components),
-        '',
-        "Assembled by scripts/build_wheel.sh. The bundled distributions' own "
-        'metadata is not installed, so `importlib.metadata.version("kumo-core")` '
-        'will not resolve; see kumo_bundle_manifest.json for what is inside.',
-    ])
     metadata = [
         # 2.4 is what defines License-File.
         'Metadata-Version: 2.4',
