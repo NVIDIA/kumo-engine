@@ -504,7 +504,7 @@ jobs:
     # package boundary (a reader package may not import the monolith, may not
     # import a foreign vendor SDK, and must stay cheap to import at top level).
     # The repository's primary interpreter runs every package suite and
-    # consumer check. The separately-built fat wheel targets Python 3.12.
+    # consumer check.
     needs: [diskgraph-wheel]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
