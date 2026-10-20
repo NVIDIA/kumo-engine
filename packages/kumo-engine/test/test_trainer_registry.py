@@ -210,13 +210,13 @@ def test_finish_fit_persists_spec_without_export_before_exposing_state(
     trainer = Trainer(ModelPlan())
     result = TrainingResult({'auc': .9}, {}, bundle)
 
-    assert trainer._finish_fit(result, predictive_query='PREDICT COUNT(*)',
-                               snapshot_id='snap-123',
-                               training_table_generation=_generation_plan(),
-                               export_config=None) is result
+    finished = trainer._finish_fit(
+        result, predictive_query='PREDICT COUNT(*)', snapshot_id='snap-123',
+        training_table_generation=_generation_plan(), export_config=None)
 
     assert (bundle / SPEC_FILE).is_file()
-    assert trainer._training_result is result
+    assert finished.bundle_id == Trainer.load(bundle).bundle_id
+    assert trainer._training_result is finished
     assert trainer._snapshot_id == 'snap-123'
     assert trainer._training_query == 'PREDICT COUNT(*)'
     assert result.published_model is None

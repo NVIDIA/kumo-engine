@@ -9,11 +9,10 @@ manifest integrity-covers the spec. Graph storage and source data remain
 separate and must be supplied through a compatible prediction snapshot.
 """
 
-import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 from kumo_core.io.filesystem import atomic_write_bytes
 from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
@@ -23,10 +22,10 @@ SPEC_FILE = 'training-spec.json'
 SPEC_VERSION = 1
 
 #: What `kumo_core`'s `VitalArtifactPublicationPolicy` names its own
-#: manifest. `write_training_spec` amends this file's `artifacts` list so
-#: `training-spec.json` is covered the same way every other bundle file is.
+#: manifest; `training-spec.json` is listed in it like every other file.
 MANIFEST_FILE = 'publication-manifest.json'
 SPEC_ROLE = 'training_spec'
+PROVENANCE_ROLE = 'provenance'
 
 
 @dataclass(frozen=True)
@@ -45,12 +44,6 @@ class TrainingSpec:
     training_table_generation: Dict[str, Any]
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    digest.update(path.read_bytes())
-    return digest.hexdigest()
-
-
 def write_training_spec(
     bundle_dir: Path,
     *,
@@ -60,6 +53,7 @@ def write_training_spec(
     training_table_generation: TrainingTableGenerationPlan,
 ) -> None:
     r"""Write an integrity-covered training spec into a completed bundle."""
+    from kumo_core.artifacts import add_bundle_file
     from kumo_core.io.json import to_json_dict
 
     spec = TrainingSpec(
@@ -75,23 +69,7 @@ def write_training_spec(
         (json.dumps(asdict(spec), indent=2, sort_keys=True) +
          '\n').encode('utf-8'),
     )
-
-    manifest_path = bundle_dir / MANIFEST_FILE
-    with open(manifest_path, encoding='utf-8') as handle:
-        manifest = json.load(handle)
-    manifest['artifacts'] = [
-        entry for entry in manifest.get('artifacts') or []
-        if entry.get('relative_path') != SPEC_FILE
-    ] + [{
-        'role': SPEC_ROLE,
-        'relative_path': SPEC_FILE,
-        'size_bytes': spec_path.stat().st_size,
-        'sha256': _sha256(spec_path),
-    }]
-    atomic_write_bytes(
-        manifest_path,
-        (json.dumps(manifest, indent=2, sort_keys=True) + '\n').encode('utf-8'),
-    )
+    add_bundle_file(bundle_dir, SPEC_ROLE, SPEC_FILE)
 
 
 def read_training_spec(bundle_dir: Path) -> TrainingSpec:
@@ -125,11 +103,12 @@ def read_training_spec(bundle_dir: Path) -> TrainingSpec:
     )
 
 
-def read_bundle_artifact_paths(bundle_dir: Path) -> Dict[str, str]:
-    r"""Rebuild the verified ``role -> path`` artifact mapping."""
+def read_bundle_artifact_paths(
+        bundle_dir: Path) -> Tuple[Dict[str, str], str]:
+    r"""Rebuild the verified ``role -> path`` mapping and the bundle id."""
     from kumo_core.artifacts import verify_model_bundle
 
-    verify_model_bundle(bundle_dir)
+    bundle_id = verify_model_bundle(bundle_dir)
     manifest_path = bundle_dir / MANIFEST_FILE
     if not manifest_path.is_file():
         raise ValueError(
@@ -150,5 +129,5 @@ def read_bundle_artifact_paths(bundle_dir: Path) -> Dict[str, str]:
     return {
         entry['role']: str(bundle_dir / entry['relative_path'])
         for entry in artifacts
-        if entry['role'] != SPEC_ROLE
-    }
+        if entry['role'] not in (SPEC_ROLE, PROVENANCE_ROLE)
+    }, bundle_id
