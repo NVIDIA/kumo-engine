@@ -70,6 +70,23 @@ Run the runner tests without engine dependencies:
 python3.12 -m unittest discover -s test/scripts -p test_engine_wheel_smoke.py
 ```
 
+Add `--learning` to train two fresh models per seed on the same installed wheel.
+One case has a known relationship. The other keeps the graph but uses independent random labels.
+Both use seeds `0–4`, 1,200 training rows, 400 validation rows, and 400 evaluation rows.
+Evaluation rows stay out of training. The target column stays out of model features.
+
+AUROC measures ranking quality. Constant scores give `0.50`.
+Provisional limits require mean AUROC of at least `0.75` for learnable labels
+and `0.45–0.55` for independent labels. These limits need release-owner approval.
+This option does not change release gates. It does not compare a candidate with a quality reference yet.
+Results under `learning/` include every score, split, probability, model plan, dependency version, and source fingerprint.
+
+Run the learning unit tests in an environment with pandas, NumPy, and scikit-learn:
+
+```bash
+python3.12 -m unittest discover -s test/scripts -p test_engine_wheel_learning.py
+```
+
 ## Report evidence
 
 Record the command, environment, result, and any untested dependency. Keep

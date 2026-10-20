@@ -150,6 +150,20 @@ class WheelSmokeTest(unittest.TestCase):
         self.assertEqual(report['stage'], 'wheel_identity')
         self.assertIn('kumo-engine', report['error'])
 
+    def test_learning_keeps_the_wheel_identity_guard(self):
+        output = self.root / 'learning-evidence'
+        completed = subprocess.run([
+            sys.executable,
+            str(RUNNER),
+            str(self.wheel(name='wrong')), '--learning', '--output-dir',
+            str(output)
+        ], capture_output=True, text=True)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertTrue((output / 'summary.json').is_file(), completed.stderr)
+        result = json.loads((output / 'summary.json').read_text())
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertEqual(result['stage'], 'wheel_identity')
+
     def test_reference_mode_rejects_a_different_wheel_before_installation(self):
         reference_name = json.loads(self.runner.REQUIREMENTS.read_text()
                                     )['reference']['wheel']['filename']

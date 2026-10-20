@@ -141,6 +141,8 @@ def run_command(command, cwd, log, timeout=60):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('wheel', type=Path)
+    parser.add_argument('--learning', action='store_true',
+                        help='Also run provisional paired learning checks')
     parser.add_argument(
         '--reference', action='store_true',
         help='Require the approved reference wheel and dependency versions')
@@ -228,6 +230,16 @@ def main():
             ], root, timeout=300)
             result = json.loads((output / 'workflow-result.json').read_text())
             verify_workflow_result(result, requirements['required_checks'])
+            if args.learning:
+                learning = root / 'wheel_learning.py'
+                shutil.copyfile(REQUIREMENTS.with_name('wheel_learning.py'),
+                                learning)
+                run('learning', [
+                    python, '-I',
+                    str(learning), '--version', identity['version'],
+                    '--output-dir',
+                    str(output / 'learning')
+                ], root, timeout=1200)
         summary.update(status='PASS', stage='complete')
     except Exception as exc:
         summary.update(status='FAIL', error=f'{type(exc).__name__}: {exc}')
