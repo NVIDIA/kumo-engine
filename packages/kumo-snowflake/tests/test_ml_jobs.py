@@ -2168,3 +2168,36 @@ def test_stage_name_rejects_empty_segments_and_bounds_input() -> None:
         validate_stage_name(f'{STAGE}//models')
     with pytest.raises(ValueError, match='fully-qualified'):
         validate_stage_name(f'{STAGE}/' + 'a' * 4096)
+
+
+@pytest.mark.parametrize('missing', [None, 'package', 'component', 'requirement'])
+def test_engine_bundle_validation(tmp_path: Path, missing: str | None) -> None:
+    path = tmp_path / 'kumo_engine-1.0.0-cp311-abi3-linux_x86_64.whl'
+    components = [
+        'kumo-engine', 'kumo-core', 'kumo-pql', 'kumo-snowflake',
+        'diskgraph', 'torch-geometric',
+    ]
+    if missing == 'component':
+        components.remove('diskgraph')
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('kumo/engine/__init__.py', '')
+        archive.writestr('kumo_core/__init__.py', '')
+        if missing != 'package':
+            archive.writestr('kumo_snowflake/__init__.py', '')
+        archive.writestr('kumo_bundle_manifest.json', json.dumps({
+            'bundle': {'name': 'kumo-engine'},
+            'components': [{'name': name} for name in components],
+            'requires': ([] if missing == 'requirement'
+                         else ['pytorch-frame==0.3.0']),
+            'extras': {'snowflake': ['snowflake-ml-python>=1.51,<2']},
+        }))
+    if missing is None:
+        assert validate_wheel(path).path == path
+    else:
+        expected = {
+            'package': 'not self-contained',
+            'component': 'missing required fat-wheel components',
+            'requirement': 'missing required runtime dependencies',
+        }[missing]
+        with pytest.raises(RuntimeError, match=expected):
+            validate_wheel(path)

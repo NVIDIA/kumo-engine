@@ -98,7 +98,7 @@ prediction_job.attach().raise_for_failure()
 ```
 
 The helper preflights the GPU pool and internal stage, discovers the installed
-Kumo fat wheel, verifies its bundle manifest and declared installation
+Kumo engine wheel (or legacy fat bundle), verifies its manifest and installation
 requirements, stages it by content digest, and asks Snowflake ML Jobs to
 install exactly that wheel. Normal `Requires-Dist` dependencies are resolved
 by the remote environment; pass `artifact_repositories=` when they must come

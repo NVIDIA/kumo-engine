@@ -38,6 +38,11 @@ _REQUIRED_COMPONENTS = frozenset({
     'torch-geometric',
     'torch-scatter',
 })
+_ENGINE_PACKAGES = ('kumo/engine/', 'kumo_core/', 'kumo_snowflake/')
+_ENGINE_COMPONENTS = frozenset({
+    'diskgraph', 'kumo-engine', 'kumo-core', 'kumo-pql',
+    'kumo-snowflake', 'torch-geometric',
+})
 _REQUIRED_RUNTIME_REQUIREMENTS = frozenset({'pytorch-frame==0.3.0'})
 _WHEEL_NAME = re.compile(r'[A-Za-z0-9_.+-]+\.whl')
 
@@ -87,7 +92,7 @@ def discover_installed_wheel() -> InstalledWheel:
 
     Reconstructing a wheel from installed files would be a second build path.
     The supported contract therefore requires pip's PEP 610 provenance to
-    point at the original wheel produced by ``build_fat_wheel.sh``.
+    point at the original wheel produced by the engine wheel builder.
     """
     candidates: list[tuple[Path, str | None]] = []
     for distribution in importlib.metadata.distributions():
@@ -109,8 +114,8 @@ def discover_installed_wheel() -> InstalledWheel:
     if len(candidates) != 1:
         raise RuntimeError(
             'submit_ml_job requires Kumo to be installed from one '
-            'retained Kumo fat wheel produced by '
-            'packages/scripts/build_fat_wheel.sh; found '
+            'retained Kumo wheel produced by '
+            'packages/kumo-engine/scripts/build_wheel.sh; found '
             f'{len(candidates)} candidate wheels')
     return validate_wheel(*candidates[0])
 
@@ -146,8 +151,12 @@ def validate_wheel(path: Path,
         with open(path, 'rb', buffering=_READ_BUFFER_BYTES) as wheel_handle:
             with zipfile.ZipFile(wheel_handle) as archive:
                 names = archive.namelist()
+                engine_wheel = any(name.startswith('kumo/engine/')
+                                   for name in names)
+                required_packages = (_ENGINE_PACKAGES if engine_wheel
+                                     else _REQUIRED_PACKAGES)
                 missing_packages = [
-                    prefix for prefix in _REQUIRED_PACKAGES
+                    prefix for prefix in required_packages
                     if not any(name.startswith(prefix) for name in names)
                 ]
                 if missing_packages:
@@ -167,12 +176,15 @@ def validate_wheel(path: Path,
         _canonical_distribution_name(component.get('name', ''))
         for component in components if isinstance(component, dict)
     }
-    missing_components = sorted(_REQUIRED_COMPONENTS - component_names)
+    required_components = (_ENGINE_COMPONENTS if engine_wheel
+                           else _REQUIRED_COMPONENTS)
+    missing_components = sorted(required_components - component_names)
     if missing_components:
         raise RuntimeError(
             f'{path.name} is missing required fat-wheel components '
             f'{missing_components!r}')
-    requirements = manifest.get('requires_at_install')
+    requirements = manifest.get('requires' if engine_wheel
+                                else 'requires_at_install')
     if not isinstance(requirements, list) or not all(
             isinstance(requirement, str) for requirement in requirements):
         raise RuntimeError(

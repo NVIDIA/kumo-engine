@@ -98,7 +98,7 @@ def _load_jobs_api() -> Any:
     except ImportError as error:
         raise SnowflakeMLJobConfigurationError(
             'Snowflake ML Jobs requires snowflake-ml-python >= 1.51,<2; install '
-            'the kumoai[snowflake] runtime') from error
+            'the kumo-engine[snowflake] runtime') from error
     return jobs
 
 
