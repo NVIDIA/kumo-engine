@@ -70,8 +70,8 @@ gcs=[
 kumo-engine = "kumo_engine_version:installed_version"
 
 [project.urls]
-homepage="https://kumo.ai"
-documentation="https://kumo.ai/docs"
+homepage="https://github.com/NVIDIA/kumo-engine"
+documentation="https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview"
 
 [tool.uv.sources]
 kumo-core = { workspace = true }

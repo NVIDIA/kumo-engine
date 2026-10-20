@@ -41,7 +41,8 @@ wheel's `Requires-Python` and writes their intersection into the final wheel.
 Stricter minimums, upper bounds, and exclusions are retained; incompatible
 constraints fail the build. Constraints are also recorded in
 `kumo_bundle_manifest.json`. Native ABI tags are checked against the resulting
-Python minimum.
+Python minimum. Redundant `>=` bounds are collapsed to the strongest minimum
+so PyPI shows `>=3.11` rather than `>=3.10,>=3.11`.
 
 `scripts/build_fat_wheel.sh` and its manual workflow, *Kumo SDK - Build fat
 wheel*, are unchanged: they still build the date-stamped `kumo-fat-bundle`

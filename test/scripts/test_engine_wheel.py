@@ -9,6 +9,7 @@ import sys
 import zipfile
 from email.parser import BytesParser
 from pathlib import Path
+from typing import cast
 from zipfile import ZipFile
 
 import pytest
@@ -245,6 +246,7 @@ def test_provider_dependencies_only_come_with_their_extra(tmp_path, providers):
     assert metadata['Requires-Python'] == '>=3.11'
     assert metadata['Name'] == 'kumo-engine'
     assert metadata['Metadata-Version'] == '2.4'
+    assert metadata.get_payload().rstrip() == 'README body'
 
 
 def test_core_packages_and_shared_license_are_bundled(tmp_path):
@@ -334,6 +336,30 @@ def test_merged_python_requirement_intersects_all_components(
                 for component in manifest['components']}
     assert recorded['kumo-core'] == core_python
     assert recorded['kumo-pql'] == pql_python
+
+
+@pytest.mark.parametrize(('component_python', 'expected'), [
+    ('>=3.10', '>=3.11'),
+    ('>=3.12', '>=3.12'),
+    ('>=3.11.4,<3.14,!=3.12.*', '!=3.12.*,<3.14,>=3.11.4'),
+])
+def test_merged_python_requirement_removes_weaker_minimums(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        component_python: str, expected: str) -> None:
+    """Keep the strongest minimum and all upper bounds and exclusions."""
+    component = cast(dict[str, object], COMPONENTS['kumo-core'])
+    monkeypatch.setitem(COMPONENTS, 'kumo-core',
+                        dict(component, python=component_python))
+
+    result = _merge(tmp_path, CORE_COMPONENTS)
+
+    assert result.returncode == 0, result.stderr
+    metadata, manifest, _ = _read_wheel(tmp_path)
+    assert metadata['Requires-Python'] == expected
+    assert manifest['bundle']['requires_python'] == expected
+    recorded = {component['name']: component['requires_python']
+                for component in manifest['components']}
+    assert recorded['kumo-core'] == component_python
 
 
 @pytest.mark.parametrize(('core_python', 'pql_python', 'error'), [
