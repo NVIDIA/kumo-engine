@@ -61,11 +61,12 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 """
 
 import json
+import os
 import warnings
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
@@ -86,6 +87,7 @@ from kumo.engine._scratch import (
     snapshot_scratch_dir,
 )
 from kumo.engine._storage import network_storage
+from kumo.engine.connector.base import Connector
 from kumo.engine.table import Table
 
 SNAPSHOT_MANIFEST_FILE = 'snapshot-manifest.json'
@@ -203,6 +205,42 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
             )
 
 
+def _store() -> Any:
+    from kumo_core.diskgraph.snapshot import (
+        DiskgraphLocalConfig,
+        LocalSnapshotStore,
+    )
+
+    return LocalSnapshotStore(
+        DiskgraphLocalConfig(data_root=str(get_scratch_dir() / 'snapshots')))
+
+
+def _lock(graph_key: str) -> Any:
+    from filelock import FileLock
+
+    persist_dir = snapshot_scratch_dir(graph_key) / 'source_tables'
+    persist_dir.parent.mkdir(parents=True, exist_ok=True)
+    return FileLock(f'{persist_dir}.lock')
+
+
+def _loaded(path: str) -> Optional[Any]:
+    r"""The index a previous load left intact at `path`, if any."""
+    from diskgraph import DiskgraphCorruptionError, verify_snapshot_integrity
+    from kumo_core.diskgraph.snapshot import check_diskgraph_output
+
+    marker = check_diskgraph_output(path)
+    if marker is None or (os.path.realpath(marker.index_path)
+                          != os.path.realpath(path)):
+        return None
+    try:
+        verify_snapshot_integrity(path)
+    except DiskgraphCorruptionError as error:
+        warnings.warn(f"Reloading the damaged graph index at {path}: {error}",
+                      UserWarning, stacklevel=3)
+        return None
+    return marker
+
+
 @dataclass(frozen=True)
 class GraphSnapshot:
     r"""The materialized artifact produced by `Graph.snapshot()`: an on-disk
@@ -237,6 +275,46 @@ class GraphSnapshot:
     index_path: Path
     graph_config: Dict[str, Any]
     record_sources: bool | None = field(default=None, compare=False)
+
+    def export(self, connector: Connector, path: str) -> str:
+        r"""Copy the index to `<path>/<graph id>/<data version[:16]>` under an
+        S3, GCS or file connector and return that location. Re-running
+        resumes."""
+        from kumo.engine._snapshot_io import export
+
+        return export(self, connector, path)
+
+    @classmethod
+    def load_from_connector(cls, connector: Connector, *, path: str,
+                            graph: Optional['Graph'] = None) -> 'GraphSnapshot':
+        r"""Copy the snapshot exported at `path` (the location `export`
+        returned) into the local snapshot store."""
+        from kumo_core.diskgraph.snapshot import DiskgraphSnapshotHandle
+
+        from kumo.engine._snapshot_io import load_into, read
+
+        root, manifest = read(connector, path)
+        graph_key = manifest['graph_key']
+        if graph is not None and graph.id != graph_key:
+            warnings.warn(
+                f"Snapshot at {path} was taken of graph {graph_key!r}, not of "
+                f"the given graph {graph.id!r}; tables, edges, schemas or "
+                "connectors differ from the exported graph.",
+                UserWarning,
+                stacklevel=2,
+            )
+        target = _store().path(
+            DiskgraphSnapshotHandle(
+                graph_key=graph_key,
+                graph_data_version=manifest['data_version']))
+        with _lock(graph_key):
+            result = _loaded(target)
+            if result is None:
+                load_into(connector, path, root, manifest, Path(target))
+                result = _loaded(target)
+        return cls(id=manifest['snapshot_id'],
+                   index_path=Path(result.index_path),
+                   graph_config=manifest['graph_config'])
 
     @property
     def manifest(self) -> SnapshotManifest | None:
@@ -433,8 +511,6 @@ class Graph:
                 source as connector and table name only (no bucket, path or
                 account) and Custom SQL as a hash only (no SQL text).
         """
-        from filelock import FileLock
-
         self.validate()
         for table in self._named_tables.values():
             table.connector.validate_scratch_dir(get_scratch_dir())
@@ -442,7 +518,6 @@ class Graph:
 
         graph_key = self.id
         persist_dir = snapshot_scratch_dir(graph_key) / 'source_tables'
-        persist_dir.parent.mkdir(parents=True, exist_ok=True)
 
         # Guards two things, both shared across every `snapshot()` call for
         # this `graph_key` -- different processes, or different threads in
@@ -460,7 +535,7 @@ class Graph:
         # mid-build -- a plain in-memory lock wouldn't coordinate across
         # processes, and a lock-file-existence mutex would leave a stale
         # lock behind after a crash.
-        with FileLock(f'{persist_dir}.lock'):
+        with _lock(graph_key):
             return self._snapshot_no_lock(graph_key, persist_dir,
                                           record_sources)
 
@@ -479,9 +554,7 @@ class Graph:
         from kumo_core.diskgraph.runner import IngestExecutionConfig
         from kumo_core.diskgraph.snapshot import (
             DiskgraphIngestResult,
-            DiskgraphLocalConfig,
             DiskgraphSnapshotHandle,
-            LocalSnapshotStore,
             check_diskgraph_output,
         )
         from kumo_core.sources.layout import staging_dir
@@ -491,9 +564,7 @@ class Graph:
         from kumo.engine.connector.source_table import checked_sql
 
         graph_config = self._graph_config
-        store = LocalSnapshotStore(
-            DiskgraphLocalConfig(data_root=str(get_scratch_dir() /
-                                               'snapshots')))
+        store = _store()
 
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}

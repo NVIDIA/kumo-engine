@@ -31,6 +31,16 @@ class ObjectStoreSinkBackend(ABC):
         """Return the authenticated filesystem and validated bucket/key path."""
         raise NotImplementedError
 
+    def filesystem(self, connector: SourceConnector, path: str, *,
+                   parallel_uploads: bool = False) -> Tuple[FileSystem, str]:
+        """The authenticated filesystem and the path ``path`` resolves to.
+        ``parallel_uploads`` tunes S3 for many concurrent uploads (one
+        buffered part each, small files as one PUT); other stores ignore it.
+        """
+        del parallel_uploads
+        filesystem, resolved = self._destination(connector, path)
+        return filesystem, resolved.rstrip('/')
+
     def write_table(
         self,
         connector: SourceConnector,

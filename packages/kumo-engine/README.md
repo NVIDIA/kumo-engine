@@ -135,6 +135,28 @@ Snapshot indexes are reused by graph definition and source version; changed
 versions get separate directories. Builds for the same graph use a filesystem
 lock. See the [implementation](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/kumo/engine/graph.py).
 
+To build an index on one machine and train on another, export it through an
+S3, GCS or file connector and load it there:
+
+```python
+location = graph.snapshot().export(S3Connector(), "s3://bucket/snapshots")
+# On the training machine:
+snapshot = GraphSnapshot.load_from_connector(S3Connector(), path=location)
+```
+
+`export` writes `<path>/<graph id>/<data version>/` (the two halves of
+`snapshot.id`) and returns it. Files move in parallel with a CRC32 per range,
+an interrupted export resumes, and a load either completes or leaves nothing.
+Loading again reuses the local copy unless it fails DiskGraph's integrity
+check, in which case it is downloaded again.
+The snapshot manifest travels with the export; `snapshot.manifest` on the
+loaded copy shows the DiskGraph formats it was built with and, under `loaded`,
+the formats of the machine that loaded it. Load does not compare versions; an
+index this DiskGraph cannot open fails with both sets of formats in the error.
+Load only from paths whose writers you trust: checksums detect corruption, not
+tampering. Snowflake stages and Databricks connectors are not supported; for a
+Unity Catalog Volume, use the S3 or GCS connector on its backing path.
+
 The return values expose the retained files directly:
 
 ```python
