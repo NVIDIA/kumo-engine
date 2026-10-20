@@ -1567,6 +1567,18 @@ fn validated_index_resume_progress(output_dir: &str) -> PyResult<Option<Vec<Stri
         .map_err(|e| DiskgraphCorruptionError::new_err(e.to_string()))
 }
 
+/// On-disk format versions this build writes and accepts.
+#[pyfunction]
+fn format_versions() -> std::collections::BTreeMap<&'static str, u32> {
+    std::collections::BTreeMap::from([
+        ("layout", diskgraph_index::layout::LAYOUT_VERSION),
+        ("shard_commit", diskgraph_index::graph::INDEX_SHARD_COMMIT_VERSION),
+        ("temp_meta", u32::from(diskgraph_index::graph::TEMP_META_VERSION)),
+        ("ingest_report", diskgraph_ingest::stats::INGEST_REPORT_VERSION),
+        ("manifest_schema", diskgraph_ingest::snapshot_mirror::MANIFEST_SCHEMA_VERSION),
+    ])
+}
+
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1608,6 +1620,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(verify_snapshot_integrity, m)?)?;
     m.add_function(wrap_pyfunction!(has_resumable_ingest, m)?)?;
     m.add_function(wrap_pyfunction!(validated_index_resume_progress, m)?)?;
+    m.add_function(wrap_pyfunction!(format_versions, m)?)?;
     m.add_function(wrap_pyfunction!(compute_col_stats_for_parquet, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_edge_stats, m)?)?;

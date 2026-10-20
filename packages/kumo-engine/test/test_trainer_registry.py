@@ -141,11 +141,11 @@ def test_write_then_read_training_spec_round_trips(tmp_path: Path) -> None:
 
 def test_training_spec_manifest_update_is_atomic_and_retryable(
         tmp_path: Path, monkeypatch) -> None:
-    import kumo.engine.trainer._spec as spec_module
+    import kumo.engine._manifest as manifest_module
 
     bundle = _fake_published_bundle(tmp_path)
     original_manifest = (bundle / MANIFEST_FILE).read_bytes()
-    real_replace = spec_module.os.replace
+    real_replace = manifest_module.os.replace
     failed = False
 
     def fail_first_manifest_replace(source, destination):
@@ -155,7 +155,7 @@ def test_training_spec_manifest_update_is_atomic_and_retryable(
             raise OSError('simulated interrupted manifest commit')
         return real_replace(source, destination)
 
-    monkeypatch.setattr(spec_module.os, 'replace', fail_first_manifest_replace)
+    monkeypatch.setattr(manifest_module.os, 'replace', fail_first_manifest_replace)
     with pytest.raises(OSError, match='interrupted manifest commit'):
         write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
                             model_plan=ModelPlan(), snapshot_id='snap-123',

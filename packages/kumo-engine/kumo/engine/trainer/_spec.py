@@ -11,13 +11,13 @@ separate and must be supplied through a compatible prediction snapshot.
 
 import hashlib
 import json
-import os
-import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict
 
 from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
+
+from kumo.engine._manifest import atomic_write
 
 #: Bundle metadata filename and schema version.
 SPEC_FILE = 'training-spec.json'
@@ -52,30 +52,6 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _atomic_write(path: Path, payload: bytes) -> None:
-    """Replace one metadata file without exposing partial JSON."""
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=path.parent,
-                                         prefix=f'.{path.name}.',
-                                         delete=False) as out:
-            temporary = Path(out.name)
-            out.write(payload)
-            out.flush()
-            os.fsync(out.fileno())
-        os.replace(temporary, path)
-        temporary = None
-        if hasattr(os, 'O_DIRECTORY'):
-            descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
 def write_training_spec(
     bundle_dir: Path,
     *,
@@ -95,7 +71,7 @@ def write_training_spec(
         training_table_generation=to_json_dict(training_table_generation),
     )
     spec_path = bundle_dir / SPEC_FILE
-    _atomic_write(
+    atomic_write(
         spec_path,
         (json.dumps(asdict(spec), indent=2, sort_keys=True) +
          '\n').encode('utf-8'),
@@ -113,7 +89,7 @@ def write_training_spec(
         'size_bytes': spec_path.stat().st_size,
         'sha256': _sha256(spec_path),
     }]
-    _atomic_write(
+    atomic_write(
         manifest_path,
         (json.dumps(manifest, indent=2, sort_keys=True) + '\n').encode('utf-8'),
     )
