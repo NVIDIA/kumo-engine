@@ -183,8 +183,9 @@ impl TypeState {
 /// than being re-derived from strings at four sites per batch.
 ///
 /// Fused-mode dispatch does not consult this at all: projection pushdown is
-/// non-fused-only for now (see `RuntimeBatchIterator::build`, which forces
-/// non-fused whenever a caller supplies a non-empty projection). It is not
+/// non-fused-only for now. `RuntimeBatchIterator::build` ignores projections
+/// for explicit fused mode and selects non-fused mode for projected automatic
+/// dispatch. It is not
 /// carried on `SamplingState`: it is resolved once per iterator (in
 /// `RuntimeBatchIterator::build`) and threaded explicitly into
 /// `sample_runtime_batch` / `sample_node_range_batch`, the only two callers
@@ -225,8 +226,7 @@ impl ResolvedProjection {
     /// `true` when this projection is the select-all identity for every type
     /// (equivalent to resolving an empty caller map). Used to detect when a
     /// caller handed a non-trivial projection directly into a fused-dispatch
-    /// request, bypassing the pybind-level guard that normally rejects or
-    /// forces that combination -- see `RuntimeBatchIterator::build`.
+    /// request, bypassing the iterator's handling of unsupported projections.
     pub fn is_trivial(&self) -> bool {
         self.names.iter().all(|n| n.is_none())
     }

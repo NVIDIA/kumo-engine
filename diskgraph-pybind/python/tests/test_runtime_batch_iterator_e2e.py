@@ -1089,13 +1089,8 @@ def test_fused_and_nonfused_iterators_emit_same_dict_shape(seed_table_fixture):
 # engine materializes per node type. Absent => select all; `[]` => select
 # NOTHING (the type is skipped outright).
 #
-# PROJECTION PUSHDOWN IS NON-FUSED ONLY: `fused=True` combined with a
-# non-empty `projections` is rejected outright (see
-# `test_fused_true_rejects_non_empty_projections`), and `fused=None` (auto)
-# is forced to non-fused whenever `projections` is non-empty (see
-# `test_fused_auto_is_forced_non_fused_when_projections_supplied`) rather than
-# silently returning all columns from a heuristically-chosen fused path. The
-# narrowing/equivalence/skip tests below therefore all run non-fused.
+# Explicit fused mode ignores projections with a warning. Automatic mode
+# selects non-fused sampling when projections are supplied.
 # ---------------------------------------------------------------------------
 
 
@@ -1212,18 +1207,27 @@ def test_feature_projection_is_value_equivalent(
         ), f"unprojected namespace {namespace} changed"
 
 
-def test_fused_true_rejects_non_empty_projections(
+@pytest.mark.parametrize("columns", [["order_id"], []])
+def test_fused_true_ignores_non_empty_projections(
     seed_table_fixture: dict[str, Any],
+    columns: list[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """`fused=True` explicitly combined with a non-empty projection is a
-    checked configuration error, not a silently-ignored projection: fused
-    dispatch cannot narrow columns today, so accepting the combination would
-    return all columns while the caller believes it narrowed them."""
-    with pytest.raises(diskgraph.DiskgraphConfigError, match="fused"):
-        _projected_batch(
+    """Fused mode preserves all features and warns for narrow and skip requests."""
+    full = _projected_batch(seed_table_fixture, fused=True)
+
+    with caplog.at_level("WARNING"):
+        projected = _projected_batch(
             seed_table_fixture,
             fused=True,
-            projections={"orders": ["order_id"]},
+            projections={"orders": columns},
+        )
+
+    assert "ignoring feature projections" in caplog.text
+    assert set(projected["raw_features"]) == set(full["raw_features"])
+    for namespace in full["raw_features"]:
+        assert _namespace_columns(projected, namespace) == _namespace_columns(
+            full, namespace
         )
 
 

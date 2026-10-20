@@ -1845,25 +1845,19 @@ impl RuntimeBatchIterator {
             pseudo_seed_time,
             disable_pseudo_time,
         )?;
-        // Feature projection pushdown is NON-FUSED ONLY (see
-        // `SamplerEngine::resolve_projection`): fused dispatch always fetches
-        // every non-reserved column, so silently accepting `projections` under
-        // an explicit or heuristically-chosen fused mode would return all
-        // columns while the caller believes it narrowed them.
+        // Explicit fused mode takes precedence over feature projection.
+        let projections =
+            if fused == Some(true) && projections.as_ref().is_some_and(|p| !p.is_empty()) {
+                tracing::warn!(
+                    "fused=True does not support feature projection; ignoring feature \
+                 projections and fetching all non-reserved columns"
+                );
+                None
+            } else {
+                projections
+            };
         let projections_non_empty = projections.as_ref().is_some_and(|p| !p.is_empty());
-        // `fused=None` → DG picks via heuristic. Explicit override wins, EXCEPT
-        // `fused=True` combined with a non-empty projection, which is rejected
-        // outright rather than silently downgraded: the caller explicitly asked
-        // for fused and the two requests are incompatible today.
-        // Telemetry so trainers can see what was chosen and why.
         let chosen_fused = match (fused, projections_non_empty) {
-            (Some(true), true) => {
-                return Err(DiskgraphConfigError::new_err(
-                    "fused=True cannot be combined with a non-empty `projections`: \
-                     feature projection pushdown is non-fused-only today. Pass \
-                     fused=False (or leave fused=None) when using `projections`.",
-                ));
-            }
             (Some(v), _) => v,
             (None, true) => {
                 tracing::info!(
