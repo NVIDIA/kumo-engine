@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 import shutil
 import threading
 import warnings
@@ -12,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pandas as pd
 import pytest
 from diskgraph import format_versions
 from kumoapi.data_source import DataSourceType
@@ -524,3 +526,108 @@ def test_transfer_renews_an_expired_client(tmp_path, scratch, graph, exports,
     scratch('gpu')
     GraphSnapshot.load_from_connector(exports, path=location)
     assert failed
+
+
+def _set_mtime(path, seconds):
+    os.utime(path, (seconds, seconds))
+
+
+def _rewrite_events(data):
+    frame = pd.read_parquet(data / 'events.parquet')
+    frame.iloc[::-1].to_parquet(data / 'events.parquet')
+    _set_mtime(data / 'events.parquet', 1_700_009_123)
+
+
+@pytest.fixture
+def dated(tmp_path, graph):
+    data = tmp_path / 'data'
+    for name in ('users', 'events'):
+        _set_mtime(data / f'{name}.parquet', 1_700_000_123)
+    return data
+
+
+def _forbid_staging(monkeypatch):
+    from kumo_core.sources.object_store import ObjectStoreSourceReader
+
+    from kumo.engine.connector.file import _FileSourceBackend
+
+    fail = Mock(side_effect=AssertionError('must not stage'))
+    monkeypatch.setattr('kumo_core.sources.prepare.read_table', fail)
+    monkeypatch.setattr(ObjectStoreSourceReader, 'prepare', fail)
+    monkeypatch.setattr(_FileSourceBackend, 'prepare_ingest', fail)
+
+
+def test_source_changes_reads_stamps_without_staging(
+        scratch, graph, dated, monkeypatch):
+    snapshot = graph.snapshot()
+    _forbid_staging(monkeypatch)
+    unchanged = {'status': 'unchanged', 'recorded': '1700000123',
+                 'current': '1700000123'}
+    assert snapshot.source_changes(graph) == {'users': unchanged,
+                                              'events': unchanged}
+    _rewrite_events(dated)
+    assert snapshot.source_changes(graph) == {
+        'users': unchanged,
+        'events': {'status': 'changed', 'recorded': '1700000123',
+                   'current': '1700009123'},
+    }
+
+
+def test_source_changes_unknown_for_hour_stamps_and_read_errors(
+        scratch, graph, dated, monkeypatch):
+    from kumo.engine.connector.file import _FileSourceBackend
+
+    _set_mtime(dated / 'users.parquet', 1_700_002_800)
+    snapshot = graph.snapshot()
+    stamp = _FileSourceBackend.get_data_version
+
+    def failing(self, connector, table_name, project_id=None):
+        if table_name == 'events.parquet':
+            raise OSError('listing failed')
+        return stamp(self, connector, table_name)
+
+    monkeypatch.setattr(_FileSourceBackend, 'get_data_version', failing)
+    assert snapshot.source_changes(graph) == {
+        'users': {'status': 'unknown', 'recorded': '1700002800',
+                  'current': '1700002800'},
+        'events': {'status': 'unknown', 'recorded': '1700000123',
+                   'current': None},
+    }
+
+
+@pytest.mark.parametrize('edit', ['absent', 'reconstructed', 'missing',
+                                  'malformed'])
+def test_source_changes_unknown_without_a_recorded_version(
+        scratch, graph, dated, edit):
+    snapshot = graph.snapshot()
+    path = snapshot.index_path / 'snapshot-manifest.json'
+    manifest = json.loads(path.read_text())
+    if edit == 'absent':
+        path.unlink()
+    elif edit == 'reconstructed':
+        path.write_text(json.dumps({**manifest, 'reconstructed': True}))
+    elif edit == 'missing':
+        del manifest['parents']['source_tables']['users']
+        path.write_text(json.dumps(manifest))
+    else:
+        path.write_text(json.dumps({**manifest, 'parents': []}))
+    changes = snapshot.source_changes(graph)
+    assert changes['users'] == {'status': 'unknown', 'recorded': None,
+                                'current': '1700000123'}
+    assert changes['events']['status'] == (
+        'unchanged' if edit == 'missing' else 'unknown')
+
+
+def test_load_warns_only_with_graph_and_only_for_changed_tables(
+        tmp_path, scratch, graph, dated, exports):
+    location, _ = _export(graph.snapshot(), exports, tmp_path)
+    scratch('gpu')
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        GraphSnapshot.load_from_connector(exports, path=location, graph=graph)
+        _rewrite_events(dated)
+        GraphSnapshot.load_from_connector(exports, path=location)
+    with pytest.warns(UserWarning) as caught:
+        GraphSnapshot.load_from_connector(exports, path=location, graph=graph)
+    [message] = [str(warning.message) for warning in caught]
+    assert 'source table(s) events;' in message
