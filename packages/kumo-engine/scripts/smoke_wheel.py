@@ -7,6 +7,7 @@
 import argparse
 import hashlib
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -48,8 +49,10 @@ def verify_install(report, identity):
 
 def run_command(command, cwd, log, timeout=60):
     with log.open('w') as stream:
+        # --isolated still reads PIP_CONFIG_FILE. Disable all pip config files.
         subprocess.run(command, cwd=cwd, stdout=stream,
-                       stderr=subprocess.STDOUT, check=True, timeout=timeout)
+                       stderr=subprocess.STDOUT, check=True, timeout=timeout,
+                       env=dict(os.environ, PIP_CONFIG_FILE=os.devnull))
 
 
 def main():

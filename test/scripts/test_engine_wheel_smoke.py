@@ -5,11 +5,13 @@
 import hashlib
 import importlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from zipfile import ZipFile
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'packages/kumo-engine/scripts'
@@ -26,11 +28,19 @@ class WheelSmokeTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
 
-    def wheel(self, name='kumo-engine', version='1.2.3'):
-        wheel = self.root / 'kumo_engine-1.2.3-py3-none-any.whl'
+    def wheel(self, name='kumo-engine', version='1.2.3', requires=''):
+        distribution = f'{name.replace("-", "_")}-{version}'
+        wheel = self.root / f'{distribution}-py3-none-any.whl'
+        metadata = f'Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n'
+        if requires:
+            metadata += f'Requires-Dist: {requires}\n'
         with ZipFile(wheel, 'w') as archive:
-            archive.writestr('kumo_engine-1.2.3.dist-info/METADATA',
-                             f'Name: {name}\nVersion: {version}\n')
+            archive.writestr(f'{distribution}.dist-info/METADATA', metadata)
+            archive.writestr(
+                f'{distribution}.dist-info/WHEEL',
+                'Wheel-Version: 1.0\nRoot-Is-Purelib: true\n'
+                'Tag: py3-none-any\n')
+            archive.writestr(f'{distribution}.dist-info/RECORD', '')
         return wheel
 
     def test_reads_selected_version_and_rejects_another_distribution(self):
@@ -76,6 +86,27 @@ class WheelSmokeTest(unittest.TestCase):
             ], self.root, log)
         self.assertEqual(error.exception.returncode, 7)
         self.assertIn('deliberate failure', log.read_text())
+
+    def test_pip_cannot_resolve_dependencies_from_host_configuration(self):
+        self.wheel(name='smoke-local-only-dependency')
+        wheel = self.wheel(requires='smoke-local-only-dependency==1.2.3')
+        config = self.root / 'pip.conf'
+        config.write_text(f'[global]\nfind-links = {self.root}\n')
+        venv = self.root / 'venv'
+        subprocess.run([sys.executable, '-I', '-m', 'venv',
+                        str(venv)], check=True, capture_output=True)
+        log = self.root / 'install.log'
+        # Stay offline. Only the host configuration can supply this dependency.
+        with patch.dict(os.environ, {'PIP_CONFIG_FILE': str(config)}):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.runner.run_command([
+                    str(venv / 'bin/python'), '-I', '-m', 'pip', '--isolated',
+                    'install', '--no-cache-dir', '--no-index',
+                    str(wheel)
+                ], self.root, log)
+        self.assertIn(
+            'No matching distribution found for '
+            'smoke-local-only-dependency', log.read_text())
 
     def test_bad_wheel_fails_the_command_and_saves_a_failure_report(self):
         output = self.root / 'evidence'
