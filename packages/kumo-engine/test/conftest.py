@@ -5,12 +5,12 @@
 import hashlib
 import json
 from pathlib import Path
+from runpy import run_path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from kumoapi.model_plan import ModelPlan
-from wheel_workflow import create_graph
 
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
@@ -96,7 +96,8 @@ def fitted(tmp_path_factory):
     try:
         settings = Path(__file__).with_name('wheel_workflow.json')
         fixture = json.loads(settings.read_text())['fixture']
-        graph = create_graph(root / 'data', fixture)
+        graph = run_path(str(settings.with_suffix('.py')))['create_graph'](
+            root / 'data', fixture)
         snapshot = graph.snapshot()
         pquery = kumo.PredictiveQuery(graph=graph, query=fixture['query'])
         plan = ModelPlan()
