@@ -2,20 +2,31 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
+import json
+import logging
+import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Tuple
 
 from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumoapi.model_plan import \
     TrainingTableGenerationPlan as PublicGenerationPlan
 from kumoapi.train import TrainingTableSpec
 
+from kumo.engine._manifest import new_manifest, read_manifest, write_manifest
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
 
 if TYPE_CHECKING:
     from kumo.engine.trainer.output_config import TrainingTableOutputConfig
+
+logger = logging.getLogger(__name__)
+
+STAGING_MANIFEST_FILE = 'training-table-manifest.json'
+EXPORT_MANIFEST_FILE = '_kumo_manifest.json'
+_RANDOM_SPLITS = ('RandomSplit', 'RandomLinkSplit')
 
 
 @dataclass(frozen=True)
@@ -37,6 +48,18 @@ class TrainingTable:
     required_stages: tuple[str, ...]
     #: Effective generation settings carried forward into ``Trainer.fit``.
     generation_plan: TrainingTableGenerationPlan
+
+    @property
+    def tt_id(self) -> str:
+        """The id DiskGraph assigned to this table at generation."""
+        from kumo_core.training.export import read_spec
+
+        return read_spec(str(self.staging_dir))['tt_id']
+
+    @property
+    def manifest(self) -> Optional[Dict[str, Any]]:
+        """Lineage recorded at generation; None for older tables."""
+        return read_manifest(self.staging_dir / STAGING_MANIFEST_FILE)
 
     def export(self, output_config: "TrainingTableOutputConfig") -> str:
         r"""Write the staged rows with a ``SPLIT`` column (``0`` train, ``1``
@@ -62,8 +85,40 @@ class TrainingTable:
         root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root) as output:
             files = export_train_table(str(self.staging_dir), output)
+            payload = self._export_manifest(connector, output_config, files,
+                                            export_id)
+            extra = ({} if payload is None else {
+                'sidecars': {
+                    EXPORT_MANIFEST_FILE: payload
+                }
+            })
             return write_files(connector, output_config.table_name, files,
-                               output_config.write_mode, export_id=export_id)
+                               output_config.write_mode, export_id=export_id,
+                               **extra)
+
+    def _export_manifest(self, connector, output_config, files: Sequence[str],
+                         export_id: str) -> Optional[bytes]:
+        from kumo_core.object_store_sink import ObjectStoreSinkBackend
+
+        if (not isinstance(connector.sink_backend, ObjectStoreSinkBackend)
+                or not (output_config.table_name.endswith('/')
+                        or len(files) > 1)):
+            logger.debug('Training-table lineage is only recorded for '
+                         'directory exports to files or object stores.')
+            return None
+        try:
+            manifest = self.manifest
+            if manifest is None:
+                return None
+            manifest.update(content_sha256=_content_digest(files),
+                            export_identity=export_id)
+            return (json.dumps(manifest, indent=2, sort_keys=True) +
+                    '\n').encode('utf-8')
+        except Exception as error:
+            warnings.warn(
+                f"Exporting without a training-table manifest: {error}",
+                UserWarning, stacklevel=3)
+            return None
 
     @classmethod
     def from_source_table(
@@ -127,6 +182,7 @@ class TrainingTable:
         run_id = new_run_id()
         run_dir = train_table_scratch_dir(run_id)
         rows_path = stage_source_table(source_table, run_dir / "source-table")
+        derived_from, modified = _export_lineage(source_table, rows_path)
         generation_plan = from_json_dict(
             to_json_dict(public_plan),
             TrainingTableGenerationPlan,
@@ -183,7 +239,7 @@ class TrainingTable:
                 year_over_year=("yoy_offsets_secs" in
                                 (task_plan.train_table.compiler_options or {})),
             )
-        return cls(
+        table = cls(
             query=pq.query,
             train_table_path=Path(generated.train_table_path),
             manifest_path=Path(generated.manifest_path),
@@ -191,3 +247,88 @@ class TrainingTable:
             required_stages=task_plan.task_dataset.required_stages,
             generation_plan=generation_plan,
         )
+        _record_manifest(table, snapshot, task_plan.train_table, 'custom',
+                         derived_from, modified=modified)
+        return table
+
+
+def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
+                     request: Any, source: str,
+                     derived_from: Optional[str] = None,
+                     **fields: Any) -> None:
+    path = table.staging_dir / STAGING_MANIFEST_FILE
+    try:
+        from kumo_core.io.json import to_json_dict
+        from kumo_core.training.export import read_spec
+
+        spec = read_spec(str(table.staging_dir))
+        seed = None
+        if request.split_family in _RANDOM_SPLITS:
+            seed = (request.split_config or {}).get('rnd_seed') or 0
+        parents = {
+            'snapshot': snapshot.id,
+            'derived_from': derived_from,
+        }
+        write_manifest(
+            path,
+            new_manifest(
+                'training_table', spec['tt_id'], parents,
+                query=table.query,
+                generation_plan=to_json_dict(table.generation_plan),
+                task_type=request.task_type,
+                rows={
+                    stage['key']: stage['row_count']
+                    for stage in spec.get('split_stages') or []
+                },
+                split_seed=seed,
+                source=source,
+                **fields,
+            ))
+    except Exception as error:
+        warnings.warn(
+            f"Could not write the training-table manifest at {path}: "
+            f"{error}", UserWarning, stacklevel=3)
+
+
+def _content_digest(paths: Sequence[Any]) -> str:
+    digests = []
+    for path in paths:
+        digest = hashlib.sha256()
+        with open(path, 'rb') as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b''):
+                digest.update(chunk)
+        digests.append(digest.hexdigest())
+    return hashlib.sha256(''.join(sorted(digests)).encode()).hexdigest()
+
+
+def _export_lineage(source_table: SourceTable,
+                    parts: Path) -> Tuple[Optional[str], Optional[bool]]:
+    from kumo_core.artifact_export import EXPORT_MARKER_NAME, export_marker
+    from kumo_core.object_store_sink import ObjectStoreSinkBackend
+
+    connector = source_table.connector
+    try:
+        backend = connector.sink_backend
+    except NotImplementedError:
+        return None, None
+    if source_table.sql is not None or not isinstance(
+            backend, ObjectStoreSinkBackend):
+        return None, None
+    name = source_table.table_name
+    try:
+        payload = backend.read_sidecar(connector, name, EXPORT_MANIFEST_FILE)
+        if payload is None:
+            return None, None
+        exported = json.loads(payload)
+        marker = backend.read_sidecar(connector, name, EXPORT_MARKER_NAME)
+        if marker is None or marker.decode('utf-8') != export_marker(
+                exported['export_identity']):
+            logger.debug('%s does not belong to the export it records', name)
+            return None, None
+        digest = _content_digest(sorted(parts.glob('*.parquet')))
+        return exported['id'], digest != exported['content_sha256']
+    except Exception as error:
+        warnings.warn(
+            f"Ignoring the training-table manifest of {name!r}: {error}",
+            UserWarning, stacklevel=3)
+        return None, None
