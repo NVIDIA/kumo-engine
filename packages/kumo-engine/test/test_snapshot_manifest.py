@@ -122,7 +122,7 @@ def test_index_without_manifest_is_reused_and_backfilled(
         **{
             f'{group}.{key}': (value, None)
             for group in ('environment', 'formats')
-            for key, value in original[group].items()
+            for key, value in original[group].items() if value is not None
         },
     }
 
