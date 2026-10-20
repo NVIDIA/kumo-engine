@@ -1480,19 +1480,19 @@ class DiskgraphTaskBatchIterable(IterableDataset):
             stage_worker_id: int | None = None,
         ):
             stage_options = self.stage_runtime_options.get(stage, {})
+            options = {**iter_options, **stage_options}
             iterator, num_samples = index.iter(
                 stage=stage,
                 sampling_plan=self.sampling_plan,
-                projections=self.projections,
+                projections=({} if options.get("fused") is True else self.projections),
                 num_workers=(stage_num_workers or num_workers),
-                worker_id=(worker_id
-                           if stage_worker_id is None else stage_worker_id),
+                worker_id=(worker_id if stage_worker_id is None else stage_worker_id),
                 shuffle=self.shuffle,
                 epoch=base_epoch + epoch_offset,
                 batch_size=self.batch_size,
                 drop_last=self.drop_last,
                 group_by_timestamp=self.group_by_timestamp,
-                **{**iter_options, **stage_options},
+                **options,
             )
             return iterator, int(num_samples)
 

@@ -1,7 +1,7 @@
 {
   "source_repository": "kumo-ai/kumo-diskgraph",
-  "source_sha": "f857d5776e2fd6ef9b69fed31a0aaf5389c63047",
-  "source_reachable_commit_count": 1105,
+  "source_sha": "83c14a964ef030382985223d83c23a7e40260740",
+  "source_reachable_commit_count": 1106,
   "import_prefix": "packages/diskgraph",
   "file_count": 389,
   "entries": [
@@ -570,7 +570,7 @@
       "destination_path": "packages/diskgraph/diskgraph-engine/src/engine.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "991265dfa4c15df659dd196306e7f8e08f13528a"
+      "blob": "053bdc3c709c24a8f8044208ba6b2647f7742462"
     },
     {
       "source_path": "diskgraph-engine/src/errors.rs",
@@ -612,7 +612,7 @@
       "destination_path": "packages/diskgraph/diskgraph-engine/src/state.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "238721d4c64f69edaac0ee2532215a65f32cf2dc"
+      "blob": "d5e4bba36f97eb9747aba93aa9555a87672af65c"
     },
     {
       "source_path": "diskgraph-engine/src/tests_unit.rs",
@@ -1795,7 +1795,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/python/diskgraph/runtime_batch_iterator.py",
       "mode": "100644",
       "type": "blob",
-      "blob": "ae7e924025e3360a643ed6a1ebaea4741dbaf606"
+      "blob": "fd95d4c9de51aee64382181facc291db9ea941e2"
     },
     {
       "source_path": "diskgraph-pybind/python/diskgraph/split_contract.py",
@@ -1914,7 +1914,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/python/tests/test_runtime_batch_iterator_e2e.py",
       "mode": "100644",
       "type": "blob",
-      "blob": "7ec1dfcad69518432f49f95a6284ce4e91678cfb"
+      "blob": "77b9c927da4ffece6066cc2d9a56973b9ce732b7"
     },
     {
       "source_path": "diskgraph-pybind/python/tests/test_sampling.py",
@@ -2026,7 +2026,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/src/runtime_batch_iterator.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "37c106116a438b811db19bb4658a7af830457ff4"
+      "blob": "9cdcf051ecdcfac25e04723f10306573b2b3fadd"
     },
     {
       "source_path": "diskgraph-pybind/src/success_marker.rs",

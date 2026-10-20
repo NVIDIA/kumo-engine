@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import warnings
+from pathlib import Path
 from typing import Any
 
 import kumo_core.diskgraph.lightning_data as dldm
@@ -4502,6 +4503,40 @@ def test_train_and_eval_loaders_send_different_projections(
     for kwargs in (train_kwargs, val_kwargs):
         assert "projections" not in kwargs["sampling_plan"]
         assert "feature_columns" not in kwargs["sampling_plan"]
+
+
+@pytest.mark.parametrize("runtime_fused", [True, False, None])
+@pytest.mark.parametrize(
+    "stage_options", [{}, {"fused": True}, {"fused": False}, {"fused": None}]
+)
+def test_fused_loaders_omit_projections(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_fused: bool | None,
+    stage_options: dict[str, bool | None],
+) -> None:
+    """Only effective fused mode suppresses train and evaluation projections."""
+    calls = _install_fake_diskgraph(monkeypatch)
+    dm = _projection_datamodule(tmp_path)
+    dm.runtime_options = {"fused": runtime_fused}
+    effective_fused = stage_options.get("fused", runtime_fused)
+
+    for loader in (dm.train_dataloader(), dm.val_dataloader()):
+        dataset = loader.dataset
+        assert isinstance(dataset, DiskgraphTaskBatchIterable)
+        dataset.stage_runtime_options = {
+            stage: stage_options for stage in dataset.stages
+        }
+
+        list(loader)
+
+        options = calls["kwargs"]
+        assert options["fused"] is effective_fused
+        if effective_fused is True:
+            assert options["projections"] == {}
+        else:
+            assert options["projections"]
+    assert dm._feature_projection(attach_pkeys=False)
 
 
 def test_schema_time_column_widens_index_time_projection(tmp_path: Any) -> None:
