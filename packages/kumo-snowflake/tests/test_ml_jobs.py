@@ -2171,7 +2171,9 @@ def test_stage_name_rejects_empty_segments_and_bounds_input() -> None:
 
 
 @pytest.mark.parametrize('missing', [None, 'package', 'component', 'requirement'])
-def test_engine_bundle_validation(tmp_path: Path, missing: str | None) -> None:
+@pytest.mark.parametrize('requirements_key', ['requires', 'requires_at_install'])
+def test_engine_bundle_validation(tmp_path: Path, missing: str | None,
+                                  requirements_key: str) -> None:
     path = tmp_path / 'kumo_engine-1.0.0-cp311-abi3-linux_x86_64.whl'
     components = [
         'kumo-engine', 'kumo-core', 'kumo-pql', 'kumo-snowflake',
@@ -2187,8 +2189,8 @@ def test_engine_bundle_validation(tmp_path: Path, missing: str | None) -> None:
         archive.writestr('kumo_bundle_manifest.json', json.dumps({
             'bundle': {'name': 'kumo-engine'},
             'components': [{'name': name} for name in components],
-            'requires': ([] if missing == 'requirement'
-                         else ['pytorch-frame==0.3.0']),
+            requirements_key: ([] if missing == 'requirement'
+                               else ['pytorch-frame==0.3.0']),
             'extras': {'snowflake': ['snowflake-ml-python>=1.51,<2']},
         }))
     if missing is None:

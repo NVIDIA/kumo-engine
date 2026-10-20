@@ -183,8 +183,9 @@ def validate_wheel(path: Path,
         raise RuntimeError(
             f'{path.name} is missing required fat-wheel components '
             f'{missing_components!r}')
-    requirements = manifest.get('requires' if engine_wheel
-                                else 'requires_at_install')
+    requirements = (manifest.get('requires',
+                                 manifest.get('requires_at_install'))
+                    if engine_wheel else manifest.get('requires_at_install'))
     if not isinstance(requirements, list) or not all(
             isinstance(requirement, str) for requirement in requirements):
         raise RuntimeError(
