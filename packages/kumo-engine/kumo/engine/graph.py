@@ -59,6 +59,7 @@ stale lock behind. Deliberately not ported from the cloud SDK: its
 remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 """
 
+import hashlib
 import json
 import warnings
 from dataclasses import dataclass, field
@@ -69,6 +70,7 @@ from typing import Any, Dict, Mapping, Sequence
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
 
+from kumo.engine._manifest import new_manifest, read_manifest, write_manifest
 from kumo.engine._scratch import (
     fingerprint,
     get_scratch_dir,
@@ -76,6 +78,8 @@ from kumo.engine._scratch import (
 )
 from kumo.engine._storage import network_storage
 from kumo.engine.table import Table
+
+SNAPSHOT_MANIFEST_FILE = 'snapshot-manifest.json'
 
 _warned_scratch: set[Path] = set()
 
@@ -214,6 +218,51 @@ class GraphSnapshot:
     id: str
     index_path: Path
     graph_config: Dict[str, Any]
+
+    @property
+    def manifest(self) -> Dict[str, Any] | None:
+        """The snapshot manifest stored next to the index, if any."""
+        return read_manifest(Path(self.index_path) / SNAPSHOT_MANIFEST_FILE)
+
+
+def _write_snapshot_manifest(index_path: Path, snapshot_id: str,
+                             graph_key: str, data_version: str,
+                             source_tables: Dict[str, Dict[str, str]], *,
+                             fresh: bool) -> None:
+    path = index_path / SNAPSHOT_MANIFEST_FILE
+    if not fresh and path.exists():
+        return
+    try:
+        from diskgraph import format_versions
+
+        stats = json.loads(
+            (index_path / 'ingest_stats.json').read_text()).get('stats', {})
+        rows = stats.get('source_rows_by_table', {})
+        fields = {
+            'graph_id': graph_key,
+            'data_version': data_version,
+            'formats': format_versions(),
+            'tables': {
+                alias: {
+                    'rows': rows.get(alias)
+                }
+                for alias in source_tables
+            },
+            'edges': dict(stats.get('edge_counts', {})),
+        }
+        if not fresh:
+            fields.update(created_at=None, environment=None, scheduler=None,
+                          formats=None, reconstructed=True)
+        write_manifest(
+            path,
+            new_manifest('graph_snapshot', snapshot_id,
+                         {'source_tables': source_tables}, **fields))
+    except Exception as error:
+        warnings.warn(
+            f"Could not write the snapshot manifest at {path}: {error}",
+            UserWarning,
+            stacklevel=4,
+        )
 
 
 @dataclass(frozen=True)
@@ -418,6 +467,7 @@ class Graph:
 
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
+        source_tables: Dict[str, Dict[str, str]] = {}
 
         try:
             for alias, table in self._named_tables.items():
@@ -429,10 +479,13 @@ class Graph:
                 dest_dir.mkdir(parents=True, exist_ok=True)
 
                 name, sql = table.table_name, None
+                coordinate = name
                 source = table.definition.source_table
                 if isinstance(source, CustomSQLSourceTable):
                     checked = checked_sql(connector, source.sql)
                     name, sql = checked.table, checked.sql
+                    coordinate = ('sql:' +
+                                  hashlib.sha256(sql.encode()).hexdigest()[:16])
                 prepared = source_backend.prepare_ingest(
                     connector,
                     name,
@@ -451,6 +504,10 @@ class Graph:
                         "limitation in kumoai/backend/local/graph.py's "
                         "_stage_sources, which raises the same way.")
                 table_data_versions[alias] = prepared.version
+                source_tables[alias] = {
+                    'source': f'{connector.source_type}:{coordinate}',
+                    'version': prepared.version,
+                }
 
                 paths = prepared.source.get('paths') or []
                 if paths:
@@ -499,10 +556,16 @@ class Graph:
                     ),
                 )
 
+            snapshot_id = f'{graph_key}@{data_version[:16]}'
+            index_path = Path(result.index_path)
+            _write_snapshot_manifest(index_path, snapshot_id, graph_key,
+                                     data_version, source_tables,
+                                     fresh=existing is None)
+
             _warn_ingest_data_loss(result, graph_config)
             return GraphSnapshot(
-                id=f'{graph_key}@{data_version[:16]}',
-                index_path=Path(result.index_path),
+                id=snapshot_id,
+                index_path=index_path,
                 graph_config=graph_config,
             )
         finally:
