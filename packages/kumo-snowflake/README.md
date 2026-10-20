@@ -108,7 +108,9 @@ compatible runtime versions are maintained outside this package.
 
 Function dispatch uses Snowflake ML Jobs' supported CloudPickle mechanism, but
 Kumo deliberately accepts only a top-level module or notebook function plus
-JSON-safe `args=`/`kwargs=` or an existing `PublishedModel`. Never capture or
+JSON-safe `args=`/`kwargs=` or an existing `PublishedModel`. Module entrypoints
+and their same-module helper functions travel by value. Other imported modules
+must be available in the remote runtime. Never capture or
 pass a Snowpark session, credential, lock, open file, connector, graph, or
 runtime client. Construct those inside the submitted function, and keep
 application data in durable, importable locations.

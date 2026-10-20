@@ -10,6 +10,7 @@ that function.
 
 from __future__ import annotations
 
+import dis
 import inspect
 import logging
 import math
@@ -18,7 +19,7 @@ import types
 import uuid
 from datetime import datetime, timezone
 from hashlib import sha256
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, cast
 
 from kumoapi.common import JobStatus
 from kumoapi.jobs import (
@@ -212,8 +213,66 @@ def _diagnostic(error: BaseException) -> SnowflakeMLJobDiagnostic:
     )
 
 
-def _validate_callable(function: Callable[..., Any]) -> None:
+def _validate_callable(function: Callable[..., Any]) -> types.FunctionType:
     _validate_function(function, set())
+    return cast(types.FunctionType, function)
+
+
+def _referenced_globals(function: types.FunctionType) -> dict[str, Any]:
+    """Include globals read by nested functions created in the entrypoint."""
+    names: set[str] = set()
+
+    def visit(code: types.CodeType) -> None:
+        names.update(instruction.argval
+                     for instruction in dis.get_instructions(code)
+                     if instruction.opname in {'LOAD_GLOBAL', 'LOAD_NAME'})
+        for value in code.co_consts:
+            if isinstance(value, types.CodeType):
+                visit(value)
+
+    visit(function.__code__)
+    return {
+        name: function.__globals__[name]
+        for name in names if name in function.__globals__
+    }
+
+
+def _detach_callable(function: types.FunctionType) -> types.FunctionType:
+    """Let Snowflake CloudPickle ship validated user functions by value.
+
+    Detached functions are not their module's registered objects, so CloudPickle
+    transports their code instead of requiring the original module remotely.
+    Shared globals and memoized helpers preserve aliases and recursion without
+    modifying the user's namespace or CloudPickle's process-wide registry.
+    """
+    functions: dict[types.FunctionType, types.FunctionType] = {}
+    namespaces: dict[int, dict[str, Any]] = {}
+
+    def clone(original: types.FunctionType) -> types.FunctionType:
+        if original in functions:
+            return functions[original]
+        namespace = namespaces.setdefault(id(original.__globals__),
+                                          original.__globals__.copy())
+        detached = types.FunctionType(original.__code__, namespace,
+                                      original.__name__, original.__defaults__,
+                                      original.__closure__)
+        functions[original] = detached
+        detached.__module__ = original.__module__
+        detached.__qualname__ = original.__qualname__
+        detached.__doc__ = original.__doc__
+        detached.__annotations__ = original.__annotations__.copy()
+        detached.__kwdefaults__ = (None if original.__kwdefaults__ is None else
+                                   original.__kwdefaults__.copy())
+        detached.__dict__.update(original.__dict__)
+        if hasattr(original, '__type_params__'):
+            detached.__type_params__ = original.__type_params__
+        for name, value in _referenced_globals(original).items():
+            if (isinstance(value, types.FunctionType)
+                    and value.__module__ in {original.__module__, '__main__'}):
+                namespace[name] = clone(value)
+        return detached
+
+    return clone(function)
 
 
 def _validate_function(function: Callable[..., Any], seen: set[int]) -> None:
@@ -235,13 +294,13 @@ def _validate_function(function: Callable[..., Any], seen: set[int]) -> None:
             'function captures nonlocal values; pass JSON-safe values through '
             'args=/kwargs= instead and construct sessions/backends inside the '
             'submitted function')
-    for name, value in closure.globals.items():
+    for name, value in _referenced_globals(function).items():
         if isinstance(value, types.ModuleType):
             continue
         if isinstance(value, types.FunctionType):
-            # Imported functions are serialized by reference. Notebook and
-            # same-module helpers are serialized with the entry point, so
-            # inspect their reachable globals recursively.
+            # Same-module helpers travel by value with the entrypoint, so
+            # inspect their reachable globals recursively. Other imported
+            # functions remain references to remote runtime dependencies.
             if value.__module__ in {function.__module__, '__main__'}:
                 _validate_function(value, seen)
             continue
@@ -890,7 +949,7 @@ def submit_ml_job(
     construct runtime clients, sessions, locks, credentials, and open files
     inside ``function`` rather than capturing or passing them.
     """
-    _validate_callable(function)
+    function = _validate_callable(function)
     submitted_args = list(args)
     submitted_kwargs = dict(kwargs or {})
     try:
@@ -1005,7 +1064,8 @@ def submit_ml_job(
             'progress_location': locations['progress'],
             'result_location': locations['result'],
         }
-        handle = definition(function, safe_args, safe_kwargs, config)
+        handle = definition(_detach_callable(function), safe_args, safe_kwargs,
+                            config)
     except Exception as error:
         failed = {**manifest, 'submission_state': 'failed', 'error': str(error)}
         try:

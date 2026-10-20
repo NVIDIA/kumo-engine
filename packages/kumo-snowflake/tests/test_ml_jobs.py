@@ -6,9 +6,12 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 import json
 import re
+import subprocess
+import sys
 import threading
 import time
 import zipfile
@@ -53,8 +56,10 @@ from kumo_snowflake._ml_job_wheel import (
 from kumo_snowflake.ml_job_contracts import _TRANSPORT_KEY
 from kumo_snowflake.ml_jobs import (
     _decode_result_value,
+    _detach_callable,
     _exception_kind,
     _json_input,
+    _validate_callable,
 )
 from kumoapi.common import JobStatus
 from kumoapi.jobs import (
@@ -362,7 +367,8 @@ def test_submit_preflights_stages_one_wheel_and_returns_handle(
     assert jobs.options['pip_requirements'] == [f'./{fat_wheel.name}']
     assert 'runtime_environment' not in jobs.options
     assert jobs.payload.__name__ == 'execute_user_function'
-    assert jobs.arguments[0] is user_function
+    assert jobs.arguments[0] is not user_function
+    assert jobs.arguments[0](4) == user_function(4)
     assert jobs.arguments[1] == [4]
     assert any(
         sql.startswith('SHOW COMPUTE POOLS') for sql, _ in session.statements)
@@ -2170,14 +2176,20 @@ def test_stage_name_rejects_empty_segments_and_bounds_input() -> None:
         validate_stage_name(f'{STAGE}/' + 'a' * 4096)
 
 
-@pytest.mark.parametrize('missing', [None, 'package', 'component', 'requirement'])
-@pytest.mark.parametrize('requirements_key', ['requires', 'requires_at_install'])
+@pytest.mark.parametrize('missing',
+                         [None, 'package', 'component', 'requirement'])
+@pytest.mark.parametrize('requirements_key',
+                         ['requires', 'requires_at_install'])
 def test_engine_bundle_validation(tmp_path: Path, missing: str | None,
                                   requirements_key: str) -> None:
     path = tmp_path / 'kumo_engine-1.0.0-cp311-abi3-linux_x86_64.whl'
     components = [
-        'kumo-engine', 'kumo-core', 'kumo-pql', 'kumo-snowflake',
-        'diskgraph', 'torch-geometric',
+        'kumo-engine',
+        'kumo-core',
+        'kumo-pql',
+        'kumo-snowflake',
+        'diskgraph',
+        'torch-geometric',
     ]
     if missing == 'component':
         components.remove('diskgraph')
@@ -2186,13 +2198,21 @@ def test_engine_bundle_validation(tmp_path: Path, missing: str | None,
         archive.writestr('kumo_core/__init__.py', '')
         if missing != 'package':
             archive.writestr('kumo_snowflake/__init__.py', '')
-        archive.writestr('kumo_bundle_manifest.json', json.dumps({
-            'bundle': {'name': 'kumo-engine'},
-            'components': [{'name': name} for name in components],
-            requirements_key: ([] if missing == 'requirement'
-                               else ['pytorch-frame==0.3.0']),
-            'extras': {'snowflake': ['snowflake-ml-python>=1.51,<2']},
-        }))
+        archive.writestr(
+            'kumo_bundle_manifest.json',
+            json.dumps({
+                'bundle': {
+                    'name': 'kumo-engine'
+                },
+                'components': [{
+                    'name': name
+                } for name in components],
+                requirements_key:
+                ([] if missing == 'requirement' else ['pytorch-frame==0.3.0']),
+                'extras': {
+                    'snowflake': ['snowflake-ml-python>=1.51,<2']
+                },
+            }))
     if missing is None:
         assert validate_wheel(path).path == path
     else:
@@ -2214,12 +2234,108 @@ def test_explicit_training_boundary_accepts_reconstructed_progress() -> None:
     try:
         with runtime_progress.operation('training', 'fit-1', 'Training'):
             for _ in range(2):
-                runtime_progress.progress_updated('training', AutoTrainerProgress(
-                    total_trials=1, completed_trials=1))
-        with runtime_progress.operation('prediction', 'predict-1', 'Predicting'):
-            runtime_progress.progress_updated('prediction', PredictionProgress(
-                total_iterations=1, completed_iterations=1))
+                runtime_progress.progress_updated(
+                    'training',
+                    AutoTrainerProgress(total_trials=1, completed_trials=1))
+        with runtime_progress.operation('prediction', 'predict-1',
+                                        'Predicting'):
+            runtime_progress.progress_updated(
+                'prediction',
+                PredictionProgress(total_iterations=1, completed_iterations=1))
         observer.raise_for_policy_violation()
     finally:
         runtime_progress.reset(token)
-    assert observer._payload(JobStatus.DONE)['prediction']['completed_iterations'] == 1
+    assert observer._payload(
+        JobStatus.DONE)['prediction']['completed_iterations'] == 1
+
+
+@pytest.mark.parametrize('source,argument,expected', [
+    ("def train(value):\n    return value + 1\n", 3, 4),
+    ("FACTOR = 3\ndef helper(value):\n    return value * FACTOR\n"
+     "alias = helper\ndef train(value):\n"
+     "    def nested(item):\n        return alias(item)\n"
+     "    return nested(value)\n", 3, 9),
+    ("def train(value):\n    return value * train(value - 1) if value else 1\n",
+     5, 120),
+    ("def even(value):\n    return odd(value - 1) if value else True\n"
+     "def odd(value):\n    return even(value - 1) if value else False\n"
+     "def train(value):\n    return even(value)\n", 6, True),
+    ("def helper(value):\n    return value\n"
+     "alias = helper\ndef train(value):\n"
+     "    return [helper is alias, helper(value) + alias(value)]\n", 3,
+     [True, 6]),
+])
+def test_imported_callable_runs_without_source_module(
+    tmp_path: Path,
+    source: str,
+    argument: int,
+    expected: Any,
+) -> None:
+    import cloudpickle
+
+    name = 'kumo_test_user_entrypoint'
+    module_path = tmp_path / f'{name}.py'
+    module_path.write_text(source +
+                           "\nUNUSED_SECRET = 'must-stay-local-9851'\n")
+    spec = importlib.util.spec_from_file_location(name, module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+        original_globals = dict(vars(module))
+        _validate_callable(module.train)
+        detached = _detach_callable(module.train)
+        payload = cloudpickle.dumps(((detached, [argument], {}, {}), {}))
+        assert b'must-stay-local-9851' not in payload
+        assert all(
+            vars(module)[key] is value
+            for key, value in original_globals.items())
+        assert detached.__globals__ is not module.train.__globals__
+        assert detached.__module__ == module.train.__module__
+        assert detached.__qualname__ == module.train.__qualname__
+    finally:
+        del sys.modules[name]
+        module_path.unlink()
+    payload_path = tmp_path / 'args.pkl'
+    payload_path.write_bytes(payload)
+    child = subprocess.run([
+        sys.executable,
+        '-I',
+        '-c',
+        "import cloudpickle, json, pathlib, sys; "
+        "args, kwargs = cloudpickle.loads(pathlib.Path(sys.argv[1]).read_bytes()); "
+        "function, args, kwargs, config = args; "
+        "print(json.dumps(function(*args, **kwargs)))",
+        str(payload_path),
+    ], check=True, capture_output=True, text=True, cwd=tmp_path)
+    assert json.loads(child.stdout) == expected
+
+
+def test_detached_callable_preserves_metadata() -> None:
+    def entry(value: int = 3, *, offset: int = 2) -> int:
+        """Metadata must survive detachment."""
+        return value + offset
+
+    setattr(entry, 'description', 'training entrypoint')
+    detached = _detach_callable(entry)
+    assert detached() == 5
+    assert detached.__defaults__ == entry.__defaults__
+    assert detached.__kwdefaults__ == entry.__kwdefaults__
+    assert detached.__annotations__ == entry.__annotations__
+    assert detached.__dict__ == entry.__dict__
+    assert detached.__doc__ == entry.__doc__
+
+
+def _function_with_nested_unsafe_global() -> Any:
+    def nested() -> Any:
+        return _UNSAFE_GLOBAL
+
+    return nested()
+
+
+def test_callable_validation_checks_nested_code_globals(
+        monkeypatch: Any) -> None:
+    monkeypatch.setitem(globals(), '_UNSAFE_GLOBAL', object())
+    with pytest.raises(SnowflakeMLJobConfigurationError, match='unsafe global'):
+        _validate_callable(_function_with_nested_unsafe_global)
