@@ -222,3 +222,32 @@ def test_csv_retry_replaces_partially_uploaded_part(tmp_path, monkeypatch):
     pd.testing.assert_frame_equal(pd.read_csv(target / 'part-00000.csv'),
                                   expected)
     assert (target / '_SUCCESS').exists()
+
+
+@pytest.mark.parametrize('directory', [True, False])
+def test_sidecars_are_written_before_success(tmp_path, monkeypatch,
+                                             directory):
+    import pyarrow.parquet as pq
+    from kumo_core.artifact_export import export_selected_files
+    from kumo_core.object_store_sink import _ArrowExportFiles
+    from pyarrow.fs import LocalFileSystem
+
+    source = tmp_path / 'part-0.parquet'
+    pq.write_table(pa.table({'id': [1]}), source)
+    target = tmp_path / 'output'
+    fs = _ArrowExportFiles(LocalFileSystem(), None)
+    touched = fs.touch
+
+    def touch(path):
+        assert (target / 'meta.json').read_bytes() == b'{}'
+        touched(path)
+
+    monkeypatch.setattr(fs, 'touch', touch)
+    export_selected_files([str(source)],
+                          str(target) + ('/' if directory else ''), fs=fs,
+                          identity='job-1', sidecars={'meta.json': b'{}'})
+    if directory:
+        assert (target / '_SUCCESS').exists()
+    else:
+        assert not (target / 'meta.json').exists()
+        assert pq.read_table(tmp_path / 'output.parquet').num_rows == 1

@@ -55,8 +55,13 @@ class ObjectStoreSinkBackend(ABC):
 
     def write_files(self, connector, table_name, files,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
-                    export_id=None, extra_columns=None):
-        """Export selected Parquet without collecting their rows."""
+                    export_id=None, extra_columns=None,
+                    sidecars: Mapping[str, bytes] = {}):
+        """Export selected Parquet without collecting their rows.
+
+        ``sidecars`` are written into a directory destination before
+        ``_SUCCESS``.
+        """
         del project_id
         if write_mode is not WriteMode.OVERWRITE:
             raise NotImplementedError(
@@ -69,8 +74,21 @@ class ObjectStoreSinkBackend(ABC):
         _, output = export_selected_files(files, path, fs=storage,
                                           identity=export_id or str(files),
                                           file_type=kind,
-                                          convert_csv=storage.convert_csv)
+                                          convert_csv=storage.convert_csv,
+                                          sidecars=sidecars)
         return f'{self.scheme}://{output}'
+
+    def read_sidecar(self, connector: SourceConnector, table_name: str,
+                     name: str) -> Optional[bytes]:
+        """Return the file ``name`` inside directory ``table_name``, if any."""
+        from pyarrow.fs import FileType
+
+        filesystem, path = self._destination(connector, table_name)
+        target = f"{path.rstrip('/')}/{name}"
+        if filesystem.get_file_info(target).type is not FileType.File:
+            return None
+        with filesystem.open_input_stream(target) as reader:
+            return reader.readall()
 
     def publish_model(
         self,
@@ -282,8 +300,11 @@ class _ArrowExportFiles:
             return reader.readall().decode('utf-8')
 
     def write_text(self, path, value):
+        self.write_bytes(path, value.encode('utf-8'))
+
+    def write_bytes(self, path, value):
         with self.filesystem.open_output_stream(path) as writer:
-            writer.write(value.encode('utf-8'))
+            writer.write(value)
 
     def makedirs(self, path, exist_ok=True):
         _prepared(self.filesystem, path)
