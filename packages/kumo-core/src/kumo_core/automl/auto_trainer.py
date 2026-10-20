@@ -939,12 +939,13 @@ class AutoTrainer:
                     break
 
                 except RuntimeError as e:
+                    error = type(e).__name__
                     self._emit('trial_ended', lambda: {
                         'trial': i + 1,
                         'params': {
                             'status': 'failed',
                             'attempt': j + 1,
-                            'error': type(e).__name__,
+                            'error': error,
                         },
                     })
                     stacktrace = ''.join(
