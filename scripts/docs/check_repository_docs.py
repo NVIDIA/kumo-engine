@@ -5,7 +5,7 @@
 """Read-only local references and agent-interface checks; never fetch URLs.
 
 Discover repository Markdown through Git, including untracked, unignored files.
-DiskGraph mirror link failures are reported for its upstream owner.
+Imported DiskGraph documentation link failures remain warnings.
 """
 import argparse
 import json
@@ -122,7 +122,7 @@ def check(root):
 
         if path.relative_to(root).parts[:2] == ('packages', 'diskgraph'):
             for error in file_errors:
-                print(f'Upstream mirror: {error}')
+                print(f'DiskGraph documentation: {error}')
         else:
             errors.extend(file_errors)
 

@@ -44,11 +44,6 @@ constraints fail the build. Constraints are also recorded in
 Python minimum. Redundant `>=` bounds are collapsed to the strongest minimum
 so PyPI shows `>=3.11` rather than `>=3.10,>=3.11`.
 
-`scripts/build_fat_wheel.sh` and its manual workflow, *Kumo SDK - Build fat
-wheel*, are unchanged: they still build the date-stamped `kumo-fat-bundle`
-wheel for Snowflake and Databricks notebooks. They are unrelated to the
-published `kumo-engine` wheel described here.
-
 ## Versioning
 
 The root [`VERSION`](../../VERSION) file is the only place the version is

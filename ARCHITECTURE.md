@@ -46,7 +46,7 @@ Users configure data sources, tables, graph relationships, and a predictive quer
 ## Important boundaries
 
 - `rest/` owns service APIs and orchestration; it does not implement graph storage or model training.
-- `diskgraph` is a Rust-backed wheel built from the synchronized source in `packages/diskgraph/`. The shared runtime in `packages/kumo-core/` and service adapters in `kumo/diskgraph/` and `kumo/data/generic/` integrate its ingest, compilation, and sampling APIs. Changes to the mirror follow its [upstream ownership boundary](docs/development/generated-artifacts.md#diskgraph-source-mirror).
+- `diskgraph` is a Rust-backed wheel built from the source in `packages/diskgraph/`. The shared runtime in `packages/kumo-core/` and service adapters in `kumo/diskgraph/` and `kumo/data/generic/` integrate its ingest, compilation, and sampling APIs. This repository is the sole source of truth; make engine changes directly in `packages/diskgraph/`.
 - `kumoapi` contains contracts shared by the service, SDK, and UI generator.
 - `kumo_core` implements shared training, AutoML, evaluation, explanation, prediction, and DiskGraph integration without service orchestration dependencies.
 - `docker/` defines the images built from this repository; `helm/` defines how the service is installed on Kubernetes.

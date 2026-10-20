@@ -22,10 +22,9 @@ is not evidence of semantic accuracy.
 
 The checker discovers all tracked and untracked, unignored Markdown files
 through Git; new guides do not need registration. Relative links in symlinked
-docs resolve from the authored file. Broken links in the protected
-`packages/diskgraph` mirror are reported as upstream-owner warnings; other
-broken local links fail the check. Follow the
-[mirror workflow](../../tools/migrations/diskgraph/README.md) for upstream fixes.
+docs resolve from the authored file. Broken links in the imported
+`packages/diskgraph` documentation remain warnings; other broken local links
+fail the check. Fix DiskGraph documentation directly in this repository.
 
 [agent-contract.json](agent-contract.json) records instruction scopes and
 compatibility adapters. Imported packages retain their own instruction layouts.

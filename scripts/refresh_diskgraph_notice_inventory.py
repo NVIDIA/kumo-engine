@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reconcile DiskGraph Rust components in the notice inventory.
 
-The resolved DiskGraph artifact manifest is mirrored from kumo-diskgraph. This
+The resolved DiskGraph artifact manifest lives in packages/diskgraph. This
 tool makes the Rust components of ``3rdparty/notices/inventory.json`` match it:
 components that are still shipped keep their records, components that left
 both artifacts are removed, and new crate versions are derived from the legal
