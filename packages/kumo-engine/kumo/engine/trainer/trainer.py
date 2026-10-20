@@ -270,9 +270,7 @@ class Trainer:
     @property
     def bundle_id(self) -> Optional[str]:
         """Content id of the fitted or loaded model bundle."""
-        if self._training_result is None:
-            return None
-        return self._training_result.bundle_id
+        return getattr(self._training_result, 'bundle_id', None)
 
     def fit(
         self,
