@@ -313,7 +313,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.ARTIFACT_NAME_SAFE }}
           path: ${{ env.ARTIFACT_NAME_SAFE }}
@@ -321,7 +321,7 @@ jobs:
 
       - name: Upload flake diagnostics
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: flake-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
           path: ${{ env.ARTIFACTS_DIR }}
@@ -333,7 +333,7 @@ jobs:
         # The aggregate job's strict count check (below) turns a missed
         # upload into a loud workflow failure rather than a silent partial merge.
         if: success() && env.STORE_DURATIONS == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           # The `-of-<total>` suffix lets the aggregate job verify it received
           # every shard; total tracks the matrix size automatically.
@@ -556,7 +556,7 @@ jobs:
 
       - name: Upload Kumo-core CPU coverage
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: kumo-core-cpu-coverage
           path: |
@@ -702,7 +702,7 @@ jobs:
           PY
 
       - name: Upload merged durations
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-durations-merged
           path: .test_durations
@@ -771,7 +771,7 @@ jobs:
 
       - name: Upload coverage html
         if: steps.coverage.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: .coverage-${{ github.run_id }}-html
           path: htmlcov
