@@ -156,3 +156,47 @@ jobs:
             packages/kumo-core/.coverage*
             packages/kumo-core/coverage.xml
           if-no-files-found: ignore
+
+  required:
+    name: GPU CI
+    needs: [changes, diskgraph-wheel, gpu]
+    # A failed dependency must fail this check rather than skip it.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require an exemption or successful GPU tests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          GPU_REQUIRED: ${{ needs.changes.outputs.gpu }}
+          WHEEL_RESULT: ${{ needs.diskgraph-wheel.result }}
+          GPU_RESULT: ${{ needs.gpu.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == push ]]; then
+            if [[ "$CHANGES_RESULT" != success ]]; then
+              echo '::error::Changed-file detection did not succeed.'
+              exit 1
+            fi
+            case "$GPU_REQUIRED" in
+              false)
+                echo 'All changed files are exempt from GPU tests.'
+                exit 0
+                ;;
+              true) ;;
+              *)
+                echo '::error::Changed-file detection did not report whether GPU tests are required.'
+                exit 1
+                ;;
+            esac
+          elif [[ "$EVENT_NAME" != workflow_dispatch ]]; then
+            echo '::error::Unexpected workflow event.'
+            exit 1
+          fi
+          if [[ "$WHEEL_RESULT" != success || "$GPU_RESULT" != success ]]; then
+            echo "::error::GPU tests must pass (wheel=$WHEEL_RESULT, gpu=$GPU_RESULT)."
+            exit 1
+          fi
+          echo 'GPU tests passed.'
