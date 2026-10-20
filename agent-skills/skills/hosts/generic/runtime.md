@@ -75,6 +75,9 @@ assert connector.table_names(), 'Connector reached no tables.'
 Emit only the line for the confirmed system. Never emit a rootless S3 or GCS connector for a
 source: it cannot list tables.
 
+Name file and object-store tables without their suffix — `connector['accounts']` for
+`accounts.parquet` — and use those names in the tables, edges and PQL (`adapter.md` §3).
+
 **Credentials.** The ambient forms above name no secret. Use an explicit identity (§3.4) only
 when the user asks for one, and then read each secret at run time from an environment variable
 whose **name** is a config-cell constant — never a literal, never a value asked for in chat:
@@ -103,6 +106,23 @@ that connector's form (`kumoai-reference/references/kumo_finetuning_sdk.md` §9.
 destination back and compare its row count to `prediction_result.num_rows` — the only proof the
 write worked.
 
+**A path destination is written at exactly the confirmed path**, never inside it. Root the output
+connector at the destination's **parent** and name the destination's last segment in
+`output_paths`, keeping its trailing `/` for a directory:
+
+```python
+# confirmed destination: s3://bucket/prediction_outputs/churn_scores/
+OUTPUT_PARENT, OUTPUT_LEAF = 's3://bucket/prediction_outputs/', 'churn_scores/'
+output_connector = kumo.S3Connector(root_dir=OUTPUT_PARENT)    # FileConnector / GCSConnector alike
+output_config = kumo.PredictionOutputConfig(
+    connector=output_connector, output_paths={'predictions': OUTPUT_LEAF})
+OUTPUT_LOCATION = OUTPUT_PARENT + OUTPUT_LEAF                   # the confirmed path, for read-back
+```
+
+Rooting the connector at the destination itself and passing a `table_name` writes one level
+below it, to a path the user never confirmed. A directory destination must be empty or absent;
+the sink creates it.
+
 ```python
 # Local files, S3, GCS — directory or single-file output
 import pyarrow.dataset as ds
@@ -129,8 +149,7 @@ with snowflake.connector.connect(connection_name=SNOWFLAKE_CONNECTION) as conn:
 assert written == prediction_result.num_rows, (written, prediction_result.num_rows)
 ```
 
-- `OUTPUT_LOCATION` for files is the destination as written: a rooted connector's relative path
-  joined to its root.
+- `OUTPUT_LOCATION` for files, S3 and GCS is the confirmed destination itself.
 - A Databricks destination is passed to Kumo as `'<schema>__kumo__<table>'` and read back as
   `<catalog>.<schema>.<table>`. With a cluster and no SQL warehouse, there is no read-back here:
   say so in the artifact and in your reply.

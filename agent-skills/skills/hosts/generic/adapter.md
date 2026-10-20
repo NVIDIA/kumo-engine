@@ -96,8 +96,11 @@ column names exactly as that tool returns them; the artifact must use the same s
 (`kumoai-reference/references/kumo_finetuning_sdk.md` §3.2). Probe results are evidence for the
 proposal only: never written, never saved to a file, never fed to the artifact.
 
-For files, a table is a file or a directory of parts in one format, named by its path relative to
-the source directory — the name `FileConnector` uses.
+For files and object stores, a table is a file or a directory of parts in one format, below the
+source location. **Name it without its file suffix**: `accounts.parquet` is the table `accounts`.
+The connector finds the file from the bare name, and the name you pass becomes the table's name
+in the graph, the edges and the PQL, where a suffix's dot does not parse. Show the bare names in
+the proposal.
 
 ---
 
