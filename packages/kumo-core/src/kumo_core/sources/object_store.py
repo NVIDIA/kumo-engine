@@ -491,7 +491,7 @@ class ObjectStoreSourceReader:
         if self.fetch is not None:
             return self._download_objects(path, found, dest, worker_ceiling,
                                           parquet=True)
-        with _copies(found, worker_ceiling) as workers:
+        with copies(found, worker_ceiling) as workers:
             return fetch_all([
                 StagedFile(
                     entry.path, entry.size
@@ -521,7 +521,7 @@ class ObjectStoreSourceReader:
             return target
 
         try:
-            with _copies(found, worker_ceiling) as workers, ThreadPoolExecutor(
+            with copies(found, worker_ceiling) as workers, ThreadPoolExecutor(
                     max_workers=workers) as pool:
                 futures = [pool.submit(download, entry) for entry in found]
                 try:
@@ -816,8 +816,8 @@ def _parquet_batches(fragment: Any,
 
 
 @contextmanager
-def _copies(found: Sequence[Any],
-            worker_ceiling: int | None) -> Iterator[int]:
+def copies(found: Sequence[Any],
+           worker_ceiling: int | None = None) -> Iterator[int]:
     """Arrow-backed downloaders copy on Arrow's IO pool."""
     with memory_share(
             COPY_WORKER_BYTES, lambda ceiling: min(
