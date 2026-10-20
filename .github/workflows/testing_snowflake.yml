@@ -39,6 +39,10 @@ env:
 
 jobs:
   pytest:
+    # Fork PRs use public CI. Validate reviewed code in a same-repository PR.
+    if: >-
+      ${{ github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository }}
     environment:
       name: gha-kumo-workflow-tests
       # This job uses environment-scoped OIDC; it does not deploy an application.

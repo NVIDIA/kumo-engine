@@ -23,6 +23,10 @@ permissions:
 
 jobs:
   import:
+    # Fork PRs use public CI. Validate reviewed code in a same-repository PR.
+    if: >-
+      ${{ github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository }}
     environment: gha-kumo-workflow-tests
     runs-on: ubuntu-24.04
     env:

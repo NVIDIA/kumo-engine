@@ -27,6 +27,24 @@ For connector changes, start with the [public test command](public-tests.md).
 It builds its prerequisites and runs without cloud credentials. The
 [test matrix](../connector-test-matrix.md) lists coverage and CI limits.
 
+## CI for fork PRs
+
+Fork PRs run the existing public checks. Jobs that require AWS setup skip fork
+PRs: the main Python matrix, Snowflake, Databricks, GCS, and installation.
+Their test commands and file filters still apply to same-repository PRs and
+other supported events. These jobs also cover local tests outside public CI.
+
+For private validation before merge:
+
+1. Review the exact commit from the fork.
+2. Push that reviewed commit to a branch inside `NVIDIA/kumo-engine`.
+3. Open a PR from that branch to `main` and inspect the relevant test results.
+4. If the code changes, repeat review and validation for the new revision.
+
+A skipped job does not mean its tests passed. The internal PR has separate
+results, which do not update the fork PR. This manual process does not add an
+automatic requirement for private validation before merge.
+
 ## Report evidence
 
 Record the command, environment, result, and any untested dependency. Keep
