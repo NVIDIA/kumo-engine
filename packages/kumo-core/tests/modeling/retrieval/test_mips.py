@@ -239,14 +239,18 @@ def test_mips_metal_all_keys_excluded() -> None:
 
 
 @pytest.mark.parametrize('with_exclude', [False, True])
-def test_macos_cpu_retrieval_does_not_require_faiss(
+def test_macos_cpu_retrieval_does_not_use_faiss_search(
     monkeypatch: pytest.MonkeyPatch,
     with_exclude: bool,
 ) -> None:
     monkeypatch.setattr(sys.modules[MIPSFaiss.__module__], 'sys',
                         SimpleNamespace(platform='darwin'))
-    # Importing Faiss must fail if the CPU path attempts to load it.
-    monkeypatch.setitem(sys.modules, 'faiss', None)
+    import faiss
+
+    def fail_search(*args, **kwargs):
+        raise AssertionError('macOS CPU retrieval must not use Faiss search')
+
+    monkeypatch.setattr(faiss, 'knn', fail_search)
     rhs = torch.eye(4, dtype=torch.float64)
     lhs = torch.tensor([[1., 2., 3., 4.]], dtype=torch.float64,
                        requires_grad=True)
@@ -277,7 +281,6 @@ import sys
 import torch
 from kumo_core.modeling.retrieval.mips import MIPSBruteForce, MIPSFaiss
 
-assert 'faiss' not in sys.modules
 torch.manual_seed(123)
 devices = ['cpu']
 if torch.backends.mps.is_available():
@@ -295,8 +298,6 @@ for device in devices:
     assert torch.isfinite(lhs.grad).all()
     layer = torch.nn.Linear(32, 16)
     layer(torch.randn(512, 32)).sum().backward()
-    if device == 'cpu' and len(devices) == 1:
-        assert 'faiss' not in sys.modules
 print('CPU and Metal retrieval passed')
 '''
     env = {

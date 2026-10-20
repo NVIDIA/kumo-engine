@@ -59,9 +59,9 @@ Materialization accepts the selected graph in `TrainingWorkflowRequest`, a `Task
 Use `kumo_core.types` for value types, `kumo_core.training` for workflow contracts, and `kumo_core.train` for the numerical stack. These initializers expose deliberate lazy APIs without loading PyTorch during package discovery.
 
 `MIPSFaiss` uses PyTorch's `MIPSBruteForce` for CPU tensors on macOS, avoiding
-Faiss CPU search and its OpenMP runtime conflict with PyTorch. Faiss is loaded
-only when a Faiss backend is needed. Brute-force search materializes the full
-query-by-key score matrix, so large CPU workloads need additional memory.
+Faiss CPU search and its OpenMP runtime conflict with PyTorch.
+Brute-force search materializes the full query-by-key score matrix, so large
+CPU workloads need additional memory.
 Linux CPU and CUDA tensors retain their Faiss search paths.
 
 For MPS embeddings on Apple Silicon, `MIPSFaiss` uses Faiss's Metal backend.

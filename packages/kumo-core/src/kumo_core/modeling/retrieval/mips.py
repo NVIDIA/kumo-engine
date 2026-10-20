@@ -4,14 +4,11 @@
 import sys
 import warnings
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
 
+import faiss
 import torch
 from torch import Tensor
 from torch_geometric.utils import scatter
-
-if TYPE_CHECKING:
-    import faiss
 
 import logging
 
@@ -145,8 +142,6 @@ class MIPSFaiss(MIPSStructure):
             self._cpu_index = MIPSBruteForce(self._key)
             return
 
-        # CPU-only macOS processes must not load Faiss's second OpenMP runtime.
-        import faiss
         import faiss.contrib.torch_utils
 
         if self._key.is_cuda:
@@ -175,8 +170,6 @@ class MIPSFaiss(MIPSStructure):
 
         if self._cpu_index is not None:
             return self._cpu_index.search(query, k, exclude)
-
-        import faiss
 
         query_k = k
         if exclude is not None:
