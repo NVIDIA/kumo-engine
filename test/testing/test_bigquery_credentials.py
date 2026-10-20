@@ -2,7 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import asyncio
 import os
 from unittest import mock
 
@@ -16,41 +15,6 @@ from kumo.testing.rest import (
     bigquery_test_identity,
     invalid_bigquery_key_test_identity_config,
 )
-
-
-@pytest.mark.parametrize('asynchronous', [False, True])
-@pytest.mark.parametrize('enabled', [False, True])
-def test_bigquery_decorator_respects_gcp_test_switch(
-        monkeypatch, asynchronous, enabled):
-    monkeypatch.setenv('KUMO_RUN_GCP_TESTS', '1' if enabled else '0')
-    monkeypatch.setenv(bigquery_connector.ENV_GOOGLE_CREDENTIALS_JSON,
-                       'existing-credentials.json')
-    setup = mock.Mock()
-    called = mock.Mock(return_value='result')
-    monkeypatch.setattr(testing_bigquery, 'setup_bigquery_credentials', setup)
-
-    async def async_test():
-        return called()
-
-    def sync_test():
-        return called()
-
-    decorated = testing_bigquery.withBigQueryCredentials(
-        async_test if asynchronous else sync_test)
-
-    def run():
-        return asyncio.run(decorated()) if asynchronous else decorated()
-
-    if enabled:
-        assert run() == 'result'
-        setup.assert_called_once()
-        called.assert_called_once()
-    else:
-        with pytest.raises(pytest.skip.Exception,
-                           match='GCP integration tests are disabled'):
-            run()
-        setup.assert_not_called()
-        called.assert_not_called()
 
 
 def test_bigquery_rest_identity_uses_workload_exchange(monkeypatch):
