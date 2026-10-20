@@ -2146,8 +2146,8 @@ def test_overlapping_top_level_operations_are_rejected() -> None:
         observer.operation_started('prediction', 'bp-job-1', 'Predicting')
 
 
-def test_sdk_snowflake_extra_requires_ml_jobs_client_version() -> None:
-    sdk_pyproject = (Path(__file__).parents[2] / 'kumo-sdk' /
+def test_engine_snowflake_extra_requires_ml_jobs_client_version() -> None:
+    sdk_pyproject = (Path(__file__).parents[2] / 'kumo-engine' /
                      'pyproject.toml').read_text()
     sdk_extra = re.search(r'^snowflake=\[(.*?)^\]$', sdk_pyproject,
                           re.MULTILINE | re.DOTALL)
