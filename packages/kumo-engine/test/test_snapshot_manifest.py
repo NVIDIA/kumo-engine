@@ -124,9 +124,25 @@ def test_index_without_manifest_is_reused_and_backfilled(
             for group in ('environment', 'formats')
             for key, value in original[group].items()
         },
-        'environment': (None, None),
-        'formats': (None, None),
     }
+
+
+def test_manifest_without_ingest_stats_keeps_identity(tmp_path, no_scheduler):
+    from types import SimpleNamespace
+
+    from kumo.engine.graph import _write_snapshot_manifest
+
+    result = SimpleNamespace(index_path=str(tmp_path),
+                             ingest_stats_path=str(tmp_path / 'missing.json'))
+    sources = {'users': {'source': 'LOCAL_FILE:users.parquet', 'version': '1'}}
+    _write_snapshot_manifest(result, 'g@d', 'g', 'd' * 64, sources, fresh=True)
+
+    manifest = GraphSnapshot('g@d', tmp_path, {}).manifest
+    assert manifest['id'] == 'g@d'
+    assert manifest['parents']['source_tables'] == sources
+    assert manifest['tables'] == {'users': {'rows': None}}
+    assert manifest['edges'] == {}
+    assert manifest['environment'] is not None
 
 
 def test_manifest_write_failure_leaves_snapshot_unchanged(
@@ -193,6 +209,11 @@ def test_build_commit_comes_from_the_local_version_segment():
         'KUMO_JOB_ID': 'job-1'
     }, None, ('other', 'job-1', None, 'env')),
     ({
+        'KUMO_JOB_RUN_ID': 'run-9',
+        'TRAINING_JOB_NAME': 'train-1',
+        'TRAINING_JOB_ARN': 'arn:train-1',
+    }, None, ('sagemaker', 'train-1', 'run-9', 'env')),
+    ({
         'TRAINING_JOB_NAME': 'train-1',
         'TRAINING_JOB_ARN': 'arn:train-1',
     }, None, ('sagemaker', 'train-1', 'arn:train-1', 'auto')),
@@ -202,7 +223,7 @@ def test_build_commit_comes_from_the_local_version_segment():
     }, ('sagemaker', 'proc-1', 'arn:proc-1', 'auto')),
     ({
         'SNOWFLAKE_SERVICE_NAME': 'SCORE_JOB_A1B2C3D4'
-    }, None, ('snowflake', 'SCORE_JOB', 'SCORE_JOB_A1B2C3D4', 'auto')),
+    }, None, ('snowflake', None, 'SCORE_JOB_A1B2C3D4', 'auto')),
     ({
         'DATABRICKS_RUNTIME_VERSION': '16.4'
     }, None, ('databricks', None, None, 'auto')),

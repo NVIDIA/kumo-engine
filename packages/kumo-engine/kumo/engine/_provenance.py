@@ -6,7 +6,6 @@
 import json
 import os
 import platform
-import re
 import subprocess
 from functools import cache
 from importlib import metadata
@@ -28,7 +27,7 @@ def _build_commit(version: str) -> Optional[str]:
     if '+' in version:
         return version.split('+', 1)[1]
     root = Path(__file__).resolve().parents[2]
-    if root.name in ('site-packages', 'dist-packages'):
+    if not (root / 'pyproject.toml').is_file():
         return None
     command = ['git', '-C', str(root), 'rev-parse', '--short', 'HEAD']
     try:
@@ -79,8 +78,7 @@ def _detect() -> Optional[Dict[str, Any]]:
                         processing.get('ProcessingJobArn'), 'auto')
     service = env.get('SNOWFLAKE_SERVICE_NAME')
     if service:
-        return _context('snowflake', re.sub(r'_[A-Za-z0-9]{8}$', '', service),
-                        service, 'auto')
+        return _context('snowflake', None, service, 'auto')
     if env.get('DATABRICKS_RUNTIME_VERSION'):
         return _context('databricks', None, None, 'auto')
     return None
@@ -93,7 +91,10 @@ def scheduler_context() -> Optional[Dict[str, Any]]:
     job_run_id = env.get('KUMO_JOB_RUN_ID')
     detected = _detect()
     if scheduler or job_id or job_run_id:
-        if not scheduler:
-            scheduler = detected['platform'] if detected else 'other'
-        return _context(scheduler, job_id, job_run_id, 'env')
+        if detected is not None and scheduler in (None, '',
+                                                  detected['platform']):
+            scheduler = detected['platform']
+            job_id = job_id or detected['job_id']
+            job_run_id = job_run_id or detected['job_run_id']
+        return _context(scheduler or 'other', job_id, job_run_id, 'env')
     return detected

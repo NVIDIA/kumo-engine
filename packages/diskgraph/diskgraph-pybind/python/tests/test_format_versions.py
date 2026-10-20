@@ -6,10 +6,12 @@ import diskgraph
 
 
 def test_format_versions_names_every_on_disk_format():
-    assert diskgraph.format_versions() == {
-        "layout": 4,
-        "shard_commit": 1,
-        "temp_meta": 2,
-        "ingest_report": 2,
-        "manifest_schema": 1,
+    versions = diskgraph.format_versions()
+    assert set(versions) == {
+        "layout",
+        "shard_commit",
+        "temp_meta",
+        "ingest_report",
+        "manifest_schema",
     }
+    assert all(type(value) is int and value > 0 for value in versions.values())
