@@ -203,7 +203,8 @@ drawing_requires = [
     "seaborn==0.13.2",
     "graphviz==0.20.1",
     "matplotlib>=3.10.5",
-    "plotly==5.13.0",
+    # Bundles the MapLibre fix for CVE-2026-85061.
+    "plotly==7.1.0",
 ]
 
 rest_requires = [
@@ -334,6 +335,7 @@ setup(
         # CUDA-env-var branch.
         "cpu": ["torch", "kumo-core[faiss-cpu]==0.1.0.dev1"],
         "cu130": ["torch", "kumo-core[faiss-gpu]==0.1.0.dev1"],
+        "cu132": ["torch", "kumo-core[faiss-gpu]==0.1.0.dev1"],
     },
     # The platform's version providers for `kumo_core.version.get_kumo_version`:
     # the image version in ~/kumo_version.txt, then the release version from

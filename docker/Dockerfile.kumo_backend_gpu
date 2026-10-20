@@ -10,15 +10,15 @@
 #   - Pool activity pod (overflow)  emptyDir on eph node, runs train/predict
 #
 # Same kumo source tree as Dockerfile.kumo_backend_cpu — the only
-# functional differences are: GPU torch+cu130 stack, NVIDIA env (from
+# functional differences are: GPU torch+cu132 stack, NVIDIA env (from
 # the GPU base), and the GPU subprocess binaries under /opt/app/bin/.
 #
 # Self-contained build: the `base` stage below (CUDA runtime + Python 3.14 +
-# GPU torch+cu130) derives directly from NVIDIA's public cuda image, so there
+# GPU torch+cu132) derives directly from NVIDIA's public cuda image, so there
 # is no separate kumo-base image / intermediate ECR base to certify.
 
 # ---------------------------------------------------------------------------
-# base stage — CUDA runtime + Python 3.14 toolchain + torch+cu130
+# base stage — CUDA runtime + Python 3.14 toolchain + torch+cu132
 # and heavy stable pip deps. Formerly the standalone kumo-base-gpu image;
 # inlined here so the backend builds directly on NVIDIA's public cuda image
 # with no intermediate ECR image. Both stages below derive from it.
@@ -54,10 +54,11 @@ ENV LD_LIBRARY_PATH=/home/${USERNAME}/.local/lib:$LD_LIBRARY_PATH
 
 WORKDIR /home/${USERNAME}
 
-# Install Python toolchain + torch (CUDA 13.0) + heavy stable pip deps.
+# CUDA 13.2 PyTorch selects Toolkit 13.2.1, above the CVE-2025-33228 fix floor.
+# Keep the existing CUDA 13.3 base and CUDA 13 Faiss wheel.
 # Build context is the kumo repo root, so the script lives at docker/.
 COPY --chmod=755 docker/kumodeps_base /home/${USERNAME}/kumodeps_base
-RUN CUDA_VERSION=cu130 /home/${USERNAME}/kumodeps_base \
+RUN CUDA_VERSION=cu132 /home/${USERNAME}/kumodeps_base \
  && rm /home/${USERNAME}/kumodeps_base
 
 COPY docker/postgres-ca-bundles /tmp/postgres-ca-bundles
@@ -137,7 +138,7 @@ ARG UID=999
 ARG USERNAME=kumouser
 
 ENV TORCH=2.12.0
-ENV CUDA=cu130
+ENV CUDA=cu132
 
 # Bake GloVe embeddings into the image (see install_glove_files):
 #   basic (default), all, none.
@@ -246,7 +247,7 @@ RUN UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps \
         /tmp/diskgraph-wheel/*.whl
 
 # Third-party dependencies come from the committed uv.lock, exported for the
-# `full` + `${CUDA}` extras (cpu/cu130, which also select torch and kumo-core's
+# `full` + `${CUDA}` extras (cpu/cu132, which also select torch and kumo-core's
 # faiss build) and installed with --no-deps so nothing is re-resolved. The
 # workspace members are excluded from the export and installed below.
 #
