@@ -104,6 +104,9 @@ platform's `release-version`.
    - builds the wheels with `--release`, so the version is exactly the tag's;
    - resolves the x86_64 wheel against PyPI, alone and with each extra, on
      every Python version it claims, and stops if any fails;
+   - runs `wheel-smoke` on the finished x86_64 wheel with Python 3.12 and CPU
+     execution. Installation, training, prediction, and model reload must pass
+     before attachment or publication. See the [test criteria](testing.md#finished-kumo-engine-wheel);
    - attaches the x86_64 and ARM64 wheels to the GitHub release.
 5. **Approve the publication.** The `kitmaker` job waits for approval on the
    `kumo-engine-release` environment. It then checks that the Portal project
@@ -132,6 +135,7 @@ this workflow.
 | --- | --- |
 | Tag does not match `VERSION` | Delete the release and tag, fix the version (or the tag), publish again. Nothing was uploaded. |
 | `check-requirements` fails | A requirement is not on PyPI yet, usually `kumo-glove-6b-50d`. Publish it, then re-run the failed jobs. Nothing was attached or published. |
+| `wheel-smoke` fails | Read `summary.json` and the logs in the `kumo-engine-wheel-smoke-*` artifact. Fix the failure before release attachment or publication. See the [test procedure](testing.md#finished-kumo-engine-wheel). |
 | Build or glibc-floor check fails | Fix on the branch, delete the release and tag, then recreate the tag on the fixed commit. Nothing was uploaded. |
 | `kitmaker` fails before *publication* starts | Nothing was published. Fix the cause and re-run the failed job. |
 | `kitmaker` fails during *publication* | Check PyPI first: a file that reached it stays there. Re-run only if the file is missing. |
@@ -140,7 +144,8 @@ this workflow.
 ## Manual builds
 
 Running the workflow by hand (Actions, *Run workflow*) builds the wheel as
-`<version>+<commit>` and keeps it as a workflow artifact for 30 days. It never
+`<version>+<commit>`, runs dependency and workflow checks, and keeps the wheel
+as a workflow artifact for 30 days. It never
 attaches or publishes anything: attaching runs only for release events, and PyPI
 rejects local versions anyway.
 

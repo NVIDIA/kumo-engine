@@ -55,6 +55,7 @@ jobs:
           python-version: '3.12'
 
       - name: Test identity and failure reporting
+        shell: bash
         run: |
           python -m unittest discover -s test/scripts -p test_engine_wheel_smoke.py \
             2>&1 | tee "$RUNNER_TEMP/wheel-smoke-unit.log"

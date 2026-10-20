@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import importlib
 import json
 import subprocess
@@ -33,8 +34,11 @@ class WheelSmokeTest(unittest.TestCase):
         return wheel
 
     def test_reads_selected_version_and_rejects_another_distribution(self):
-        self.assertEqual(
-            self.runner.wheel_identity(self.wheel())['version'], '1.2.3')
+        wheel = self.wheel()
+        identity = self.runner.wheel_identity(wheel)
+        self.assertEqual(identity['version'], '1.2.3')
+        self.assertEqual(identity['sha256'],
+                         hashlib.sha256(wheel.read_bytes()).hexdigest())
         with self.assertRaisesRegex(ValueError, 'kumo-engine'):
             self.runner.wheel_identity(self.wheel(name='another-package'))
 
