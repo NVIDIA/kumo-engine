@@ -2,7 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import hashlib
 import json
 import logging
 import warnings
@@ -99,10 +98,13 @@ class TrainingTable:
     def _export_manifest(self, connector, output_config, files: Sequence[str],
                          export_id: str) -> Optional[bytes]:
         from kumo_core.object_store_sink import ObjectStoreSinkBackend
+        from kumo_core.sources import layout
 
+        name = output_config.table_name
         if (not isinstance(connector.sink_backend, ObjectStoreSinkBackend)
-                or not (output_config.table_name.endswith('/')
-                        or len(files) > 1)):
+                or not (name.endswith('/') or len(files) > 1)
+                or layout.file_type(name.rstrip('/')) not in (
+                    None, layout.PARQUET)):
             logger.debug('Training-table lineage is only recorded for '
                          'directory exports to files or object stores.')
             return None
@@ -182,7 +184,7 @@ class TrainingTable:
         run_id = new_run_id()
         run_dir = train_table_scratch_dir(run_id)
         rows_path = stage_source_table(source_table, run_dir / "source-table")
-        derived_from, modified = _export_lineage(source_table, rows_path)
+        derived_from, modified = _export_lineage(source_table)
         generation_plan = from_json_dict(
             to_json_dict(public_plan),
             TrainingTableGenerationPlan,
@@ -248,12 +250,12 @@ class TrainingTable:
             generation_plan=generation_plan,
         )
         _record_manifest(table, snapshot, task_plan.train_table, 'custom',
-                         derived_from, modified=modified)
+                         derived_from=derived_from, modified=modified)
         return table
 
 
 def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
-                     request: Any, source: str,
+                     request: Any, source: str, *,
                      derived_from: Optional[str] = None,
                      **fields: Any) -> None:
     path = table.staging_dir / STAGING_MANIFEST_FILE
@@ -290,42 +292,45 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
             f"{error}", UserWarning, stacklevel=3)
 
 
-def _content_digest(paths: Sequence[Any]) -> str:
+def _content_digest(paths: Sequence[str]) -> str:
+    import hashlib
+
+    from kumo_core.artifact_export import content_sha256
+
     digests = []
     for path in paths:
-        digest = hashlib.sha256()
         with open(path, 'rb') as handle:
-            for chunk in iter(lambda: handle.read(1 << 20), b''):
-                digest.update(chunk)
-        digests.append(digest.hexdigest())
-    return hashlib.sha256(''.join(sorted(digests)).encode()).hexdigest()
+            digests.append(hashlib.file_digest(handle, 'sha256').hexdigest())
+    return content_sha256(digests)
 
 
-def _export_lineage(source_table: SourceTable,
-                    parts: Path) -> Tuple[Optional[str], Optional[bool]]:
+def _export_lineage(
+        source_table: SourceTable) -> Tuple[Optional[str], Optional[bool]]:
     from kumo_core.artifact_export import EXPORT_MARKER_NAME, export_marker
     from kumo_core.object_store_sink import ObjectStoreSinkBackend
 
     connector = source_table.connector
-    try:
-        backend = connector.sink_backend
-    except NotImplementedError:
-        return None, None
-    if source_table.sql is not None or not isinstance(
-            backend, ObjectStoreSinkBackend):
-        return None, None
     name = source_table.table_name
     try:
+        backend = connector.sink_backend
+        if source_table.sql is not None or not isinstance(
+                backend, ObjectStoreSinkBackend):
+            return None, None
         payload = backend.read_sidecar(connector, name, EXPORT_MANIFEST_FILE)
         if payload is None:
+            logger.debug('%s has no training-table manifest', name)
             return None, None
+    except Exception as error:
+        logger.debug('No training-table manifest for %s: %s', name, error)
+        return None, None
+    try:
         exported = json.loads(payload)
         marker = backend.read_sidecar(connector, name, EXPORT_MARKER_NAME)
         if marker is None or marker.decode('utf-8') != export_marker(
                 exported['export_identity']):
             logger.debug('%s does not belong to the export it records', name)
             return None, None
-        digest = _content_digest(sorted(parts.glob('*.parquet')))
+        digest = backend.content_digest(connector, name)
         return exported['id'], digest != exported['content_sha256']
     except Exception as error:
         warnings.warn(

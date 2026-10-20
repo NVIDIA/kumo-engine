@@ -436,3 +436,49 @@ def test_warehouse_sink_receives_no_sidecars(graph):
         sink_backend=SimpleNamespace(write_files=write_files))
     table.export(TrainingTableOutputConfig(connector, 'DB.SCHEMA.TT'))
     assert calls == [{'export_id': f'{table.tt_id}:tt-export-v1'}]
+
+
+def test_reencoded_staging_does_not_mark_export_modified(graph, monkeypatch):
+    from kumo.engine.pquery import _custom_source
+
+    _, snapshot, connector, out = graph
+    query = ('PREDICT LIST_DISTINCT(events.ITEM_ID, 0, 7, days) '
+             'RANK TOP 3 FOR EACH ents.ID')
+    pquery, table, _ = _export(graph, query, 'lineage_weighted')
+    directory = out / 'lineage_weighted'
+    parts = sorted(directory.glob('*.parquet'))
+    for part in parts:
+        rows = pq.read_table(part)
+        weights = pa.array([[1.0] * len(values)
+                            for values in rows['TARGET1'].to_pylist()],
+                           pa.list_(pa.float64()))
+        pq.write_table(rows.append_column('WEIGHT', weights), part)
+    sidecar = directory / '_kumo_manifest.json'
+    sidecar.write_text(json.dumps({
+        **json.loads(sidecar.read_text()), 'content_sha256': _digest(parts)
+    }))
+    staged = []
+    stage_source_table = _custom_source.stage_source_table
+
+    def capture(*args, **kwargs):
+        staged.append(stage_source_table(*args, **kwargs))
+        return staged[-1]
+
+    monkeypatch.setattr(_custom_source, 'stage_source_table', capture)
+    manifest = kumo.TrainingTable.from_source_table(
+        connector['lineage_weighted'],
+        TrainingTableSpec(weight_col='WEIGHT', split_col='SPLIT'),
+        pq=pquery, snapshot=snapshot).manifest
+    assert _digest(sorted(staged[0].glob('*.parquet'))) != _digest(parts)
+    assert manifest['parents']['derived_from'] == table.tt_id
+    assert manifest['modified'] is False
+
+
+def test_csv_directory_export_gets_no_sidecar(graph):
+    graph_, snapshot, connector, out = graph
+    table = kumo.PredictiveQuery(
+        graph=graph_, query='PREDICT ents.LABEL FOR EACH ents.ID'
+    ).generate_training_table(snapshot)
+    table.export(TrainingTableOutputConfig(connector, 'rows.csv/'))
+    names = {p.name for p in (out / 'rows.csv').iterdir()}
+    assert '_SUCCESS' in names and '_kumo_manifest.json' not in names
