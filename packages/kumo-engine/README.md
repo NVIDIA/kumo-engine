@@ -290,8 +290,10 @@ predictions = trainer.predict(prediction_table, snapshot=snapshot)
 Both constructors stage and validate rows immediately, retaining local paths and
 query/generation metadata. Select graph data at `fit` or `predict` with `snapshot=`.
 
-Keep the scratch directory while those paths are needed. Use `ModelOutputConfig`
-or `PredictionOutputConfig` to copy results elsewhere through a connector.
+Keep the scratch directory while those paths are needed. Use
+`PredictionOutputConfig` with `Trainer.predict(..., output_config=...)` or
+`result.export(...)` to export predictions. Use `ModelOutputConfig` with
+`Trainer.fit(..., export_config=...)` to publish the fitted model bundle.
 
 Custom forecasting rows must include precomputed `future_labels` for training,
 `autoregression_labels` for lag features, and `year_over_year_labels` for
