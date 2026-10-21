@@ -421,6 +421,21 @@ def test_source_changes_reads_stamps_without_staging(
         'status': 'unknown', 'recorded': '1700000123', 'current': None}
 
 
+def test_source_changes_compares_directory_listings(tmp_path, scratch):
+    parts = tmp_path / 'dir' / 'users'
+    parts.mkdir(parents=True)
+    pd.DataFrame({'ID': range(5)}).to_parquet(parts / 'part-0.parquet')
+    connector = kumo.FileConnector(root_dir=str(tmp_path / 'dir'))
+    graph = kumo.Graph(tables={
+        'users': kumo.Table.from_source_table(connector['users'],
+                                              primary_key='ID')
+    }, edges=[])
+    snapshot = graph.snapshot()
+    assert snapshot.source_changes(graph)['users']['status'] == 'unchanged'
+    pd.DataFrame({'ID': range(5, 9)}).to_parquet(parts / 'part-1.parquet')
+    assert snapshot.source_changes(graph)['users']['status'] == 'changed'
+
+
 @pytest.mark.parametrize('edit', ['absent', 'reconstructed', 'hour_bucket'])
 def test_source_changes_unknown_without_a_comparable_version(
         scratch, graph, dated, edit):
