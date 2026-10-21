@@ -32,13 +32,14 @@ That run used the checkout's Python source and freshly built Linux DiskGraph
 debug binaries.
 CUDA mode also correctly fails when CUDA is unavailable.
 
-On GitHub-hosted Windows 2022, [run 39655272701](https://github.com/NVIDIA/kumo-engine/actions/runs/39655272701)
-passed CPU Torch setup, source installation with CPU Faiss (17m08s cold),
-and engine import/test collection after the libc guard fix. Real ingestion
-then exited with code 1; production diagnostic redaction hid the cause.
-The smoke now prints the bounded subprocess output tail for its generated
-fixture and rethrows the error, preserving production privacy and failure
-behavior. Windows ingest/train/predict, WSL, and GPU execution remain unverified.
+On GitHub-hosted Windows 2022, [run 39662048847](https://github.com/NVIDIA/kumo-engine/actions/runs/39662048847)
+completed real ingestion, one CPU training epoch, and checkpoint reload.
+Validation-result reading then failed because a local Windows file URI
+incorrectly treated the drive letter as a hostname. The URI producer is now
+fixed; Windows prediction and the complete smoke still await qualification.
+The smoke prints a bounded subprocess output tail for its generated fixture
+on failure, preserving production privacy and failure behavior.
+WSL and GPU execution remain unverified.
 Native Rust dependencies are cached even after smoke failure; workspace
 crates still rebuild from checkout source.
 
@@ -58,12 +59,16 @@ the delivered workflow remains manual-only. Ordinary fork pushes and
 | Environment | Runner group | Runner label |
 | --- | --- | --- |
 | Linux ARM64, L4 | `nv-gpu-arm64-l4-1gpu` | `linux-arm64-gpu-l4-latest-1` |
-| Windows x86-64 through WSL, L4 | `nv-gpu-general` | `wsl-amd64-gpu-l4-latest-1` |
+| Windows x86-64 through WSL, T4 | `nv-gpu-amd64-t4-1gpu` | `wsl-amd64-gpu-t4-latest-1` |
 | Native Windows x86-64, CPU | GitHub-hosted | `windows-2022` |
 
-Access to the two GPU runner groups is requested in
+The workflow selects runners by label only; the table records catalog group
+membership. The current runner-access configuration already grants the T4
+group used by WSL. ARM64 L4 access is requested in
 [runner configuration PR 549](https://github.com/nv-gha-runners/enterprise-runner-configuration/pull/549);
-review and application remain pending. Native Windows
+review and application remain pending.
+The missing ARM64 grant is a configuration gap; queued jobs alone do not
+establish their live permission or provisioning failure cause. Native Windows
 uses a GitHub-hosted CPU runner and needs no enterprise GPU group access.
 All images need a
 C/C++ compiler and network access to package indexes and Rust dependencies.
