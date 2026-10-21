@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class RuntimeProgressObserver(Protocol):
-    """Receives serial progress notifications from one process."""
+    """Receives progress notifications from one process."""
     def operation_started(
         self,
         kind: str,
@@ -45,7 +45,9 @@ class RuntimeProgressObserver(Protocol):
 
 
 _OBSERVER: RuntimeProgressObserver | None = None
-_LOCK = threading.RLock()
+_LOCK = threading.Condition(threading.RLock())
+_IN_FLIGHT = 0
+_RESETTING = False
 
 
 def install(observer: RuntimeProgressObserver, ) -> RuntimeProgressObserver:
@@ -65,25 +67,52 @@ def install(observer: RuntimeProgressObserver, ) -> RuntimeProgressObserver:
 
 def reset(token: RuntimeProgressObserver) -> None:
     """Remove the observer represented by ``token`` after callbacks finish."""
-    global _OBSERVER
+    global _OBSERVER, _RESETTING
     with _LOCK:
-        if _OBSERVER is not token:
+        if _OBSERVER is not token or _RESETTING:
             raise RuntimeError('Kumo runtime progress observer token changed')
-        _OBSERVER = None
+        _RESETTING = True
+        try:
+            while _IN_FLIGHT:
+                _LOCK.wait()
+            _OBSERVER = None
+        finally:
+            _RESETTING = False
+
+
+def has_observer() -> bool:
+    """Whether optional runtime progress needs to be collected."""
+    with _LOCK:
+        return _OBSERVER is not None and not _RESETTING
+
+
+@contextmanager
+def _delivery() -> Iterator[RuntimeProgressObserver | None]:
+    """Reserve a callback without holding the process lock during I/O."""
+    global _IN_FLIGHT
+    with _LOCK:
+        observer = None if _RESETTING else _OBSERVER
+        if observer is not None:
+            _IN_FLIGHT += 1
+    try:
+        yield observer
+    finally:
+        if observer is not None:
+            with _LOCK:
+                _IN_FLIGHT -= 1
+                _LOCK.notify_all()
 
 
 def stage_changed(stage: str, detail: str | None = None) -> None:
     """Publish a stage transition when an observer is installed."""
-    with _LOCK:
-        observer = _OBSERVER
+    with _delivery() as observer:
         if observer is not None:
             observer.stage_changed(stage, detail)
 
 
 def progress_updated(kind: str, progress: Any) -> None:
     """Best-effort publish a native Kumo progress value when available."""
-    with _LOCK:
-        observer = _OBSERVER
+    with _delivery() as observer:
         if observer is not None:
             try:
                 observer.progress_updated(kind, progress)
@@ -109,8 +138,7 @@ def operation(
     Observers may reject overlapping operations.  Calls remain free when no
     observer is installed, which is the normal :class:`LocalBackend` path.
     """
-    with _LOCK:
-        observer = _OBSERVER
+    with _delivery() as observer:
         if observer is not None:
             observer.operation_started(kind, operation_id, stage)
     if observer is None:
@@ -123,9 +151,10 @@ def operation(
         error = caught
         raise
     finally:
-        with _LOCK:
+        with _delivery() as current:
             try:
-                observer.operation_finished(kind, operation_id, error)
+                if current is observer:
+                    observer.operation_finished(kind, operation_id, error)
             except Exception:
                 # Completion reporting is observability.  Once the operation
                 # has produced a result (or its own exception), an observer

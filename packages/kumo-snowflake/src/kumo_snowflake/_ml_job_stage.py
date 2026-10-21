@@ -65,11 +65,11 @@ def _file_result(result: Any) -> dict[str, Any]:
 
 
 def _stage_object_missing(error: BaseException) -> bool:
-    if getattr(error, 'errno', None) == 250016:
-        return True
-    return any(fragment in str(error).lower()
-               for fragment in ('does not exist', 'not found',
-                                'no files matched'))
+    # Connector ER_FILE_NOT_EXISTS. SQL compilation errors for an absent or
+    # inaccessible stage/session must propagate, even when their text says
+    # "not found". Only this file-transfer code identifies a missing object.
+    return (getattr(error, 'errno', None) == 253006
+            or getattr(error, 'sql_error_code', None) == 253006)
 
 
 class StageStore:

@@ -131,10 +131,10 @@ value is also exposed as `result.published_model` for convenient discovery.
 Native Kumo training and prediction progress reaches the durable ML Job
 progress sidecar through the shared `kumo_core.runtime_progress` observer.
 The submission layer does not import or freeze either SDK's public API.
-A submitted function may run at most one training operation and at most one
-prediction operation, sequentially. Training followed by prediction is
-supported; repeated or overlapping operations of either kind fail the durable
-job result.
+A submitted function may run sequential training and prediction operations,
+including repeated predictions over multiple partitions. Progress describes the
+current or most recent operation. Explicit overlapping top-level operations
+are unsupported and fail the durable job result.
 
 Handles are not thread-safe. Serialize calls on one handle. Independent jobs
 may be observed concurrently when callers supply distinct Snowpark sessions.

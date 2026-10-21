@@ -166,3 +166,31 @@ def test_a_second_process_observer_is_rejected() -> None:
             runtime_progress.install(_Observer())
     finally:
         runtime_progress.reset(token)
+
+
+def test_slow_callback_does_not_hold_process_lock() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    checked = threading.Event()
+
+    class SlowObserver(_Observer):
+        def progress_updated(self, kind: str, progress: Any) -> None:
+            entered.set()
+            assert release.wait(timeout=2)
+
+    token = runtime_progress.install(SlowObserver())
+    worker = threading.Thread(target=runtime_progress.progress_updated,
+                              args=('prediction', {}))
+    reader = threading.Thread(
+        target=lambda: (runtime_progress.has_observer(), checked.set()))
+    try:
+        worker.start()
+        assert entered.wait(timeout=1)
+        reader.start()
+        assert checked.wait(timeout=1)
+    finally:
+        release.set()
+        worker.join(timeout=2)
+        reader.join(timeout=2)
+        runtime_progress.reset(token)
+    assert not runtime_progress.has_observer()

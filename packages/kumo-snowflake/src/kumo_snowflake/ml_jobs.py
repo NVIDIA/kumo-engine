@@ -123,7 +123,8 @@ def _exception_chain(error: BaseException) -> list[BaseException]:
             continue
         seen.add(id(candidate))
         found.append(candidate)
-        for attribute in ('__cause__', '__context__', 'conn_error'):
+        # Implicit context can describe an unrelated error being handled.
+        for attribute in ('__cause__', 'conn_error'):
             nested = getattr(candidate, attribute, None)
             if isinstance(nested, BaseException):
                 pending.append(nested)
@@ -132,32 +133,34 @@ def _exception_chain(error: BaseException) -> list[BaseException]:
 
 def _exception_kind(error: BaseException) -> str:
     candidates = _exception_chain(error)
+    sql_exception_names = {
+        'SnowparkSQLException',
+        'DatabaseError',
+        'ProgrammingError',
+        'OperationalError',
+        'SnowparkClientException',
+    }
+    # Authorization failures must never become retryable because a wrapper
+    # also carries a transport error.
     if any(
-            isinstance(candidate, (ConnectionError, TimeoutError))
-            for candidate in candidates):
-        return 'transient'
-    if any(
-            type(candidate).__name__ in _TRANSIENT_CONNECTOR_ERRORS
-            for candidate in candidates):
-        return 'transient'
-    if any(
-            str(getattr(candidate, 'sqlstate', '') or '') == '42501' or any(
-                fragment in str(candidate).lower()
-                for fragment in ('insufficient privilege', 'access denied',
-                                 'not authorized'))
+            isinstance(candidate, PermissionError)
+            or str(getattr(candidate, 'sqlstate', '') or '') == '42501' or (
+                type(candidate).__name__ in sql_exception_names and any(
+                    fragment in str(candidate).lower()
+                    for fragment in ('insufficient privilege', 'access denied',
+                                     'not authorized')))
             for candidate in candidates):
         return 'permission'
-    sql_exception_names = {
-        'SnowparkSQLException', 'DatabaseError', 'ProgrammingError'
-    }
+    if any(
+            isinstance(candidate, (ConnectionError, TimeoutError))
+            or type(candidate).__name__ in _TRANSIENT_CONNECTOR_ERRORS
+            or str(getattr(candidate, 'sqlstate', '') or '').startswith('08')
+            for candidate in candidates):
+        return 'transient'
     if any(
             type(candidate).__name__ in sql_exception_names
             for candidate in candidates):
         return 'sql'
-    if any(
-            type(candidate).__name__ == 'SnowparkClientException'
-            for candidate in candidates):
-        return 'transient'
     return 'unexpected'
 
 
@@ -453,11 +456,15 @@ def _set_tags(session: Any, service_id: str, tags: Mapping[str, str]) -> None:
             retryable=False,
             service_id=service_id,
         ) from error
-    assignments = ', '.join(f'{name} = ?' for name in tags)
-    session.sql(
-        f'ALTER SERVICE {service_name} SET TAG {assignments}',
-        params=list(tags.values()),
-    ).collect()
+
+    def literal(value: str) -> str:
+        # Snowflake interprets backslash escapes inside single-quoted strings.
+        escaped = value.replace('\\', '\\\\').replace("'", "''")
+        return f"'{escaped}'"
+
+    assignments = ', '.join(f'{name} = {literal(value)}'
+                            for name, value in tags.items())
+    session.sql(f'ALTER SERVICE {service_name} SET TAG {assignments}').collect()
 
 
 def _locations(execution_id: str) -> dict[str, str]:
@@ -657,14 +664,29 @@ class SnowflakeMLJob:
     def progress(self) -> SnowflakeMLJobProgress:
         """Return the latest native Kumo progress and stage events."""
         store = self._store()
-        payload = store.get_json(self.progress_location, missing_ok=True)
-        durable = store.get_json(self.result_location, missing_ok=True)
+        try:
+            payload = store.get_json(self.progress_location, missing_ok=True)
+        except Exception:
+            payload = None
+            logger.warning('Could not read progress for %s; querying status',
+                           self.service_id, exc_info=True)
+        try:
+            durable = store.get_json(self.result_location, missing_ok=True)
+        except Exception:
+            durable = None
+            logger.warning('Could not read terminal progress for %s',
+                           self.service_id, exc_info=True)
         durable_result: SnowflakeMLJobResult | None = None
         if isinstance(durable, Mapping):
             durable_result = self._result_from_payload(durable)
             status = durable_result.status
         else:
-            status = self._service_status()
+            try:
+                status = self._service_status()
+            except Exception:
+                # Recheck durable state if service history has disappeared
+                # or its status endpoint is temporarily unavailable.
+                status = self.status()
         now = datetime.now(timezone.utc)
         terminal_at = (durable_result.finished_at if durable_result is not None
                        and durable_result.finished_at is not None else now)
@@ -832,31 +854,42 @@ class SnowflakeMLJob:
         print(f'Attaching to Snowflake ML Job {self.service_id}.')
         current_stage: str | None = None
         bar: Any | None = None
-        while True:
-            progress = self.progress()
-            events = progress.status_report.event_log
-            stage = events[-1].stage_name if events else self.status().value
-            if stage != current_stage:
-                if bar is not None:
-                    bar.close()
-                    bar = None
-                print(f'Current stage: {stage}')
-                current_stage = stage
+        try:
+            while True:
+                try:
+                    progress = self.progress()
+                    events = progress.status_report.event_log
+                    stage = (events[-1].stage_name if events else
+                             progress.status_report.status.value.title())
+                    if stage != current_stage:
+                        if bar is not None:
+                            bar.close()
+                            bar = None
+                        print(f'Current stage: {stage}')
+                        current_stage = stage
 
-            completed, total, detail = _progress_units(progress)
-            if total > 0:
-                if bar is None:
-                    bar = tqdm(total=total, desc=stage, dynamic_ncols=True)
-                bar.total = total
-                bar.update(max(0, completed - bar.n))
-                if detail:
-                    bar.set_postfix_str(detail)
-                bar.refresh()
-            if progress.status_report.status.is_terminal:
-                if bar is not None:
-                    bar.close()
-                return self.result()
-            time.sleep(interval_s)
+                    completed, total, detail = _progress_units(progress)
+                    if total > 0:
+                        if bar is None:
+                            bar = tqdm(total=total, desc=stage,
+                                       dynamic_ncols=True)
+                        bar.total = total
+                        bar.update(max(0, completed - bar.n))
+                        if detail:
+                            bar.set_postfix_str(detail)
+                        bar.refresh()
+                    if progress.status_report.status.is_terminal:
+                        return self.result()
+                except Exception as error:
+                    if _exception_kind(error) != 'transient':
+                        raise
+                    logger.warning(
+                        'Temporary error observing %s; retrying in %.1fs: %s',
+                        self.service_id, interval_s, error)
+                time.sleep(interval_s)
+        finally:
+            if bar is not None:
+                bar.close()
 
     def close(self) -> None:
         """Release references held by this observer.
@@ -1048,6 +1081,7 @@ def submit_ml_job(
         'tags': dict(validated_tags),
         'created_at': datetime.now(timezone.utc).isoformat(),
     }
+    dispatch_started = False
     try:
         store.put_json(locations['manifest'], manifest)
         # Function dispatch writes its app below this predictable definition
@@ -1064,19 +1098,31 @@ def submit_ml_job(
             'progress_location': locations['progress'],
             'result_location': locations['result'],
         }
-        handle = definition(_detach_callable(function), safe_args, safe_kwargs,
-                            config)
+        detached = _detach_callable(function)
+        dispatch_started = True
+        handle = definition(detached, safe_args, safe_kwargs, config)
     except Exception as error:
-        failed = {**manifest, 'submission_state': 'failed', 'error': str(error)}
+        state = 'dispatch_unknown' if dispatch_started else 'failed'
+        failed = {**manifest, 'submission_state': state, 'error': str(error)}
         try:
             store.put_json(locations['manifest'], failed)
         except Exception:
             logger.exception('Could not persist failed submission manifest')
-        if isinstance(error, SnowflakeMLJobError):
+        if not dispatch_started and isinstance(error, SnowflakeMLJobError):
             raise
+        if dispatch_started:
+            message = (
+                f'Snowflake ML Job dispatch outcome is unknown for definition '
+                f'{definition_name!r}, execution {execution_id!r}. Inspect '
+                f'Snowflake services and {stage_name}/{locations["manifest"]} '
+                f'before submitting again; a GPU job may already be running: '
+                f'{error}')
+        else:
+            message = f'Snowflake ML Job preparation failed: {error}'
         raise SnowflakeMLJobSubmissionError(
-            f'Snowflake ML Job dispatch failed: {error}',
-            retryable=_exception_kind(error) == 'transient',
+            message,
+            retryable=(not dispatch_started
+                       and _exception_kind(error) == 'transient'),
         ) from error
 
     service_id = str(getattr(handle, 'id', '') or '')

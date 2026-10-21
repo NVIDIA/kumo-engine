@@ -221,7 +221,9 @@ class _Files:
         del kwargs
         self.session.gets.append(target)
         if target not in self.session.objects:
-            raise RuntimeError(f'{target} does not exist')
+            from snowflake.snowpark.exceptions import SnowparkSQLException
+            raise SnowparkSQLException(f'{target} does not exist',
+                                       sql_error_code=253006)
         return io.BytesIO(self.session.objects[target])
 
 
@@ -407,7 +409,8 @@ def test_submit_resolves_quoted_identifiers_at_every_sql_boundary(
     assert any(
         sql.startswith(
             'ALTER SERVICE "job.db"."job schema"."job.service" SET TAG '
-            '"tag.db"."tag schema"."request.tag" = ?') for sql in statements)
+            "\"tag.db\".\"tag schema\".\"request.tag\" = 'run-1'")
+        for sql in statements)
     job.close()
 
 
@@ -1942,7 +1945,7 @@ def test_automatic_progress_ignores_late_regression_after_completion() -> None:
     ]
 
 
-def test_automatic_progress_rejects_sequential_same_kind_operations() -> None:
+def test_automatic_progress_accepts_sequential_same_kind_operations() -> None:
     session = _Session()
     observer = _RemoteObserver(
         StageStore(session, STAGE),
@@ -1955,11 +1958,12 @@ def test_automatic_progress_rejects_sequential_same_kind_operations() -> None:
     second = PredictionProgress(total_iterations=3, completed_iterations=1)
 
     observer.progress_updated('prediction', first)
-    with pytest.raises(RuntimeError, match='at most one prediction'):
-        observer.progress_updated('prediction', second)
+    observer.progress_updated('prediction', second)
+    observer.raise_for_policy_violation()
+    assert observer.terminal(True)['prediction']['completed_iterations'] == 1
 
 
-def test_changed_automatic_progress_source_fails_durable_result(
+def test_changed_automatic_progress_source_preserves_durable_result(
     monkeypatch: Any, ) -> None:
     session = _Session()
     monkeypatch.setattr(
@@ -1976,25 +1980,23 @@ def test_changed_automatic_progress_source_fails_durable_result(
             'prediction',
             PredictionProgress(total_iterations=3, completed_iterations=2),
         )
-        return 'must not succeed'
+        return 'done'
 
-    with pytest.raises(RuntimeError, match='progress source changed'):
-        execute_user_function(change_source_while_active, [], {}, {
-            'schema_version': 1,
-            'execution_id': 'changed-progress-source',
-            'stage_name': STAGE,
-            'progress_location': 'progress.json',
-            'result_location': 'result.json',
-        })
+    execute_user_function(change_source_while_active, [], {}, {
+        'schema_version': 1,
+        'execution_id': 'changed-progress-source',
+        'stage_name': STAGE,
+        'progress_location': 'progress.json',
+        'result_location': 'result.json',
+    })
 
     durable = StageStore(session, STAGE).get_json('result.json')
-    assert durable['status'] == 'FAILED'
-    assert durable['diagnostic']['message'].endswith(
-        'progress source changed during an active automatic operation')
+    assert durable['status'] == 'SUCCEEDED'
+    assert durable['progress']['completed_iterations'] == 2
 
 
 @pytest.mark.parametrize('kind', ['training', 'prediction'])
-def test_repeated_automatic_operation_fails_durable_result(
+def test_repeated_automatic_operation_preserves_durable_result(
     monkeypatch: Any,
     kind: str,
 ) -> None:
@@ -2024,21 +2026,20 @@ def test_repeated_automatic_operation_fails_durable_result(
             kind,
             progress(1, 3),
         )
-        return 'must not succeed'
+        return 'done'
 
-    with pytest.raises(RuntimeError, match=f'at most one {kind}'):
-        execute_user_function(run_twice, [], {}, {
-            'schema_version': 1,
-            'execution_id': f'repeated-{kind}',
-            'stage_name': STAGE,
-            'progress_location': 'progress.json',
-            'result_location': 'result.json',
-        })
+    execute_user_function(run_twice, [], {}, {
+        'schema_version': 1,
+        'execution_id': f'repeated-{kind}',
+        'stage_name': STAGE,
+        'progress_location': 'progress.json',
+        'result_location': 'result.json',
+    })
 
     durable = StageStore(session, STAGE).get_json('result.json')
-    assert durable['status'] == 'FAILED'
-    assert durable['diagnostic']['message'].endswith(
-        'at most one prediction operation')
+    assert durable['status'] == 'SUCCEEDED'
+    assert durable['progress']['total_trials' if kind ==
+                               'training' else 'total_iterations'] == 3
 
 
 def test_terminal_progress_waits_for_in_flight_worker_callback(

@@ -9,6 +9,7 @@ import copy
 import dataclasses
 import logging
 import math
+import threading
 import time
 import traceback
 from datetime import date, datetime
@@ -16,6 +17,7 @@ from datetime import time as time_value
 from datetime import timedelta, timezone
 from decimal import Decimal
 from enum import Enum
+from functools import wraps
 from pathlib import PurePath
 from typing import Any, Callable, Mapping, Sequence
 
@@ -184,9 +186,19 @@ def _safe_traceback(error: BaseException) -> str:
         return f'{type(error).__name__}: {_safe_exception_text(error)}'
 
 
+def _synchronized(method: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(method)
+    def synchronized(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return synchronized
+
+
 class _RemoteObserver:
     """Serially mirrors native progress through the ML Job active session."""
     def __init__(self, store: StageStore, config: Mapping[str, Any]) -> None:
+        self._lock = threading.RLock()
         self._store = store
         self._execution_id = str(config['execution_id'])
         self._progress_location = str(config['progress_location'])
@@ -208,7 +220,6 @@ class _RemoteObserver:
         self._operation_automatic = False
         self._active_automatic_source: Any | None = None
         self._completed_automatic_source: Any | None = None
-        self._native_operation_kinds: set[str] = set()
         self._policy_error: RuntimeError | None = None
         self._last_publish = 0.0
         self._publish(force=True)
@@ -265,22 +276,16 @@ class _RemoteObserver:
             )
         self._last_publish = monotonic
 
+    @_synchronized
     def operation_started(self, kind: str, operation_id: str,
                           stage: str) -> None:
         if self._operation_active:
-            raise RuntimeError(
+            error = RuntimeError(
                 'A submitted Snowflake ML Job may run only one top-level '
                 'Kumo operation at a time; overlapping '
                 f'{self._operation_kind!r} and {kind!r} is unsupported')
-        if (kind in {'training', 'prediction'}
-                and kind in self._native_operation_kinds):
-            error = RuntimeError(
-                'A submitted Snowflake ML Job may run at most one training '
-                'operation and at most one prediction operation')
             self._policy_error = error
             raise error
-        if kind in {'training', 'prediction'}:
-            self._native_operation_kinds.add(kind)
         self._operation_kind = kind
         self._operation_id = operation_id
         self._training = None
@@ -292,11 +297,13 @@ class _RemoteObserver:
         self._completed_automatic_source = None
         self.stage_changed(stage)
 
+    @_synchronized
     def raise_for_policy_violation(self) -> None:
         """Fail the durable result even if callback delivery was best effort."""
         if self._policy_error is not None:
             raise self._policy_error
 
+    @_synchronized
     def stage_changed(self, stage: str, detail: str | None = None) -> None:
         now = _now()
         if not self._events or self._events[-1].stage_name != stage:
@@ -314,14 +321,17 @@ class _RemoteObserver:
             )
         self._publish(force=True)
 
+    @_synchronized
     def progress_updated(self, kind: str, progress: Any) -> None:
+        # Per-trial callbacks cannot establish a top-level operation.
+        if not isinstance(progress, (AutoTrainerProgress, PredictionProgress)):
+            return
         if (not self._operation_active and kind == self._operation_kind
                 and progress is self._completed_automatic_source):
             # All callbacks from one native logger carry the same mutable
             # progress object.  Retain that object as the automatic-operation
             # generation marker so a delayed callback cannot reopen it.  A new
-            # logger object reaches ``operation_started`` and is rejected by
-            # the one-operation-per-kind submission policy below.
+            # logger object can start the next sequential operation.
             return
         if not self._operation_active:
             completed_source = self._completed_automatic_source
@@ -362,19 +372,10 @@ class _RemoteObserver:
                     self._best_metrics[name] = max(previous, value)
         elif isinstance(progress, PredictionProgress):
             self._prediction = copy.deepcopy(progress)
-        else:
-            # Trial-level TrainerProgress is useful inside AutoTrainerProgress
-            # but is not itself the public top-level contract.
-            return
         if self._operation_automatic:
-            if self._active_automatic_source is None:
-                self._active_automatic_source = progress
-            elif progress is not self._active_automatic_source:
-                error = RuntimeError(
-                    f'Kumo {kind!r} progress source changed during an active '
-                    'automatic operation')
-                self._policy_error = error
-                raise error
+            # Partitioned prediction may construct multiple loggers.
+            # Only explicit operation boundaries establish ownership.
+            self._active_automatic_source = progress
         self._publish()
         if self._operation_automatic and self._progress_complete(kind):
             self.operation_finished(kind, self._execution_id, None)
@@ -390,6 +391,7 @@ class _RemoteObserver:
                     >= self._prediction.total_iterations)
         return False
 
+    @_synchronized
     def operation_finished(self, kind: str, operation_id: str,
                            error: BaseException | None) -> None:
         if (kind, operation_id) != (self._operation_kind, self._operation_id):
@@ -405,8 +407,9 @@ class _RemoteObserver:
         self._operation_active = False
         self._operation_automatic = False
 
-    def terminal(self, succeeded: bool,
-                 detail: str | None = None) -> dict[str, Any]:
+    @_synchronized
+    def terminal(self, succeeded: bool, detail: str | None = None, *,
+                 cancelled: bool = False) -> dict[str, Any]:
         if self._operation_active:
             assert self._operation_kind is not None
             stage = (f'{self._operation_kind.title()} complete'
@@ -414,8 +417,9 @@ class _RemoteObserver:
             self.stage_changed(stage, None if succeeded else detail)
             self._operation_active = False
             self._operation_automatic = False
-        status = JobStatus.DONE if succeeded else JobStatus.FAILED
-        stage = 'Completed' if succeeded else 'Failed'
+        status = (JobStatus.CANCELLED if cancelled else
+                  JobStatus.DONE if succeeded else JobStatus.FAILED)
+        stage = 'Cancelled' if cancelled else 'Completed' if succeeded else 'Failed'
         self._events.append(
             JobEventLogEntry(
                 stage_name=stage,
@@ -578,45 +582,59 @@ def execute_user_function(
             if isinstance(returned, PublishedModel):
                 execution_context.published_model = returned
             value = _json_value(returned)
-        except BaseException as error:
             runtime_progress.reset(token)
             observer_attached = False
+            terminal_progress = observer.terminal(True)
+            result = {
+                'schema_version': _SCHEMA_VERSION,
+                'execution_id': str(config['execution_id']),
+                'status': 'SUCCEEDED',
+                'finished_at': _now().isoformat(),
+                'value': value,
+                'diagnostic': None,
+                **_result_observation_fields(execution_context, terminal_progress),
+            }
+        except BaseException as error:
+            cancelled = isinstance(error, (SystemExit, KeyboardInterrupt))
+            if observer_attached:
+                runtime_progress.reset(token)
+                observer_attached = False
             try:
                 terminal_progress = observer.terminal(
-                    False, _safe_exception_text(error))
+                    False, _safe_exception_text(error), cancelled=cancelled)
             except Exception:
                 terminal_progress = None
                 logger.exception(
                     'Could not finalize progress for failed Kumo execution %s',
                     config.get('execution_id'))
+            try:
+                observation_fields = _result_observation_fields(
+                    execution_context, terminal_progress)
+            except Exception:
+                logger.exception('Could not serialize failure observations')
+                observation_fields = {
+                    'published_model': None,
+                    'progress': None,
+                    'progress_kind': None,
+                    'status_report': None,
+                }
             failure = {
                 'schema_version': _SCHEMA_VERSION,
                 'execution_id': str(config['execution_id']),
-                'status': 'FAILED',
+                'status': 'CANCELLED' if cancelled else 'FAILED',
                 'finished_at': _now().isoformat(),
                 'value': None,
                 'diagnostic': _diagnostic(error),
-                **_result_observation_fields(execution_context, terminal_progress),
+                **observation_fields,
             }
             try:
-                store.put_json(str(config['result_location']), failure)
+                _publish_terminal_result(store, str(config['result_location']),
+                                         failure)
             except Exception:
                 logger.exception(
                     'Could not publish the durable failure for Kumo execution %s',
                     config.get('execution_id'))
             raise
-        runtime_progress.reset(token)
-        observer_attached = False
-        terminal_progress = observer.terminal(True)
-        result = {
-            'schema_version': _SCHEMA_VERSION,
-            'execution_id': str(config['execution_id']),
-            'status': 'SUCCEEDED',
-            'finished_at': _now().isoformat(),
-            'value': value,
-            'diagnostic': None,
-            **_result_observation_fields(execution_context, terminal_progress),
-        }
         _publish_terminal_result(
             store,
             str(config['result_location']),

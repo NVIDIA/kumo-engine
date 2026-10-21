@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import torch
+from kumo_core import runtime_progress
 from kumo_core.diskgraph.lightning_data import (
     DiskgraphLightningDataModule,
     suppress_batch_indices_warning,
@@ -58,6 +59,25 @@ from kumo_core.utils.names import get_table_name
 from kumo_core.utils.registry import register
 
 logger = logging.getLogger(__name__)
+
+
+def _prediction_progress_callbacks(
+    datamodule: DiskgraphLightningDataModule,
+    log_dir: str | None,
+    log_id: int,
+) -> list[Any]:
+    """Collect prediction progress only when a consumer needs it."""
+    if log_dir is None and not runtime_progress.has_observer():
+        return []
+    from kumo_core.callbacks import PredictionProgressLogger
+
+    loader = datamodule.predict_dataloader()
+    try:
+        total_iterations = len(loader)
+    except TypeError:
+        # Streaming loaders have no known total; completed batches still help.
+        total_iterations = 0
+    return [PredictionProgressLogger(log_dir, log_id, total_iterations)]
 
 
 def _defer_predict_worker_shutdown(
@@ -1371,7 +1391,6 @@ class DiskgraphNestedTrainer(NestedTrainer):
         import math
 
         import torch
-        from kumo_core.callbacks import PredictionProgressLogger
         from kumo_core.train.formatting import (
             format_embeddings,
             format_prediction,
@@ -1417,13 +1436,8 @@ class DiskgraphNestedTrainer(NestedTrainer):
         self.pl_model.eval_top_k = None
         output_partition_ids = output_partition_ids or [partition_id]
 
-        callbacks = [
-            PredictionProgressLogger(
-                progress_log_dir,
-                progress_log_id,
-                total_iterations=len(self.datamodule.predict_dataloader()),
-            )
-        ]
+        callbacks = _prediction_progress_callbacks(
+            self.datamodule, progress_log_dir, progress_log_id)
         embedding_extra_fields = set((output_extra_fields
                                       or {}).get('EMBEDDINGS', ()))
 
@@ -1718,7 +1732,6 @@ class DiskgraphNestedTrainer(NestedTrainer):
 
         import numpy as np
         import torch
-        from kumo_core.callbacks import PredictionProgressLogger
         from kumo_core.train.output import (
             PredOutput,
             StreamingPredOutputWriter,
@@ -1761,11 +1774,8 @@ class DiskgraphNestedTrainer(NestedTrainer):
             self.pl_model.pred_top_k = int(pred_top_k)
 
         # kumo-pred reads a PredictionProgress file after predict.
-        _cbs = [
-            PredictionProgressLogger(
-                progress_log_dir, progress_log_id,
-                total_iterations=len(self.datamodule.predict_dataloader()))
-        ]
+        _cbs = _prediction_progress_callbacks(
+            self.datamodule, progress_log_dir, progress_log_id)
 
         def _np(x: Any) -> Any:
             if x is None:
