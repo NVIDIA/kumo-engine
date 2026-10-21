@@ -52,12 +52,11 @@ def environment() -> Dict[str, Optional[str]]:
 
 
 def _context(platform_name: str, job_id: Optional[str],
-             job_run_id: Optional[str], source: str) -> Dict[str, Any]:
+             job_run_id: Optional[str]) -> Dict[str, Any]:
     return {
         'platform': platform_name,
         'job_id': job_id,
         'job_run_id': job_run_id,
-        'source': source,
     }
 
 
@@ -73,16 +72,16 @@ def _detect() -> Optional[Dict[str, Any]]:
     env = os.environ
     if env.get('TRAINING_JOB_NAME'):
         return _context('sagemaker', env['TRAINING_JOB_NAME'],
-                        env.get('TRAINING_JOB_ARN'), 'auto')
+                        env.get('TRAINING_JOB_ARN'))
     processing = _processing_job()
     if processing is not None and processing.get('ProcessingJobName'):
         return _context('sagemaker', processing['ProcessingJobName'],
-                        processing.get('ProcessingJobArn'), 'auto')
+                        processing.get('ProcessingJobArn'))
     service = env.get('SNOWFLAKE_SERVICE_NAME')
     if service:
-        return _context('snowflake', None, service, 'auto')
+        return _context('snowflake', None, service)
     if env.get('DATABRICKS_RUNTIME_VERSION'):
-        return _context('databricks', None, None, 'auto')
+        return _context('databricks', None, None)
     return None
 
 
@@ -98,7 +97,7 @@ def scheduler_context() -> Optional[Dict[str, Any]]:
             scheduler = detected['platform']
             job_id = job_id or detected['job_id']
             job_run_id = job_run_id or detected['job_run_id']
-        return _context(scheduler or 'other', job_id, job_run_id, 'env')
+        return _context(scheduler or 'other', job_id, job_run_id)
     return detected
 
 

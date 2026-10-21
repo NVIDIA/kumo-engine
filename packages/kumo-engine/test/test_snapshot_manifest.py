@@ -196,33 +196,33 @@ def test_build_commit_comes_from_the_local_version_segment():
         'KUMO_JOB_ID': '11',
         'KUMO_JOB_RUN_ID': '22',
         'TRAINING_JOB_NAME': 'ignored',
-    }, None, ('databricks', '11', '22', 'env')),
+    }, None, ('databricks', '11', '22')),
     ({
         'KUMO_JOB_RUN_ID': 'run-1',
         'DATABRICKS_RUNTIME_VERSION': '16.4',
-    }, None, ('databricks', None, 'run-1', 'env')),
+    }, None, ('databricks', None, 'run-1')),
     ({
         'KUMO_JOB_ID': 'job-1'
-    }, None, ('other', 'job-1', None, 'env')),
+    }, None, ('other', 'job-1', None)),
     ({
         'KUMO_JOB_RUN_ID': 'run-9',
         'TRAINING_JOB_NAME': 'train-1',
         'TRAINING_JOB_ARN': 'arn:train-1',
-    }, None, ('sagemaker', 'train-1', 'run-9', 'env')),
+    }, None, ('sagemaker', 'train-1', 'run-9')),
     ({
         'TRAINING_JOB_NAME': 'train-1',
         'TRAINING_JOB_ARN': 'arn:train-1',
-    }, None, ('sagemaker', 'train-1', 'arn:train-1', 'auto')),
+    }, None, ('sagemaker', 'train-1', 'arn:train-1')),
     ({}, {
         'ProcessingJobName': 'proc-1',
         'ProcessingJobArn': 'arn:proc-1',
-    }, ('sagemaker', 'proc-1', 'arn:proc-1', 'auto')),
+    }, ('sagemaker', 'proc-1', 'arn:proc-1')),
     ({
         'SNOWFLAKE_SERVICE_NAME': 'SCORE_JOB_A1B2C3D4'
-    }, None, ('snowflake', None, 'SCORE_JOB_A1B2C3D4', 'auto')),
+    }, None, ('snowflake', None, 'SCORE_JOB_A1B2C3D4')),
     ({
         'DATABRICKS_RUNTIME_VERSION': '16.4'
-    }, None, ('databricks', None, None, 'auto')),
+    }, None, ('databricks', None, None)),
 ])
 def test_scheduler_context(no_scheduler, env, processing, expected):
     for name, value in env.items():
@@ -236,7 +236,7 @@ def test_scheduler_context(no_scheduler, env, processing, expected):
         assert context is None
     else:
         assert context == dict(
-            zip(('platform', 'job_id', 'job_run_id', 'source'), expected))
+            zip(('platform', 'job_id', 'job_run_id'), expected))
 
 
 def test_manifest_from_a_newer_schema_is_ignored(tmp_path):
@@ -250,6 +250,12 @@ def test_manifest_from_a_newer_schema_is_ignored(tmp_path):
         }))
     with pytest.warns(UserWarning, match='schema_version 2'):
         assert snapshot.manifest is None
+
+    for version in (True, 0):
+        (tmp_path / SNAPSHOT_MANIFEST_FILE).write_text(
+            json.dumps({'schema_version': version}))
+        with pytest.warns(UserWarning, match='schema_version'):
+            assert snapshot.manifest is None
 
     (tmp_path / SNAPSHOT_MANIFEST_FILE).write_text('{"kind": ')
     with pytest.warns(UserWarning, match='unreadable'):
