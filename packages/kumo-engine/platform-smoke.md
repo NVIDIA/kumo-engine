@@ -51,9 +51,11 @@ the delivered workflow remains manual-only. Ordinary fork pushes and
 | --- | --- | --- |
 | Linux ARM64, L4 | `nv-gpu-arm64-l4-1gpu` | `linux-arm64-gpu-l4-latest-1` |
 | Windows x86-64 through WSL, L4 | `nv-gpu-general` | `wsl-amd64-gpu-l4-latest-1` |
-| Native Windows x86-64, CPU execution on L4 host | `nv-gpu-general` | `windows-amd64-gpu-l4-latest-1` |
+| Native Windows x86-64, CPU | GitHub-hosted | `windows-2022` |
 
-The repository must have access to these runner groups. All images need a
+The repository must have access to the two GPU runner groups. Native Windows
+uses a GitHub-hosted CPU runner and needs no enterprise GPU group access.
+All images need a
 C/C++ compiler and network access to package indexes and Rust dependencies.
 Linux ARM64 and WSL also need a working NVIDIA driver. Python 3.12 and Rust
 are installed by the workflow. PyTorch 2.12.0 uses CUDA 13 on Linux/WSL and
@@ -72,8 +74,9 @@ Windows host shells. That registration detail and installed image packages
 still need confirmation in the first manual run. Git Bash is not a WSL test.
 
 The native Windows job runs PowerShell and installs the MSVC Rust target.
-Its image must already contain Visual Studio 2022 or newer Build Tools with
-the x64 C++ toolchain, Windows SDK, and CMake. The workflow locates the installed
+The [Windows Server 2022 image](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)
+includes Visual Studio 2022, the x64 C++ toolchain, Windows SDK, and CMake.
+The workflow locates the installed
 tools with `vswhere`, activates their developer environment, and checks that
 `cl`, `link`, and `cmake` are available. It fails explicitly when prerequisites
 are absent; it does not install system toolchains or reboot the runner.
