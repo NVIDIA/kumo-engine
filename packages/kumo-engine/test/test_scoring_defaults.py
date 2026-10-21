@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -13,6 +14,7 @@ import pytest
 from kumo_core.artifacts import add_bundle_file, remove_bundle_file
 from kumo_core.types import TaskType
 from kumoapi.model_plan import ModelPlan
+from kumoapi.plugin import PublishedModel
 
 import kumo.engine as kumo
 from kumo.engine.trainer._scoring import normalized_scoring_defaults
@@ -112,6 +114,18 @@ def test_defaults_survive_export_and_connector_load(fitted, tmp_path):
     loaded = kumo.Trainer.load_from_connector(registry, path='m1')
     assert loaded.scoring_defaults == child.scoring_defaults
     assert loaded.bundle_id == child.bundle_id
+
+
+def test_derived_export_publishes_the_child_bundle_id(fitted):
+    trainer, *_ = fitted
+    child = trainer.with_scoring_defaults(
+        kumo.ScoringDefaults(binary_classification_threshold=.4))
+    calls = []
+    sink = SimpleNamespace(publish_model=lambda *a, **k: calls.append(k) or
+                           PublishedModel(name='m', version='1', uri='u'))
+    child.export(
+        kumo.ModelOutputConfig(SimpleNamespace(sink_backend=sink), path='m'))
+    assert calls[0]['metadata']['kumo_bundle_id'] == child.bundle_id
 
 
 def test_defaults_are_validated_against_the_task(fitted):

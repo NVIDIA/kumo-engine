@@ -563,7 +563,7 @@ restored = Trainer.load(result.bundle_dir)  # pass the recorded path
 
 For an exported model, use
 `Trainer.load_from_connector(connector, path="model/version")`, or
-`location=ModelRegistryLocation(...)` for Snowflake Model Registry. A scoring
+`location=ModelRegistryLocation(...)` for Snowflake or Databricks. A scoring
 job with `Graph` code rebuilds the live graph and snapshot; one without loads an
 exported snapshot with `GraphSnapshot.load_from_connector(...)` and calls
 `trainer.predict_snapshot(snapshot)`. Bundles contain trained artifacts, not
@@ -586,6 +586,38 @@ restored = Trainer.load_from_connector(snowflake, location=ModelRegistryLocation
 ```
 
 S3, GCS, and file connectors expose the published path or URI in the same result.
+
+### Publish and promote
+
+Snowflake Model Registry and Databricks Unity Catalog connectors support aliases:
+
+```python
+from kumo.engine import ModelOutputConfig, ModelRegistryLocation, set_model_alias
+
+result = trainer.fit(training_table, snapshot=snapshot, export_config=ModelOutputConfig(
+    registry, location=ModelRegistryLocation("CHURN_GNN", alias="challenger")))
+published = result.published_model
+
+# Promote: the alias moves from any version that held it.
+set_model_alias(registry, ModelRegistryLocation(
+    published.name, version=published.version), "prod")
+
+# Scoring jobs load whichever version "prod" points at.
+trainer = Trainer.load_from_connector(registry, location=ModelRegistryLocation(
+    "CHURN_GNN", alias="prod"))
+```
+
+An export alias is set after publishing; if that fails, `fit()` warns and still
+returns the published model. Snowflake allows one alias per version and reserves
+`DEFAULT`, `FIRST` and `LAST`, which can be loaded but not set. File, S3 and GCS
+connectors have no aliases.
+
+Each published version records only pointers: the `kumo_engine` marker and
+`kumo_bundle_id` (Snowflake version metrics, which also hold the training
+metrics; Databricks version tags). The bundle's own `provenance.json` holds its
+lineage. `list_models` and `fetch_model` return `kumo_bundle_id` in
+`PublishedModel.metadata`; `load_from_connector`
+warns if the fetched bundle differs from the recorded `kumo_bundle_id`.
 
 ## Prediction and embedding destinations
 

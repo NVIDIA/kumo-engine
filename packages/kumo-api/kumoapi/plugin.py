@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import (
     Any,
     Callable,
+    Dict,
     List,
     Mapping,
     Optional,
@@ -41,9 +42,13 @@ from kumoapi.jobs import WriteMode
 from kumoapi.typing import Dtype
 
 __all__ = [
+    'BUNDLE_ID_KEY',
+    'ENGINE_MARKER',
+    'REGISTRY_KEY_PREFIX',
     'ArtifactLocation',
     'ArtifactSink',
     'IngestResult',
+    'ModelAliasingSink',
     'ModelFetchingSink',
     'ModelListingSink',
     'ModelPublishingSink',
@@ -54,7 +59,18 @@ __all__ = [
     'SourceBackend',
     'SourceConnector',
     'SourceCredentials',
+    'check_model_alias',
+    'registry_lineage',
 ]
+
+#: Prefix of the keys an engine export records in registry metadata.
+REGISTRY_KEY_PREFIX = 'kumo_'
+#: Registry metadata key marking a version as a Kumo engine bundle.
+ENGINE_MARKER = 'kumo_engine'
+#: Registry metadata key holding the version's bundle id; the bundle's own
+#: provenance.json holds its lineage.
+BUNDLE_ID_KEY = 'kumo_bundle_id'
+_RESERVED_ALIASES = frozenset({'DEFAULT', 'FIRST', 'LAST'})
 
 
 @dataclass(frozen=True)
@@ -147,13 +163,16 @@ class ModelRegistryLocation:
     Args:
         model_name: Registry-local model name.
         version: Exact version to write or read. ``None`` lets the registry
-            assign the next one on export, and selects the latest on import.
-            An assigned version comes back on the export result.
+            assign the next one on export; on import it selects Snowflake's
+            default or Databricks' latest Kumo version.
         comment: Optional description recorded on the version.
+        alias: Set on the new version after export; on import, the version
+            it points at. Exclusive with :obj:`version`.
     """
     model_name: str
     version: Optional[str] = None
     comment: Optional[str] = None
+    alias: Optional[str] = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.model_name, str) or not self.model_name
@@ -164,6 +183,10 @@ class ModelRegistryLocation:
             raise ValueError(
                 'version must be a non-empty version, or None to let the '
                 'registry choose')
+        if self.alias is not None and (not self.alias
+                                       or self.version is not None):
+            raise ValueError('alias must be a non-empty alias, and is '
+                             'mutually exclusive with version')
 
 
 @dataclass(frozen=True)
@@ -687,7 +710,8 @@ class ModelFetchingSink(ArtifactSink, Protocol):
             local_dir: Directory to place the bundle in. Created if absent.
             path: Source for a path-addressed target.
             location: A registry location. A version of ``None`` selects the
-                latest, which is resolved here and reported back.
+                registry's choice (see :class:`ModelRegistryLocation`), which
+                is resolved here and reported back.
             project_id: Authorizing project, where one applies.
 
         Returns:
@@ -695,6 +719,45 @@ class ModelFetchingSink(ArtifactSink, Protocol):
             resolved to the one that was fetched.
         """
         ...
+
+
+@runtime_checkable
+class ModelAliasingSink(ArtifactSink, Protocol):
+    r"""A registry sink that sets aliases and fetches by
+    :attr:`ModelRegistryLocation.alias`."""
+    def set_model_alias(
+        self,
+        connector: SourceConnector,
+        location: ModelRegistryLocation,
+        alias: str,
+    ) -> None:
+        r"""Points :obj:`alias` at ``location.version``, moving it if held."""
+        ...
+
+
+def check_model_alias(alias: str) -> None:
+    r"""Raises :class:`ValueError` unless every model registry can set
+    :obj:`alias`: non-empty, not a Snowflake system alias (``DEFAULT``,
+    ``FIRST``, ``LAST``) and not SageMaker's ``SageMakerLifecycle-``."""
+    if not isinstance(alias, str) or not alias.strip():
+        raise ValueError(f'A model alias must be a non-empty name, not '
+                         f'{alias!r}.')
+    if (alias.upper() in _RESERVED_ALIASES
+            or alias.lower().startswith('sagemakerlifecycle-')):
+        raise ValueError(
+            f'{alias!r} is reserved by a model registry; set it with the '
+            f'registry directly (for DEFAULT: ALTER MODEL ... SET '
+            f'DEFAULT_VERSION).')
+
+
+def registry_lineage(recorded: Mapping[str, Any]) -> Dict[str, str]:
+    r"""The ``kumo_*`` entries of a version's registry metadata, such as
+    :data:`BUNDLE_ID_KEY`, as strings and without :data:`ENGINE_MARKER`."""
+    return {
+        key: str(value)
+        for key, value in recorded.items()
+        if key.startswith(REGISTRY_KEY_PREFIX) and key != ENGINE_MARKER
+    }
 
 
 @runtime_checkable
