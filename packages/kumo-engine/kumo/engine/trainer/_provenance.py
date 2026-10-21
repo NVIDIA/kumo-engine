@@ -17,7 +17,6 @@ def write_provenance(
     bundle_dir: Path,
     *,
     train_table: TrainingTable,
-    snapshot_id: str,
     warm_start_bundle_id: Optional[str],
     started_at: datetime,
     fit_mode: Optional[str],
@@ -28,7 +27,6 @@ def write_provenance(
     finished_at = datetime.now(timezone.utc)
     parents = {
         'training_table': train_table.tt_id,
-        'snapshot': snapshot_id,
         'warm_start': warm_start_bundle_id,
     }
     write_manifest(
@@ -41,7 +39,7 @@ def write_provenance(
                 'seconds': round((finished_at - started_at).total_seconds(),
                                  3),
             },
-            training_table=_training_table(train_table.manifest),
+            training_table=_training_table(train_table),
             source_tables=_source_tables(snapshot),
             fit_mode=fit_mode,
         ))
@@ -56,17 +54,15 @@ def _source_tables(
     return (manifest.get('parents') or {}).get('source_tables')
 
 
-def _training_table(manifest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    manifest = manifest or {}
-    parents = manifest.get('parents') or {}
+def _training_table(train_table: TrainingTable) -> Dict[str, Any]:
+    parents = (train_table.manifest or {}).get('parents') or {}
     record = {
-        'source': manifest.get('source'),
+        'source': train_table.source_mode,
         'snapshot': parents.get('snapshot'),
     }
-    if record['source'] == 'custom':
-        source_table = parents.get('source_table') or {}
+    if 'source_table' in parents:
         record.update({
-            key: source_table.get(key)
+            key: (parents['source_table'] or {}).get(key)
             for key in ('connector', 'location', 'version')
         })
     return record

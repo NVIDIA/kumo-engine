@@ -207,16 +207,6 @@ def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
     return _find_holdout(trainer.get_log_dir(fit_mode=published))
 
 
-def _published_fit_mode(trainer: Any) -> Optional[str]:
-    refit = getattr(trainer, 'refit_cfg', None)
-    for mode, flag in (('refit_full', 'refitted_full'),
-                       ('refit_trainval', 'refitted_trainval'),
-                       ('fit', 'fitted')):
-        if getattr(refit, flag, False) is True:
-            return mode
-    return None
-
-
 def _collect_garbage(stage: str) -> None:
     # Lightning links each trainer to its data module and model in reference
     # cycles; free a finished run now rather than at a later collection.
@@ -540,7 +530,8 @@ class Trainer:
 
         holdout_path, holdout_truncated = _published_holdout(
             result.best_trainer)
-        fit_mode = _published_fit_mode(result.best_trainer)
+        fit_mode = result.best_trainer.published_fit_mode()
+        fit_mode = None if fit_mode is None else fit_mode.value
         training_result = TrainingResult(
             metrics=dict(result.metrics),
             artifact_paths=dict(result.artifact_paths),
@@ -558,7 +549,6 @@ class Trainer:
             export_config=export_config,
             model_plan=effective_plan,
             provenance=dict(train_table=train_table,
-                            snapshot_id=snapshot.id,
                             warm_start_bundle_id=warm_start_bundle_id,
                             started_at=started_at, fit_mode=fit_mode,
                             snapshot=snapshot),
