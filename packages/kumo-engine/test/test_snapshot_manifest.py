@@ -197,7 +197,8 @@ def test_unsupported_manifest_is_ignored(tmp_path, content):
      'cat.sch.tt', None, '`cat`.`sch`.`tt`'),
     (BigQueryConnector(project_id='data-project', dataset_id='analytics'),
      'tt', None, 'data-project.analytics.tt'),
-    (SimpleNamespace(config=None, source_backend=None), 'TT', None, 'TT'),
+    (SimpleNamespace(source_type='OTHER', source_backend=None), 'TT', None,
+     'TT'),
     (None, 'synthetic', 'SELECT 1', 'sql:' +
      hashlib.sha256(b'SELECT 1').hexdigest()),
 ])

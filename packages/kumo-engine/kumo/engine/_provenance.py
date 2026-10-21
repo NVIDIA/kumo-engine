@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 PROCESSING_JOB_CONFIG = Path('/opt/ml/config/processingjobconfig.json')
+_LOCATED_CONNECTORS = frozenset(
+    {'LOCAL_FILE', 'S3', 'GCS', 'SNOWFLAKE', 'DATABRICKS', 'BIGQUERY'})
 
 
 @cache
@@ -105,10 +107,14 @@ def source_location(connector: Any, table_name: str,
                     sql: Optional[str] = None) -> str:
     if sql is not None:
         return 'sql:' + hashlib.sha256(sql.encode()).hexdigest()
-    backend = connector.source_backend
-    locate = (getattr(backend, 'table_uri', None)
-              or getattr(backend, 'table_location', None))
-    return table_name if locate is None else locate(connector, table_name)
+    if _connector_kind(connector) not in _LOCATED_CONNECTORS:
+        return table_name
+    return connector.source_backend.table_location(connector, table_name)
+
+
+def _connector_kind(connector: Any) -> str:
+    kind = connector.source_type
+    return str(getattr(kind, 'value', kind))
 
 
 def source_table(connector: Any, table_name: str, sql: Optional[str],
@@ -129,8 +135,7 @@ def source_table(connector: Any, table_name: str, sql: Optional[str],
             for name, value in dependencies.items()
         }
     try:
-        kind = connector.source_type
-        entry['connector'] = str(getattr(kind, 'value', kind))
+        entry['connector'] = _connector_kind(connector)
         entry['location'] = (source_location(connector, table_name, sql)
                              if record_locations or sql is not None else
                              table_name)
