@@ -93,11 +93,19 @@ def artifacts() -> Connector:
     return connector_for_root(_env('KUMO_ARTIFACT_ROOT'))
 
 
+def artifact_uri(path: str) -> str:
+    """``path`` under ``KUMO_ARTIFACT_ROOT`` as a full URI or path."""
+    return f"{_env('KUMO_ARTIFACT_ROOT').rstrip('/')}/{path}"
+
+
+def _run_path() -> str:
+    run = _env('KUMO_JOB_RUN_ID').rstrip('/').rsplit('/', 1)[-1]
+    return f'runs/{run}'
+
+
 def run_artifacts() -> Connector:
     """``KUMO_ARTIFACT_ROOT/runs/<last segment of KUMO_JOB_RUN_ID>``."""
-    run = _env('KUMO_JOB_RUN_ID').rstrip('/').rsplit('/', 1)[-1]
-    return connector_for_root(
-        f"{_env('KUMO_ARTIFACT_ROOT').rstrip('/')}/runs/{run}")
+    return connector_for_root(artifact_uri(_run_path()))
 
 
 def build_graph(connector: Connector) -> Graph:
@@ -169,3 +177,13 @@ def prediction_output(connector: Connector) -> PredictionOutputConfig:
     return PredictionOutputConfig(run_artifacts(),
                                   output_paths={'predictions': 'predictions/'},
                                   extra_fields=fields)
+
+
+def prediction_destinations(output: PredictionOutputConfig) -> dict:
+    """Where ``output`` writes: full URIs, or the table name."""
+    if output.output_paths is None:
+        return output.destinations()
+    return {
+        name: artifact_uri(f'{_run_path()}/{path}')
+        for name, path in output.output_paths.items()
+    }

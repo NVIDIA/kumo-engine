@@ -28,7 +28,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         run.record(snapshot_id=snapshot.id)
         if os.environ.get('KUMO_ARTIFACT_ROOT'):
             run.record(outputs={
-                'snapshot': snapshot.export(jobs.artifacts(), 'snapshots')
+                'snapshot':
+                jobs.artifact_uri(snapshot.export(jobs.artifacts(), 'snapshots'))
             })
 
         query = kumo.PredictiveQuery(graph=graph,

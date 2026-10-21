@@ -36,7 +36,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             binary_classification_threshold=None
             if defaults is not None else 0.5)
         run.record(run_id=result.selection.job_id,
-                   outputs=output.destinations())
+                   outputs=jobs.prediction_destinations(output))
 
 
 if __name__ == '__main__':

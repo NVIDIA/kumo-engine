@@ -121,8 +121,9 @@ def test_fit_then_score_locally(tmp_path, monkeypatch, capsys):
     assert score['status'] == 'succeeded', score
     assert (score['bundle_id'], score['snapshot_id']) != (None, None)
     assert score['bundle_id'] == fit['bundle_id']
-    predictions = pd.read_parquet(tmp_path / 'artifacts' / 'runs' / 'run-2' /
-                                  score['outputs']['predictions'])
+    assert score['outputs']['predictions'] == str(
+        tmp_path / 'artifacts' / 'runs' / 'run-2' / 'predictions') + '/'
+    predictions = pd.read_parquet(score['outputs']['predictions'])
     assert len(predictions) == 50
     assert 'ANCHOR_TIMESTAMP' in predictions
 

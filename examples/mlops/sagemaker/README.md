@@ -16,8 +16,8 @@ with a `PipelineSchedule` trigger (`pipeline.put_triggers`).
 
 ## Before running
 
-1. Build an ECR image with `kumo-engine[mlflow,s3]`, its dependency wheels,
-   the CUDA stack and `sagemaker-mlflow`.
+1. Build an ECR image with `kumo-engine[mlflow,s3]`, its dependency wheels
+   and `sagemaker-mlflow` (plus the CUDA stack for GPU instance types).
 2. Upload the code channel: `aws s3 sync examples/mlops s3://<bucket>/kumo/code/`.
 3. With the SageMaker Python SDK v2 (`pip install 'sagemaker<3'`):
    ```bash
@@ -50,18 +50,23 @@ with a `PipelineSchedule` trigger (`pipeline.put_triggers`).
   as `KUMO_JOB_ID`/`KUMO_JOB_RUN_ID` (`container_arguments` takes only plain
   strings); the processing step passes them as `--job-id`/`--job-run-id`.
 - **MLflow.** `MLFLOW_TRACKING_URI` is the tracking server or MLflow App ARN.
-  Pin the MLflow client to the server's minor version; the engine needs
-  MLflow 3. `SageMakerLifecycle-` aliases are reserved and refused.
+  Managed MLflow servers run MLflow 3.0; the engine needs a newer client
+  (3.11 or later), which works against them, so do not pin the client to the
+  server's version. Aliases are letters, digits and underscores, so
+  SageMaker's reserved `SageMakerLifecycle-` aliases cannot be set.
 - **Scratch.** The fit step uses `/tmp/kumo` (on NVMe instance types
   SageMaker puts `/tmp` on the instance store; on EBS-only types raise
   `volume_size`); the score step uses `/opt/ml/processing/scratch`.
 - **Retries.** Step `retry_policies` key on SageMaker failure reasons, never
   on the exit code; a non-zero exit is not retried.
 
-## Unverified
+## Verified
 
-The pipeline has never been upserted or run (only byte-compiled). An MLflow
-App ARN as tracking URI and registering from a training job are unverified.
+The pipeline was upserted and run on `ml.m5.xlarge` with a CPU image, the
+tracking server ARN as `MLFLOW_TRACKING_URI` and 180 days of synthetic orders
+(the 30-day query needs about 150 days of history): both steps exit 0, the
+fit registers a new `users-churn` version and moves `champion`, and the score
+step loads it. An MLflow App ARN as tracking URI is unverified.
 
 ## References
 

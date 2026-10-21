@@ -46,8 +46,8 @@ to a shorter window and `KUMO_NUM_EXPERIMENTS=1`.
   retry), `permanent` or `unknown`.
 - **Output.** Each script prints one JSON line on stdout when it ends:
   `status`, `exit_code`, `scheduler`, `bundle_id`, `snapshot_id`, `run_id`,
-  `outputs` (the exported snapshot and published model, or the prediction
-  destinations), `warnings` and `error`. Logs go to stderr.
+  `outputs` (full URIs of the exported snapshot and published model, or of
+  the prediction destinations), `warnings` and `error`. Logs go to stderr.
 - **Job ids.** `--job-id`/`--job-run-id` (or `KUMO_JOB_ID`/`KUMO_JOB_RUN_ID`)
   are recorded as `scheduler: {platform, job_id, job_run_id}` in the snapshot
   and training-table manifests and the bundle's `provenance.json`, and as
