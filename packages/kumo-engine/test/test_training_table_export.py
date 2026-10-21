@@ -364,6 +364,22 @@ def test_manifest_write_failure_keeps_generation_and_export(
     assert exported.num_rows == sum(_seeds(table)[1].values())
 
 
+def test_unreadable_manifest_still_exports(graph):
+    graph_, snapshot, connector, out = graph
+    table = kumo.PredictiveQuery(
+        graph=graph_, query='PREDICT ents.LABEL FOR EACH ents.ID'
+    ).generate_training_table(snapshot)
+    manifest = table.staging_dir / 'training-table-manifest.json'
+    manifest.chmod(0)
+    try:
+        with pytest.warns(UserWarning, match='_kumo_manifest.json'):
+            table.export(TrainingTableOutputConfig(connector, 'unreadable'))
+    finally:
+        manifest.chmod(0o644)
+    assert list((out / 'unreadable').glob('*.parquet'))
+    assert not (out / 'unreadable' / '_kumo_manifest.json').exists()
+
+
 def test_no_sidecar_for_warehouse_or_csv_exports(graph):
     graph_, snapshot, connector, out = graph
     table = kumo.PredictiveQuery(
