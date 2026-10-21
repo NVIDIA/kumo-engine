@@ -43,6 +43,14 @@ For ARM64, see the
 pip install kumo-engine
 ```
 
+Faiss is optional. Link-prediction retrieval requires one compatible variant:
+`pip install "kumo-engine[faiss-cpu]"` for CPU execution or
+`pip install "kumo-engine[faiss-gpu]"` for CUDA execution. Without Faiss,
+retrieval raises an installation error; other tasks remain available.
+Do not install both variants together. ARM GPU users can install a compatible
+source-built wheel first; see the
+[Faiss selection guide](../../docs/development/setup.md#choose-the-core-faiss-dependency).
+
 Install connector dependencies with the `snowflake`, `s3`, `gcs`, `bigquery`,
 or `databricks` extra:
 

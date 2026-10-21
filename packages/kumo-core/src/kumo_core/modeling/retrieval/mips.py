@@ -1,12 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+import importlib
 import warnings
 from abc import ABC, abstractmethod
+from types import ModuleType
 
-import faiss
-import faiss.contrib.torch_utils
 import torch
+from kumo_core.errors import TrainingValidationError
 from torch import Tensor
 from torch_geometric.utils import scatter
 
@@ -18,6 +19,38 @@ logger = logging.getLogger(__name__)
 # as newer versions fixed the validation, e.g., see:
 # https://github.com/facebookresearch/faiss/blob/v1.12.0/faiss/gpu/impl/IndexUtils.cu#L30  # noqa: E501
 MAX_K = 2047  # Upper `faiss` limit
+
+
+class FaissUnavailableError(TrainingValidationError):
+    """The selected retrieval device lacks a compatible FAISS backend."""
+
+
+def require_faiss(device: torch.device | None = None) -> ModuleType:
+    """Load optional FAISS without hiding errors in an installed backend."""
+    try:
+        faiss = importlib.import_module('faiss')
+    except ModuleNotFoundError as error:
+        if error.name != 'faiss':
+            raise
+        raise FaissUnavailableError(
+            title="FAISS is required for link prediction retrieval",
+            message="Install faiss-cpu for CPU execution or a compatible "
+            "faiss-gpu build for CUDA execution. A compatible source-built "
+            "FAISS installation is also supported.",
+        ) from error
+
+    if device is not None and device.type == 'cuda' and (
+            not hasattr(faiss, 'StandardGpuResources')
+            or not hasattr(faiss, 'knn_gpu')):
+        raise FaissUnavailableError(
+            title="GPU FAISS is required for CUDA link prediction",
+            message="The installed FAISS backend lacks GPU support. Install "
+            "a compatible GPU FAISS build (including a source build on ARM) "
+            "or explicitly select CPU execution with faiss-cpu.",
+        )
+    # This patches FAISS search for Torch tensors only when retrieval is used.
+    importlib.import_module('faiss.contrib.torch_utils')
+    return faiss
 
 
 class MIPSStructure(ABC):
@@ -131,7 +164,8 @@ class MIPSFaiss(MIPSStructure):
     def __init__(self, key: Tensor) -> None:
         super().__init__(key=key)
 
-        self._res: faiss.StandardGpuResources | None = None
+        faiss = require_faiss(key.device)
+        self._res = None
         if self._key.is_cuda:
             self._res = faiss.StandardGpuResources()
             self._res.setDefaultNullStreamAllDevices()
@@ -163,6 +197,7 @@ class MIPSFaiss(MIPSStructure):
                 query_k = MAX_K
 
         # Zero-copy MIPS over PyTorch tensors via `faiss`:
+        faiss = require_faiss(query.device)
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore', message='TypedStorage')
             if self._res is not None:

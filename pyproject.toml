@@ -26,8 +26,8 @@ dynamic = [
 ]
 
 [dependency-groups]
-# Public engine tests use CPU Torch with the engine's GPU Faiss dependency.
-public-tests = ["torch"]
+# Public retrieval tests explicitly use CPU Torch with GPU Faiss.
+public-tests = ["torch", "kumo-core[faiss-gpu]==0.1.0.dev1"]
 
 [tool.poetry]
 name = "kumo"
