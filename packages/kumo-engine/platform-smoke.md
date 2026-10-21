@@ -32,9 +32,12 @@ That run used the checkout's Python source and freshly built Linux DiskGraph
 debug binaries.
 CUDA mode also correctly fails when CUDA is unavailable.
 
-WSL [run 39665870696](https://github.com/NVIDIA/kumo-engine/actions/runs/39665870696)
-passed ingestion, four CUDA optimizer steps, and 100 finite predictions
-(one test passed in 11.69 seconds; source installation took 5m11s).
+WSL passed twice: [run 39665870696](https://github.com/NVIDIA/kumo-engine/actions/runs/39665870696)
+and [run 39667658574](https://github.com/NVIDIA/kumo-engine/actions/runs/39667658574).
+Both completed ingestion, four CUDA optimizer steps, and 100 finite predictions.
+The latest test passed in 25.98 seconds at revision `29b255e`, the same
+revision as the native Windows pass below. Observed source installation took
+5m11s–11m19s; the latest DiskGraph build accounted for 11m02s.
 It used WSL2 kernel `6.6.114.1-microsoft`, x86-64, Python 3.12.3,
 Torch 2.12.0+cu130, and a Tesla T4 with driver 596.36.
 
