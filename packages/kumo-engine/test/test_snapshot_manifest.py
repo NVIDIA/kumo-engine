@@ -2,9 +2,11 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import json
 import os
 from datetime import datetime
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -17,6 +19,7 @@ import kumo.engine._provenance as provenance
 from kumo.engine import (
     FileConnector,
     Graph,
+    S3Connector,
     Table,
     __version__,
     diff_manifests,
@@ -83,13 +86,13 @@ def test_fresh_snapshot_writes_manifest(make_snapshot, tmp_path):
     assert snapshot.index_path.name == manifest['data_version']
     assert manifest['formats'] == format_versions()
     sources = manifest['parents']['source_tables']
-    assert {
-        alias: entry['source']
-        for alias, entry in sources.items()
-    } == {
-        'ents': 'LOCAL_FILE:ents.parquet',
-        'events': 'LOCAL_FILE:events.parquet',
-    }
+    data = (tmp_path / 'data').resolve()
+    assert {alias: entry['location']
+            for alias, entry in sources.items()} == {
+                'ents': str(data / 'ents.parquet'),
+                'events': str(data / 'events.parquet'),
+            }
+    assert {entry['connector'] for entry in sources.values()} == {'LOCAL_FILE'}
     assert all(entry['version'] for entry in sources.values())
     assert manifest['tables'] == {'ents': {'rows': 5}, 'events': {'rows': 30}}
     assert manifest['edges']['events_ENT_ID_to_ents_ID'] == 30
@@ -99,7 +102,7 @@ def test_fresh_snapshot_writes_manifest(make_snapshot, tmp_path):
     assert manifest['environment']['kumo_engine'] == __version__
     assert manifest['scheduler'] is None
     assert datetime.fromisoformat(manifest['created_at']).tzinfo is not None
-    assert str(tmp_path) not in json.dumps(manifest)
+    assert str(tmp_path / 'scratch') not in json.dumps(manifest)
 
 
 def test_index_without_manifest_is_reused_and_backfilled(
@@ -128,13 +131,17 @@ def test_index_without_manifest_is_reused_and_backfilled(
 
 
 def test_manifest_without_ingest_stats_keeps_identity(tmp_path, no_scheduler):
-    from types import SimpleNamespace
-
     from kumo.engine.graph import _write_snapshot_manifest
 
     result = SimpleNamespace(index_path=str(tmp_path),
                              ingest_stats_path=str(tmp_path / 'missing.json'))
-    sources = {'users': {'source': 'LOCAL_FILE:users.parquet', 'version': '1'}}
+    sources = {
+        'users': {
+            'connector': 'LOCAL_FILE',
+            'location': '/data/users.parquet',
+            'version': '1'
+        }
+    }
     _write_snapshot_manifest(result, 'g@d', 'g', 'd' * 64, sources, fresh=True)
 
     manifest = GraphSnapshot('g@d', tmp_path, {}).manifest
@@ -258,3 +265,23 @@ def test_manifest_from_a_newer_schema_is_ignored(tmp_path):
     (tmp_path / SNAPSHOT_MANIFEST_FILE).write_text('{"kind": ')
     with pytest.warns(UserWarning, match='unreadable'):
         assert snapshot.manifest is None
+
+
+@pytest.mark.parametrize('connector, name, sql, location', [
+    (S3Connector(root_dir='s3://bucket-a/data/'), 'exports/tt/', None,
+     's3://bucket-a/data/exports/tt'),
+    (S3Connector(), 's3://bucket-a/exports/tt', None,
+     's3://bucket-a/exports/tt'),
+    (SimpleNamespace(config=None, source_backend=None, database='DB',
+                     schema_name='SCHEMA'), 'TT', None, 'DB.SCHEMA.TT'),
+    (None, 'synthetic', 'SELECT 1', 'sql:' +
+     hashlib.sha256(b'SELECT 1').hexdigest()),
+])
+def test_source_location(connector, name, sql, location):
+    assert provenance.source_location(connector, name, sql) == location
+
+
+def test_unrecordable_location_is_null():
+    with pytest.warns(UserWarning, match='location'):
+        entry = provenance.source_table(None, 'users', None, 7)
+    assert entry == {'connector': None, 'location': None, 'version': '7'}

@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Runtime versions and scheduler job identity recorded in manifests."""
 
+import hashlib
 import json
 import os
 import platform
 import subprocess
+import warnings
 from functools import cache
 from importlib import metadata
 from pathlib import Path
@@ -98,3 +100,36 @@ def scheduler_context() -> Optional[Dict[str, Any]]:
             job_run_id = job_run_id or detected['job_run_id']
         return _context(scheduler or 'other', job_id, job_run_id, 'env')
     return detected
+
+
+def source_location(connector: Any, table_name: str,
+                    sql: Optional[str] = None) -> str:
+    if sql is not None:
+        return 'sql:' + hashlib.sha256(sql.encode()).hexdigest()
+    root = getattr(connector.config, 'root_dir', None)
+    if root is not None:
+        return str(Path(root, table_name))
+    table_uri = getattr(connector.source_backend, 'table_uri', None)
+    if table_uri is not None:
+        return table_uri(connector, table_name)
+    namespace = (getattr(connector, field, None)
+                 for field in ('database', 'catalog', 'project_id',
+                               'schema_name', 'dataset_id'))
+    return '.'.join([*filter(None, namespace), table_name])
+
+
+def source_table(connector: Any, table_name: str, sql: Optional[str],
+                 version: Any) -> Dict[str, Optional[str]]:
+    entry: Dict[str, Optional[str]] = {
+        'connector': None,
+        'location': None,
+        'version': None if version is None else str(version),
+    }
+    try:
+        kind = connector.source_type
+        entry['connector'] = str(getattr(kind, 'value', kind))
+        entry['location'] = source_location(connector, table_name, sql)
+    except Exception as error:
+        warnings.warn(f"Could not record a source table's location: {error}",
+                      UserWarning, stacklevel=3)
+    return entry
