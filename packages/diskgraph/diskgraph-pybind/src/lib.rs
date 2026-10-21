@@ -1425,9 +1425,10 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 ///         entries in the full output (all by default; the min output keeps
 ///         20) and record ``CATEGORY_COUNTS_CAPPED``, whether counting hit
 ///         the category cap so ``NUM_UNIQUE`` is an estimate.
-///     first_row_per: compute every statistic over only the first row of
-///         each run of equal values of these columns, in path and row order
-///         (for example the top-scored row of each prediction).
+///     max_per: compute every statistic over the maximum of each column
+///         within each run of equal values of these columns, in path and row
+///         order (for example each prediction's top score). Needs numerical
+///         columns, ``histograms=False`` and ``summary_stats_by_class=False``.
 ///     _category_count_limit_for_testing: keyword-only test hook that lowers
 ///         the retained category limit. ``None`` preserves the production
 ///         1,000,000-category limit; a supplied value must be greater than 0.
@@ -1446,7 +1447,7 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
     summary_stats_by_class=true,
     histograms=true,
     category_counts_limit=None,
-    first_row_per=None,
+    max_per=None,
     _category_count_limit_for_testing=None,
 ))]
 #[tracing::instrument(level = "debug", skip(py, kumo_column_specs_json))]
@@ -1459,7 +1460,7 @@ fn compute_col_stats_for_parquet(
     summary_stats_by_class: bool,
     histograms: bool,
     category_counts_limit: Option<usize>,
-    first_row_per: Option<Vec<String>>,
+    max_per: Option<Vec<String>>,
     _category_count_limit_for_testing: Option<u64>,
 ) -> PyResult<(String, String)> {
     use diskgraph_ingest::config_converter::{
@@ -1534,7 +1535,7 @@ fn compute_col_stats_for_parquet(
         summary_stats_by_class,
         histograms,
         category_counts_limit,
-        first_row_per: first_row_per.unwrap_or_default(),
+        max_per: max_per.unwrap_or_default(),
     };
 
     py.detach(|| -> anyhow::Result<(String, String)> {

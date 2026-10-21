@@ -28,7 +28,7 @@ Paths = Sequence[Union[str, Path]]
 
 
 def parquet_stats(paths: Paths, columns: Sequence[str], *,
-                  first_row_per: Optional[Sequence[str]] = None
+                  max_per: Optional[Sequence[str]] = None
                   ) -> Dict[str, Dict[str, Any]]:
     r"""Summaries of ``columns``: percentiles of numbers, counts of labels."""
     import diskgraph
@@ -40,7 +40,7 @@ def parquet_stats(paths: Paths, columns: Sequence[str], *,
         [str(path) for path in paths], json.dumps(specs), '',
         percentiles=True, summary_stats_by_class=False, histograms=False,
         category_counts_limit=TOP_CLASSES,
-        first_row_per=list(first_row_per or []))
+        max_per=list(max_per or []))
     stats = json.loads(full)
     return {
         spec['name']: _summary(stats, spec['name'], spec['stype'])
@@ -51,8 +51,8 @@ def parquet_stats(paths: Paths, columns: Sequence[str], *,
 def top_score_stats(paths: Paths) -> Dict[str, Any]:
     r"""Summary of each prediction's highest ``SCORE``.
 
-    A prediction is a run of rows with equal non-class columns (entity, and
-    anchor when present), written in descending score order.
+    A prediction is a run of consecutive rows with equal non-class columns
+    (entity, and anchor when present), in any score order.
     """
     from pyarrow import parquet
 
@@ -60,7 +60,7 @@ def top_score_stats(paths: Paths) -> Dict[str, Any]:
         name for name in parquet.read_schema(paths[0]).names
         if name not in _CLASS_COLUMNS and not name.startswith('__')
     ]
-    return parquet_stats(paths, ['SCORE'], first_row_per=keys)['SCORE']
+    return parquet_stats(paths, ['SCORE'], max_per=keys)['SCORE']
 
 
 def positive_rate(summary: Dict[str, Any]) -> Optional[float]:
@@ -92,7 +92,9 @@ def _summary(stats: Dict[str, Any], name: str,
         return None if entry is None else entry['value']
 
     if stype == 'numerical':
-        count = (value('COUNT') or 0) - (value('NUM_NA') or 0)
+        rows = value('COUNT') or 0
+        non_finite = round((value('INVALID_FRACTION') or 0) * rows)
+        count = rows - (value('NUM_NA') or 0) - non_finite
         return {
             'count': count,
             'mean': value('MEAN') if count else None,

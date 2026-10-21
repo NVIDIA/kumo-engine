@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 from kumo_core.types import TaskType
 
+from kumo.engine._score_stats import parquet_stats, top_score_stats
 from kumo.engine.trainer._provenance import holdout_baseline
 
 
@@ -22,7 +23,7 @@ def _close_to_ranks(summary, values):
 def test_long_format_holdouts_take_each_predictions_top_score(tmp_path):
     rng = np.random.default_rng(0)
     entities, k = 400, 3
-    score = -np.sort(-rng.random((entities, k)), axis=1)
+    score = rng.random((entities, k))
     frame = pd.DataFrame({
         'ENTITY': np.repeat(np.arange(entities), k),
         'CLASS': [f'c{i}' for i in range(entities * k)],
@@ -33,13 +34,30 @@ def test_long_format_holdouts_take_each_predictions_top_score(tmp_path):
     frame['TARGET'] = np.repeat(frame['CLASS'].to_numpy()[::k], k)
     path = tmp_path / 'test_df.parquet'
     frame.to_parquet(path, row_group_size=7)
+    parts = [tmp_path / 'part-0.parquet', tmp_path / 'part-1.parquet']
+    frame.iloc[:601].to_parquet(parts[0])
+    frame.iloc[601:].to_parquet(parts[1])
 
     for task_type in (TaskType.MULTILABEL_CLASSIFICATION,
                       TaskType.MULTICLASS_CLASSIFICATION):
         holdout = holdout_baseline(path, task_type, truncated=None)
         assert holdout['rows'] == entities
-        _close_to_ranks(holdout['columns']['top_score'], score[:, 0])
+        _close_to_ranks(holdout['columns']['top_score'], score.max(axis=1))
         assert holdout['truncated'] is None
+    _close_to_ranks(top_score_stats(parts), score.max(axis=1))
+
+
+def test_non_finite_scores_are_not_counted(tmp_path):
+    pd.DataFrame({
+        'True_PROB': [.2, np.nan, np.inf, .4, None, -np.inf],
+        'TARGET': [1, 0, 1, 0, 1, 0],
+    }).to_parquet(tmp_path / 'binary.parquet')
+
+    summary = parquet_stats([tmp_path / 'binary.parquet'],
+                            ['True_PROB'])['True_PROB']
+
+    assert summary['count'] == 2
+    assert summary['min'] == .2 and summary['max'] == .4
 
 
 def test_binary_and_regression_holdouts(tmp_path):

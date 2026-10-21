@@ -13,11 +13,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use arrow::compute::filter_record_batch;
+use arrow::array::{new_null_array, Array, Float64Array, UInt32Array};
+use arrow::compute::{cast, concat, take};
 use arrow::row::{OwnedRow, RowConverter, SortField};
-use arrow_array::{ArrayRef, BooleanArray, RecordBatch};
-use arrow_schema::{DataType, Schema};
-use parquet::arrow::arrow_reader::{ParquetRecordBatchReaderBuilder, RowSelection, RowSelector};
+use arrow_array::{ArrayRef, RecordBatch};
+use arrow_schema::{DataType, Field, Schema};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ProjectionMask;
 use rayon::prelude::*;
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
@@ -95,9 +96,10 @@ pub struct ColStatsOptions {
     /// and record `CATEGORY_COUNTS_CAPPED`: whether counting hit the
     /// category cap, so `NUM_UNIQUE` is an estimate.
     pub category_counts_limit: Option<usize>,
-    /// Compute every statistic over only the first row of each run of equal
-    /// values of these columns, in path and row order.
-    pub first_row_per: Vec<String>,
+    /// Compute every statistic over the maximum of each column within each
+    /// run of equal values of these columns, in path and row order. Needs
+    /// numerical columns and no histograms or by-class summaries.
+    pub max_per: Vec<String>,
 }
 
 impl Default for ColStatsOptions {
@@ -107,16 +109,9 @@ impl Default for ColStatsOptions {
             summary_stats_by_class: true,
             histograms: true,
             category_counts_limit: None,
-            first_row_per: Vec::new(),
+            max_per: Vec::new(),
         }
     }
-}
-
-/// Run boundaries for `ColStatsOptions::first_row_per`.
-struct RunKeys {
-    names: Vec<String>,
-    /// Per work item, the key row that precedes its row group.
-    previous: Vec<Option<OwnedRow>>,
 }
 
 fn key_rows(batch: &RecordBatch, names: &[String]) -> Result<arrow::row::Rows> {
@@ -133,104 +128,191 @@ fn key_rows(batch: &RecordBatch, names: &[String]) -> Result<arrow::row::Rows> {
     Ok(converter.convert_columns(&arrays)?)
 }
 
-/// Keep the rows whose key differs from the row before; `carry` holds the
-/// last key seen.
-fn first_rows_of_runs(
-    batch: RecordBatch,
-    names: &[String],
-    carry: &mut Option<OwnedRow>,
-) -> Result<RecordBatch> {
-    if batch.num_rows() == 0 {
-        return Ok(batch);
-    }
-    let rows = key_rows(&batch, names)?;
-    let mask: BooleanArray = (0..rows.num_rows())
-        .map(|idx| {
-            Some(if idx == 0 {
-                carry.as_ref().is_none_or(|last| last.row() != rows.row(0))
-            } else {
-                rows.row(idx) != rows.row(idx - 1)
-            })
-        })
-        .collect();
-    *carry = Some(rows.row(rows.num_rows() - 1).owned());
-    Ok(filter_record_batch(&batch, &mask)?)
+/// Per-column maximum of one run of equal `max_per` keys, as one-row arrays.
+struct RunMax {
+    key: OwnedRow,
+    best: Vec<(Option<f64>, Option<ArrayRef>)>,
 }
 
-fn last_key_row(path: &Path, row_group: usize, names: &[String]) -> Result<Option<OwnedRow>> {
-    let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
-    let rows = builder.metadata().row_group(row_group).num_rows() as usize;
-    if rows == 0 {
-        return Ok(None);
-    }
-    let indices = resolve_named_indices(names, builder.schema())?;
-    let projection = ProjectionMask::roots(builder.parquet_schema(), indices);
-    let reader = builder
-        .with_row_groups(vec![row_group])
-        .with_projection(projection)
-        .with_row_selection(RowSelection::from(vec![
-            RowSelector::skip(rows - 1),
-            RowSelector::select(1),
-        ]))
-        .build()?;
-    let mut last = None;
-    for batch in reader {
-        let batch = batch?;
-        if batch.num_rows() > 0 {
-            let rows = key_rows(&batch, names)?;
-            last = Some(rows.row(rows.num_rows() - 1).owned());
+impl RunMax {
+    fn merge(&mut self, other: RunMax) {
+        for (mine, theirs) in self.best.iter_mut().zip(other.best) {
+            if larger(theirs.0, mine.0) {
+                *mine = theirs;
+            }
         }
     }
-    Ok(last)
 }
 
-fn resolve_named_indices(names: &[String], schema: &Schema) -> Result<Vec<usize>> {
-    names
+fn larger(candidate: Option<f64>, current: Option<f64>) -> bool {
+    matches!(candidate, Some(v) if !v.is_nan() && current.is_none_or(|c| v > c))
+}
+
+/// The first and last runs of a row group, which may continue into the
+/// neighbouring row groups.
+#[derive(Default)]
+struct RowGroupRuns {
+    head: Option<RunMax>,
+    tail: Option<RunMax>,
+}
+
+/// The open run while scanning: its best values so far, and which of them
+/// sit in the current batch.
+struct OpenRun {
+    key: Option<OwnedRow>,
+    best: Vec<(Option<f64>, Option<ArrayRef>)>,
+    in_batch: Vec<Option<usize>>,
+    started_in_batch: bool,
+}
+
+impl OpenRun {
+    fn new(columns: usize, key: Option<OwnedRow>, started_in_batch: bool) -> Self {
+        Self {
+            key,
+            best: vec![(None, None); columns],
+            in_batch: vec![None; columns],
+            started_in_batch,
+        }
+    }
+
+    /// Copy (not slice, which would pin the batch) the best values out.
+    fn settle(mut self, arrays: &[ArrayRef], key: impl FnOnce() -> OwnedRow) -> Result<RunMax> {
+        for (col, row) in self.in_batch.iter().enumerate() {
+            if let Some(row) = row {
+                let row = UInt32Array::from(vec![*row as u32]);
+                self.best[col].1 = Some(take(&arrays[col], &row, None)?);
+            }
+        }
+        Ok(RunMax {
+            key: self.key.unwrap_or_else(key),
+            best: self.best,
+        })
+    }
+}
+
+fn runs_batch(columns: &[ColumnSpec], arrays: Vec<ArrayRef>) -> Result<RecordBatch> {
+    let fields: Vec<Field> = columns
         .iter()
-        .map(|name| {
-            schema
-                .index_of(name)
-                .with_context(|| format!("schema error: missing parquet column '{name}'"))
-        })
-        .collect()
+        .zip(&arrays)
+        .map(|(col, array)| Field::new(&col.name, array.data_type().clone(), true))
+        .collect();
+    Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)?)
 }
 
-fn run_keys(
-    parquet_paths: &[&Path],
-    work: &[(usize, usize)],
-    options: &ColStatsOptions,
-) -> Result<Option<RunKeys>> {
-    if options.first_row_per.is_empty() {
-        return Ok(None);
-    }
-    let names = options.first_row_per.clone();
-    let lasts = work
-        .par_iter()
-        .map(|&(pi, rg)| last_key_row(parquet_paths[pi], rg, &names))
+fn runs_to_batch(columns: &[ColumnSpec], types: &[DataType], runs: &[RunMax]) -> Result<RecordBatch> {
+    let arrays = (0..columns.len())
+        .map(|col| {
+            let parts: Vec<ArrayRef> = runs
+                .iter()
+                .map(|run| {
+                    run.best[col]
+                        .1
+                        .clone()
+                        .unwrap_or_else(|| new_null_array(&types[col], 1))
+                })
+                .collect();
+            Ok(concat(&parts.iter().map(|a| a.as_ref()).collect::<Vec<_>>())?)
+        })
         .collect::<Result<Vec<_>>>()?;
-    let mut previous = Vec::with_capacity(lasts.len());
-    let mut carry: Option<OwnedRow> = None;
-    for last in lasts {
-        previous.push(carry.clone());
-        if last.is_some() {
-            carry = last;
+    runs_batch(columns, arrays)
+}
+
+/// Reduce a row group's batches to the per-column maximum of each run;
+/// `emit` gets the maxima of every run that starts and ends in the group
+/// except the first.
+fn reduce_runs(
+    batches: impl Iterator<Item = Result<RecordBatch>>,
+    keys: &[String],
+    columns: &[ColumnSpec],
+    emit: &mut dyn FnMut(&RecordBatch) -> Result<()>,
+) -> Result<RowGroupRuns> {
+    let mut runs = RowGroupRuns::default();
+    let mut spilled: Vec<RunMax> = Vec::new();
+    let mut types: Vec<DataType> = Vec::new();
+    let mut open: Option<OpenRun> = None;
+    for batch in batches {
+        let batch = batch?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let key = key_rows(&batch, keys)?;
+        let arrays: Vec<ArrayRef> = columns
+            .iter()
+            .map(|col| Ok(batch.column(batch.schema().index_of(&col.name)?).clone()))
+            .collect::<Result<_>>()?;
+        types = arrays.iter().map(|array| array.data_type().clone()).collect();
+        let values: Vec<Float64Array> = arrays
+            .iter()
+            .map(|array| {
+                Ok(cast(array, &DataType::Float64)?
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .context("numerical column")?
+                    .clone())
+            })
+            .collect::<Result<_>>()?;
+        let mut picks: Vec<Vec<Option<u32>>> = vec![Vec::new(); columns.len()];
+        for row in 0..batch.num_rows() {
+            let new_run = match (row, open.as_ref()) {
+                (_, None) => true,
+                (0, Some(o)) => o.key.as_ref().is_none_or(|k| k.row() != key.row(0)),
+                _ => key.row(row) != key.row(row - 1),
+            };
+            if new_run {
+                if let Some(done) = open.take() {
+                    let done_key = || key.row(row - 1).owned();
+                    if runs.head.is_none() {
+                        runs.head = Some(done.settle(&arrays, done_key)?);
+                    } else if done.started_in_batch {
+                        for (col, row) in done.in_batch.iter().enumerate() {
+                            picks[col].push(row.map(|row| row as u32));
+                        }
+                    } else {
+                        spilled.push(done.settle(&arrays, done_key)?);
+                    }
+                }
+                open = Some(OpenRun::new(columns.len(), None, true));
+            }
+            let o = open.as_mut().expect("open run");
+            for (col, values) in values.iter().enumerate() {
+                let value = (!values.is_null(row)).then(|| values.value(row));
+                if larger(value, o.best[col].0) {
+                    o.best[col].0 = value;
+                    o.in_batch[col] = Some(row);
+                }
+            }
+        }
+        if !picks[0].is_empty() {
+            let arrays = arrays
+                .iter()
+                .zip(picks)
+                .map(|(array, rows)| Ok(take(array, &UInt32Array::from(rows), None)?))
+                .collect::<Result<Vec<_>>>()?;
+            emit(&runs_batch(columns, arrays)?)?;
+        }
+        if let Some(o) = open.take() {
+            let last = batch.num_rows() - 1;
+            let run = o.settle(&arrays, || key.row(last).owned())?;
+            let mut next = OpenRun::new(columns.len(), Some(run.key), false);
+            next.best = run.best;
+            open = Some(next);
         }
     }
-    Ok(Some(RunKeys { names, previous }))
-}
-
-/// Projected parquet columns: the specs' plus any run keys.
-fn with_key_indices(
-    mut indices: Vec<usize>,
-    run_keys: Option<&RunKeys>,
-    schema: &Schema,
-) -> Result<Vec<usize>> {
-    if let Some(keys) = run_keys {
-        indices.extend(resolve_named_indices(&keys.names, schema)?);
+    if let Some(o) = open {
+        let run = RunMax {
+            key: o.key.expect("settled key"),
+            best: o.best,
+        };
+        if runs.head.is_none() {
+            runs.head = Some(run);
+        } else {
+            runs.tail = Some(run);
+        }
     }
-    indices.sort_unstable();
-    indices.dedup();
-    Ok(indices)
+    if !spilled.is_empty() {
+        emit(&runs_to_batch(columns, &types, &spilled)?)?;
+    }
+    Ok(runs)
 }
 
 fn validate_stats_dtype(col: &ColumnSpec) -> Result<()> {
@@ -735,7 +817,6 @@ fn accumulate_distributions_for_row_group(
     floating_specs: &[FloatingHistogramSpec],
     integer_specs: &[IntegerHistogramSpec],
     timestamp_specs: &[TimestampHistogramSpec],
-    run: Option<(&RunKeys, usize)>,
     out: &mut DistributionPartial,
 ) -> Result<()> {
     let projected_indices: Vec<usize> = floating_specs
@@ -752,7 +833,7 @@ fn accumulate_distributions_for_row_group(
                 .map(|spec| parquet_indices[spec.spec_idx]),
         )
         .collect();
-    for batch_res in row_group_batches(path, row_group, &projected_indices, run)? {
+    for batch_res in row_group_batches(path, row_group, &projected_indices, &[])? {
         let batch = batch_res?;
         let schema = batch.schema();
         for (hist_idx, spec) in floating_specs.iter().enumerate() {
@@ -936,54 +1017,48 @@ fn accumulate_by_class(
 
 type RowGroupStats = (FileColStats, ByClassStats, Vec<IntegerRange>);
 
-/// The row group's batches, reduced to run starts when `first_row_per` is set.
-fn row_group_batches<'a>(
+/// The row group's batches of the projected columns and `keys`.
+fn row_group_batches(
     path: &Path,
     row_group: usize,
     parquet_indices: &[usize],
-    run: Option<(&'a RunKeys, usize)>,
-) -> Result<impl Iterator<Item = Result<RecordBatch>> + 'a> {
+    keys: &[String],
+) -> Result<impl Iterator<Item = Result<RecordBatch>>> {
     let file = File::open(path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-    let indices = with_key_indices(
-        parquet_indices.to_vec(),
-        run.map(|(keys, _)| keys),
-        builder.schema(),
-    )?;
+    let mut indices = parquet_indices.to_vec();
+    for name in keys {
+        indices.push(
+            builder
+                .schema()
+                .index_of(name)
+                .with_context(|| format!("schema error: missing parquet column '{name}'"))?,
+        );
+    }
+    indices.sort_unstable();
+    indices.dedup();
     let projection = ProjectionMask::roots(builder.parquet_schema(), indices);
     let reader = builder
         .with_row_groups(vec![row_group])
         .with_projection(projection)
         .build()?;
-    let mut carry = run.and_then(|(keys, work_idx)| keys.previous[work_idx].clone());
-    Ok(reader.map(move |batch| {
-        let batch = batch?;
-        match run {
-            Some((keys, _)) => first_rows_of_runs(batch, &keys.names, &mut carry),
-            None => Ok(batch),
-        }
-    }))
+    Ok(reader.map(|batch| Ok(batch?)))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn stats_for_row_group(
-    path: &Path,
-    row_group: usize,
-    columns: &[ColumnSpec],
-    parquet_indices: &[usize],
-    integer_spec_indices: &[usize],
-    table_cat: &Arc<TableCategoryCounts>,
+struct StatsSink<'a> {
+    columns: &'a [ColumnSpec],
+    integer_spec_indices: &'a [usize],
     score_class: Option<(usize, usize)>,
-    run: Option<(&RunKeys, usize)>,
-) -> Result<RowGroupStats> {
-    let mut fcs = FileColStats::new_with_categories(columns, Arc::clone(table_cat));
-    let mut by_class = ByClassStats::new();
-    let mut integer_ranges = vec![IntegerRange::default(); integer_spec_indices.len()];
-    for batch_res in row_group_batches(path, row_group, parquet_indices, run)? {
-        let batch = batch_res?;
+    stats: RowGroupStats,
+}
+
+impl StatsSink<'_> {
+    fn drive(&mut self, batch: &RecordBatch) -> Result<()> {
+        let (fcs, by_class, integer_ranges) = &mut self.stats;
         let schema = batch.schema();
-        for (i, col) in columns.iter().enumerate() {
-            let range = integer_spec_indices
+        for (i, col) in self.columns.iter().enumerate() {
+            let range = self
+                .integer_spec_indices
                 .binary_search(&i)
                 .ok()
                 .map(|idx| &mut integer_ranges[idx]);
@@ -991,7 +1066,7 @@ fn stats_for_row_group(
                 i,
                 batch.column(schema.index_of(&col.name)?),
                 col,
-                &mut fcs,
+                fcs,
                 range,
             );
             if let Err(error) = result {
@@ -1004,19 +1079,67 @@ fn stats_for_row_group(
                 )));
             }
         }
-        if let Some((score, class)) = score_class {
+        if let Some((score, class)) = self.score_class {
             accumulate_by_class(
-                &batch,
-                schema.index_of(&columns[score].name)?,
-                schema.index_of(&columns[class].name)?,
-                &columns[score],
-                &columns[class],
-                &mut by_class,
+                batch,
+                schema.index_of(&self.columns[score].name)?,
+                schema.index_of(&self.columns[class].name)?,
+                &self.columns[score],
+                &self.columns[class],
+                by_class,
             )?;
         }
+        Ok(())
     }
-    fcs.flush_categories();
-    Ok((fcs, by_class, integer_ranges))
+}
+
+type RunEdges = Vec<(Option<RunMax>, Option<RunMax>)>;
+
+fn stats_for_row_group(
+    path: &Path,
+    row_group: usize,
+    parquet_indices: &[usize],
+    sink: &mut StatsSink<'_>,
+    max_per: &[String],
+) -> Result<(Option<RunMax>, Option<RunMax>)> {
+    let batches = row_group_batches(path, row_group, parquet_indices, max_per)?;
+    let edges = if max_per.is_empty() {
+        for batch in batches {
+            sink.drive(&batch?)?;
+        }
+        (None, None)
+    } else {
+        let columns = sink.columns;
+        let runs = reduce_runs(batches, max_per, columns, &mut |batch| sink.drive(batch))?;
+        (runs.head, runs.tail)
+    };
+    sink.stats.0.flush_categories();
+    Ok(edges)
+}
+
+/// Join runs that cross row groups, in order, into one batch of maxima.
+fn stitch_runs(
+    columns: &[ColumnSpec],
+    types: &[DataType],
+    edges: RunEdges,
+) -> Result<Option<RecordBatch>> {
+    let mut done = Vec::new();
+    let mut pending: Option<RunMax> = None;
+    for (head, tail) in edges {
+        let Some(head) = head else { continue };
+        match pending.as_mut() {
+            Some(open) if open.key == head.key => open.merge(head),
+            _ => done.extend(pending.replace(head)),
+        }
+        if let Some(tail) = tail {
+            done.extend(pending.replace(tail));
+        }
+    }
+    done.extend(pending);
+    if done.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(runs_to_batch(columns, types, &done)?))
 }
 
 /// Accumulate per-column statistics for [`compute_parquet_col_stats_with_options`].
@@ -1065,49 +1188,83 @@ fn accumulate_parquet_col_stats<'a>(
         .collect();
 
     let score_class = find_score_class(columns).filter(|_| options.summary_stats_by_class);
-    let run_keys = run_keys(parquet_paths, &work, options)?;
-    let empty = || {
-        (
+    let max_per = options.max_per.as_slice();
+    if !max_per.is_empty()
+        && (options.histograms
+            || score_class.is_some()
+            || columns
+                .iter()
+                .any(|col| col.semantic_type != Some(SemanticType::Numerical)))
+    {
+        bail!("max_per needs numerical columns and no histograms or by-class summaries");
+    }
+    let sink = || StatsSink {
+        columns,
+        integer_spec_indices: &integer_spec_indices,
+        score_class,
+        stats: (
             FileColStats::new_with_categories(columns, Arc::clone(&table_cat)),
             ByClassStats::new(),
             vec![IntegerRange::default(); integer_spec_indices.len()],
-        )
+        ),
+    };
+    let merge = |total: &mut RowGroupStats, (mut partial, partial_by_class, partial_ranges): RowGroupStats| {
+        let (acc, by_class, integer_ranges) = total;
+        acc.merge(&mut partial);
+        for (class, stats) in partial_by_class {
+            by_class.entry(class).or_default().merge(&stats);
+        }
+        for (total, range) in integer_ranges.iter_mut().zip(partial_ranges) {
+            total.merge(range);
+        }
     };
 
-    let (acc, by_class, integer_ranges) = if work.is_empty() {
-        let (mut fcs, by_class, integer_ranges) = empty();
-        fcs.flush_categories();
-        (fcs, by_class, integer_ranges)
-    } else {
-        work.par_iter()
-            .enumerate()
-            .map(|(work_idx, &(pi, rg))| {
-                stats_for_row_group(
-                    parquet_paths[pi],
-                    rg,
-                    columns,
-                    &parquet_indices[pi],
-                    &integer_spec_indices,
-                    &table_cat,
-                    score_class,
-                    run_keys.as_ref().map(|keys| (keys, work_idx)),
-                )
+    let mut total = sink();
+    if !work.is_empty() {
+        // Fixed chunks merged in order: the result never depends on scheduling.
+        let chunk = work.len().div_ceil(64);
+        let chunks = work
+            .par_chunks(chunk)
+            .map(|items| {
+                let mut out = sink();
+                let mut edges = RunEdges::new();
+                for &(pi, rg) in items {
+                    edges.push(stats_for_row_group(
+                        parquet_paths[pi],
+                        rg,
+                        &parquet_indices[pi],
+                        &mut out,
+                        max_per,
+                    )?);
+                }
+                Ok((out.stats, edges))
             })
-            .try_reduce(
-                empty,
-                |(mut acc, mut by_class, mut integer_ranges),
-                 (mut partial, partial_by_class, partial_ranges)| {
-                    acc.merge(&mut partial);
-                    for (class, stats) in partial_by_class {
-                        by_class.entry(class).or_default().merge(&stats);
-                    }
-                    for (total, range) in integer_ranges.iter_mut().zip(partial_ranges) {
-                        total.merge(range);
-                    }
-                    Ok((acc, by_class, integer_ranges))
-                },
-            )?
-    };
+            .collect::<Result<Vec<_>>>()?;
+        let mut edges = RunEdges::new();
+        for (stats, chunk_edges) in chunks {
+            merge(&mut total.stats, stats);
+            edges.extend(chunk_edges);
+        }
+        let types = if max_per.is_empty() {
+            Vec::new()
+        } else {
+            let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(parquet_paths[0])?)?;
+            columns
+                .iter()
+                .map(|col| Ok(builder.schema().field_with_name(&col.name)?.data_type().clone()))
+                .collect::<Result<Vec<_>>>()?
+        };
+        if let Some(batch) = stitch_runs(columns, &types, edges)? {
+            let mut boundary = sink();
+            boundary.drive(&batch)?;
+            boundary.stats.0.flush_categories();
+            merge(&mut total.stats, boundary.stats);
+        }
+    }
+    let (mut acc, by_class, integer_ranges) = total.stats;
+    if work.is_empty() {
+        acc.flush_categories();
+    }
     Ok((
         acc,
         table_cat,
@@ -1120,7 +1277,6 @@ fn accumulate_parquet_col_stats<'a>(
             integer_ranges,
             by_class,
             score_class,
-            run_keys,
         },
     ))
 }
@@ -1135,7 +1291,6 @@ struct Accumulated<'a> {
     integer_ranges: Vec<IntegerRange>,
     by_class: ByClassStats,
     score_class: Option<(usize, usize)>,
-    run_keys: Option<RunKeys>,
 }
 
 /// [`compute_parquet_col_stats_with_options`] with default options and a given
@@ -1265,7 +1420,6 @@ fn add_distribution_stats(
         parquet_indices,
         integer_spec_indices,
         integer_ranges,
-        run_keys,
         ..
     } = run;
     let (parquet_paths, columns) = (*parquet_paths, *columns);
@@ -1348,7 +1502,6 @@ fn add_distribution_stats(
     {
         let distributions = work
             .par_iter()
-            .enumerate()
             .try_fold(
                 || {
                     DistributionPartial::new(
@@ -1357,7 +1510,7 @@ fn add_distribution_stats(
                         timestamp_specs.len(),
                     )
                 },
-                |mut out, (work_idx, &(pi, rg))| {
+                |mut out, &(pi, rg)| {
                     accumulate_distributions_for_row_group(
                         parquet_paths[pi],
                         rg,
@@ -1366,7 +1519,6 @@ fn add_distribution_stats(
                         &floating_specs,
                         &integer_specs,
                         &timestamp_specs,
-                        run_keys.as_ref().map(|keys| (keys, work_idx)),
                         &mut out,
                     )?;
                     Ok::<_, anyhow::Error>(out)
@@ -1506,7 +1658,7 @@ mod tests {
 
     use arrow_array::builder::{Float64Builder, ListBuilder};
     use arrow_array::{
-        ArrayRef, Date32Array, Decimal128Array, Decimal256Array, Float64Array, Int32Array,
+        ArrayRef, Date32Array, Decimal128Array, Decimal256Array, Float32Array, Float64Array, Int32Array,
         Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray, TimestampSecondArray,
     };
     use arrow::datatypes::i256;
@@ -3042,28 +3194,29 @@ mod tests {
     }
 
     #[test]
-    fn first_row_per_keeps_one_row_per_run_across_row_groups_and_files() {
+    fn max_per_takes_each_runs_maximum_across_row_groups_and_files() {
         let dir = tempdir().unwrap();
         let schema = Schema::new(vec![
             Field::new("ENTITY", DataType::Int64, false),
             Field::new("ANCHOR", DataType::Int64, false),
-            Field::new("SCORE", DataType::Float64, false),
+            Field::new("SCORE", DataType::Float32, true),
         ]);
-        // Runs of 3 rows (entity, anchor), scores descending in each run; the
-        // same entity repeats with a new anchor, and runs straddle row groups
-        // (7 rows each) and the file boundary.
+        // Runs of 3 rows (entity, anchor) with the maximum in any position;
+        // the same entity repeats with a new anchor, and runs straddle row
+        // groups (7 rows each) and the file boundary.
         let runs = 40i64;
         let entity: Vec<i64> = (0..runs * 3).map(|i| i / 6).collect();
         let anchor: Vec<i64> = (0..runs * 3).map(|i| (i / 3) % 2).collect();
-        let score: Vec<f64> = (0..runs * 3)
-            .map(|i| (i / 3) as f64 + 1.0 - (i % 3) as f64 * 0.25)
+        let score: Vec<Option<f32>> = (0..runs * 3)
+            .map(|i| match (i % 3, (i / 3) % 3) {
+                (pos, top) if pos == top => Some((i / 3) as f32 + 1.0),
+                (0, _) => None,
+                _ => Some(f32::NAN),
+            })
             .collect();
         let split = 61usize;
         let mut paths = Vec::new();
-        for (idx, range) in [0..split, split..(runs * 3) as usize]
-            .into_iter()
-            .enumerate()
-        {
+        for (idx, range) in [0..split, split..(runs * 3) as usize].into_iter().enumerate() {
             let path = dir.path().join(format!("part-{idx}.parquet"));
             write_parquet(
                 &path,
@@ -3071,59 +3224,63 @@ mod tests {
                 vec![
                     StdArc::new(Int64Array::from(entity[range.clone()].to_vec())) as ArrayRef,
                     StdArc::new(Int64Array::from(anchor[range.clone()].to_vec())) as ArrayRef,
-                    StdArc::new(Float64Array::from(score[range].to_vec())) as ArrayRef,
+                    StdArc::new(Float32Array::from(score[range].to_vec())) as ArrayRef,
                 ],
                 7,
             );
             paths.push(path);
         }
         let paths: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
-        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
+        let columns = vec![col("SCORE", IngestedType::Float32, SemanticType::Numerical)];
+        let options = |keys: &[&str]| ColStatsOptions {
+            percentiles: true,
+            histograms: false,
+            max_per: keys.iter().map(|key| key.to_string()).collect(),
+            ..Default::default()
+        };
 
-        let full = with_options(
-            &paths,
-            &columns,
-            ColStatsOptions {
-                percentiles: true,
-                first_row_per: vec!["ENTITY".into(), "ANCHOR".into()],
-                ..Default::default()
-            },
-        );
-        assert_eq!(
-            val(&full, "SCORE__kumo.numerical__COUNT__False"),
-            json!(runs)
-        );
+        let full = with_options(&paths, &columns, options(&["ENTITY", "ANCHOR"]));
+        assert_eq!(val(&full, "SCORE__kumo.numerical__COUNT__False"), json!(runs));
+        assert_eq!(val(&full, "SCORE__kumo.numerical__NUM_NA__False"), json!(0));
         assert_eq!(val(&full, "SCORE__kumo.numerical__MIN__False"), json!(1.0));
         assert_eq!(
             val(&full, "SCORE__kumo.numerical__MEAN__False"),
             json!((runs + 1) as f64 / 2.0)
         );
         assert_eq!(
-            val(&full, "SCORE__kumo.numerical__PERCENTILES__True")
-                .as_array()
-                .unwrap()[49],
+            val(&full, "SCORE__kumo.numerical__PERCENTILES__True").as_array().unwrap()[49],
             json!(20.5)
         );
-        let histogram = val(&full, "SCORE__kumo.numerical__HISTOGRAM__False");
-        let total: f64 = histogram
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|bin| bin[1].as_f64().unwrap())
-            .sum();
-        assert!((total - 100.0).abs() < 1e-9);
 
-        let entity_only = with_options(
-            &paths,
-            &columns,
-            ColStatsOptions {
-                first_row_per: vec!["ENTITY".into()],
-                ..Default::default()
-            },
-        );
-        assert_eq!(
-            val(&entity_only, "SCORE__kumo.numerical__COUNT__False"),
-            json!(runs / 2)
-        );
+        let entity_only = with_options(&paths, &columns, options(&["ENTITY"]));
+        assert_eq!(val(&entity_only, "SCORE__kumo.numerical__COUNT__False"), json!(runs / 2));
+        assert_eq!(val(&entity_only, "SCORE__kumo.numerical__MIN__False"), json!(2.0));
     }
+
+    #[test]
+    fn output_does_not_depend_on_thread_count() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("scores.parquet");
+        let scores: Vec<f64> = (0..50_000u64)
+            .map(|i| ((i * 2_654_435_761) % 1_000_003) as f64 / 1_000_003.0)
+            .collect();
+        write_scores(&path, scores, 300);
+        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
+        let options = ColStatsOptions {
+            percentiles: true,
+            ..Default::default()
+        };
+        let run = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| with_options(&[path.as_path()], &columns, options.clone()))
+        };
+        let single = run(1);
+        for threads in [2, 5, 16] {
+            assert_eq!(run(threads), single);
+        }
+    }
+
 }

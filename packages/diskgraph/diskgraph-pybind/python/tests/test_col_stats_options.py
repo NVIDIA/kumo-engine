@@ -22,7 +22,7 @@ def test_prediction_options_through_python(tmp_path):
     pq.write_table(
         pa.table({
             "ENTITY": [1, 1, 2, 2, 3, 3],
-            "SCORE": [0.9, 0.2, 0.7, 0.6, 0.4, 0.1],
+            "SCORE": [0.2, 0.9, 0.7, 0.6, 0.1, 0.4],
             "CLASS": ["a", "b", "a", "c", "b", "a"],
         }), path, row_group_size=3)
 
@@ -40,7 +40,7 @@ def test_prediction_options_through_python(tmp_path):
 
     full, _ = diskgraph.compute_col_stats_for_parquet(
         [str(path)], json.dumps(json.loads(SPECS)[:1]), "v1",
-        first_row_per=["ENTITY"])
+        summary_stats_by_class=False, histograms=False, max_per=["ENTITY"])
     stats = json.loads(full)
     assert stats["SCORE__kumo.numerical__COUNT__False"]["value"] == 3
     assert stats["SCORE__kumo.numerical__MIN__False"]["value"] == 0.4
