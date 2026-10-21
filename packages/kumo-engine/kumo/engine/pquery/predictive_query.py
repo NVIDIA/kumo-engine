@@ -159,8 +159,10 @@ class PredictiveQuery:
         # snapshot.id is 'graph_key@data_version_prefix' (see
         # Graph.snapshot()); self._graph_id is the graph_key alone, so
         # membership is a prefix check, not equality.
-        if snapshot.id != self.graph.id and not snapshot.id.startswith(
-                f'{self._graph_id}@'):
+        if isinstance(self.graph, GraphSnapshot) and (snapshot.id
+                                                      == self.graph.id):
+            return
+        if not snapshot.id.startswith(f'{self._graph_id}@'):
             raise ValueError(
                 f"snapshot {snapshot.id!r} was not materialized from "
                 f"this query's graph (id {self._graph_id!r}) -- pass a "

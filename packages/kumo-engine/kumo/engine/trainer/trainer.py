@@ -345,6 +345,12 @@ class Trainer:
         return self._training_table_generation_plan
 
     @property
+    def training_query(self) -> Optional[str]:
+        """Predictive query of the last fit/load, for
+        :meth:`PredictiveQuery.from_snapshot`."""
+        return self._training_query
+
+    @property
     def scratch_dir(self) -> Path:
         return trainer_scratch_dir(self._id)
 

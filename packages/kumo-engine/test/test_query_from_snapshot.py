@@ -19,7 +19,8 @@ def _scores(trainer, table, snapshot):
 
 def test_snapshot_bound_query_predicts_like_graph_bound(fitted, tmp_path):
     trainer, graph_table, snapshot = fitted
-    query = kumo.PredictiveQuery.from_snapshot(snapshot, graph_table.query)
+    assert trainer.training_query == graph_table.query
+    query = kumo.PredictiveQuery.from_snapshot(snapshot, trainer.training_query)
     expected = _scores(trainer, graph_table, snapshot)
 
     assert query.get_task_type() == TaskType.BINARY_CLASSIFICATION
