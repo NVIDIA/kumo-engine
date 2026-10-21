@@ -618,6 +618,17 @@ def test_source_changes_unknown_without_a_recorded_version(
         'unchanged' if edit == 'missing' else 'unknown')
 
 
+def test_source_changes_unknown_for_a_moved_table(scratch, graph, dated):
+    snapshot = graph.snapshot()
+    path = snapshot.index_path / 'snapshot-manifest.json'
+    manifest = json.loads(path.read_text())
+    manifest['parents']['source_tables']['users']['location'] += '.old'
+    path.write_text(json.dumps(manifest))
+    changes = snapshot.source_changes(graph)
+    assert changes['users']['status'] == 'unknown'
+    assert changes['events']['status'] == 'unchanged'
+
+
 def test_load_warns_only_with_graph_and_only_for_changed_tables(
         tmp_path, scratch, graph, dated, exports):
     location, _ = _export(graph.snapshot(), exports, tmp_path)
