@@ -145,7 +145,9 @@ snapshot = GraphSnapshot.load_from_connector(S3Connector(), path=location)
 ```
 
 `export` writes `<path>/<graph id>/<data version>/` and returns it; an
-interrupted export resumes, and a load either completes or leaves nothing.
+interrupted export resumes, and a load either completes or leaves nothing. The
+export holds the DiskGraph index under `index/` with its own `_MANIFEST.json`;
+`index/_SUCCESS` is written last, so a copy without it is incomplete.
 Snowflake, Databricks and BigQuery connectors cannot hold an export: use a
 `FileConnector` on a mounted volume (e.g. `/Volumes/<catalog>/<schema>/<volume>`)
 or the S3/GCS connector on the bucket behind it. Load only from paths whose

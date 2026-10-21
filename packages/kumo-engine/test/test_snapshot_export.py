@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import json
 import os
 import shutil
@@ -60,6 +61,16 @@ def _edit_manifest(exported, edit):
     manifest = json.loads(path.read_text())
     edit(manifest)
     path.write_text(json.dumps(manifest))
+
+
+def _edit_index_manifest(exported, edit):
+    path = exported / 'index/_MANIFEST.json'
+    manifest = json.loads(path.read_text())
+    edit(manifest)
+    path.write_text(json.dumps(manifest))
+    _edit_manifest(
+        exported, lambda m: m.update(
+            index_manifest=hashlib.sha256(path.read_bytes()).hexdigest()))
 
 
 def _load(exports, location, **kwargs):
@@ -126,25 +137,24 @@ def test_interrupted_export_is_not_loadable_and_resumes(
 
     monkeypatch.setattr('kumo_core.sources.object_store.copies', four)
     snapshot = graph.snapshot()
-    stream, finished = snapshot_io._stream, threading.Event()
+    open_output, finished = snapshot_io._open_output, threading.Event()
 
-    def interrupted(source, size, stop, write=None):
-        if write is not None and source.name == 'diskgraph_config.json':
+    def interrupted(client, path):
+        if path.endswith('diskgraph_config.json'):
             finished.wait(10)
             raise OSError('connection reset')
-        crcs = stream(source, size, stop, write)
-        if write is not None and source.name == 'col_stats.json':
+        if path.endswith('col_stats.json'):
             finished.set()
-        return crcs
+        return open_output(client, path)
 
     with monkeypatch.context() as patch:
-        patch.setattr(snapshot_io, '_stream', interrupted)
+        patch.setattr(snapshot_io, '_open_output', interrupted)
         patch.setattr(snapshot_io, '_ATTEMPTS', 1)
         with pytest.raises(OSError, match='connection reset'):
             snapshot.export(exports, 'one')
     graph_id, data_version = snapshot.id.split('@')
     location = f'one/{graph_id}/{data_version}'
-    with pytest.raises(FileNotFoundError, match='kumo_snapshot.json'):
+    with pytest.raises(FileNotFoundError, match='No complete snapshot'):
         _load(exports, location)
     assert snapshot.export(exports, 'one') == location
     scratch('gpu')
@@ -155,15 +165,15 @@ def test_interrupted_export_is_not_loadable_and_resumes(
 def test_concurrent_exports_of_one_snapshot_both_succeed(
         tmp_path, scratch, graph, exports, monkeypatch):
     snapshot = graph.snapshot()
-    parallel, raced = snapshot_io._parallel, []
+    transfer, raced = snapshot_io._transfer, []
 
     def racing(*args):
         if not raced:
             raced.append(None)
             raced[0] = snapshot.export(exports, 'one')
-        return parallel(*args)
+        return transfer(*args)
 
-    monkeypatch.setattr(snapshot_io, '_parallel', racing)
+    monkeypatch.setattr(snapshot_io, '_transfer', racing)
     assert raced == [snapshot.export(exports, 'one')]
 
 
@@ -230,19 +240,20 @@ def test_load_refuses_before_downloading_when_disk_is_too_small(
         _load(exports, location)
 
 
-@pytest.mark.parametrize('edit', [
-    lambda manifest: manifest.update(data_version='../../victim'),
-    lambda manifest: manifest['files'][0].update(path='../../victim/x'),
-    lambda manifest: manifest.pop('files'),
-    lambda manifest: manifest['files'].append(manifest['files'][0]),
+@pytest.mark.parametrize('index, edit', [
+    (False, lambda manifest: manifest.update(data_version='../../victim')),
+    (False, lambda manifest: manifest.pop('crc32')),
+    (True, lambda manifest: manifest['files'][0].update(
+        rel_path='../../victim/x')),
+    (True, lambda manifest: manifest['files'].append(manifest['files'][0])),
 ])
 def test_load_rejects_a_hostile_or_malformed_manifest(tmp_path, scratch, graph,
-                                                      exports, edit):
+                                                      exports, index, edit):
     location, exported = _export(graph.snapshot(), exports, tmp_path)
     victim = tmp_path / 'victim'
     victim.mkdir()
     (victim / 'keep').write_text('x')
-    _edit_manifest(exported, edit)
+    (_edit_index_manifest if index else _edit_manifest)(exported, edit)
     scratch('gpu/a/b')
     with pytest.raises(ValueError):
         _load(exports, location)
@@ -254,12 +265,8 @@ def test_load_warns_instead_of_refusing_newer_or_foreign_exports(
     snapshot = graph.snapshot()
     location, exported = _export(snapshot, exports, tmp_path)
 
-    def newer(manifest):
-        manifest.update(format=2, added_later={'x': 1})
-        for entry in manifest['files']:
-            entry['added_later'] = 1
-
-    _edit_manifest(exported, newer)
+    _edit_manifest(exported,
+                   lambda m: m.update(format=2, added_later={'x': 1}))
     other = kumo.Graph(tables={'users': graph.tables['users']})
     scratch('gpu')
     with pytest.warns(UserWarning) as caught:
@@ -313,9 +320,7 @@ def test_load_explains_an_index_the_installed_diskgraph_cannot_open(
     metadata.write_bytes(garbage)
 
     def unreadable(manifest):
-        for entry in manifest['files']:
-            if entry['path'] == 'index_metadata.json':
-                entry['crc32'] = [zlib.crc32(garbage)]
+        manifest['crc32']['index_metadata.json'] = [zlib.crc32(garbage)]
         manifest['snapshot']['formats'] = {'layout': -1}
 
     _edit_manifest(exported, unreadable)
