@@ -9,6 +9,7 @@ import pytest
 from kumoapi.task import TaskType
 
 import kumo.engine as kumo
+from kumo.engine._scratch import get_scratch_dir
 
 
 def _scores(trainer, table, snapshot):
@@ -59,6 +60,32 @@ def test_predict_snapshot_scores_with_the_saved_query(fitted, tmp_path):
     pd.testing.assert_frame_equal(scores(entities=rows), expected)
     with pytest.raises(ValueError, match='not both'):
         scores(entities=rows, prediction_time=graph_table.timestamps[0])
+
+
+def test_exported_snapshot_scores_in_a_fresh_scratch_without_a_graph(
+        fitted, tmp_path):
+    trainer, graph_table, snapshot = fitted
+    expected = _scores(trainer, graph_table, snapshot)
+    exports = kumo.FileConnector(root_dir=str(tmp_path / 'exports'))
+    location = snapshot.export(exports, 'snapshots')
+    bundle = trainer._training_result.bundle_dir
+    previous = get_scratch_dir()
+    kumo.configure(scratch_dir=tmp_path / 'fresh')
+    try:
+        loaded = kumo.GraphSnapshot.load_from_connector(exports, path=location)
+        assert loaded.id == snapshot.id
+        assert loaded.index_path.is_relative_to(tmp_path / 'fresh')
+        model = kumo.Trainer.load(bundle)
+        scored = model.predict_snapshot(
+            loaded, binary_classification_threshold=0.5).frame
+        pd.testing.assert_frame_equal(
+            scored.sort_values('ENTITY').reset_index(drop=True), expected)
+        query = kumo.PredictiveQuery.from_snapshot(loaded, model.training_query)
+        table = query.generate_prediction_table(
+            loaded, plan=model.training_table_generation_plan)
+        pd.testing.assert_frame_equal(_scores(model, table, loaded), expected)
+    finally:
+        kumo.configure(scratch_dir=previous)
 
 
 def test_snapshot_bound_query_checks_snapshot_graph(fitted):
