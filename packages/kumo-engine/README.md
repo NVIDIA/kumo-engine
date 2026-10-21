@@ -764,6 +764,71 @@ delete `_SUCCESS` before copying and restore it on completion, so delete permiss
 is required. Readers should wait for `_SUCCESS`. Exports are not transactional
 across destinations, atomic for single files, or isolated from concurrent access.
 
+## Monitoring prediction runs
+
+Every `predict()` writes `prediction-manifest.json` beside the run's scratch
+outputs (`result.manifest`): parents (`bundle`, `snapshot`, `prediction_table`),
+the snapshot's `source_tables`, anchors, scoring options, `outputs` (one record
+per export), timings and output score statistics. Parquet directory exports
+carry a copy as `_kumo_manifest.json`. A row's lineage columns lead back to its
+sources: `KUMO_RUN_ID` names the manifest, whose `source_tables` give each
+table's connector, location and version.
+
+`trainer.evaluate(result, snapshot=newer_snapshot)` regenerates the query's
+labels at the run's anchors on a newer snapshot, joins them with the run's
+predictions on `ENTITY` (and `ANCHOR_TIMESTAMP`), and returns an
+`EvaluationResult` with `metrics`, `labelled_fraction` and `actuals`, a Parquet
+directory of the joined labels (`ENTITY`, `ANCHOR_TIMESTAMP`, `TARGET`) next to
+the run. DiskGraph streams both sides from Parquet and hash-partitions the join,
+so memory follows the partition size rather than the run size. It never
+refuses; flags say how far to trust it: `matured` is `False` while the label
+window ends after the earliest latest-event time of the query's target tables,
+and `bundle_matches` compares the run's model with the trainer's. Static
+queries read labels at the snapshot, so `anchors` is empty and `matured` is
+`None`. A failed step leaves `metrics` empty with a `reasons` entry.
+
+Metrics use the fit-time `test_*` definitions: binary `auroc`/`ap` (exact,
+scores compared at float32 precision); regression `mae`/`rmse`; multiclass `acc`
+of the top-scored `CLASS`; link prediction `map@k`/`precision@k`, with `k` the
+classes returned per entity and anchor, over predictions with a target. Link
+prediction labels exist only for entities with a target in the window, so
+`labelled_fraction` is the share with any future link.
+
+`trainer.score_drift(result, previous=None, snapshot=None,
+training_snapshot=None)` returns a `DriftReport`: PSI of the run's scores
+against the bundle's holdout and against a previous run, and per-table row and
+per-edge count changes between the training and scoring snapshots. PSI is taken
+over the baseline's deciles, reading each side's share per bin off its recorded
+percentile curve (linear between min, q01..q99 and max). Missing records leave
+a field `None` with a `reasons` entry.
+
+To monitor in a later job, export the run to a Parquet directory and load it
+back:
+
+```python
+from kumo.engine import PredictionResult, Trainer
+
+trainer = Trainer.load_from_connector(registry, path="models/churn/")
+run = PredictionResult.load_from_connector(connector, "predictions/2024-06-01/")
+report = trainer.evaluate(run, snapshot=newer_snapshot)
+drift = trainer.score_drift(run)
+```
+
+`load_from_connector` fetches only the run's `_kumo_manifest.json`; `score_drift`
+needs nothing else, and the Parquet parts are downloaded in parallel when
+`evaluate` (or `files`) first reads them. A run exported by an older engine has no manifest: temporal queries then need
+the `ANCHOR_TIMESTAMP` column (request it with `extra_fields`), and
+`score_drift` reports `psi` as `None`.
+
+For warehouse model monitors (Snowflake ML Observability, Databricks inference
+profiles), predict with `extra_fields=[MetadataField.ANCHOR_TIMESTAMP]` and
+`lineage_columns=True`, and add actuals from `evaluate(...).actuals` joined on
+`ENTITY` (and `ANCHOR_TIMESTAMP`). Use `ANCHOR_TIMESTAMP` as the timestamp,
+`True_PROB` or `TARGET_PRED` as the prediction, `TARGET` as the label and
+`KUMO_BUNDLE_ID` as the model id. Neither supports link prediction or ranking
+outputs, and Kumo does not yet set `task=` on Snowflake model versions, so a
+Snowflake monitor cannot attach to a Kumo-published version today.
+
 ## BigQuery prediction output
 
 A `BigQueryConnector` writes predictions or embeddings to a table in its own

@@ -27,6 +27,7 @@ from kumoapi.table import Column
 
 from kumo.engine._events import Event
 from kumo.engine._job import JobRun, job
+from kumo.engine._monitoring import DriftReport, EvaluationResult
 from kumo.engine._version import __version__
 from kumo.engine.config import configure
 from kumo.engine.connector import (
@@ -66,6 +67,8 @@ __all__ = [
     "Event",
     "job",
     "JobRun",
+    "EvaluationResult",
+    "DriftReport",
     "EmbeddingModelStore",
     "GloVeVectors",
     "TokenEmbeddingModel",
