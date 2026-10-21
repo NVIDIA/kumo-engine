@@ -101,11 +101,17 @@ class TrainingTable:
 
         manifest = self.staging_dir / STAGING_MANIFEST_FILE
         name = output_config.table_name.rstrip('/')
-        if (not isinstance(connector.sink_backend, ObjectStoreSinkBackend)
-                or layout.file_type(name) == layout.CSV
-                or not manifest.is_file()):
+        try:
+            if (not isinstance(connector.sink_backend, ObjectStoreSinkBackend)
+                    or layout.file_type(name) == layout.CSV
+                    or not manifest.is_file()):
+                return {}
+            return {'sidecars': {EXPORT_MANIFEST_FILE: manifest.read_bytes()}}
+        except Exception as error:
+            warnings.warn(
+                f"Exporting without {EXPORT_MANIFEST_FILE}: {error}",
+                UserWarning, stacklevel=3)
             return {}
-        return {'sidecars': {EXPORT_MANIFEST_FILE: manifest.read_bytes()}}
 
     @classmethod
     def from_source_table(
