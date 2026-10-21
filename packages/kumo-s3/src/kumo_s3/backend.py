@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-from typing import Any, Mapping, Optional, Union
+from typing import Any, Optional, Union
 
 import kumo_s3
 from kumo_core.sources.errors import ReconnectRequiredError
@@ -13,11 +13,7 @@ from kumo_core.sources.object_store_sessions import (
 )
 from kumo_core.sources.principals import IdentityRef, Principal
 from kumo_core.sources.types import ReadMode
-from kumo_s3.session import (
-    anonymous_filesystem,
-    arrow_connection_options,
-    retry_strategy,
-)
+from kumo_s3.session import anonymous_filesystem, arrow_connection_options
 from kumoapi.data_source import (
     DataSourceType,
     S3AccessKeyAuthentication,
@@ -104,9 +100,7 @@ class S3Sessions(ObjectStoreSessions):
                 if connection else None)
 
     def _filesystem(self, connector: Any, bucket: str,
-                    region: Optional[str],
-                    options: Optional[Mapping[str, Any]] = None
-                    ) -> S3FileSystem:
+                    region: Optional[str]) -> S3FileSystem:
         r"""A ready filesystem is taken as it is: it may address a service
         that is not AWS at all, and probing its bucket name against AWS would
         answer for somebody else's bucket.
@@ -116,12 +110,6 @@ class S3Sessions(ObjectStoreSessions):
             connector, bucket)
         if isinstance(session, S3FileSystem):
             return session
-        arrow_options = {
-            **(arrow_connection_options(connection.endpoint_url,
-                                        connection.addressing_style)
-               if connection else {}),
-            **(options or {})
-        }
         with kumo_s3.translated(f'Signing for {bucket}', table=bucket):
             _require_credentials(session)
             # Resolve through the package so applications/tests replacing its
@@ -131,7 +119,9 @@ class S3Sessions(ObjectStoreSessions):
                 default_region=(connection.region or region)
                 if connection else region,
                 endpoint_url=connection.endpoint_url if connection else None,
-                options=arrow_options or None)
+                options=arrow_connection_options(connection.endpoint_url,
+                                                 connection.addressing_style)
+                if connection else None)
         if resolved is not None:
             return resolved
         if not allow_anonymous:
@@ -151,11 +141,12 @@ class S3Sessions(ObjectStoreSessions):
         if connection is not None:
             return anonymous_filesystem(
                 bucket, region=connection.region or region
-                or session.region_name, options=arrow_options)
+                or session.region_name,
+                options=arrow_connection_options(connection.endpoint_url,
+                                                 connection.addressing_style))
         from pyarrow.fs import FileSystem
         filesystem, _ = FileSystem.from_uri(f's3://{bucket}')
-        return S3FileSystem(region=filesystem.region,
-                            retry_strategy=retry_strategy(), **(options or {}))
+        return filesystem
 
 
 class S3SourceBackend(S3Sessions, ObjectStoreSourceBackend):
