@@ -269,6 +269,10 @@ def test_visualize_layout_is_deterministic_with_cycles_and_isolates():
     assert all(
         f'{edge.src_table}.{edge.fkey} → {edge.dst_table}.event_id' in titles
         for edge in edges)
+    paths = root.findall('.//{http://www.w3.org/2000/svg}path[@fill="none"]')
+    assert len(paths) == len(edges)
+    assert len({path.attrib['d'] for path in paths}) == len(edges)
+    assert any(re.search('[CQ]', path.attrib['d']) for path in paths)
 
 
 @pytest.mark.parametrize('case, message', [

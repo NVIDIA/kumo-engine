@@ -3,9 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Dependency-free SVG rendering of graph schema metadata."""
 
-from collections import deque
 from html import escape
-from math import ceil, sqrt
 from typing import Mapping, Sequence
 from unicodedata import combining
 
@@ -91,23 +89,6 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         neighbors[src].add(dst)
         neighbors[dst].add(src)
 
-    # Breadth-first groups keep related tables close, with a bounded grid
-    # rather than an arbitrarily wide chain or tall star.
-    order = []
-    remaining = set(names)
-    while remaining:
-        root = min(remaining, key=lambda n: (-len(neighbors[n]), n))
-        queue = deque([root])
-        remaining.remove(root)
-        while queue:
-            name = queue.popleft()
-            order.append(name)
-            for neighbor in sorted(neighbors[name] & remaining):
-                remaining.remove(neighbor)
-                queue.append(neighbor)
-    ncols = max(1, ceil(sqrt(len(names))))
-    nrows = max(1, ceil(len(names) / ncols))
-    positions = {name: divmod(index, nrows) for index, name in enumerate(order)}
     cards = {}
     for name in names:
         definition = definitions[name]
@@ -135,27 +116,75 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         height = y + (30 if footer else 8)
         cards[name] = (title, header, rows, ports, footer, height)
 
-    card_width = 304
-    gap = 90 + 8 * len(edges)
-    row_heights = [
-        max((cards[name][-1]
-             for name in names if positions[name][1] == row), default=90)
-        for row in range(nrows)
-    ]
-    distant = [
-        edge for edge in edges
-        if abs(positions[edge.src_table][0] - positions[edge.dst_table][0]) > 1
-    ]
-    top = 40 + 12 * len(distant)
-    xy = {
-        name:
-        (40 + col * (card_width + gap), top + sum(row_heights[:row]) + row * 48)
-        for name, (col, row) in positions.items()
+    # Rank primary-key tables before their dependents, as in the UI's LR flow.
+    parents = {name: set() for name in names}
+    for edge in edges:
+        parents[edge.src_table].add(edge.dst_table)
+    ranks: dict[str, int] = {}
+    pending = set(names)
+    while pending:
+        ready = [name for name in pending if not parents[name] & pending]
+        name = min(ready or pending, key=lambda n: (-len(neighbors[n]), n))
+        ranks[name] = max(
+            (ranks[parent] + 1 for parent in parents[name] if parent in ranks),
+            default=0)
+        pending.remove(name)
+    count = max(ranks.values(), default=0) + 1
+    layers = [[] for _ in range(count)]
+    heights = [cards[name][-1] for name in names]
+    for node, name in enumerate(names):
+        layers[ranks[name]].append(node)
+    node_ids = {name: node for node, name in enumerate(names)}
+    routes = []
+    adjacent: dict[int, list[int]] = {node: [] for node in range(len(names))}
+    for edge in edges:
+        source, target = ranks[edge.dst_table], ranks[edge.src_table]
+        route = [node_ids[edge.dst_table]]
+        # Empty slots carry long edges through a rank without crossing a card.
+        for rank in range(source + 1, target):
+            node = len(heights)
+            heights.append(16)
+            layers[rank].append(node)
+            adjacent[node] = []
+            route.append(node)
+        route.append(node_ids[edge.src_table])
+        routes.append(route)
+        if source < target:
+            for a, b in zip(route, route[1:]):
+                adjacent[a].append(b)
+                adjacent[b].append(a)
+    centers = {
+        node: index
+        for layer in layers
+        for index, node in enumerate(layer)
     }
-    width = (ncols * card_width + (ncols - 1) * gap + 80 + (gap if any(
-        positions[e.src_table][0] == positions[e.dst_table][0] == ncols - 1
-        for e in edges) else 0))
-    height = top + sum(row_heights) + (nrows - 1) * 48 + 40
+    for sweep in (list(range(count)), list(reversed(range(count)))) * 2:
+        for rank in sweep:
+            layers[rank].sort(
+                key=lambda node: (sum(centers[n] for n in adjacent[node]) / len(
+                    adjacent[node]) if adjacent[node] else centers[node], node))
+            offset = 0
+            for node in layers[rank]:
+                centers[node] = offset + heights[node] / 2
+                offset += heights[node] + 50
+    layer_heights = [
+        sum(heights[node] for node in layer) + max(0,
+                                                   len(layer) - 1) * 50
+        for layer in layers
+    ]
+    feedback = sum(ranks[e.dst_table] >= ranks[e.src_table] for e in edges)
+    card_width, gap = 304, max(120, 60 + 8 * feedback)
+    margin = max(80, 32 + 6 * feedback)
+    top = 40 + 24 * feedback
+    canvas_height = max(layer_heights, default=90)
+    xy = {}
+    for rank, layer in enumerate(layers):
+        y = top + (canvas_height - layer_heights[rank]) / 2
+        for node in layer:
+            xy[node] = (margin + rank * (card_width + gap), y)
+            y += heights[node] + 50
+    width = count * card_width + (count - 1) * gap + 2 * margin
+    height = top + canvas_height + 40
     if not names:
         width, height = 304, 112
     svg = [
@@ -171,54 +200,45 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         svg.append('<text x="24" y="60" font-size="16" fill="#606060">'
                    'No tables</text>')
     lane = 0
+    handles = set()
     for index, edge in enumerate(edges):
-        src, dst = edge.src_table, edge.dst_table
-        sx, sy = xy[src]
-        dx, dy = xy[dst]
-        sy += cards[src][3][edge.fkey]
-        dy += cards[dst][3][definitions[dst].pkey]
-        sc, dc = positions[src][0], positions[dst][0]
-        source_side = 1 if sc <= dc else -1
-        destination_side = 1 if sc >= dc else -1
-        sx += card_width if source_side == 1 else 0
-        dx += card_width if destination_side == 1 else 0
-        start, end = (sx, sy), (dx, dy)
-        # Opposing ports use distinct horizontal levels so unrelated edges
-        # on aligned rows do not appear to join across a gutter.
-        sx, sy = sx + source_side * 12, sy + source_side * 6
-        dx, dy = dx + destination_side * 12, dy + destination_side * 6
-        if sc == dc:
-            bend = sx + 24 + index * 8
-            path = f'H {bend} V {dy} H {dx}'
+        route = routes[index]
+        sx, sy = xy[route[0]]
+        dx, dy = xy[route[-1]]
+        sx += card_width
+        sy += cards[edge.dst_table][3][definitions[edge.dst_table].pkey]
+        dy += cards[edge.src_table][3][edge.fkey]
+        path = f'M {sx} {sy}'
+        if ranks[edge.dst_table] < ranks[edge.src_table]:
+            x, y = sx, sy
+            for node in route[1:]:
+                nx, ny = (dx, dy) if node == route[-1] else (xy[node][0],
+                                                             xy[node][1] +
+                                                             heights[node] / 2)
+                # UI getBezierPath: horizontal handles, half-gap controls.
+                half = (nx - x) / 2
+                path += f' C {x + half} {y} {nx - half} {ny} {nx} {ny}'
+                x, y = nx, ny
+                if node != route[-1]:
+                    path += (f' C {x + card_width / 3} {y} '
+                             f'{x + 2 * card_width / 3} {y} '
+                             f'{x + card_width} {y}')
+                    x += card_width
         else:
-            direction = 1 if sc < dc else -1
-            if abs(sc - dc) == 1:
-                bend = (sx + dx) / 2 + direction * (index * 8 - len(edges) * 4)
-                path = (f'H {bend - direction * 8} '
-                        f'Q {bend} {sy} {bend} {sy + (8 if dy > sy else -8)} '
-                        f'V {dy - (8 if dy > sy else -8)} '
-                        f'Q {bend} {dy} {bend + direction * 8} {dy} H {dx}')
-                if sy == dy:
-                    path = f'H {dx}'
-            else:
-                overhead = 24 + lane * 12
-                lane += 1
-                a = sx + direction * (24 + index * 8)
-                b = dx - direction * (24 + index * 8)
-                path = (f'H {a} V {overhead} H {b} '
-                        f'V {dy} H {dx}')
-        path = (f'M {start[0]} {start[1]} L {sx} {sy} {path} '
-                f'L {end[0]} {end[1]}')
-        label = escape(f'{src}.{edge.fkey} → '
-                       f'{dst}.{definitions[dst].pkey}')
+            overhead = 20 + lane * 24
+            bow = 42 + lane * 8
+            lane += 1
+            path += (f' C {sx + bow} {sy} {sx + bow} {overhead} '
+                     f'{sx} {overhead} C {sx - gap} {overhead} '
+                     f'{dx + gap} {overhead} {dx} {overhead} '
+                     f'C {dx - bow} {overhead} {dx - bow} {dy} {dx} {dy}')
+        label = escape(f'{edge.src_table}.{edge.fkey} → '
+                       f'{edge.dst_table}.{definitions[edge.dst_table].pkey}')
         svg.append(f'<g><title>{label}</title><path d="{path}" fill="none" '
-                   'stroke="#76b900" stroke-width="1.7" '
-                   'stroke-linejoin="round"/></g>')
-        for x, y in (start, end):
-            svg.append(f'<circle cx="{x}" cy="{y}" r="4" '
-                       'fill="#76b900" stroke="white" stroke-width="1.5"/>')
+                   'stroke="#a1a1a1" stroke-width="1"/></g>')
+        handles.update(((sx, sy), (dx, dy)))
     for name in names:
-        x, y = xy[name]
+        x, y = xy[node_ids[name]]
         title, header, rows, ports, footer, card_height = cards[name]
         svg.append(f'<g transform="translate({x} {y})">'
                    f'<title>{escape(name)}</title>'
@@ -252,4 +272,6 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
             svg.append(f'<text x="18" y="{card_height - 14}" font-size="12" '
                        f'fill="#64748b">{footer}</text>')
         svg.append('</g>')
+    for x, y in sorted(handles):
+        svg.append(f'<circle cx="{x}" cy="{y}" r="4" fill="#64748b"/>')
     return SVG(''.join(svg) + '</svg>')
