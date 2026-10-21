@@ -80,7 +80,7 @@ from kumo.engine._manifest import (
     stamp,
     write_manifest,
 )
-from kumo.engine._provenance import source_table
+from kumo.engine._provenance import source_location, source_table
 from kumo.engine._scratch import (
     fingerprint,
     get_scratch_dir,
@@ -260,8 +260,11 @@ def _source_change(table: Table, recorded: Any) -> Dict[str, Any]:
         source = table.definition.source_table
         if not isinstance(source, CustomSQLSourceTable):
             connector = table.connector
-            same_source = recorded.get('source') == (
-                f'{connector.source_type}:{table.table_name}')
+            kind = connector.source_type
+            same_source = (recorded.get('connector'),
+                           recorded.get('location')) == (
+                               str(getattr(kind, 'value', kind)),
+                               source_location(connector, table.table_name))
             stamp = connector.source_backend.get_data_version(
                 connector, table.table_name)
             current = None if stamp is None else str(stamp)
