@@ -419,6 +419,17 @@ def main():
                     destination.chmod(destination.stat().st_mode | 0o111)
         log(f"merged {component['name']} {component['version']}")
 
+    # A development bundle adds its commit to the component's stamped version.
+    # Keep the installed module consistent with the assembled wheel metadata.
+    version_module = staging / 'kumo/engine/_version.py'
+    if version_module.is_file():
+        source, count = re.subn(r'(?m)^__version__\s*=.*$',
+                                f'__version__ = {version!r}',
+                                version_module.read_text(encoding='utf-8'))
+        if count != 1:
+            fail('expected one stamped kumo.engine version')
+        version_module.write_text(source, encoding='utf-8')
+
     dist_info = staging / f"{name.replace('-', '_')}-{version}.dist-info"
     dist_info.mkdir(parents=True)
     if entry_points.sections():

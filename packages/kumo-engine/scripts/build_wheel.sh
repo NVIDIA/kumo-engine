@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Build the one published `kumo-engine` wheel: the local training closure plus
-# every provider package, merged into a single linux x86_64 wheel.
+# every provider package, merged into a single native-platform wheel.
 #
 #     pip install kumo-engine                 # engine + provider *code*
 #     pip install 'kumo-engine[snowflake]'    # ... + snowflake-connector, ...
@@ -24,9 +24,8 @@
 # Wheel tag: DiskGraph is the only native component and is a stable-ABI
 # (abi3) extension, so one wheel serves every CPython at or above its floor,
 # currently 3.11. The merger intersects every component Requires-Python
-# constraint for the resulting wheel. The platform tag is manylinux_<MAX_GLIBC>,
-# backed by a check that the bundled binaries really need no newer glibc
-# (see check_glibc_floor).
+# constraint for the resulting wheel. Linux uses manylinux_<MAX_GLIBC>,
+# backed by check_glibc_floor. macOS inherits DiskGraph's native platform tag.
 #
 # Bundled first-party and native components:
 #
@@ -62,13 +61,24 @@ RELEASE=0
 # Build DiskGraph through cargo-zigbuild so the extension and the ingest binary
 # link against a manylinux2014 glibc rather than this host's. A native build
 # links against the build host's glibc and will not load on the runtime.
-USE_ZIG="${USE_ZIG:-1}"
+HOST_OS="$(uname -s)"
+if [ "${HOST_OS}" = "Darwin" ]; then
+    USE_ZIG="${USE_ZIG:-0}"
+    # Matches the minimum of the macOS ARM64 Faiss dependency. Both the
+    # extension and standalone ingest must use the same deployment target.
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+else
+    USE_ZIG="${USE_ZIG:-1}"
+fi
 # Highest glibc the DiskGraph binaries may require, and the manylinux tag the
 # wheel claims. Container Runtime is Ubuntu-based and provides 2.35, so 2.34
 # leaves headroom while still catching a binary accidentally linked against a
 # modern build host. See check_glibc_floor.
 MAX_GLIBC="${MAX_GLIBC:-2.34}"
-PLATFORM_TAG="${PLATFORM_TAG:-manylinux_${MAX_GLIBC//./_}_x86_64}"
+PLATFORM_TAG="${PLATFORM_TAG:-}"
+if [ "${HOST_OS}" != "Darwin" ]; then
+    : "${PLATFORM_TAG:=manylinux_${MAX_GLIBC//./_}_x86_64}"
+fi
 VERIFY_IMAGE="${VERIFY_IMAGE:-}"
 THIRD_PARTY_NOTICE="${THIRD_PARTY_NOTICE:-}"
 GENERATE_THIRD_PARTY_NOTICE=0
@@ -87,11 +97,12 @@ Options:
   --release             Stamp exactly the VERSION file's version, for publishing.
                         Without it: <version>+<short commit>.
   --version VERSION     Override the version entirely (PEP 440).
-  --platform-tag TAG    Wheel platform tag.   [manylinux_2_34_x86_64]
+  --platform-tag TAG    Wheel platform tag. [manylinux_2_34_x86_64 on Linux;
+                        native DiskGraph tag on macOS]
   --kumo-repo PATH      kumo monorepo checkout.           [this repo]
   --no-zig              Build DiskGraph natively instead of through
-                        cargo-zigbuild. Only safe when this host's glibc is no
-                        newer than the runtime's.
+                        cargo-zigbuild. Default on macOS. On Linux, the host's
+                        glibc must be no newer than the runtime's.
   --verify-image IMAGE  After building, install the wheel into IMAGE with
                         Docker and import the closure as a smoke test.
   --offline-report      Print the requirements pip must still resolve at
@@ -100,6 +111,8 @@ Options:
   -h, --help            This message.
 
 Environment:
+  MACOSX_DEPLOYMENT_TARGET  Minimum macOS version for both native binaries.
+                           [14.0]
   MAX_GLIBC             Highest glibc the DiskGraph binaries may require.
                         [2.34; Container Runtime provides 2.35]
 EOF
@@ -127,6 +140,10 @@ DISKGRAPH_SOURCE="${KUMO_REPO}/packages/diskgraph"
 
 log() { echo "[wheel] $*" >&2; }
 die() { echo "[wheel] ERROR: $*" >&2; exit 1; }
+
+if [ "${HOST_OS}" = "Darwin" ] && [ "${USE_ZIG}" != "0" ]; then
+    die "macOS wheels require a native DiskGraph build (USE_ZIG=0)"
+fi
 
 # The build host's interpreter only drives pip and the merge. Every pure-Python
 # component is built with `pip wheel`; DiskGraph's wheel tag comes from its
@@ -253,6 +270,20 @@ env "${ZIG_ENV[@]}" "${PYTHON}" -m pip wheel --no-deps -q \
     -w "${WHEELS}" "${DISKGRAPH_SOURCE}" >&2
 record 'diskgraph-*.whl' diskgraph-native "in-tree source ${DISKGRAPH_SOURCE}"
 
+if [ "${HOST_OS}" = "Darwin" ]; then
+    DG_WHEEL="$(ls -1 "${WHEELS}"/diskgraph-*.whl | sort | tail -1)"
+    DG_PLATFORM="$(basename "${DG_WHEEL}" .whl)"
+    DG_PLATFORM="${DG_PLATFORM##*-}"
+    case "${DG_PLATFORM}" in
+        macosx_*_"$(uname -m)") ;;
+        *) die "expected a native macOS DiskGraph wheel, got ${DG_WHEEL}" ;;
+    esac
+    if [ -n "${PLATFORM_TAG}" ] && [ "${PLATFORM_TAG}" != "${DG_PLATFORM}" ]; then
+        die "platform tag ${PLATFORM_TAG} does not match DiskGraph's ${DG_PLATFORM}"
+    fi
+    PLATFORM_TAG="${DG_PLATFORM}"
+fi
+
 if [ "${USE_ZIG}" = "1" ]; then
     DG_WHEEL="$(ls -1 "${WHEELS}"/diskgraph-*.whl | sort | tail -1)"
     case "$(basename "${DG_WHEEL}")" in
@@ -304,7 +335,9 @@ check_glibc_floor() {
     fi
     log "DiskGraph glibc floor: ${worst} (ceiling ${MAX_GLIBC})"
 }
-check_glibc_floor
+if [ "${HOST_OS}" != "Darwin" ]; then
+    check_glibc_floor
+fi
 
 # --------------------------------------------------------------------------
 # 3) Generate the legal payload and combined license expression.
@@ -349,7 +382,7 @@ fi
 WHEEL_PATH="$("${PYTHON}" "${SCRIPT_DIR}/merge_wheels.py" "${WHEELS}" \
     "${COMPONENTS}" "${OUTPUT_DIR}" "${merge_args[@]}")"
 
-SIZE_MIB="$(( $(stat -c %s "${WHEEL_PATH}") / 1024 / 1024 ))"
+SIZE_MIB="$("${PYTHON}" -c 'import os, sys; print(os.path.getsize(sys.argv[1]) // 1024**2)' "${WHEEL_PATH}")"
 log "wrote ${WHEEL_PATH} (${SIZE_MIB} MiB)"
 
 # --------------------------------------------------------------------------

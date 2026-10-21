@@ -33,6 +33,23 @@ The package uses `kumoapi` model plans and connector plugin contracts.
 [Output configurations](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/kumo/engine/trainer/output_config.py)
 take connector objects directly.
 
+### Training device
+
+Choose the accelerator when constructing a trainer:
+
+```python
+trainer = Trainer(model_plan, accelerator="cpu")
+```
+
+Accepted values are `auto` (default), `cpu`, `gpu`, and `mps`, using Lightning's
+device selection. The choice applies to training, refits, explanations, and
+prediction. An explicitly requested accelerator must be available on the host.
+
+Device selection is local to the instance and is not saved in model bundles.
+Select it again when loading, for example
+`Trainer.load(bundle_path, accelerator="cpu")` or
+`Trainer.load_from_connector(registry, path="model", accelerator="cpu")`.
+
 ## Installation
 
 Requires Linux x86_64, CPython 3.11 or newer, and glibc 2.34 or newer.
