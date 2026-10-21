@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Profile loading, seeded perturbation and the samplers built from a profile.
 
 A profile holds aggregate statistics only (see profiles/). Every distribution

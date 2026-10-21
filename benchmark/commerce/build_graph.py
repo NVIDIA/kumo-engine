@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Builds the kumo.engine Graph and PQL task for a generated rung.
 
     <kumo venv>/bin/python kumo/build_graph.py --data <root>/commerce/1B --graph commerce \
@@ -18,9 +21,6 @@ DELIM = "|"
 
 COMMERCE_QUERY = ("PREDICT LIST_DISTINCT(purchases.merchant_id, 0, 7, days) RANK TOP 10 "
                   "FOR EACH customers.customer_id")
-FRAUD_QUERY = ("PREDICT COUNT(transactions.* WHERE transactions.is_fraud = 1, 0, 1, days) > 0 "
-               "FOR EACH accounts.account_id ASSUMING COUNT(transactions.*, 0, 1, days) > 0")
-
 
 def table(files, name, pk=None, time_col=None, stypes=None, multicat=()):
     t = Table.from_source_table(files[name], primary_key=pk, time_column=time_col)
@@ -59,46 +59,17 @@ def commerce_graph(files):
     return Graph(tables=tables, edges=edges), COMMERCE_QUERY
 
 
-def fraud_graph(files):
-    cat, num, idt = Stype.categorical, Stype.numerical, Stype.ID
-    tables = {
-        "accounts": table(files, "accounts", "account_id", "created_time", {
-            "email_domain": cat, "country": cat, "account_type": cat, "loyalty_tier": cat,
-            "is_verified": cat}),
-        "devices": table(files, "devices", "device_id", "first_seen_time", {
-            "os": cat, "browser": cat, "device_type": cat, "language": cat, "timezone": cat}),
-        "ip_addresses": table(files, "ip_addresses", "ip_id", None, {
-            "isp": cat, "country": cat, "region": cat, "is_proxy": cat, "is_datacenter": cat}),
-        "payment_methods": table(files, "payment_methods", "payment_method_id", None, {
-            "card_network": cat, "card_type": cat, "issuing_country": cat}, multicat=["payer_name"]),
-        "merchants": table(files, "merchants", "merchant_id", None, {
-            "category": cat, "country": cat, "city": cat, "channel": cat}),
-        "transactions": table(files, "transactions", "transaction_id", "transaction_time", {
-            "account_id": idt, "device_id": idt, "ip_id": idt, "payment_method_id": idt,
-            "merchant_id": idt, "is_fraud": num, "amount_usd": num, "quantity": num,
-            "currency": cat, "channel": cat, "billing_country": cat,
-            "email_matches_payer": cat, "installments": num, "traveler_name": cat},
-            multicat=["billing_postal_codes", "risk_rule_hits"]),
-    }
-    edges = [Edge("transactions", "account_id", "accounts"),
-             Edge("transactions", "device_id", "devices"),
-             Edge("transactions", "ip_id", "ip_addresses"),
-             Edge("transactions", "payment_method_id", "payment_methods"),
-             Edge("transactions", "merchant_id", "merchants")]
-    return Graph(tables=tables, edges=edges), FRAUD_QUERY
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
-    ap.add_argument("--graph", required=True, choices=["commerce", "fraud"])
+    ap.add_argument("--graph", required=True, choices=["commerce"])
     ap.add_argument("--scratch", required=True)
     ap.add_argument("--snapshot", action="store_true")
     ap.add_argument("--training-table", action="store_true")
     args = ap.parse_args()
     configure(scratch_dir=args.scratch)
     files = FileConnector(root_dir=args.data)
-    graph, query = (commerce_graph if args.graph == "commerce" else fraud_graph)(files)
+    graph, query = commerce_graph(files)
     graph.validate()
     for name, t in graph._named_tables.items():
         print(name, [(c.name, str(c.stype), str(c.dtype)) for c in t.definition.cols])

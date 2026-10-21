@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Shared generation primitives: keyed RNG, time model, column builders."""
 import hashlib
 from functools import lru_cache

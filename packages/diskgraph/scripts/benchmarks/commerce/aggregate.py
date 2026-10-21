@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Builds results-<rung>.json from the matrix lines, the ingest record and the run's environment.
 
     python aggregate.py --rung 50B --jsonl $OUT_DIR/results-50B.jsonl --parquet-bytes N \

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Generate one rung of one graph.
 
     python -m scalebench.generate run --graph commerce --rung 1B --root s3://bucket/prefix
