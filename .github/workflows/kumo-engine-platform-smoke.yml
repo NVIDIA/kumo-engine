@@ -5,10 +5,10 @@
 name: Kumo Engine - Platform smoke
 
 on:  # yamllint disable-line rule:truthy
-  # Temporary pre-merge qualification: manually admitted by copy-pr-bot.
-  # Remove this PR-specific trigger before merging; retain manual dispatch.
+  # Temporary pre-merge qualification on the upstream development branch.
+  # Remove this branch-specific trigger before merging; retain manual dispatch.
   push:
-    branches: [pull-request/76]
+    branches: [dm-platform-smoke]
   workflow_dispatch:
 
 permissions:
