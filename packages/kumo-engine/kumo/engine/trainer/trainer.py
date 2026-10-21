@@ -340,9 +340,10 @@ class Trainer:
 
     def with_scoring_defaults(self, defaults: ScoringDefaults) -> Self:
         """Return a trainer on a copy of this bundle that carries ``defaults``."""
+        from kumo_core.artifacts import bundle_task_type
+
         from kumo.engine.trainer._provenance import record_derivation
         from kumo.engine.trainer._scoring import (
-            bundle_task_type,
             normalized_scoring_defaults,
             write_scoring_defaults,
         )
@@ -510,11 +511,11 @@ class Trainer:
             search=AutoMLSearchOptions(),
         )
         if warm_start_artifacts is not None:
-            source_schema = json.loads(
-                Path(warm_start_artifacts['prediction_schema']).read_text())
+            from kumo_core.artifacts import bundle_task_type
+
             validate_warm_start_task_type(
                 TaskType(workflow.query.task_type),
-                TaskType(source_schema['task_type']),
+                bundle_task_type(warm_start_artifacts),
             )
         from kumo_core.pquery import (
             query_is_temporal,

@@ -17,6 +17,7 @@ from kumo_core.artifacts import (
     VitalArtifactSources,
     add_bundle_file,
     bundle_id_from_manifest,
+    bundle_task_type,
     resolve_vital_artifact_sources,
     verify_model_bundle,
 )
@@ -263,3 +264,10 @@ def test_bundle_id_ignores_provenance_only(tmp_path: Path) -> None:
     (bundle / "metrics.json").write_text('{"auc": 0}')
     add_bundle_file(bundle, "metrics", "metrics.json")
     assert verify_model_bundle(bundle) != bundle_id
+
+
+def test_bundle_task_type_reads_the_prediction_schema(tmp_path: Path) -> None:
+    schema = tmp_path / "prediction-schema.json"
+    schema.write_text('{"task_type": "regression"}')
+    assert bundle_task_type({"prediction_schema": str(schema)}).value == (
+        "regression")

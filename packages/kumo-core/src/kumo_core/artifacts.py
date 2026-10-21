@@ -14,6 +14,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     ClassVar,
     Iterable,
@@ -25,6 +26,9 @@ from typing import (
 from .io.filesystem import atomic_write_bytes, fsync_directory, local_path
 from .io.json import load_json, save_json
 from .manifest import RunManifest, RunPaths
+
+if TYPE_CHECKING:
+    from .types import TaskType
 
 
 @runtime_checkable
@@ -496,6 +500,14 @@ _BUNDLE_LAYOUT = {
     'prediction_schema': 'prediction-schema.json',
     'metrics': 'metrics.json',
 }
+
+
+def bundle_task_type(artifacts: Mapping[str, str]) -> TaskType:
+    """The task type a bundle's prediction schema records."""
+    from .types import TaskType
+
+    schema = load_json(artifacts['prediction_schema'], dict)
+    return TaskType(schema['task_type'])
 
 
 def stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:

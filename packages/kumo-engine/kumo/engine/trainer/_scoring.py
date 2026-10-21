@@ -10,7 +10,7 @@ from numbers import Integral, Real
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from kumo.engine._manifest import atomic_write
+from kumo.engine._manifest import write_manifest
 from kumo.engine.trainer._spec import SCORING_DEFAULTS_ROLE, listed_file
 
 SCORING_DEFAULTS_FILE = 'scoring-defaults.json'
@@ -22,14 +22,6 @@ class ScoringDefaults:
 
     binary_classification_threshold: Optional[float] = None
     num_classes_to_return: Optional[int] = None
-
-
-def bundle_task_type(artifact_paths: Mapping[str, str]) -> Any:
-    from kumo_core.types import TaskType
-
-    schema = json.loads(
-        Path(artifact_paths['prediction_schema']).read_text(encoding='utf-8'))
-    return TaskType(schema['task_type'])
 
 
 def normalized_scoring_defaults(defaults: ScoringDefaults,
@@ -63,14 +55,14 @@ def write_scoring_defaults(bundle_dir: Path, defaults: ScoringDefaults) -> None:
     if defaults == ScoringDefaults():
         remove_bundle_file(bundle_dir, SCORING_DEFAULTS_ROLE)
         return
-    atomic_write(bundle_dir / SCORING_DEFAULTS_FILE,
-                 (json.dumps(asdict(defaults), indent=2, sort_keys=True) +
-                  '\n').encode('utf-8'))
+    write_manifest(bundle_dir / SCORING_DEFAULTS_FILE, asdict(defaults))
     add_bundle_file(bundle_dir, SCORING_DEFAULTS_ROLE, SCORING_DEFAULTS_FILE)
 
 
 def read_scoring_defaults(bundle_dir: Path,
                           artifact_paths: Mapping[str, str]) -> ScoringDefaults:
+    from kumo_core.artifacts import bundle_task_type
+
     path = listed_file(bundle_dir, SCORING_DEFAULTS_ROLE)
     if path is None:
         return ScoringDefaults()
