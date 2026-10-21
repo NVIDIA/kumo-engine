@@ -250,7 +250,8 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                    f'<path d="M 0 {header} H {card_width}" '
                    'stroke="#c8d9ad"/>')
         for i, line in enumerate(title):
-            svg.append(f'<text x="16" y="{28 + 22 * i}" font-size="17" '
+            svg.append('<text xml:space="preserve" '
+                       f'x="16" y="{28 + 22 * i}" font-size="17" '
                        f'font-weight="700" fill="#386000">{escape(line)}'
                        '</text>')
         for column, lines, ry, rh in rows:
@@ -260,7 +261,8 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                            f'width="{card_width - 20}" height="{rh - 4}" '
                            'rx="3" fill="#f7f7f7"/>')
             for i, line in enumerate(lines):
-                svg.append(f'<text x="18" y="{ry + 23 + 20 * i}" '
+                svg.append('<text xml:space="preserve" '
+                           f'x="18" y="{ry + 23 + 20 * i}" '
                            f'font-size="16" fill="#202020">{escape(line)}'
                            '</text>')
             if role:

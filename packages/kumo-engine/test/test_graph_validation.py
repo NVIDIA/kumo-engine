@@ -170,6 +170,7 @@ def test_omitted_self_relation_preserves_column_type(tables, original_stype):
     ('<script>alert("账户")</script> & customers', 'customer<&"账户'),
     ('PURCHASES_AND_TRANSACTIONS', 'O' * 22),
     ('Ж' * 27, 'Ш' * 22),
+    ('sales  data', 'order  id'),
 ])
 def test_visualize_exports_escaped_svg_without_source_access(
         tmp_path, alias, key):
@@ -197,7 +198,10 @@ def test_visualize_exports_escaped_svg_without_source_access(
     assert destination.read_text(encoding='utf-8') == svg
     root = ElementTree.fromstring(svg)
     assert root.tag == '{http://www.w3.org/2000/svg}svg'
-    text = ''.join(root.itertext())
+    text = ''.join(
+        element.text or ''
+        for element in root.iter('{http://www.w3.org/2000/svg}text')
+        if element.get('{http://www.w3.org/XML/1998/namespace}space') == 'preserve')
     assert alias in text and key in text
     if alias.isupper():
         visible = [
