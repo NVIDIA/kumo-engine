@@ -56,10 +56,13 @@ no base table). Map the YAML onto that file's `TABLE` and `RELATIONSHIP` records
 | an `on:` that is anything but one column-to-column equality | a non-equality relationship → ASK BACK, as that file says |
 | `dimensions:`, `measures:`, `filter:` | the view's dimensions, facts and metrics: ignored, as that file says |
 
-A metric view declares no primary keys. A joined table's `REF_KEY` column is its key, `[declared]`
-by the relationship, exactly as that file treats a relationship that references a non-primary
-column; every other table's key comes from preflight §3. The one-schema rule, physical names and
-`[declared]` tags apply unchanged, with `catalog.schema` in place of `DB.SCHEMA`.
+A metric view declares no keys of its own. A base table's `PRIMARY_KEY` is its Unity Catalog
+primary-key constraint, read with the §3 declared-keys query, and tagged `[declared]`. Every rule
+of that file about primary keys then applies as written — a composite key, a relationship whose
+`REF_KEY` is not the table's primary key, two relationships referencing two columns of one
+table. A base table with no primary-key constraint has no declared key: its key comes from
+preflight §3, as for a view table with no `PRIMARY_KEY`. The one-schema rule, physical names and
+`[declared]` relationships apply unchanged, with `catalog.schema` in place of `DB.SCHEMA`.
 
 > **Not verified:** no metric view has been read by this skill in a workspace.
 
