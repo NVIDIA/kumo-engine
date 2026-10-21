@@ -7,7 +7,7 @@ import logging
 import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence
 
 from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumoapi.model_plan import \
@@ -84,8 +84,7 @@ class TrainingTable:
         root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root) as output:
             files = export_train_table(str(self.staging_dir), output)
-            payload = self._export_manifest(connector, output_config, files,
-                                            export_id)
+            payload = self._export_manifest(connector, output_config, files)
             extra = ({} if payload is None else {
                 'sidecars': {
                     EXPORT_MANIFEST_FILE: payload
@@ -95,8 +94,8 @@ class TrainingTable:
                                output_config.write_mode, export_id=export_id,
                                **extra)
 
-    def _export_manifest(self, connector, output_config, files: Sequence[str],
-                         export_id: str) -> Optional[bytes]:
+    def _export_manifest(self, connector, output_config,
+                         files: Sequence[str]) -> Optional[bytes]:
         from kumo_core.object_store_sink import ObjectStoreSinkBackend
         from kumo_core.sources import layout
 
@@ -105,22 +104,14 @@ class TrainingTable:
                 or not (name.endswith('/') or len(files) > 1)
                 or layout.file_type(name.rstrip('/')) not in (
                     None, layout.PARQUET)):
-            logger.debug('Training-table lineage is only recorded for '
-                         'directory exports to files or object stores.')
+            logger.debug('Training-table manifests are only exported to '
+                         'Parquet directories on files or object stores.')
             return None
-        try:
-            manifest = self.manifest
-            if manifest is None:
-                return None
-            manifest.update(content_sha256=_content_digest(files),
-                            export_identity=export_id)
-            return (json.dumps(manifest, indent=2, sort_keys=True) +
-                    '\n').encode('utf-8')
-        except Exception as error:
-            warnings.warn(
-                f"Exporting without a training-table manifest: {error}",
-                UserWarning, stacklevel=3)
+        manifest = self.manifest
+        if manifest is None:
             return None
+        return (json.dumps(manifest, indent=2, sort_keys=True) +
+                '\n').encode('utf-8')
 
     @classmethod
     def from_source_table(
@@ -184,7 +175,7 @@ class TrainingTable:
         run_id = new_run_id()
         run_dir = train_table_scratch_dir(run_id)
         rows_path = stage_source_table(source_table, run_dir / "source-table")
-        derived_from, modified = _export_lineage(source_table)
+        lineage = _source_lineage(source_table)
         generation_plan = from_json_dict(
             to_json_dict(public_plan),
             TrainingTableGenerationPlan,
@@ -250,14 +241,13 @@ class TrainingTable:
             generation_plan=generation_plan,
         )
         _record_manifest(table, snapshot, task_plan.train_table, 'custom',
-                         derived_from=derived_from, modified=modified)
+                         source_table=lineage)
         return table
 
 
 def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
                      request: Any, source: str, *,
-                     derived_from: Optional[str] = None,
-                     **fields: Any) -> None:
+                     source_table: Optional[Dict[str, Any]] = None) -> None:
     path = table.staging_dir / STAGING_MANIFEST_FILE
     try:
         from kumo_core.io.json import to_json_dict
@@ -267,10 +257,9 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
         seed = None
         if request.split_family in _RANDOM_SPLITS:
             seed = (request.split_config or {}).get('rnd_seed') or 0
-        parents = {
-            'snapshot': snapshot.id,
-            'derived_from': derived_from,
-        }
+        parents: Dict[str, Any] = {'snapshot': snapshot.id}
+        if source_table is not None:
+            parents['source_table'] = source_table
         write_manifest(
             path,
             new_manifest(
@@ -284,7 +273,6 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
                 },
                 split_seed=seed,
                 source=source,
-                **fields,
             ))
     except Exception as error:
         warnings.warn(
@@ -292,48 +280,44 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
             f"{error}", UserWarning, stacklevel=3)
 
 
-def _content_digest(paths: Sequence[str]) -> str:
-    import hashlib
-
-    from kumo_core.artifact_export import content_sha256
-
-    digests = []
-    for path in paths:
-        with open(path, 'rb') as handle:
-            digests.append(hashlib.file_digest(handle, 'sha256').hexdigest())
-    return content_sha256(digests)
-
-
-def _export_lineage(
-        source_table: SourceTable) -> Tuple[Optional[str], Optional[bool]]:
-    from kumo_core.artifact_export import EXPORT_MARKER_NAME, export_marker
-    from kumo_core.object_store_sink import ObjectStoreSinkBackend
-
-    connector = source_table.connector
-    name = source_table.table_name
+def _source_lineage(source_table: SourceTable) -> Dict[str, Optional[str]]:
+    connector, name, sql = (source_table.connector, source_table.table_name,
+                            source_table.sql)
+    lineage: Dict[str, Optional[str]] = {'location': None, 'version': None}
     try:
-        backend = connector.sink_backend
-        if source_table.sql is not None or not isinstance(
-                backend, ObjectStoreSinkBackend):
-            return None, None
-        payload = backend.read_sidecar(connector, name, EXPORT_MANIFEST_FILE)
-        if payload is None:
-            logger.debug('%s has no training-table manifest', name)
-            return None, None
-    except Exception as error:
-        logger.debug('No training-table manifest for %s: %s', name, error)
-        return None, None
-    try:
-        exported = json.loads(payload)
-        marker = backend.read_sidecar(connector, name, EXPORT_MARKER_NAME)
-        if marker is None or marker.decode('utf-8') != export_marker(
-                exported['export_identity']):
-            logger.debug('%s does not belong to the export it records', name)
-            return None, None
-        digest = backend.content_digest(connector, name)
-        return exported['id'], digest != exported['content_sha256']
+        lineage['location'] = _location(connector, name, sql)
     except Exception as error:
         warnings.warn(
-            f"Ignoring the training-table manifest of {name!r}: {error}",
-            UserWarning, stacklevel=3)
-        return None, None
+            f"Could not record where the custom table was loaded from: "
+            f"{error}", UserWarning, stacklevel=3)
+    if sql is None:
+        try:
+            version = connector.source_backend.get_data_version(
+                connector, name)
+            lineage['version'] = None if version is None else str(version)
+        except Exception as error:
+            warnings.warn(
+                f"Could not record the custom table's data version: {error}",
+                UserWarning, stacklevel=3)
+    return lineage
+
+
+def _location(connector: Any, name: str, sql: Optional[str]) -> str:
+    import hashlib
+    import posixpath
+
+    from kumo_core.sources.object_store_sessions import ObjectStoreSessions
+
+    if sql is not None:
+        return 'sql:' + hashlib.sha256(sql.encode()).hexdigest()
+    root = getattr(connector.config, 'root_dir', None)
+    if root is not None:
+        return str(Path(root, name))
+    backend = connector.source_backend
+    if isinstance(backend, ObjectStoreSessions):
+        _, prefix, key, _ = backend._placement(connector, name)
+        return f'{backend.scheme}://{posixpath.join(prefix, key).rstrip("/")}'
+    namespace = (getattr(connector, field, None)
+                 for field in ('database', 'catalog', 'project_id',
+                               'schema_name', 'dataset_id'))
+    return '.'.join([*filter(None, namespace), name])
