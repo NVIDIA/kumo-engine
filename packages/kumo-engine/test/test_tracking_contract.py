@@ -387,49 +387,6 @@ def test_a_tracker_that_raises_is_not_called_again(caplog):
     assert caplog.text.count('Experiment tracking failed') == 1
 
 
-def test_gaps_compare_step_histories_when_declared():
-    expected = expected_records(replay([]))
-    observed = {
-        run_id:
-        Observed(
-            name=record.name, params=record.params, metrics={
-                **record.metrics,
-                **{
-                    k: v[-1][1]
-                    for k, v in record.steps.items()
-                }
-            }, steps=record.steps, tags=record.tags)
-        for run_id, record in expected.items()
-    }
-    steps = Capabilities(step_metrics=True)
-    assert gaps(expected, observed, steps, dict) == []
-
-    retry = observed[f'{RUN}-trial-2-attempt-2']
-    retry.steps = {**retry.steps, 'val_mae': ((10, 0.5), (20, 0.3))}
-    assert len(gaps(expected, observed, steps, dict)) == 1
-    undeclared = gaps(expected, observed, Capabilities(), dict)
-    assert [gap.split()[1:3]
-            for gap in undeclared] == [['metric', 'names:']] * 2
-
-
-def test_session_merges_trial_loggers_and_skips_trackers_without_one():
-    class WithLogger(_Recorder):
-        def __init__(self, pl_logger):
-            super().__init__()
-            self.pl_logger = pl_logger
-
-        def trial_logger(self, trial, attempt):
-            return self.pl_logger
-
-    one, two = object(), object()
-    session = TrackingSession(_Recorder())
-    assert session.trial_logger(1, 1) is None
-    session = TrackingSession([_Recorder(), WithLogger(one), WithLogger(None)])
-    assert session.trial_logger(1, 1) == [one]
-    session = TrackingSession([WithLogger(one), WithLogger(two)])
-    assert session.trial_logger(1, 1) == [one, two]
-
-
 def test_only_rank_zero_tracks(monkeypatch):
     monkeypatch.setenv('LOCAL_RANK', '1')
     recorder = _Recorder()

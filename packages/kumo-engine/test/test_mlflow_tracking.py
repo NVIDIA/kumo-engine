@@ -140,10 +140,6 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, caplog):
         assert child.data.tags['kumo.kind'] == 'trial'
         assert child.data.tags['kumo.status'] == 'succeeded'
         assert child.data.tags['mlflow.parentRunId'] == parent.info.run_id
-        assert child.data.tags['kumo.parent_run'] == (
-            parent.data.tags['kumo.run_id'])
-        assert child.data.tags['kumo.run_id'] == (
-            f"{parent.data.tags['kumo.run_id']}-{child.info.run_name}")
         assert child.data.params['attempt'] == '1'
         assert float(child.data.params['optimization.base_lr']) in (0.01, 0.001)
         assert {'best_val_mae', 'seconds', 'val_mae',

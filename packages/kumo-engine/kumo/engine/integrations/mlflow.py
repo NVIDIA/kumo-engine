@@ -3,31 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""MLflow tracking for `Trainer.fit` (``pip install 'kumo-engine[mlflow]'``).
 
-Translates the engine's run records (`kumo.engine.tracking.run_record`,
-`kumo.engine.tracking.trial_record`) into MLflow runs under their names. Each fit is
-one MLflow run: nested under the caller's active run if there is one, else a
-new run in the current or named experiment. Each AutoML trial attempt is a
-child run with its searched hyperparameters, per-epoch metrics (step = epoch)
-and summary metrics; Lightning's own metrics on it are prefixed
-``lightning-`` (step = Lightning's global step). The fit run gets the resolved
-model plan, the query, user and ``kumo.*`` tags, and at the end the final
-metrics and the finish-time tags (published model ids as ``kumo.model_*``, or
-``kumo.error`` when the fit failed). A trial run gets ``kumo.status`` and, on
-failure, ``kumo.error`` when it ends.
-Trial runs still open when the fit ends (the fit failed mid-trial) are ended
-FAILED. MLflow autologging is suspended for the fit, so it adds no runs of its
-own.
-
-MLflow limits: params whose key MLflow rejects (characters outside
-``[/\w.\- ]``, over 250 characters, or not a normalized relative path) or whose
-value is over 6000 characters are not logged as params; the full plan is
-always in the ``model_plan.json`` artifact, and the run's
-``kumo.dropped_params`` tag counts the skipped ones.
-
-Any MLflow error is logged once as a warning and stops tracking for the rest of
-that fit: only the fit run is then ended, and open trial runs are left as they
-are. The fit itself is unaffected. Concurrent fits in one process are not
-supported.
+One run per fit (nested under the active run, if any) with a child run per
+trial attempt. Params MLflow rejects are skipped and counted in
+``kumo.dropped_params``; the full plan is in ``model_plan.json``. The first
+MLflow error turns tracking off for the rest of the fit. Concurrent fits in one
+process are not supported.
 """
 
 import logging

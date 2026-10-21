@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Experiment tracking for `Trainer.fit`: the platform-neutral run records
-and the `Tracking` protocol that adapters implement."""
+r"""Platform-neutral run records and the `Tracking` protocol."""
 
 import dataclasses
 import hashlib
@@ -35,11 +34,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Prefix of the metrics a `Tracking.trial_logger` receives from Lightning
-# (step = Lightning's global step), so they never share a name with the
-# record's per-epoch ``steps``.
+# Lightning logs per global step; the prefix keeps those apart from the
+# per-epoch ``steps``.
 LIGHTNING_PREFIX = 'lightning'
-# Tags counting what an adapter skipped to fit its platform's limits.
 DROPPED_PARAMS = 'kumo.dropped_params'
 DROPPED_METRICS = 'kumo.dropped_metrics'
 
@@ -58,12 +55,8 @@ class FitContext:
 
 @dataclass(frozen=True)
 class RunRecord:
-    r"""One tracked run in platform-neutral names; adapters translate it.
-
-    ``steps`` maps a metric to its ``(step, value)`` history (step = epoch),
-    ``links`` holds ids of models published from the run (each also a
-    ``kumo.<link>`` tag), and ``artifacts`` maps file names to text content.
-    """
+    r"""One tracked run; ``steps`` are per-epoch ``(epoch, value)``
+    histories and ``artifacts`` map file names to text."""
 
     name: Optional[str] = None
     params: Mapping[str, str] = field(default_factory=dict)
@@ -80,17 +73,9 @@ class Capabilities:
     r"""What a tracking adapter records beyond params, metrics and tags.
 
     Args:
-        nested_runs: trial runs are children of the fit run on the platform.
-            Without it they are flat runs linked by the ``kumo.parent_run``
-            tag.
-        system_metrics: host CPU/GPU/memory usage is sampled on the fit run.
-        step_metrics: `RunRecord.steps` histories are recorded under their
-            names with step = epoch.
-        artifacts: `RunRecord.artifacts` are stored as files of the run.
-        model_link: a model published from the run to this platform's own
-            registry is also linked to it through the platform's run-to-model
-            link. Without it, and always in addition, `RunRecord.links` are
-            ``kumo.<link>`` tags.
+        nested_runs: trial runs are child runs of the fit run.
+        model_link: published models are also linked through the platform's
+            own run-to-model link.
     """
 
     nested_runs: bool = False
