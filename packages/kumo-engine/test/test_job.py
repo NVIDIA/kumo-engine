@@ -32,6 +32,9 @@ def test_summary_records_ids_warnings_and_scheduler(capsys):
         run.record(bundle_id='b-1', snapshot_id='s-1')
         run.record(run_id='r-1', outputs={'predictions': 's3://out/p'})
         warnings.warn('threshold not set', UserWarning)
+        for i in range(30):
+            warnings.warn(f'{i}' * 400, FutureWarning)
+            warnings.warn(f'{i}' * 400, FutureWarning)
 
     assert manifest['scheduler'] == {
         'platform': 'other',
@@ -48,8 +51,12 @@ def test_summary_records_ids_warnings_and_scheduler(capsys):
         'snapshot_id': 's-1',
         'run_id': 'r-1',
         'outputs': {'predictions': 's3://out/p'},
-        'warnings': ['threshold not set'],
+        'warnings': summary['warnings'],
     }
+    assert summary['warnings'][0] == 'threshold not set'
+    assert len(summary['warnings']) == 20
+    assert len(set(summary['warnings'])) == 20
+    assert max(map(len, summary['warnings'])) == 300
     assert 'KUMO_JOB_ID' not in os.environ
 
 

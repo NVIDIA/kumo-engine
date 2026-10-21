@@ -14,6 +14,8 @@ import warnings
 from typing import Any, Dict, Iterator, Mapping, NoReturn, Optional
 
 _MAX_MESSAGE = 500
+_MAX_WARNING = 300
+_MAX_WARNINGS = 20
 
 
 class Terminated(BaseException):
@@ -36,7 +38,8 @@ class JobRun:
                snapshot_id: Optional[str] = None,
                run_id: Optional[str] = None,
                outputs: Optional[Mapping[str, Any]] = None) -> None:
-        r"""Adds ids and outputs to the summary; ``None`` leaves a field."""
+        r"""Adds ids and outputs (name to absolute URI or table) to the
+        summary; ``None`` leaves a field."""
         for key, value in (('bundle_id', bundle_id),
                            ('snapshot_id', snapshot_id), ('run_id', run_id)):
             if value is not None:
@@ -83,7 +86,8 @@ def job(*, job_id: Optional[str] = None,
     detected scheduler) are recorded in the manifests and tracking tags the
     body writes. Logs go to stderr. On exit, however the body ends, one JSON
     line goes to stdout: ``status``, ``exit_code``, the scheduler context, what
-    the body passed to :meth:`JobRun.record`, warnings raised, and ``error``
+    the body passed to :meth:`JobRun.record`, the first 20 distinct warnings
+    (300 characters each), and ``error``
     (``type``, ``kind``: ``transient``/``permanent``/``unknown``, ``message``)
     on failure. A failed body exits the process with 1; SIGTERM with 143.
 
@@ -103,7 +107,10 @@ def job(*, job_id: Optional[str] = None,
     shown = warnings.showwarning
 
     def show(message: Any, *args: Any, **kwargs: Any) -> None:
-        run.summary['warnings'].append(str(message))
+        text = str(message)[:_MAX_WARNING]
+        recorded = run.summary['warnings']
+        if text not in recorded and len(recorded) < _MAX_WARNINGS:
+            recorded.append(text)
         shown(message, *args, **kwargs)
 
     warnings.showwarning = show
