@@ -44,6 +44,11 @@ def _stub_generated_task_dataset_builder(monkeypatch):
     )
 
 
+def _best_trainer(log_dir):
+    return SimpleNamespace(get_log_dir=lambda fit_mode: str(log_dir),
+                           published_fit_mode=lambda: None)
+
+
 def _write_prediction_shard(options, frame):
     from pathlib import Path
 
@@ -406,7 +411,7 @@ def test_fit_consumes_generated_rows_with_fresh_task_metadata(
             metrics={},
             artifact_paths={},
             explain_disabled=True,
-            best_trainer=SimpleNamespace(log_dir=str(tmp_path)),
+            best_trainer=_best_trainer(tmp_path),
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -536,7 +541,7 @@ def test_fit_materializes_existing_rows_against_explicit_snapshot(
             metrics={},
             artifact_paths={},
             explain_disabled=True,
-            best_trainer=SimpleNamespace(log_dir=str(tmp_path)),
+            best_trainer=_best_trainer(tmp_path),
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -612,7 +617,7 @@ def test_fit_uses_selected_graph_task_semantics_without_regenerating_rows(
             metrics={},
             artifact_paths={},
             explain_disabled=True,
-            best_trainer=SimpleNamespace(log_dir=str(tmp_path)),
+            best_trainer=_best_trainer(tmp_path),
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -791,7 +796,7 @@ def test_repeated_fit_calls_get_distinct_ingest_targets(snapshot, tmp_path,
             metrics={},
             artifact_paths={},
             explain_disabled=True,
-            best_trainer=SimpleNamespace(log_dir=str(tmp_path)),
+            best_trainer=_best_trainer(tmp_path),
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -872,7 +877,7 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
         return SimpleNamespace(
             metrics={'run_name':
                      run_name}, artifact_paths={}, explain_disabled=True,
-            best_trainer=SimpleNamespace(log_dir=str(tmp_path)))
+            best_trainer=_best_trainer(tmp_path))
 
     monkeypatch.setattr(
         'kumo.engine.trainer.trainer.build_generated_training_task_dataset',

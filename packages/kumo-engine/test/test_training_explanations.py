@@ -51,7 +51,8 @@ def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
     best_trainer = SimpleNamespace(
         explain=Mock(side_effect=explain),
         subgraph_collector_dir=lambda: str(tmp_path / 'subgraph_collector'),
-        log_dir=str(tmp_path),
+        get_log_dir=lambda fit_mode: str(tmp_path),
+        published_fit_mode=lambda: None,
     )
 
     def aggregate_features(*args):
