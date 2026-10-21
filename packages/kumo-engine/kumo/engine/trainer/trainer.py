@@ -513,7 +513,7 @@ class Trainer:
             provenance=dict(train_table=train_table,
                             snapshot_id=snapshot.id,
                             warm_start_bundle_id=warm_start_bundle_id,
-                            started_at=started_at, home_dir=run_dir,
+                            started_at=started_at,
                             published_model=published_model),
         )
 

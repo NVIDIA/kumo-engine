@@ -100,7 +100,6 @@ def test_fit_records_listed_provenance(two_trials):
         'provenance.json')
     provenance = result.provenance
     assert provenance['kind'] == 'model_bundle'
-    assert provenance['bundle_format_version'] == 1
     assert provenance['parents'] == {
         'training_table': table.tt_id,
         'snapshot': snapshot.id,
@@ -111,21 +110,10 @@ def test_fit_records_listed_provenance(two_trials):
         'source': 'pql',
         'snapshot': snapshot.id,
     }
-    assert provenance['seed'] is None
+    assert not {'seed', 'bundle_format_version', 'trials'} & provenance.keys()
     assert provenance['fit']['seconds'] >= 0
-    assert [trial['trial'] for trial in provenance['trials']] == [0, 1]
-    assert {trial['status'] for trial in provenance['trials']} == {'succeeded'}
     assert provenance['selected_trial'] in (0, 1)
     assert provenance['published_model'] == 'refit_trainval'
-    for trial in provenance['trials']:
-        assert trial['best_epoch'] == 1
-        assert trial['seconds'] > 0
-        assert 'val_auroc' in trial['metrics']
-    params = [trial['params'] for trial in provenance['trials']]
-    assert params[0] and params[0].keys() == params[1].keys()
-    assert all(params[0][key] != params[1][key] for key in params[0])
-    assert not any(isinstance(value, list) and len(value) == 1
-                   for value in params[0].values())
     assert provenance['environment']['kumo_engine'] == kumo.__version__
     assert trainer.bundle_id == result.bundle_id
 
@@ -186,12 +174,11 @@ def _finish_stub_fit(tmp_path, trainer, manifest=None):
         provenance=dict(train_table=table, snapshot_id='snap',
                         warm_start_bundle_id=None,
                         started_at=datetime.now(timezone.utc),
-                        home_dir=tmp_path, published_model=None))
+                        published_model=None))
 
 
-def test_provenance_without_trial_logs_still_records_parents(tmp_path):
+def test_provenance_without_a_table_manifest(tmp_path):
     result = _finish_stub_fit(tmp_path, kumo.Trainer(ModelPlan()))
-    assert result.provenance['trials'] == []
     assert result.provenance['parents']['training_table'] == 'tt-1'
     assert result.provenance['training_table'] == {
         'id': 'tt-1',
@@ -202,7 +189,11 @@ def test_provenance_without_trial_logs_still_records_parents(tmp_path):
 
 
 def test_provenance_records_custom_table_source(tmp_path):
-    source_table = {'location': 's3://bucket/exports/tt', 'version': '17'}
+    source_table = {
+        'connector': 'S3',
+        'location': 's3://bucket/exports/tt',
+        'version': '17'
+    }
     manifest = {
         'source': 'custom',
         'query': 'PREDICT x',
@@ -237,11 +228,11 @@ def test_provenance_failure_warns_and_still_publishes(tmp_path, monkeypatch):
     from kumo.engine.trainer import _provenance
 
     def fail(*args):
-        raise RuntimeError('unreadable trials')
+        raise RuntimeError('unreadable manifest')
 
-    monkeypatch.setattr(_provenance, '_trials', fail)
+    monkeypatch.setattr(_provenance, '_training_table', fail)
     trainer = kumo.Trainer(ModelPlan())
-    with pytest.warns(UserWarning, match='unreadable trials'):
+    with pytest.warns(UserWarning, match='unreadable manifest'):
         result = _finish_stub_fit(tmp_path, trainer)
     assert 'provenance' not in _roles(result.bundle_dir)
     assert result.provenance is None
