@@ -32,14 +32,21 @@ That run used the checkout's Python source and freshly built Linux DiskGraph
 debug binaries.
 CUDA mode also correctly fails when CUDA is unavailable.
 
-On GitHub-hosted Windows 2022, [run 39662048847](https://github.com/NVIDIA/kumo-engine/actions/runs/39662048847)
-completed real ingestion, one CPU training epoch, and checkpoint reload.
-Validation-result reading then failed because a local Windows file URI
-incorrectly treated the drive letter as a hostname. The URI producer is now
-fixed; Windows prediction and the complete smoke still await qualification.
+WSL [run 39665870696](https://github.com/NVIDIA/kumo-engine/actions/runs/39665870696)
+passed ingestion, four CUDA optimizer steps, and 100 finite predictions
+(one test passed in 11.69 seconds; source installation took 5m11s).
+It used WSL2 kernel `6.6.114.1-microsoft`, x86-64, Python 3.12.3,
+Torch 2.12.0+cu130, and a Tesla T4 with driver 596.36.
+
+On GitHub-hosted Windows 2022, [run 39663965343](https://github.com/NVIDIA/kumo-engine/actions/runs/39663965343)
+completed real ingestion and CPU fitting, including finite gradients and
+training metrics. Prediction publication then failed because ownership-path
+normalization mixed Windows backslashes with forward-slash containment checks.
+That normalization is now fixed; the complete Windows smoke still awaits
+qualification.
 The smoke prints a bounded subprocess output tail for its generated fixture
 on failure, preserving production privacy and failure behavior.
-WSL and GPU execution remain unverified.
+Linux ARM64 CUDA execution remains unverified.
 Native Rust dependencies are cached even after smoke failure; workspace
 crates still rebuild from checkout source.
 
@@ -83,10 +90,10 @@ ARM additionally needs CUDA 13 development tools at `/usr/local/cuda` (or
 checks these prerequisites and uses the existing ARM Faiss source builder.
 It does not install system packages or alter the runner image.
 
-The WSL job assumes the Actions agent executes inside the Linux guest. It
+The WSL job requires the Actions agent to execute inside the Linux guest. It
 checks the Linux kernel for WSL and fails if this runner instead executes
-Windows host shells. That registration detail and installed image packages
-still need confirmation in the first manual run. Git Bash is not a WSL test.
+Windows host shells. The successful WSL run verified this registration and
+its installed prerequisites. Git Bash is not a WSL test.
 
 The native Windows job runs PowerShell and installs the MSVC Rust target.
 The [Windows Server 2022 image](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)
