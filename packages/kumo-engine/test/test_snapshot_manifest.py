@@ -213,30 +213,34 @@ def test_unrecordable_location_is_null():
                      'version_kind': 'unknown'}
 
 
-def test_custom_sql_records_dependency_versions():
+@pytest.mark.parametrize('record_sources', [True, False])
+def test_custom_sql_records_text_unless_sources_are_off(record_sources):
     version = SourceVersion('abc', 'hour_bucket', {'orders': '17'})
     entry = provenance.source_table(
         SnowflakeConnector(warehouse='wh', database='db', schema_name='sch'),
-        'q', 'SELECT * FROM orders', version, record_locations=False)
-    assert entry == {
+        'q', 'SELECT * FROM orders', version, record_sources=record_sources)
+    expected = {
         'connector': 'SNOWFLAKE',
         'location': 'sql:' + hashlib.sha256(b'SELECT * FROM orders').hexdigest(),
         'version': 'abc',
         'version_kind': 'hour_bucket',
         'dependencies': {'orders': '17'},
     }
+    if record_sources:
+        expected.update(sql='SELECT * FROM orders', dialect='snowflake')
+    assert entry == expected
 
 
-def test_record_locations_false_keeps_table_names_only(make_snapshot,
-                                                       tmp_path):
+def test_record_sources_false_keeps_table_names_only(make_snapshot,
+                                                     tmp_path):
     names = {'ents': 'ents', 'events': 'events.parquet'}
-    redacted = make_snapshot(30, record_locations=False)
+    redacted = make_snapshot(30, record_sources=False)
     sources = redacted.manifest['parents']['source_tables']
     assert {alias: e['location'] for alias, e in sources.items()} == names
     assert str(tmp_path) not in json.dumps(redacted.manifest)
-    assert redacted.manifest['record_locations'] is False
+    assert redacted.manifest['record_sources'] is False
 
-    full = make_snapshot(record_locations=True)
+    full = make_snapshot(record_sources=True)
     assert full == redacted
     assert full.manifest['parents']['source_tables']['ents'][
         'location'] == str((tmp_path / 'data' / 'ents.parquet').resolve())
