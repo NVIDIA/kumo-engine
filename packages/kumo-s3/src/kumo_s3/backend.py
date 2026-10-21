@@ -155,11 +155,8 @@ class S3Sessions(ObjectStoreSessions):
                 or session.region_name, options=arrow_options)
         from pyarrow.fs import FileSystem
         filesystem, _ = FileSystem.from_uri(f's3://{bucket}')
-        if options:
-            return S3FileSystem(region=filesystem.region,
-                                retry_strategy=retry_strategy(),
-                                **options)
-        return filesystem
+        return S3FileSystem(region=filesystem.region,
+                            retry_strategy=retry_strategy(), **(options or {}))
 
 
 class S3SourceBackend(S3Sessions, ObjectStoreSourceBackend):
