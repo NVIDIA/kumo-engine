@@ -144,9 +144,7 @@ jobs:
   windows-native:
     name: Engine CPU smoke (windows-native)
     timeout-minutes: 90
-    runs-on:
-      group: nv-gpu-general
-      labels: windows-amd64-gpu-l4-latest-1
+    runs-on: windows-2022
     defaults:
       run:
         shell: pwsh
