@@ -20,9 +20,8 @@ def _fake_table(dest_writes: bool = True, credentials=None):
 
     return SimpleNamespace(
         definition=SimpleNamespace(cols=[], source_table=None),
-        connector=SimpleNamespace(
-            source_type='LOCAL_FILE',
-            source_backend=SimpleNamespace(prepare_ingest=prepare_ingest)),
+        connector=SimpleNamespace(source_backend=SimpleNamespace(
+            prepare_ingest=prepare_ingest)),
         table_name='t',
     )
 

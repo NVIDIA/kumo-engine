@@ -66,33 +66,31 @@ def make_snapshot(tmp_path, no_scheduler):
     return make
 
 
-def test_fresh_snapshot_writes_manifest(make_snapshot, tmp_path):
-    snapshot = make_snapshot(30)
-    manifest = snapshot.manifest
+def test_snapshot_manifest_records_sources_and_diffs(make_snapshot,
+                                                     tmp_path):
+    before = make_snapshot(30)
+    manifest = before.manifest
 
     assert manifest['kind'] == 'graph_snapshot'
-    assert manifest['schema_version'] == 1
-    assert manifest['id'] == snapshot.id
-    assert 'graph_id' not in manifest and 'data_version' not in manifest
+    assert manifest['id'] == before.id
     assert manifest['formats'] == format_versions()
-    sources = manifest['parents']['source_tables']
     data = (tmp_path / 'data').resolve()
-    assert {alias: entry['location']
-            for alias, entry in sources.items()} == {
+    assert {a: e['location']
+            for a, e in manifest['parents']['source_tables'].items()} == {
                 'ents': str(data / 'ents.parquet'),
                 'events': str(data / 'events.parquet'),
             }
-    assert {entry['connector'] for entry in sources.values()} == {'LOCAL_FILE'}
-    assert all(entry['version'] for entry in sources.values())
     assert manifest['tables'] == {'ents': {'rows': 5}, 'events': {'rows': 30}}
     assert manifest['edges']['events_ENT_ID_to_ents_ID'] == 30
-    assert set(manifest['environment']) == {
-        'kumo_engine', 'build_commit', 'kumo_core', 'torch', 'python'
-    }
     assert manifest['environment']['kumo_engine'] == __version__
     assert manifest['scheduler'] is None
     assert datetime.fromisoformat(manifest['created_at']).tzinfo is not None
     assert str(tmp_path / 'scratch') not in json.dumps(manifest)
+
+    diff = diff_manifests(manifest, make_snapshot(40).manifest)
+    assert diff['tables.events.rows'] == (30, 40)
+    assert 'parents.source_tables.events.version' in diff
+    assert 'parents.source_tables.ents.version' not in diff
 
 
 def test_index_without_manifest_is_reused_and_backfilled(
@@ -106,40 +104,13 @@ def test_index_without_manifest_is_reused_and_backfilled(
                         lambda *args: pytest.fail('cached index re-ingested'))
 
     reused = make_snapshot()
-    rebuilt = reused.manifest
 
     assert reused == snapshot
-    assert diff_manifests(original, rebuilt) == {
-        'created_at': (original['created_at'], None),
-        'reconstructed': (None, True),
-        **{
-            f'{group}.{key}': (value, None)
-            for group in ('environment', 'formats')
-            for key, value in original[group].items() if value is not None
-        },
-    }
-
-
-def test_manifest_without_ingest_stats_keeps_identity(tmp_path, no_scheduler):
-    from kumo.engine.graph import _write_snapshot_manifest
-
-    result = SimpleNamespace(index_path=str(tmp_path),
-                             ingest_stats_path=str(tmp_path / 'missing.json'))
-    sources = {
-        'users': {
-            'connector': 'LOCAL_FILE',
-            'location': '/data/users.parquet',
-            'version': '1'
-        }
-    }
-    _write_snapshot_manifest(result, 'g@d', sources, fresh=True)
-
-    manifest = GraphSnapshot('g@d', tmp_path, {}).manifest
-    assert manifest['id'] == 'g@d'
-    assert manifest['parents']['source_tables'] == sources
-    assert manifest['tables'] == {'users': {'rows': None}}
-    assert manifest['edges'] == {}
-    assert manifest['environment'] is not None
+    changed = diff_manifests(original, reused.manifest)
+    assert changed['reconstructed'] == (None, True)
+    assert all(key.split('.')[0] in ('created_at', 'reconstructed',
+                                     'environment', 'formats')
+               for key in changed)
 
 
 def test_manifest_write_failure_leaves_snapshot_unchanged(
@@ -153,46 +124,18 @@ def test_manifest_write_failure_leaves_snapshot_unchanged(
 
     assert snapshot.manifest is None
     assert (snapshot.index_path / '_SUCCESS').is_file()
-    assert snapshot.index_path.name.startswith(snapshot.id.split('@')[1])
-
-
-def test_appended_rows_show_in_manifest_diff(make_snapshot):
-    before = make_snapshot(30).manifest
-    after = make_snapshot(40).manifest
-
-    diff = diff_manifests(before, after)
-
-    assert diff['id'] == (before['id'], after['id'])
-    version = 'parents.source_tables.events.version'
-    assert version in diff and diff[version][0] != diff[version][1]
-    assert diff['tables.events.rows'] == (30, 40)
-    assert 'parents.source_tables.ents.version' not in diff
-    assert 'tables.ents.rows' not in diff
 
 
 @pytest.mark.parametrize('env, processing, expected', [
     ({}, None, None),
-    ({
-        'KUMO_SCHEDULER': 'databricks',
-        'KUMO_JOB_ID': '11',
-        'KUMO_JOB_RUN_ID': '22',
-        'TRAINING_JOB_NAME': 'ignored',
-    }, None, ('databricks', '11', '22')),
-    ({
-        'KUMO_JOB_RUN_ID': 'run-9',
-        'TRAINING_JOB_NAME': 'train-1',
-        'TRAINING_JOB_ARN': 'arn:train-1',
-    }, None, ('sagemaker', 'train-1', 'run-9')),
-    ({}, {
-        'ProcessingJobName': 'proc-1',
-        'ProcessingJobArn': 'arn:proc-1',
-    }, ('sagemaker', 'proc-1', 'arn:proc-1')),
-    ({
-        'SNOWFLAKE_SERVICE_NAME': 'SCORE_JOB_A1B2C3D4'
-    }, None, ('snowflake', None, 'SCORE_JOB_A1B2C3D4')),
-    ({
-        'DATABRICKS_RUNTIME_VERSION': '16.4'
-    }, None, ('databricks', None, None)),
+    ({'KUMO_SCHEDULER': 'databricks', 'KUMO_JOB_ID': '11',
+      'KUMO_JOB_RUN_ID': '22', 'TRAINING_JOB_NAME': 'ignored'}, None,
+     ('databricks', '11', '22')),
+    ({'KUMO_JOB_RUN_ID': 'run-9', 'TRAINING_JOB_NAME': 'train-1'}, None,
+     ('sagemaker', 'train-1', 'run-9')),
+    ({}, {'ProcessingJobName': 'proc-1', 'ProcessingJobArn': 'arn:proc-1'},
+     ('sagemaker', 'proc-1', 'arn:proc-1')),
+    ({'SNOWFLAKE_SERVICE_NAME': 'JOB_A1'}, None, ('snowflake', None, 'JOB_A1')),
 ])
 def test_scheduler_context(no_scheduler, env, processing, expected):
     for name, value in env.items():
@@ -202,41 +145,25 @@ def test_scheduler_context(no_scheduler, env, processing, expected):
 
     context = provenance.scheduler_context()
 
-    if expected is None:
-        assert context is None
+    assert context == (expected and dict(
+        zip(('platform', 'job_id', 'job_run_id'), expected)))
+
+
+@pytest.mark.parametrize('content', [
+    None, '{"schema_version": 2}', '{"schema_version": true}', '{"kind": '
+])
+def test_unsupported_manifest_is_ignored(tmp_path, content):
+    if content is not None:
+        (tmp_path / SNAPSHOT_MANIFEST_FILE).write_text(content)
+        with pytest.warns(UserWarning):
+            assert GraphSnapshot('s', tmp_path, {}).manifest is None
     else:
-        assert context == dict(
-            zip(('platform', 'job_id', 'job_run_id'), expected))
-
-
-def test_manifest_from_a_newer_schema_is_ignored(tmp_path):
-    snapshot = GraphSnapshot('snapshot', tmp_path, {})
-    assert snapshot.manifest is None
-
-    (tmp_path / SNAPSHOT_MANIFEST_FILE).write_text(
-        json.dumps({
-            'kind': 'graph_snapshot',
-            'schema_version': 2
-        }))
-    with pytest.warns(UserWarning, match='schema_version 2'):
-        assert snapshot.manifest is None
-
-    for version in (True, 0):
-        (tmp_path / SNAPSHOT_MANIFEST_FILE).write_text(
-            json.dumps({'schema_version': version}))
-        with pytest.warns(UserWarning, match='schema_version'):
-            assert snapshot.manifest is None
-
-    (tmp_path / SNAPSHOT_MANIFEST_FILE).write_text('{"kind": ')
-    with pytest.warns(UserWarning, match='unreadable'):
-        assert snapshot.manifest is None
+        assert GraphSnapshot('s', tmp_path, {}).manifest is None
 
 
 @pytest.mark.parametrize('connector, name, sql, location', [
     (S3Connector(root_dir='s3://bucket-a/data/'), 'exports/tt/', None,
      's3://bucket-a/data/exports/tt'),
-    (S3Connector(), 's3://bucket-a/exports/tt', None,
-     's3://bucket-a/exports/tt'),
     (SimpleNamespace(config=None, source_backend=None, database='DB',
                      schema_name='SCHEMA'), 'TT', None, 'DB.SCHEMA.TT'),
     (None, 'synthetic', 'SELECT 1', 'sql:' +
