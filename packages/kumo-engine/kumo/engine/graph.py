@@ -245,21 +245,33 @@ class GraphSnapshot:
 
 
 def _write_snapshot_manifest(result: Any, snapshot_id: str,
-                             source_tables: Dict[str, Dict[str, Any]], *,
-                             fresh: bool) -> None:
+                             source_tables: Dict[str, Dict[str, Any]],
+                             record_locations: bool, *, fresh: bool) -> None:
     path = Path(result.index_path) / SNAPSHOT_MANIFEST_FILE
-    if not fresh and path.exists():
-        return
     try:
-        fields = {} if fresh else dict(created_at=None, environment=None,
-                                       scheduler=None, reconstructed=True)
-        write_manifest(
-            path,
-            new_manifest('graph_snapshot', snapshot_id,
-                         {'source_tables': source_tables}, **fields))
+        if not fresh and path.exists():
+            existing = read_manifest(path)
+            if existing is None or existing.get('record_locations',
+                                                True) == record_locations:
+                return
+            manifest = {
+                **existing, 'record_locations': record_locations,
+                'parents': {
+                    **existing['parents'], 'source_tables': source_tables
+                }
+            }
+        else:
+            fields = {} if fresh else dict(created_at=None, environment=None,
+                                           scheduler=None, reconstructed=True)
+            manifest = new_manifest('graph_snapshot', snapshot_id,
+                                    {'source_tables': source_tables},
+                                    record_locations=record_locations,
+                                    **fields)
+        write_manifest(path, manifest)
     except Exception as error:
         if fresh or path not in _warned_backfill:
-            _warned_backfill.add(path)
+            if not fresh:
+                _warned_backfill.add(path)
             warnings.warn(
                 f"Could not write the snapshot manifest at {path}: {error}",
                 UserWarning,
@@ -396,7 +408,7 @@ class Graph:
         """
         self.native_graph
 
-    def snapshot(self) -> GraphSnapshot:
+    def snapshot(self, *, record_locations: bool = True) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
         result through `kumo-core` to build column stats and the on-disk
         index. The index is stored under a directory keyed by both `self.id`
@@ -405,6 +417,11 @@ class Graph:
         and `GraphSnapshot`'s docstring for the resulting `id` shape. If a
         valid build already exists for that exact key, ingest is skipped and
         it's reused as is.
+
+        Args:
+            record_locations: if False, the snapshot manifest records each
+                source as connector and table name only (no bucket, path or
+                account).
         """
         from filelock import FileLock
 
@@ -434,10 +451,11 @@ class Graph:
         # processes, and a lock-file-existence mutex would leave a stale
         # lock behind after a crash.
         with FileLock(f'{persist_dir}.lock'):
-            return self._snapshot_no_lock(graph_key, persist_dir)
+            return self._snapshot_no_lock(graph_key, persist_dir,
+                                          record_locations)
 
-    def _snapshot_no_lock(self, graph_key: str, persist_dir: Path) \
-            -> GraphSnapshot:
+    def _snapshot_no_lock(self, graph_key: str, persist_dir: Path,
+                          record_locations: bool = True) -> GraphSnapshot:
         r"""`snapshot()`'s body, run under its `FileLock`. Not meant to be
         called on its own -- `persist_dir`, unlike everything else here,
         isn't a pure function of `self` alone (it's `snapshot()`'s lock key,
@@ -503,8 +521,9 @@ class Graph:
                         "limitation in kumoai/backend/local/graph.py's "
                         "_stage_sources, which raises the same way.")
                 table_data_versions[alias] = prepared.version
-                source_tables[alias] = source_table(connector, name, sql,
-                                                    prepared.version)
+                source_tables[alias] = source_table(
+                    connector, name, sql, prepared.version,
+                    record_locations=record_locations)
 
                 paths = prepared.source.get('paths') or []
                 if paths:
@@ -555,7 +574,7 @@ class Graph:
 
             snapshot_id = f'{graph_key}@{data_version[:16]}'
             _write_snapshot_manifest(result, snapshot_id, source_tables,
-                                     fresh=existing is None)
+                                     record_locations, fresh=existing is None)
 
             _warn_ingest_data_loss(result, graph_config)
             return GraphSnapshot(
