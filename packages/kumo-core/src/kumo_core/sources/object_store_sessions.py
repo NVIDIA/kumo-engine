@@ -106,7 +106,8 @@ class ObjectStoreSessions(ABC):
                                        fetch=access.fetch,
                                        object_identity=access.object_identity)
 
-    def table_uri(self, connector: SourceConnector, table_name: str) -> str:
+    def table_location(self, connector: SourceConnector,
+                       table_name: str) -> str:
         """Full ``scheme://bucket/key`` of ``table_name``, without credentials."""
         root = self._root_for(connector)
         if root is None:
