@@ -240,14 +240,10 @@ def _loaded(path: str) -> Optional[Any]:
     return marker
 
 
-_HOUR_SECONDS = 3600
-
-
 def _comparable(stamp: Any) -> bool:
-    # hour_version() stamps views and unversioned sources on the hour; -1 is
-    # an undated source.
+    # Views and unversioned sources are stamped on the hour; -1 is undated.
     return (isinstance(stamp, str) and stamp != '-1'
-            and not (stamp.isdigit() and int(stamp) % _HOUR_SECONDS == 0))
+            and not (stamp.isdigit() and int(stamp) % 3600 == 0))
 
 
 def _source_change(table: Table, recorded: Any) -> Dict[str, Any]:
@@ -340,13 +336,8 @@ class GraphSnapshot:
         root, manifest = read(connector, path)
         graph_key = manifest['graph_key']
         if graph is not None and graph.id != graph_key:
-            warnings.warn(
-                f"Snapshot at {path} was taken of graph {graph_key!r}, not of "
-                f"the given graph {graph.id!r}; tables, edges, schemas or "
-                "connectors differ from the exported graph.",
-                UserWarning,
-                stacklevel=2,
-            )
+            warnings.warn(f"Snapshot at {path} was taken of another graph.",
+                          UserWarning, stacklevel=2)
         target = _store().path(
             DiskgraphSnapshotHandle(
                 graph_key=graph_key,
@@ -367,12 +358,9 @@ class GraphSnapshot:
             ]
             if changed:
                 warnings.warn(
-                    f"Snapshot at {path} predates the current data of "
-                    f"source table(s) {', '.join(changed)}; see "
-                    "`snapshot.source_changes(graph)`.",
-                    UserWarning,
-                    stacklevel=2,
-                )
+                    f"Snapshot at {path} predates source table(s) "
+                    f"{', '.join(changed)}; see `snapshot.source_changes`.",
+                    UserWarning, stacklevel=2)
         return snapshot
 
     def source_changes(self, graph: 'Graph') -> Dict[str, Dict[str, Any]]:
@@ -381,18 +369,12 @@ class GraphSnapshot:
         try:
             manifest = self.manifest
             recorded = ({} if not manifest or manifest.get('reconstructed') else
-                        manifest['parents']['source_tables'])
+                        dict(manifest['parents']['source_tables']))
         except Exception:
             recorded = {}
-        if not isinstance(recorded, dict):
-            recorded = {}
-        try:
-            tables = graph._named_tables
-        except Exception:
-            return {}
         return {
             alias: _source_change(table, recorded.get(alias))
-            for alias, table in tables.items()
+            for alias, table in graph._named_tables.items()
         }
 
     @property
