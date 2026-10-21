@@ -153,42 +153,6 @@ class ObjectStoreSinkBackend(ABC):
                                           sidecars=sidecars)
         return f'{self.scheme}://{output}'
 
-    def content_digest(self, connector: SourceConnector,
-                       table_name: str) -> str:
-        """``content_sha256`` of the visible Parquet parts in ``table_name``."""
-        import hashlib
-
-        from kumo_core.artifact_export import content_sha256
-        from kumo_core.sources import layout
-        from pyarrow.fs import FileSelector, FileType
-
-        filesystem, path = self._destination(connector, table_name)
-        digests = []
-        for info in filesystem.get_file_info(
-                FileSelector(path.rstrip('/'), allow_not_found=True)):
-            if (info.type is not FileType.File
-                    or layout.is_hidden(info.base_name)
-                    or layout.file_type(info.base_name) != layout.PARQUET):
-                continue
-            digest = hashlib.sha256()
-            with filesystem.open_input_stream(info.path) as reader:
-                while chunk := reader.read(_CHUNK):
-                    digest.update(chunk)
-            digests.append(digest.hexdigest())
-        return content_sha256(digests)
-
-    def read_sidecar(self, connector: SourceConnector, table_name: str,
-                     name: str) -> Optional[bytes]:
-        """Return the file ``name`` inside directory ``table_name``, if any."""
-        from pyarrow.fs import FileType
-
-        filesystem, path = self._destination(connector, table_name)
-        target = f"{path.rstrip('/')}/{name}"
-        if filesystem.get_file_info(target).type is not FileType.File:
-            return None
-        with filesystem.open_input_stream(target) as reader:
-            return reader.readall()
-
     def publish_model(
         self,
         connector: SourceConnector,

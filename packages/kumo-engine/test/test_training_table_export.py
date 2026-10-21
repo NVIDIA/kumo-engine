@@ -4,7 +4,6 @@
 
 import hashlib
 import json
-import shutil
 from collections import Counter
 from functools import partial
 from types import SimpleNamespace
@@ -12,7 +11,6 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import pytest
 from kumoapi.graph import Edge
@@ -298,12 +296,6 @@ def test_custom_training_table_declares_integer_timestamp_unit(graph, unit,
         assert _rows(seeds[stage], columns) == _rows(original_seeds[stage], columns)
 
 
-def _digest(paths):
-    return hashlib.sha256(''.join(
-        sorted(hashlib.sha256(p.read_bytes()).hexdigest()
-               for p in paths)).encode()).hexdigest()
-
-
 def _reload(graph, name, pquery):
     _, snapshot, connector, _ = graph
     return kumo.TrainingTable.from_source_table(
@@ -311,8 +303,8 @@ def _reload(graph, name, pquery):
         snapshot=snapshot)
 
 
-def test_manifest_lineage_across_export_and_reload(graph, tmp_path):
-    from kumo_core.training.export import export_train_table, identity
+def test_manifest_and_export_sidecar(graph, tmp_path):
+    from kumo_core.training.export import export_train_table
 
     _, snapshot, connector, out = graph
     query = 'PREDICT ents.LABEL FOR EACH ents.ID'
@@ -320,10 +312,7 @@ def test_manifest_lineage_across_export_and_reload(graph, tmp_path):
     manifest = table.manifest
     assert manifest['kind'] == 'training_table'
     assert manifest['id'] == table.tt_id == _spec(table)['tt_id']
-    assert manifest['parents'] == {
-        'snapshot': snapshot.id,
-        'derived_from': None
-    }
+    assert manifest['parents'] == {'snapshot': snapshot.id}
     assert (manifest['query'], manifest['source']) == (query, 'pql')
     assert manifest['task_type'] == 'binary_classification'
     assert manifest['rows'] == _seeds(table)[1]
@@ -342,63 +331,80 @@ def test_manifest_lineage_across_export_and_reload(graph, tmp_path):
         [p.name for p in parts] +
         ['_KUMO_EXPORT', '_SUCCESS', '_kumo_manifest.json'])
     sidecar = (directory / '_kumo_manifest.json').read_bytes()
-    assert json.loads(sidecar) == {
-        **manifest, 'content_sha256': _digest(parts),
-        'export_identity': identity(_spec(table))
-    }
+    assert json.loads(sidecar) == manifest
 
     table.export(TrainingTableOutputConfig(connector, 'lineage'))
     assert (directory / '_kumo_manifest.json').read_bytes() == sidecar
-    assert [p.read_bytes() for p in parts] == [
-        (baseline / p.name).read_bytes() for p in parts
-    ]
-
-    reloaded = _reload(graph, 'lineage', pquery).manifest
-    assert reloaded['parents'] == {
-        'snapshot': snapshot.id,
-        'derived_from': table.tt_id
-    }
-    assert (reloaded['source'], reloaded['modified']) == ('custom', False)
-    assert reloaded['id'] != table.tt_id
-
-    edited = out / 'lineage_edited'
-    shutil.copytree(directory, edited)
-    rows = pq.read_table(parts[0])
-    flipped = pc.invert(rows['TARGET1'])
-    pq.write_table(rows.set_column(rows.schema.get_field_index('TARGET1'),
-                                   'TARGET1', flipped),
-                   edited / parts[0].name)
-    edited_manifest = _reload(graph, 'lineage_edited', pquery).manifest
-    assert edited_manifest['parents']['derived_from'] == table.tt_id
-    assert edited_manifest['modified'] is True
 
 
-@pytest.mark.parametrize('damage', ['missing', 'garbled', 'foreign'])
-def test_reload_without_matching_sidecar_records_no_lineage(graph, damage):
+def test_custom_table_records_its_source(graph, recwarn):
     _, snapshot, connector, out = graph
     pquery, table, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
-                               f'unlinked_base_{damage}')
-    directory = out / f'unlinked_{damage}'
-    shutil.copytree(out / f'unlinked_base_{damage}', directory)
-    sidecar = directory / '_kumo_manifest.json'
-    if damage == 'missing':
-        sidecar.unlink()
-    elif damage == 'garbled':
-        sidecar.write_text('{not json')
-    else:
-        (directory / '_KUMO_EXPORT').write_text('another export')
-
-    if damage == 'garbled':
-        with pytest.warns(UserWarning, match='training-table manifest'):
-            reloaded = _reload(graph, directory.name, pquery)
-    else:
-        reloaded = _reload(graph, directory.name, pquery)
-    assert reloaded.manifest['parents'] == {
+                               'reloaded')
+    (out / 'reloaded' / '_kumo_manifest.json').write_text('{not json')
+    reloaded = _reload(graph, 'reloaded', pquery)
+    manifest = reloaded.manifest
+    assert manifest['source'] == 'custom'
+    assert manifest['id'] != table.tt_id
+    assert manifest['parents'] == {
         'snapshot': snapshot.id,
-        'derived_from': None
+        'source_table': {
+            'location': str(out / 'reloaded'),
+            'version': connector.source_backend.get_data_version(
+                connector, 'reloaded'),
+        },
     }
-    assert reloaded.manifest['modified'] is None
+    assert manifest['parents']['source_table']['version']
+    assert not [w for w in recwarn if 'manifest' in str(w.message)]
     assert _seeds(reloaded)[1] == _seeds(table)[1]
+
+
+@pytest.mark.parametrize('failing', ['_location', 'get_data_version'])
+def test_unrecordable_source_is_null(graph, monkeypatch, failing):
+    from kumo.engine.pquery import training_table
+
+    _, snapshot, connector, out = graph
+    pquery, table, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
+                               f'unrecorded_{failing}')
+
+    def fail(*args, **kwargs):
+        raise OSError('listing denied')
+
+    target = (training_table if failing == '_location' else
+              type(connector.source_backend))
+    monkeypatch.setattr(target, failing, fail)
+    with pytest.warns(UserWarning, match='listing denied'):
+        reloaded = _reload(graph, f'unrecorded_{failing}', pquery)
+    recorded = reloaded.manifest['parents']['source_table']
+    if failing == '_location':
+        assert recorded['location'] is None and recorded['version']
+    else:
+        assert recorded == {
+            'location': str(out / f'unrecorded_{failing}'),
+            'version': None
+        }
+    assert _seeds(reloaded)[1] == _seeds(table)[1]
+
+
+@pytest.mark.parametrize('connector, name, location', [
+    (kumo.S3Connector(root_dir='s3://bucket/data/'), 'exports/tt/',
+     's3://bucket/data/exports/tt'),
+    (kumo.S3Connector(), 's3://bucket/exports/tt', 's3://bucket/exports/tt'),
+    (SimpleNamespace(config=None, source_backend=None, database='DB',
+                     schema_name='SCHEMA'), 'TT', 'DB.SCHEMA.TT'),
+])
+def test_source_location(connector, name, location):
+    from kumo.engine.pquery.training_table import _location
+
+    assert _location(connector, name, None) == location
+
+
+def test_sql_location_is_a_digest():
+    from kumo.engine.pquery.training_table import _location
+
+    sql = 'SELECT * FROM labels'
+    assert _location(None, 'synthetic', sql) == (
+        'sql:' + hashlib.sha256(sql.encode()).hexdigest())
 
 
 def test_manifest_write_failure_keeps_generation_and_export(
@@ -436,42 +442,6 @@ def test_warehouse_sink_receives_no_sidecars(graph):
         sink_backend=SimpleNamespace(write_files=write_files))
     table.export(TrainingTableOutputConfig(connector, 'DB.SCHEMA.TT'))
     assert calls == [{'export_id': f'{table.tt_id}:tt-export-v1'}]
-
-
-def test_reencoded_staging_does_not_mark_export_modified(graph, monkeypatch):
-    from kumo.engine.pquery import _custom_source
-
-    _, snapshot, connector, out = graph
-    query = ('PREDICT LIST_DISTINCT(events.ITEM_ID, 0, 7, days) '
-             'RANK TOP 3 FOR EACH ents.ID')
-    pquery, table, _ = _export(graph, query, 'lineage_weighted')
-    directory = out / 'lineage_weighted'
-    parts = sorted(directory.glob('*.parquet'))
-    for part in parts:
-        rows = pq.read_table(part)
-        weights = pa.array([[1.0] * len(values)
-                            for values in rows['TARGET1'].to_pylist()],
-                           pa.list_(pa.float64()))
-        pq.write_table(rows.append_column('WEIGHT', weights), part)
-    sidecar = directory / '_kumo_manifest.json'
-    sidecar.write_text(json.dumps({
-        **json.loads(sidecar.read_text()), 'content_sha256': _digest(parts)
-    }))
-    staged = []
-    stage_source_table = _custom_source.stage_source_table
-
-    def capture(*args, **kwargs):
-        staged.append(stage_source_table(*args, **kwargs))
-        return staged[-1]
-
-    monkeypatch.setattr(_custom_source, 'stage_source_table', capture)
-    manifest = kumo.TrainingTable.from_source_table(
-        connector['lineage_weighted'],
-        TrainingTableSpec(weight_col='WEIGHT', split_col='SPLIT'),
-        pq=pquery, snapshot=snapshot).manifest
-    assert _digest(sorted(staged[0].glob('*.parquet'))) != _digest(parts)
-    assert manifest['parents']['derived_from'] == table.tt_id
-    assert manifest['modified'] is False
 
 
 def test_csv_directory_export_gets_no_sidecar(graph):
