@@ -30,6 +30,23 @@ jobs:
           node-version: '22'
       - name: Populate the DiskGraph Cargo source cache
         run: cargo fetch --locked --manifest-path packages/diskgraph/Cargo.toml
+      - name: Check DiskGraph workspace license declarations
+        working-directory: packages/diskgraph
+        run: |
+          cargo metadata --locked --format-version 1 --no-deps | jq -e '
+            [.packages[] | select(.source == null)] as $workspace |
+            any($workspace[]; .name == "diskgraph-ptrhash" and .license == "MIT") and
+            all($workspace[];
+              if .name == "diskgraph-ptrhash" then
+                .license == "MIT"
+              else
+                .license == "Apache-2.0"
+              end)'
+      - name: Check the full DiskGraph Cargo graph against deny.toml
+        working-directory: packages/diskgraph
+        run: |
+          cargo install --locked cargo-deny@0.20.2
+          cargo deny check licenses
       - name: Reproduce the in-tree DiskGraph artifact manifest
         run: python packages/diskgraph/scripts/generate_artifact_manifest.py --repo-root packages/diskgraph --check packages/diskgraph/third_party/artifact-manifest.json
       - name: Check the generated notice and deny-by-default policy
