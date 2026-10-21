@@ -30,9 +30,17 @@ Local Linux ARM64 CPU validation passed with four optimizer steps and 100
 finite predictions, using Python 3.14, Torch 2.12.0+cpu, and public PyG 2.8.1.
 That run used the checkout's Python source and freshly built Linux DiskGraph
 debug binaries.
-It does not establish a Windows build. CUDA mode also correctly fails when
-CUDA is unavailable. Windows, WSL, and GPU execution remain unverified; the
-first manual runner executions must validate their installation and runtime.
+CUDA mode also correctly fails when CUDA is unavailable.
+
+On GitHub-hosted Windows 2022, [run 39655272701](https://github.com/NVIDIA/kumo-engine/actions/runs/39655272701)
+passed CPU Torch setup, source installation with CPU Faiss (17m08s cold),
+and engine import/test collection after the libc guard fix. Real ingestion
+then exited with code 1; production diagnostic redaction hid the cause.
+The smoke now prints the bounded subprocess output tail for its generated
+fixture and rethrows the error, preserving production privacy and failure
+behavior. Windows ingest/train/predict, WSL, and GPU execution remain unverified.
+Native Rust dependencies are cached even after smoke failure; workspace
+crates still rebuild from checkout source.
 
 In GitHub Actions, select **Kumo Engine - Platform smoke**, choose **Run
 workflow**, and select the branch containing this workflow. All three jobs run
@@ -40,7 +48,7 @@ independently. Each dispatch tests its selected revision. The workflow builds
 on native portability commit
 `e4b423c1aeff1a83564e1a26e58de6939cb01003`.
 
-Before the workflow is registered, PR 76 has a temporary push trigger scoped
+For pre-merge qualification, PR 76 has a temporary push trigger scoped
 only to its trusted `pull-request/76` copy. A maintainer admits the exact PR
 head with `/ok to test <full-head-SHA>`; copy-pr-bot's push starts all three
 jobs without changing `main`. Remove this temporary trigger before merge so
@@ -53,7 +61,9 @@ the delivered workflow remains manual-only. Ordinary fork pushes and
 | Windows x86-64 through WSL, L4 | `nv-gpu-general` | `wsl-amd64-gpu-l4-latest-1` |
 | Native Windows x86-64, CPU | GitHub-hosted | `windows-2022` |
 
-The repository must have access to the two GPU runner groups. Native Windows
+Access to the two GPU runner groups is requested in
+[runner configuration PR 549](https://github.com/nv-gha-runners/enterprise-runner-configuration/pull/549);
+review and application remain pending. Native Windows
 uses a GitHub-hosted CPU runner and needs no enterprise GPU group access.
 All images need a
 C/C++ compiler and network access to package indexes and Rust dependencies.
@@ -87,11 +97,13 @@ Only one Faiss distribution
 is installed because both provide the same Python import namespace. Windows
 CPU Faiss and CPU training do not cover native Windows GPU execution.
 DiskGraph and Python portability changes are maintained in this repository.
-The native build and runner image still need validation before native
-execution can be called operational.
+The full native runtime still needs validation before it can be called
+operational.
 
-Native Windows coverage is limited to the isolated engine installation in this
-workflow. Root `kumo[cu130]`, `kumo[cu132]`, and full-workspace installs remain
+Native Windows coverage is limited to this isolated engine installation with
+zero DataLoader worker processes, selected by the current Windows and test
+configuration. The existing Unix worker-pool paths are not qualified by this
+smoke. Root `kumo[cu130]`, `kumo[cu132]`, and full-workspace installs remain
 unsupported: root GPU extras also request GPU Faiss, conflicting with CPU
 Faiss selection. Root extras are unchanged.
 
