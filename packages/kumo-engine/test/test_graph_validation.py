@@ -2,9 +2,11 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import re
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
+from xml.etree import ElementTree
 
 import pytest
 from kumoapi.graph import Edge
@@ -162,3 +164,140 @@ def test_omitted_self_relation_preserves_column_type(tables, original_stype):
                 if col['name'] == 'user_id')['stype'] == original_stype
     assert next(col for col in source.definition.cols
                 if col.name == 'user_id').stype == original_stype
+
+
+def test_visualize_exports_escaped_svg_without_source_access(tmp_path):
+    users, events = _s3_tables()
+    alias = '<script>alert("账户")</script> & customers'
+    key = 'customer<&"账户'
+    events = replace(
+        events, definition=replace(
+            events.definition, cols=[
+                events.definition.cols[0],
+                Column(key, Stype.ID, Dtype.int64)
+            ]))
+    graph = Graph({
+        'purchases': events,
+        alias: users
+    }, [Edge('purchases', key, alias)])
+    destination = tmp_path / 'relationships.svg'
+    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
+                      side_effect=AssertionError('source accessed')), \
+            patch.object(Table, 'infer_metadata',
+                         side_effect=AssertionError('inference started')), \
+            patch.object(Graph, 'snapshot',
+                         side_effect=AssertionError('snapshot started')):
+        svg = graph.visualize(destination)
+    assert isinstance(svg, str)
+    assert svg._repr_svg_() == svg
+    assert destination.read_text(encoding='utf-8') == svg
+    root = ElementTree.fromstring(svg)
+    assert root.tag == '{http://www.w3.org/2000/svg}svg'
+    text = ''.join(root.itertext())
+    assert alias in text and key in text
+    assert not root.findall('.//{http://www.w3.org/2000/svg}script')
+    assert all(not name.lower().startswith('on') for element in root.iter()
+               for name in element.attrib)
+    assert 's3://schema-only-fixture' not in svg
+
+
+@pytest.mark.parametrize('count, limit', [(10, 10), (11, 5)])
+@pytest.mark.parametrize('show_cols', [False, True])
+def test_visualize_bounds_column_detail(count, limit, show_cols):
+    users, _ = _s3_tables()
+    extras = [
+        Column(f'feature_{i:02}', Stype.numerical, Dtype.int64)
+        for i in range(12)
+    ]
+    table = replace(
+        users, definition=replace(users.definition,
+                                  cols=[*users.definition.cols, *extras]))
+    graph = Graph({f'table_{i:02}': table for i in range(count)})
+    root = ElementTree.fromstring(graph.visualize(show_cols=show_cols))
+    text = ' '.join(
+        element.text or ''
+        for element in root.iter('{http://www.w3.org/2000/svg}text'))
+    visible = limit - 1 if show_cols else 0
+    for i in range(12):
+        assert (f'feature_{i:02}' in text) == (i < visible)
+    assert re.search(rf'\+\s*{12 - visible} (other )?columns', text)
+
+
+def test_visualize_retains_keys_beyond_column_limit():
+    users, events = _s3_tables()
+    keys = [Column(f'foreign_{i:02}', Stype.ID, Dtype.int64) for i in range(12)]
+    events = replace(
+        events, definition=replace(events.definition,
+                                   cols=[events.definition.cols[0], *keys]))
+    graph = Graph([users, events],
+                  [Edge('events', column.name, 'users') for column in keys])
+    text = ''.join(ElementTree.fromstring(graph.visualize()).itertext())
+    assert all(column.name in text for column in keys)
+    assert 'event_id' in text and 'id' in text
+
+
+def test_visualize_layout_is_deterministic_with_cycles_and_isolates():
+    _, table = _s3_tables()
+    tables = {name: table for name in ['a', 'b', 'c', 'isolated']}
+    edges = [
+        Edge('a', 'user_id', 'b'),
+        Edge('b', 'user_id', 'c'),
+        Edge('c', 'user_id', 'a'),
+        Edge('a', 'event_id', 'b')
+    ]
+    svg = Graph(tables, edges).visualize()
+    assert svg == Graph(dict(reversed(list(tables.items()))),
+                        list(reversed(edges))).visualize()
+    root = ElementTree.fromstring(svg)
+    text = ''.join(root.itertext())
+    assert all(name in text for name in tables)
+    assert all(float(value) > 0 for value in root.attrib['viewBox'].split()[2:])
+    titles = {
+        element.text
+        for element in root.iter('{http://www.w3.org/2000/svg}title')
+    }
+    assert all(
+        f'{edge.src_table}.{edge.fkey} → {edge.dst_table}.event_id' in titles
+        for edge in edges)
+
+
+@pytest.mark.parametrize('case, message', [
+    ('unresolved', 'definition|infer_metadata'),
+    ('endpoint', 'missing'),
+    ('no_primary_key', 'primary key'),
+    ('missing_primary_key', 'missing|primary key'),
+    ('missing_foreign_key', 'missing|foreign key'),
+    ('self_relation', '[Ss]elf'),
+    ('duplicate_columns', 'duplicate column'),
+    ('xml_control', 'valid XML'),
+])
+def test_visualize_rejects_invalid_metadata(case, message):
+    users, events = _s3_tables()
+    edge = Edge('events', 'user_id', 'users')
+    if case == 'unresolved':
+        users = replace(users, definition=None)
+    elif case in ('no_primary_key', 'missing_primary_key'):
+        users = replace(
+            users, definition=replace(
+                users.definition,
+                pkey=None if case == 'no_primary_key' else 'gone'))
+    elif case == 'endpoint':
+        edge = Edge('missing', 'user_id', 'users')
+    elif case == 'missing_foreign_key':
+        edge = Edge('events', 'gone', 'users')
+    elif case == 'self_relation':
+        edge = Edge('events', 'user_id', 'events')
+    elif case == 'duplicate_columns':
+        users = replace(
+            users, definition=replace(users.definition,
+                                      cols=users.definition.cols * 2))
+    elif case == 'xml_control':
+        users = replace(users, table_name='users\x00')
+        edge = Edge('events', 'user_id', users.table_name)
+    with pytest.raises(ValueError, match=message):
+        Graph([users, events], [edge]).visualize()
+
+
+def test_visualize_empty_graph():
+    svg = Graph([]).visualize()
+    assert 'No tables' in ''.join(ElementTree.fromstring(svg).itertext())

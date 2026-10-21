@@ -123,6 +123,22 @@ publication copies bundles to an empty destination and rejects symlinks and
 overlap. Reload a published bundle with
 `Trainer.load_from_connector(connector, path=...)`.
 
+## Visualize table relationships
+
+Display a graph's declared tables and key relationships in a notebook, or save the same view as an SVG:
+
+```python
+graph.visualize()                        # inline notebook display
+svg = graph.visualize("relationships.svg", show_cols=True)
+```
+
+The return value is SVG text with notebook display support.
+Visualization uses declared metadata without reading source rows or requiring Graphviz or other rendering dependencies.
+The default view shows primary and relationship foreign keys.
+`show_cols=True` adds columns up to 10 rows per table, or 5 for graphs with more than 10 tables; keys always remain visible, even above that limit.
+A footer counts hidden columns.
+Self-relations are rejected because graph snapshots do not support them.
+
 ## Local storage and results
 
 Snapshots, generated tables, model bundles, and unexported predictions live under
