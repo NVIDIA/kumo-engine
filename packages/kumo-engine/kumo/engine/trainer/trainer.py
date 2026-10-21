@@ -323,8 +323,8 @@ class Trainer:
                 raises is logged and not called again.
             tracking: records this fit in experiment trackers: one
                 `kumo.engine.Tracking` (e.g.
-                `kumo.engine.integrations.mlflow.MlflowTracking`) or a
-                sequence of them. Tracking errors are logged as warnings and
+                `kumo.engine.integrations.mlflow.MlflowTracking`) or a list or
+                tuple of them. Tracking errors are logged as warnings and
                 never fail the fit or the other trackers.
         """
         if export_config is not None and not callable(

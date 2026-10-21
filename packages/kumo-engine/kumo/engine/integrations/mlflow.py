@@ -7,8 +7,9 @@ Translates the engine's run records (`kumo.engine.run_record`,
 `kumo.engine.trial_record`) into MLflow runs. Each fit is one MLflow run:
 nested under the caller's active run if there is one, else a new run in the
 current or named experiment. Each AutoML trial attempt is a child run with its
-searched hyperparameters, Lightning's per-step metrics (step = Lightning's
-global step) and summary metrics; the fit run gets the resolved model plan,
+searched hyperparameters, Lightning's metrics (step = Lightning's global
+step, not the epoch: hence ``step_metrics=False``, as the record's per-epoch
+histories are not logged separately) and summary metrics; the fit run gets the resolved model plan,
 the query and the final metrics. Trial runs still open when the fit ends (the
 fit failed mid-trial) are ended FAILED. MLflow autologging is suspended for the
 fit, so it adds no runs of its own.
@@ -67,7 +68,7 @@ class MlflowTracking:
     """
 
     capabilities = Capabilities(nested_runs=True, system_metrics=True,
-                                step_metrics=True, artifacts=True)
+                                artifacts=True)
 
     def __init__(
         self,
@@ -109,7 +110,7 @@ class MlflowTracking:
             logger.warning(
                 'Could not suspend MLflow autologging; it may log the '
                 'internal trial fits as extra runs', exc_info=True)
-        self._safe(self._start_parent, run_record(context))
+        self._safe(self._start_parent, context)
 
     def trial_logger(self, trial: int, attempt: int) -> Optional[Any]:
         return self._safe(self._trial_logger, trial, attempt)
@@ -120,19 +121,16 @@ class MlflowTracking:
             events = self._trials.setdefault(key, [])
             events.append(event)
             if event.name == 'trial_started':
-                self._safe(self._start_trial, key,
-                           trial_record(self._context, events))
+                self._safe(self._start_trial, key, events)
             elif event.name == 'trial_ended':
-                self._safe(self._end_trial, key,
-                           trial_record(self._context, events), event)
+                self._safe(self._end_trial, key, events, event)
         elif event.name == 'fit_ended':
             self._fit_ended = event
 
     def finish(self, result: Any, error: Optional[BaseException]) -> None:
         try:
-            if result is not None and self._context is not None:
-                record = run_record(self._context, result, self._fit_ended)
-                self._safe(self._log_metrics, self._parent, record.metrics)
+            if result is not None:
+                self._safe(self._log_final_metrics, result)
             status = 'FINISHED' if error is None else 'FAILED'
             if self._enabled:
                 for run_id in self._children.values():
@@ -147,7 +145,8 @@ class MlflowTracking:
             self._guard.close()
             self._reset()
 
-    def _start_parent(self, record: RunRecord) -> None:
+    def _start_parent(self, context: FitContext) -> None:
+        record = run_record(context)
         mlflow = self._mlflow
         self._client = mlflow.MlflowClient()
         experiment_id = None
@@ -173,7 +172,8 @@ class MlflowTracking:
         for name, text in record.artifacts.items():
             self._client.log_text(self._parent, text, name)
 
-    def _start_trial(self, key: Tuple[int, int], record: RunRecord) -> None:
+    def _start_trial(self, key: Tuple[int, int], events: List[Event]) -> None:
+        record = trial_record(self._context, events)
         self._log_params(self._child(key, record), record.params)
 
     def _child(self, key: Tuple[int, int], record: RunRecord) -> str:
@@ -201,14 +201,20 @@ class MlflowTracking:
         trial_logger.version
         return trial_logger
 
-    def _end_trial(self, key: Tuple[int, int], record: RunRecord,
+    def _end_trial(self, key: Tuple[int, int], events: List[Event],
                    event: Event) -> None:
+        record = trial_record(self._context, events)
         run_id = self._children.pop(key)
         del self._trials[key]
         self._log_metrics(run_id, record.metrics)
         succeeded = event.params.get('status') == 'succeeded'
         self._client.set_terminated(run_id,
                                     'FINISHED' if succeeded else 'FAILED')
+
+    def _log_final_metrics(self, result: Any) -> None:
+        self._log_metrics(
+            self._parent,
+            run_record(self._context, result, self._fit_ended).metrics)
 
     def _log_params(self, run_id: str, params: Mapping[str, str]) -> None:
         entities = import_provider('mlflow.entities', 'mlflow')

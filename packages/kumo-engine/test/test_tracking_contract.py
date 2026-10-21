@@ -123,20 +123,16 @@ class _Raising:
 
 
 def replay(trackers) -> List[Event]:
-    r"""Feeds the recorded fit to `trackers` as `Trainer.fit` would, driving
-    their trial loggers like Lightning; returns the events trackers saw."""
+    r"""Feeds the recorded fit to `trackers` as `Trainer.fit` would; returns
+    the events trackers saw. Trial loggers are requested but not fed: what
+    Lightning logs through them is outside the record."""
     recorder = _Recorder()
     session = TrackingSession([recorder, *trackers])
     session.start(lambda: CONTEXT)
-    loggers: Any = None
     for event in EVENTS:
         session.on_event(event)
         if event.name == 'trial_started':
-            loggers = session.trial_logger(event.trial, event.params['attempt'])
-        elif event.name == 'epoch_ended' and loggers is not None:
-            for pl_logger in (loggers
-                              if isinstance(loggers, list) else [loggers]):
-                pl_logger.log_metrics(dict(event.metrics), step=event.epoch)
+            session.trial_logger(event.trial, event.params['attempt'])
     session.finish(RESULT, None)
     return recorder.events
 
@@ -162,7 +158,7 @@ class Observed:
     name: Optional[str]
     params: Mapping[str, str]
     metrics: Mapping[str, float]
-    steps: Mapping[str, Tuple[float, ...]]
+    steps: Mapping[str, Tuple[Tuple[int, float], ...]]
     tags: Mapping[str, str]
     parent: Optional[str] = None
     links: Mapping[str, str] = field(default_factory=dict)
@@ -197,16 +193,12 @@ def gaps(
         differ('params', dict(seen.params), dict(kept_params(record.params)))
         differ('metrics', {k: seen.metrics.get(k)
                            for k in record.metrics}, dict(record.metrics))
-        extra = set(seen.metrics) - set(record.metrics) - set(record.steps)
-        if extra and not (capabilities.system_metrics
-                          and 'kumo.parent_run' not in record.tags):
-            found.append(f'{run_id} extra metrics {sorted(extra)}')
+        names = set(record.metrics)
         if capabilities.step_metrics:
+            names |= set(record.steps)
             differ('steps', {k: seen.steps.get(k)
-                             for k in record.steps}, {
-                                 k: tuple(v for _, v in history)
-                                 for k, history in record.steps.items()
-                             })
+                             for k in record.steps}, dict(record.steps))
+        differ('metric names', sorted(seen.metrics), sorted(names))
         differ('tags', {k: seen.tags.get(k)
                         for k in record.tags}, dict(record.tags))
         differ('kumo tags',
@@ -243,7 +235,7 @@ def mlflow_adapter(tmp_path, monkeypatch):
                 metrics=run.data.metrics, steps={
                     key:
                     tuple(
-                        m.value
+                        (m.step, m.value)
                         for m in sorted(client.get_metric_history(run_id, key),
                                         key=lambda m: (m.step, m.timestamp)))
                     for key in run.data.metrics
@@ -336,7 +328,33 @@ def test_a_failing_tracker_does_not_affect_others(adapter, caplog):
 
     assert gaps(expected_records(events), adapter.observe(),
                 tracker.capabilities, adapter.kept_params) == []
-    assert caplog.text.count('Experiment tracking failed') == 5 + len(EVENTS)
+    hooks = 2 + len(EVENTS) + sum(e.name == 'trial_started' for e in EVENTS)
+    assert caplog.text.count('Experiment tracking failed') == hooks
+
+
+def test_gaps_compare_step_histories_when_declared():
+    expected = expected_records(replay([]))
+    observed = {
+        run_id:
+        Observed(
+            name=record.name, params=record.params, metrics={
+                **record.metrics,
+                **{
+                    k: v[-1][1]
+                    for k, v in record.steps.items()
+                }
+            }, steps=record.steps, tags=record.tags)
+        for run_id, record in expected.items()
+    }
+    steps = Capabilities(step_metrics=True)
+    assert gaps(expected, observed, steps, dict) == []
+
+    retry = observed[f'{RUN}-trial-2-attempt-2']
+    retry.steps = {**retry.steps, 'val_mae': ((10, 0.5), (20, 0.3))}
+    assert len(gaps(expected, observed, steps, dict)) == 1
+    undeclared = gaps(expected, observed, Capabilities(), dict)
+    assert [gap.split()[1:3]
+            for gap in undeclared] == [['metric', 'names:']] * 2
 
 
 def test_session_merges_trial_loggers_and_skips_trackers_without_one():
@@ -352,7 +370,7 @@ def test_session_merges_trial_loggers_and_skips_trackers_without_one():
     session = TrackingSession(_Recorder())
     assert session.trial_logger(1, 1) is None
     session = TrackingSession([_Recorder(), WithLogger(one), WithLogger(None)])
-    assert session.trial_logger(1, 1) is one
+    assert session.trial_logger(1, 1) == [one]
     session = TrackingSession([WithLogger(one), WithLogger(two)])
     assert session.trial_logger(1, 1) == [one, two]
 

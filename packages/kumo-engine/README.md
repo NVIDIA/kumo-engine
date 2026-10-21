@@ -367,7 +367,7 @@ SageMaker managed MLflow set it to the tracking server ARN with the
 `sagemaker-mlflow` plugin installed. With nothing configured MLflow writes a
 local store in the working directory.
 
-Pass a sequence to record to several trackers; each is isolated from the
+Pass a list to record to several trackers; each is isolated from the
 others. Any other system plugs in through the `kumo.engine.Tracking` protocol:
 
 - `start(context)`: a `FitContext` once the model plan is resolved;
@@ -379,7 +379,7 @@ others. Any other system plugs in through the `kumo.engine.Tracking` protocol:
 - optional `capabilities`: a `Capabilities` stating what the adapter records
   (nested runs, system metrics, step metrics, artifacts, model links).
 
-Build what to log with `run_record(context, result, fit_ended_event)` and
+Build what to log with `run_record(context, result, fit_ended)` and
 `trial_record(context, trial_events)`, so every adapter uses the same
 parameter, metric and tag names:
 

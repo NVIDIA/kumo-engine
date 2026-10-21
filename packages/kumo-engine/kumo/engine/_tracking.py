@@ -75,7 +75,8 @@ class Capabilities:
             Without it they are flat runs linked by the ``kumo.parent_run``
             tag.
         system_metrics: host CPU/GPU/memory usage is sampled on the fit run.
-        step_metrics: per-epoch metric histories are recorded with steps.
+        step_metrics: `RunRecord.steps` histories are recorded with step =
+            epoch.
         artifacts: `RunRecord.artifacts` are stored as files of the run.
         model_link: `RunRecord.links` are attached to the run.
     """
@@ -88,15 +89,15 @@ class Capabilities:
 
 
 def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
-               ended: Optional[Event] = None) -> RunRecord:
+               fit_ended: Optional[Event] = None) -> RunRecord:
     r"""The fit run's record; metrics need `result` and the ``fit_ended``
     event."""
     metrics: Dict[str, float] = {}
     links: Dict[str, str] = {}
     if result is not None:
         metrics.update(result.metrics)
-        if ended is not None and 'seconds' in ended.metrics:
-            metrics['seconds'] = ended.metrics['seconds']
+        if fit_ended is not None and 'seconds' in fit_ended.metrics:
+            metrics['seconds'] = fit_ended.metrics['seconds']
         if result.published_model is not None:
             links = {
                 'model_name': result.published_model.name,
@@ -237,14 +238,16 @@ class TrackingSession:
                 if callable(getattr(tracker, 'trial_logger', None)))
             if pl_logger is not None
         ]
-        if len(loggers) > 1:
-            return loggers
-        return loggers[0] if loggers else None
+        return loggers or None
 
     def on_event(self, event: Event) -> None:
         if not self._started:
             return
-        event = _with_attempt(event, self._attempts)
+        try:
+            event = _with_attempt(event, self._attempts)
+        except Exception:
+            logger.warning('Could not read the trial attempt of %r', event,
+                           exc_info=True)
         for tracker in self._trackers:
             _call(tracker.on_event, event)
 
