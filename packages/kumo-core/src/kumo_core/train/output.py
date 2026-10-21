@@ -739,6 +739,7 @@ class StreamingPredOutputWriter:
         write_predictions: bool = True,
         artifact_stats_sample_rows: Mapping[PredictionArtifactType, int]
         | None = None,
+        constant_columns: Mapping[str, str] | None = None,
     ) -> None:
         makedirs(folder, exist_ok=True)
         prediction_dir = osp.join(
@@ -762,6 +763,7 @@ class StreamingPredOutputWriter:
                 stats_sample_rows=(None if artifact_stats_sample_rows is None
                                    else artifact_stats_sample_rows.get(
                                        PredictionArtifactType.PREDICTIONS, 0)),
+                constant_columns=constant_columns,
             )
         self._embedding_dir = embedding_dir
         self._embedding_prefix = osp.join(embedding_dir,
@@ -770,6 +772,7 @@ class StreamingPredOutputWriter:
         self._max_buffer_size = max_buffer_size
         self._output_extra_fields = output_extra_fields
         self._job_start_time = job_start_time
+        self._constant_columns = constant_columns
         self._upload_workers = upload_workers
         self._spool_root = spool_root
         self._collect_artifact_stats = artifact_stats_sample_rows is not None
@@ -939,6 +942,7 @@ class StreamingPredOutputWriter:
                 stats_sample_rows=(None if not self._collect_artifact_stats else
                                    self._artifact_stats_sample_rows.get(
                                        PredictionArtifactType.EMBEDDINGS, 0)),
+                constant_columns=self._constant_columns,
             )
         self._embedding_writer.write(embedding)
 

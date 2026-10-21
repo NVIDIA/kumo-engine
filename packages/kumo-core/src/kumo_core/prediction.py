@@ -507,6 +507,7 @@ class _PredictionWorkerConfig(NamedTuple):
     forecast_options: Optional[Dict[str, int]]
     embedding_models: Optional[EmbeddingModelStore] = None
     ignore_time_col: bool = False
+    constant_columns: Optional[Dict[str, str]] = None
 
 
 def _score_prediction_shard(
@@ -570,6 +571,7 @@ def _score_prediction_shard(
                            in config.artifacts),
         top_k=config.top_k,
         output_extra_fields=config.extra_fields or None,
+        output_constant_columns=config.constant_columns,
         job_start_time=config.job_start_time,
         pred_time_col_name=config.pred_time_col_name,
         ignore_time_col=config.ignore_time_col,
@@ -606,6 +608,7 @@ def score_prediction(
     forecast_options: Mapping[str, int] | None = None,
     embedding_models: EmbeddingModelStore | None = None,
     encoders: Any = None,
+    constant_columns: Mapping[str, str] | None = None,
 ) -> Any:
     """Score partitions and publish bounded metadata using the hosted protocol.
 
@@ -678,6 +681,7 @@ def score_prediction(
         forecast_options=(dict(forecast_options)
                           if forecast_options is not None else None),
         embedding_models=embedding_models,
+        constant_columns=dict(constant_columns or {}),
     )
     if worker_count == 1:
         references = [

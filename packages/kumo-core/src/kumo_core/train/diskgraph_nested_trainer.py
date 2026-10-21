@@ -1346,6 +1346,7 @@ class DiskgraphNestedTrainer(Trainer):
         ignore_time_col: bool = False,
         pred_time_col_name: str | None = None,
         output_extra_fields: dict[str, list[str]] | None = None,
+        output_constant_columns: Mapping[str, str] | None = None,
         max_output_file_size: int = 1024**3,
         progress_log_dir: str | None = None,
         progress_log_id: int = 0,
@@ -1403,6 +1404,7 @@ class DiskgraphNestedTrainer(Trainer):
                 ignore_time_col=ignore_time_col,
                 pred_time_col_name=pred_time_col_name,
                 output_extra_fields=output_extra_fields,
+                output_constant_columns=output_constant_columns,
                 max_output_file_size=max_output_file_size,
                 progress_log_dir=progress_log_dir,
                 progress_log_id=progress_log_id, partition_id=partition_id,
@@ -1585,6 +1587,7 @@ class DiskgraphNestedTrainer(Trainer):
                         output_extra_fields=output_extra_fields,
                         job_start_time=job_start_time,
                         write_predictions=emit_predictions,
+                        constant_columns=output_constant_columns,
                         artifact_stats_sample_rows=({
                             artifact_type:
                             artifact_stats_collector.sample_rows_needed(
@@ -1698,6 +1701,7 @@ class DiskgraphNestedTrainer(Trainer):
         ignore_time_col: bool = False,
         pred_time_col_name: str | None = None,
         output_extra_fields: dict[str, list[str]] | None = None,
+        output_constant_columns: Mapping[str, str] | None = None,
         max_output_file_size: int = 1024**3,
         progress_log_dir: str | None = None,
         progress_log_id: int = 0,
@@ -1982,6 +1986,7 @@ class DiskgraphNestedTrainer(Trainer):
                         output_extra_fields=output_extra_fields,
                         job_start_time=job_start_time,
                         write_predictions=emit_predictions,
+                        constant_columns=output_constant_columns,
                         artifact_stats_sample_rows=({
                             artifact_type:
                             artifact_stats_collector.sample_rows_needed(

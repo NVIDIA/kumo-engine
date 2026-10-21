@@ -750,6 +750,14 @@ Choose `extra_fields` during `predict`; `export()` rejects them. Directory retri
 can reuse their own output; different exports need an empty destination. Explicit
 `.parquet`/`.csv` paths retain single-file/multipart behavior.
 
+`PredictionOutputConfig(..., lineage_columns=True)` passed to `predict` writes
+constant `KUMO_RUN_ID`, `KUMO_BUNDLE_ID` and `KUMO_SNAPSHOT_ID` string columns
+into every output row (`result.files`, `result.frame` and every export); unknown
+ids are omitted. It changes the destination's column set, so enable it on a new
+table or directory: on a table created without it, Snowflake `OVERWRITE`,
+BigQuery `APPEND` and Databricks `APPEND` fail, and Snowflake `APPEND` silently
+drops the new columns. `export()` copies whatever columns the result has.
+
 Destinations export independently; failures may leave completed outputs and partial
 directories. Retry `result.export()` with the same destinations. Directory retries
 delete `_SUCCESS` before copying and restore it on completion, so delete permission
