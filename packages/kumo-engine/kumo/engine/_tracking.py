@@ -7,6 +7,9 @@ import dataclasses
 import json
 import logging
 import os
+import queue
+import threading
+import time
 import warnings
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass, field
@@ -37,6 +40,11 @@ logger = logging.getLogger(__name__)
 LIGHTNING_PREFIX = 'lightning'
 DROPPED_PARAMS = 'kumo.dropped_params'
 DROPPED_METRICS = 'kumo.dropped_metrics'
+# Tracker calls run on one background thread so a slow tracking server
+# never stalls training; these bound how long the fit waits for it.
+QUEUE_SIZE = 1000
+REPLY_SECONDS = 5.0
+FINISH_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -189,12 +197,14 @@ def trial_record(context: FitContext, events: Sequence[Event]) -> RunRecord:
 class Tracking(Protocol):
     r"""Records one `Trainer.fit` in an experiment tracker.
 
-    `start` gets the fit run's record without metrics, `on_trial` a trial
-    attempt's record so far with the event that updated it, and `finish` the
-    fit run's final record (`None` if tracking stopped early, which should
-    end the run as failed). Optional members: ``tags`` (extra fit-run tags),
-    ``trial_logger(trial, attempt)`` returning a Lightning logger (whose
-    methods must not raise) or None, and ``capabilities``.
+    Calls come from one background thread. `start` gets the fit run's
+    record without metrics, `on_trial` a trial attempt's record so far with
+    the event that updated it, and `finish` the fit run's final record
+    (`None` if tracking stopped early, which should end the run as failed).
+    Optional members: ``prepare()``, called first on the fit's own thread;
+    ``tags`` (extra fit-run tags); ``trial_logger(trial, attempt)`` returning
+    a Lightning logger (whose methods must not raise and are called on the
+    training thread) or None; and ``capabilities``.
     """
     def start(self, record: RunRecord) -> None:
         ...
@@ -222,6 +232,11 @@ class TrackingSession:
         self._context: Optional[FitContext] = None
         self._trials: Dict[int, List[Event]] = {}
         self._fit_ended: Optional[Event] = None
+        self._jobs: 'queue.Queue[Optional[Callable[[], Any]]]' = queue.Queue(
+            QUEUE_SIZE)
+        self._worker: Optional[threading.Thread] = None
+        self._behind = False
+        self._slow = False
 
     @property
     def enabled(self) -> bool:
@@ -238,15 +253,30 @@ class TrackingSession:
             self._trackers = []
             return
         self._context = value
-        self._call_all(lambda tracker: tracker.start(
-            run_record(value, tags=getattr(tracker, 'tags', None))))
+        self._call_all(lambda tracker: getattr(tracker, 'prepare', _none)())
+        self._worker = threading.Thread(target=self._work,
+                                        name='kumo-tracking', daemon=True)
+        self._worker.start()
+        self._submit(lambda: self._call_all(lambda tracker: tracker.start(
+            run_record(value, tags=getattr(tracker, 'tags', None)))))
 
     def trial_logger(self, trial: int, attempt: int) -> Optional[Any]:
-        loggers = [
-            pl_logger for pl_logger in self._call_all(
+        if self._worker is None or self._slow:
+            return None
+        reply: 'queue.Queue[List[Any]]' = queue.Queue(1)
+        if not self._submit(lambda: reply.put(self._call_all(
                 lambda tracker: getattr(tracker, 'trial_logger', _none)
-                (trial, attempt)) if pl_logger is not None
-        ]
+                (trial, attempt)))):
+            return None
+        try:
+            values = reply.get(timeout=REPLY_SECONDS)
+        except queue.Empty:
+            logger.warning(
+                'Experiment tracking did not answer within %ss; this and '
+                'later trials log no per-step metrics', REPLY_SECONDS)
+            self._slow = True
+            return None
+        loggers = [pl_logger for pl_logger in values if pl_logger is not None]
         return loggers or None
 
     def on_event(self, event: Event) -> None:
@@ -265,11 +295,13 @@ class TrackingSession:
             })
         events.append(event)
         record = trial_record(self._context, events)
-        self._call_all(lambda tracker: tracker.on_trial(record, event))
+        self._submit(lambda: self._call_all(
+            lambda tracker: tracker.on_trial(record, event)))
 
     def finish(self, result: Optional['TrainingResult'],
                error: Optional[BaseException]) -> None:
-        if self._context is None:
+        worker = self._worker
+        if self._context is None or worker is None:
             return
         try:
             record: Optional[RunRecord] = run_record(self._context, result,
@@ -278,9 +310,46 @@ class TrackingSession:
             logger.warning('Could not build the tracking record',
                            exc_info=True)
             record = None
-        trackers, self._trackers = self._trackers, []
-        call_each(trackers, lambda tracker: tracker.finish(record, error),
-                  'Experiment tracking')
+
+        def finish_all() -> None:
+            trackers, self._trackers = self._trackers, []
+            call_each(trackers, lambda tracker: tracker.finish(record, error),
+                      'Experiment tracking')
+
+        deadline = time.monotonic() + FINISH_SECONDS
+        try:
+            for job in (finish_all, None):
+                self._jobs.put(job, timeout=max(0.0,
+                                                deadline - time.monotonic()))
+        except queue.Full:
+            pass
+        worker.join(max(0.0, deadline - time.monotonic()))
+        if worker.is_alive():
+            logger.warning(
+                'Experiment tracking did not finish within %ss; it goes on '
+                'in the background and the fit returns', FINISH_SECONDS)
+
+    def _submit(self, job: Callable[[], Any]) -> bool:
+        if self._behind:
+            return False
+        try:
+            self._jobs.put_nowait(job)
+            return True
+        except queue.Full:
+            self._behind = True
+            logger.warning('Experiment tracking is falling behind; the rest '
+                           'of this fit is not tracked')
+            return False
+
+    def _work(self) -> None:
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                return
+            try:
+                job()
+            except Exception:
+                logger.warning('Experiment tracking failed', exc_info=True)
 
     def _call_all(self, call: Callable[[Tracking], Any]) -> List[Any]:
         return call_each(self._trackers, call, 'Experiment tracking',

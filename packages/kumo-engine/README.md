@@ -354,6 +354,11 @@ they do not derive them from entity, target, and timestamp columns.
 `fit(tracking=...)` records a fit in an experiment tracker: one run per fit,
 one run per hyperparameter-search trial attempt. It is opt-in; tracking errors
 are logged as warnings and never fail the fit. Only global rank 0 tracks.
+Tracker calls run on a background thread, so a slow or unreachable tracking
+server does not hold up training: at the end of the fit, `fit` waits at most
+30 s for tracking to finish (the rest continues in the background). During
+the fit, MLflow HTTP calls use 2 retries and a 30 s timeout unless
+`MLFLOW_HTTP_REQUEST_MAX_RETRIES` / `MLFLOW_HTTP_REQUEST_TIMEOUT` are set.
 
 ```python
 from kumo.engine.integrations.mlflow import MlflowTracking  # kumo-engine[mlflow]

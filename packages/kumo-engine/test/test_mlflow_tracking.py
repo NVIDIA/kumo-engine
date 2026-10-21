@@ -3,13 +3,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
+import socket
+import threading
+import time
 
 import numpy as np
 import pandas as pd
 import pytest
 from kumoapi.encoder import Numerical
 from kumoapi.model_plan import ModelPlan
-from test_tracking_contract import CONTEXT, replay
+from test_tracking_contract import CONTEXT, join_tracking_threads, replay
 
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
@@ -177,3 +181,49 @@ def test_user_disabled_autologging_stays_disabled(tracking_uri):
         tracker.start(run_record(CONTEXT))
         tracker.finish(None, None)
         assert autologging_utils._AUTOLOGGING_GLOBALLY_DISABLED is True
+
+
+@pytest.fixture
+def hung_server():
+    server = socket.create_server(('127.0.0.1', 0))
+    held = []
+
+    def accept():
+        while True:
+            try:
+                held.append(server.accept()[0])
+            except OSError:
+                return
+
+    threading.Thread(target=accept, daemon=True).start()
+    try:
+        yield f'http://127.0.0.1:{server.getsockname()[1]}'
+    finally:
+        server.close()
+        for connection in held:
+            connection.close()
+        join_tracking_threads()
+
+
+def test_a_hung_server_does_not_stall_the_fit(hung_server, monkeypatch):
+    import kumo.engine._tracking as tracking
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    monkeypatch.setattr(tracking, 'REPLY_SECONDS', 0.2)
+    monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.5)
+    monkeypatch.setenv('MLFLOW_HTTP_REQUEST_MAX_RETRIES', '0')
+    monkeypatch.delenv('MLFLOW_HTTP_REQUEST_TIMEOUT', raising=False)
+    previous = mlflow.get_tracking_uri()
+    mlflow.set_tracking_uri(hung_server)
+    try:
+        began = time.monotonic()
+        replay([MlflowTracking(log_system_metrics=False)])
+        elapsed = time.monotonic() - began
+        limits = {name: os.environ.get(name) for name in (
+            'MLFLOW_HTTP_REQUEST_MAX_RETRIES', 'MLFLOW_HTTP_REQUEST_TIMEOUT')}
+    finally:
+        mlflow.set_tracking_uri(previous)
+
+    assert elapsed < 1.5
+    assert limits == {'MLFLOW_HTTP_REQUEST_MAX_RETRIES': '0',
+                      'MLFLOW_HTTP_REQUEST_TIMEOUT': '30'}

@@ -5,11 +5,12 @@ r"""MLflow tracking for `Trainer.fit` (``pip install 'kumo-engine[mlflow]'``).
 """
 
 import logging
+import os
 import posixpath
 import re
 import time
-from contextlib import ExitStack
-from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+from contextlib import ExitStack, contextmanager
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Tuple
 
 from pytorch_lightning.loggers import MLFlowLogger
 
@@ -28,6 +29,11 @@ _MAX_PARAM_KEY = 250
 _MAX_PARAM_VALUE = 6000
 # MLflow's portable name charset (its Windows rule, which omits ':').
 _PARAM_KEY = re.compile(r'[/\w.\- ]+')
+# MLflow's defaults (7 retries, 120 s timeout) can hold a call for minutes.
+_HTTP_LIMITS = {
+    'MLFLOW_HTTP_REQUEST_MAX_RETRIES': '2',
+    'MLFLOW_HTTP_REQUEST_TIMEOUT': '30',
+}
 
 
 class MlflowTracking:
@@ -60,6 +66,7 @@ class MlflowTracking:
         self.run_name = run_name
         self.log_system_metrics = log_system_metrics
         self.tags = dict(tags or {})
+        self._outer: Optional[str] = None
         self._reset()
 
     def _reset(self) -> None:
@@ -69,8 +76,13 @@ class MlflowTracking:
         self._children: Dict[Tuple[int, int], str] = {}
         self._guard = ExitStack()
 
+    def prepare(self) -> None:
+        active = self._mlflow.active_run()
+        self._outer = active.info.run_id if active is not None else None
+
     def start(self, record: RunRecord) -> None:
         self._reset()
+        self._guard.enter_context(_limited_http())
         try:
             autologging = import_provider('mlflow.utils.autologging_utils',
                                           'mlflow')
@@ -93,7 +105,7 @@ class MlflowTracking:
         run = mlflow.start_run(
             experiment_id=experiment_id,
             run_name=self.run_name,
-            nested=mlflow.active_run() is not None,
+            parent_run_id=self._outer,
             tags=record.tags,
             log_system_metrics=self.log_system_metrics,
         )
@@ -110,7 +122,7 @@ class MlflowTracking:
             return None
         trial_logger = _KumoMLFlowLogger(
             run_id=run_id, tracking_uri=self._mlflow.get_tracking_uri(),
-            log_model=False, prefix=LIGHTNING_PREFIX)
+            log_model=False, prefix=LIGHTNING_PREFIX, synchronous=False)
         # Lightning resolves these lazily, outside the tracking guard.
         trial_logger.experiment
         trial_logger.version
@@ -145,6 +157,7 @@ class MlflowTracking:
                 if error is None:
                     status = 'FINISHED'
         finally:
+            _quietly(self._mlflow.flush_async_logging)
             for run_id in self._children.values():
                 _quietly(self._client.set_terminated, run_id, 'FAILED')
             if self._parent is not None:
@@ -229,3 +242,14 @@ def _quietly(function: Callable[..., Any], *args: Any) -> None:
         function(*args)
     except Exception:
         logger.debug('MLflow cleanup call failed', exc_info=True)
+
+
+@contextmanager
+def _limited_http() -> Iterator[None]:
+    unset = [name for name in _HTTP_LIMITS if name not in os.environ]
+    os.environ.update({name: _HTTP_LIMITS[name] for name in unset})
+    try:
+        yield
+    finally:
+        for name in unset:
+            os.environ.pop(name, None)

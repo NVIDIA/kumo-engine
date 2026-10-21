@@ -5,6 +5,8 @@
 
 import hashlib
 import json
+import threading
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
@@ -84,6 +86,12 @@ class _Recorder:
 
     def finish(self, record, error):
         self.calls.append(('finish', record))
+
+
+def join_tracking_threads():
+    for thread in threading.enumerate():
+        if thread.name == 'kumo-tracking':
+            thread.join(30)
 
 
 def replay(trackers, events=EVENTS, result=RESULT,
@@ -308,3 +316,29 @@ def test_only_rank_zero_tracks(monkeypatch):
     session.finish(RESULT, None)
 
     assert recorder.calls == []
+
+
+def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch, caplog):
+    import kumo.engine._tracking as tracking
+
+    monkeypatch.setattr(tracking, 'REPLY_SECONDS', 0.2)
+    monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.5)
+    release = threading.Event()
+
+    class Hung(_Recorder):
+        def start(self, record):
+            super().start(record)
+            release.wait(30)
+
+    hung = Hung()
+    began = time.monotonic()
+    try:
+        replay([hung])
+        elapsed = time.monotonic() - began
+    finally:
+        release.set()
+        join_tracking_threads()
+
+    assert elapsed < 1.5
+    assert caplog.text.count('did not answer') == 1
+    assert 'did not finish within' in caplog.text
