@@ -322,7 +322,7 @@ class Trainer:
             callbacks: called with each progress `Event`; a callback that
                 raises is logged and not called again.
             tracking: records this fit in experiment trackers: one
-                `kumo.engine.Tracking` (e.g.
+                `kumo.engine.tracking.Tracking` (e.g.
                 `kumo.engine.integrations.mlflow.MlflowTracking`) or a list or
                 tuple of them. Tracking errors are logged as warnings and
                 never fail the fit or the other trackers.

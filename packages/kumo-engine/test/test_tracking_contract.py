@@ -19,18 +19,18 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 import pytest
 from kumoapi.plugin import PublishedModel
 
-from kumo.engine import (
-    Capabilities,
-    Event,
-    FitContext,
-    RunRecord,
-    run_record,
-    trial_record,
-)
+from kumo.engine import Event
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
     TrackingSession,
+)
+from kumo.engine.tracking import (
+    Capabilities,
+    FitContext,
+    RunRecord,
+    run_record,
+    trial_record,
 )
 
 RUN = 'trainer-fit-1'

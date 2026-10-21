@@ -368,7 +368,8 @@ SageMaker managed MLflow set it to the tracking server ARN with the
 local store in the working directory.
 
 Pass a list to record to several trackers; each is isolated from the
-others. Any other system plugs in through the `kumo.engine.Tracking` protocol:
+others. Any other system plugs in through the `kumo.engine.tracking.Tracking`
+protocol:
 
 - `start(context)`: a `FitContext` once the model plan is resolved;
 - `on_event(event)`: every progress `Event` (trial events carry
@@ -396,7 +397,7 @@ tracker without its own run-to-model link still records them; `steps` are per-ep
 
 ```python
 import json
-from kumo.engine import run_record, trial_record
+from kumo.engine.tracking import run_record, trial_record
 
 class JsonTracking:
     def start(self, context):

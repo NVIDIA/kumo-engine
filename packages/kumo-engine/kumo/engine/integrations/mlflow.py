@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""MLflow tracking for `Trainer.fit` (``pip install 'kumo-engine[mlflow]'``).
 
-Translates the engine's run records (`kumo.engine.run_record`,
-`kumo.engine.trial_record`) into MLflow runs under their names. Each fit is
+Translates the engine's run records (`kumo.engine.tracking.run_record`,
+`kumo.engine.tracking.trial_record`) into MLflow runs under their names. Each fit is
 one MLflow run: nested under the caller's active run if there is one, else a
 new run in the current or named experiment. Each AutoML trial attempt is a
 child run with its searched hyperparameters, per-epoch metrics (step = epoch)
