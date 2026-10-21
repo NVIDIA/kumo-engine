@@ -144,10 +144,14 @@ location = graph.snapshot().export(S3Connector(), "s3://bucket/snapshots")
 snapshot = GraphSnapshot.load_from_connector(S3Connector(), path=location)
 ```
 
-`export` writes `<path>/<graph id>/<data version>/` and returns it; an
-interrupted export resumes, and a load either completes or leaves nothing. The
-export holds the DiskGraph index under `index/` with its own `_MANIFEST.json`;
-`index/_SUCCESS` is written last, so a copy without it is incomplete.
+`export` writes `<path>/<graph id>/<data version>/` and returns it. It first
+removes `kumo_snapshot.json` and anything else at that location, uploads every
+file, and writes `kumo_snapshot.json` (with per-range CRC32s) last, so an
+interrupted export is never loadable and re-running starts over. A load either
+completes or leaves nothing; a load that overlaps a re-export of the same
+location can fail and should be retried. To keep several builds of one
+snapshot (for example from two engine versions), export them to different
+paths.
 Snowflake, Databricks and BigQuery connectors cannot hold an export: use a
 `FileConnector` on a mounted volume (e.g. `/Volumes/<catalog>/<schema>/<volume>`)
 or the S3/GCS connector on the bucket behind it. Load only from paths whose
@@ -161,9 +165,9 @@ on since the snapshot was built, from metadata only:
  "events": {"status": "changed",   "recorded": "1792539971", "current": "1792539974"}}
 ```
 
-The status is `unknown` when there is nothing reliable to compare (no recorded
-version, a different source location, Custom SQL, or an hour-aligned stamp from
-a view). `load_from_connector(..., graph=graph)` warns when tables `changed`.
+The status is `unknown` when there is nothing reliable to compare: no recorded
+version, a different connector or location, Custom SQL, or a version whose
+`version_kind` is `hour_bucket` or `unknown` (views, undated sources). `load_from_connector(..., graph=graph)` warns when tables `changed`.
 
 The return values expose the retained files directly:
 

@@ -9,18 +9,16 @@ import os
 import re
 import threading
 import time
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
-from pyarrow.fs import FileSelector, FileSystem, FileType
+from pyarrow.fs import FileSystem
 
 _FORMAT = 1
 _MANIFEST = 'kumo_snapshot.json'
 _INDEX_MANIFEST = '_MANIFEST.json'
-_SUCCESS = '_SUCCESS'
 _RANGE_BYTES = 64 << 20
 _CHUNK = 8 << 20
 _ATTEMPTS = 3
@@ -165,10 +163,26 @@ def _fingerprint(index_manifest: bytes) -> str:
     return hashlib.sha256(index_manifest).hexdigest()
 
 
+def _snapshot_manifest(snapshot: Any) -> bytes:
+    from kumo.engine._manifest import new_manifest
+    from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
+
+    try:
+        return (Path(snapshot.index_path) / SNAPSHOT_MANIFEST_FILE).read_bytes()
+    except OSError:
+        manifest = new_manifest('graph_snapshot', snapshot.id,
+                                {'source_tables': {}}, created_at=None,
+                                environment=None, scheduler=None,
+                                reconstructed=True)
+        return (json.dumps(manifest, indent=2, sort_keys=True) +
+                '\n').encode()
+
+
 def export(snapshot: Any, connector: Any, path: str) -> str:
     from diskgraph import snapshot_range_checksums
 
     from kumo.engine._provenance import environment
+    from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
 
     source = Path(snapshot.index_path)
     graph_key, data_version = snapshot.graph_key, snapshot.data_version
@@ -179,35 +193,14 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
         entry['rel_path']: int(entry['size_bytes'])
         for entry in json.loads(index_manifest)['files']
     }
-    fingerprint = _fingerprint(index_manifest)
+    snapshot_manifest = _snapshot_manifest(snapshot)
     filesystem, root = _location(connector, location)
-
-    def recorded() -> Optional[dict]:
-        existing = _read_json(filesystem, f'{root}/{_MANIFEST}')
-        found = (existing.get('snapshot_id')
-                 if isinstance(existing, dict) else None)
-        if existing is not None and found != snapshot.id:
-            raise ValueError(f'{location} holds snapshot {found!r}, not '
-                             f'{snapshot.id!r}; remove it and re-export.')
-        return existing
-
-    def build() -> Optional[str]:
-        return (recorded() or {}).get('index_manifest')
-
-    def committed() -> bool:
-        return _files(filesystem).exists(f'{root}/index/{_SUCCESS}')
-
-    def present() -> Dict[str, int]:
-        return {
-            info.path[len(root) + len('/index/'):]: info.size
-            for info in filesystem.get_file_info(
-                FileSelector(f'{root}/index', recursive=True,
-                             allow_not_found=True))
-            if info.type is FileType.File
-        }
+    if _files(filesystem).exists(f'{root}/{_MANIFEST}'):
+        filesystem.delete_file(f'{root}/{_MANIFEST}')
+    filesystem.delete_dir_contents(root, missing_dir_ok=True)
 
     def upload(client: FileSystem, name: str, stop: threading.Event) -> None:
-        size = len(index_manifest) if name == _INDEX_MANIFEST else sizes[name]
+        size = sizes[name]
         with open(source / name, 'rb', buffering=0) as reader, _open_output(
                 client, f'{root}/index/{name}') as writer:
             for offset in range(0, size, _CHUNK):
@@ -218,60 +211,29 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
                                   'exported')
                 writer.write(chunk)
 
-    def send(names: List[str], action: str) -> None:
-        names.sort(key=lambda name: -sizes.get(name, 0))
-        _transfer(connector, location, names,
-                  [sizes.get(name, len(index_manifest)) for name in names],
-                  upload, action)
-
-    if committed():
-        if build() != fingerprint:
-            logger.info('Keeping the existing export of %s at %s',
-                        snapshot.id, location)
-            return location
-        uploaded = present()
-        send([
-            name for name, size in {
-                **sizes, _INDEX_MANIFEST: len(index_manifest)
-            }.items() if uploaded.get(name) != size
-        ], 'repair')
-        return location
-    existing = recorded()
-    if existing is None and filesystem.get_file_info(
-            FileSelector(root, allow_not_found=True)):
-        raise ValueError(f'{location} is not empty; remove it and re-export.')
-    resume = (existing or {}).get('index_manifest') == fingerprint
-    recorded_snapshot = snapshot.manifest
-    metadata = {
-        'format': _FORMAT,
-        'snapshot_id': snapshot.id,
-        'graph_key': graph_key,
-        'data_version': data_version,
-        'index_manifest': fingerprint,
-        'graph_config': snapshot.graph_config,
-        'snapshot': None if recorded_snapshot is None else
-        {k: v
-         for k, v in recorded_snapshot.items() if k != 'loaded'},
-        'environment': environment(),
-        'range_bytes': _RANGE_BYTES,
-    }
-    _write(filesystem, f'{root}/{_MANIFEST}', json.dumps(metadata).encode())
+    names = sorted(sizes, key=lambda name: -sizes[name])
     with ThreadPoolExecutor(1) as pool:
         checksums = pool.submit(snapshot_range_checksums, str(source),
                                 _RANGE_BYTES)
-        uploaded = present() if resume else {}
-        send([
-            name for name, size in sizes.items() if uploaded.get(name) != size
-        ], 'export')
-        metadata['crc32'] = checksums.result()
+        _transfer(connector, location, names, [sizes[name] for name in names],
+                  upload, 'export')
+        crc32 = checksums.result()
     filesystem, root = _location(connector, location)
-    if build() != fingerprint:
-        raise RuntimeError(f'Another build of {snapshot.id} was exported to '
-                           f'{location} meanwhile; re-export.')
-    if not committed():
-        _write(filesystem, f'{root}/{_MANIFEST}', json.dumps(metadata).encode())
-        _write(filesystem, f'{root}/index/{_INDEX_MANIFEST}', index_manifest)
-        _write(filesystem, f'{root}/index/{_SUCCESS}', fingerprint.encode())
+    _write(filesystem, f'{root}/index/{_INDEX_MANIFEST}', index_manifest)
+    _write(filesystem, f'{root}/{SNAPSHOT_MANIFEST_FILE}', snapshot_manifest)
+    _write(
+        filesystem, f'{root}/{_MANIFEST}',
+        json.dumps({
+            'format': _FORMAT,
+            'snapshot_id': snapshot.id,
+            'graph_key': graph_key,
+            'data_version': data_version,
+            'index_manifest': _fingerprint(index_manifest),
+            'graph_config': snapshot.graph_config,
+            'environment': environment(),
+            'range_bytes': _RANGE_BYTES,
+            'crc32': crc32,
+        }).encode())
     return location
 
 
@@ -283,24 +245,22 @@ def _corrupt(path: str, detail: str) -> ValueError:
 def read(connector: Any, path: str) -> Tuple[str, dict]:
     filesystem, root = _location(connector, path)
     manifest = _read_json(filesystem, f'{root}/{_MANIFEST}')
-    if manifest is None or not _files(filesystem).exists(
-            f'{root}/index/{_SUCCESS}'):
+    if manifest is None:
         raise FileNotFoundError(f'No complete snapshot export at {path}; '
                                 're-run export.')
     if not isinstance(manifest, dict):
         raise _corrupt(path, 'manifest is not a JSON object')
     if manifest.get('format') != _FORMAT:
-        warnings.warn(
-            f"Snapshot export at {path} has layout format "
-            f"{manifest.get('format')!r}; reading it as format {_FORMAT}.",
-            UserWarning, stacklevel=3)
+        raise ValueError(
+            f"Snapshot export at {path} has format "
+            f"{manifest.get('format')!r}; this kumo-engine reads format "
+            f"{_FORMAT}. Load it with the kumo-engine that exported it.")
     _check_key(manifest.get('graph_key'), manifest.get('data_version'),
                manifest.get('snapshot_id'))
     span, crcs = manifest.get('range_bytes'), manifest.get('crc32')
     if (type(span) is not int or span <= 0 or not isinstance(crcs, dict)
             or not isinstance(manifest.get('index_manifest'), str)
-            or not isinstance(manifest.get('graph_config'), dict)
-            or not isinstance(manifest.get('snapshot'), (dict, type(None)))):
+            or not isinstance(manifest.get('graph_config'), dict)):
         raise _corrupt(path, 'malformed manifest')
     return root, manifest
 
@@ -324,9 +284,12 @@ def _download(root: str, staging: Path, client: FileSystem,
             os.close(fd)
 
 
-def _index_files(path: str, root: str, manifest: dict,
-                 connector: Any) -> Tuple[bytes, List[Tuple[str, int]]]:
+def _index_files(
+        path: str, root: str, manifest: dict, connector: Any
+) -> Tuple[bytes, List[Tuple[str, int]], Optional[bytes]]:
     from kumo_core.sources.layout import confined
+
+    from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
 
     filesystem, _ = _location(connector, path)
     with filesystem.open_input_stream(
@@ -341,7 +304,13 @@ def _index_files(path: str, root: str, manifest: dict,
         raise _corrupt(path, f'bad {_INDEX_MANIFEST}: {error}') from error
     if len({name for name, _ in files}) != len(files):
         raise _corrupt(path, f'{_INDEX_MANIFEST} lists a file twice')
-    return index_manifest, files
+    try:
+        with filesystem.open_input_stream(
+                f'{root}/{SNAPSHOT_MANIFEST_FILE}') as reader:
+            snapshot_manifest = reader.readall()
+    except FileNotFoundError:
+        snapshot_manifest = None
+    return index_manifest, files, snapshot_manifest
 
 
 def load_into(connector: Any, path: str, root: str, manifest: dict,
@@ -358,12 +327,11 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
     from kumo_core.io.filesystem import fsync_directory
     from kumo_core.sources.transfer import discard_destination
 
-    from kumo.engine._manifest import write_manifest
-    from kumo.engine._provenance import environment
     from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
 
     span = manifest['range_bytes']
-    index_manifest, files = _index_files(path, root, manifest, connector)
+    index_manifest, files, snapshot_manifest = _index_files(
+        path, root, manifest, connector)
     staging = target.with_name(f'{target.name}.loading')
     discard_destination(str(target))
     discard_destination(str(staging))
@@ -408,13 +376,8 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
                 raise _corrupt(
                     path, f'{name} failed its checksum at offset {offset}')
         _check_readable(staging, manifest)
-        if manifest.get('snapshot') is not None:
-            write_manifest(
-                staging / SNAPSHOT_MANIFEST_FILE, {
-                    **manifest['snapshot'], 'loaded': {
-                        'environment': environment()
-                    }
-                })
+        if snapshot_manifest is not None:
+            (staging / SNAPSHOT_MANIFEST_FILE).write_bytes(snapshot_manifest)
         for directory in sorted({(staging / name).parent
                                  for name, _ in files} | {staging}):
             fsync_directory(directory)
