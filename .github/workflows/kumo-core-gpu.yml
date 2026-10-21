@@ -37,8 +37,12 @@ jobs:
         run: |
           set -euo pipefail
           # Skip only if every file in the pull request is docs, UI, Helm or tooling.
-          files="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/${GITHUB_REF_NAME#pull-request/}/files" --jq '.[].filename')"
-          if grep -q -v -E '^(ui/|docs/|helm/|tools/|benchmark/)|\.md$' <<< "$files"; then
+          pr_url="repos/$GITHUB_REPOSITORY/pulls/${GITHUB_REF_NAME#pull-request/}"
+          files="$(gh api --paginate "$pr_url/files" --jq '.[] | .filename, (.previous_filename // empty)')"
+          metadata="$(gh api "$pr_url" --jq '[.head.sha, .changed_files] | @tsv')"
+          read -r pr_head changed_files <<< "$metadata"
+          if [[ "$pr_head" != "$GITHUB_SHA" ]] || (( changed_files > 3000 )) ||
+            grep -q -v -E '^(ui/|docs/|helm/|tools/|benchmark/)|\.md$' <<< "$files"; then
             echo gpu=true >> "$GITHUB_OUTPUT"
           else
             echo gpu=false >> "$GITHUB_OUTPUT"
@@ -145,7 +149,9 @@ jobs:
         run: nvidia-smi
 
       - name: Run CUDA-selected package suite
-        run: make test-kumo-core-gpu
+        run: |
+          python -c "import torch; assert torch.cuda.is_available(), 'PyTorch CUDA is unavailable'"
+          make test-kumo-core-gpu
 
       - name: Upload coverage data
         if: always()
@@ -156,3 +162,47 @@ jobs:
             packages/kumo-core/.coverage*
             packages/kumo-core/coverage.xml
           if-no-files-found: ignore
+
+  required:
+    name: kumo-core-gpu-ci
+    needs: [changes, diskgraph-wheel, gpu]
+    # A failed dependency must fail this check rather than skip it.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require an exemption or successful GPU tests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          GPU_REQUIRED: ${{ needs.changes.outputs.gpu }}
+          WHEEL_RESULT: ${{ needs.diskgraph-wheel.result }}
+          GPU_RESULT: ${{ needs.gpu.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == push ]]; then
+            if [[ "$CHANGES_RESULT" != success ]]; then
+              echo '::error::Changed-file detection did not succeed.'
+              exit 1
+            fi
+            case "$GPU_REQUIRED" in
+              false)
+                echo 'All changed files are exempt from GPU tests.'
+                exit 0
+                ;;
+              true) ;;
+              *)
+                echo '::error::Changed-file detection did not report whether GPU tests are required.'
+                exit 1
+                ;;
+            esac
+          elif [[ "$EVENT_NAME" != workflow_dispatch ]]; then
+            echo '::error::Unexpected workflow event.'
+            exit 1
+          fi
+          if [[ "$WHEEL_RESULT" != success || "$GPU_RESULT" != success ]]; then
+            echo "::error::GPU tests must pass (wheel=$WHEEL_RESULT, gpu=$GPU_RESULT)."
+            exit 1
+          fi
+          echo 'GPU tests passed.'
