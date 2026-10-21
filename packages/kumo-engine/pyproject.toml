@@ -62,8 +62,7 @@ text=[
 gcs=[
     "kumo-gcs>=0.1.0.dev1",
 ]
-# MLflow tracking; nvidia-ml-py adds GPU system metrics (psutil, for the
-# rest, comes with kumo-core).
+# nvidia-ml-py adds GPU system metrics.
 mlflow=[
     "mlflow>=3.0,<4",
     "nvidia-ml-py",

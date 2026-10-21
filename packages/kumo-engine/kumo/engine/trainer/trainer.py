@@ -321,11 +321,9 @@ class Trainer:
                 match. Forecasting warm starts are unsupported.
             callbacks: called with each progress `Event`; a callback that
                 raises is logged and not called again.
-            tracking: records this fit in experiment trackers: one
-                `kumo.engine.tracking.Tracking` (e.g.
-                `kumo.engine.integrations.mlflow.MlflowTracking`) or a list or
-                tuple of them. Tracking errors are logged as warnings and
-                never fail the fit or the other trackers.
+            tracking: one `kumo.engine.tracking.Tracking` (e.g.
+                `kumo.engine.integrations.mlflow.MlflowTracking`) or a list of
+                them; tracking errors are logged, never raised.
         """
         if export_config is not None and not callable(
                 getattr(export_config.connector.sink_backend, 'publish_model',

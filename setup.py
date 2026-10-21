@@ -293,8 +293,7 @@ test_requires = [
     "respx==0.22.0",
     "pytorch-frame==0.3.0",
     "pytorch-lightning==2.6.5",
-    # kumo-engine's MLflow tracking tests; the engine wheel is tested with
-    # --no-deps in this environment, so its `mlflow` extra is not installed.
+    # kumo-engine's `mlflow` extra; its wheel is tested with --no-deps.
     "mlflow>=3.0,<4",
 ]
 

@@ -1432,8 +1432,7 @@ class Trainer(PortableConfigMixin):
         if self.fit_mode.is_refit:
             limit_val_batches = 0
 
-        # TensorBoard stays first: Lightning's ``log_dir``, which the stopper
-        # reads, comes from the first logger.
+        # The stopper reads ``log_dir``, which comes from the first logger.
         pl_logger: Any = pl.loggers.TensorBoardLogger(
             save_dir=self.get_log_dir(local=True),
             name='',

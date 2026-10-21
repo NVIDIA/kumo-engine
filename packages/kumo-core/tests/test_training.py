@@ -542,14 +542,12 @@ def test_pl_trainer_keeps_tensorboard_and_adds_supplied_loggers(
     trainer.max_epochs = 1
     supplied = [CSVLogger(str(tmp_path)) for _ in range(supplied_loggers)]
     trainer.kwargs = {"accelerator": "cpu"}
-    if supplied_loggers == 1:
-        trainer.kwargs["logger"] = supplied[0]
-    elif supplied_loggers:
-        trainer.kwargs["logger"] = supplied
+    if supplied:
+        trainer.kwargs["logger"] = (supplied[0]
+                                    if len(supplied) == 1 else supplied)
 
     trainer.create_pl_trainer()
 
-    loggers = trainer.pl_trainer.loggers
-    assert isinstance(loggers[0], TensorBoardLogger)
-    assert loggers[1:] == supplied
+    assert isinstance(trainer.pl_trainer.loggers[0], TensorBoardLogger)
+    assert trainer.pl_trainer.loggers[1:] == supplied
     assert trainer.pl_trainer.log_dir == str(tmp_path / "tensorboard")

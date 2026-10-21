@@ -34,8 +34,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Lightning logs per global step; the prefix keeps those apart from the
-# per-epoch ``steps``.
+# Lightning logs per global step, apart from the per-epoch ``steps``.
 LIGHTNING_PREFIX = 'lightning'
 DROPPED_PARAMS = 'kumo.dropped_params'
 DROPPED_METRICS = 'kumo.dropped_metrics'
@@ -70,13 +69,7 @@ class RunRecord:
 
 @dataclass(frozen=True)
 class Capabilities:
-    r"""What a tracking adapter records beyond params, metrics and tags.
-
-    Args:
-        nested_runs: trial runs are child runs of the fit run.
-        model_link: published models are also linked through the platform's
-            own run-to-model link.
-    """
+    r"""What a tracking adapter records beyond params, metrics and tags."""
 
     nested_runs: bool = False
     system_metrics: bool = False
@@ -88,13 +81,7 @@ class Capabilities:
 def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
                fit_ended: Optional[Event] = None, *,
                tags: Optional[Mapping[str, str]] = None) -> RunRecord:
-    r"""The fit run's record; metrics need `result` and the ``fit_ended``
-    event, which also sets ``kumo.error`` when the fit failed.
-
-    ``tags`` (an adapter's user-supplied tags) pass through under their given
-    names, except ``kumo.*`` names, which only the engine sets, and names of
-    the record's params (both dropped with a warning).
-    """
+    r"""The fit run's record; ``tags`` are the user's extra tags."""
     metrics: Dict[str, float] = {}
     links: Dict[str, str] = {}
     if result is not None:
@@ -146,8 +133,7 @@ def _user_tags(tags: Optional[Mapping[str, Any]],
                      if key.startswith('kumo.') or key in params)
     if dropped:
         warnings.warn(
-            f'Tracking tags {dropped} are not recorded: kumo.* tags are set '
-            f'by the engine, and a tag may not share a param\'s name.',
+            f'Tracking tags {dropped} are reserved and not recorded.',
             UserWarning, stacklevel=3)
     return {
         key: str(value)
@@ -162,9 +148,7 @@ def _error_tag(ended: Optional[Event]) -> Dict[str, str]:
 
 
 def trial_record(context: FitContext, events: Sequence[Event]) -> RunRecord:
-    r"""One trial attempt's record from its events so far: ``trial_started``,
-    then ``epoch_ended`` and ``trial_ended`` (which sets ``kumo.status`` and,
-    on failure, ``kumo.error``)."""
+    r"""One trial attempt's record from its events so far."""
     started = next(event for event in events if event.name == 'trial_started')
     trial, attempt = started.trial, int(started.params['attempt'])
     params: Dict[str, str] = {
@@ -207,31 +191,17 @@ def trial_record(context: FitContext, events: Sequence[Event]) -> RunRecord:
 class Tracking(Protocol):
     r"""Records one `Trainer.fit` in an experiment tracker.
 
-    Pass an implementation (or a sequence of them) as ``fit(tracking=...)``.
-    Hooks receive platform-neutral facts; build what to log with `run_record`
-    and `trial_record`. Only global rank 0 calls the hooks. A hook that raises
-    is logged as a warning and its tracker is not called again for that fit;
-    it never fails the fit or affects other trackers.
-
-    Optional members:
-
-    - ``trial_logger(trial, attempt)``: a Lightning logger that also receives
-      that search-trial attempt's step metrics, or None. Lightning calls the
-      returned logger directly, so its methods must not raise.
-    - ``capabilities``: a `Capabilities` declaring what the adapter records.
+    Optional members: ``trial_logger(trial, attempt)`` returning a Lightning
+    logger (whose methods must not raise) or None, and ``capabilities``.
     """
     def start(self, context: FitContext) -> None:
-        r"""Called once the model plan is resolved."""
         ...
 
     def on_event(self, event: Event) -> None:
-        r"""Called for every progress event after `start`. Trial events
-        carry ``params['attempt']``."""
         ...
 
     def finish(self, result: Optional['TrainingResult'],
                error: Optional[BaseException]) -> None:
-        r"""Called once when the fit returns or raises."""
         ...
 
 
@@ -239,8 +209,6 @@ Trackers = Union[Tracking, Sequence[Tracking], None]
 
 
 class TrackingSession:
-    r"""Calls one fit's trackers, each best-effort and isolated: a tracker
-    whose hook raises is dropped for the rest of the fit."""
     def __init__(self, tracking: Trackers) -> None:
         if tracking is None or _rank() != 0:
             trackers: List[Tracking] = []
@@ -279,12 +247,7 @@ class TrackingSession:
     def on_event(self, event: Event) -> None:
         if not self._started:
             return
-        try:
-            event = _with_attempt(event, self._attempts)
-        except Exception:
-            logger.warning('Could not read the trial attempt of %r', event,
-                           exc_info=True)
-        self._call_all('on_event', event)
+        self._call_all('on_event', _with_attempt(event, self._attempts))
 
     def finish(self, result: Optional['TrainingResult'],
                error: Optional[BaseException]) -> None:
@@ -303,8 +266,7 @@ class TrackingSession:
             except Exception:
                 logger.warning(
                     'Experiment tracking failed in %r; it is off for the '
-                    'rest of this fit, which continues', tracker,
-                    exc_info=True)
+                    'rest of this fit', tracker, exc_info=True)
                 self._trackers.remove(tracker)
         return values
 

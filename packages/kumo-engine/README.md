@@ -365,63 +365,20 @@ result = trainer.fit(training_table, snapshot=snapshot,
 MLflow runs go to `MLFLOW_TRACKING_URI`: on Databricks this is automatic; for
 SageMaker managed MLflow set it to the tracking server ARN with the
 `sagemaker-mlflow` plugin installed. With nothing configured MLflow writes a
-local store in the working directory.
+local store in the working directory. Per-epoch metrics use step = epoch;
+Lightning's per-step metrics are prefixed `lightning-`.
 
-Pass a list to record to several trackers; each is isolated from the
-others, and one whose hook raises is not called again for that fit. Any other
-system plugs in through the `kumo.engine.tracking.Tracking` protocol:
-
-- `start(context)`: a `FitContext` once the model plan is resolved;
-- `on_event(event)`: every progress `Event` (trial events carry
-  `params["attempt"]`);
-- `finish(result, error)`: once, when the fit returns or raises;
-- optional `trial_logger(trial, attempt)`: a Lightning logger for one trial
-  attempt, or `None` (MLflow prefixes its metrics `lightning-`, since their
-  step is Lightning's global step, not the epoch);
-- optional `capabilities`: a `Capabilities` stating what the adapter records
-  (nested runs, system metrics, step metrics, artifacts, model links).
-
-Build what to log with `run_record(context, result, fit_ended, tags=...)` and
-`trial_record(context, trial_events)`, so every adapter uses the same
-parameter, metric and tag names. Params are options and hyperparameters: the
-task type and resolved model plan on a fit run, the searched hyperparameters
-and attempt on a trial run. Ids and outcomes are `kumo.*` tags: `kumo.kind`
-(`fit` or `trial`), `kumo.run_id`, `kumo.snapshot_id`,
-`kumo.training_table_id` and `kumo.query_sha256` on the fit, `kumo.parent_run`
-and, when it ends, `kumo.status` on a trial, and `kumo.error` (error type and
-a short message) on a failed fit or trial. The `tags=` you pass are added under
-their given names; ones named `kumo.*` or like a param are dropped with a
-warning. Links to a published model (`model_name`,
-`model_version`, `model_uri`) are also tags (`kumo.model_name`, ...), so a
-tracker without its own run-to-model link still records them; `steps` are per-epoch histories (step = epoch).
-
-```python
-import json
-from kumo.engine.tracking import run_record, trial_record
-
-class JsonTracking:
-    def start(self, context):
-        self.context, self.trials, self.ended = context, {}, None
-        print(json.dumps({"run": run_record(context).tags}))
-
-    def on_event(self, event):
-        if event.trial is not None:
-            key = (event.trial, event.params["attempt"])
-            self.trials.setdefault(key, []).append(event)
-            if event.name == "trial_ended":
-                record = trial_record(self.context, self.trials.pop(key))
-                print(json.dumps({"trial": record.name, "params": record.params,
-                                  "metrics": record.metrics}))
-        elif event.name == "fit_ended":
-            self.ended = event
-
-    def finish(self, result, error):
-        if result is not None:
-            record = run_record(self.context, result, self.ended)
-            print(json.dumps({"metrics": record.metrics}))
-
-trainer.fit(training_table, snapshot=snapshot, tracking=JsonTracking())
-```
+Pass a list to record to several trackers; a tracker that raises is not
+called again for that fit. Other systems plug in through the
+`kumo.engine.tracking.Tracking` protocol: `start(context)`, `on_event(event)`
+and `finish(result, error)`, plus an optional `trial_logger(trial, attempt)`
+returning a Lightning logger. Build what to log with `run_record` and
+`trial_record` so every tracker records the same names: params are the task
+type and resolved model plan (fit) or searched hyperparameters and `attempt`
+(trial); ids and outcomes are `kumo.*` tags (`kumo.kind`, `kumo.run_id`,
+`kumo.snapshot_id`, `kumo.training_table_id`, `kumo.query_sha256`,
+`kumo.parent_run`, `kumo.status`, `kumo.error`, `kumo.model_*`). Your `tags=`
+are added as given, except `kumo.*` names and param names.
 
 ## BigQuery staged ingestion
 
