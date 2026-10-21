@@ -19,12 +19,13 @@ code. Its grammar files and synchronized `pqDocs.json` are generated; the
 remaining parsing and autocomplete code is authored.
 
 Editor help in `ui/src/utils/PQLParsing/pqDocs.json` is generated from
-`kumo-ai/docs` reference MDX. Edit the reference pages there. After they land,
-the docs synchronization workflow opens or updates a Kumo PR containing only
-the regenerated JSON, its source revision and a change-map comment. Review
-that PR and run the CodeEditor tests before merging; do not edit the JSON
-by hand. The initial content came from docs commit
-`48d7c15f95b2eb37b37f972a9f96fef33c377ebd`.
+`kumo-ai/docs` `ui-hints/editor-hints.json` by `scripts/build_pq_docs.py`.
+Edit that authored registry for hover text, exact editor keys, aliases, highlight types and explicit documentation links.
+The registry records deliberate missing hints and retains legacy tuples for compatible generation.
+Run the docs generator with `--output <engine-checkout>/ui/src/utils/PQLParsing/pqDocs.json`, then run the CodeEditor tests; do not edit the JSON by hand.
+The docs synchronization workflow opens reviewed Draft PRs against `NVIDIA/kumo-engine` with source revision provenance, after checking that its default branch supports the registry format.
+The compatible Engine consumer and bundled registry must merge before the docs synchronization format switch or hint-only source deletion.
+The adapter also accepts legacy tuple data; token dictionaries retain syntax metadata without authored hover text.
 
 The website is maintained and published from `kumo-ai/docs`. Kumo builds use
 the committed JSON and do not require that checkout, Fern, or a docs token.

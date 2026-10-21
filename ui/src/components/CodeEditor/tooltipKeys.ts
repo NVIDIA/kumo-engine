@@ -91,3 +91,39 @@ export const modelPlannerKeys = [
     "train_end_offset",
     "train_start_offset"
 ];
+
+// Existing authored hover records, including intentionally empty metric bodies.
+export const fallbackHintKeys: Record<string, string[]> = {
+    YAML: [
+        "min_steps_per_epoch",
+        "auroc_per_label",
+        "auroc_macro",
+        "auroc_micro",
+        "auroc",
+        "acc",
+        "auprc_macro",
+        "auprc_micro",
+        "auprc",
+        "ap_macro",
+        "ap_micro",
+        "ap_per_label",
+        "ap",
+        "recall@K",
+        "recall",
+        "precision@K",
+        "precision",
+        "ndcg",
+        "loss",
+        "mrr",
+        "mae",
+        "mape",
+        "smape",
+        "mse",
+        "rmse",
+        "map@K",
+        "map",
+        "f1@K",
+        "f1",
+        "prediction_time_encodings"
+    ]
+};
