@@ -382,9 +382,9 @@ attempt's run after each of its events, and `finish(record, error)` with the
 fit run's final record (`None` when tracking stopped early), plus an optional
 `trial_logger(trial, attempt)` returning a Lightning logger. Params are the
 task type and resolved model plan (fit) or searched hyperparameters and
-`attempt` (trial); ids and outcomes are `kumo.*` tags (`kumo.kind`, `kumo.run_id`,
-`kumo.snapshot_id`, `kumo.training_table_id`, `kumo.query_sha256`,
-`kumo.parent_run`, `kumo.status`, `kumo.error`, `kumo.model_*`). Your `tags=`
+`attempt` (trial); ids and outcomes are `kumo.*` tags (`kumo.kind`,
+`kumo.run_id`, `kumo.snapshot_id`, `kumo.query_sha256`, `kumo.parent_run`,
+`kumo.status`, `kumo.error`, `kumo.model_*`). Your `tags=`
 are added as given, except `kumo.*` names and param names.
 
 ## BigQuery staged ingestion

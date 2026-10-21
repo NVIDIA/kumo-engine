@@ -29,7 +29,7 @@ USER_TAGS = {'team': 'ents', 'kumo.run_id': 'overridden'}
 QUERY = 'PREDICT ents.Y FOR EACH ents.ID'
 CONTEXT = FitContext(
     run_id=RUN, task_type='regression', snapshot_id='snap@1',
-    training_table_id='tt-1', query=QUERY, model_plan={
+    query=QUERY, model_plan={
         'optimization': {'base_lr': [0.01, 0.001], 'max_epochs': 2},
         'training_job': {'tune_metric': 'mae'},
         'column_processing': {
@@ -239,7 +239,6 @@ def test_records_of_the_recorded_fit():
         'kumo.engine_version': fit.tags['kumo.engine_version'],
         'kumo.run_id': RUN,
         'kumo.snapshot_id': 'snap@1',
-        'kumo.training_table_id': 'tt-1',
         'kumo.query_sha256': hashlib.sha256(QUERY.encode()).hexdigest(),
         'kumo.model_name': 'ents-model',
         'kumo.model_version': '3',

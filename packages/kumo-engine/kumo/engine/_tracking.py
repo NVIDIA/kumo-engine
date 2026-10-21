@@ -54,7 +54,6 @@ class FitContext:
     run_id: str
     task_type: str
     snapshot_id: str
-    training_table_id: str
     query: str
     model_plan: Mapping[str, Any]
 
@@ -117,7 +116,6 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
             'kumo.engine_version': __version__,
             'kumo.run_id': context.run_id,
             'kumo.snapshot_id': context.snapshot_id,
-            'kumo.training_table_id': context.training_table_id,
             'kumo.query_sha256': query_sha256(context.query),
             **_error_tag(fit_ended),
             **{f'kumo.{key}': value

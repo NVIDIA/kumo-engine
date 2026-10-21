@@ -446,8 +446,7 @@ class Trainer:
         from kumoapi.pquery import QueryType
         from pyarrow import parquet
 
-        train_table_spec = read_spec(str(train_table.staging_dir))
-        parts = stage_parts(train_table_spec)
+        parts = stage_parts(read_spec(str(train_table.staging_dir)))
         seed_part = next(part for paths in parts.values() for part in paths)
         seed_schema = parquet.read_schema(train_table.staging_dir / seed_part)
         entity_tables = [workflow.query.entity_table]
@@ -507,7 +506,6 @@ class Trainer:
             run_id=run_id,
             task_type=TaskType(workflow.query.task_type).value,
             snapshot_id=snapshot.id,
-            training_table_id=str(train_table_spec['tt_id']),
             query=train_table.query,
             model_plan=to_json_dict(materialized.model_plan),
         ))
