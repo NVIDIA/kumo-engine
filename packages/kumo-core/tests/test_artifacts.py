@@ -16,6 +16,7 @@ from kumo_core.artifacts import (
     VitalArtifactPublicationPolicy,
     VitalArtifactSources,
     add_bundle_file,
+    bundle_id_from_manifest,
     resolve_vital_artifact_sources,
     verify_model_bundle,
 )
@@ -252,6 +253,7 @@ def test_bundle_id_ignores_provenance_only(tmp_path: Path) -> None:
         (bundle / "provenance.json").write_text(payload)
         add_bundle_file(bundle, "provenance", "provenance.json")
         assert verify_model_bundle(bundle) == bundle_id
+        assert bundle_id_from_manifest(bundle) == bundle_id
     roles = [
         entry["role"] for entry in json.loads(
             (bundle / "publication-manifest.json").read_text())["artifacts"]
