@@ -371,8 +371,20 @@ def test_a_failing_tracker_does_not_affect_others(adapter, caplog):
 
     assert gaps(expected_records(events), adapter.observe(),
                 tracker.capabilities, adapter.kept_params) == []
-    hooks = 2 + len(EVENTS) + sum(e.name == 'trial_started' for e in EVENTS)
-    assert caplog.text.count('Experiment tracking failed') == hooks
+    assert caplog.text.count('Experiment tracking failed') == 1
+
+
+def test_a_tracker_that_raises_is_not_called_again(caplog):
+    class RaisesOnEvent(_Recorder):
+        def on_event(self, event):
+            super().on_event(event)
+            raise RuntimeError('tracker down')
+
+    broken = RaisesOnEvent()
+    replay([broken])
+
+    assert [hook for hook, _ in broken.calls] == ['start', 'on_event']
+    assert caplog.text.count('Experiment tracking failed') == 1
 
 
 def test_gaps_compare_step_histories_when_declared():

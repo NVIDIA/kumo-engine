@@ -224,13 +224,15 @@ class Tracking(Protocol):
 
     Pass an implementation (or a sequence of them) as ``fit(tracking=...)``.
     Hooks receive platform-neutral facts; build what to log with `run_record`
-    and `trial_record`. Only global rank 0 calls the hooks, and an error in
-    one is logged as a warning, never raised into the fit or other trackers.
+    and `trial_record`. Only global rank 0 calls the hooks. A hook that raises
+    is logged as a warning and its tracker is not called again for that fit;
+    it never fails the fit or affects other trackers.
 
     Optional members:
 
     - ``trial_logger(trial, attempt)``: a Lightning logger that also receives
-      that search-trial attempt's step metrics, or None.
+      that search-trial attempt's step metrics, or None. Lightning calls the
+      returned logger directly, so its methods must not raise.
     - ``capabilities``: a `Capabilities` declaring what the adapter records.
     """
     def start(self, context: FitContext) -> None:
@@ -238,8 +240,8 @@ class Tracking(Protocol):
         ...
 
     def on_event(self, event: Event) -> None:
-        r"""Called for every progress event. Trial events carry
-        ``params['attempt']``."""
+        r"""Called for every progress event after `start`. Trial events
+        carry ``params['attempt']``."""
         ...
 
     def finish(self, result: Optional['TrainingResult'],
@@ -252,7 +254,8 @@ Trackers = Union[Tracking, Sequence[Tracking], None]
 
 
 class TrackingSession:
-    r"""Calls one fit's trackers, each best-effort and isolated."""
+    r"""Calls one fit's trackers, each best-effort and isolated: a tracker
+    whose hook raises is dropped for the rest of the fit."""
     def __init__(self, tracking: Trackers) -> None:
         if tracking is None or _rank() != 0:
             trackers: List[Tracking] = []
@@ -279,16 +282,12 @@ class TrackingSession:
                            exc_info=True)
             self._trackers = []
             return
-        for tracker in self._trackers:
-            _call(tracker.start, value)
+        self._call_all('start', value)
 
     def trial_logger(self, trial: int, attempt: int) -> Optional[Any]:
         loggers = [
-            pl_logger for pl_logger in (
-                _call(tracker.trial_logger, trial, attempt)
-                for tracker in self._trackers
-                if callable(getattr(tracker, 'trial_logger', None)))
-            if pl_logger is not None
+            pl_logger for pl_logger in self._call_all(
+                'trial_logger', trial, attempt) if pl_logger is not None
         ]
         return loggers or None
 
@@ -300,24 +299,29 @@ class TrackingSession:
         except Exception:
             logger.warning('Could not read the trial attempt of %r', event,
                            exc_info=True)
-        for tracker in self._trackers:
-            _call(tracker.on_event, event)
+        self._call_all('on_event', event)
 
     def finish(self, result: Optional['TrainingResult'],
                error: Optional[BaseException]) -> None:
         if not self._started:
             return
-        for tracker in self._trackers:
-            _call(tracker.finish, result, error)
+        self._call_all('finish', result, error)
 
-
-def _call(hook: Callable[..., Any], *args: Any) -> Any:
-    try:
-        return hook(*args)
-    except Exception:
-        logger.warning('Experiment tracking failed; the fit continues',
-                       exc_info=True)
-        return None
+    def _call_all(self, hook: str, *args: Any) -> List[Any]:
+        values = []
+        for tracker in list(self._trackers):
+            function = getattr(tracker, hook, None)
+            if not callable(function):
+                continue
+            try:
+                values.append(function(*args))
+            except Exception:
+                logger.warning(
+                    'Experiment tracking failed in %r; it is off for the '
+                    'rest of this fit, which continues', tracker,
+                    exc_info=True)
+                self._trackers.remove(tracker)
+        return values
 
 
 def _with_attempt(event: Event, attempts: Dict[int, int]) -> Event:

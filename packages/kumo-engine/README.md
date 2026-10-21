@@ -368,8 +368,8 @@ SageMaker managed MLflow set it to the tracking server ARN with the
 local store in the working directory.
 
 Pass a list to record to several trackers; each is isolated from the
-others. Any other system plugs in through the `kumo.engine.tracking.Tracking`
-protocol:
+others, and one whose hook raises is not called again for that fit. Any other
+system plugs in through the `kumo.engine.tracking.Tracking` protocol:
 
 - `start(context)`: a `FitContext` once the model plan is resolved;
 - `on_event(event)`: every progress `Event` (trial events carry
