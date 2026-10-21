@@ -103,9 +103,7 @@ class ObjectStoreSinkBackend(ABC):
     def filesystem(self, connector: SourceConnector, path: str, *,
                    parallel_uploads: bool = False) -> Tuple[FileSystem, str]:
         """The authenticated filesystem and the path ``path`` resolves to.
-        ``parallel_uploads`` tunes S3 for many concurrent uploads (one
-        buffered part each, small files as one PUT); other stores ignore it.
-        """
+        ``parallel_uploads`` tunes S3 for many concurrent uploads."""
         del parallel_uploads
         filesystem, resolved = self._destination(connector, path)
         return filesystem, resolved.rstrip('/')
