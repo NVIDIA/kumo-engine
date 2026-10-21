@@ -226,9 +226,9 @@ def test_custom_link_table_ingests_multiple_weighted_parts(
     stage_source_table = _custom_source.stage_source_table
 
     def stage_multipart_source(*args, **kwargs):
-        path = stage_source_table(*args, **kwargs)
+        path, version = stage_source_table(*args, **kwargs)
         assert len(list(path.glob('*.parquet'))) > 1
-        return path
+        return path, version
 
     monkeypatch.setattr(_custom_source, 'stage_source_table',
                         stage_multipart_source)
@@ -359,31 +359,20 @@ def test_custom_table_records_its_source(graph, recwarn):
     assert _seeds(reloaded)[1] == _seeds(table)[1]
 
 
-@pytest.mark.parametrize('failing', ['source_location', 'get_data_version'])
-def test_unrecordable_source_is_null(graph, monkeypatch, failing):
+def test_unrecordable_location_is_null(graph, monkeypatch):
     from kumo.engine import _provenance
 
-    _, snapshot, connector, out = graph
     pquery, table, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
-                               f'unrecorded_{failing}')
+                               'unrecorded')
 
     def fail(*args, **kwargs):
         raise OSError('listing denied')
 
-    target = (_provenance if failing == 'source_location' else
-              type(connector.source_backend))
-    monkeypatch.setattr(target, failing, fail)
+    monkeypatch.setattr(_provenance, 'source_location', fail)
     with pytest.warns(UserWarning, match='listing denied'):
-        reloaded = _reload(graph, f'unrecorded_{failing}', pquery)
+        reloaded = _reload(graph, 'unrecorded', pquery)
     recorded = reloaded.manifest['parents']['source_table']
-    if failing == 'source_location':
-        assert recorded['location'] is None and recorded['version']
-    else:
-        assert recorded == {
-            'connector': 'LOCAL_FILE',
-            'location': str(out / f'unrecorded_{failing}'),
-            'version': None
-        }
+    assert recorded['location'] is None and recorded['version']
     assert _seeds(reloaded)[1] == _seeds(table)[1]
 
 

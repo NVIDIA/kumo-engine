@@ -251,3 +251,27 @@ def test_sidecars_are_written_before_success(tmp_path, monkeypatch,
     else:
         assert not (target / 'meta.json').exists()
         assert pq.read_table(tmp_path / 'output.parquet').num_rows == 1
+
+
+def test_failed_sidecar_write_still_publishes(tmp_path):
+    import pyarrow.parquet as pq
+    from kumo_core.artifact_export import export_selected_files
+    from kumo_core.object_store_sink import _ArrowExportFiles
+    from pyarrow.fs import LocalFileSystem
+
+    source = tmp_path / 'part-0.parquet'
+    pq.write_table(pa.table({'id': [1]}), source)
+    fs = _ArrowExportFiles(LocalFileSystem(), None)
+    write_bytes = fs.write_bytes
+
+    def denied(path, value):
+        if path.endswith('meta.json'):
+            raise PermissionError('denied')
+        write_bytes(path, value)
+
+    fs.write_bytes = denied
+    target = tmp_path / 'output'
+    with pytest.warns(UserWarning, match='denied'):
+        export_selected_files([str(source)], f'{target}/', fs=fs,
+                              identity='job-1', sidecars={'meta.json': b'{}'})
+    assert (target / '_SUCCESS').exists()

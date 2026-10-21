@@ -8,6 +8,7 @@ import errno
 import os
 import shutil
 from pathlib import Path
+from typing import Optional, Tuple
 
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
@@ -15,8 +16,10 @@ import pyarrow.parquet as pq
 from kumo.engine.connector.source_table import SourceTable
 
 
-def stage_source_table(source_table: SourceTable, destination: Path) -> Path:
-    """Read ``source_table`` through its connector and retain its parquet parts."""
+def stage_source_table(source_table: SourceTable,
+                       destination: Path) -> Tuple[Path, Optional[str]]:
+    """Read ``source_table`` through its connector and retain its parquet
+    parts; also returns the connector's version of the rows read."""
     if not isinstance(source_table, SourceTable):
         raise TypeError("source_table must be a kumo.engine SourceTable")
     destination.mkdir(parents=True, exist_ok=False)
@@ -62,7 +65,7 @@ def stage_source_table(source_table: SourceTable, destination: Path) -> Path:
                     errno.EPERM, errno.EACCES, errno.EOPNOTSUPP, errno.ENOSYS):
                 raise
             shutil.copyfile(part, target)
-    return output
+    return output, prepared.version
 
 
 def _validate_source(path, query, graph, *, weight_col, split_col,
