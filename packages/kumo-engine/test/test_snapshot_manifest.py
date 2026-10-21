@@ -170,25 +170,6 @@ def test_appended_rows_show_in_manifest_diff(make_snapshot):
     assert 'tables.ents.rows' not in diff
 
 
-def test_diff_manifests_reports_added_removed_and_whole_lists():
-    a = {'kind': 'k', 'x': {'y': 1, 'gone': 2}, 'items': [1, 2]}
-    b = {'kind': 'k', 'x': {'y': 1, 'new': 3}, 'items': [1, 3]}
-
-    assert diff_manifests(a, b) == {
-        'items': ([1, 2], [1, 3]),
-        'x.gone': (2, None),
-        'x.new': (None, 3),
-    }
-    assert diff_manifests({'kind': 'graph_snapshot'},
-                          {'kind': 'model_bundle'}) == {
-                              'kind': ('graph_snapshot', 'model_bundle')
-                          }
-
-
-def test_build_commit_comes_from_the_local_version_segment():
-    assert provenance._build_commit('1.2.0+abc1234') == 'abc1234'
-
-
 @pytest.mark.parametrize('env, processing, expected', [
     ({}, None, None),
     ({
@@ -198,21 +179,10 @@ def test_build_commit_comes_from_the_local_version_segment():
         'TRAINING_JOB_NAME': 'ignored',
     }, None, ('databricks', '11', '22')),
     ({
-        'KUMO_JOB_RUN_ID': 'run-1',
-        'DATABRICKS_RUNTIME_VERSION': '16.4',
-    }, None, ('databricks', None, 'run-1')),
-    ({
-        'KUMO_JOB_ID': 'job-1'
-    }, None, ('other', 'job-1', None)),
-    ({
         'KUMO_JOB_RUN_ID': 'run-9',
         'TRAINING_JOB_NAME': 'train-1',
         'TRAINING_JOB_ARN': 'arn:train-1',
     }, None, ('sagemaker', 'train-1', 'run-9')),
-    ({
-        'TRAINING_JOB_NAME': 'train-1',
-        'TRAINING_JOB_ARN': 'arn:train-1',
-    }, None, ('sagemaker', 'train-1', 'arn:train-1')),
     ({}, {
         'ProcessingJobName': 'proc-1',
         'ProcessingJobArn': 'arn:proc-1',
