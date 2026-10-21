@@ -23,10 +23,10 @@ def test_fit_records_provenance(fitted):
     result = trainer._training_result
     provenance = result.provenance
     parents = provenance['parents']
-    assert (parents['snapshot'], parents['warm_start']) == (snapshot.id, None)
-    assert parents['training_table']
+    assert parents.keys() == {'training_table', 'warm_start'}
+    assert parents['training_table'] and parents['warm_start'] is None
     assert provenance['training_table'] == {
-        'source': 'pql',
+        'source': 'pquery',
         'snapshot': snapshot.id
     }
     assert provenance['source_tables'] == (
@@ -66,18 +66,18 @@ def test_bundle_without_provenance_loads_and_predicts_identically(
     pd.testing.assert_frame_equal(predict(restored), predict(trainer))
 
 
-def _finish_stub_fit(bundle, trainer, manifest=None):
+def _finish_stub_fit(bundle, trainer, manifest=None, source_mode=None):
     (bundle / 'model').mkdir(parents=True)
     (bundle / 'model' / 'config.json').write_text('{}')
     (bundle / MANIFEST_FILE).write_text(json.dumps({'artifacts': []}))
     add_bundle_file(bundle, 'trainer_config', 'model/config.json')
-    table = SimpleNamespace(tt_id='tt-1', manifest=manifest)
+    table = SimpleNamespace(tt_id='tt-1', manifest=manifest,
+                            source_mode=source_mode)
     return trainer._finish_fit(
         TrainingResult({}, {}, bundle), predictive_query='PREDICT x',
         snapshot_id='snap', export_config=None,
         training_table_generation=TrainingTableGenerationPlan(),
-        provenance=dict(train_table=table, snapshot_id='snap',
-                        warm_start_bundle_id=None,
+        provenance=dict(train_table=table, warm_start_bundle_id=None,
                         started_at=datetime.now(timezone.utc),
                         fit_mode=None))
 
@@ -89,16 +89,15 @@ def test_provenance_records_custom_or_missing_table_source(tmp_path):
         'version': '17'
     }
     manifest = {
-        'source': 'custom',
         'parents': {
             'snapshot': 'snap',
             'source_table': source_table
         },
     }
     custom = _finish_stub_fit(tmp_path / 'custom', kumo.Trainer(ModelPlan()),
-                              manifest)
+                              manifest, 'custom_tt')
     assert custom.provenance['training_table'] == {
-        'source': 'custom',
+        'source': 'custom_tt',
         'snapshot': 'snap',
         **source_table,
     }

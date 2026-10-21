@@ -359,16 +359,8 @@ def add_bundle_file(bundle_dir: Path, role: str, relative_path: str) -> None:
             sha256=VitalArtifactPublicationPolicy._sha256(path),
         ).to_dict()
     ]
-    temporary = manifest_path.with_name(f'.{manifest_path.name}.tmp')
-    try:
-        with temporary.open('w', encoding='utf-8') as handle:
-            handle.write(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, manifest_path)
-        FilesystemArtifactStore._fsync_directory(bundle_dir)
-    finally:
-        temporary.unlink(missing_ok=True)
+    payload = json.dumps(manifest, indent=2, sort_keys=True) + '\n'
+    atomic_write_bytes(manifest_path, payload.encode('utf-8'))
 
 
 @runtime_checkable
