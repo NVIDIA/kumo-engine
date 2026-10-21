@@ -61,10 +61,7 @@ def _training_table(train_table: TrainingTable) -> Dict[str, Any]:
         'snapshot': parents.get('snapshot'),
     }
     if 'source_table' in parents:
-        record.update({
-            key: (parents['source_table'] or {}).get(key)
-            for key in ('connector', 'location', 'version')
-        })
+        record.update(parents['source_table'] or {})
     return record
 
 
