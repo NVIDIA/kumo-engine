@@ -8,11 +8,12 @@ from __future__ import annotations
 import os
 import shutil
 from collections.abc import Callable
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import fsspec
 from fsspec.implementations.local import LocalFileSystem
+from fsspec.spec import AbstractFileSystem
 
 # gcsfs >=2026.3 otherwise maps gs:// to ExtendedGcsFileSystem, whose per-bucket
 # gRPC layout lookup stalls when it fails. Kumo uses no zonal/HNS buckets.
@@ -67,7 +68,7 @@ def copy(src: str, dst: str, overwrite: bool = False) -> None:
         return
     for source_path in src_fs.find(src_path):
         relative = PurePosixPath(source_path).relative_to(src_path)
-        source_uri = src_fs.unstrip_protocol(source_path)
+        source_uri = _path_uri(src_fs, source_path)
         target_uri = f"{dst.rstrip('/')}/{relative.as_posix()}"
         copy_file(source_uri, target_uri, overwrite=overwrite)
 
@@ -87,7 +88,17 @@ def local_path(path: str) -> Path:
 
 def listdir(path: str) -> list[str]:
     fs, fs_path = _resolve(path)
-    return [fs.unstrip_protocol(item) for item in fs.ls(fs_path, detail=False)]
+    return [_path_uri(fs, item) for item in fs.ls(fs_path, detail=False)]
+
+
+def _path_uri(fs: AbstractFileSystem, path: str) -> str:
+    if isinstance(fs, LocalFileSystem):
+        windows_path = PureWindowsPath(path)
+        if windows_path.is_absolute() and len(windows_path.drive) == 2:
+            # fsspec emits file://C:/..., which urllib reads as host C:.
+            # Keep fsspec's unescaped path convention and an empty authority.
+            return f"file:///{windows_path.as_posix()}"
+    return fs.unstrip_protocol(path)
 
 
 def torch_save(value: Any, path: str, **kwargs: Any) -> None:

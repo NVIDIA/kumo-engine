@@ -450,6 +450,7 @@ fn lookup_id_only(shard: &PkHashShard, key: &Key) -> Option<u32> {
     Some(value)
 }
 
+#[cfg(unix)]
 fn advise_random(map: &Mmap) {
     let ret = unsafe {
         libc::madvise(
@@ -462,3 +463,6 @@ fn advise_random(map: &Mmap) {
         let _ = std::io::Error::last_os_error();
     }
 }
+
+#[cfg(windows)]
+fn advise_random(_map: &Mmap) {}

@@ -14,6 +14,10 @@ pub fn validate_path_component(name: &str) -> Result<()> {
     if name.contains('\0') {
         bail!("path component must not contain null bytes: {:?}", name);
     }
+    #[cfg(windows)]
+    if name.contains(':') {
+        bail!("path component must not contain ':' on Windows: {:?}", name);
+    }
     if name.contains('/') || name.contains('\\') {
         bail!(
             "path component must not contain path separators: {:?}",
@@ -73,7 +77,19 @@ mod tests {
     fn test_valid_components() {
         assert!(validate_path_component("my-graph").is_ok());
         assert!(validate_path_component("graph_v2").is_ok());
+        #[cfg(not(windows))]
         assert!(validate_path_component("2025-03-27T12:00:00Z").is_ok());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_rejects_windows_colons() {
+        let root = Path::new(r"C:\data");
+        for component in ["C:evil", "D:", "graph:stream", "2025-03-27T12:00:00Z"] {
+            assert!(validate_path_component(component).is_err());
+            assert!(safe_index_path(root, component, "v1").is_err());
+            assert!(safe_index_path(root, "graph", component).is_err());
+        }
     }
 
     #[test]
@@ -122,6 +138,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_canonicalize_under_symlink_escape() {
         let dir = tempfile::tempdir().unwrap();
         let parent = dir.path();
