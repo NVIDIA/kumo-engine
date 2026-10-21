@@ -381,11 +381,14 @@ ready-built `RunRecord`s so every tracker records the same names:
 attempt's run after each of its events, and `finish(record, error)` with the
 fit run's final record (`None` when tracking stopped early), plus an optional
 `trial_logger(trial, attempt)` returning a Lightning logger. Params are the
-task type and resolved model plan (fit) or searched hyperparameters and
-`attempt` (trial); ids and outcomes are `kumo.*` tags (`kumo.kind`,
-`kumo.run_id`, `kumo.snapshot_id`, `kumo.query_sha256`, `kumo.parent_run`,
-`kumo.status`, `kumo.error`, `kumo.model_*`). Your `tags=`
-are added as given, except `kumo.*` names and param names.
+resolved model plan (fit) or searched hyperparameters and `attempt` (trial).
+Runs carry pointers, not lineage: `kumo.kind` and `kumo.run_id` (plus
+`kumo.parent_run`, `kumo.status` and `kumo.error` for outcomes); lineage stays
+in the model bundle, whose `provenance.json` is logged on the fit run when the
+bundle has one, with `query.pql` and `model_plan.json`. MLflow also records
+the fit's input datasets as native run inputs; Snowflake Experiment Tracking
+has no dataset inputs, so it skips them. Your `tags=` are added as given,
+except `kumo.*` names and param names.
 
 ## BigQuery staged ingestion
 

@@ -13,6 +13,7 @@ import time
 import warnings
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -28,8 +29,7 @@ from typing import (
     Union,
 )
 
-from kumo.engine._events import Event, call_each, query_sha256
-from kumo.engine._version import __version__
+from kumo.engine._events import Event, call_each
 
 if TYPE_CHECKING:
     from kumo.engine.trainer.trainer import TrainingResult
@@ -52,16 +52,17 @@ class FitContext:
     r"""What a fit trains, known once its model plan is resolved."""
 
     run_id: str
-    task_type: str
-    snapshot_id: str
     query: str
     model_plan: Mapping[str, Any]
+    #: Datasets the fit reads, by name: their location (path, URI or table).
+    inputs: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class RunRecord:
     r"""One tracked run; ``steps`` are per-epoch ``(epoch, value)``
-    histories and ``artifacts`` map file names to text."""
+    histories, ``artifacts`` map file names to text and ``inputs`` map
+    dataset names to their location."""
 
     name: Optional[str] = None
     params: Mapping[str, str] = field(default_factory=dict)
@@ -69,8 +70,8 @@ class RunRecord:
     steps: Mapping[str, Tuple[Tuple[int, float],
                               ...]] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
-    links: Mapping[str, str] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
+    inputs: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,7 @@ class Capabilities:
     system_metrics: bool = False
     step_metrics: bool = False
     artifacts: bool = False
+    dataset_inputs: bool = False
     model_link: bool = False
 
 
@@ -89,23 +91,22 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
                tags: Optional[Mapping[str, str]] = None) -> RunRecord:
     r"""The fit run's record; ``tags`` are the user's extra tags."""
     metrics: Dict[str, float] = {}
-    links: Dict[str, str] = {}
+    artifacts = {
+        'query.pql': context.query,
+        'model_plan.json': json.dumps(dict(context.model_plan), indent=2,
+                                      default=str),
+    }
     if result is not None:
         metrics.update(result.metrics)
         if fit_ended is not None and 'seconds' in fit_ended.metrics:
             metrics['seconds'] = fit_ended.metrics['seconds']
-        if result.published_model is not None:
-            links = {
-                'model_name': result.published_model.name,
-                'model_version': str(result.published_model.version),
-                'model_uri': result.published_model.uri,
-            }
+        provenance = Path(result.bundle_dir) / 'provenance.json'
+        if provenance.is_file():
+            artifacts['provenance.json'] = provenance.read_text(
+                encoding='utf-8')
     params = {
-        'task_type': context.task_type,
-        **{
-            key: _param_value(value)
-            for key, value in _flatten(context.model_plan)
-        },
+        key: _param_value(value)
+        for key, value in _flatten(context.model_plan)
     }
     return RunRecord(
         params=params,
@@ -113,21 +114,11 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
         tags={
             **_user_tags(tags, params),
             'kumo.kind': 'fit',
-            'kumo.engine_version': __version__,
             'kumo.run_id': context.run_id,
-            'kumo.snapshot_id': context.snapshot_id,
-            'kumo.query_sha256': query_sha256(context.query),
             **_error_tag(fit_ended),
-            **{f'kumo.{key}': value
-               for key, value in links.items()},
         },
-        links=links,
-        artifacts={
-            'query.pql':
-            context.query,
-            'model_plan.json':
-            json.dumps(dict(context.model_plan), indent=2, default=str),
-        },
+        artifacts=artifacts,
+        inputs=dict(context.inputs),
     )
 
 

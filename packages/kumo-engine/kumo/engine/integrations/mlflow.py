@@ -4,13 +4,15 @@
 r"""MLflow tracking for `Trainer.fit` (``pip install 'kumo-engine[mlflow]'``).
 """
 
+import hashlib
+import json
 import logging
 import os
 import posixpath
 import re
 import time
 from contextlib import ExitStack, contextmanager
-from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Set, Tuple
 
 from pytorch_lightning.loggers import MLFlowLogger
 
@@ -52,7 +54,8 @@ class MlflowTracking:
     """
 
     capabilities = Capabilities(nested_runs=True, system_metrics=True,
-                                step_metrics=True, artifacts=True)
+                                step_metrics=True, artifacts=True,
+                                dataset_inputs=True)
 
     def __init__(
         self,
@@ -74,6 +77,7 @@ class MlflowTracking:
         self._parent: Optional[str] = None
         self._experiment_id: Optional[str] = None
         self._children: Dict[Tuple[int, int], str] = {}
+        self._artifacts: Set[str] = set()
         self._guard = ExitStack()
 
     def prepare(self) -> None:
@@ -112,8 +116,19 @@ class MlflowTracking:
         self._parent = run.info.run_id
         self._experiment_id = run.info.experiment_id
         self._log_params(self._parent, record.params)
-        for name, text in record.artifacts.items():
-            self._client.log_text(self._parent, text, name)
+        self._log_artifacts(record.artifacts)
+        if record.inputs:
+            entities = mlflow.entities
+            self._client.log_inputs(self._parent, datasets=[
+                entities.DatasetInput(
+                    entities.Dataset(
+                        name=name, digest=hashlib.sha256(
+                            location.encode()).hexdigest()[:8],
+                        source_type='external',
+                        source=json.dumps({'uri': location})),
+                    tags=[entities.InputTag('mlflow.data.context', 'train')])
+                for name, location in record.inputs.items()
+            ])
 
     def trial_logger(self, trial: int,
                      attempt: int) -> Optional['_KumoMLFlowLogger']:
@@ -154,6 +169,7 @@ class MlflowTracking:
             if record is not None and self._parent is not None:
                 self._log_metrics(self._parent, record.metrics)
                 self._log_tags(self._parent, record.tags)
+                self._log_artifacts(record.artifacts)
                 if error is None:
                     status = 'FINISHED'
         finally:
@@ -168,6 +184,12 @@ class MlflowTracking:
                     _quietly(self._client.set_terminated, self._parent, status)
             self._guard.close()
             self._reset()
+
+    def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
+        for name, text in artifacts.items():
+            if name not in self._artifacts:
+                self._client.log_text(self._parent, text, name)
+                self._artifacts.add(name)
 
     def _log_tags(self, run_id: str, tags: Mapping[str, str]) -> None:
         entities = self._mlflow.entities

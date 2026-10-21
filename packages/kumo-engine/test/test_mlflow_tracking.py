@@ -105,7 +105,8 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, caplog):
     assert len(runs) == 4
     assert client.get_experiment(parent.info.experiment_id).name == 'ents'
     assert parent.info.status == 'FINISHED'
-    assert parent.data.tags['kumo.snapshot_id'] == snapshot.id
+    assert {k for k in parent.data.tags if k.startswith('kumo.')} == {
+        'kumo.kind', 'kumo.run_id', 'kumo.dropped_params'}
     assert int(parent.data.tags['kumo.dropped_params']) >= 1
     params = parent.data.params
     assert json.loads(params['optimization.base_lr']) == [0.01, 0.001]

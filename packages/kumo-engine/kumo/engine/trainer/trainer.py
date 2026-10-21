@@ -504,8 +504,6 @@ class Trainer:
         del task_dataset
         tracking.start(lambda: FitContext(
             run_id=run_id,
-            task_type=TaskType(workflow.query.task_type).value,
-            snapshot_id=snapshot.id,
             query=train_table.query,
             model_plan=to_json_dict(materialized.model_plan),
         ))

@@ -3,16 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Every tracking adapter records the same run records as a recorded fit."""
 
-import hashlib
 import json
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import pytest
-from kumoapi.plugin import PublishedModel
 
 from kumo.engine import Event
 from kumo.engine._tracking import (
@@ -28,8 +27,8 @@ RUN = 'trainer-fit-1'
 USER_TAGS = {'team': 'ents', 'kumo.run_id': 'overridden'}
 QUERY = 'PREDICT ents.Y FOR EACH ents.ID'
 CONTEXT = FitContext(
-    run_id=RUN, task_type='regression', snapshot_id='snap@1',
-    query=QUERY, model_plan={
+    run_id=RUN, query=QUERY, inputs={'ents': 's3://bucket/ents.parquet'},
+    model_plan={
         'optimization': {'base_lr': [0.01, 0.001], 'max_epochs': 2},
         'training_job': {'tune_metric': 'mae'},
         'column_processing': {
@@ -68,10 +67,8 @@ EVENTS = [
     _event('fit_ended', metrics={'val_mae': 0.3, 'test_mae': 0.32,
                                  'seconds': 9.0}, status='succeeded'),
 ]
-RESULT = SimpleNamespace(
-    metrics={'val_mae': 0.3, 'test_mae': 0.32},
-    published_model=PublishedModel(name='ents-model', version='3',
-                                   uri='models:/ents-model/3'))
+RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
+                         bundle_dir=Path('no-bundle'))
 
 
 class _Recorder:
@@ -122,7 +119,7 @@ class Observed:
     steps: Mapping[str, Tuple[Tuple[int, float], ...]]
     tags: Mapping[str, str]
     parent: Optional[str] = None
-    links: Mapping[str, str] = field(default_factory=dict)
+    inputs: Mapping[str, str] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
 
 
@@ -171,8 +168,8 @@ def gaps(expected: Dict[str, RunRecord], observed: Dict[str, Observed],
             sorted(k for k in record.tags if k.startswith('kumo.')))
         if capabilities.nested_runs:
             differ('parent', seen.parent, record.tags.get('kumo.parent_run'))
-        if capabilities.model_link:
-            differ('links', dict(seen.links), dict(record.links))
+        if capabilities.dataset_inputs:
+            differ('inputs', dict(seen.inputs), dict(record.inputs))
         if capabilities.artifacts:
             differ('artifacts', dict(seen.artifacts), dict(record.artifacts))
     return found
@@ -209,6 +206,10 @@ def mlflow_adapter(tmp_path, monkeypatch):
                     a.path: mlflow.artifacts.load_text(
                         f'{run.info.artifact_uri}/{a.path}')
                     for a in client.list_artifacts(run.info.run_id)
+                },
+                inputs={
+                    d.dataset.name: json.loads(d.dataset.source)['uri']
+                    for d in run.inputs.dataset_inputs
                 })
             for run in runs
         }
@@ -233,31 +234,23 @@ def test_records_of_the_recorded_fit():
     records = replay([])
 
     fit = records[RUN]
-    assert fit.tags == {
-        'team': 'ents',
-        'kumo.kind': 'fit',
-        'kumo.engine_version': fit.tags['kumo.engine_version'],
-        'kumo.run_id': RUN,
-        'kumo.snapshot_id': 'snap@1',
-        'kumo.query_sha256': hashlib.sha256(QUERY.encode()).hexdigest(),
-        'kumo.model_name': 'ents-model',
-        'kumo.model_version': '3',
-        'kumo.model_uri': 'models:/ents-model/3',
-    }
+    assert fit.tags == {'team': 'ents', 'kumo.kind': 'fit', 'kumo.run_id': RUN}
     assert fit.params == {
-        'task_type': 'regression',
         'optimization.base_lr': '[0.01, 0.001]',
         'optimization.max_epochs': '2',
         'training_job.tune_metric': 'mae',
         'column_processing.encoder_overrides.ents.amount ($)': 'numerical',
     }
-    with pytest.warns(UserWarning, match="'kumo.bundle_id', 'task_type'"):
+    with pytest.warns(UserWarning,
+                      match="'kumo.bundle_id', 'training_job.tune_metric'"):
         spoofed = run_record(CONTEXT, tags={'kumo.bundle_id': 'x',
-                                            'task_type': 'y', 'a': 1})
+                                            'training_job.tune_metric': 'y',
+                                            'a': 1})
     assert spoofed.tags.keys() - fit.tags.keys() == {'a'}
     assert fit.metrics == {'val_mae': 0.3, 'test_mae': 0.32, 'seconds': 9.0}
     assert fit.artifacts['query.pql'] == QUERY
     assert json.loads(fit.artifacts['model_plan.json']) == CONTEXT.model_plan
+    assert fit.inputs == {'ents': 's3://bucket/ents.parquet'}
 
     oom = records[f'{RUN}-trial-2-attempt-1']
     assert oom == RunRecord(
@@ -277,14 +270,18 @@ def test_records_of_the_recorded_fit():
 
 
 def test_adapter_records_the_same_runs_beside_a_failing_tracker(
-        adapter, caplog):
+        adapter, caplog, tmp_path):
     class RaisesOnTrial(_Recorder):
         def on_trial(self, record, event):
             super().on_trial(record, event)
             raise RuntimeError('tracker down')
 
+    (tmp_path / 'provenance.json').write_text('{"bundle": "b"}')
+    result = SimpleNamespace(metrics=RESULT.metrics, bundle_dir=tmp_path)
     broken, tracker = RaisesOnTrial(), adapter.make()
-    expected = replay([broken, tracker])
+    expected = replay([broken, tracker], result=result)
+
+    assert expected[RUN].artifacts['provenance.json'] == '{"bundle": "b"}'
 
     assert [hook for hook, _ in broken.calls] == [
         'start', 'on_trial', 'finish'
