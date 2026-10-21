@@ -236,6 +236,7 @@ class BundleProvenance(Manifest):
     source_tables: Optional[Dict[str, SourceTableEntry]] = None
     fit_mode: Optional[str] = None
     tracking: Optional[TrackingRef] = omit_none()
+    holdout: Optional[Dict[str, Any]] = omit_none()
 
     def to_dict(self) -> Dict[str, Any]:
         data = super().to_dict()

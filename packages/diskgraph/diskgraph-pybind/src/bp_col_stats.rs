@@ -13,15 +13,19 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use arrow_array::RecordBatch;
+use arrow::compute::filter_record_batch;
+use arrow::row::{OwnedRow, RowConverter, SortField};
+use arrow_array::{ArrayRef, BooleanArray, RecordBatch};
 use arrow_schema::{DataType, Schema};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_reader::{ParquetRecordBatchReaderBuilder, RowSelection, RowSelector};
 use parquet::arrow::ProjectionMask;
 use rayon::prelude::*;
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
+#[cfg(test)]
+use diskgraph_core::accumulators::MAX_CATEGORIES;
 use diskgraph_core::accumulators::{
-    kumo_entry, kumo_key, CategoryCountStrategy, WelfordAccumulator, MAX_CATEGORIES,
+    kumo_entry, kumo_key, CategoryCountStrategy, WelfordAccumulator,
 };
 use diskgraph_ingest::col_stats::{FileColStats, TableCategoryCounts};
 use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType, TimestampUnit};
@@ -76,6 +80,157 @@ impl IntegerRange {
             self.observe(max);
         }
     }
+}
+
+/// Options beyond the ingest-compatible statistics; the default changes nothing.
+#[derive(Clone, Debug)]
+pub struct ColStatsOptions {
+    /// Emit `PERCENTILES` (q01..q99, approximate) for every numerical column.
+    pub percentiles: bool,
+    /// Emit `SUMMARY_STATS_BY_CLASS` for a `SCORE`/`CLASS` column pair.
+    pub summary_stats_by_class: bool,
+    /// Emit `HISTOGRAM` / `HISTOGRAM_HALF_MONTH` (a second read).
+    pub histograms: bool,
+    /// Keep at most this many `CATEGORY_COUNTS` entries in the full output,
+    /// and record `CATEGORY_COUNTS_CAPPED`: whether counting hit the
+    /// category cap, so `NUM_UNIQUE` is an estimate.
+    pub category_counts_limit: Option<usize>,
+    /// Compute every statistic over only the first row of each run of equal
+    /// values of these columns, in path and row order.
+    pub first_row_per: Vec<String>,
+}
+
+impl Default for ColStatsOptions {
+    fn default() -> Self {
+        Self {
+            percentiles: false,
+            summary_stats_by_class: true,
+            histograms: true,
+            category_counts_limit: None,
+            first_row_per: Vec::new(),
+        }
+    }
+}
+
+/// Run boundaries for `ColStatsOptions::first_row_per`.
+struct RunKeys {
+    names: Vec<String>,
+    /// Per work item, the key row that precedes its row group.
+    previous: Vec<Option<OwnedRow>>,
+}
+
+fn key_rows(batch: &RecordBatch, names: &[String]) -> Result<arrow::row::Rows> {
+    let arrays: Vec<ArrayRef> = names
+        .iter()
+        .map(|name| Ok(batch.column(batch.schema().index_of(name)?).clone()))
+        .collect::<Result<_>>()?;
+    let converter = RowConverter::new(
+        arrays
+            .iter()
+            .map(|array| SortField::new(array.data_type().clone()))
+            .collect(),
+    )?;
+    Ok(converter.convert_columns(&arrays)?)
+}
+
+/// Keep the rows whose key differs from the row before; `carry` holds the
+/// last key seen.
+fn first_rows_of_runs(
+    batch: RecordBatch,
+    names: &[String],
+    carry: &mut Option<OwnedRow>,
+) -> Result<RecordBatch> {
+    if batch.num_rows() == 0 {
+        return Ok(batch);
+    }
+    let rows = key_rows(&batch, names)?;
+    let mask: BooleanArray = (0..rows.num_rows())
+        .map(|idx| {
+            Some(if idx == 0 {
+                carry.as_ref().is_none_or(|last| last.row() != rows.row(0))
+            } else {
+                rows.row(idx) != rows.row(idx - 1)
+            })
+        })
+        .collect();
+    *carry = Some(rows.row(rows.num_rows() - 1).owned());
+    Ok(filter_record_batch(&batch, &mask)?)
+}
+
+fn last_key_row(path: &Path, row_group: usize, names: &[String]) -> Result<Option<OwnedRow>> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
+    let rows = builder.metadata().row_group(row_group).num_rows() as usize;
+    if rows == 0 {
+        return Ok(None);
+    }
+    let indices = resolve_named_indices(names, builder.schema())?;
+    let projection = ProjectionMask::roots(builder.parquet_schema(), indices);
+    let reader = builder
+        .with_row_groups(vec![row_group])
+        .with_projection(projection)
+        .with_row_selection(RowSelection::from(vec![
+            RowSelector::skip(rows - 1),
+            RowSelector::select(1),
+        ]))
+        .build()?;
+    let mut last = None;
+    for batch in reader {
+        let batch = batch?;
+        if batch.num_rows() > 0 {
+            let rows = key_rows(&batch, names)?;
+            last = Some(rows.row(rows.num_rows() - 1).owned());
+        }
+    }
+    Ok(last)
+}
+
+fn resolve_named_indices(names: &[String], schema: &Schema) -> Result<Vec<usize>> {
+    names
+        .iter()
+        .map(|name| {
+            schema
+                .index_of(name)
+                .with_context(|| format!("schema error: missing parquet column '{name}'"))
+        })
+        .collect()
+}
+
+fn run_keys(
+    parquet_paths: &[&Path],
+    work: &[(usize, usize)],
+    options: &ColStatsOptions,
+) -> Result<Option<RunKeys>> {
+    if options.first_row_per.is_empty() {
+        return Ok(None);
+    }
+    let names = options.first_row_per.clone();
+    let lasts = work
+        .par_iter()
+        .map(|&(pi, rg)| last_key_row(parquet_paths[pi], rg, &names))
+        .collect::<Result<Vec<_>>>()?;
+    let mut previous = Vec::with_capacity(lasts.len());
+    let mut carry: Option<OwnedRow> = None;
+    for last in lasts {
+        previous.push(carry.clone());
+        if last.is_some() {
+            carry = last;
+        }
+    }
+    Ok(Some(RunKeys { names, previous }))
+}
+
+/// Projected parquet columns: the specs' plus any run keys.
+fn with_key_indices(
+    mut indices: Vec<usize>,
+    run_keys: Option<&RunKeys>,
+    schema: &Schema,
+) -> Result<Vec<usize>> {
+    if let Some(keys) = run_keys {
+        indices.extend(resolve_named_indices(&keys.names, schema)?);
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    Ok(indices)
 }
 
 fn validate_stats_dtype(col: &ColumnSpec) -> Result<()> {
@@ -580,11 +735,10 @@ fn accumulate_distributions_for_row_group(
     floating_specs: &[FloatingHistogramSpec],
     integer_specs: &[IntegerHistogramSpec],
     timestamp_specs: &[TimestampHistogramSpec],
+    run: Option<(&RunKeys, usize)>,
     out: &mut DistributionPartial,
 ) -> Result<()> {
-    let file = File::open(path)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-    let mut projected_indices: Vec<usize> = floating_specs
+    let projected_indices: Vec<usize> = floating_specs
         .iter()
         .map(|spec| parquet_indices[spec.spec_idx])
         .chain(
@@ -598,14 +752,7 @@ fn accumulate_distributions_for_row_group(
                 .map(|spec| parquet_indices[spec.spec_idx]),
         )
         .collect();
-    projected_indices.sort_unstable();
-    projected_indices.dedup();
-    let projection = ProjectionMask::roots(builder.parquet_schema(), projected_indices);
-    let reader = builder
-        .with_row_groups(vec![row_group])
-        .with_projection(projection)
-        .build()?;
-    for batch_res in reader {
+    for batch_res in row_group_batches(path, row_group, &projected_indices, run)? {
         let batch = batch_res?;
         let schema = batch.schema();
         for (hist_idx, spec) in floating_specs.iter().enumerate() {
@@ -787,6 +934,38 @@ fn accumulate_by_class(
     Ok(())
 }
 
+type RowGroupStats = (FileColStats, ByClassStats, Vec<IntegerRange>);
+
+/// The row group's batches, reduced to run starts when `first_row_per` is set.
+fn row_group_batches<'a>(
+    path: &Path,
+    row_group: usize,
+    parquet_indices: &[usize],
+    run: Option<(&'a RunKeys, usize)>,
+) -> Result<impl Iterator<Item = Result<RecordBatch>> + 'a> {
+    let file = File::open(path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let indices = with_key_indices(
+        parquet_indices.to_vec(),
+        run.map(|(keys, _)| keys),
+        builder.schema(),
+    )?;
+    let projection = ProjectionMask::roots(builder.parquet_schema(), indices);
+    let reader = builder
+        .with_row_groups(vec![row_group])
+        .with_projection(projection)
+        .build()?;
+    let mut carry = run.and_then(|(keys, work_idx)| keys.previous[work_idx].clone());
+    Ok(reader.map(move |batch| {
+        let batch = batch?;
+        match run {
+            Some((keys, _)) => first_rows_of_runs(batch, &keys.names, &mut carry),
+            None => Ok(batch),
+        }
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn stats_for_row_group(
     path: &Path,
     row_group: usize,
@@ -795,18 +974,12 @@ fn stats_for_row_group(
     integer_spec_indices: &[usize],
     table_cat: &Arc<TableCategoryCounts>,
     score_class: Option<(usize, usize)>,
-) -> Result<(FileColStats, ByClassStats, Vec<IntegerRange>)> {
+    run: Option<(&RunKeys, usize)>,
+) -> Result<RowGroupStats> {
     let mut fcs = FileColStats::new_with_categories(columns, Arc::clone(table_cat));
     let mut by_class = ByClassStats::new();
     let mut integer_ranges = vec![IntegerRange::default(); integer_spec_indices.len()];
-    let file = File::open(path)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-    let projection = ProjectionMask::roots(builder.parquet_schema(), parquet_indices.to_vec());
-    let reader = builder
-        .with_row_groups(vec![row_group])
-        .with_projection(projection)
-        .build()?;
-    for batch_res in reader {
+    for batch_res in row_group_batches(path, row_group, parquet_indices, run)? {
         let batch = batch_res?;
         let schema = batch.schema();
         for (i, col) in columns.iter().enumerate() {
@@ -846,27 +1019,12 @@ fn stats_for_row_group(
     Ok((fcs, by_class, integer_ranges))
 }
 
-/// Compute full and min Kumo-format statistics for prediction parquet files.
-pub fn compute_parquet_col_stats(
-    parquet_paths: &[&Path],
-    columns: &[ColumnSpec],
-    data_version: &str,
-) -> Result<(String, String)> {
-    compute_parquet_col_stats_with_max_categories(
-        parquet_paths,
-        columns,
-        data_version,
-        MAX_CATEGORIES,
-    )
-}
-
-/// Test-focused variant of [`compute_parquet_col_stats`] with an injectable
-/// retained-vocabulary limit. Production callers always use
-/// [`MAX_CATEGORIES`] through the public wrapper above.
+/// Accumulate per-column statistics for [`compute_parquet_col_stats_with_options`].
 fn accumulate_parquet_col_stats<'a>(
     parquet_paths: &'a [&'a Path],
     columns: &'a [ColumnSpec],
     max_categories: u64,
+    options: &ColStatsOptions,
 ) -> Result<(FileColStats, Arc<TableCategoryCounts>, Accumulated<'a>)> {
     if max_categories == 0 {
         bail!("category count limit must be greater than zero");
@@ -906,19 +1064,24 @@ fn accumulate_parquet_col_stats<'a>(
         })
         .collect();
 
-    let score_class = find_score_class(columns);
-
-    let (acc, by_class, integer_ranges) = if work.is_empty() {
-        let mut fcs = FileColStats::new_with_categories(columns, Arc::clone(&table_cat));
-        fcs.flush_categories();
+    let score_class = find_score_class(columns).filter(|_| options.summary_stats_by_class);
+    let run_keys = run_keys(parquet_paths, &work, options)?;
+    let empty = || {
         (
-            fcs,
+            FileColStats::new_with_categories(columns, Arc::clone(&table_cat)),
             ByClassStats::new(),
             vec![IntegerRange::default(); integer_spec_indices.len()],
         )
+    };
+
+    let (acc, by_class, integer_ranges) = if work.is_empty() {
+        let (mut fcs, by_class, integer_ranges) = empty();
+        fcs.flush_categories();
+        (fcs, by_class, integer_ranges)
     } else {
         work.par_iter()
-            .map(|&(pi, rg)| {
+            .enumerate()
+            .map(|(work_idx, &(pi, rg))| {
                 stats_for_row_group(
                     parquet_paths[pi],
                     rg,
@@ -927,16 +1090,11 @@ fn accumulate_parquet_col_stats<'a>(
                     &integer_spec_indices,
                     &table_cat,
                     score_class,
+                    run_keys.as_ref().map(|keys| (keys, work_idx)),
                 )
             })
             .try_reduce(
-                || {
-                    (
-                        FileColStats::new_with_categories(columns, Arc::clone(&table_cat)),
-                        ByClassStats::new(),
-                        vec![IntegerRange::default(); integer_spec_indices.len()],
-                    )
-                },
+                empty,
                 |(mut acc, mut by_class, mut integer_ranges),
                  (mut partial, partial_by_class, partial_ranges)| {
                     acc.merge(&mut partial);
@@ -962,6 +1120,7 @@ fn accumulate_parquet_col_stats<'a>(
             integer_ranges,
             by_class,
             score_class,
+            run_keys,
         },
     ))
 }
@@ -976,19 +1135,56 @@ struct Accumulated<'a> {
     integer_ranges: Vec<IntegerRange>,
     by_class: ByClassStats,
     score_class: Option<(usize, usize)>,
+    run_keys: Option<RunKeys>,
 }
 
-/// Test-focused variant of [`compute_parquet_col_stats`] with an injectable
-/// retained-vocabulary limit. Production callers always use
-/// [`MAX_CATEGORIES`] through the public wrapper above.
-pub(crate) fn compute_parquet_col_stats_with_max_categories(
+/// [`compute_parquet_col_stats_with_options`] with default options and a given
+/// retained-vocabulary limit.
+#[cfg(test)]
+fn compute_parquet_col_stats_with_max_categories(
     parquet_paths: &[&Path],
     columns: &[ColumnSpec],
     data_version: &str,
     max_categories: u64,
 ) -> Result<(String, String)> {
-    let (acc, table_cat, run) =
-        accumulate_parquet_col_stats(parquet_paths, columns, max_categories)?;
+    compute_parquet_col_stats_with_options(
+        parquet_paths,
+        columns,
+        data_version,
+        max_categories,
+        &ColStatsOptions::default(),
+    )
+}
+
+/// Compute full and min Kumo-format statistics for prediction parquet files,
+/// with the optional statistics in `options`.
+pub fn compute_parquet_col_stats_with_options(
+    parquet_paths: &[&Path],
+    columns: &[ColumnSpec],
+    data_version: &str,
+    max_categories: u64,
+    options: &ColStatsOptions,
+) -> Result<(String, String)> {
+    let (mut acc, table_cat, run) =
+        accumulate_parquet_col_stats(parquet_paths, columns, max_categories, options)?;
+    let percentiles: Vec<(usize, Vec<f64>)> = if options.percentiles {
+        let levels: Vec<f64> = (1..100).map(|q| q as f64 / 100.0).collect();
+        (0..columns.len())
+            .filter_map(|idx| Some((idx, acc.numerical_quantiles(idx, &levels)?)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let capped: Vec<(usize, bool)> = if options.category_counts_limit.is_some() {
+        table_cat
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, counts)| Some((idx, counts.as_ref()?.is_capped())))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
     let types: Vec<IngestedType> = columns.iter().map(|c| c.ingested_dtype.clone()).collect();
     let mut kumo = acc.into_kumo_stats(
@@ -1000,12 +1196,42 @@ pub(crate) fn compute_parquet_col_stats_with_max_categories(
         data_version,
     )?;
     let mut full = std::mem::take(&mut kumo.stats);
-    add_distribution_stats(&run, &mut full, data_version)?;
+    add_distribution_stats(&run, &mut full, data_version, options.histograms)?;
     // Category arrays are filled in, and trimmed for min, when serialized.
     let mut min = full.clone();
+    for (idx, capped) in capped {
+        let name = &columns[idx].name;
+        let prefix = format!("{name}__");
+        let stype = full.keys().find_map(|key| {
+            key.strip_prefix(&prefix)?
+                .strip_suffix("__CATEGORY_COUNTS__False")
+                .map(str::to_string)
+        });
+        if let Some(stype) = stype {
+            let count = full
+                .get(&kumo_key(name, &stype, "COUNT", false))
+                .and_then(|entry| entry.get("value")?.as_u64())
+                .unwrap_or_default();
+            full.insert(
+                kumo_key(name, &stype, "CATEGORY_COUNTS_CAPPED", false),
+                kumo_entry(json!(capped), false, data_version, count),
+            );
+        }
+    }
+    for (idx, values) in percentiles {
+        let name = &columns[idx].name;
+        let count = full
+            .get(&kumo_key(name, "kumo.numerical", "COUNT", false))
+            .and_then(|entry| entry.get("value")?.as_u64())
+            .unwrap_or_default();
+        full.insert(
+            kumo_key(name, "kumo.numerical", "PERCENTILES", true),
+            kumo_entry(json!(values), true, data_version, count),
+        );
+    }
     add_summary_stats_by_class(&run, &mut full, &mut min, data_version);
     Ok((
-        kumo.to_json_string(&full, usize::MAX)?,
+        kumo.to_json_string(&full, options.category_counts_limit.unwrap_or(usize::MAX))?,
         kumo.to_json_string(&min, MIN_COL_STATS_CATEGORY_LIMIT)?,
     ))
 }
@@ -1030,6 +1256,7 @@ fn add_distribution_stats(
     run: &Accumulated<'_>,
     full: &mut JsonMap<String, JsonValue>,
     data_version: &str,
+    histograms: bool,
 ) -> Result<()> {
     let Accumulated {
         parquet_paths,
@@ -1038,6 +1265,7 @@ fn add_distribution_stats(
         parquet_indices,
         integer_spec_indices,
         integer_ranges,
+        run_keys,
         ..
     } = run;
     let (parquet_paths, columns) = (*parquet_paths, *columns);
@@ -1059,6 +1287,9 @@ fn add_distribution_stats(
         }
     }
 
+    if !histograms {
+        return Ok(());
+    }
     let floating_specs: Vec<FloatingHistogramSpec> = columns
         .iter()
         .enumerate()
@@ -1117,6 +1348,7 @@ fn add_distribution_stats(
     {
         let distributions = work
             .par_iter()
+            .enumerate()
             .try_fold(
                 || {
                     DistributionPartial::new(
@@ -1125,7 +1357,7 @@ fn add_distribution_stats(
                         timestamp_specs.len(),
                     )
                 },
-                |mut out, &(pi, rg)| {
+                |mut out, (work_idx, &(pi, rg))| {
                     accumulate_distributions_for_row_group(
                         parquet_paths[pi],
                         rg,
@@ -1134,6 +1366,7 @@ fn add_distribution_stats(
                         &floating_specs,
                         &integer_specs,
                         &timestamp_specs,
+                        run_keys.as_ref().map(|keys| (keys, work_idx)),
                         &mut out,
                     )?;
                     Ok::<_, anyhow::Error>(out)
@@ -1367,12 +1600,17 @@ mod tests {
         max_categories: u64,
     ) -> (String, String) {
         use diskgraph_ingest::col_stats::minify_kumo_stats;
-        let (mut acc, table_cat, run) =
-            accumulate_parquet_col_stats(paths, columns, max_categories).unwrap();
+        let (mut acc, table_cat, run) = accumulate_parquet_col_stats(
+            paths,
+            columns,
+            max_categories,
+            &ColStatsOptions::default(),
+        )
+        .unwrap();
         let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
         let types: Vec<IngestedType> = columns.iter().map(|c| c.ingested_dtype.clone()).collect();
         let mut full = acc.to_kumo_json(&names, &types, Some(&table_cat), None, "v1");
-        add_distribution_stats(&run, &mut full, "v1").unwrap();
+        add_distribution_stats(&run, &mut full, "v1", true).unwrap();
         let mut min = minify_kumo_stats(&full, MIN_COL_STATS_CATEGORY_LIMIT);
         add_summary_stats_by_class(&run, &mut full, &mut min, "v1");
         (
@@ -1490,7 +1728,13 @@ mod tests {
             col("SCORE", IngestedType::Float64, SemanticType::Numerical),
             col("CLASS", IngestedType::String, SemanticType::Categorical),
         ];
-        let (full, min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, min) = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
 
         // COUNT == n across columns (merge across row groups correct).
         assert_eq!(val(&full, "entity__kumo.ID__COUNT__False"), n as u64);
@@ -1601,7 +1845,13 @@ mod tests {
             ts_col("month", None),
             ts_col("day", None),
         ];
-        let (full, _) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _) = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
         for (name, stype) in [
             ("rank", "kumo.numerical"),
             ("revenue", "kumo.numerical"),
@@ -1649,7 +1899,13 @@ mod tests {
             IngestedType::Float32Array,
             SemanticType::Latlong,
         )];
-        let (full, _) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _) = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
         assert_eq!(
             val(&full, "location__kumo.latlong__SEQUENCE_MAX_LENGTH__False"),
             2
@@ -1683,7 +1939,13 @@ mod tests {
             col("SCORE", IngestedType::Float32, SemanticType::Numerical),
             col("CLASS", IngestedType::Bool, SemanticType::Categorical),
         ];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
         // Numerical scalar stats populated (not empty-Welford defaults).
         let mx = val(&full, "SCORE__kumo.numerical__MAX__False")
             .as_f64()
@@ -1732,7 +1994,13 @@ mod tests {
             col("SCORE", IngestedType::Float64, SemanticType::Numerical),
             col("CLASS", IngestedType::String, SemanticType::Categorical),
         ];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
         let bc = val(
             &full,
             "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
@@ -1783,7 +2051,13 @@ mod tests {
             col("score", IngestedType::Float64, SemanticType::Numerical),
         ];
         let (full, _) =
-            compute_parquet_col_stats(&[p1.as_path(), p2.as_path()], &columns, "v1").unwrap();
+            compute_parquet_col_stats_with_options(
+                &[p1.as_path(), p2.as_path()],
+                &columns,
+                "v1",
+                MAX_CATEGORIES,
+                &ColStatsOptions::default(),
+            ).unwrap();
         assert_eq!(val(&full, "entity__kumo.ID__COUNT__False"), 4);
         assert_eq!(val(&full, "score__kumo.numerical__MIN__False"), 1.0);
         assert_eq!(val(&full, "score__kumo.numerical__MAX__False"), 4.0);
@@ -1814,10 +2088,12 @@ mod tests {
             vec![StdArc::new(Float64Array::from(vec![2.0])) as ArrayRef],
             1,
         );
-        let err = compute_parquet_col_stats(
+        let err = compute_parquet_col_stats_with_options(
             &[p1.as_path(), p2.as_path()],
             &[col("score", IngestedType::Float64, SemanticType::Numerical)],
             "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
         )
         .unwrap_err();
         assert!(format!("{err:#}").contains("column 'score'"));
@@ -1882,7 +2158,13 @@ mod tests {
         );
 
         let columns = vec![ts_col("created_at", None), ts_col("updated_at", None)];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
         assert_eq!(
             val(
                 &full,
@@ -1937,7 +2219,13 @@ mod tests {
         );
 
         let (full, _min) =
-            compute_parquet_col_stats(&[path.as_path()], &[ts_col("ts", None)], "v1").unwrap();
+            compute_parquet_col_stats_with_options(
+                &[path.as_path()],
+                &[ts_col("ts", None)],
+                "v1",
+                MAX_CATEGORIES,
+                &ColStatsOptions::default(),
+            ).unwrap();
         let histogram = val(&full, "ts__kumo.timestamp__HISTOGRAM_HALF_MONTH__False");
         let histogram = histogram.as_array().unwrap();
         assert_eq!(histogram.len(), TIMESTAMP_HISTOGRAM_BINS);
@@ -1981,7 +2269,13 @@ mod tests {
         );
 
         let (full, _) =
-            compute_parquet_col_stats(&[path.as_path()], &[ts_col("ts", None)], "v1").unwrap();
+            compute_parquet_col_stats_with_options(
+                &[path.as_path()],
+                &[ts_col("ts", None)],
+                "v1",
+                MAX_CATEGORIES,
+                &ColStatsOptions::default(),
+            ).unwrap();
         let histogram = val(&full, "ts__kumo.timestamp__HISTOGRAM_HALF_MONTH__False");
         let histogram = histogram.as_array().unwrap();
         assert_eq!(histogram.len(), TIMESTAMP_HISTOGRAM_BINS);
@@ -2033,7 +2327,13 @@ mod tests {
             ts_col("null_ts", None),
             col("score", IngestedType::Float64, SemanticType::Numerical),
         ];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
         let stats: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
         assert!(!stats.contains_key("ts__kumo.timestamp__HISTOGRAM_HALF_MONTH__False"));
         assert!(!stats.contains_key("null_ts__kumo.timestamp__HISTOGRAM_HALF_MONTH__False"));
@@ -2077,7 +2377,13 @@ mod tests {
         let mut timestamp = ts_col("ts", Some(TimestampUnit::Millis));
         timestamp.ingested_dtype = IngestedType::Int64;
         let columns = vec![timestamp];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
         assert_eq!(val(&full, "ts__kumo.timestamp__MIN__False"), expected);
         assert_eq!(val(&full, "ts__kumo.timestamp__MAX__False"), expected);
         assert_eq!(
@@ -2088,7 +2394,13 @@ mod tests {
         let mut timestamp = ts_col("ts", None);
         timestamp.ingested_dtype = IngestedType::Int64;
         let (full, _min) =
-            compute_parquet_col_stats(&[path.as_path()], &[timestamp], "v1").unwrap();
+            compute_parquet_col_stats_with_options(
+                &[path.as_path()],
+                &[timestamp],
+                "v1",
+                MAX_CATEGORIES,
+                &ColStatsOptions::default(),
+            ).unwrap();
         assert_eq!(val(&full, "ts__kumo.timestamp__MIN__False"), expected);
     }
 
@@ -2106,7 +2418,13 @@ mod tests {
             64,
         );
         let columns = vec![ts_col("ts", Some(TimestampUnit::Seconds))];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
         assert_eq!(
             val(&full, "ts__kumo.timestamp__MIN__False"),
             "kumo_timestamp_2022-07-31 22:00:01"
@@ -2129,7 +2447,13 @@ mod tests {
             IngestedType::Float64,
             SemanticType::Numerical,
         )];
-        let err = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap_err();
+        let err = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("NOT_THERE") && msg.contains("schema error"));
 
@@ -2142,7 +2466,13 @@ mod tests {
             1024,
         );
         let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
-        let (full, _) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _) = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
         assert_eq!(
             val(&full, "SCORE__kumo.numerical__MIN__False"),
             JsonValue::Null
@@ -2175,7 +2505,13 @@ mod tests {
             col("cnt", IngestedType::Int32, SemanticType::Numerical),
             col("b", IngestedType::UInt8, SemanticType::Numerical),
         ];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
         assert_eq!(val(&full, "cnt__kumo.numerical__COUNT__False"), 3u64);
         assert_eq!(val(&full, "b__kumo.numerical__COUNT__False"), 3u64);
         let mfull: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
@@ -2199,10 +2535,12 @@ mod tests {
             1,
         );
 
-        let (full, _) = compute_parquet_col_stats(
+        let (full, _) = compute_parquet_col_stats_with_options(
             &[path.as_path()],
             &[col("v", IngestedType::Int64, SemanticType::Numerical)],
             "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
         )
         .unwrap();
         assert_eq!(val(&full, "v__kumo.numerical__MIN__False"), i64::MAX - 2);
@@ -2227,10 +2565,12 @@ mod tests {
             1,
         );
 
-        let (full, _) = compute_parquet_col_stats(
+        let (full, _) = compute_parquet_col_stats_with_options(
             &[path.as_path()],
             &[col("v", IngestedType::Int64, SemanticType::Numerical)],
             "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
         )
         .unwrap();
         let histogram = val(&full, "v__kumo.numerical__HISTOGRAM__False");
@@ -2259,14 +2599,12 @@ mod tests {
             1,
         );
 
-        let (full, _) = compute_parquet_col_stats(
+        let (full, _) = compute_parquet_col_stats_with_options(
             &[path.as_path()],
-            &[col(
-                "wide_int",
-                IngestedType::Int64,
-                SemanticType::Numerical,
-            )],
+            &[col( "wide_int", IngestedType::Int64, SemanticType::Numerical, )],
             "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
         )
         .unwrap();
 
@@ -2299,14 +2637,12 @@ mod tests {
             1,
         );
 
-        let (full, _) = compute_parquet_col_stats(
+        let (full, _) = compute_parquet_col_stats_with_options(
             &[path.as_path()],
-            &[col(
-                "integer",
-                IngestedType::Int64,
-                SemanticType::Numerical,
-            )],
+            &[col( "integer", IngestedType::Int64, SemanticType::Numerical, )],
             "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
         )
         .unwrap();
 
@@ -2369,14 +2705,12 @@ mod tests {
                 vec![values],
                 1,
             );
-            let error = compute_parquet_col_stats(
+            let error = compute_parquet_col_stats_with_options(
                 &[path.as_path()],
-                &[col(
-                    "wide_int",
-                    IngestedType::Int64,
-                    SemanticType::Numerical,
-                )],
+                &[col( "wide_int", IngestedType::Int64, SemanticType::Numerical, )],
                 "v1",
+                MAX_CATEGORIES,
+                &ColStatsOptions::default(),
             )
             .unwrap_err();
 
@@ -2411,13 +2745,12 @@ mod tests {
             1,
         );
 
-        let (full, _) = compute_parquet_col_stats(
+        let (full, _) = compute_parquet_col_stats_with_options(
             &[path.as_path()],
-            &[
-                col("integer", IngestedType::Int64, SemanticType::Numerical),
-                col("float", IngestedType::Float64, SemanticType::Numerical),
-            ],
+            &[ col("integer", IngestedType::Int64, SemanticType::Numerical), col("float", IngestedType::Float64, SemanticType::Numerical), ],
             "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
         )
         .unwrap();
         let stats: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
@@ -2452,7 +2785,13 @@ mod tests {
             col("subnormal", IngestedType::Float64, SemanticType::Numerical),
         ];
 
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) = compute_parquet_col_stats_with_options(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
         let histogram = val(&full, "extreme__kumo.numerical__HISTOGRAM__False");
         let histogram = histogram.as_array().unwrap();
         assert_eq!(histogram.len(), NUMERICAL_HISTOGRAM_BINS);
@@ -2509,7 +2848,13 @@ mod tests {
             );
             let columns = vec![ts_col("ts", None)];
             let (full, _min) =
-                compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+                compute_parquet_col_stats_with_options(
+                    &[path.as_path()],
+                    &columns,
+                    "v1",
+                    MAX_CATEGORIES,
+                    &ColStatsOptions::default(),
+                ).unwrap();
             assert_eq!(
                 val(&full, "ts__kumo.timestamp__MIN__False"),
                 "kumo_timestamp_1969-12-31 23:59:59",
@@ -2529,5 +2874,256 @@ mod tests {
                 "histogram wrong for {label}"
             );
         }
+    }
+
+    fn with_options(paths: &[&Path], columns: &[ColumnSpec], options: ColStatsOptions) -> String {
+        compute_parquet_col_stats_with_options(paths, columns, "v1", MAX_CATEGORIES, &options)
+            .unwrap()
+            .0
+    }
+
+    fn write_scores(path: &Path, scores: Vec<f64>, rows_per_group: usize) {
+        write_parquet(
+            path,
+            Schema::new(vec![Field::new("SCORE", DataType::Float64, true)]),
+            vec![StdArc::new(Float64Array::from(scores)) as ArrayRef],
+            rows_per_group,
+        );
+    }
+
+    #[test]
+    fn unset_options_change_nothing_and_options_are_additive() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("scores.parquet");
+        let n = 3000usize;
+        write_parquet(
+            &path,
+            Schema::new(vec![
+                Field::new("SCORE", DataType::Float64, false),
+                Field::new("CLASS", DataType::Utf8, false),
+            ]),
+            vec![
+                StdArc::new(Float64Array::from(
+                    (0..n).map(|i| (i % 97) as f64 / 97.0).collect::<Vec<_>>(),
+                )) as ArrayRef,
+                StdArc::new(StringArray::from(
+                    (0..n)
+                        .map(|i| format!("c{}", (i * i) % 50))
+                        .collect::<Vec<_>>(),
+                )) as ArrayRef,
+            ],
+            256,
+        );
+        let columns = vec![
+            col("SCORE", IngestedType::Float64, SemanticType::Numerical),
+            col("CLASS", IngestedType::String, SemanticType::Categorical),
+        ];
+        let paths = [path.as_path()];
+        let parse = |json: &str| serde_json::from_str::<JsonMap<String, JsonValue>>(json).unwrap();
+
+        let (default, default_min) = compute_parquet_col_stats_with_options(
+            &paths,
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        ).unwrap();
+        let unset = compute_parquet_col_stats_with_options(
+            &paths,
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions::default(),
+        )
+        .unwrap();
+        assert_eq!((default.clone(), default_min.clone()), unset);
+
+        let (full, min) = compute_parquet_col_stats_with_options(
+            &paths,
+            &columns,
+            "v1",
+            MAX_CATEGORIES,
+            &ColStatsOptions {
+                percentiles: true,
+                summary_stats_by_class: false,
+                histograms: false,
+                category_counts_limit: Some(5),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (mut full, mut default) = (parse(&full), parse(&default));
+        let percentiles = full
+            .remove("SCORE__kumo.numerical__PERCENTILES__True")
+            .unwrap();
+        assert_eq!(percentiles["value"].as_array().unwrap().len(), 99);
+        assert_eq!(percentiles["num_entries"], json!(n));
+        for key in [
+            "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
+            "SCORE__kumo.numerical__HISTOGRAM__False",
+        ] {
+            assert!(default.remove(key).is_some());
+        }
+        assert_eq!(
+            full.remove("CLASS__kumo.categorical__CATEGORY_COUNTS_CAPPED__False").unwrap()["value"],
+            json!(false)
+        );
+        let counts_key = "CLASS__kumo.categorical__CATEGORY_COUNTS__False";
+        let all = default.remove(counts_key).unwrap()["value"].clone();
+        let top = full.remove(counts_key).unwrap()["value"].clone();
+        assert_eq!(top.as_array().unwrap()[..], all.as_array().unwrap()[..5]);
+        assert_eq!(full, default);
+        let mut default_min = parse(&default_min);
+        default_min.remove("SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False");
+        default_min.remove("SCORE__kumo.numerical__HISTOGRAM__False");
+        assert_eq!(parse(&min), default_min);
+    }
+
+    #[test]
+    fn capped_category_counts_are_flagged() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("classes.parquet");
+        write_parquet(
+            &path,
+            Schema::new(vec![Field::new("CLASS", DataType::Utf8, false)]),
+            vec![StdArc::new(StringArray::from(vec!["a", "b", "c", "a"])) as ArrayRef],
+            100,
+        );
+        let columns = vec![col("CLASS", IngestedType::String, SemanticType::Categorical)];
+        let options = ColStatsOptions {
+            category_counts_limit: Some(1),
+            ..Default::default()
+        };
+        for (cap, capped) in [(2, true), (3, false)] {
+            let (full, _) =
+                compute_parquet_col_stats_with_options(&[path.as_path()], &columns, "v1", cap, &options)
+                    .unwrap();
+            assert_eq!(
+                val(&full, "CLASS__kumo.categorical__CATEGORY_COUNTS_CAPPED__False"),
+                json!(capped)
+            );
+            assert_eq!(
+                val(&full, "CLASS__kumo.categorical__CATEGORY_COUNTS__False"),
+                json!([["a", 2]])
+            );
+        }
+    }
+
+    #[test]
+    fn percentiles_track_exact_ranks() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("scores.parquet");
+        let mut scores: Vec<f64> = (1..=20_000).map(|i| (i as f64 / 2000.0).exp()).collect();
+        scores.extend((1..=5_000).map(|i| -(i as f64) / 10.0));
+        scores.push(f64::NAN);
+        write_scores(&path, scores.clone(), 1000);
+        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
+
+        let full = with_options(
+            &[path.as_path()],
+            &columns,
+            ColStatsOptions {
+                percentiles: true,
+                ..Default::default()
+            },
+        );
+        let values = val(&full, "SCORE__kumo.numerical__PERCENTILES__True");
+        let mut finite: Vec<f64> = scores.into_iter().filter(|v| v.is_finite()).collect();
+        finite.sort_by(f64::total_cmp);
+        for (idx, value) in values.as_array().unwrap().iter().enumerate() {
+            let rank = finite.partition_point(|v| *v < value.as_f64().unwrap()) as f64
+                / finite.len() as f64;
+            assert!(
+                (rank - (idx + 1) as f64 / 100.0).abs() < 0.005,
+                "q{:02}",
+                idx + 1
+            );
+        }
+    }
+
+    #[test]
+    fn first_row_per_keeps_one_row_per_run_across_row_groups_and_files() {
+        let dir = tempdir().unwrap();
+        let schema = Schema::new(vec![
+            Field::new("ENTITY", DataType::Int64, false),
+            Field::new("ANCHOR", DataType::Int64, false),
+            Field::new("SCORE", DataType::Float64, false),
+        ]);
+        // Runs of 3 rows (entity, anchor), scores descending in each run; the
+        // same entity repeats with a new anchor, and runs straddle row groups
+        // (7 rows each) and the file boundary.
+        let runs = 40i64;
+        let entity: Vec<i64> = (0..runs * 3).map(|i| i / 6).collect();
+        let anchor: Vec<i64> = (0..runs * 3).map(|i| (i / 3) % 2).collect();
+        let score: Vec<f64> = (0..runs * 3)
+            .map(|i| (i / 3) as f64 + 1.0 - (i % 3) as f64 * 0.25)
+            .collect();
+        let split = 61usize;
+        let mut paths = Vec::new();
+        for (idx, range) in [0..split, split..(runs * 3) as usize]
+            .into_iter()
+            .enumerate()
+        {
+            let path = dir.path().join(format!("part-{idx}.parquet"));
+            write_parquet(
+                &path,
+                schema.clone(),
+                vec![
+                    StdArc::new(Int64Array::from(entity[range.clone()].to_vec())) as ArrayRef,
+                    StdArc::new(Int64Array::from(anchor[range.clone()].to_vec())) as ArrayRef,
+                    StdArc::new(Float64Array::from(score[range].to_vec())) as ArrayRef,
+                ],
+                7,
+            );
+            paths.push(path);
+        }
+        let paths: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
+
+        let full = with_options(
+            &paths,
+            &columns,
+            ColStatsOptions {
+                percentiles: true,
+                first_row_per: vec!["ENTITY".into(), "ANCHOR".into()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            val(&full, "SCORE__kumo.numerical__COUNT__False"),
+            json!(runs)
+        );
+        assert_eq!(val(&full, "SCORE__kumo.numerical__MIN__False"), json!(1.0));
+        assert_eq!(
+            val(&full, "SCORE__kumo.numerical__MEAN__False"),
+            json!((runs + 1) as f64 / 2.0)
+        );
+        assert_eq!(
+            val(&full, "SCORE__kumo.numerical__PERCENTILES__True")
+                .as_array()
+                .unwrap()[49],
+            json!(20.5)
+        );
+        let histogram = val(&full, "SCORE__kumo.numerical__HISTOGRAM__False");
+        let total: f64 = histogram
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|bin| bin[1].as_f64().unwrap())
+            .sum();
+        assert!((total - 100.0).abs() < 1e-9);
+
+        let entity_only = with_options(
+            &paths,
+            &columns,
+            ColStatsOptions {
+                first_row_per: vec!["ENTITY".into()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            val(&entity_only, "SCORE__kumo.numerical__COUNT__False"),
+            json!(runs / 2)
+        );
     }
 }
