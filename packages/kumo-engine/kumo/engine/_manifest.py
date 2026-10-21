@@ -70,7 +70,7 @@ def read_manifest(path: Path) -> Optional[Dict[str, Any]]:
         return None
     version = (manifest.get('schema_version')
                if isinstance(manifest, dict) else None)
-    if not isinstance(version, int) or version > SCHEMA_VERSION:
+    if type(version) is not int or not 1 <= version <= SCHEMA_VERSION:
         warnings.warn(
             f"Ignoring {path}: manifest schema_version {version!r} is not "
             f"supported by this kumo-engine (up to {SCHEMA_VERSION}).",

@@ -82,6 +82,7 @@ from kumo.engine.table import Table
 SNAPSHOT_MANIFEST_FILE = 'snapshot-manifest.json'
 
 _warned_scratch: set[Path] = set()
+_warned_backfill: set[Path] = set()
 
 
 def _warn_if_network_scratch(root: Path) -> None:
@@ -263,11 +264,13 @@ def _write_snapshot_manifest(result: Any, snapshot_id: str,
             new_manifest('graph_snapshot', snapshot_id,
                          {'source_tables': source_tables}, **fields))
     except Exception as error:
-        warnings.warn(
-            f"Could not write the snapshot manifest at {path}: {error}",
-            UserWarning,
-            stacklevel=4,
-        )
+        if fresh or path not in _warned_backfill:
+            _warned_backfill.add(path)
+            warnings.warn(
+                f"Could not write the snapshot manifest at {path}: {error}",
+                UserWarning,
+                stacklevel=4,
+            )
 
 
 @dataclass(frozen=True)
