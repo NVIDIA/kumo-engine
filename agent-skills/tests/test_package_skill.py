@@ -65,6 +65,71 @@ def test_generic_ships_only_its_own_host(tmp_path: Path) -> None:
     assert leaks == []
 
 
+def test_genie_ships_only_its_own_host(tmp_path: Path) -> None:
+    pkg = package_skill.build('genie', tmp_path)
+    assert pkg == tmp_path / 'genie' / 'skills' / 'kumo-data-science'
+    assert [p.name for p in (pkg / 'hosts').iterdir()] == ['databricks-genie']
+    assert sorted(p.name for p in (pkg / 'hosts' / 'databricks-genie').iterdir()) == [
+        'adapter.md', 'runtime.md']
+    leaks = [str(p.relative_to(pkg)) for p in pkg.rglob('*.md')
+             if re.search(r'snowflake-coco|hosts/generic|ml_job\.md', p.read_text())]
+    assert leaks == []
+
+
+def test_genie_names_no_secret_by_default() -> None:
+    """The notebook runs as its user; a service principal appears only as the opt-in form."""
+    runtime = (package_skill.SKILLS / 'hosts' / 'databricks-genie' / 'runtime.md').read_text()
+    code = '\n'.join(re.findall(r'```python\n(.*?)```', runtime, re.DOTALL))
+    assert 'kumo.DatabricksIdentity()' in code
+    assert not re.search(r'dbutils|client_secret|token', code)
+    assert "__kumo__" in code
+    assert "wait_timeout='50s'" in code and 'get_statement' in code
+
+
+class FakeWorkspace:
+    """Records imports and serves them back, as the Workspace API would."""
+
+    def __init__(self, existing: dict[str, bytes] | None = None, corrupt: str = '') -> None:
+        self.files = dict(existing or {})
+        self.corrupt = corrupt
+
+    def me(self) -> str:
+        return 'someone@example.com'
+
+    def api(self, method: str, path: str, body: dict | None = None,
+            query: dict | None = None) -> dict:
+        if path.endswith('/import'):
+            assert body and body['overwrite'] is True
+            data = package_skill.base64.b64decode(body['content'])
+            self.files[body['path']] = b'x' if self.corrupt in body['path'] and self.corrupt else data
+        if path.endswith('/export'):
+            assert query
+            return dict(content=package_skill.base64.b64encode(self.files[query['path']]).decode())
+        return {}
+
+    def listing(self, path: str) -> list[str]:
+        return [p for p in self.files if p.startswith(path + '/')]
+
+
+def test_deploy_reads_every_file_back(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    pkg = package_skill.build('genie', tmp_path)
+    target = '/Users/someone@example.com/.assistant/skills/kumo-data-science'
+    ws = FakeWorkspace({f'{target}/old-notes.md': b'stale'})
+    assert package_skill.deploy_genie(pkg, ws) == target  # type: ignore[arg-type]
+    shipped = {f'{target}/{p.relative_to(pkg).as_posix()}': p.read_bytes()
+               for p in pkg.rglob('*') if p.is_file()}
+    assert {k: ws.files[k] for k in shipped} == shipped
+    out = capsys.readouterr().out
+    assert 'read back byte for byte' in out
+    assert f'left in place: {target}/old-notes.md' in out
+
+
+def test_deploy_fails_on_a_mismatch(tmp_path: Path) -> None:
+    pkg = package_skill.build('genie', tmp_path)
+    with pytest.raises(SystemExit, match='deploy check failed'):
+        package_skill.deploy_genie(pkg, FakeWorkspace(corrupt='runtime.md'))  # type: ignore[arg-type]
+
+
 def test_core_names_no_host() -> None:
     """The portable core reaches its host as `hosts/<host>/`, never by a host's own name."""
     hosts = sorted(p.name for p in (package_skill.SKILLS / 'hosts').iterdir() if p.is_dir())
@@ -81,5 +146,12 @@ def test_adapter_covers_what_the_core_defers(host: str) -> None:
     """Preflight §0, the intake contract and batch inference defer these to the adapter."""
     adapter = next(rel for rel in package_skill.HOSTS[host]['hosts'] if rel.endswith('adapter.md'))
     text = (package_skill.SKILLS / 'hosts' / adapter).read_text()
-    for section in ['Source scope', 'Access', 'Destinations']:
+    for section in ['Source scope', 'Access', 'Destinations', 'reflight',
+                    'untime column constraints' if host != 'coco' else 'Runtime-dependent']:
         assert section in text, f'{adapter} does not cover {section}'
+
+
+@pytest.mark.parametrize('host', sorted(package_skill.HOSTS))
+def test_every_host_ships_a_runtime(host: str) -> None:
+    """The router reads `hosts/<host>/runtime.md` at Step 2."""
+    assert any(rel.endswith('/runtime.md') for rel in package_skill.HOSTS[host]['hosts'])

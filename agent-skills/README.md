@@ -1,12 +1,13 @@
 # Agent skills: `kumo-data-science`
 
 Agent skill for building, training, and running inference with Kumo models. One shared source tree
-serves every host; host-specific behavior lives under `skills/hosts/`. Two hosts:
+serves every host; host-specific behavior lives under `skills/hosts/`. Three hosts:
 
 | Host | Package | For |
 |---|---|---|
 | `hosts/snowflake-coco/` | `coco` | Snowflake Cortex Code (CoCo), inside Snowflake |
 | `hosts/generic/` | `generic` | a coding agent beside the user — Claude Code, Codex — generating code for any of the six Kumo connectors |
+| `hosts/databricks-genie/` | `genie` | Databricks Genie Code, inside a Databricks workspace, generating notebooks for a GPU cluster |
 
 This directory is deliberately not under `.agents/skills/` or `.claude/skills/`: Codex, Claude Code
 and the CoCo CLI load those for repo developers, and this skill triggers on "kumo" and "train a
@@ -39,13 +40,18 @@ path. Build a host package with:
 ```bash
 python3 agent-skills/scripts/package_skill.py coco        # -> agent-skills/dist/coco/
 python3 agent-skills/scripts/package_skill.py generic     # -> agent-skills/dist/generic/skills/
+python3 agent-skills/scripts/package_skill.py genie       # -> agent-skills/dist/genie/skills/
+python3 agent-skills/scripts/package_skill.py genie --deploy   # + upload to your Genie Code skills folder
 python3 agent-skills/scripts/package_skill.py --check     # build every host, verify references
 ```
 
 A package carries exactly one host, and the core reaches it only as `hosts/<host>/`; tests fail if
 a core file names a host. To use the `generic` package, copy
 `dist/generic/skills/kumo-data-science/` into the agent's user-level skills directory (for Claude
-Code, `~/.claude/skills/`) — not into this repository, for the reason above.
+Code, `~/.claude/skills/`) — not into this repository, for the reason above. `genie --deploy`
+uploads the `genie` package to `/Users/<you>/.assistant/skills/kumo-data-science/` in the
+workspace named by `DATABRICKS_HOST` and `DATABRICKS_TOKEN` and reads every file back; a new Genie
+Code chat loads it.
 
 The build stamps the router's `SKILL-BUILD` marker with the source commit
 (`<commit date>-<short sha>`, `-dirty` for uncommitted edits); never edit it by hand. Every build
