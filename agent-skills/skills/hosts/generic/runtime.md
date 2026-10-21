@@ -31,7 +31,10 @@ The first code cell holds the imports and every location as a named constant: th
 source, the confirmed destination, and any population table — each written verbatim.
 
 Values only the runtime knows — a Snowflake warehouse or `connections.toml` entry, a Databricks
-SQL warehouse or cluster — are constants here too. Write the user's value if they gave one;
+SQL warehouse or cluster — are constants here too. S3 and GCS have none: the ambient chain
+resolves credentials and region where the code runs (an instance or job role, the environment,
+`aws configure`), so add no region, profile or project constant for them, and pass `region=` only
+when the user named one. Write the user's value if they gave one;
 otherwise a placeholder of the form `'<DATABRICKS_WAREHOUSE_ID>'`, and list each placeholder in
 your reply as something to fill in before running. A placeholder never stands in for a confirmed
 value, and never for a secret.
