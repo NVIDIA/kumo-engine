@@ -243,33 +243,33 @@ def _snapshot_id(graph_key: str, data_version: str) -> str:
     return f'{graph_key}@{data_version[:16]}'
 
 
-def _comparable(stamp: Any) -> bool:
-    from kumo_core.sources.object_store import UNDATED_VERSION
-
-    # Views and unversioned sources are stamped on the hour.
-    return (isinstance(stamp, str) and stamp != UNDATED_VERSION
-            and not (stamp.isdigit() and int(stamp) % 3600 == 0))
+_COMPARABLE = ('exact', 'timestamp')
 
 
-def _source_change(table: Table, recorded: Any) -> Dict[str, Any]:
+def _source_change(table: Table, recorded: Any,
+                   record_locations: bool) -> Dict[str, Any]:
     from kumoapi.source_table import CustomSQLSourceTable
 
     recorded = recorded if isinstance(recorded, dict) else {}
     before, current, same_source = recorded.get('version'), None, False
+    comparable = recorded.get('version_kind') in _COMPARABLE
     try:
         source = table.definition.source_table
         if not isinstance(source, CustomSQLSourceTable):
             connector = table.connector
             stamp = connector.source_backend.get_data_version(
                 connector, table.table_name)
-            now = source_table(connector, table.table_name, None, stamp)
+            now = source_table(connector, table.table_name, None, stamp,
+                               record_locations=record_locations)
             current = now['version']
+            comparable = comparable and now['version_kind'] in _COMPARABLE
             same_source = (recorded.get('connector'),
                            recorded.get('location')) == (now['connector'],
                                                          now['location'])
     except Exception:
         current = None
-    if not (same_source and _comparable(before) and _comparable(current)):
+    if not (same_source and comparable and before is not None
+            and current is not None):
         status = 'unknown'
     else:
         status = 'unchanged' if before == current else 'changed'
@@ -324,7 +324,8 @@ class GraphSnapshot:
 
     def export(self, connector: Connector, path: str) -> str:
         r"""Copy the index to `<path>/<graph id>/<data version[:16]>` and
-        return that location; re-running resumes.
+        return that location. Any earlier export there is replaced; it is not
+        loadable until the new one completes.
 
         Args:
             connector: an S3, GCS or file connector (on Databricks or
@@ -385,14 +386,16 @@ class GraphSnapshot:
             manifest = self.manifest
             recorded = ({} if not manifest or manifest.get('reconstructed') else
                         dict(manifest['parents']['source_tables']))
+            record_locations = manifest.get('record_locations', True)
         except Exception:
-            recorded = {}
+            recorded, record_locations = {}, True
         from kumo_core.sources.parallel import run_in_parallel
 
         tables = graph._named_tables
         changes = run_in_parallel(
             [
-                partial(_source_change, table, recorded.get(alias))
+                partial(_source_change, table, recorded.get(alias),
+                        record_locations)
                 for alias, table in tables.items()
             ], workers=max(1, min(len(tables), 16)), stop=threading.Event())
         return dict(zip(tables, changes))

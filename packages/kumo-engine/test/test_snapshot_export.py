@@ -86,8 +86,8 @@ def test_export_load_round_trip_relocates_and_is_reused(
     assert location == f'one/{graph_id}/{data_version}'
     assert snapshot.export(exports, 'one') == location
     exported = tmp_path / 'exports' / location
-    manifest = json.loads((exported / 'kumo_snapshot.json').read_text())
-    assert manifest['snapshot'] == snapshot.manifest
+    recorded = (snapshot.index_path / 'snapshot-manifest.json').read_bytes()
+    assert (exported / 'snapshot-manifest.json').read_bytes() == recorded
 
     shutil.rmtree(tmp_path / 'cpu')
     scratch('gpu')
@@ -96,12 +96,10 @@ def test_export_load_round_trip_relocates_and_is_reused(
                                                 snapshot.graph_config)
     assert loaded.index_path.is_relative_to(tmp_path / 'gpu')
     assert _index_files(loaded.index_path) == _index_files(exported / 'index')
-    recorded = loaded.manifest
-    assert set(recorded.pop('loaded')) == {'environment'}
-    assert recorded == manifest['snapshot']
+    assert (loaded.index_path /
+            'snapshot-manifest.json').read_bytes() == recorded
     reexported = tmp_path / 'exports' / loaded.export(exports, 'two')
-    assert json.loads((reexported / 'kumo_snapshot.json').read_text())[
-        'snapshot'] == manifest['snapshot']
+    assert (reexported / 'snapshot-manifest.json').read_bytes() == recorded
 
     monkeypatch.setattr(
         'kumo_core.diskgraph.ingest.execute_diskgraph_ingest',
@@ -128,7 +126,7 @@ def test_damaged_index_is_reused_by_snapshot_but_reloaded_by_load(
     assert _index_files(loaded.index_path) == expected
 
 
-def test_interrupted_export_is_not_loadable_and_resumes(
+def test_interrupted_reexport_is_not_loadable_and_reruns_from_scratch(
         tmp_path, scratch, graph, exports, monkeypatch):
     @contextmanager
     def four(found, worker_ceiling=None):
@@ -136,6 +134,8 @@ def test_interrupted_export_is_not_loadable_and_resumes(
 
     monkeypatch.setattr('kumo_core.sources.object_store.copies', four)
     snapshot = graph.snapshot()
+    location, exported = _export(snapshot, exports, tmp_path)
+    (exported / 'index/stray.bin').write_bytes(b'x')
     open_output, finished = snapshot_io._open_output, threading.Event()
 
     def interrupted(client, path):
@@ -151,11 +151,10 @@ def test_interrupted_export_is_not_loadable_and_resumes(
         patch.setattr(snapshot_io, '_ATTEMPTS', 1)
         with pytest.raises(OSError, match='connection reset'):
             snapshot.export(exports, 'one')
-    graph_id, data_version = snapshot.id.split('@')
-    location = f'one/{graph_id}/{data_version}'
     with pytest.raises(FileNotFoundError, match='No complete snapshot'):
         _load(exports, location)
     assert snapshot.export(exports, 'one') == location
+    assert not (exported / 'index/stray.bin').exists()
     scratch('gpu')
     assert _index_files(_load(exports, location).index_path) == _index_files(
         snapshot.index_path)
@@ -174,6 +173,7 @@ def test_concurrent_exports_of_one_snapshot_both_succeed(
 
     monkeypatch.setattr(snapshot_io, '_transfer', racing)
     assert raced == [snapshot.export(exports, 'one')]
+    assert _load(exports, raced[0]).id == snapshot.id
 
 
 def test_failed_upload_is_retried_with_a_fresh_client(
@@ -192,16 +192,23 @@ def test_failed_upload_is_retried_with_a_fresh_client(
     assert len(clients) == 2 and clients[0] is not clients[1]
 
 
-def test_rerunning_export_repairs_a_committed_export(
+def test_reexport_replaces_whatever_the_location_holds(
         tmp_path, scratch, graph, exports):
     snapshot = graph.snapshot()
+    graph_id, data_version = snapshot.id.split('@')
+    occupied = tmp_path / 'exports/one' / graph_id / data_version
+    occupied.mkdir(parents=True)
+    (occupied / 'other.parquet').write_bytes(b'x')
     location, exported = _export(snapshot, exports, tmp_path)
+    assert not (exported / 'other.parquet').exists()
     stats = exported / 'index/col_stats.json'
     original = stats.read_bytes()
     stats.write_bytes(original[:3])
     (exported / 'index/index_metadata.json').unlink()
+    _edit_manifest(exported, lambda m: m.update(snapshot_id='other'))
     assert snapshot.export(exports, 'one') == location
     assert stats.read_bytes() == original
+    assert _load(exports, location).id == snapshot.id
 
 
 def test_failed_load_leaves_nothing_and_restarts_cleanly(
@@ -259,48 +266,46 @@ def test_load_rejects_a_hostile_or_malformed_manifest(tmp_path, scratch, graph,
     assert (victim / 'keep').read_text() == 'x'
 
 
-def test_load_warns_instead_of_refusing_newer_or_foreign_exports(
+def test_load_rejects_unknown_formats_and_accepts_unknown_fields(
         tmp_path, scratch, graph, exports):
     snapshot = graph.snapshot()
     location, exported = _export(snapshot, exports, tmp_path)
-
-    _edit_manifest(exported,
-                   lambda m: m.update(format=2, added_later={'x': 1}))
-    other = kumo.Graph(tables={'users': graph.tables['users']})
     scratch('gpu')
-    with pytest.warns(UserWarning) as caught:
+
+    _edit_manifest(exported, lambda m: m.update(format=2))
+    with pytest.raises(ValueError, match='format 2'):
+        _load(exports, location)
+
+    _edit_manifest(exported, lambda m: m.update(format=1, added_later={'x': 1}))
+    other = kumo.Graph(tables={'users': graph.tables['users']})
+    with pytest.warns(UserWarning, match='another graph'):
         loaded = _load(exports, location, graph=other)
-    messages = ' '.join(str(warning.message) for warning in caught)
-    assert 'layout format 2' in messages and 'another graph' in messages
     assert loaded.id == snapshot.id
 
 
-def test_export_refuses_a_path_holding_other_data(tmp_path, scratch, graph,
-                                                  exports):
+@pytest.mark.parametrize('recorded', ['newer', 'missing'])
+def test_snapshot_manifest_travels_unchanged_or_is_reconstructed(
+        tmp_path, scratch, graph, exports, recorded):
     snapshot = graph.snapshot()
-    graph_id, data_version = snapshot.id.split('@')
-    occupied = tmp_path / 'exports/occupied' / graph_id / data_version
-    occupied.mkdir(parents=True)
-    (occupied / 'other.parquet').write_bytes(b'x')
-    with pytest.raises(ValueError, match='not empty'):
-        snapshot.export(exports, 'occupied')
-
-    _, exported = _export(snapshot, exports, tmp_path)
-    _edit_manifest(exported, lambda m: m.update(snapshot_id='other'))
-    with pytest.raises(ValueError, match="snapshot 'other', not"):
-        snapshot.export(exports, 'one')
-
-
-def test_rebuilt_snapshot_reexports_to_the_existing_export(
-        tmp_path, scratch, graph, exports):
-    snapshot = graph.snapshot()
+    path = snapshot.index_path / 'snapshot-manifest.json'
+    if recorded == 'newer':
+        path.write_bytes(b'{"schema_version": 99, "future": [1]}')
+    else:
+        path.unlink()
     location, exported = _export(snapshot, exports, tmp_path)
-    committed = (exported / 'kumo_snapshot.json').read_bytes()
-    scratch('rebuilt')
-    rebuilt = graph.snapshot()
-    assert rebuilt.id == snapshot.id
-    assert rebuilt.export(exports, 'one') == location
-    assert (exported / 'kumo_snapshot.json').read_bytes() == committed
+    scratch('gpu')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        loaded = _load(exports, location)
+    shipped = (exported / 'snapshot-manifest.json').read_bytes()
+    assert (loaded.index_path / 'snapshot-manifest.json').read_bytes() == shipped
+    if recorded == 'newer':
+        assert shipped == b'{"schema_version": 99, "future": [1]}'
+    else:
+        manifest = loaded.manifest
+        assert (manifest['id'], manifest['reconstructed']) == (snapshot.id,
+                                                               True)
+        assert manifest['parents'] == {'source_tables': {}}
 
 
 def test_warehouse_connectors_are_not_supported(scratch, graph):
@@ -368,20 +373,21 @@ def dated(tmp_path, graph):
     return data
 
 
+@pytest.mark.parametrize('record_locations', [True, False])
 def test_source_changes_reads_stamps_without_staging(
-        scratch, graph, dated, monkeypatch):
+        scratch, graph, dated, monkeypatch, record_locations):
     from kumo_core.sources.object_store import ObjectStoreSourceReader
 
     from kumo.engine.connector.file import _FileSourceBackend
 
     _set_mtime(dated / 'users.parquet', 1_700_002_800)
-    snapshot = graph.snapshot()
+    snapshot = graph.snapshot(record_locations=record_locations)
     fail = Mock(side_effect=AssertionError('must not stage'))
     monkeypatch.setattr('kumo_core.sources.prepare.read_table', fail)
     monkeypatch.setattr(ObjectStoreSourceReader, 'prepare', fail)
     monkeypatch.setattr(_FileSourceBackend, 'prepare_ingest', fail)
     assert snapshot.source_changes(graph) == {
-        'users': {'status': 'unknown', 'recorded': '1700002800',
+        'users': {'status': 'unchanged', 'recorded': '1700002800',
                   'current': '1700002800'},
         'events': {'status': 'unchanged', 'recorded': '1700000123',
                    'current': '1700000123'},
@@ -396,16 +402,20 @@ def test_source_changes_reads_stamps_without_staging(
         'status': 'unknown', 'recorded': '1700000123', 'current': None}
 
 
-@pytest.mark.parametrize('edit', ['absent', 'reconstructed'])
-def test_source_changes_unknown_without_a_recorded_version(
+@pytest.mark.parametrize('edit', ['absent', 'reconstructed', 'hour_bucket'])
+def test_source_changes_unknown_without_a_comparable_version(
         scratch, graph, dated, edit):
     snapshot = graph.snapshot()
     path = snapshot.index_path / 'snapshot-manifest.json'
+    manifest = json.loads(path.read_text())
     if edit == 'absent':
         path.unlink()
+    elif edit == 'reconstructed':
+        path.write_text(json.dumps({**manifest, 'reconstructed': True}))
     else:
-        path.write_text(
-            json.dumps({**json.loads(path.read_text()), 'reconstructed': True}))
+        for entry in manifest['parents']['source_tables'].values():
+            entry['version_kind'] = 'hour_bucket'
+        path.write_text(json.dumps(manifest))
     assert {change['status'] for change in snapshot.source_changes(
         graph).values()} == {'unknown'}
 
