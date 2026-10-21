@@ -254,11 +254,10 @@ PROVENANCE_FILE = 'provenance.json'
 def verify_model_bundle(bundle: Path) -> str:
     """Verify fetched artifacts before parsing or staging a model bundle.
 
-    Returns the bundle id: the SHA-256 of the sorted ``[relative_path,
-    sha256]`` pairs of every verified file except ``provenance.json``. Paths
-    must stay inside the bundle after symlink resolution; declared sizes and
-    SHA-256 digests must match. Older manifests may omit sizes or leave
-    training-spec.json unlisted; its digest still participates in the id.
+    Returns the bundle id, a SHA-256 over every verified file except
+    ``provenance.json``. Paths must stay inside the bundle after symlink
+    resolution; declared sizes and SHA-256 digests must match. Older
+    manifests may omit sizes or leave training-spec.json unlisted.
     """
     from .sources import layout
     from .sources.errors import PermanentSourceError
