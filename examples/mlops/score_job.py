@@ -9,7 +9,8 @@ import os
 import sys
 from typing import Optional, Sequence
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(
+    globals().get('__file__') or sys.argv[0])))
 
 import jobs  # noqa: E402
 

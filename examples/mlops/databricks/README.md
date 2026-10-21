@@ -17,16 +17,17 @@ cluster. Each task is a `spark_python_task` running a job script with
 
 ## Before deploying
 
-1. Make the kumo-engine wheel and its dependencies (kumo-core, kumo-api,
-   kumo-pql, diskgraph, kumo-databricks, mlflow 3) available to the cluster;
-   set `kumo_engine_wheel` or add further `libraries` entries. On DBR 16.4
-   install with `pip install --prefer-binary` (for example from an init
-   script): its setuptools cannot build the SQLAlchemy sdist MLflow pulls.
+1. Put the kumo-engine wheel and a `requirements.txt` for its dependencies
+   (kumo-core, kumo-api, kumo-pql, diskgraph, kumo-databricks, mlflow 3) on a
+   volume and set `kumo_engine_wheel` and `requirements`. Start the
+   requirements file with `--prefer-binary`: DBR 16.4's setuptools cannot
+   build the SQLAlchemy sdist MLflow pulls. Each task installs the
+   requirements, then the wheel.
 2. Replace the `<...>` placeholders in `databricks.yml` (or pass
    `--var catalog=...`). The parent folder of the MLflow experiment
    path must already exist in the workspace.
-3. Add a `targets` mapping for your workspace, then `databricks bundle
-   validate` and `databricks bundle deploy -t <target>`. The bundle syncs this
+3. Adjust the `dev` target (workspace `root_path`) or add your own, then
+   `databricks bundle validate` and `databricks bundle deploy -t <target>`. The bundle syncs this
    whole `examples/mlops` directory (`sync.paths: [..]`).
 
 ## Privileges for the run-as principal
@@ -44,7 +45,8 @@ cluster. Each task is a `spark_python_task` running a job script with
 
 - **Script, not `python_wheel_task`.** Databricks overrides a custom
   `PYTHONPATH` at driver startup, so a wheel task cannot import `jobs.py`; the
-  scripts put their own directory on `sys.path`. Databricks sets no job-id
+  scripts put their own directory on `sys.path` (from `sys.argv[0]`: a
+  `spark_python_task` runs the file without `__file__`). Databricks sets no job-id
   environment variable, so ids come from `{{job.id}}`/`{{job.run_id}}`.
 - **Dedicated access mode** (`SINGLE_USER`): standard compute runs as a
   low-privilege user and has no GPUs. `KUMO_SCRATCH_DIR` is
@@ -57,10 +59,13 @@ cluster. Each task is a `spark_python_task` running a job script with
 - **Job clusters.** Both jobs repeat the cluster block; YAML anchors would
   remove the copy but are untested with `databricks bundle validate`.
 
-## Unverified
+## Verified
 
-The bundle has not been deployed or validated (only parsed), and the
-workspace layout of files synced from outside the bundle root is unverified.
+The bundle was deployed and both jobs were run on a single-node cluster against
+synthetic `users`, `items` and `orders` tables: both exit 0 with the JSON
+summary and the Databricks job and run ids, the fit registers a new
+`users_churn` version and moves `champion`, and the score job loads it and
+writes the predictions table.
 
 ## References
 

@@ -137,3 +137,14 @@ def test_sagemaker_pipeline_needs_an_instance_type(capsys):
     with pytest.raises(SystemExit):
         pipeline.main(args)
     assert '--instance-type' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('name', ['fit_job', 'score_job'])
+def test_scripts_import_without_dunder_file(name, monkeypatch):
+    path = _examples() / f'{name}.py'
+    monkeypatch.setattr(sys, 'argv', [str(path)])
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    monkeypatch.delitem(sys.modules, 'jobs', raising=False)
+    namespace = {'__name__': 'spark_python_task'}
+    exec(compile(path.read_text(), str(path), 'exec'), namespace)
+    assert callable(namespace['main'])

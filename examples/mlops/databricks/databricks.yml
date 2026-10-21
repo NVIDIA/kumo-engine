@@ -25,8 +25,11 @@ variables:
     description: SQL warehouse that reads the source tables and writes predictions
     default: <warehouse_id>
   kumo_engine_wheel:
-    description: kumo-engine wheel (and its dependencies) on a volume or workspace path
+    description: kumo-engine wheel on a volume or workspace path
     default: /Volumes/<catalog>/<schema>/<volume>/wheels/<kumo_engine_wheel>.whl
+  requirements:
+    description: requirements.txt for kumo-engine's dependencies, starting with --prefer-binary
+    default: /Volumes/<catalog>/<schema>/<volume>/wheels/requirements.txt
   spark_version:
     description: a GPU ML runtime, for example 16.4.x-gpu-ml-scala2.12
     default: <dbr_gpu_ml_version>
@@ -70,6 +73,7 @@ resources:
         - task_key: fit
           job_cluster_key: kumo
           libraries:
+            - requirements: ${var.requirements}
             - whl: ${var.kumo_engine_wheel}
           spark_python_task:
             python_file: ${workspace.file_path}/fit_job.py
@@ -115,6 +119,7 @@ resources:
         - task_key: score
           job_cluster_key: kumo
           libraries:
+            - requirements: ${var.requirements}
             - whl: ${var.kumo_engine_wheel}
           spark_python_task:
             python_file: ${workspace.file_path}/score_job.py
@@ -123,3 +128,9 @@ resources:
               - "{{job.id}}"
               - --job-run-id
               - "{{job.run_id}}"
+
+targets:
+  dev:
+    default: true
+    workspace:
+      root_path: /Workspace/Shared/kumo-engine/.bundle/${bundle.name}/${bundle.target}
