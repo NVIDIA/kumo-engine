@@ -68,17 +68,24 @@ documentation = "https://kumo.ai/docs"
 # `uv sync --all-packages --extra cpu` applies a same-named extra to every
 # workspace member that defines one -- a bare "cpu" extra here would pull
 # in faiss-cpu alongside whatever faiss build root's own install chose.
+# Put platform markers on concrete packages so frozen exports preserve them.
+faiss = [
+  "faiss-cpu==1.14.3; sys_platform != 'linux'",
+  "faiss-gpu==1.14.3; sys_platform == 'linux'",
+]
 faiss-cpu = ["faiss-cpu==1.14.3"]
 faiss-gpu = ["faiss-gpu==1.14.3"]
 text = ["kumo-glove-6b-50d>=1.0.0,<2"]
 test = [
-  "faiss-gpu==1.14.3",
+  "faiss-cpu==1.14.3; sys_platform != 'linux'",
+  "faiss-gpu==1.14.3; sys_platform == 'linux'",
   "packaging>=24",
   "pytest>=8",
   "pytest-cov>=5",
 ]
 dev = [
-  "faiss-gpu==1.14.3",
+  "faiss-cpu==1.14.3; sys_platform != 'linux'",
+  "faiss-gpu==1.14.3; sys_platform == 'linux'",
   "packaging>=24",
   "pytest>=8",
   "pytest-cov>=5",

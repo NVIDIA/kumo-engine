@@ -244,7 +244,7 @@ def test_merged_module_reports_bundle_version(tmp_path, monkeypatch):
 @pytest.mark.parametrize(('platform', 'expected'), [
     ('linux', {'faiss-gpu'}),
     ('darwin', {'faiss-cpu'}),
-    ('win32', set()),
+    ('win32', {'faiss-cpu'}),
 ])
 def test_engine_faiss_platform_selection_survives_merge(
         tmp_path, monkeypatch, platform, expected):
