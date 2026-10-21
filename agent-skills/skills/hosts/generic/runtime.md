@@ -166,15 +166,17 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
 - **Files, S3, GCS:** read the entity key — and, when the entity table has a time column, that
   column too — from the source with `pyarrow.dataset`; name them `ENTITY1` and `TIMESTAMP`; write
   one Parquet file inside the confirmed population path, creating the directory first for local
-  files; and build the `PredictionTable` from a connector rooted there. Kumo rejects a
-  population without `TIMESTAMP` when the entity is timestamped, even for a static query (§7.1).
+  files; and build the `PredictionTable` from a connector rooted there. Decide from the entity's
+  `Table` as you built it: if it has a `time_column`, the population **must** carry it as
+  `TIMESTAMP`. Kumo rejects a population without it, even for a static query, whatever the
+  §7.1 Snowflake example shows (`ValueError: ... missing TIMESTAMP`).
 
   ```python
   import os
   import pyarrow.dataset as ds
   import pyarrow.parquet as papq
 
-  keep = {ENTITY_KEY: 'ENTITY1', ENTITY_TIME: 'TIMESTAMP'}       # drop ENTITY_TIME if there is none
+  keep = {ENTITY_KEY: 'ENTITY1', ENTITY_TIME: 'TIMESTAMP'}   # ENTITY_TIME: the entity Table's time_column
   population = ds.dataset(ENTITY_SOURCE, format='parquet').to_table(columns=list(keep))
   population = population.rename_columns([keep[c] for c in population.column_names])
   if '://' not in POPULATION_PATH:
