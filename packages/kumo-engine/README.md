@@ -150,6 +150,8 @@ svg = graph.visualize("relationships.svg", show_cols=True)
 ```
 
 The return value is SVG text with notebook display support.
+Notebook HTML output keeps labels at their original size in a scrollable view, capped at 640 pixels high, with a Full screen button when the host permits it.
+Interactive controls require trusted HTML output; SVG export retains the complete graph at its original dimensions.
 Visualization uses declared metadata without reading source rows or requiring Graphviz or other rendering dependencies.
 The default view shows primary and relationship foreign keys.
 `show_cols=True` adds columns up to 10 rows per table, or 5 for graphs with more than 10 tables; keys always remain visible, even above that limit.

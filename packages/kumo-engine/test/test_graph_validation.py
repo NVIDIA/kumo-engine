@@ -198,6 +198,10 @@ def test_visualize_exports_escaped_svg_without_source_access(
     assert destination.read_text(encoding='utf-8') == svg
     root = ElementTree.fromstring(svg)
     assert root.tag == '{http://www.w3.org/2000/svg}svg'
+    html = ElementTree.fromstring(svg._repr_html_())
+    embedded = html.find('.//{http://www.w3.org/2000/svg}svg')
+    assert ElementTree.tostring(embedded) == ElementTree.tostring(root)
+    assert html.find('.//div[@role="region"]').get('tabindex') == '0'
     text = ''.join(
         element.text or ''
         for element in root.iter('{http://www.w3.org/2000/svg}text')

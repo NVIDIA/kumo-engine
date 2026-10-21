@@ -21,6 +21,45 @@ class SVG(str):
     def _repr_svg_(self) -> str:
         return str(self)
 
+    def _repr_html_(self) -> str:
+        return (
+            '<div class="kumo-graph"><style>'
+            '.kumo-graph{display:flex;flex-direction:column;max-height:640px;'
+            'max-width:100%;padding:8px;box-sizing:border-box;background:white;'
+            'color:#202020;font:14px Arial,Helvetica,sans-serif}'
+            '.kumo-graph button{align-self:flex-start;padding:6px 12px;'
+            'margin-bottom:8px;background:#f4f8ec;color:#386000;'
+            'border:1px solid #c8d9ad;border-radius:4px;cursor:pointer}'
+            '.kumo-graph-view{overflow:auto;min-height:0}'
+            '.kumo-graph-view svg{max-width:none!important;'
+            'max-height:none!important}'
+            '.kumo-graph:fullscreen{height:100%;max-height:none}'
+            '.kumo-graph:fullscreen .kumo-graph-view{flex:1}'
+            '.kumo-graph .kumo-graph-exit,.kumo-graph:fullscreen '
+            '.kumo-graph-enter{display:none}'
+            '.kumo-graph:fullscreen .kumo-graph-exit{display:block}'
+            '</style><button type="button" class="kumo-graph-enter" '
+            'onclick="this.parentElement.querySelector(\'[role=status]\')'
+            '.hidden=true;Promise.resolve().then(() => '
+            'this.parentElement.requestFullscreen()).catch(() => '
+            'this.parentElement.querySelector(\'[role=status]\').hidden=false)">'
+            'Full screen</button><button type="button" class="kumo-graph-exit" '
+            'onclick="document.exitFullscreen()">Exit full screen</button>'
+            '<span role="status" hidden="">Full screen is unavailable in this '
+            'notebook. Scroll here or open the exported SVG.</span>'
+            '<div class="kumo-graph-view" tabindex="0" role="region" '
+            'aria-label="Scrollable graph visualization">'
+            '<div style="width:max-content">' + self + '</div></div>'
+            '<script>(()=>{const host=document.currentScript.parentElement;'
+            'requestAnimationFrame(()=>host.querySelectorAll('
+            '\'.kumo-graph-view:not([data-positioned])\').forEach(v=>{'
+            'const p=Array.from(v.querySelectorAll(\'g[transform]\'),'
+            'g=>g.transform.baseVal.getItem(0).matrix)'
+            '.sort((a,b)=>a.e-b.e||a.f-b.f)[0];'
+            'if(p){v.scrollLeft=Math.max(0,p.e-40);'
+            'v.scrollTop=Math.max(0,p.f-40)}v.dataset.positioned=true;'
+            '}))})()</script></div>')
+
 
 def _wrap(text: str, width: int) -> list[str]:
     lines, line, size = [], '', 0

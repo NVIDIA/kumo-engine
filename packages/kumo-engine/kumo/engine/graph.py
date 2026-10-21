@@ -349,7 +349,7 @@ class Graph:
 
     def visualize(self, path: str | Path | None = None, *,
                   show_cols: bool = False) -> SVG:
-        """Display table relationships inline in notebooks and return SVG text.
+        """Display scrollable table relationships in notebooks and return SVG.
 
         Args:
             path: Optional local file to write as UTF-8 SVG, overwriting it.
@@ -359,6 +359,7 @@ class Graph:
 
         Uses declared schemas without reading source data. Self-relations
         and missing schema/key definitions raise ValueError.
+        Trusted HTML output offers full screen when the notebook host permits it.
         """
         from kumo.engine._visualization import render
 
