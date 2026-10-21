@@ -127,3 +127,26 @@ def test_event_metrics_keep_finite_numbers():
                                 'val_mae': 0.5})
 
     assert received[0].metrics == {'val_mae': 0.5}
+
+
+def test_epoch_event_without_recorded_metrics_does_not_raise(tmp_path):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from kumo_core.callbacks.train_progress_logger import (
+        AutoTrainingProgressLogger,
+    )
+
+    received = []
+    logger = AutoTrainingProgressLogger(
+        str(tmp_path), 1, on_event=lambda *a, **k: received.append(a))
+    progress = SimpleNamespace(num_epochs_completed=1, metrics=[],
+                               estimated_train_time=0.0)
+    logger.set_current_trainer(
+        SimpleNamespace(training_progress_logger=SimpleNamespace(
+            progress=progress)), trial=1)
+    logger.progress.start_time = datetime.now(timezone.utc)
+
+    logger.on_train_epoch_end(None, None)
+
+    assert received == []

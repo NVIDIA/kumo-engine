@@ -190,14 +190,18 @@ class AutoTrainingProgressLogger(MonitoringCallback):  # pragma: no cover
         save_json(self.progress, self.path)
 
         if self.on_event is not None and self.trial is not None:
-            progress = self.trainer.training_progress_logger.progress
-            epoch = progress.num_epochs_completed
-            metrics = progress.metrics[epoch - 1]
-            self.on_event('epoch_ended', trial=self.trial, epoch=epoch,
-                          metrics={
-                              **metrics.train_metrics,
-                              **metrics.validation_metrics
-                          })
+            try:
+                progress = self.trainer.training_progress_logger.progress
+                epoch = progress.num_epochs_completed
+                metrics = progress.metrics[epoch - 1]
+                self.on_event('epoch_ended', trial=self.trial, epoch=epoch,
+                              metrics={
+                                  **metrics.train_metrics,
+                                  **metrics.validation_metrics
+                              })
+            except Exception:
+                logger.warning('Could not report epoch_ended',
+                               exc_info=True)
 
     def on_validation_end(self, pl_trainer, pl_module):
         if pl_trainer.state.fn == TrainerFn.VALIDATING:
