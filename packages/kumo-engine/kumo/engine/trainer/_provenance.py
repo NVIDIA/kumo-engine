@@ -15,6 +15,7 @@ from kumo.engine._manifest import (
     BundleTrainingTable,
     FitTiming,
     SourceTableEntry,
+    TrackingRef,
     read_manifest,
     stamp,
     write_manifest,
@@ -33,6 +34,7 @@ def write_provenance(
     started_at: datetime,
     fit_mode: Optional[str],
     snapshot: Optional[GraphSnapshot] = None,
+    tracked_run_id: Optional[str] = None,
 ) -> None:
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
 
@@ -51,6 +53,8 @@ def write_provenance(
             training_table=_training_table(train_table),
             source_tables=_source_tables(snapshot),
             fit_mode=fit_mode,
+            tracking=None if tracked_run_id is None else TrackingRef(
+                run_id=tracked_run_id),
             **stamp(),
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)

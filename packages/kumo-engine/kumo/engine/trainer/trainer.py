@@ -255,8 +255,7 @@ def _publish(training_result: TrainingResult,
         name: str(getattr(spec, name))
         for name in ('spec_version', 'predictive_query', 'snapshot_id')
     }
-    if training_result.bundle_id:
-        metadata[BUNDLE_ID_KEY] = training_result.bundle_id
+    metadata.update(registry_pointers(training_result))
     location = export_config.location
     alias = location.alias if location else None
     if location and alias:
@@ -463,7 +462,7 @@ class Trainer:
         events.emit('fit_ended', metrics={
             **result.metrics, 'seconds': time.monotonic() - fit_start
         }, params={'status': 'succeeded'})
-        session.finish(result, None)
+        session.finish(result, session.log_model(result, snapshot))
         return result
 
     def _fit(
@@ -673,7 +672,8 @@ class Trainer:
             provenance=dict(train_table=train_table,
                             warm_start_bundle_id=warm_start_bundle_id,
                             started_at=started_at, fit_mode=fit_mode,
-                            snapshot=snapshot),
+                            snapshot=snapshot,
+                            tracked_run_id=run_id if tracking.enabled else None),
         )
 
     def _finish_fit(
@@ -1035,13 +1035,7 @@ class Trainer:
                                      str(bundle_dir), path=address.path,
                                      location=address.location)
         trainer = cls._load_bundle(bundle_dir, embedding_models)
-        recorded = (getattr(published, 'metadata', None)
-                    or {}).get(BUNDLE_ID_KEY)
-        if recorded and trainer.bundle_id and recorded != trainer.bundle_id:
-            warnings.warn(
-                f"The registry records bundle {recorded} for this version, "
-                f"but the fetched bundle is {trainer.bundle_id}.", UserWarning,
-                stacklevel=2)
+        warn_if_other_bundle(getattr(published, 'metadata', None), trainer)
         return trainer
 
     @classmethod
@@ -1077,3 +1071,17 @@ def set_model_alias(connector: Connector, location: ModelRegistryLocation,
         raise NotImplementedError(
             f'{type(connector).__name__} cannot set model aliases')
     sink.set_model_alias(cast(SourceConnector, connector), location, alias)
+
+
+def warn_if_other_bundle(metadata: Optional[Mapping[str, Any]],
+                         trainer: Trainer) -> None:
+    recorded = (metadata or {}).get(BUNDLE_ID_KEY)
+    if recorded and trainer.bundle_id and recorded != trainer.bundle_id:
+        warnings.warn(
+            f"The registry records bundle {recorded} for this version, but "
+            f"the fetched bundle is {trainer.bundle_id}.", UserWarning,
+            stacklevel=3)
+
+
+def registry_pointers(result: TrainingResult) -> Dict[str, str]:
+    return {BUNDLE_ID_KEY: result.bundle_id} if result.bundle_id else {}
