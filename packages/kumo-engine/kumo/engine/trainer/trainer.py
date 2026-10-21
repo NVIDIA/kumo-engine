@@ -71,6 +71,7 @@ from kumo.engine._tracking import (
     Tracking,
     TrackingSession,
     fit_inputs,
+    log_prediction_run,
 )
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
@@ -972,6 +973,7 @@ class Trainer:
         num_classes_to_return: Optional[int] = None,
         num_workers: int = 1,
         binary_classification_threshold: Optional[float] = None,
+        tracking: Optional[Tracking] = None,
     ) -> PredictionResult:
         r"""Score ``snapshot`` with the query and table-generation plan saved
         by the last fit/load.
@@ -1008,7 +1010,8 @@ class Trainer:
             table, snapshot=snapshot, output_config=output_config,
             num_classes_to_return=num_classes_to_return,
             num_workers=num_workers,
-            binary_classification_threshold=binary_classification_threshold)
+            binary_classification_threshold=binary_classification_threshold,
+            tracking=tracking)
 
     def predict(
         self,
@@ -1019,6 +1022,7 @@ class Trainer:
         num_classes_to_return: Optional[int] = None,
         num_workers: int = 1,
         binary_classification_threshold: Optional[float] = None,
+        tracking: Optional[Tracking] = None,
     ) -> PredictionResult:
         r"""Run batch prediction and return durable file-backed results.
 
@@ -1041,6 +1045,8 @@ class Trainer:
         thresholds change predicted labels without changing class scores.
 
         Omitted arguments fall back to the bundle's :attr:`scoring_defaults`.
+
+        ``tracking`` records this run like :meth:`fit`'s; best-effort.
         """
         from kumo_core.prediction_options import (
             validate_num_classes_to_return,
@@ -1270,6 +1276,8 @@ class Trainer:
                                 finished_at=datetime.now(
                                     timezone.utc).isoformat(
                                         timespec='seconds'))))
+        if tracking is not None:
+            log_prediction_run(result, tracking)
         return result
 
     def evaluate(self, run: PredictionResult, *,

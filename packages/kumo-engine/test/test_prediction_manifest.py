@@ -316,3 +316,37 @@ def test_failed_export_still_writes_manifest(graph, classifier, tmp_path,
                         'location': str(tmp_path / 'preds')},
     }]
     assert manifest['timings']['finished_at'] is not None
+
+
+def test_predict_tracking_logs_the_run_and_never_changes_it(
+        graph, classifier, caplog):
+    from kumo.engine._tracking import prediction_record
+
+    _, snapshot = graph
+    trainer, table = classifier
+
+    class Recorder:
+        def __init__(self):
+            self.records = []
+
+        def log_prediction_run(self, record):
+            self.records.append(record)
+
+    class Raising:
+        def log_prediction_run(self, record):
+            raise RuntimeError('tracker down')
+
+    recorder = Recorder()
+    untracked = trainer.predict(table, snapshot=snapshot,
+                                binary_classification_threshold=0.4)
+    tracked = trainer.predict(table, snapshot=snapshot,
+                              binary_classification_threshold=0.4,
+                              tracking=recorder)
+    failed = trainer.predict(table, snapshot=snapshot,
+                             binary_classification_threshold=0.4,
+                             tracking=Raising())
+
+    for result in (tracked, failed):
+        pd.testing.assert_frame_equal(result.frame, untracked.frame)
+    assert recorder.records == [prediction_record(tracked.manifest)]
+    assert caplog.text.count('off for the rest of this run') == 1

@@ -31,7 +31,7 @@ from kumo.engine._events import Event, _finite_floats
 
 if TYPE_CHECKING:
     from kumo.engine.graph import GraphSnapshot
-    from kumo.engine.trainer.trainer import TrainingResult
+    from kumo.engine.trainer.trainer import PredictionResult, TrainingResult
 
 logger = logging.getLogger(__name__)
 
@@ -227,8 +227,84 @@ def trial_record(context: FitContext, events: Sequence[Event]) -> RunRecord:
     )
 
 
+def prediction_record(manifest: Mapping[str, Any]) -> RunRecord:
+    r"""A prediction run's record, from its `PredictionResult.manifest`:
+    scoring options as params, row counts and score percentiles as metrics,
+    pointer tags, and the manifest as an artifact."""
+    from kumo.engine.trainer._run_manifest import MANIFEST_FILE
+
+    table = manifest.get('prediction_table') or {}
+    scheduler = manifest.get('scheduler') or {}
+    params = {
+        **(manifest.get('scoring') or {}), 'anchors': table.get('anchors')
+    }
+    metrics: Dict[str, Any] = {'prediction_table.rows': table.get('rows')}
+    for artifact, stats in (manifest.get('stats') or {}).items():
+        stats = {**stats, **(stats.get('columns') or {})}
+        stats.pop('columns', None)
+        for key, value in _flatten(stats, f'{artifact}.'):
+            if key.endswith('.percentiles'):
+                metrics.update(_logged_percentiles(key, value))
+            else:
+                metrics[key] = value
+    tags = {
+        'kumo.kind': 'prediction',
+        'kumo.run_id': manifest.get('id'),
+        'kumo.bundle_id': (manifest.get('parents') or {}).get('bundle'),
+        'kumo.scheduler': scheduler.get('platform'),
+        'kumo.job_id': scheduler.get('job_id'),
+        'kumo.job_run_id': scheduler.get('job_run_id'),
+    }
+    return RunRecord(
+        name=manifest.get('id'),
+        params={
+            key: _param_value(value)
+            for key, value in params.items() if value is not None
+        },
+        metrics=_finite_floats({
+            key: value
+            for key, value in metrics.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }),
+        tags={
+            key: str(value)
+            for key, value in tags.items() if value is not None
+        },
+        artifacts={
+            MANIFEST_FILE:
+            json.dumps(dict(manifest), indent=2, sort_keys=True, default=str)
+        },
+    )
+
+
+def log_prediction_run(result: 'PredictionResult',
+                       tracking: Optional['Tracking']) -> None:
+    r"""Record a prediction run in ``tracking``; never raises."""
+    session = TrackingSession(tracking)
+    if not session.enabled:
+        return
+    try:
+        record = prediction_record(result.manifest)
+    except Exception:
+        logger.warning('Experiment tracking failed; the prediction run is '
+                       'not tracked', exc_info=True)
+        return
+    session.log_prediction_run(record)
+
+
+def _logged_percentiles(key: str, values: Any) -> Dict[str, Any]:
+    if not isinstance(values, list) or len(values) != 99:
+        return {}
+    column = key[:-len('percentiles')]
+    return {
+        f'{column}q{q:02d}': values[q - 1]
+        for q in (1, 5, 25, 50, 75, 95, 99)
+    }
+
+
 class Tracking(Protocol):
-    r"""Records one `Trainer.fit` in an experiment tracker.
+    r"""Records `Trainer.fit` (and optionally `Trainer.predict`) runs in an
+    experiment tracker.
 
     Calls come from one background thread. `start` gets the fit run's
     record without metrics, `on_trial` a trial attempt's record so far with
@@ -238,7 +314,8 @@ class Tracking(Protocol):
     ``log_model(result, snapshot)``, called after a fit that succeeded and
     before `finish`, which the fit waits for while the tracking thread is
     alive, up to an hour (an error, a stopped thread or the time limit ends
-    the run as failed); and ``tags`` (extra fit-run tags).
+    the run as failed); ``tags`` (extra fit-run tags); and
+    ``log_prediction_run(record)`` for ``predict(tracking=...)``.
     """
     def start(self, record: RunRecord) -> None:
         ...
@@ -364,9 +441,24 @@ class TrackingSession:
             if tracker is not None:
                 tracker.finish(record, error)
 
+        self._drain(worker, finish_tracker, 'the fit')
+
+    def log_prediction_run(self, record: RunRecord) -> None:
+        if getattr(self._tracker, 'log_prediction_run', None) is None:
+            return
+        self._call(lambda tracker: getattr(tracker, 'prepare', _none)())
+        worker = threading.Thread(target=self._work, name='kumo-tracking',
+                                  daemon=True)
+        worker.start()
+        self._drain(worker, lambda: self._call(
+            lambda tracker: tracker.log_prediction_run(record)),
+                    'the prediction')
+
+    def _drain(self, worker: threading.Thread, last: Callable[[], None],
+               what: str) -> None:
         deadline = time.monotonic() + FINISH_SECONDS
         try:
-            for job in (finish_tracker, None):
+            for job in (last, None):
                 self._jobs.put(job, timeout=max(0.0,
                                                 deadline - time.monotonic()))
         except queue.Full:
@@ -375,7 +467,7 @@ class TrackingSession:
         if worker.is_alive():
             logger.warning(
                 'Experiment tracking did not finish within %ss; it goes on '
-                'in the background and the fit returns', FINISH_SECONDS)
+                'in the background and %s returns', FINISH_SECONDS, what)
 
     def _submit(self, job: Callable[[], Any]) -> bool:
         if self._behind:

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""MLflow tracking and models for `Trainer.fit`
+r"""MLflow tracking and models for `Trainer.fit` and `Trainer.predict`
 (``pip install 'kumo-engine[mlflow]'``)."""
 
 import hashlib
@@ -65,6 +65,9 @@ class MlflowTracking:
     Catalog then links them to a model registered from the run), file and
     object-store sources by URI. Params MLflow rejects are counted in
     ``kumo.dropped_params``. Concurrent fits in one process are not supported.
+    ``predict(tracking=...)`` records each prediction run as one run named by
+    its kumo run id, placed like a fit run; ``run_name`` and ``tags`` apply to
+    fit runs only.
 
     Args:
         experiment_name: experiment for the fit run, created if missing.
@@ -155,7 +158,7 @@ class MlflowTracking:
                                  self.experiment_name))
         run = mlflow.start_run(
             experiment_id=experiment_id,
-            run_name=self.run_name,
+            run_name=record.name or self.run_name,
             parent_run_id=self._outer,
             tags=record.tags,
             log_system_metrics=self.log_system_metrics,
@@ -165,6 +168,10 @@ class MlflowTracking:
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
         _log_inputs(mlflow, self._client, self._parent, record.inputs)
+
+    def log_prediction_run(self, record: RunRecord) -> None:
+        self.start(record)
+        self.finish(record, None)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         key = (event.trial or 0, int(event.params['attempt']))
