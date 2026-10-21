@@ -132,12 +132,25 @@ class PredictionResult:
     Parquet files. Accessing ``frame`` explicitly collects the whole result
     into memory and is intended only for outputs that fit in memory.
     ``bundle_id`` and ``snapshot_id`` identify the model and graph scored.
+    ``manifest`` is the prediction-run record; None for results without one.
     """
 
     selection: PredictionSelectionRef
     artifact_type: PredictionArtifactType
     bundle_id: Optional[str] = field(default=None, compare=False)
     snapshot_id: Optional[str] = field(default=None, compare=False)
+
+    @property
+    def run_id(self) -> str:
+        return self.selection.job_id
+
+    @property
+    def manifest(self) -> Optional[Dict[str, Any]]:
+        from kumo.engine._manifest import read_manifest
+        from kumo.engine.trainer._run_manifest import MANIFEST_FILE
+
+        return read_manifest(
+            Path(self.selection.pointer_path).parent / MANIFEST_FILE)
 
     @property
     def num_rows(self) -> int:
@@ -175,7 +188,12 @@ class PredictionResult:
                 'lineage_columns are written at prediction time; this result '
                 'has none, so the export has none either.', UserWarning,
                 stacklevel=2)
-        self._export(output_config)
+        manifest = self.manifest
+        records = self._export(output_config, manifest)
+        if manifest is not None and records is not None:
+            _write_run_manifest(
+                self, {**manifest,
+                       'outputs': [*(manifest.get('outputs') or []), *records]})
 
     def _has_lineage_columns(self) -> bool:
         from pyarrow import parquet
@@ -183,7 +201,8 @@ class PredictionResult:
         return bool(files) and LINEAGE_RUN_ID in parquet.read_schema(
             files[0]).names
 
-    def _export(self, output_config: PredictionOutputConfig) -> None:
+    def _export(self, output_config: PredictionOutputConfig,
+                manifest: Optional[Dict[str, Any]] = None) -> Optional[list]:
         write_files = getattr(output_config.connector.sink_backend,
                               'write_files', None)
         if not callable(write_files):
@@ -194,13 +213,48 @@ class PredictionResult:
             kind = PredictionArtifactType(name.upper())
             files = PredictionResult(self.selection, kind).files
             outputs.append((kind, destination, files))
-        for kind, destination, files in outputs:
+        records, sidecars = _output_records(output_config, outputs, manifest)
+        for (kind, destination, files), extra in zip(outputs, sidecars):
             write_files(output_config.connector, destination, list(files),
                         output_config.write_mode,
-                        export_id=f'{self.selection.job_id}-{kind.value}')
+                        export_id=f'{self.selection.job_id}-{kind.value}',
+                        **extra)
+        return records
 
 
 LINEAGE_RUN_ID = 'KUMO_RUN_ID'
+
+
+def _output_records(output_config: PredictionOutputConfig, outputs: list,
+                    manifest: Optional[Dict[str, Any]]
+                    ) -> tuple[Optional[list], list]:
+    from kumo_core.object_store_sink import ObjectStoreSinkBackend
+    from kumo_core.sources import layout
+
+    from kumo.engine._manifest import manifest_bytes
+    from kumo.engine.pquery.training_table import EXPORT_MANIFEST_FILE
+    from kumo.engine.trainer._run_manifest import output_record
+
+    try:
+        records = [
+            output_record(output_config.connector, kind, destination)
+            for kind, destination, _ in outputs
+        ]
+        payload = None if manifest is None else manifest_bytes(
+            {**manifest, 'outputs': records})
+    except Exception as error:
+        warnings.warn(f"Exporting without a prediction manifest: {error}",
+                      UserWarning, stacklevel=4)
+        return None, [{} for _ in outputs]
+    # Parquet exports to files or object stores carry the manifest; the
+    # writer adds it to directory destinations only.
+    sink = output_config.connector.sink_backend
+    return records, [
+        {'sidecars': {EXPORT_MANIFEST_FILE: payload}}
+        if payload is not None and isinstance(sink, ObjectStoreSinkBackend)
+        and layout.file_type(destination.rstrip('/')) != layout.CSV else {}
+        for _, destination, _ in outputs
+    ]
 
 
 def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
@@ -228,6 +282,26 @@ def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
                     'the test split, so it has no holdout predictions.')
         return None, False
     return _find_holdout(trainer.get_log_dir(fit_mode=published))
+
+
+def _option_source(argument: Any, value: Any, fallback: str) -> str:
+    if value is None:
+        return 'none'
+    return 'argument' if argument is not None else fallback
+
+
+def _write_run_manifest(result: PredictionResult,
+                        manifest: Dict[str, Any]) -> None:
+    from kumo.engine._manifest import write_manifest
+    from kumo.engine.trainer._run_manifest import MANIFEST_FILE
+
+    try:
+        write_manifest(
+            Path(result.selection.pointer_path).parent / MANIFEST_FILE,
+            manifest)
+    except Exception as error:
+        warnings.warn(f"Could not write the prediction manifest: {error}",
+                      UserWarning, stacklevel=3)
 
 
 def _collect_garbage(stage: str) -> None:
@@ -875,6 +949,7 @@ class Trainer:
         parsed = parse_and_validate_query(prediction_table.query, native_graph)
         if num_classes_to_return is None and parsed.query.top_k is None:
             num_classes_to_return = self._scoring_defaults.num_classes_to_return
+        requested_classes = num_classes_to_return
         num_classes_to_return = resolve_num_classes_to_return(
             task_type,
             num_classes_to_return,
@@ -914,6 +989,7 @@ class Trainer:
             score_prediction,
         )
 
+        started_at = datetime.now(timezone.utc)
         run_id = f'{self._id}-predict-{new_run_id()}'
         run_dir = self.scratch_dir / 'runs' / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -983,7 +1059,7 @@ class Trainer:
         source_identity = [
             snapshot.id, prediction_table.query, timestamps,
             sorted(kind.value for kind in artifacts), num_classes_to_return,
-            threshold, extra_fields
+            threshold, extra_fields, self.bundle_id
         ] + ([lineage] if lineage else [])
         selection = score_prediction(
             materialized=materialized,
@@ -1014,8 +1090,36 @@ class Trainer:
         result = PredictionResult(selection, artifact_type,
                                   bundle_id=self.bundle_id,
                                   snapshot_id=snapshot.id)
+        manifest = None
+        try:
+            from kumo.engine.trainer._provenance import _source_tables
+            from kumo.engine.trainer._run_manifest import run_manifest
+            manifest = run_manifest(
+                result=result, prediction_table=prediction_table,
+                task_type=task_type, scoring={
+                    'binary_classification_threshold': threshold,
+                    'threshold_source': _option_source(
+                        binary_classification_threshold, threshold,
+                        'default'),
+                    'num_classes_to_return': num_classes_to_return,
+                    'count_source': _option_source(
+                        requested_classes, num_classes_to_return, 'query'),
+                    'num_workers': num_workers,
+                    'lineage_columns': bool(output_config
+                                            and output_config.lineage_columns),
+                }, source_tables=_source_tables(snapshot),
+                started_at=started_at.isoformat(timespec='seconds'))
+        except Exception as error:
+            warnings.warn(f"Predicting without a prediction manifest: {error}",
+                          UserWarning, stacklevel=2)
         if output_config is not None:
-            result._export(output_config)
+            outputs = result._export(output_config, manifest)
+            if manifest is not None:
+                manifest['outputs'] = outputs
+        if manifest is not None:
+            manifest['timings']['finished_at'] = datetime.now(
+                timezone.utc).isoformat(timespec='seconds')
+            _write_run_manifest(result, manifest)
         return result
 
     @classmethod

@@ -266,12 +266,15 @@ class BundleProvenance(Manifest):
         }
 
 
-def write_manifest(path: Path,
-                   manifest: Union[Record, Mapping[str, Any]]) -> None:
+def manifest_bytes(manifest: Union[Record, Mapping[str, Any]]) -> bytes:
     if isinstance(manifest, Record):
         manifest = manifest.to_dict()
-    payload = json.dumps(manifest, indent=2, sort_keys=True) + '\n'
-    atomic_write_bytes(path, payload.encode('utf-8'))
+    return (json.dumps(manifest, indent=2, sort_keys=True) + '\n').encode()
+
+
+def write_manifest(path: Path,
+                   manifest: Union[Record, Mapping[str, Any]]) -> None:
+    atomic_write_bytes(path, manifest_bytes(manifest))
 
 
 def read_manifest(path: Path, kind: Type[M]) -> Optional[M]:
