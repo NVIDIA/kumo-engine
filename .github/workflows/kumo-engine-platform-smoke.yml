@@ -1,0 +1,224 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo Engine - Platform smoke
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Engine GPU smoke (${{ matrix.platform }})
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-arm64
+            group: nv-gpu-arm64-l4-1gpu
+            label: linux-arm64-gpu-l4-latest-1
+            architecture: aarch64
+          - platform: windows-wsl
+            group: nv-gpu-general
+            label: wsl-amd64-gpu-l4-latest-1
+            architecture: x86_64
+    runs-on:
+      group: ${{ matrix.group }}
+      labels: ${{ matrix.label }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      SMOKE_PLATFORM: ${{ matrix.platform }}
+      EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+      PYTHONUNBUFFERED: '1'
+      UV_LINK_MODE: copy
+      KUMO_SMOKE_DEVICE: cuda
+    steps:
+      - name: Check runner operating system and GPU
+        run: |
+          set -euo pipefail
+          if [ "$(uname -s)" != Linux ]; then
+            echo 'This workflow requires a Linux Actions agent, inside WSL for the WSL runner.' >&2
+            exit 1
+          fi
+          test "$(uname -m)" = "$EXPECTED_ARCHITECTURE"
+          if [ "$SMOKE_PLATFORM" = windows-wsl ]; then
+            if ! grep -qi microsoft /proc/sys/kernel/osrelease; then
+              echo 'The WSL smoke must execute inside a WSL Linux guest.' >&2
+              exit 1
+            fi
+          fi
+          nvidia-smi
+          command -v cc
+          command -v c++
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+
+      - name: Check ARM Faiss build prerequisites
+        if: matrix.platform == 'linux-arm64'
+        run: |
+          set -euo pipefail
+          cuda_root="${CUDAToolkit_ROOT:-/usr/local/cuda}"
+          if ! "$cuda_root/bin/nvcc" --version | grep -q 'release 13\.'; then
+            echo 'ARM GPU Faiss requires CUDA 13 toolkit; set CUDAToolkit_ROOT on the runner.' >&2
+            exit 1
+          fi
+          printf '#include <cblas.h>\nint main(void) { return 0; }\n' \
+            | cc -x c - -lopenblas -o "$RUNNER_TEMP/openblas-check"
+          echo "CUDAToolkit_ROOT=$cuda_root" >> "$GITHUB_ENV"
+
+      - name: Set up isolated Python 3.12
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          python-version: '3.12'
+          activate-environment: true
+
+      - name: Set up Rust for DiskGraph
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+
+      - name: Install and verify CUDA PyTorch
+        # Both CPython 3.12 architectures are recorded in the repository uv.lock.
+        run: |
+          uv pip install 'torch==2.12.0+cu130' --index-url https://download.pytorch.org/whl/cu130
+          python - <<'PY'
+          import torch
+
+          assert torch.cuda.is_available(), 'CUDA must work before building the engine'
+          print(torch.__version__, torch.cuda.get_device_name(0))
+          assert (torch.ones(2, device='cuda') + 1).tolist() == [2, 2]
+          PY
+
+      - name: Build ARM GPU Faiss
+        id: faiss
+        if: matrix.platform == 'linux-arm64'
+        env:
+          FAISS_GPU_CACHE_DIR: ${{ runner.temp }}/faiss-arm64
+        run: |
+          set -euo pipefail
+          wheel_dir="$(scripts/build_faiss_gpu_arm64_wheel.sh --python "$(command -v python)" --cuda cu130)"
+          echo "wheel-directory=$wheel_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Install the engine and native graph from this checkout
+        env:
+          FAISS_WHEEL_DIRECTORY: ${{ steps.faiss.outputs.wheel-directory }}
+        run: |
+          set -euo pipefail
+          faiss_wheels=()
+          if [ -n "$FAISS_WHEEL_DIRECTORY" ]; then
+            faiss_wheels=("$FAISS_WHEEL_DIRECTORY"/faiss_gpu-1.14.3-*.whl)
+          fi
+          uv pip install --no-sources --torch-backend=cu130 \
+            'torch==2.12.0+cu130' \
+            "${faiss_wheels[@]}" \
+            ./packages/diskgraph ./packages/kumo-api ./packages/kumo-pql \
+            ./packages/kumo-core './packages/kumo-engine[test]'
+          uv pip check
+
+      - name: Run real ingest, GPU training, and prediction
+        run: |
+          python -m pytest -q -s packages/kumo-engine/test/smoke_platform.py \
+            --junitxml=platform-gpu-results.xml
+
+      - name: Save smoke results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: engine-gpu-${{ matrix.platform }}-${{ github.run_attempt }}
+          path: platform-gpu-results.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  windows-native:
+    name: Engine CPU smoke (windows-native)
+    timeout-minutes: 90
+    runs-on:
+      group: nv-gpu-general
+      labels: windows-amd64-gpu-l4-latest-1
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUNBUFFERED: '1'
+      UV_LINK_MODE: copy
+      KUMO_SMOKE_DEVICE: cpu
+    steps:
+      - name: Check native Windows
+        run: |
+          if (-not $IsWindows -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
+            throw 'This smoke requires a native Windows x64 Actions agent.'
+          }
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+
+      - name: Activate installed MSVC build tools
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw 'Runner image needs Visual Studio Build Tools with the x64 C++ toolchain and Windows SDK.'
+          }
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $installation) {
+            throw 'No installed Visual Studio x64 C++ build tools found.'
+          }
+          & "$installation\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          foreach ($name in @('cl', 'link', 'cmake')) {
+            Get-Command $name -ErrorAction Stop | Select-Object Name, Source
+          }
+          # Keep the activated toolchain available in later Actions steps.
+          foreach ($name in @('PATH', 'INCLUDE', 'LIB', 'LIBPATH')) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
+      - name: Set up isolated Python 3.12
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          python-version: '3.12'
+          activate-environment: true
+
+      - name: Set up Rust for DiskGraph
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+
+      - name: Install and verify CPU PyTorch
+        # The CPython 3.12 win_amd64 wheel is recorded in uv.lock.
+        run: |
+          uv pip install 'torch==2.12.0+cpu' --index-url https://download.pytorch.org/whl/cpu
+          if ($LASTEXITCODE -ne 0) { throw 'CPU PyTorch installation failed.' }
+          python -c "import sys, torch; assert sys.platform == 'win32'; assert torch.version.cuda is None; print(torch.__version__); assert (torch.ones(2, device='cpu') + 1).tolist() == [2, 2]"
+          if ($LASTEXITCODE -ne 0) { throw 'Native CPU execution failed.' }
+
+      - name: Install the engine and native graph from this checkout
+        run: |
+          uv pip install --no-sources --torch-backend=cpu `
+            'torch==2.12.0+cpu' `
+            ./packages/diskgraph ./packages/kumo-api ./packages/kumo-pql `
+            ./packages/kumo-core './packages/kumo-engine[test]'
+          if ($LASTEXITCODE -ne 0) { throw 'Engine source installation failed.' }
+          uv pip check
+          if ($LASTEXITCODE -ne 0) { throw 'Engine dependency check failed.' }
+
+      - name: Run real ingest, CPU training, and prediction
+        run: |
+          python -m pytest -q -s packages/kumo-engine/test/smoke_platform.py --junitxml=platform-cpu-results.xml
+
+      - name: Save smoke results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: engine-cpu-windows-native-${{ github.run_attempt }}
+          path: platform-cpu-results.xml
+          if-no-files-found: ignore
+          retention-days: 7
