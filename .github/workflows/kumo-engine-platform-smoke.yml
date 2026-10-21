@@ -92,7 +92,7 @@ jobs:
       - name: Install and verify CUDA PyTorch
         # Both CPython 3.12 architectures are recorded in the repository uv.lock.
         run: |
-          uv pip install 'torch==2.12.0+cu130' --index-url https://download.pytorch.org/whl/cu130
+          uv pip install 'torch==2.12.0+cu130' --torch-backend=cu130
           python - <<'PY'
           import torch
 
@@ -197,7 +197,7 @@ jobs:
       - name: Install and verify CPU PyTorch
         # The CPython 3.12 win_amd64 wheel is recorded in uv.lock.
         run: |
-          uv pip install 'torch==2.12.0+cpu' --index-url https://download.pytorch.org/whl/cpu
+          uv pip install 'torch==2.12.0+cpu' --torch-backend=cpu
           if ($LASTEXITCODE -ne 0) { throw 'CPU PyTorch installation failed.' }
           python -c "import sys, torch; assert sys.platform == 'win32'; assert torch.version.cuda is None; print(torch.__version__); assert (torch.ones(2, device='cpu') + 1).tolist() == [2, 2]"
           if ($LASTEXITCODE -ne 0) { throw 'Native CPU execution failed.' }
