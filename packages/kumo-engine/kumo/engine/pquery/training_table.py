@@ -281,43 +281,17 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
 
 
 def _source_lineage(source_table: SourceTable) -> Dict[str, Optional[str]]:
+    from kumo.engine._provenance import source_table as lineage
+
     connector, name, sql = (source_table.connector, source_table.table_name,
                             source_table.sql)
-    lineage: Dict[str, Optional[str]] = {'location': None, 'version': None}
-    try:
-        lineage['location'] = _location(connector, name, sql)
-    except Exception as error:
-        warnings.warn(
-            f"Could not record where the custom table was loaded from: "
-            f"{error}", UserWarning, stacklevel=3)
+    version = None
     if sql is None:
         try:
             version = connector.source_backend.get_data_version(
                 connector, name)
-            lineage['version'] = None if version is None else str(version)
         except Exception as error:
             warnings.warn(
                 f"Could not record the custom table's data version: {error}",
                 UserWarning, stacklevel=3)
-    return lineage
-
-
-def _location(connector: Any, name: str, sql: Optional[str]) -> str:
-    import hashlib
-    import posixpath
-
-    from kumo_core.sources.object_store_sessions import ObjectStoreSessions
-
-    if sql is not None:
-        return 'sql:' + hashlib.sha256(sql.encode()).hexdigest()
-    root = getattr(connector.config, 'root_dir', None)
-    if root is not None:
-        return str(Path(root, name))
-    backend = connector.source_backend
-    if isinstance(backend, ObjectStoreSessions):
-        _, prefix, key, _ = backend._placement(connector, name)
-        return f'{backend.scheme}://{posixpath.join(prefix, key).rstrip("/")}'
-    namespace = (getattr(connector, field, None)
-                 for field in ('database', 'catalog', 'project_id',
-                               'schema_name', 'dataset_id'))
-    return '.'.join([*filter(None, namespace), name])
+    return lineage(connector, name, sql, version)

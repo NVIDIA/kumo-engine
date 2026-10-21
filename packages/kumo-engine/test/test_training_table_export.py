@@ -2,7 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import hashlib
 import json
 from collections import Counter
 from functools import partial
@@ -349,6 +348,7 @@ def test_custom_table_records_its_source(graph, recwarn):
     assert manifest['parents'] == {
         'snapshot': snapshot.id,
         'source_table': {
+            'connector': 'LOCAL_FILE',
             'location': str(out / 'reloaded'),
             'version': connector.source_backend.get_data_version(
                 connector, 'reloaded'),
@@ -359,9 +359,9 @@ def test_custom_table_records_its_source(graph, recwarn):
     assert _seeds(reloaded)[1] == _seeds(table)[1]
 
 
-@pytest.mark.parametrize('failing', ['_location', 'get_data_version'])
+@pytest.mark.parametrize('failing', ['source_location', 'get_data_version'])
 def test_unrecordable_source_is_null(graph, monkeypatch, failing):
-    from kumo.engine.pquery import training_table
+    from kumo.engine import _provenance
 
     _, snapshot, connector, out = graph
     pquery, table, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
@@ -370,41 +370,21 @@ def test_unrecordable_source_is_null(graph, monkeypatch, failing):
     def fail(*args, **kwargs):
         raise OSError('listing denied')
 
-    target = (training_table if failing == '_location' else
+    target = (_provenance if failing == 'source_location' else
               type(connector.source_backend))
     monkeypatch.setattr(target, failing, fail)
     with pytest.warns(UserWarning, match='listing denied'):
         reloaded = _reload(graph, f'unrecorded_{failing}', pquery)
     recorded = reloaded.manifest['parents']['source_table']
-    if failing == '_location':
+    if failing == 'source_location':
         assert recorded['location'] is None and recorded['version']
     else:
         assert recorded == {
+            'connector': 'LOCAL_FILE',
             'location': str(out / f'unrecorded_{failing}'),
             'version': None
         }
     assert _seeds(reloaded)[1] == _seeds(table)[1]
-
-
-@pytest.mark.parametrize('connector, name, location', [
-    (kumo.S3Connector(root_dir='s3://bucket/data/'), 'exports/tt/',
-     's3://bucket/data/exports/tt'),
-    (kumo.S3Connector(), 's3://bucket/exports/tt', 's3://bucket/exports/tt'),
-    (SimpleNamespace(config=None, source_backend=None, database='DB',
-                     schema_name='SCHEMA'), 'TT', 'DB.SCHEMA.TT'),
-])
-def test_source_location(connector, name, location):
-    from kumo.engine.pquery.training_table import _location
-
-    assert _location(connector, name, None) == location
-
-
-def test_sql_location_is_a_digest():
-    from kumo.engine.pquery.training_table import _location
-
-    sql = 'SELECT * FROM labels'
-    assert _location(None, 'synthetic', sql) == (
-        'sql:' + hashlib.sha256(sql.encode()).hexdigest())
 
 
 def test_manifest_write_failure_keeps_generation_and_export(
