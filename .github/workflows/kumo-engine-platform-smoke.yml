@@ -23,16 +23,12 @@ jobs:
       matrix:
         include:
           - platform: linux-arm64
-            group: nv-gpu-arm64-l4-1gpu
             label: linux-arm64-gpu-l4-latest-1
             architecture: aarch64
           - platform: windows-wsl
-            group: nv-gpu-general
-            label: wsl-amd64-gpu-l4-latest-1
+            label: wsl-amd64-gpu-t4-latest-1
             architecture: x86_64
-    runs-on:
-      group: ${{ matrix.group }}
-      labels: ${{ matrix.label }}
+    runs-on: ${{ matrix.label }}
     defaults:
       run:
         shell: bash
