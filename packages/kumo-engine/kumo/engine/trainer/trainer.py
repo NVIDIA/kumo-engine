@@ -263,8 +263,7 @@ class Trainer:
 
     @property
     def training_query(self) -> Optional[str]:
-        """Predictive query of the last fit/load, for
-        :meth:`PredictiveQuery.from_snapshot`."""
+        """Predictive query of the last fit/load."""
         return self._training_query
 
     @property

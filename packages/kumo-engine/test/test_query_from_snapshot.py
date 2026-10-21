@@ -41,15 +41,15 @@ def test_snapshot_bound_query_predicts_like_graph_bound(fitted, tmp_path):
                                   expected)
 
 
-def test_snapshot_bound_query_refuses_other_graph(fitted):
+def test_snapshot_bound_query_checks_snapshot_graph(fitted):
     _, graph_table, snapshot = fitted
     query = kumo.PredictiveQuery.from_snapshot(snapshot, graph_table.query)
     newer = replace(snapshot, id=snapshot.id.split('@')[0] + '@newer')
     other = replace(snapshot, id='other@' + snapshot.id.split('@')[1])
-
-    query._require_matching_snapshot(newer)
     plain = replace(snapshot, id='plain')
-    kumo.PredictiveQuery.from_snapshot(plain, '')._require_matching_snapshot(
-        plain)
+
+    query.suggest_model_plan(newer)
+    kumo.PredictiveQuery.from_snapshot(plain, graph_table.query) \
+        .suggest_model_plan(plain)
     with pytest.raises(ValueError, match='was not materialized'):
-        query.generate_prediction_table(other)
+        query.suggest_model_plan(other)
