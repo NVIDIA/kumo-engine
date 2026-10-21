@@ -14,7 +14,7 @@ This package is maintained in the Kumo monorepo at `packages/kumo-api`.
 From the repository root:
 
 ```bash
-uv pip install -e 'packages/kumo-api[test,release-check]'
+uv pip install -e 'packages/kumo-api[test]'
 uv run --no-project pytest packages/kumo-api/test
 ```
 
