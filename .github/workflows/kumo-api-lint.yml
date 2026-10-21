@@ -73,7 +73,7 @@ jobs:
       - name: Install Kumo API
         run: |
           cd packages/kumo-api
-          uv pip install -e ".[test,release-check]"
+          uv pip install -e ".[test]"
 
       - name: Run type checker
         run: |
