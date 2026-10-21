@@ -245,8 +245,8 @@ class TrainingTable:
             source_table=provenance.source_table(
                 source_table.connector, source_table.table_name,
                 source_table.sql, version,
-                record_locations=(snapshot.manifest
-                                  or {}).get('record_locations', True)))
+                record_sources=(snapshot.manifest
+                                or {}).get('record_sources', True)))
         return table
 
 
