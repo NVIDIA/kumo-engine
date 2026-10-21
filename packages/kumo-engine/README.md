@@ -382,9 +382,15 @@ others. Any other system plugs in through the `kumo.engine.Tracking` protocol:
 
 Build what to log with `run_record(context, result, fit_ended, tags=...)` and
 `trial_record(context, trial_events)`, so every adapter uses the same
-parameter, metric and tag names. Tags are the engine's `kumo.*` tags plus the
-`tags=` you pass, under their given names (`kumo.*` names are the engine's;
-yours are dropped with a warning). Links to a published model (`model_name`,
+parameter, metric and tag names. Params are options and hyperparameters: the
+task type and resolved model plan on a fit run, the searched hyperparameters
+and attempt on a trial run. Ids and outcomes are `kumo.*` tags: `kumo.kind`
+(`fit` or `trial`), `kumo.run_id`, `kumo.snapshot_id`,
+`kumo.training_table_id` and `kumo.query_sha256` on the fit, `kumo.parent_run`
+and, when it ends, `kumo.status` on a trial, and `kumo.error` (error type and
+a short message) on a failed fit or trial. The `tags=` you pass are added under
+their given names; ones named `kumo.*` or like a param are dropped with a
+warning. Links to a published model (`model_name`,
 `model_version`, `model_uri`) are also tags (`kumo.model_name`, ...), so a
 tracker without its own run-to-model link still records them; `steps` are per-epoch histories (step = epoch).
 

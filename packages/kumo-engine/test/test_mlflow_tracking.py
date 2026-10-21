@@ -110,12 +110,12 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, caplog):
     assert parent.data.tags['kumo.snapshot_id'] == snapshot.id
     assert parent.data.tags['kumo.engine_version'] == kumo.__version__
     assert int(parent.data.tags['kumo.dropped_params']) >= 1
+    assert parent.data.tags['kumo.kind'] == 'fit'
+    assert parent.data.tags['kumo.query_sha256'] == hashlib.sha256(
+        QUERY.encode()).hexdigest()
     params = parent.data.params
     assert params['task_type'] == 'regression'
-    assert params['snapshot_id'] == snapshot.id
-    assert params['training_table_id'] == (
-        parent.data.tags['kumo.training_table_id'])
-    assert params['query_sha256'] == hashlib.sha256(QUERY.encode()).hexdigest()
+    assert 'snapshot_id' not in params
     assert json.loads(params['optimization.base_lr']) == [0.01, 0.001]
     metrics = {
         name: value
@@ -137,6 +137,8 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, caplog):
             for run in children] == ['trial-1-attempt-1', 'trial-2-attempt-1']
     for child in children:
         assert child.info.status == 'FINISHED'
+        assert child.data.tags['kumo.kind'] == 'trial'
+        assert child.data.tags['kumo.status'] == 'succeeded'
         assert child.data.tags['mlflow.parentRunId'] == parent.info.run_id
         assert child.data.tags['kumo.parent_run'] == (
             parent.data.tags['kumo.run_id'])
@@ -228,6 +230,7 @@ def test_failed_fit_marks_the_run_failed(table_and_snapshot, monkeypatch):
     assert raised.value is error
     run, = _runs(mlflow.MlflowClient())
     assert run.info.status == 'FAILED'
+    assert run.data.tags['kumo.error'] == 'ValueError: stop'
     assert mlflow.active_run() is None
 
 

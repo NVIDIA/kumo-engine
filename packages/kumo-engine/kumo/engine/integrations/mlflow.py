@@ -11,7 +11,9 @@ child run with its searched hyperparameters, per-epoch metrics (step = epoch)
 and summary metrics; Lightning's own metrics on it are prefixed
 ``lightning-`` (step = Lightning's global step). The fit run gets the resolved
 model plan, the query, user and ``kumo.*`` tags, and at the end the final
-metrics and the finish-time tags (published model ids as ``kumo.model_*``).
+metrics and the finish-time tags (published model ids as ``kumo.model_*``, or
+``kumo.error`` when the fit failed). A trial run gets ``kumo.status`` and, on
+failure, ``kumo.error`` when it ends.
 Trial runs still open when the fit ends (the fit failed mid-trial) are ended
 FAILED. MLflow autologging is suspended for the fit, so it adds no runs of its
 own.
@@ -137,8 +139,7 @@ class MlflowTracking:
 
     def finish(self, result: Any, error: Optional[BaseException]) -> None:
         try:
-            if result is not None:
-                self._safe(self._log_result, result)
+            self._safe(self._log_result, result)
             status = 'FINISHED' if error is None else 'FAILED'
             if self._enabled:
                 for run_id in self._children.values():
@@ -222,6 +223,7 @@ class MlflowTracking:
         run_id = self._children.pop(key)
         del self._trials[key]
         self._log_metrics(run_id, record.metrics)
+        self._log_tags(run_id, record.tags)
         succeeded = event.params.get('status') == 'succeeded'
         self._client.set_terminated(run_id,
                                     'FINISHED' if succeeded else 'FAILED')
@@ -230,11 +232,14 @@ class MlflowTracking:
         record = run_record(self._context, result, self._fit_ended,
                             tags=self.tags)
         self._log_metrics(self._parent, record.metrics)
+        self._log_tags(self._parent, record.tags)
+
+    def _log_tags(self, run_id: str, tags: Mapping[str, str]) -> None:
         entities = import_provider('mlflow.entities', 'mlflow')
         self._client.log_batch(
-            self._parent, tags=[
+            run_id, tags=[
                 entities.RunTag(key, value)
-                for key, value in record.tags.items()
+                for key, value in tags.items()
             ])
 
     def _log_params(self, run_id: str, params: Mapping[str, str]) -> None:

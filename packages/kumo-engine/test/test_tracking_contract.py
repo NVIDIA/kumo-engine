@@ -10,6 +10,7 @@ compared with `run_record`/`trial_record`, allowing only the gaps its
 ``kumo.dropped_params``). A new adapter is one more `adapter` fixture param.
 """
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -78,7 +79,7 @@ EVENTS = [
     }, status='succeeded', attempt=1),
     _event('trial_started', 2, attempt=1, **{'optimization.base_lr': 0.001}),
     _event('trial_ended', 2, status='failed', attempt=1,
-           error='OutOfMemoryError'),
+           error='OutOfMemoryError: CUDA out of memory'),
     _event('trial_started', 2, attempt=2, **{
         'optimization.base_lr': 0.001,
         'optimization.batch_size': 256
@@ -127,22 +128,24 @@ class _Raising:
     start = on_event = trial_logger = finish = _raise
 
 
-def replay(trackers) -> List[Event]:
+def replay(trackers, events=EVENTS, result=RESULT,
+           error=None) -> List[Event]:
     r"""Feeds the recorded fit to `trackers` as `Trainer.fit` would; returns
     the events trackers saw. Trial loggers are requested but not fed: what
     Lightning logs through them is outside the record."""
     recorder = _Recorder()
     session = TrackingSession([recorder, *trackers])
     session.start(lambda: CONTEXT)
-    for event in EVENTS:
+    for event in events:
         session.on_event(event)
         if event.name == 'trial_started':
             session.trial_logger(event.trial, event.params['attempt'])
-    session.finish(RESULT, None)
+    session.finish(result, error)
     return recorder.events
 
 
-def expected_records(events: List[Event]) -> Dict[str, RunRecord]:
+def expected_records(events: List[Event],
+                     result=RESULT) -> Dict[str, RunRecord]:
     trials: Dict[Tuple[int, int], List[Event]] = {}
     for event in events:
         if event.trial is not None:
@@ -150,7 +153,7 @@ def expected_records(events: List[Event]) -> Dict[str, RunRecord]:
                               []).append(event)
     ended = next(event for event in events if event.name == 'fit_ended')
     records = [
-        run_record(CONTEXT, RESULT, ended, tags=USER_TAGS),
+        run_record(CONTEXT, result, ended, tags=USER_TAGS),
         *(trial_record(CONTEXT, group) for group in trials.values())
     ]
     return {record.tags['kumo.run_id']: record for record in records}
@@ -285,30 +288,30 @@ def test_records_of_the_recorded_fit():
     fit = records[RUN]
     assert fit.tags == {
         'team': 'ents',
+        'kumo.kind': 'fit',
         'kumo.engine_version': fit.tags['kumo.engine_version'],
         'kumo.run_id': RUN,
         'kumo.snapshot_id': 'snap@1',
         'kumo.training_table_id': 'tt-1',
+        'kumo.query_sha256': hashlib.sha256(QUERY.encode()).hexdigest(),
         'kumo.model_name': 'ents-model',
         'kumo.model_version': '3',
         'kumo.model_uri': 'models:/ents-model/3',
     }
-    assert {
-        key: fit.params[key]
-        for key in ('task_type', 'snapshot_id', 'training_table_id',
-                    'optimization.base_lr',
-                    'column_processing.encoder_overrides.ents.amount ($)')
-    } == {
+    assert fit.params == {
         'task_type': 'regression',
-        'snapshot_id': 'snap@1',
-        'training_table_id': 'tt-1',
         'optimization.base_lr': '[0.01, 0.001]',
+        'optimization.max_epochs': '2',
+        'training_job.tune_metric': 'mae',
         'column_processing.encoder_overrides.ents.amount ($)': 'numerical',
     }
-    with pytest.warns(UserWarning, match='kumo.bundle_id'):
-        spoofed = run_record(CONTEXT, tags={'kumo.bundle_id': 'x', 'a': 1})
-    assert 'kumo.bundle_id' not in spoofed.tags and spoofed.tags['a'] == '1'
-    assert len(fit.params['query_sha256']) == 64
+    with pytest.warns(UserWarning, match="'kumo.bundle_id', 'task_type'"):
+        spoofed = run_record(CONTEXT, tags={
+            'kumo.bundle_id': 'x',
+            'task_type': 'y',
+            'a': 1
+        })
+    assert spoofed.tags.keys() - fit.tags.keys() == {'a'}
     assert fit.metrics == {'val_mae': 0.3, 'test_mae': 0.32, 'seconds': 9.0}
     assert fit.links == {
         'model_name': 'ents-model',
@@ -324,11 +327,16 @@ def test_records_of_the_recorded_fit():
             'optimization.base_lr': '0.001',
             'attempt': '1'
         }, tags={
+            'kumo.kind': 'trial',
             'kumo.run_id': f'{RUN}-trial-2-attempt-1',
-            'kumo.parent_run': RUN
+            'kumo.parent_run': RUN,
+            'kumo.status': 'failed',
+            'kumo.error': 'OutOfMemoryError: CUDA out of memory',
         })
     retry = records[f'{RUN}-trial-2-attempt-2']
     assert retry.params['attempt'] == '2'
+    assert retry.tags['kumo.status'] == 'succeeded'
+    assert 'kumo.error' not in retry.tags
     assert retry.metrics == {'best_val_mae': 0.3, 'seconds': 4.0}
     assert retry.steps == {
         'train_loss': ((1, 0.6), (2, 0.4)),
@@ -343,6 +351,18 @@ def test_adapter_records_the_same_runs(adapter):
 
     assert gaps(expected_records(events), adapter.observe(),
                 tracker.capabilities, adapter.kept_params) == []
+
+
+def test_adapter_records_a_failed_fit(adapter):
+    tracker = adapter.make()
+    failed = _event('fit_ended', status='failed', error='ValueError: stop')
+    events = replay([tracker], [*EVENTS[:-1], failed], None,
+                    ValueError('stop'))
+
+    expected = expected_records(events, None)
+    assert expected[RUN].tags['kumo.error'] == 'ValueError: stop'
+    assert gaps(expected, adapter.observe(), tracker.capabilities,
+                adapter.kept_params) == []
 
 
 def test_a_failing_tracker_does_not_affect_others(adapter, caplog):

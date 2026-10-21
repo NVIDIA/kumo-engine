@@ -104,11 +104,11 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
                fit_ended: Optional[Event] = None, *,
                tags: Optional[Mapping[str, str]] = None) -> RunRecord:
     r"""The fit run's record; metrics need `result` and the ``fit_ended``
-    event.
+    event, which also sets ``kumo.error`` when the fit failed.
 
     ``tags`` (an adapter's user-supplied tags) pass through under their given
-    names, except ``kumo.*`` names, which only the engine sets (dropped with a
-    warning).
+    names, except ``kumo.*`` names, which only the engine sets, and names of
+    the record's params (both dropped with a warning).
     """
     metrics: Dict[str, float] = {}
     links: Dict[str, str] = {}
@@ -122,24 +122,26 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
                 'model_version': str(result.published_model.version),
                 'model_uri': result.published_model.uri,
             }
-    return RunRecord(
-        params={
-            'task_type': context.task_type,
-            'snapshot_id': context.snapshot_id,
-            'training_table_id': context.training_table_id,
-            'query_sha256': hashlib.sha256(context.query.encode()).hexdigest(),
-            **{
-                key: _param_value(value)
-                for key, value in _flatten(context.model_plan)
-            },
+    params = {
+        'task_type': context.task_type,
+        **{
+            key: _param_value(value)
+            for key, value in _flatten(context.model_plan)
         },
+    }
+    return RunRecord(
+        params=params,
         metrics=metrics,
         tags={
-            **_user_tags(tags),
+            **_user_tags(tags, params),
+            'kumo.kind': 'fit',
             'kumo.engine_version': __version__,
             'kumo.run_id': context.run_id,
             'kumo.snapshot_id': context.snapshot_id,
             'kumo.training_table_id': context.training_table_id,
+            'kumo.query_sha256': hashlib.sha256(
+                context.query.encode()).hexdigest(),
+            **_error_tag(fit_ended),
             **{f'kumo.{key}': value
                for key, value in links.items()},
         },
@@ -153,21 +155,31 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
     )
 
 
-def _user_tags(tags: Optional[Mapping[str, Any]]) -> Dict[str, str]:
-    reserved = sorted(key for key in tags or {} if key.startswith('kumo.'))
-    if reserved:
+def _user_tags(tags: Optional[Mapping[str, Any]],
+               params: Mapping[str, str]) -> Dict[str, str]:
+    dropped = sorted(key for key in tags or {}
+                     if key.startswith('kumo.') or key in params)
+    if dropped:
         warnings.warn(
-            f'Tracking tags {reserved} are not recorded: kumo.* tags are set '
-            f'by the engine.', UserWarning, stacklevel=3)
+            f'Tracking tags {dropped} are not recorded: kumo.* tags are set '
+            f'by the engine, and a tag may not share a param\'s name.',
+            UserWarning, stacklevel=3)
     return {
         key: str(value)
-        for key, value in (tags or {}).items() if key not in reserved
+        for key, value in (tags or {}).items() if key not in dropped
     }
+
+
+def _error_tag(ended: Optional[Event]) -> Dict[str, str]:
+    if ended is None or 'error' not in ended.params:
+        return {}
+    return {'kumo.error': str(ended.params['error'])}
 
 
 def trial_record(context: FitContext, events: Sequence[Event]) -> RunRecord:
     r"""One trial attempt's record from its events so far: ``trial_started``,
-    then ``epoch_ended`` and ``trial_ended``."""
+    then ``epoch_ended`` and ``trial_ended`` (which sets ``kumo.status`` and,
+    on failure, ``kumo.error``)."""
     started = next(event for event in events if event.name == 'trial_started')
     trial, attempt = started.trial, int(started.params['attempt'])
     params: Dict[str, str] = {
@@ -176,11 +188,16 @@ def trial_record(context: FitContext, events: Sequence[Event]) -> RunRecord:
     }
     metrics: Dict[str, float] = {}
     steps: Dict[str, List[Tuple[int, float]]] = {}
+    ended: Dict[str, str] = {}
     for event in events:
         if event.name == 'epoch_ended' and event.epoch is not None:
             for name, value in event.metrics.items():
                 steps.setdefault(name, []).append((event.epoch, value))
         elif event.name == 'trial_ended':
+            ended = {
+                'kumo.status': str(event.params.get('status')),
+                **_error_tag(event),
+            }
             metrics.update({
                 name if name == 'seconds' else f'best_{name}': value
                 for name, value in event.metrics.items()
@@ -194,8 +211,10 @@ def trial_record(context: FitContext, events: Sequence[Event]) -> RunRecord:
             for name, history in steps.items()
         },
         tags={
+            'kumo.kind': 'trial',
             'kumo.run_id': f'{context.run_id}-trial-{trial}-attempt-{attempt}',
             'kumo.parent_run': context.run_id,
+            **ended,
         },
     )
 
