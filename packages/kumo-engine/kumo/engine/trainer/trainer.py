@@ -145,12 +145,16 @@ class PredictionResult:
         return self.selection.job_id
 
     @property
-    def manifest(self) -> Optional[Dict[str, Any]]:
-        from kumo.engine._manifest import read_manifest
+    def _manifest_path(self) -> Path:
         from kumo.engine.trainer._run_manifest import MANIFEST_FILE
 
-        return read_manifest(
-            Path(self.selection.pointer_path).parent / MANIFEST_FILE)
+        return Path(self.selection.pointer_path).parent / MANIFEST_FILE
+
+    @property
+    def manifest(self) -> Optional[Dict[str, Any]]:
+        from kumo.engine._manifest import read_manifest
+
+        return read_manifest(self._manifest_path)
 
     @property
     def num_rows(self) -> int:
@@ -211,13 +215,13 @@ class PredictionResult:
         outputs = []
         for name, destination in output_config.destinations().items():
             kind = PredictionArtifactType(name.upper())
-            files = PredictionResult(self.selection, kind).files
+            files = replace(self, artifact_type=kind).files
             outputs.append((kind, destination, files))
         records, sidecars = _output_records(output_config, outputs, manifest)
         for (kind, destination, files), extra in zip(outputs, sidecars):
             write_files(output_config.connector, destination, list(files),
                         output_config.write_mode,
-                        export_id=f'{self.selection.job_id}-{kind.value}',
+                        export_id=f'{self.run_id}-{kind.value}',
                         **extra)
         return records
 
@@ -293,12 +297,9 @@ def _option_source(argument: Any, value: Any, fallback: str) -> str:
 def _write_run_manifest(result: PredictionResult,
                         manifest: Dict[str, Any]) -> None:
     from kumo.engine._manifest import write_manifest
-    from kumo.engine.trainer._run_manifest import MANIFEST_FILE
 
     try:
-        write_manifest(
-            Path(result.selection.pointer_path).parent / MANIFEST_FILE,
-            manifest)
+        write_manifest(result._manifest_path, manifest)
     except Exception as error:
         warnings.warn(f"Could not write the prediction manifest: {error}",
                       UserWarning, stacklevel=3)
