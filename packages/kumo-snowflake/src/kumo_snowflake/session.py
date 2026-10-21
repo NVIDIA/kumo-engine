@@ -461,6 +461,11 @@ class _SnowflakeSessions:
                       f'accepted, as {self._default_hint}.'),
         )
 
+    def table_location(self, connector: SourceConnector,
+                       table_name: str) -> str:
+        """Fully qualified name of ``table_name`` in the connector's target."""
+        return self._qualified(connector, table_name)
+
     @staticmethod
     def _qualified(connector: SourceConnector, table_name: str) -> str:
         return (f'{_quoted(resolved(_target_config(connector).database))}.'

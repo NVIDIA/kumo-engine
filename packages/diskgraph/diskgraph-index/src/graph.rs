@@ -27,9 +27,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const TEMP_META_MAGIC: [u8; 4] = *b"DGTP";
-pub const TEMP_META_VERSION: u8 = 2;
+const TEMP_META_VERSION: u8 = 2;
 pub const INDEX_SHARD_COMMIT_DIR: &str = "_tmp/index_commits";
-pub const INDEX_SHARD_COMMIT_VERSION: u32 = 1;
+const INDEX_SHARD_COMMIT_VERSION: u32 = 1;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct IndexShardCommit {
