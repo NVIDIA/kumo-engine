@@ -60,6 +60,7 @@ class OptunaSearcher(Searcher[PlanT]):
         for _ in range(self.fallback_sampler.max_attempts):
             self.current_trial = self.study.ask()
             cfg = self.fallback_sampler.sample_instance()
+            self.sampled_params = self.fallback_sampler.sampled_params
             if cfg not in [prev_cfg for prev_cfg, _ in self.state]:
                 return cfg
         return cfg

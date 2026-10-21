@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, cast
 
 import pandas as pd
 from kumo_core.embedding_models import EmbeddingModelStore
+from kumo_core.instrumentation import format_error
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
 from kumo_core.model_plan import inferred_or_missing_type_to_none
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
@@ -42,7 +43,7 @@ from kumo.engine._embeddings import (
     require_embedding_models,
     require_trained_embedding_models,
 )
-from kumo.engine._events import Event, EventEmitter
+from kumo.engine._events import Event, EventEmitter, query_sha256
 from kumo.engine._manifest import BundleProvenance
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine.connector.base import Connector
@@ -331,8 +332,7 @@ class Trainer:
         try:
             started = {
                 'snapshot_id': snapshot.id,
-                'query_sha256': hashlib.sha256(
-                    train_table.query.encode()).hexdigest(),
+                'query_sha256': query_sha256(train_table.query),
             }
         except Exception:
             started = {}
@@ -345,7 +345,7 @@ class Trainer:
         except BaseException as error:
             events.emit('fit_ended', params={
                 'status': 'failed',
-                'error': f'{type(error).__name__}: {error}'[:200],
+                'error': format_error(error),
             })
             raise
         events.emit('fit_ended', metrics={
@@ -503,7 +503,7 @@ class Trainer:
             bindings=local_training_bindings(
                 training_input, run_name=run_id,
                 embedding_models=self._embedding_models,
-                on_event=events.core_sink),
+                instrumentation=events),
             options=CallableTrainingOptions(),
         )
 

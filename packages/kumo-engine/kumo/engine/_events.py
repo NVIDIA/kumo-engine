@@ -3,11 +3,23 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Progress events reported by `Trainer.fit`."""
 
+import hashlib
 import logging
 import math
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Dict, Literal, Mapping, Optional, Sequence
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Literal,
+    Mapping,
+    Optional,
+    Sequence,
+    cast,
+)
+
+from kumo_core.instrumentation import NoOpTrainingInstrumentation
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +43,10 @@ class Event:
         return asdict(self)
 
 
+def query_sha256(query: str) -> str:
+    return hashlib.sha256(query.encode()).hexdigest()
+
+
 def _finite_floats(metrics: Mapping[str, Any]) -> Dict[str, float]:
     result = {}
     for key, value in metrics.items():
@@ -43,7 +59,7 @@ def _finite_floats(metrics: Mapping[str, Any]) -> Dict[str, float]:
     return result
 
 
-class EventEmitter:
+class EventEmitter(NoOpTrainingInstrumentation):
     def __init__(self, run_id: str,
                  callbacks: Sequence[Callable[[Event], None]]) -> None:
         self.run_id = run_id
@@ -66,8 +82,5 @@ class EventEmitter:
                     'rest of run %s', callback, self.run_id, exc_info=True)
                 self._callbacks.remove(callback)
 
-    @property
-    def core_sink(self) -> Optional[Callable[[Dict[str, Any]], None]]:
-        if not self._callbacks:
-            return None
-        return lambda payload: self.emit(**payload)
+    def event(self, name: str, **fields: Any) -> None:
+        self.emit(cast(EventName, name), **fields)

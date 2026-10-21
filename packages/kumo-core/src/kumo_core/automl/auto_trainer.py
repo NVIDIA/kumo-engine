@@ -17,7 +17,7 @@ import traceback
 import warnings
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 import pandas as pd
 import torch
@@ -34,15 +34,13 @@ from kumo_core.automl.runtime import (
     resolve_warm_start,
     with_na_strategy,
 )
-from kumo_core.automl.searcher import searched_params
 from kumo_core.callbacks.stopper import TopKEarlyStopping
 from kumo_core.embedding_models import require_encoder_models
 from kumo_core.callbacks.train_progress_logger import (
     AutoTrainerProgress,
     AutoTrainingProgressLogger,
-    EpochEventEmitter,
 )
-from kumo_core.instrumentation import TrainingInstrumentation
+from kumo_core.instrumentation import TrainingInstrumentation, format_error
 from kumo_core.io import filesystem
 from kumo_core.io.json import load_json, save_json
 from kumo_core.job_config import JobConfig, TrainStatus
@@ -212,8 +210,6 @@ class AutoTrainer:
         home_dir: The home directory used to resolve ``root_dir`` and to
             load/save :class:`TrainStatus`. If ``None``, the runtime supplies
             its default.
-        on_event: Receives ``trial_started``, ``epoch_ended`` and
-            ``trial_ended`` progress events as plain dicts.
     """
     def __init__(
         self,
@@ -226,7 +222,6 @@ class AutoTrainer:
         checkpoint_path: str | None = None,
         home_dir: str | None = None,
         checkpoint_encoder_dir: str | None = None,
-        on_event: Callable[[dict[str, Any]], None] | None = None,
         **kwargs: Any,
     ) -> None:
         if not isinstance(task, ResolvedNumericalTask):
@@ -235,7 +230,6 @@ class AutoTrainer:
         self.task = task
         self.runtime = runtime
         self.instrumentation = instrumentation
-        self.on_event = on_event
         self.checkpoint_path = checkpoint_path
         self.checkpoint_encoder_dir = checkpoint_encoder_dir
         self.max_tries = max_tries
@@ -721,12 +715,8 @@ class AutoTrainer:
             trainer.pl_trainer.callbacks.append(pruning)
 
         # Add progress logging callback:
-        self.training_progress_logger.set_current_trainer(trainer)
+        self.training_progress_logger.set_current_trainer(trainer, trial)
         trainer.pl_trainer.callbacks.append(self.training_progress_logger)
-        epoch_events = None
-        if self.on_event is not None and trial is not None:
-            epoch_events = EpochEventEmitter(self.on_event, trial)
-            trainer.pl_trainer.callbacks.append(epoch_events)
 
         # Save AutoTrainer YAML (Trainer YAML will be saved within
         # Trainer itself). The AutoTrainer configuration contains relevant
@@ -753,8 +743,6 @@ class AutoTrainer:
         del self.training_progress_logger.log
         del self.training_progress_logger.log_dict
         trainer.pl_trainer.callbacks.remove(self.training_progress_logger)
-        if epoch_events is not None:
-            trainer.pl_trainer.callbacks.remove(epoch_events)
 
         if pruning is not None:
             # Prevent keeping old trainer state around.
@@ -861,7 +849,7 @@ class AutoTrainer:
         logger.info(f"Initialized '{self.searcher}'")
 
         self.training_progress_logger = AutoTrainingProgressLogger(
-            self.log_dir, self.num_experiments)
+            self.log_dir, self.num_experiments, on_event=self._emit)
 
         tune_mode = MetricStore.tune_mode(self.tune_metric)
         metrics_job_name = self.runtime.metrics_job_name()
@@ -886,12 +874,9 @@ class AutoTrainer:
                     logger.info(f"Starting AutoML experiment "
                                 f"{i + 1}/{self.num_experiments}")
 
-                    self._emit('trial_started', lambda: {
-                        'trial': i + 1,
-                        'params': {
-                            **searched_params(self.space, cfg),
-                            'attempt': j + 1,
-                        },
+                    self._emit('trial_started', trial=i + 1, params={
+                        **self.searcher.sampled_params,
+                        'attempt': j + 1,
                     })
                     batch_size = cfg.optimization.batch_size[0]
                     with self.instrumentation.timing(
@@ -926,28 +911,20 @@ class AutoTrainer:
                             "auto_trainer.run.status_save_success",
                             trial=i + 1):
                         status.save(self.home_dir)
-                    self._emit('trial_ended', lambda: {
-                        'trial': i + 1,
-                        'metrics': {
-                            self.val_tune_metric: float(best_performance),
-                            'seconds': trial_seconds,
-                        },
-                        'params': {
-                            'status': 'succeeded',
-                            'attempt': j + 1,
-                        },
+                    self._emit('trial_ended', trial=i + 1, metrics={
+                        self.val_tune_metric: best_performance,
+                        'seconds': trial_seconds,
+                    }, params={
+                        'status': 'succeeded',
+                        'attempt': j + 1,
                     })
                     break
 
                 except RuntimeError as e:
-                    error = f'{type(e).__name__}: {e}'[:200]
-                    self._emit('trial_ended', lambda: {
-                        'trial': i + 1,
-                        'params': {
-                            'status': 'failed',
-                            'attempt': j + 1,
-                            'error': error,
-                        },
+                    self._emit('trial_ended', trial=i + 1, params={
+                        'status': 'failed',
+                        'attempt': j + 1,
+                        'error': format_error(e),
                     })
                     stacktrace = ''.join(
                         traceback.format_exception(e, e, e.__traceback__))
@@ -1001,11 +978,12 @@ class AutoTrainer:
                                          should_init=init_best_trainer):
             return self.get_best_trainer(should_init=init_best_trainer)
 
-    def _emit(self, name: str, fields: Callable[[], dict[str, Any]]) -> None:
-        if self.on_event is None:
+    def _emit(self, name: str, **fields: Any) -> None:
+        event = getattr(self.instrumentation, 'event', None)
+        if event is None:
             return
         try:
-            self.on_event({'name': name, **fields()})
+            event(name, **fields)
         except Exception:
             logger.warning(f"Could not report progress event '{name}'",
                            exc_info=True)

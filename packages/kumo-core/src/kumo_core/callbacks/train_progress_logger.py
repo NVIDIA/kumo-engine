@@ -140,17 +140,22 @@ class AutoTrainingProgressLogger(MonitoringCallback):  # pragma: no cover
     # Constant to account for overhead not captured in trial estimation:
     OVERHEAD_CONSTANT = 1.30
 
-    def __init__(self, log_dir: str, num_experiments: int):
+    def __init__(self, log_dir: str, num_experiments: int,
+                 on_event: Callable[..., None] | None = None):
         super().__init__()
         self.path = osp.join(log_dir, self.FILE_NAME)
+        self.on_event = on_event
+        self.trial: int | None = None
 
         self.progress = load_json(self.path, AutoTrainerProgress,
                                   raise_on_missing=False)
         if self.progress is None:
             self.progress = AutoTrainerProgress(total_trials=num_experiments)
 
-    def set_current_trainer(self, trainer: Any | None):
+    def set_current_trainer(self, trainer: Any | None,
+                            trial: int | None = None):
         self.trainer = trainer
+        self.trial = trial
 
     def on_train_start(self, pl_trainer, pl_module):
         if self.progress.start_time is None:
@@ -184,30 +189,16 @@ class AutoTrainingProgressLogger(MonitoringCallback):  # pragma: no cover
 
         save_json(self.progress, self.path)
 
+        if self.on_event is not None and self.trial is not None:
+            progress = self.trainer.training_progress_logger.progress
+            epoch = progress.num_epochs_completed
+            metrics = progress.metrics[epoch - 1]
+            self.on_event('epoch_ended', trial=self.trial, epoch=epoch,
+                          metrics={
+                              **metrics.train_metrics,
+                              **metrics.validation_metrics
+                          })
+
     def on_validation_end(self, pl_trainer, pl_module):
         if pl_trainer.state.fn == TrainerFn.VALIDATING:
             save_json(self.progress, self.path)
-
-
-class EpochEventEmitter(MonitoringCallback):
-    def __init__(self, on_event: Callable[[dict[str, Any]], None],
-                 trial: int):
-        super().__init__()
-        self.on_event = on_event
-        self.trial = trial
-
-    def on_train_epoch_end(self, pl_trainer, pl_module):
-        try:
-            self.on_event({
-                'name': 'epoch_ended',
-                'trial': self.trial,
-                'epoch': pl_trainer.current_epoch + 1,
-                'metrics': {
-                    key: float(value)
-                    for key, value in pl_trainer.progress_bar_metrics.items()
-                    if key.startswith(('train_', 'val_'))
-                },
-            })
-        except Exception:
-            logger.warning("Could not report progress event 'epoch_ended'",
-                           exc_info=True)
