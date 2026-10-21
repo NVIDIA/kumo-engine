@@ -34,6 +34,9 @@ major_dependencies = [
     "pandas==2.3.3",
     # Used directly by kumo.utils.dataclass and REST integration tests.
     "httpx<0.28",
+    # Security floors for transitive HTTP and image dependencies.
+    "aiohttp>=3.14.4,<4",
+    "pillow>=13.0.0,<14",
     "backoff==2.2.1",
 ]
 
@@ -175,7 +178,8 @@ install_requires = major_dependencies + observability_requires + [
     "databricks-sql-connector==4.5.0",
     "databricks-sdk==0.73.0",
     "thrift==0.24.0",
-    "certifi==2025.1.31",  # sf support case 01012966
+    # Remove the compromised emSign root (GHSA-6q48-6c7w-9gw2).
+    "certifi==2026.10.19",
     "python-logging-loki==0.3.1",
     # temporalio 1.17.0 capped protobuf<6, conflicting with the cp314
     # protobuf>=6.33 floor (kumo-api requires protobuf>=5.27 on 3.14).
