@@ -288,7 +288,9 @@ no secret is passed, so the connect step names no secret at all:
 - `FileConnector.root_dir` is a filesystem directory, not a URI, and must not overlap the
   scratch directory (§2.1). Absolute table paths, URIs, `..` and globs are rejected. A CSV time
   column needs `.with_column(col, dtype=Dtype.time, timestamp_format=...)`.
-- `region` on `S3Connector` is valid only with `root_dir`.
+- `region` on `S3Connector` is optional and normally **omitted**: the ambient chain resolves the
+  bucket's region where the code runs. Pass it only when the user named one, and only with
+  `root_dir`. It is never a value to ask for, and never a placeholder.
 - `DatabricksConnector` takes exactly one of `warehouse_id` and `cluster_id`.
 - `require_staged=True` needs `staging_uri` (BigQuery) or `staging_volume_path` (Databricks).
 - ADLS has no connector in this package.

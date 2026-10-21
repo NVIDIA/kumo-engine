@@ -59,7 +59,7 @@ add arguments the user did not confirm.
 # Local files
 connector = kumo.FileConnector(root_dir=SOURCE_DIR)
 # S3 / GCS — rooted at the confirmed prefix, so table_names() works
-connector = kumo.S3Connector(root_dir=SOURCE_URI)            # 's3://bucket/prefix/'
+connector = kumo.S3Connector(root_dir=SOURCE_URI)            # 's3://bucket/prefix/'; no region=
 connector = kumo.GCSConnector(root_dir=SOURCE_URI)           # 'gs://bucket/prefix/'
 # BigQuery
 connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=DATASET_ID)
