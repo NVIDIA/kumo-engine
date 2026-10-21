@@ -147,6 +147,8 @@ snapshot = GraphSnapshot.load_from_connector(S3Connector(), path=location)
 `export` writes `<path>/<graph id>/<data version>/` (the two halves of
 `snapshot.id`) and returns it. Files move in parallel with a CRC32 per range,
 an interrupted export resumes, and a load either completes or leaves nothing.
+Exporting a snapshot whose id is already exported there, including one rebuilt
+on another machine, keeps the existing export and returns its location.
 Loading again reuses the local copy unless it fails DiskGraph's integrity
 check, in which case it is downloaded again.
 The snapshot manifest travels with the export; `snapshot.manifest` on the
@@ -177,7 +179,8 @@ listing) and never reads or stages rows:
 ```
 
 The status is `unknown` when there is nothing reliable to compare: the table
-is missing from the manifest, the manifest is absent or was reconstructed for
+is missing from the manifest, the table now reads from a different connector or
+location than the one recorded, the manifest is absent or was reconstructed for
 an index built before manifests, the version could not be read, the table is
 Custom SQL (its version folds in a 24-hour window, so it cannot separate a data
 change from the window rolling over), or either version is an hour-aligned

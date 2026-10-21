@@ -114,6 +114,9 @@ def test_export_load_round_trip_relocates_and_is_reused(
         'environment': manifest['environment'],
     }
     assert recorded == manifest['snapshot']
+    reexported = tmp_path / 'exports' / loaded.export(exports, 'two')
+    assert json.loads((reexported / 'kumo_snapshot.json').read_text())[
+        'snapshot'] == manifest['snapshot']
 
     _no_ingest(monkeypatch)
     monkeypatch.setattr(snapshot_io, 'load_into',
@@ -269,7 +272,7 @@ def test_failed_load_leaves_nothing_and_restarts_cleanly(
     stats.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
 
     scratch('gpu')
-    with pytest.raises(ValueError, match='checksum'):
+    with pytest.raises(ValueError, match='checksum.*corrupt. Delete one/'):
         GraphSnapshot.load_from_connector(exports, path=location)
     graph_dir = tmp_path / 'gpu/snapshots' / snapshot.index_path.parent.name
     assert not [path for path in graph_dir.iterdir() if path.suffix != '.lock']
@@ -345,7 +348,7 @@ def test_load_rejects_a_malformed_manifest_with_value_error(
     edit(manifest)
     path.write_text(json.dumps(manifest))
     scratch('gpu')
-    with pytest.raises(ValueError, match='export is corrupt'):
+    with pytest.raises(ValueError, match='corrupt. Delete one/'):
         GraphSnapshot.load_from_connector(exports, path=location)
     path.write_text('[]')
     with pytest.raises(ValueError, match='not a JSON object'):
@@ -383,10 +386,28 @@ def test_export_refuses_a_path_holding_other_data(tmp_path, scratch, graph,
         snapshot.export(exports, 'occupied')
 
     _, exported = _export(snapshot, exports, tmp_path)
-    _edit_manifest(exported, index_manifest='other')
-    with pytest.raises(ValueError, match='differs from this one'):
+    _edit_manifest(exported, snapshot_id='other')
+    with pytest.raises(ValueError, match="snapshot 'other', not"):
         snapshot.export(exports, 'one')
     assert (exported / 'index/col_stats.json').is_file()
+
+
+def test_rebuilt_snapshot_reexports_to_the_existing_export(
+        tmp_path, scratch, graph, exports):
+    snapshot = graph.snapshot()
+    location, exported = _export(snapshot, exports, tmp_path)
+    committed = (exported / 'kumo_snapshot.json').read_bytes()
+    scratch('rebuilt/on/another/machine')
+    rebuilt = graph.snapshot()
+    assert rebuilt.id == snapshot.id
+    assert (rebuilt.index_path / '_MANIFEST.json').read_bytes() != (
+        snapshot.index_path / '_MANIFEST.json').read_bytes()
+
+    assert rebuilt.export(exports, 'one') == location
+    assert (exported / 'kumo_snapshot.json').read_bytes() == committed
+    scratch('gpu')
+    loaded = GraphSnapshot.load_from_connector(exports, path=location)
+    assert _index_files(loaded.index_path) == _exported_files(snapshot)
 
 
 @pytest.mark.parametrize('kind, reason', [

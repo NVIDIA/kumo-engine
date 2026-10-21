@@ -384,8 +384,10 @@ class GraphSnapshot:
 
     def source_changes(self, graph: 'Graph') -> Dict[str, Dict[str, Any]]:
         r"""Compare each of `graph`'s tables' current source version, read
-        from metadata only, with the version this snapshot recorded. Never
-        raises."""
+        from metadata only, with the version this snapshot recorded. A table
+        is `unknown` when the versions cannot be compared, including when it
+        now reads from a different connector or location than the one
+        recorded. Never raises."""
         try:
             manifest = self.manifest
             recorded = ({} if not manifest or manifest.get('reconstructed') else

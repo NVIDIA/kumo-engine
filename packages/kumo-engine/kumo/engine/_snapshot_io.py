@@ -28,6 +28,7 @@ _INDEX_MANIFEST = '_MANIFEST.json'
 _ATTEMPTS = 3
 _KEY = re.compile('[0-9a-f]{64}')
 _PROGRESS_SECONDS = 30
+_REEXPORT = 'Delete {} and run GraphSnapshot.export again.'
 _UNSUPPORTED = {
     'SNOWFLAKE': ('Snowflake stages are not supported; in SPCS services, or '
                   'ML Jobs where a stage volume is mounted, use a '
@@ -180,18 +181,16 @@ def _write_json(filesystem: FileSystem, path: str, value: dict) -> None:
 
 
 def _committed(filesystem: FileSystem, root: str, location: str,
-               snapshot_id: str, fingerprint: str) -> bool:
+               snapshot_id: str) -> Optional[dict]:
     existing = _read_json(filesystem, f'{root}/{_MANIFEST}')
     if existing is None:
-        return False
-    if not isinstance(existing, dict):
-        existing = {}
-    if (existing.get('snapshot_id') == snapshot_id
-            and existing.get('index_manifest') == fingerprint):
-        return True
-    raise ValueError(
-        f'{location} already holds an export of snapshot '
-        f"{existing.get('snapshot_id')!r} that differs from this one.")
+        return None
+    found = existing.get('snapshot_id') if isinstance(existing, dict) else None
+    if found != snapshot_id:
+        raise ValueError(
+            f'{location} holds an export of snapshot {found!r}, not '
+            f'{snapshot_id!r}; remove it and re-export.')
+    return existing
 
 
 def export(snapshot: Any, connector: Any, path: str) -> str:
@@ -210,9 +209,16 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
     identity = {'snapshot_id': snapshot.id, 'index_manifest': fingerprint}
     filesystem, root = _location(connector, location)
 
-    def committed() -> bool:
-        return _committed(filesystem, root, location, snapshot.id,
-                          fingerprint)
+    def committed() -> Optional[dict]:
+        return _committed(filesystem, root, location, snapshot.id)
+
+    def finished() -> bool:
+        existing = committed()
+        if existing and existing.get('index_manifest') != fingerprint:
+            raise RuntimeError(
+                f'Another build of snapshot {snapshot.id} finished exporting '
+                f'to {location} while this one ran; remove it and re-export.')
+        return existing is not None
 
     def present() -> Dict[str, int]:
         return {
@@ -231,7 +237,13 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
         with _open_output(client, f'{root}/index/{name}') as writer:
             return _stream(source / name, size, stop, writer.write)
 
-    if committed():
+    existing = committed()
+    if existing is not None and existing.get('index_manifest') != fingerprint:
+        logger.info(
+            '%s already holds snapshot %s from another build of it; keeping '
+            'that export.', location, snapshot.id)
+        return location
+    if existing is not None:
         # Re-running repairs files a racing or interrupted export rewrote.
         uploaded = present()
         stale = [file for file in files if uploaded.get(file[0]) != file[1]]
@@ -257,13 +269,14 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
     filesystem, root = _location(connector, location)
     # An identical export racing this one uploads the same bytes, so
     # whichever finishes first commits and the other finds it committed.
-    if committed():
+    if finished():
         return location
     if (_read_json(filesystem, f'{root}/{_EXPORTING}') != identity
-            and not committed()):
+            and not finished()):
         raise RuntimeError(
             f'Another export to {location} started while this one ran; '
             'remove it and re-export.')
+    recorded = snapshot.manifest
     _write_json(
         filesystem, f'{root}/{_MANIFEST}', {
             'format': _FORMAT,
@@ -272,7 +285,10 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
             'data_version': data_version,
             'index_manifest': fingerprint,
             'graph_config': snapshot.graph_config,
-            'snapshot': snapshot.manifest,
+            'snapshot': None if recorded is None else {
+                key: value
+                for key, value in recorded.items() if key != 'loaded'
+            },
             'environment': environment(),
             'range_bytes': _RANGE_BYTES,
             'files': [{
@@ -297,7 +313,7 @@ def _format_note(manifest: Any) -> str:
 
 def _malformed(path: str, detail: str, manifest: Any) -> ValueError:
     return ValueError(f'The snapshot manifest at {path} {detail}; the export '
-                      f'is corrupt{_format_note(manifest)}.')
+                      f'is corrupt{_format_note(manifest)}. {_REEXPORT.format(path)}')
 
 
 def read(connector: Any, path: str) -> Tuple[str, dict]:
@@ -359,7 +375,7 @@ def _download(root: str, staging: Path, client: FileSystem,
                 if len(chunk) != want:
                     raise ValueError(
                         f'Snapshot file {name} in the export is shorter than '
-                        'its manifest records; the export is corrupt.')
+                        'its manifest records; the export is corrupt')
                 crc = zlib.crc32(chunk, crc)
                 os.pwrite(fd, chunk, start)
             # Flush while other ranges download, not all at the end.
@@ -369,7 +385,7 @@ def _download(root: str, staging: Path, client: FileSystem,
     if crc != expected:
         raise ValueError(
             f'Snapshot file {name} failed its checksum at offset {offset}; '
-            'the export is corrupt.')
+            'the export is corrupt')
 
 
 def load_into(connector: Any, path: str, root: str, manifest: dict,
@@ -414,9 +430,9 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
             _parallel(connector, path, ranges, [item[2] for item in ranges],
                       partial(_download, root, staging), 'load')
         except ValueError as error:
-            if _format_note(manifest):
-                raise ValueError(f'{error}{_format_note(manifest)}') from error
-            raise
+            raise ValueError(
+                f'{error}{_format_note(manifest)}. {_REEXPORT.format(path)}'
+            ) from error
         write_diskgraph_success_marker(str(staging),
                                        DiskgraphIngestResult.for_index(target))
         verify_snapshot_integrity(str(staging))
