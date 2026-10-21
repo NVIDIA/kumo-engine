@@ -459,9 +459,11 @@ restored = Trainer.load(result.bundle_dir)  # pass the recorded path
 
 For an exported model, use
 `Trainer.load_from_connector(connector, path="model/version")`, or
-`location=ModelRegistryLocation(...)` for Snowflake Model Registry. Rebuild
-the live graph and snapshot before generating prediction inputs. Bundles
-contain trained artifacts, not source data or graph storage.
+`location=ModelRegistryLocation(...)` for Snowflake Model Registry. A scoring
+job with `Graph` code rebuilds the live graph and snapshot; one without loads an
+exported snapshot with `GraphSnapshot.load_from_connector(...)` and calls
+`trainer.predict_snapshot(snapshot)`. Bundles contain trained artifacts, not
+source data or graph storage.
 
 With `export_config`, `result.published_model` records the assigned name, version,
 and URI; otherwise it is `None`. Snowflake also records training metrics and
