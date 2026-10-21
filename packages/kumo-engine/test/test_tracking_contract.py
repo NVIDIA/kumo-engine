@@ -16,15 +16,11 @@ from kumo.engine import Event
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
-    TrackingSession,
-)
-from kumo.engine.tracking import (
-    Capabilities,
     FitContext,
-    RunRecord,
+    TrackingSession,
     run_record,
-    trial_record,
 )
+from kumo.engine.tracking import Capabilities, RunRecord
 
 RUN = 'trainer-fit-1'
 USER_TAGS = {'team': 'ents', 'kumo.run_id': 'overridden'}
@@ -80,23 +76,20 @@ class _Recorder:
     def __init__(self):
         self.calls: List[Tuple[str, Any]] = []
 
-    def start(self, context):
-        self.calls.append(('start', context))
+    def start(self, record):
+        self.calls.append(('start', record))
 
-    def on_event(self, event):
-        self.calls.append(('on_event', event))
+    def on_trial(self, record, event):
+        self.calls.append(('on_trial', record))
 
-    def finish(self, result, error):
-        self.calls.append(('finish', result))
-
-    @property
-    def events(self):
-        return [value for hook, value in self.calls if hook == 'on_event']
+    def finish(self, record, error):
+        self.calls.append(('finish', record))
 
 
 def replay(trackers, events=EVENTS, result=RESULT,
-           error=None) -> List[Event]:
-    r"""Feeds the recorded fit to `trackers`; returns the events they saw."""
+           error=None) -> Dict[str, RunRecord]:
+    r"""Feeds the recorded fit to `trackers`; returns the records expected
+    of them."""
     recorder = _Recorder()
     session = TrackingSession([recorder, *trackers])
     session.start(lambda: CONTEXT)
@@ -105,22 +98,12 @@ def replay(trackers, events=EVENTS, result=RESULT,
         if event.name == 'trial_started':
             session.trial_logger(event.trial, event.params['attempt'])
     session.finish(result, error)
-    return recorder.events
-
-
-def expected_records(events: List[Event],
-                     result=RESULT) -> Dict[str, RunRecord]:
-    trials: Dict[Tuple[int, int], List[Event]] = {}
-    for event in events:
-        if event.trial is not None:
-            trials.setdefault((event.trial, event.params['attempt']),
-                              []).append(event)
-    ended = next(event for event in events if event.name == 'fit_ended')
-    records = [
-        run_record(CONTEXT, result, ended, tags=USER_TAGS),
-        *(trial_record(CONTEXT, group) for group in trials.values())
-    ]
-    return {record.tags['kumo.run_id']: record for record in records}
+    records = {
+        record.tags['kumo.run_id']: record
+        for hook, record in recorder.calls if hook == 'on_trial'
+    }
+    records[RUN] = run_record(CONTEXT, result, events[-1], tags=USER_TAGS)
+    return records
 
 
 @dataclass
@@ -239,7 +222,7 @@ def adapter(request) -> Adapter:
 
 
 def test_records_of_the_recorded_fit():
-    records = expected_records(replay([]))
+    records = replay([])
 
     fit = records[RUN]
     assert fit.tags == {
@@ -288,27 +271,29 @@ def test_records_of_the_recorded_fit():
 
 def test_adapter_records_the_same_runs_beside_a_failing_tracker(
         adapter, caplog):
-    class RaisesOnEvent(_Recorder):
-        def on_event(self, event):
-            super().on_event(event)
+    class RaisesOnTrial(_Recorder):
+        def on_trial(self, record, event):
+            super().on_trial(record, event)
             raise RuntimeError('tracker down')
 
-    broken, tracker = RaisesOnEvent(), adapter.make()
-    events = replay([broken, tracker])
+    broken, tracker = RaisesOnTrial(), adapter.make()
+    expected = replay([broken, tracker])
 
-    assert [hook for hook, _ in broken.calls] == ['start', 'on_event']
-    assert caplog.text.count('Experiment tracking failed') == 1
-    assert gaps(expected_records(events), adapter.observe(),
-                tracker.capabilities, adapter.kept_params) == []
+    assert [hook for hook, _ in broken.calls] == [
+        'start', 'on_trial', 'finish'
+    ]
+    assert broken.calls[-1] == ('finish', None)
+    assert caplog.text.count('not called again') == 1
+    assert gaps(expected, adapter.observe(), tracker.capabilities,
+                adapter.kept_params) == []
 
 
 def test_adapter_records_a_failed_fit(adapter):
     tracker = adapter.make()
     failed = _event('fit_ended', status='failed', error='ValueError: stop')
-    events = replay([tracker], [*EVENTS[:-1], failed], None,
-                    ValueError('stop'))
+    expected = replay([tracker], [*EVENTS[:-1], failed], None,
+                      ValueError('stop'))
 
-    expected = expected_records(events, None)
     assert expected[RUN].tags['kumo.error'] == 'ValueError: stop'
     assert gaps(expected, adapter.observe(), tracker.capabilities,
                 adapter.kept_params) == []

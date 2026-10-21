@@ -4,7 +4,6 @@
 r"""Platform-neutral run records and the `Tracking` protocol."""
 
 import dataclasses
-import hashlib
 import json
 import logging
 import os
@@ -26,7 +25,7 @@ from typing import (
     Union,
 )
 
-from kumo.engine._events import Event
+from kumo.engine._events import Event, call_each, query_sha256
 from kumo.engine._version import __version__
 
 if TYPE_CHECKING:
@@ -111,8 +110,7 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
             'kumo.run_id': context.run_id,
             'kumo.snapshot_id': context.snapshot_id,
             'kumo.training_table_id': context.training_table_id,
-            'kumo.query_sha256': hashlib.sha256(
-                context.query.encode()).hexdigest(),
+            'kumo.query_sha256': query_sha256(context.query),
             **_error_tag(fit_ended),
             **{f'kumo.{key}': value
                for key, value in links.items()},
@@ -191,16 +189,20 @@ def trial_record(context: FitContext, events: Sequence[Event]) -> RunRecord:
 class Tracking(Protocol):
     r"""Records one `Trainer.fit` in an experiment tracker.
 
-    Optional members: ``trial_logger(trial, attempt)`` returning a Lightning
-    logger (whose methods must not raise) or None, and ``capabilities``.
+    `start` gets the fit run's record without metrics, `on_trial` a trial
+    attempt's record so far with the event that updated it, and `finish` the
+    fit run's final record (`None` if tracking stopped early, which should
+    end the run as failed). Optional members: ``tags`` (extra fit-run tags),
+    ``trial_logger(trial, attempt)`` returning a Lightning logger (whose
+    methods must not raise) or None, and ``capabilities``.
     """
-    def start(self, context: FitContext) -> None:
+    def start(self, record: RunRecord) -> None:
         ...
 
-    def on_event(self, event: Event) -> None:
+    def on_trial(self, record: RunRecord, event: Event) -> None:
         ...
 
-    def finish(self, result: Optional['TrainingResult'],
+    def finish(self, record: Optional[RunRecord],
                error: Optional[BaseException]) -> None:
         ...
 
@@ -217,8 +219,9 @@ class TrackingSession:
         else:
             trackers = [tracking]
         self._trackers = trackers
-        self._started = False
-        self._attempts: Dict[int, int] = {}
+        self._context: Optional[FitContext] = None
+        self._trials: Dict[int, List[Event]] = {}
+        self._fit_ended: Optional[Event] = None
 
     @property
     def enabled(self) -> bool:
@@ -227,7 +230,6 @@ class TrackingSession:
     def start(self, context: Callable[[], FitContext]) -> None:
         if not self._trackers:
             return
-        self._started = True
         try:
             value = context()
         except Exception:
@@ -235,53 +237,65 @@ class TrackingSession:
                            exc_info=True)
             self._trackers = []
             return
-        self._call_all('start', value)
+        self._context = value
+        self._call_all(lambda tracker: tracker.start(
+            run_record(value, tags=getattr(tracker, 'tags', None))))
 
     def trial_logger(self, trial: int, attempt: int) -> Optional[Any]:
         loggers = [
             pl_logger for pl_logger in self._call_all(
-                'trial_logger', trial, attempt) if pl_logger is not None
+                lambda tracker: getattr(tracker, 'trial_logger', _none)
+                (trial, attempt)) if pl_logger is not None
         ]
         return loggers or None
 
     def on_event(self, event: Event) -> None:
-        if not self._started:
+        if self._context is None:
             return
-        self._call_all('on_event', _with_attempt(event, self._attempts))
+        if event.name == 'fit_ended':
+            self._fit_ended = event
+        if event.trial is None:
+            return
+        if event.name == 'trial_started':
+            self._trials[event.trial] = []
+        events = self._trials.setdefault(event.trial, [])
+        if 'attempt' not in event.params and events:
+            event = dataclasses.replace(event, params={
+                **event.params, 'attempt': events[0].params['attempt']
+            })
+        events.append(event)
+        record = trial_record(self._context, events)
+        self._call_all(lambda tracker: tracker.on_trial(record, event))
 
     def finish(self, result: Optional['TrainingResult'],
                error: Optional[BaseException]) -> None:
-        if not self._started:
+        if self._context is None:
             return
-        self._call_all('finish', result, error)
+        try:
+            record: Optional[RunRecord] = run_record(self._context, result,
+                                                     self._fit_ended)
+        except Exception:
+            logger.warning('Could not build the tracking record',
+                           exc_info=True)
+            record = None
+        trackers, self._trackers = self._trackers, []
+        call_each(trackers, lambda tracker: tracker.finish(record, error),
+                  'Experiment tracking')
 
-    def _call_all(self, hook: str, *args: Any) -> List[Any]:
-        values = []
-        for tracker in list(self._trackers):
-            function = getattr(tracker, hook, None)
-            if not callable(function):
-                continue
-            try:
-                values.append(function(*args))
-            except Exception:
-                logger.warning(
-                    'Experiment tracking failed in %r; it is off for the '
-                    'rest of this fit', tracker, exc_info=True)
-                self._trackers.remove(tracker)
-        return values
+    def _call_all(self, call: Callable[[Tracking], Any]) -> List[Any]:
+        return call_each(self._trackers, call, 'Experiment tracking',
+                         dropped=_abandon)
 
 
-def _with_attempt(event: Event, attempts: Dict[int, int]) -> Event:
-    if event.trial is None:
-        return event
-    if event.name == 'trial_started':
-        attempts[event.trial] = int(event.params.get('attempt', 1))
-    if 'attempt' in event.params:
-        return event
-    return dataclasses.replace(
-        event, params={
-            **event.params, 'attempt': attempts.get(event.trial, 1)
-        })
+def _none(*args: Any) -> None:
+    return None
+
+
+def _abandon(tracker: Tracking) -> None:
+    try:
+        tracker.finish(None, None)
+    except Exception:
+        logger.debug('Could not end the run of %r', tracker, exc_info=True)
 
 
 def _rank() -> int:

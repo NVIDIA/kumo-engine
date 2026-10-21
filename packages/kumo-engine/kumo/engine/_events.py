@@ -12,16 +12,19 @@ from typing import (
     Any,
     Callable,
     Dict,
+    List,
     Literal,
     Mapping,
     Optional,
     Sequence,
+    TypeVar,
     cast,
 )
 
 from kumo_core.instrumentation import NoOpTrainingInstrumentation
 
 logger = logging.getLogger(__name__)
+T = TypeVar('T')
 
 EventName = Literal['fit_started', 'trial_started', 'epoch_ended',
                     'trial_ended', 'fit_ended']
@@ -59,6 +62,21 @@ def _finite_floats(metrics: Mapping[str, Any]) -> Dict[str, float]:
     return result
 
 
+def call_each(targets: List[T], call: Callable[[T], Any], what: str,
+              dropped: Optional[Callable[[T], None]] = None) -> List[Any]:
+    values = []
+    for target in list(targets):
+        try:
+            values.append(call(target))
+        except Exception:
+            logger.warning('%s %r failed; it is not called again in this run',
+                           what, target, exc_info=True)
+            targets.remove(target)
+            if dropped is not None:
+                dropped(target)
+    return values
+
+
 class EventEmitter(NoOpTrainingInstrumentation):
     def __init__(self, run_id: str,
                  callbacks: Sequence[Callable[[Event], None]]) -> None:
@@ -73,14 +91,8 @@ class EventEmitter(NoOpTrainingInstrumentation):
                       trial=trial, epoch=epoch,
                       metrics=_finite_floats(metrics or {}),
                       params=dict(params or {}))
-        for callback in list(self._callbacks):
-            try:
-                callback(event)
-            except Exception:
-                logger.warning(
-                    'Progress callback %r failed; it is disabled for the '
-                    'rest of run %s', callback, self.run_id, exc_info=True)
-                self._callbacks.remove(callback)
+        call_each(self._callbacks, lambda callback: callback(event),
+                  'Progress callback')
 
     def event(self, name: str, **fields: Any) -> None:
         self.emit(cast(EventName, name), **fields)

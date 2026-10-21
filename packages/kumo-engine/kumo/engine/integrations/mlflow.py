@@ -9,7 +9,7 @@ import posixpath
 import re
 import time
 from contextlib import ExitStack
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from pytorch_lightning.loggers import MLFlowLogger
 
@@ -18,9 +18,7 @@ from kumo.engine._tracking import (
     DROPPED_PARAMS,
     LIGHTNING_PREFIX,
     Capabilities,
-    FitContext,
-    run_record,
-    trial_record,
+    RunRecord,
 )
 from kumo.engine.connector._extras import import_provider
 
@@ -65,20 +63,14 @@ class MlflowTracking:
         self._reset()
 
     def _reset(self) -> None:
-        self._enabled = False
-        self._context: Optional[FitContext] = None
         self._client: Any = None
         self._parent: Optional[str] = None
         self._experiment_id: Optional[str] = None
         self._children: Dict[Tuple[int, int], str] = {}
-        self._trials: Dict[Tuple[int, int], List[Event]] = {}
-        self._fit_ended: Optional[Event] = None
         self._guard = ExitStack()
 
-    def start(self, context: FitContext) -> None:
+    def start(self, record: RunRecord) -> None:
         self._reset()
-        self._enabled = True
-        self._context = context
         try:
             autologging = import_provider('mlflow.utils.autologging_utils',
                                           'mlflow')
@@ -89,45 +81,6 @@ class MlflowTracking:
         except Exception:
             logger.warning('Could not suspend MLflow autologging',
                            exc_info=True)
-        self._safe(self._start_parent, context)
-
-    def trial_logger(self, trial: int, attempt: int) -> Optional[Any]:
-        return self._safe(self._trial_logger, trial, attempt)
-
-    def on_event(self, event: Event) -> None:
-        if event.trial is not None and self._context is not None:
-            key = (event.trial, int(event.params['attempt']))
-            events = self._trials.setdefault(key, [])
-            events.append(event)
-            if event.name == 'trial_started':
-                self._safe(self._start_trial, key, events)
-            elif event.name == 'epoch_ended':
-                self._safe(self._log_metrics, self._children.get(key),
-                           event.metrics, event.epoch or 0)
-            elif event.name == 'trial_ended':
-                self._safe(self._end_trial, key, events, event)
-        elif event.name == 'fit_ended':
-            self._fit_ended = event
-
-    def finish(self, result: Any, error: Optional[BaseException]) -> None:
-        try:
-            self._safe(self._log_result, result)
-            status = 'FINISHED' if error is None else 'FAILED'
-            if self._enabled:
-                for run_id in self._children.values():
-                    _quietly(self._client.set_terminated, run_id, 'FAILED')
-            if self._parent is not None:
-                active = self._mlflow.active_run()
-                if active is not None and active.info.run_id == self._parent:
-                    _quietly(self._mlflow.end_run, status)
-                else:
-                    _quietly(self._client.set_terminated, self._parent, status)
-        finally:
-            self._guard.close()
-            self._reset()
-
-    def _start_parent(self, context: FitContext) -> None:
-        record = run_record(context, tags=self.tags)
         mlflow = self._mlflow
         self._client = mlflow.MlflowClient()
         experiment_id = None
@@ -150,43 +103,58 @@ class MlflowTracking:
         for name, text in record.artifacts.items():
             self._client.log_text(self._parent, text, name)
 
-    def _start_trial(self, key: Tuple[int, int], events: List[Event]) -> None:
-        record = trial_record(self._context, events)
-        run = self._client.create_run(
-            self._experiment_id, run_name=record.name,
-            tags={**record.tags, 'mlflow.parentRunId': self._parent})
-        self._children[key] = run.info.run_id
-        self._log_params(run.info.run_id, record.params)
-
-    def _trial_logger(self, trial: int,
-                      attempt: int) -> Optional['_KumoMLFlowLogger']:
+    def trial_logger(self, trial: int,
+                     attempt: int) -> Optional['_KumoMLFlowLogger']:
         run_id = self._children.get((trial, attempt))
         if run_id is None:
             return None
         trial_logger = _KumoMLFlowLogger(
-            self, run_id=run_id, tracking_uri=self._mlflow.get_tracking_uri(),
+            run_id=run_id, tracking_uri=self._mlflow.get_tracking_uri(),
             log_model=False, prefix=LIGHTNING_PREFIX)
-        # Lightning resolves these lazily, outside `_safe`.
+        # Lightning resolves these lazily, outside the tracking guard.
         trial_logger.experiment
         trial_logger.version
         return trial_logger
 
-    def _end_trial(self, key: Tuple[int, int], events: List[Event],
-                   event: Event) -> None:
-        record = trial_record(self._context, events)
-        run_id = self._children.pop(key)
-        del self._trials[key]
-        self._log_metrics(run_id, record.metrics)
-        self._log_tags(run_id, record.tags)
-        succeeded = event.params.get('status') == 'succeeded'
-        self._client.set_terminated(run_id,
-                                    'FINISHED' if succeeded else 'FAILED')
+    def on_trial(self, record: RunRecord, event: Event) -> None:
+        key = (event.trial or 0, int(event.params['attempt']))
+        if event.name == 'trial_started':
+            run = self._client.create_run(
+                self._experiment_id, run_name=record.name,
+                tags={**record.tags, 'mlflow.parentRunId': self._parent})
+            self._children[key] = run.info.run_id
+            self._log_params(run.info.run_id, record.params)
+        elif event.name == 'epoch_ended':
+            self._log_metrics(self._children.get(key), event.metrics,
+                              event.epoch or 0)
+        elif event.name == 'trial_ended':
+            run_id = self._children.pop(key)
+            self._log_metrics(run_id, record.metrics)
+            self._log_tags(run_id, record.tags)
+            succeeded = event.params.get('status') == 'succeeded'
+            self._client.set_terminated(run_id,
+                                        'FINISHED' if succeeded else 'FAILED')
 
-    def _log_result(self, result: Any) -> None:
-        record = run_record(self._context, result, self._fit_ended,
-                            tags=self.tags)
-        self._log_metrics(self._parent, record.metrics)
-        self._log_tags(self._parent, record.tags)
+    def finish(self, record: Optional[RunRecord],
+               error: Optional[BaseException]) -> None:
+        status = 'FAILED'
+        try:
+            if record is not None and self._parent is not None:
+                self._log_metrics(self._parent, record.metrics)
+                self._log_tags(self._parent, record.tags)
+                if error is None:
+                    status = 'FINISHED'
+        finally:
+            for run_id in self._children.values():
+                _quietly(self._client.set_terminated, run_id, 'FAILED')
+            if self._parent is not None:
+                active = self._mlflow.active_run()
+                if active is not None and active.info.run_id == self._parent:
+                    _quietly(self._mlflow.end_run, status)
+                else:
+                    _quietly(self._client.set_terminated, self._parent, status)
+            self._guard.close()
+            self._reset()
 
     def _log_tags(self, run_id: str, tags: Mapping[str, str]) -> None:
         entities = self._mlflow.entities
@@ -219,30 +187,28 @@ class MlflowTracking:
                 for key, value in metrics.items()
             ])
 
-    def _safe(self, function: Callable[..., Any], *args: Any) -> Any:
-        if not self._enabled:
-            return None
-        try:
-            return function(*args)
-        except Exception:
-            logger.warning(
-                'MLflow tracking failed; it is off for the rest of this fit',
-                exc_info=True)
-            self._enabled = False
-            return None
-
 
 class _KumoMLFlowLogger(MLFlowLogger):
-    def __init__(self, tracking: MlflowTracking, **kwargs: Any) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._tracking = tracking
+        self._failed = False
 
     def log_metrics(self, metrics: Mapping[str, float],
                     step: Optional[int] = None) -> None:
-        self._tracking._safe(super().log_metrics, metrics, step)
+        self._guarded(super().log_metrics, metrics, step)
 
     def log_hyperparams(self, params: Any) -> None:
-        self._tracking._safe(super().log_hyperparams, params)
+        self._guarded(super().log_hyperparams, params)
+
+    def _guarded(self, function: Callable[..., Any], *args: Any) -> None:
+        if self._failed:
+            return
+        try:
+            function(*args)
+        except Exception:
+            logger.warning('MLflow logging failed; it is off for this trial',
+                           exc_info=True)
+            self._failed = True
 
     def finalize(self, status: str = 'success') -> None:
         pass  # the tracker ends the run

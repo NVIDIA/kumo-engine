@@ -13,6 +13,7 @@ from test_tracking_contract import CONTEXT, replay
 
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
+from kumo.engine._tracking import run_record
 
 mlflow = pytest.importorskip('mlflow')
 autologging_utils = pytest.importorskip('mlflow.utils.autologging_utils')
@@ -111,7 +112,7 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, caplog):
         if not name.startswith('system/')
     }
     assert metrics == {**result.metrics, 'seconds': metrics['seconds']}
-    assert 'MLflow tracking failed' not in caplog.text
+    assert 'not called again' not in caplog.text
 
     assert [run.info.run_name
             for run in children] == ['trial-1-attempt-1', 'trial-2-attempt-1']
@@ -146,8 +147,8 @@ def test_failed_fit_marks_the_run_failed(table_and_snapshot, monkeypatch):
 
 
 @pytest.mark.parametrize('broken', ['log_batch', 'get_run'])
-def test_mlflow_errors_are_logged_once_not_raised(tracking_uri, monkeypatch,
-                                                  caplog, broken):
+def test_mlflow_error_ends_runs_failed_and_is_not_raised(
+        tracking_uri, monkeypatch, caplog, broken):
     from mlflow.tracking import MlflowClient
 
     from kumo.engine.integrations.mlflow import MlflowTracking
@@ -162,14 +163,10 @@ def test_mlflow_errors_are_logged_once_not_raised(tracking_uri, monkeypatch,
     monkeypatch.setattr(MlflowClient, broken, down)
     replay([MlflowTracking(log_system_metrics=False)])
 
-    assert caplog.text.count('MLflow tracking failed') == 1
+    assert caplog.text.count('not called again') == 1
     assert mlflow.active_run() is None
-    if broken == 'log_batch':
-        parent, = [
-            run for run in _runs(mlflow.MlflowClient())
-            if 'mlflow.parentRunId' not in run.data.tags
-        ]
-        assert parent.info.status == 'FINISHED'
+    statuses = {run.info.status for run in _runs(mlflow.MlflowClient())}
+    assert statuses == {'FAILED'}
 
 
 def test_user_disabled_autologging_stays_disabled(tracking_uri):
@@ -177,6 +174,6 @@ def test_user_disabled_autologging_stays_disabled(tracking_uri):
 
     tracker = MlflowTracking(log_system_metrics=False)
     with autologging_utils.disable_autologging():
-        tracker.start(CONTEXT)
+        tracker.start(run_record(CONTEXT))
         tracker.finish(None, None)
         assert autologging_utils._AUTOLOGGING_GLOBALLY_DISABLED is True

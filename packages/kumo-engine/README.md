@@ -369,13 +369,15 @@ local store in the working directory. Per-epoch metrics use step = epoch;
 Lightning's per-step metrics are prefixed `lightning-`.
 
 Pass a list to record to several trackers; a tracker that raises is not
-called again for that fit. Other systems plug in through the
-`kumo.engine.tracking.Tracking` protocol: `start(context)`, `on_event(event)`
-and `finish(result, error)`, plus an optional `trial_logger(trial, attempt)`
-returning a Lightning logger. Build what to log with `run_record` and
-`trial_record` so every tracker records the same names: params are the task
-type and resolved model plan (fit) or searched hyperparameters and `attempt`
-(trial); ids and outcomes are `kumo.*` tags (`kumo.kind`, `kumo.run_id`,
+called again for that fit and its run is ended as failed. Other systems plug
+in through the `kumo.engine.tracking.Tracking` protocol, which receives
+ready-built `RunRecord`s so every tracker records the same names:
+`start(record)` with the fit run, `on_trial(record, event)` with a trial
+attempt's run after each of its events, and `finish(record, error)` with the
+fit run's final record (`None` when tracking stopped early), plus an optional
+`trial_logger(trial, attempt)` returning a Lightning logger. Params are the
+task type and resolved model plan (fit) or searched hyperparameters and
+`attempt` (trial); ids and outcomes are `kumo.*` tags (`kumo.kind`, `kumo.run_id`,
 `kumo.snapshot_id`, `kumo.training_table_id`, `kumo.query_sha256`,
 `kumo.parent_run`, `kumo.status`, `kumo.error`, `kumo.model_*`). Your `tags=`
 are added as given, except `kumo.*` names and param names.
