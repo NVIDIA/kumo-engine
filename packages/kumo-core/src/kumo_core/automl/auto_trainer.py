@@ -909,18 +909,8 @@ class AutoTrainer:
                             status=status,
                             trial=i + 1,
                         )
+                    trial_seconds = time.monotonic() - trial_start
                     best_performance = _eval_fn[tune_mode](val_performance)
-                    self._emit('trial_ended', lambda: {
-                        'trial': i + 1,
-                        'metrics': {
-                            self.val_tune_metric: float(best_performance),
-                            'seconds': time.monotonic() - trial_start,
-                        },
-                        'params': {
-                            'status': 'succeeded',
-                            'attempt': j + 1,
-                        },
-                    })
                     logger.info(f"AutoML experiment "
                                 f"{i + 1}/{self.num_experiments} finished "
                                 f"with validation performance: "
@@ -936,6 +926,17 @@ class AutoTrainer:
                             "auto_trainer.run.status_save_success",
                             trial=i + 1):
                         status.save(self.home_dir)
+                    self._emit('trial_ended', lambda: {
+                        'trial': i + 1,
+                        'metrics': {
+                            self.val_tune_metric: float(best_performance),
+                            'seconds': trial_seconds,
+                        },
+                        'params': {
+                            'status': 'succeeded',
+                            'attempt': j + 1,
+                        },
+                    })
                     break
 
                 except RuntimeError as e:

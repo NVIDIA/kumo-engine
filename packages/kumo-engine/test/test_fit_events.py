@@ -127,6 +127,30 @@ def test_failed_fit_reports_fit_ended(table_and_snapshot, monkeypatch):
     assert events[-1].params == {'status': 'failed', 'error': 'ValueError'}
 
 
+def test_trial_failing_after_training_ends_once(table_and_snapshot,
+                                                monkeypatch):
+    from kumo_core.automl.optuna_searcher import TPESearcher
+
+    def fail(*args, **kwargs):
+        raise RuntimeError('searcher down')
+
+    monkeypatch.setattr(TPESearcher, 'update', fail)
+    table, snapshot = table_and_snapshot
+    plan = ModelPlan()
+    plan.training_job.num_experiments = 1
+    plan.training_job.disable_explain = True
+    plan.optimization.max_epochs = 1
+    plan.optimization.max_steps_per_epoch = 2
+    events = []
+
+    with pytest.raises(RuntimeError):
+        kumo.Trainer(plan).fit(table, snapshot=snapshot,
+                               callbacks=[events.append])
+
+    ended = [event for event in events if event.name == 'trial_ended']
+    assert [event.params['status'] for event in ended] == ['failed']
+
+
 def test_event_errors_are_logged_not_raised(caplog):
     from kumo_core.automl.auto_trainer import AutoTrainer
 
