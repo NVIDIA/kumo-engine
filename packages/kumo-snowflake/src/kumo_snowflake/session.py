@@ -463,8 +463,13 @@ class _SnowflakeSessions:
 
     def table_location(self, connector: SourceConnector,
                        table_name: str) -> str:
-        """Fully qualified name of ``table_name`` in the connector's target."""
-        return self._qualified(connector, table_name)
+        """``account/"DB"."SCHEMA"."TABLE"``; the account when it resolves."""
+        try:
+            account = _snowflake_config(self._principal(connector)).account
+        except Exception:
+            account = None
+        qualified = self._qualified(connector, table_name)
+        return f'{account}/{qualified}' if account else qualified
 
     @staticmethod
     def _qualified(connector: SourceConnector, table_name: str) -> str:

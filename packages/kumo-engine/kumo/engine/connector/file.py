@@ -121,6 +121,11 @@ class _FileSourceBackend(ObjectStoreSourceBackend):
             LocalFileSourceTable(path=str(Path(path).resolve()),
                                  file_type=FileType(kind.upper())))
 
+    def table_location(self, connector: Union[Connector, SourceConnector],
+                       table_name):
+        reader, name = self._reader(connector, table_name)
+        return str(Path(reader.resolve(name)[0]).resolve())
+
     def prepare_ingest(self, connector, table_name, dest_dir, *args, **kwargs):
         _disjoint(Path(connector.config.root_dir), Path(dest_dir))
         return super().prepare_ingest(connector, table_name, dest_dir, *args,

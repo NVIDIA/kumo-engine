@@ -52,7 +52,7 @@ from .errors import (
     TransientSourceError,
     UnsupportedReadModeError,
 )
-from .identity import epoch_second
+from .identity import SourceVersion, epoch_second
 from .object_store_access import ObjectFetch, ObjectIdentity
 from .parallel import run_in_parallel
 from .prepare import ReadOutput, run_prepare
@@ -101,14 +101,16 @@ _io_wanted: list[int] = []
 def _source_version(path: str, entries: Sequence[Any]) -> str:
     if len(entries) == 1 and entries[0].path.rstrip("/") == path.rstrip("/"):
         latest = entries[0].mtime
-        return epoch_second(latest) if latest is not None else "-1"
+        return (SourceVersion(epoch_second(latest), "timestamp")
+                if latest is not None else SourceVersion("-1"))
     # A maximum mtime misses changes to older files and added/deleted parts.
     metadata = [
         (entry.path, entry.size, getattr(entry, "mtime_ns", None),
          entry.mtime.isoformat() if entry.mtime is not None else None)
         for entry in sorted(entries, key=lambda entry: entry.path)
     ]
-    return hashlib.sha256(json.dumps(metadata).encode()).hexdigest()
+    return SourceVersion(
+        hashlib.sha256(json.dumps(metadata).encode()).hexdigest(), "timestamp")
 
 
 class _CsvSource(NamedTuple):

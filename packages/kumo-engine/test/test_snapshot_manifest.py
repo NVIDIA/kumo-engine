@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from kumo_core.sources.identity import SourceVersion
 from kumo_core.version import get_kumo_version
 from kumoapi.graph import Edge
 from kumoapi.typing import Stype
@@ -25,7 +26,10 @@ from kumo.engine import (
     SnowflakeConnector,
     Table,
 )
-from kumo.engine.connector.identity import DatabricksIdentity
+from kumo.engine.connector.identity import (
+    DatabricksIdentity,
+    SnowflakeIdentity,
+)
 from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE, GraphSnapshot
 
 _SCHEDULER_ENV = ('KUMO_SCHEDULER', 'KUMO_JOB_ID', 'KUMO_JOB_RUN_ID',
@@ -49,7 +53,7 @@ def make_snapshot(tmp_path, no_scheduler):
     data.mkdir()
     pd.DataFrame({'ID': np.arange(5)}).to_parquet(data / 'ents.parquet')
 
-    def make(events: int | None = None) -> GraphSnapshot:
+    def make(events: int | None = None, **options) -> GraphSnapshot:
         if events is not None:
             pd.DataFrame({
                 'EID': np.arange(events),
@@ -62,14 +66,14 @@ def make_snapshot(tmp_path, no_scheduler):
         return Graph(
             {
                 'ents':
-                Table.from_source_table(connector['ents.parquet'],
+                Table.from_source_table(connector['ents'],
                                         primary_key='ID').infer_metadata(),
                 'events':
                 Table.from_source_table(
                     connector['events.parquet'],
                     primary_key='EID').infer_metadata().with_column(
                         'ENT_ID', stype=Stype.ID),
-            }, [Edge('events', 'ENT_ID', 'ents')]).snapshot()
+            }, [Edge('events', 'ENT_ID', 'ents')]).snapshot(**options)
 
     return make
 
@@ -87,10 +91,14 @@ def test_snapshot_manifest_records_sources_and_diffs(make_snapshot,
                 'ents': str(data / 'ents.parquet'),
                 'events': str(data / 'events.parquet'),
             }
+    assert {e['version_kind']
+            for e in manifest['parents']['source_tables'].values()
+            } == {'timestamp'}
     assert 'tables' not in manifest and 'edges' not in manifest
     assert before.counts['rows'] == {'ents': 5, 'events': 30}
     assert before.counts['edges']['events_ENT_ID_to_ents_ID'] == 30
     assert manifest['environment']['kumo_engine'] == get_kumo_version()
+    assert manifest['environment']['diskgraph']
     assert manifest['scheduler'] is None
     assert datetime.fromisoformat(manifest['created_at']).tzinfo is not None
     assert str(tmp_path / 'scratch') not in json.dumps(manifest)
@@ -173,6 +181,13 @@ def test_unsupported_manifest_is_ignored(tmp_path, content):
 @pytest.mark.parametrize('connector, name, sql, location', [
     (S3Connector(root_dir='s3://bucket-a/data/'), 'exports/tt/', None,
      's3://bucket-a/data/exports/tt'),
+    (S3Connector(root_dir='s3://bucket-a/data/'), 'q4#1 50%.parquet', None,
+     's3://bucket-a/data/q4%231%2050%25.parquet'),
+    (S3Connector(), 's3://bucket-a/sales%23q4.parquet', None,
+     's3://bucket-a/sales%23q4.parquet'),
+    (SnowflakeConnector(warehouse='wh', database='db', schema_name='sch',
+                        identity=SnowflakeIdentity(account='org-acct')),
+     'TT', None, 'org-acct/"DB"."SCH"."TT"'),
     (SnowflakeConnector(warehouse='wh', database='db', schema_name='sch'),
      'TT', None, '"DB"."SCH"."TT"'),
     (DatabricksConnector(
@@ -193,4 +208,35 @@ def test_source_location(connector, name, sql, location):
 def test_unrecordable_location_is_null():
     with pytest.warns(UserWarning, match='location'):
         entry = provenance.source_table(None, 'users', None, 7)
-    assert entry == {'connector': None, 'location': None, 'version': '7'}
+    assert entry == {'connector': None, 'location': None, 'version': '7',
+                     'version_kind': 'unknown'}
+
+
+def test_custom_sql_records_dependency_versions():
+    version = SourceVersion('abc', 'hour_bucket', {'orders': '17'})
+    entry = provenance.source_table(
+        SnowflakeConnector(warehouse='wh', database='db', schema_name='sch'),
+        'q', 'SELECT * FROM orders', version, record_locations=False)
+    assert entry == {
+        'connector': 'SNOWFLAKE',
+        'location': 'sql:' + hashlib.sha256(b'SELECT * FROM orders').hexdigest(),
+        'version': 'abc',
+        'version_kind': 'hour_bucket',
+        'dependencies': {'orders': '17'},
+    }
+
+
+def test_record_locations_false_keeps_table_names_only(make_snapshot,
+                                                       tmp_path):
+    names = {'ents': 'ents', 'events': 'events.parquet'}
+    redacted = make_snapshot(30, record_locations=False)
+    sources = redacted.manifest['parents']['source_tables']
+    assert {alias: e['location'] for alias, e in sources.items()} == names
+    assert str(tmp_path) not in json.dumps(redacted.manifest)
+    assert redacted.manifest['record_locations'] is False
+
+    full = make_snapshot(record_locations=True)
+    assert full == redacted
+    assert full.manifest['parents']['source_tables']['ents'][
+        'location'] == str((tmp_path / 'data' / 'ents.parquet').resolve())
+    assert full.manifest['created_at'] == redacted.manifest['created_at']
