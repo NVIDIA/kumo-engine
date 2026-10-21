@@ -57,6 +57,8 @@ def test_derived_bundle_thresholds_unless_explicit(fitted):
     assert _digest(parent_dir) == original
     assert trainer.scoring_defaults == kumo.ScoringDefaults()
     assert child.bundle_id != trainer.bundle_id
+    assert child.provenance['id'] == child.bundle_id
+    assert trainer.provenance['id'] == trainer.bundle_id
     assert child.provenance['parents'] == {
         **trainer.provenance['parents'], 'derived_from': trainer.bundle_id
     }
@@ -82,6 +84,7 @@ def test_derivation_from_old_or_newer_provenance(fitted, tmp_path):
     remove_bundle_file(old, 'provenance')
     child = kumo.Trainer.load(old).with_scoring_defaults(defaults)
     assert child.provenance['reconstructed'] is True
+    assert child.provenance['id'] == child.bundle_id
     assert child.provenance['parents'] == {'derived_from': trainer.bundle_id}
 
     newer = _copy(trainer, tmp_path / 'newer')
