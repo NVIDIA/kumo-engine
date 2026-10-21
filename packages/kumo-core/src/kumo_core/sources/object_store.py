@@ -110,7 +110,7 @@ def _source_version(path: str, entries: Sequence[Any]) -> str:
         for entry in sorted(entries, key=lambda entry: entry.path)
     ]
     return SourceVersion(
-        hashlib.sha256(json.dumps(metadata).encode()).hexdigest(), "timestamp")
+        hashlib.sha256(json.dumps(metadata).encode()).hexdigest(), "listing")
 
 
 class _CsvSource(NamedTuple):
