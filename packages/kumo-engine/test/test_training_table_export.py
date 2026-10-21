@@ -324,11 +324,26 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
     assert reloaded.source_mode == 'custom_tt'
     assert manifest['parents']['source_table'] == {
         'connector': 'LOCAL_FILE',
-        'location': str(directory),
+        'location': str(directory.resolve()),
         'version': connector.source_backend.get_data_version(
             connector, 'lineage'),
+        'version_kind': 'timestamp',
     }
     assert _seeds(reloaded)[1] == _seeds(table)[1]
+
+
+def test_custom_table_follows_the_snapshots_record_locations(graph):
+    graph_, _, connector, _ = graph
+    pquery, _, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
+                           'unlocated')
+    try:
+        redacted = graph_.snapshot(record_locations=False)
+        table = kumo.TrainingTable.from_source_table(
+            connector['unlocated'], TrainingTableSpec(split_col='SPLIT'),
+            pq=pquery, snapshot=redacted)
+    finally:
+        graph_.snapshot()
+    assert table.manifest['parents']['source_table']['location'] == 'unlocated'
 
 
 def test_manifest_write_failure_keeps_generation_and_export(
