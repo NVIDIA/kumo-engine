@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import warnings
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass, field
 from typing import (
@@ -34,6 +35,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Prefix of the metrics a `Tracking.trial_logger` receives from Lightning
+# (step = Lightning's global step), so they never share a name with the
+# record's per-epoch ``steps``.
+LIGHTNING_PREFIX = 'lightning'
+# Tags counting what an adapter skipped to fit its platform's limits.
+DROPPED_PARAMS = 'kumo.dropped_params'
+DROPPED_METRICS = 'kumo.dropped_metrics'
+
 
 @dataclass(frozen=True)
 class FitContext:
@@ -52,8 +61,8 @@ class RunRecord:
     r"""One tracked run in platform-neutral names; adapters translate it.
 
     ``steps`` maps a metric to its ``(step, value)`` history (step = epoch),
-    ``links`` holds ids of models published from the run, and ``artifacts``
-    maps file names to text content.
+    ``links`` holds ids of models published from the run (each also a
+    ``kumo.<link>`` tag), and ``artifacts`` maps file names to text content.
     """
 
     name: Optional[str] = None
@@ -75,10 +84,13 @@ class Capabilities:
             Without it they are flat runs linked by the ``kumo.parent_run``
             tag.
         system_metrics: host CPU/GPU/memory usage is sampled on the fit run.
-        step_metrics: `RunRecord.steps` histories are recorded with step =
-            epoch.
+        step_metrics: `RunRecord.steps` histories are recorded under their
+            names with step = epoch.
         artifacts: `RunRecord.artifacts` are stored as files of the run.
-        model_link: `RunRecord.links` are attached to the run.
+        model_link: a model published from the run to this platform's own
+            registry is also linked to it through the platform's run-to-model
+            link. Without it, and always in addition, `RunRecord.links` are
+            ``kumo.<link>`` tags.
     """
 
     nested_runs: bool = False
@@ -89,9 +101,15 @@ class Capabilities:
 
 
 def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
-               fit_ended: Optional[Event] = None) -> RunRecord:
+               fit_ended: Optional[Event] = None, *,
+               tags: Optional[Mapping[str, str]] = None) -> RunRecord:
     r"""The fit run's record; metrics need `result` and the ``fit_ended``
-    event."""
+    event.
+
+    ``tags`` (an adapter's user-supplied tags) pass through under their given
+    names, except ``kumo.*`` names, which only the engine sets (dropped with a
+    warning).
+    """
     metrics: Dict[str, float] = {}
     links: Dict[str, str] = {}
     if result is not None:
@@ -117,10 +135,13 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
         },
         metrics=metrics,
         tags={
+            **_user_tags(tags),
             'kumo.engine_version': __version__,
             'kumo.run_id': context.run_id,
             'kumo.snapshot_id': context.snapshot_id,
             'kumo.training_table_id': context.training_table_id,
+            **{f'kumo.{key}': value
+               for key, value in links.items()},
         },
         links=links,
         artifacts={
@@ -130,6 +151,18 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
             json.dumps(dict(context.model_plan), indent=2, default=str),
         },
     )
+
+
+def _user_tags(tags: Optional[Mapping[str, Any]]) -> Dict[str, str]:
+    reserved = sorted(key for key in tags or {} if key.startswith('kumo.'))
+    if reserved:
+        warnings.warn(
+            f'Tracking tags {reserved} are not recorded: kumo.* tags are set '
+            f'by the engine.', UserWarning, stacklevel=3)
+    return {
+        key: str(value)
+        for key, value in (tags or {}).items() if key not in reserved
+    }
 
 
 def trial_record(context: FitContext, events: Sequence[Event]) -> RunRecord:

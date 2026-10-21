@@ -375,13 +375,18 @@ others. Any other system plugs in through the `kumo.engine.Tracking` protocol:
   `params["attempt"]`);
 - `finish(result, error)`: once, when the fit returns or raises;
 - optional `trial_logger(trial, attempt)`: a Lightning logger for one trial
-  attempt's step metrics, or `None`;
+  attempt, or `None` (MLflow prefixes its metrics `lightning-`, since their
+  step is Lightning's global step, not the epoch);
 - optional `capabilities`: a `Capabilities` stating what the adapter records
   (nested runs, system metrics, step metrics, artifacts, model links).
 
-Build what to log with `run_record(context, result, fit_ended)` and
+Build what to log with `run_record(context, result, fit_ended, tags=...)` and
 `trial_record(context, trial_events)`, so every adapter uses the same
-parameter, metric and tag names:
+parameter, metric and tag names. Tags are the engine's `kumo.*` tags plus the
+`tags=` you pass, under their given names (`kumo.*` names are the engine's;
+yours are dropped with a warning). Links to a published model (`model_name`,
+`model_version`, `model_uri`) are also tags (`kumo.model_name`, ...), so a
+tracker without its own run-to-model link still records them; `steps` are per-epoch histories (step = epoch).
 
 ```python
 import json

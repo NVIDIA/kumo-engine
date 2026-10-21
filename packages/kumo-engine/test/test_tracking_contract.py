@@ -6,8 +6,8 @@
 A recorded fake fit (fixed context, events and result) is replayed through
 `TrackingSession` into an adapter; what the adapter stored is read back and
 compared with `run_record`/`trial_record`, allowing only the gaps its
-`Capabilities` declare and the params its platform limits drop. A new adapter
-is one more `adapter` fixture param.
+`Capabilities` declare and the params its platform limits drop (counted in
+``kumo.dropped_params``). A new adapter is one more `adapter` fixture param.
 """
 
 import json
@@ -26,9 +26,14 @@ from kumo.engine import (
     run_record,
     trial_record,
 )
-from kumo.engine._tracking import TrackingSession
+from kumo.engine._tracking import (
+    DROPPED_METRICS,
+    DROPPED_PARAMS,
+    TrackingSession,
+)
 
 RUN = 'trainer-fit-1'
+USER_TAGS = {'team': 'ents', 'kumo.run_id': 'overridden'}
 QUERY = 'PREDICT ents.Y FOR EACH ents.ID'
 CONTEXT = FitContext(
     run_id=RUN, task_type='regression', snapshot_id='snap@1',
@@ -145,7 +150,7 @@ def expected_records(events: List[Event]) -> Dict[str, RunRecord]:
                               []).append(event)
     ended = next(event for event in events if event.name == 'fit_ended')
     records = [
-        run_record(CONTEXT, RESULT, ended),
+        run_record(CONTEXT, RESULT, ended, tags=USER_TAGS),
         *(trial_record(CONTEXT, group) for group in trials.values())
     ]
     return {record.tags['kumo.run_id']: record for record in records}
@@ -181,6 +186,13 @@ def gaps(
     found = []
     if set(observed) != set(expected):
         return [f'runs {sorted(observed)} != {sorted(expected)}']
+    dropped = sum(
+        len(record.params) - len(kept_params(record.params))
+        for record in expected.values())
+    counted = sum(
+        int(seen.tags.get(DROPPED_PARAMS, 0)) for seen in observed.values())
+    if counted != dropped:
+        found.append(f'{DROPPED_PARAMS}: {counted} != {dropped}')
     for run_id, record in expected.items():
         seen = observed[run_id]
 
@@ -201,9 +213,11 @@ def gaps(
         differ('metric names', sorted(seen.metrics), sorted(names))
         differ('tags', {k: seen.tags.get(k)
                         for k in record.tags}, dict(record.tags))
-        differ('kumo tags',
-               sorted(k for k in seen.tags if k.startswith('kumo.')),
-               sorted(record.tags))
+        differ(
+            'kumo tags',
+            sorted(k for k in seen.tags if k.startswith('kumo.')
+                   and k not in (DROPPED_PARAMS, DROPPED_METRICS)),
+            sorted(k for k in record.tags if k.startswith('kumo.')))
         if capabilities.nested_runs:
             differ('parent', seen.parent, record.tags.get('kumo.parent_run'))
         if capabilities.model_link:
@@ -250,8 +264,10 @@ def mlflow_adapter(tmp_path, monkeypatch):
         return observed
 
     try:
-        yield Adapter(make=lambda: MlflowTracking(log_system_metrics=False),
-                      observe=observe, kept_params=_mlflow_params)
+        yield Adapter(
+            make=lambda: MlflowTracking(log_system_metrics=False,
+                                        tags=USER_TAGS), observe=observe,
+            kept_params=_mlflow_params)
     finally:
         while mlflow.active_run() is not None:
             mlflow.end_run()
@@ -268,10 +284,14 @@ def test_records_of_the_recorded_fit():
 
     fit = records[RUN]
     assert fit.tags == {
+        'team': 'ents',
         'kumo.engine_version': fit.tags['kumo.engine_version'],
         'kumo.run_id': RUN,
         'kumo.snapshot_id': 'snap@1',
         'kumo.training_table_id': 'tt-1',
+        'kumo.model_name': 'ents-model',
+        'kumo.model_version': '3',
+        'kumo.model_uri': 'models:/ents-model/3',
     }
     assert {
         key: fit.params[key]
@@ -285,6 +305,9 @@ def test_records_of_the_recorded_fit():
         'optimization.base_lr': '[0.01, 0.001]',
         'column_processing.encoder_overrides.ents.amount ($)': 'numerical',
     }
+    with pytest.warns(UserWarning, match='kumo.bundle_id'):
+        spoofed = run_record(CONTEXT, tags={'kumo.bundle_id': 'x', 'a': 1})
+    assert 'kumo.bundle_id' not in spoofed.tags and spoofed.tags['a'] == '1'
     assert len(fit.params['query_sha256']) == 64
     assert fit.metrics == {'val_mae': 0.3, 'test_mae': 0.32, 'seconds': 9.0}
     assert fit.links == {

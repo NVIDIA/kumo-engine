@@ -111,6 +111,7 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, caplog):
     assert parent.data.tags['team'] == 'a'
     assert parent.data.tags['kumo.snapshot_id'] == snapshot.id
     assert parent.data.tags['kumo.engine_version'] == kumo.__version__
+    assert int(parent.data.tags['kumo.dropped_params']) >= 1
     params = parent.data.params
     assert params['task_type'] == 'regression'
     assert params['snapshot_id'] == snapshot.id
@@ -145,8 +146,12 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, caplog):
             f"{parent.data.tags['kumo.run_id']}-{child.info.run_name}")
         assert child.data.params['attempt'] == '1'
         assert float(child.data.params['optimization.base_lr']) in (0.01, 0.001)
-        assert {'best_val_mae', 'seconds', 'epoch'} <= set(child.data.metrics)
-        epochs = client.get_metric_history(child.info.run_id, 'epoch')
+        assert {'best_val_mae', 'seconds', 'val_mae',
+                'lightning-epoch'} <= set(child.data.metrics)
+        history = client.get_metric_history(child.info.run_id, 'val_mae')
+        assert sorted(metric.step for metric in history) == [1, 2]
+        epochs = client.get_metric_history(child.info.run_id,
+                                           'lightning-epoch')
         assert {0, 1} <= {metric.value for metric in epochs}
 
 

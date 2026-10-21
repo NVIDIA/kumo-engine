@@ -4,20 +4,23 @@
 r"""MLflow tracking for `Trainer.fit` (``pip install 'kumo-engine[mlflow]'``).
 
 Translates the engine's run records (`kumo.engine.run_record`,
-`kumo.engine.trial_record`) into MLflow runs. Each fit is one MLflow run:
-nested under the caller's active run if there is one, else a new run in the
-current or named experiment. Each AutoML trial attempt is a child run with its
-searched hyperparameters, Lightning's metrics (step = Lightning's global
-step, not the epoch: hence ``step_metrics=False``, as the record's per-epoch
-histories are not logged separately) and summary metrics; the fit run gets the resolved model plan,
-the query and the final metrics. Trial runs still open when the fit ends (the
-fit failed mid-trial) are ended FAILED. MLflow autologging is suspended for the
-fit, so it adds no runs of its own.
+`kumo.engine.trial_record`) into MLflow runs under their names. Each fit is
+one MLflow run: nested under the caller's active run if there is one, else a
+new run in the current or named experiment. Each AutoML trial attempt is a
+child run with its searched hyperparameters, per-epoch metrics (step = epoch)
+and summary metrics; Lightning's own metrics on it are prefixed
+``lightning-`` (step = Lightning's global step). The fit run gets the resolved
+model plan, the query, user and ``kumo.*`` tags, and at the end the final
+metrics and the finish-time tags (published model ids as ``kumo.model_*``).
+Trial runs still open when the fit ends (the fit failed mid-trial) are ended
+FAILED. MLflow autologging is suspended for the fit, so it adds no runs of its
+own.
 
 MLflow limits: params whose key MLflow rejects (characters outside
 ``[/\w.\- ]``, over 250 characters, or not a normalized relative path) or whose
 value is over 6000 characters are not logged as params; the full plan is
-always in the ``model_plan.json`` artifact.
+always in the ``model_plan.json`` artifact, and the run's
+``kumo.dropped_params`` tag counts the skipped ones.
 
 Any MLflow error is logged once as a warning and stops tracking for the rest of
 that fit: only the fit run is then ended, and open trial runs are left as they
@@ -36,6 +39,8 @@ from pytorch_lightning.loggers import MLFlowLogger
 
 from kumo.engine._events import Event
 from kumo.engine._tracking import (
+    DROPPED_PARAMS,
+    LIGHTNING_PREFIX,
     Capabilities,
     FitContext,
     RunRecord,
@@ -61,14 +66,14 @@ class MlflowTracking:
         run_name: name of the fit run. `None` lets MLflow pick one.
         log_system_metrics: sample CPU, memory, disk, network and (with
             ``nvidia-ml-py``) GPU usage on the fit run.
-        tags: extra tags for the fit run.
+        tags: extra tags for the fit run, under their given names.
 
     Raises:
         ImportError: if mlflow is not installed.
     """
 
     capabilities = Capabilities(nested_runs=True, system_metrics=True,
-                                artifacts=True)
+                                step_metrics=True, artifacts=True)
 
     def __init__(
         self,
@@ -93,6 +98,7 @@ class MlflowTracking:
         self._children: Dict[Tuple[int, int], str] = {}
         self._trials: Dict[Tuple[int, int], List[Event]] = {}
         self._fit_ended: Optional[Event] = None
+        self._dropped: Dict[str, int] = {}
         self._guard = ExitStack()
 
     def start(self, context: FitContext) -> None:
@@ -122,6 +128,8 @@ class MlflowTracking:
             events.append(event)
             if event.name == 'trial_started':
                 self._safe(self._start_trial, key, events)
+            elif event.name == 'epoch_ended' and event.epoch is not None:
+                self._safe(self._log_steps, key, events, event.epoch)
             elif event.name == 'trial_ended':
                 self._safe(self._end_trial, key, events, event)
         elif event.name == 'fit_ended':
@@ -130,7 +138,7 @@ class MlflowTracking:
     def finish(self, result: Any, error: Optional[BaseException]) -> None:
         try:
             if result is not None:
-                self._safe(self._log_final_metrics, result)
+                self._safe(self._log_result, result)
             status = 'FINISHED' if error is None else 'FAILED'
             if self._enabled:
                 for run_id in self._children.values():
@@ -146,7 +154,7 @@ class MlflowTracking:
             self._reset()
 
     def _start_parent(self, context: FitContext) -> None:
-        record = run_record(context)
+        record = run_record(context, tags=self.tags)
         mlflow = self._mlflow
         self._client = mlflow.MlflowClient()
         experiment_id = None
@@ -160,10 +168,7 @@ class MlflowTracking:
             experiment_id=experiment_id,
             run_name=self.run_name,
             nested=mlflow.active_run() is not None,
-            tags={
-                **record.tags,
-                **self.tags
-            },
+            tags=record.tags,
             log_system_metrics=self.log_system_metrics,
         )
         self._parent = run.info.run_id
@@ -195,11 +200,21 @@ class MlflowTracking:
             return None
         trial_logger = _KumoMLFlowLogger(
             self, run_id=run_id, tracking_uri=self._mlflow.get_tracking_uri(),
-            log_model=False)
+            log_model=False, prefix=LIGHTNING_PREFIX)
         # Lightning resolves these lazily, outside our error handling.
         trial_logger.experiment
         trial_logger.version
         return trial_logger
+
+    def _log_steps(self, key: Tuple[int, int], events: List[Event],
+                   epoch: int) -> None:
+        record = trial_record(self._context, events)
+        self._log_metrics(
+            self._children.get(key), {
+                name: history[-1][1]
+                for name, history in record.steps.items()
+                if history[-1][0] == epoch
+            }, step=epoch)
 
     def _end_trial(self, key: Tuple[int, int], events: List[Event],
                    event: Event) -> None:
@@ -211,28 +226,40 @@ class MlflowTracking:
         self._client.set_terminated(run_id,
                                     'FINISHED' if succeeded else 'FAILED')
 
-    def _log_final_metrics(self, result: Any) -> None:
-        self._log_metrics(
-            self._parent,
-            run_record(self._context, result, self._fit_ended).metrics)
+    def _log_result(self, result: Any) -> None:
+        record = run_record(self._context, result, self._fit_ended,
+                            tags=self.tags)
+        self._log_metrics(self._parent, record.metrics)
+        entities = import_provider('mlflow.entities', 'mlflow')
+        self._client.log_batch(
+            self._parent, tags=[
+                entities.RunTag(key, value)
+                for key, value in record.tags.items()
+            ])
 
     def _log_params(self, run_id: str, params: Mapping[str, str]) -> None:
         entities = import_provider('mlflow.entities', 'mlflow')
+        kept = _mlflow_params(params)
+        dropped = len(params) - len(kept)
+        tags = []
+        if dropped:
+            self._dropped[run_id] = self._dropped.get(run_id, 0) + dropped
+            tags = [entities.RunTag(DROPPED_PARAMS, str(self._dropped[run_id]))]
         self._client.log_batch(
             run_id, params=[
                 entities.Param(key, value)
-                for key, value in _mlflow_params(params).items()
-            ])
+                for key, value in kept.items()
+            ], tags=tags)
 
     def _log_metrics(self, run_id: Optional[str],
-                     metrics: Mapping[str, float]) -> None:
+                     metrics: Mapping[str, float], step: int = 0) -> None:
         if run_id is None or not metrics:
             return
         entities = import_provider('mlflow.entities', 'mlflow')
         timestamp = int(time.time() * 1000)
         self._client.log_batch(
             run_id, metrics=[
-                entities.Metric(key, float(value), timestamp, 0)
+                entities.Metric(key, float(value), timestamp, step)
                 for key, value in metrics.items()
             ])
 
@@ -251,8 +278,8 @@ class MlflowTracking:
 
 
 class _KumoMLFlowLogger(MLFlowLogger):
-    r"""Logs one trial's epoch metrics to an existing child run. The tracker,
-    not Lightning, ends the run."""
+    r"""Logs one trial's Lightning metrics to an existing child run. The
+    tracker, not Lightning, ends the run."""
     def __init__(self, tracking: MlflowTracking, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._tracking = tracking
