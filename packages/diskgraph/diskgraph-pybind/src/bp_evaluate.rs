@@ -3,19 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Join batch-prediction outputs with generated labels and compute realized
-//! metrics, streaming both sides from Parquet.
-//!
-//! Both sides are hash-partitioned on their join key; a partition holds about
-//! `partition_rows` rows of either side and at most `MAX_CONCURRENT_JOINS`
-//! partitions are joined at once, so memory follows the partition size, not
-//! the output size (binary metrics also keep 8 bytes per labelled row for the
-//! exact ranking). With more than one partition both sides are spilled to
-//! Arrow IPC files first. Metrics follow the
-//! definitions used for fit-time `test_*` metrics: AUROC and average
-//! precision as in torchmetrics (exact, ties counted half), MAE/RMSE,
-//! top-1 accuracy, and MAP@k / precision@k as in PyG's link-prediction
-//! metrics over examples with at least one label.
+//! metrics. Both sides are hash-partitioned on their key into Arrow IPC
+//! spill files of about `partition_rows` rows each, and at most
+//! `MAX_CONCURRENT_JOINS` partitions are joined at once. Metrics follow the
+//! fit-time definitions: exact AUROC and AP as in torchmetrics, MAE/RMSE,
+//! top-1 accuracy, and MAP@k / precision@k as in PyG.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
@@ -24,44 +18,40 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
-use arrow::array::{Array, AsArray, ListArray, UInt32Array};
-use arrow::compute::{cast, take};
-use arrow::datatypes::{Float64Type, Int64Type, UInt64Type};
+use arrow::array::{Array, AsArray, BooleanArray, FixedSizeBinaryArray, UInt32Array};
+use arrow::compute::{cast, filter, take_record_batch};
+use arrow::datatypes::Float64Type;
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::FileWriter;
-use arrow_array::{ArrayRef, Float64Array, RecordBatch, UInt64Array};
+use arrow::row::{RowConverter, SortField};
+use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::arrow::{ArrowWriter, ProjectionMask};
+use parquet::arrow::ArrowWriter;
 use rayon::prelude::*;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 
+use crate::bp_col_stats::row_group_batches;
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum EvaluateTask {
-    /// `True_PROB` against a 0/1 label: `auroc`, `ap`.
     Binary,
-    /// `TARGET_PRED` against a number: `mae`, `rmse`.
     Regression,
-    /// The top-`SCORE` `CLASS` of each prediction against one label: `acc`.
     Multiclass,
-    /// Ranked `CLASS` rows against a list of labels: `map@k`, `precision@k`.
     Link,
 }
 
-/// What to join and score; columns are matched by name.
 #[derive(Clone, Debug, Deserialize)]
 pub struct EvaluateSpec {
     pub task: EvaluateTask,
-    /// Prediction key columns, paired by position with `label_keys`.
     pub prediction_keys: Vec<String>,
     pub label_keys: Vec<String>,
     pub label_target: String,
-    /// Directory for the matched label rows (`part-*.parquet`), renamed by
-    /// `actual_columns` (label name, output name); none when unset.
     #[serde(default)]
     pub actuals_dir: Option<PathBuf>,
+    /// (label column, output column) pairs written to `actuals_dir`.
     #[serde(default)]
     pub actual_columns: Vec<(String, String)>,
     pub spill_dir: PathBuf,
@@ -74,358 +64,170 @@ fn default_partition_rows() -> usize {
 }
 
 const MAX_CONCURRENT_JOINS: usize = 8;
+const KEY: &str = "__key";
 
-/// Keys are already uniform 128-bit hashes; fold them instead of rehashing.
-#[derive(Default)]
-struct KeyHasher(u64);
+type Batches = Box<dyn Iterator<Item = Result<RecordBatch>> + Send>;
 
-impl Hasher for KeyHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 = self.0.rotate_left(8) ^ u64::from(*byte);
-        }
-    }
-
-    fn write_u128(&mut self, value: u128) {
-        self.0 = value as u64 ^ (value >> 64) as u64;
-    }
-}
-
-type KeyMap<V> = HashMap<u128, V, std::hash::BuildHasherDefault<KeyHasher>>;
-
-const KEY_HI: &str = "__key_hi";
-const KEY_LO: &str = "__key_lo";
-const SCORE: &str = "__score";
-const CLASS: &str = "__class";
-
-#[derive(Clone, Copy, PartialEq)]
-enum KeyKind {
-    Integer,
-    Time,
-    Text,
-}
-
-fn key_kind(prediction: &DataType, label: &DataType) -> KeyKind {
-    let temporal = |t: &DataType| {
-        matches!(
-            t,
-            DataType::Timestamp(..) | DataType::Date32 | DataType::Date64
-        )
-    };
-    if temporal(prediction) || temporal(label) {
-        KeyKind::Time
-    } else if prediction.is_integer() && label.is_integer() {
-        KeyKind::Integer
+/// The type a pair of columns is compared as.
+fn common_type(a: &DataType, b: &DataType) -> DataType {
+    let int = |t: &DataType| t.is_integer() || *t == DataType::Boolean;
+    if a.is_temporal() || b.is_temporal() {
+        DataType::Timestamp(TimeUnit::Nanosecond, None)
+    } else if int(a) && int(b) {
+        DataType::Int64
+    } else if [a, b].iter().all(|t| int(t) || t.is_floating()) {
+        DataType::Float64
     } else {
-        KeyKind::Text
+        DataType::Utf8
     }
 }
 
-fn hasher(seed: u64) -> std::collections::hash_map::DefaultHasher {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    seed.hash(&mut hasher);
-    hasher
-}
-
-/// 128-bit hashes of each row's key; `None` when a key value is null.
-fn key_hashes(
-    batch: &RecordBatch,
-    names: &[String],
-    kinds: &[KeyKind],
-) -> Result<Vec<Option<u128>>> {
-    let columns: Vec<ArrayRef> = names
+/// 128-bit hash of each row of `arrays` cast to `types`; `None` on a null.
+fn hashes(arrays: &[&ArrayRef], types: &[DataType]) -> Result<Vec<Option<u128>>> {
+    let arrays = arrays
         .iter()
-        .zip(kinds)
-        .map(|(name, kind)| {
-            let array = batch.column(batch.schema().index_of(name)?);
-            Ok(match kind {
-                KeyKind::Integer => cast(array, &DataType::Int64)?,
-                KeyKind::Time => cast(
-                    &cast(
-                        array,
-                        &DataType::Timestamp(TimeUnit::Nanosecond, timezone(array)),
-                    )?,
-                    &DataType::Int64,
-                )?,
-                KeyKind::Text => cast(array, &DataType::Utf8)?,
+        .zip(types)
+        .map(|(array, to)| match (to, array.data_type()) {
+            (DataType::Timestamp(unit, _), DataType::Timestamp(_, tz)) => {
+                cast(array, &DataType::Timestamp(*unit, tz.clone()))
+            }
+            _ => cast(array, to),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let fields = arrays
+        .iter()
+        .map(|a| SortField::new(a.data_type().clone()))
+        .collect();
+    let rows = RowConverter::new(fields)?.convert_columns(&arrays)?;
+    Ok((0..rows.num_rows())
+        .map(|row| {
+            arrays.iter().all(|array| array.is_valid(row)).then(|| {
+                let half = |seed: u64| {
+                    let mut hasher = DefaultHasher::new();
+                    seed.hash(&mut hasher);
+                    rows.row(row).hash(&mut hasher);
+                    hasher.finish()
+                };
+                u128::from(half(1)) << 64 | u128::from(half(2))
             })
         })
-        .collect::<Result<_>>()?;
-    let mut out = Vec::with_capacity(batch.num_rows());
-    for row in 0..batch.num_rows() {
-        let (mut hi, mut lo) = (hasher(1), hasher(2));
-        let mut present = true;
-        for (array, kind) in columns.iter().zip(kinds) {
-            if array.is_null(row) {
-                present = false;
-                break;
-            }
-            if *kind == KeyKind::Text {
-                let value = array.as_string::<i32>().value(row);
-                value.hash(&mut hi);
-                value.hash(&mut lo);
-            } else {
-                let value = array.as_primitive::<Int64Type>().value(row);
-                value.hash(&mut hi);
-                value.hash(&mut lo);
-            }
-        }
-        out.push(present.then(|| (u128::from(hi.finish()) << 64) | u128::from(lo.finish())));
-    }
-    Ok(out)
+        .collect())
 }
 
-fn timezone(array: &ArrayRef) -> Option<Arc<str>> {
-    match array.data_type() {
-        DataType::Timestamp(_, tz) => tz.clone(),
-        _ => None,
-    }
+fn classes(array: &ArrayRef, class: &DataType) -> Result<Vec<Option<u64>>> {
+    let hashes = hashes(&[array], std::slice::from_ref(class))?;
+    Ok(hashes.into_iter().map(|h| h.map(|h| h as u64)).collect())
 }
 
-/// Identity of a class or label value: integers, integral floats and
-/// booleans by number, other floats by value, everything else as text.
-fn value_hashes(array: &ArrayRef) -> Result<Vec<Option<u64>>> {
-    let tagged = |tag: u8, write: &dyn Fn(&mut std::collections::hash_map::DefaultHasher)| {
-        let mut hasher = hasher(3);
-        tag.hash(&mut hasher);
-        write(&mut hasher);
-        hasher.finish()
-    };
-    let number = |value: f64| {
-        if value.fract() == 0.0 && value.abs() < 9.0e15 {
-            tagged(0, &|h| (value as i64).hash(h))
-        } else {
-            tagged(1, &|h| value.to_bits().hash(h))
-        }
-    };
-    let data_type = array.data_type();
-    Ok(
-        if data_type.is_integer() || *data_type == DataType::Boolean {
-            let values = cast(array, &DataType::Int64)?;
-            values
-                .as_primitive::<Int64Type>()
-                .iter()
-                .map(|value| value.map(|value| tagged(0, &|h| value.hash(h))))
-                .collect()
-        } else if data_type.is_floating() {
-            let values = cast(array, &DataType::Float64)?;
-            values
-                .as_primitive::<Float64Type>()
-                .iter()
-                .map(|value| value.map(number))
-                .collect()
-        } else {
-            let values = cast(array, &DataType::Utf8)?;
-            values
-                .as_string::<i32>()
-                .iter()
-                .map(|value| value.map(|value| tagged(2, &|h| value.hash(h))))
-                .collect()
-        },
-    )
+fn column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a ArrayRef> {
+    batch
+        .column_by_name(name)
+        .with_context(|| format!("missing column '{name}'"))
 }
 
-fn float_values(array: &ArrayRef) -> Result<Vec<Option<f64>>> {
+fn floats(array: &ArrayRef) -> Result<Vec<Option<f64>>> {
     Ok(cast(array, &DataType::Float64)?
         .as_primitive::<Float64Type>()
         .iter()
         .collect())
 }
 
-fn column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a ArrayRef> {
-    Ok(batch.column(
-        batch
-            .schema()
-            .index_of(name)
-            .with_context(|| format!("missing column '{name}'"))?,
-    ))
+fn keys(batch: &RecordBatch) -> Result<impl Iterator<Item = u128> + '_> {
+    let keys = column(batch, KEY)?.as_fixed_size_binary();
+    Ok((0..keys.len()).map(|row| u128::from_le_bytes(keys.value(row).try_into().unwrap())))
 }
 
-fn key_columns(keys: &[Option<u128>]) -> (UInt64Array, UInt64Array) {
-    let hi: UInt64Array = keys
-        .iter()
-        .map(|key| key.map(|key| (key >> 64) as u64))
-        .collect();
-    let lo: UInt64Array = keys.iter().map(|key| key.map(|key| key as u64)).collect();
-    (hi, lo)
-}
-
-fn read_key(batch: &RecordBatch, row: usize) -> Option<u128> {
-    let hi = batch.column(0).as_primitive::<UInt64Type>();
-    let lo = batch.column(1).as_primitive::<UInt64Type>();
-    (!hi.is_null(row)).then(|| (u128::from(hi.value(row)) << 64) | u128::from(lo.value(row)))
-}
-
-/// Prediction rows reduced to key, score and class identity.
-fn canonical_predictions(
-    batch: &RecordBatch,
-    spec: &EvaluateSpec,
-    kinds: &[KeyKind],
-) -> Result<RecordBatch> {
-    let keys = key_hashes(batch, &spec.prediction_keys, kinds)?;
-    let (hi, lo) = key_columns(&keys);
-    let score_name = match spec.task {
-        EvaluateTask::Binary => "True_PROB",
-        EvaluateTask::Regression => "TARGET_PRED",
-        EvaluateTask::Multiclass | EvaluateTask::Link => "SCORE",
-    };
-    let score = Float64Array::from(float_values(column(batch, score_name)?)?);
-    let class: UInt64Array = match spec.task {
-        EvaluateTask::Multiclass | EvaluateTask::Link => {
-            value_hashes(column(batch, "CLASS")?)?.into_iter().collect()
-        }
-        _ => UInt64Array::new_null(batch.num_rows()),
-    };
-    Ok(RecordBatch::try_new(
-        Arc::new(Schema::new(vec![
-            Field::new(KEY_HI, DataType::UInt64, true),
-            Field::new(KEY_LO, DataType::UInt64, true),
-            Field::new(SCORE, DataType::Float64, true),
-            Field::new(CLASS, DataType::UInt64, true),
-        ])),
-        vec![Arc::new(hi), Arc::new(lo), Arc::new(score), Arc::new(class)],
-    )?)
-}
-
-/// Label rows with their key hash in front of the original columns.
-fn canonical_labels(
-    batch: &RecordBatch,
-    spec: &EvaluateSpec,
-    kinds: &[KeyKind],
-) -> Result<RecordBatch> {
-    let keys = key_hashes(batch, &spec.label_keys, kinds)?;
-    let (hi, lo) = key_columns(&keys);
-    let mut fields = vec![
-        Arc::new(Field::new(KEY_HI, DataType::UInt64, true)),
-        Arc::new(Field::new(KEY_LO, DataType::UInt64, true)),
-    ];
-    let mut columns: Vec<ArrayRef> = vec![Arc::new(hi), Arc::new(lo)];
-    for (field, array) in batch.schema().fields().iter().zip(batch.columns()) {
-        fields.push(Arc::new(field.as_ref().clone().with_nullable(true)));
-        columns.push(array.clone());
+/// Sorted, distinct class hashes of each label.
+fn label_classes(target: &ArrayRef, link: bool, class: &DataType) -> Result<Vec<Option<Vec<u64>>>> {
+    if !link {
+        let classes = classes(target, class)?;
+        return Ok(classes.into_iter().map(|c| c.map(|c| vec![c])).collect());
     }
-    Ok(RecordBatch::try_new(
-        Arc::new(Schema::new(fields)),
-        columns,
-    )?)
-}
-
-fn partition_of(key: u128, partitions: usize) -> usize {
-    ((key >> 64) as u64 % partitions as u64) as usize
-}
-
-enum Sink {
-    Memory(Mutex<Vec<RecordBatch>>),
-    Spill(
-        Mutex<Option<Box<FileWriter<BufWriter<File>>>>>,
-        PathBuf,
-        SchemaRef,
-    ),
-}
-
-impl Sink {
-    fn push(&self, batch: RecordBatch) -> Result<()> {
-        match self {
-            Sink::Memory(batches) => batches.lock().unwrap().push(batch),
-            Sink::Spill(writer, path, schema) => {
-                let mut writer = writer.lock().unwrap();
-                if writer.is_none() {
-                    *writer = Some(Box::new(FileWriter::try_new(
-                        BufWriter::new(File::create(path)?),
-                        schema,
-                    )?));
-                }
-                writer.as_mut().unwrap().write(&batch)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn into_batches(self) -> Result<Box<dyn Iterator<Item = Result<RecordBatch>> + Send>> {
-        Ok(match self {
-            Sink::Memory(batches) => Box::new(batches.into_inner().unwrap().into_iter().map(Ok)),
-            Sink::Spill(writer, path, _) => match writer.into_inner().unwrap() {
-                None => Box::new(std::iter::empty()),
-                Some(mut writer) => {
-                    writer.finish()?;
-                    let reader = FileReader::try_new(File::open(&path)?, None)?;
-                    Box::new(reader.map(|batch| batch.map_err(Into::into)))
-                }
-            },
+    let item = Field::new_list_field(class.clone(), true);
+    let list = cast(target, &DataType::List(Arc::new(item)))?;
+    let list = list.as_list::<i32>();
+    let items = classes(list.values(), class)?;
+    let offsets = list.value_offsets();
+    Ok((0..list.len())
+        .map(|row| {
+            list.is_valid(row).then(|| {
+                let range = offsets[row] as usize..offsets[row + 1] as usize;
+                let mut row: Vec<u64> = items[range].iter().flatten().copied().collect();
+                row.sort_unstable();
+                row.dedup();
+                row
+            })
         })
+        .collect())
+}
+
+type Sink = (PathBuf, Mutex<Option<FileWriter<BufWriter<File>>>>);
+
+fn spill((path, writer): &Sink, batch: &RecordBatch) -> Result<()> {
+    let mut writer = writer.lock().unwrap();
+    if writer.is_none() {
+        let file = BufWriter::new(File::create(path)?);
+        *writer = Some(FileWriter::try_new(file, &batch.schema())?);
     }
+    Ok(writer.as_mut().unwrap().write(batch)?)
+}
+
+fn unspill((path, writer): Sink) -> Result<Batches> {
+    let Some(mut writer) = writer.into_inner().unwrap() else {
+        return Ok(Box::new(std::iter::empty()));
+    };
+    writer.finish()?;
+    let reader = FileReader::try_new(File::open(path)?, None)?;
+    Ok(Box::new(reader.map(|batch| Ok(batch?))))
 }
 
 type RowGroups = Vec<(usize, usize)>;
 
-fn work_items(paths: &[&Path]) -> Result<(RowGroups, usize, SchemaRef)> {
-    let mut work = Vec::new();
-    let mut rows = 0usize;
-    let mut schema = None;
-    for (idx, path) in paths.iter().enumerate() {
+fn row_groups(paths: &[&Path]) -> Result<(RowGroups, usize, SchemaRef)> {
+    let (mut groups, mut rows, mut schema) = (Vec::new(), 0, Arc::new(Schema::empty()));
+    for (file, path) in paths.iter().enumerate() {
         let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
-        schema.get_or_insert_with(|| builder.schema().clone());
+        schema = builder.schema().clone();
         rows += builder.metadata().file_metadata().num_rows() as usize;
-        work.extend((0..builder.metadata().num_row_groups()).map(|rg| (idx, rg)));
+        groups.extend((0..builder.metadata().num_row_groups()).map(|group| (file, group)));
     }
-    let schema = schema.unwrap_or_else(|| Arc::new(Schema::empty()));
-    Ok((work, rows, schema))
+    Ok((groups, rows, schema))
 }
 
-/// Read every row group in parallel, canonicalize, and route rows to sinks.
+/// Read `keep` columns, hash `keys`, and route rows with a key to `sinks`.
 fn scatter(
     paths: &[&Path],
-    work: &[(usize, usize)],
-    columns: &[String],
+    groups: &RowGroups,
+    (keys, types): (&[String], &[DataType]),
+    keep: &[String],
     sinks: &[Sink],
-    canonical: &(dyn Fn(&RecordBatch) -> Result<RecordBatch> + Sync),
 ) -> Result<()> {
-    work.par_iter().try_for_each(|&(idx, rg)| -> Result<()> {
-        let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(paths[idx])?)?;
-        let indices = columns
-            .iter()
-            .map(|name| {
-                builder
-                    .schema()
-                    .index_of(name)
-                    .with_context(|| format!("missing column '{name}'"))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let projection = ProjectionMask::roots(builder.parquet_schema(), indices);
-        for batch in builder
-            .with_row_groups(vec![rg])
-            .with_projection(projection)
-            .build()?
-        {
+    let columns: Vec<String> = keys.iter().chain(keep).cloned().collect();
+    groups.par_iter().try_for_each(|&(file, group)| {
+        for batch in row_group_batches(paths[file], group, &[], &columns)? {
             let batch = batch?;
-            let order = columns
+            let key_columns = keys
                 .iter()
-                .map(|name| batch.schema().index_of(name))
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            let batch = canonical(&batch.project(&order)?)?;
-            if sinks.len() == 1 {
-                sinks[0].push(batch)?;
-                continue;
-            }
-            let mut rows: Vec<Vec<u32>> = vec![Vec::new(); sinks.len()];
-            for row in 0..batch.num_rows() {
-                if let Some(key) = read_key(&batch, row) {
-                    rows[partition_of(key, sinks.len())].push(row as u32);
+                .map(|name| column(&batch, name))
+                .collect::<Result<Vec<_>>>()?;
+            let hashes = hashes(&key_columns, types)?;
+            let mut parts = vec![Vec::new(); sinks.len()];
+            for (row, key) in hashes.iter().enumerate() {
+                if let Some(key) = key {
+                    parts[((key >> 64) as u64 % sinks.len() as u64) as usize].push(row as u32);
                 }
             }
-            for (sink, rows) in sinks.iter().zip(rows) {
+            let key = hashes.into_iter().map(|key| key.map(u128::to_le_bytes));
+            let key = FixedSizeBinaryArray::try_from_sparse_iter_with_size(key, 16)?;
+            let mut out = Vec::new();
+            for name in keep {
+                out.push((name.as_str(), column(&batch, name)?.clone(), true));
+            }
+            out.push((KEY, Arc::new(key), true));
+            let batch = RecordBatch::try_from_iter_with_nullable(out)?;
+            for (sink, rows) in sinks.iter().zip(parts) {
                 if !rows.is_empty() {
-                    let indices = UInt32Array::from(rows);
-                    let columns = batch
-                        .columns()
-                        .iter()
-                        .map(|array| take(array, &indices, None))
-                        .collect::<std::result::Result<Vec<_>, _>>()?;
-                    sink.push(RecordBatch::try_new(batch.schema(), columns)?)?;
+                    spill(sink, &take_record_batch(&batch, &UInt32Array::from(rows))?)?;
                 }
             }
         }
@@ -433,26 +235,16 @@ fn scatter(
     })
 }
 
-enum Label {
-    Positive(bool),
-    Number(f64),
-    Class(u64),
-    Items(Vec<u64>),
-}
-
 #[derive(Default)]
 struct Accumulator {
     rows: u64,
     labelled: u64,
-    /// Binary: float32 order key of the score shifted left, label in bit 0.
+    /// Binary: score order key shifted left, label in bit 0.
     pairs: Vec<u64>,
-    abs_error: f64,
-    squared_error: f64,
     count: u64,
-    correct: u64,
-    /// Link: examples with labels, hits, and MAP numerators by label count.
-    examples: u64,
-    hits: f64,
+    sum: f64,
+    squares: f64,
+    /// Link: MAP numerators by label count.
     map_by_labels: BTreeMap<usize, f64>,
     k: usize,
 }
@@ -462,12 +254,9 @@ impl Accumulator {
         self.rows += other.rows;
         self.labelled += other.labelled;
         self.pairs.append(&mut other.pairs);
-        self.abs_error += other.abs_error;
-        self.squared_error += other.squared_error;
         self.count += other.count;
-        self.correct += other.correct;
-        self.examples += other.examples;
-        self.hits += other.hits;
+        self.sum += other.sum;
+        self.squares += other.squares;
         for (labels, value) in other.map_by_labels {
             *self.map_by_labels.entry(labels).or_default() += value;
         }
@@ -478,212 +267,115 @@ impl Accumulator {
 
 fn order_key(score: f64) -> u64 {
     let bits = (score as f32).to_bits();
-    let ordered = if bits & 0x8000_0000 != 0 {
+    u64::from(if bits & 0x8000_0000 != 0 {
         !bits
     } else {
         bits | 0x8000_0000
-    };
-    u64::from(ordered)
-}
-
-fn read_label(
-    batch: &RecordBatch,
-    target: &ArrayRef,
-    task: EvaluateTask,
-    row: usize,
-    hashes: &LabelValues,
-) -> Option<Label> {
-    let _ = batch;
-    if target.is_null(row) {
-        return None;
-    }
-    Some(match (task, hashes) {
-        (EvaluateTask::Binary, LabelValues::Numbers(values)) => {
-            Label::Positive(values[row]? != 0.0)
-        }
-        (EvaluateTask::Regression, LabelValues::Numbers(values)) => Label::Number(values[row]?),
-        (EvaluateTask::Multiclass, LabelValues::Classes(values)) => Label::Class(values[row]?),
-        (EvaluateTask::Link, LabelValues::Lists(list, values)) => {
-            let offsets = list.value_offsets();
-            let (start, end) = (offsets[row] as usize, offsets[row + 1] as usize);
-            let mut items: Vec<u64> = values[start..end].iter().flatten().copied().collect();
-            items.sort_unstable();
-            items.dedup();
-            Label::Items(items)
-        }
-        _ => return None,
     })
 }
 
-enum LabelValues {
-    Numbers(Vec<Option<f64>>),
-    Classes(Vec<Option<u64>>),
-    Lists(ListArray, Vec<Option<u64>>),
-}
-
-fn label_values(target: &ArrayRef, task: EvaluateTask) -> Result<LabelValues> {
-    Ok(match task {
-        EvaluateTask::Binary | EvaluateTask::Regression => {
-            LabelValues::Numbers(float_values(target)?)
-        }
-        EvaluateTask::Multiclass => LabelValues::Classes(value_hashes(target)?),
-        EvaluateTask::Link => {
-            let list = cast(
-                target,
-                &DataType::List(Arc::new(Field::new_list_field(
-                    target_item_type(target)?,
-                    true,
-                ))),
-            )?;
-            let list = list.as_list::<i32>().clone();
-            let values = value_hashes(list.values())?;
-            LabelValues::Lists(list, values)
-        }
-    })
-}
-
-fn target_item_type(target: &ArrayRef) -> Result<DataType> {
-    match target.data_type() {
-        DataType::List(field) | DataType::LargeList(field) | DataType::FixedSizeList(field, _) => {
-            Ok(field.data_type().clone())
-        }
-        other => bail!("link-prediction labels must be lists, got {other}"),
-    }
-}
-
-fn join_partition(
-    labels: Box<dyn Iterator<Item = Result<RecordBatch>> + Send>,
-    predictions: Box<dyn Iterator<Item = Result<RecordBatch>> + Send>,
+/// Score each label row against the predictions with its key; the first
+/// label of a key counts.
+fn join(
+    predictions: Batches,
+    labels: Batches,
     spec: &EvaluateSpec,
+    (score, class): (&str, &DataType),
     actuals: Option<PathBuf>,
 ) -> Result<Accumulator> {
-    let mut label_batches = Vec::new();
-    let mut by_key: KeyMap<(Label, u32, u32, bool)> = KeyMap::default();
-    for batch in labels {
-        let batch = batch?;
-        let target = column(&batch, &spec.label_target)?.clone();
-        let values = label_values(&target, spec.task)?;
-        let batch_idx = label_batches.len() as u32;
-        for row in 0..batch.num_rows() {
-            if let (Some(key), Some(label)) = (
-                read_key(&batch, row),
-                read_label(&batch, &target, spec.task, row, &values),
-            ) {
-                by_key.insert(key, (label, batch_idx, row as u32, false));
-            }
-        }
-        label_batches.push(batch);
-    }
-
-    let mut acc = Accumulator::default();
-    let mut groups: KeyMap<Vec<(f64, Option<u64>)>> = KeyMap::default();
-    let mut seen: KeyMap<()> = KeyMap::default();
+    let grouped = matches!(spec.task, EvaluateTask::Multiclass | EvaluateTask::Link);
+    let mut first = HashMap::new();
+    let mut groups: HashMap<u128, Vec<(f64, Option<u64>)>> = HashMap::new();
     for batch in predictions {
         let batch = batch?;
-        let score = batch.column(2).as_primitive::<Float64Type>();
-        let class = batch.column(3).as_primitive::<UInt64Type>();
-        for row in 0..batch.num_rows() {
-            let Some(key) = read_key(&batch, row) else {
-                continue;
-            };
-            let value = (!score.is_null(row)).then(|| score.value(row));
-            match spec.task {
-                EvaluateTask::Binary | EvaluateTask::Regression => {
-                    if seen.insert(key, ()).is_some() {
-                        continue;
-                    }
-                    acc.rows += 1;
-                    let Some(entry) = by_key.get_mut(&key) else {
-                        continue;
-                    };
-                    entry.3 = true;
-                    acc.labelled += 1;
-                    match (&entry.0, value) {
-                        (Label::Positive(positive), Some(score)) if score.is_finite() => {
-                            acc.pairs.push(order_key(score) << 1 | u64::from(*positive));
+        let scores = floats(column(&batch, score)?)?;
+        if !grouped {
+            for (key, score) in keys(&batch)?.zip(scores) {
+                first.entry(key).or_insert(score);
+            }
+            continue;
+        }
+        let classes = classes(column(&batch, "CLASS")?, class)?;
+        for ((key, score), class) in keys(&batch)?.zip(scores).zip(classes) {
+            let score = score.unwrap_or(f64::NEG_INFINITY);
+            groups.entry(key).or_default().push((score, class));
+        }
+    }
+    let mut acc = Accumulator {
+        rows: (first.len() + groups.len()) as u64,
+        k: groups.values().map(Vec::len).max().unwrap_or(0),
+        ..Default::default()
+    };
+
+    let mut writer: Option<ArrowWriter<File>> = None;
+    for batch in labels {
+        let batch = batch?;
+        let target = column(&batch, &spec.label_target)?;
+        let mut matched = vec![false; batch.num_rows()];
+        if !grouped {
+            for ((row, key), label) in keys(&batch)?.enumerate().zip(floats(target)?) {
+                let Some(label) = label else { continue };
+                let Some(score) = first.remove(&key) else {
+                    continue;
+                };
+                matched[row] = true;
+                match score {
+                    Some(score) if spec.task == EvaluateTask::Binary => {
+                        if score.is_finite() {
+                            acc.pairs
+                                .push(order_key(score) << 1 | u64::from(label != 0.0));
                         }
-                        (Label::Number(target), Some(prediction)) => {
-                            let error = prediction - target;
-                            acc.abs_error += error.abs();
-                            acc.squared_error += error * error;
-                            acc.count += 1;
-                        }
-                        _ => {}
                     }
+                    Some(prediction) => {
+                        let error = prediction - label;
+                        acc.count += 1;
+                        acc.sum += error.abs();
+                        acc.squares += error * error;
+                    }
+                    None => {}
                 }
-                EvaluateTask::Multiclass | EvaluateTask::Link => {
-                    groups.entry(key).or_default().push((
-                        value.unwrap_or(f64::NEG_INFINITY),
-                        (!class.is_null(row)).then(|| class.value(row)),
-                    ));
+            }
+        } else {
+            let link = spec.task == EvaluateTask::Link;
+            let labels = label_classes(target, link, class)?;
+            for ((row, key), items) in keys(&batch)?.enumerate().zip(labels) {
+                let Some(items) = items else { continue };
+                let Some(mut ranked) = groups.remove(&key) else {
+                    continue;
+                };
+                matched[row] = true;
+                // Highest score first; ties keep their order.
+                ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+                let hit =
+                    |class: Option<u64>| class.is_some_and(|c| items.binary_search(&c).is_ok());
+                if !link {
+                    acc.count += 1;
+                    acc.sum += f64::from(u8::from(hit(ranked[0].1)));
+                } else if !items.is_empty() {
+                    let (mut hits, mut numerator) = (0usize, 0.0);
+                    for (rank, (_, class)) in ranked.iter().enumerate() {
+                        if hit(*class) {
+                            hits += 1;
+                            numerator += hits as f64 / (rank + 1) as f64;
+                        }
+                    }
+                    acc.count += 1;
+                    acc.sum += hits as f64;
+                    *acc.map_by_labels.entry(items.len()).or_default() += numerator;
                 }
             }
         }
-    }
-    for (key, mut rows) in groups {
-        acc.rows += 1;
-        acc.k = acc.k.max(rows.len());
-        let Some(entry) = by_key.get_mut(&key) else {
+        let matched = BooleanArray::from(matched);
+        acc.labelled += matched.true_count() as u64;
+        let Some(path) = actuals.as_ref().filter(|_| matched.true_count() > 0) else {
             continue;
         };
-        entry.3 = true;
-        acc.labelled += 1;
-        // Highest score first; equal scores keep their output order.
-        rows.sort_by(|a, b| b.0.total_cmp(&a.0));
-        match &entry.0 {
-            Label::Class(target) => {
-                acc.count += 1;
-                acc.correct += u64::from(rows[0].1 == Some(*target));
-            }
-            Label::Items(items) if !items.is_empty() => {
-                acc.examples += 1;
-                let (mut hits, mut numerator) = (0usize, 0.0);
-                for (rank, (_, class)) in rows.iter().enumerate() {
-                    if class.is_some_and(|class| items.binary_search(&class).is_ok()) {
-                        hits += 1;
-                        numerator += hits as f64 / (rank + 1) as f64;
-                    }
-                }
-                acc.hits += hits as f64;
-                *acc.map_by_labels.entry(items.len()).or_default() += numerator;
-            }
-            _ => {}
-        }
-    }
-
-    if let Some(path) = actuals {
-        write_actuals(&path, &label_batches, &by_key, spec)?;
-    }
-    Ok(acc)
-}
-
-fn write_actuals(
-    path: &Path,
-    batches: &[RecordBatch],
-    by_key: &KeyMap<(Label, u32, u32, bool)>,
-    spec: &EvaluateSpec,
-) -> Result<()> {
-    let mut rows: Vec<Vec<u32>> = vec![Vec::new(); batches.len()];
-    for (_, batch, row, matched) in by_key.values() {
-        if *matched {
-            rows[*batch as usize].push(*row);
-        }
-    }
-    let mut writer: Option<ArrowWriter<File>> = None;
-    for (batch, mut rows) in batches.iter().zip(rows) {
-        if rows.is_empty() {
-            continue;
-        }
-        rows.sort_unstable();
-        let indices = UInt32Array::from(rows);
-        let mut fields = Vec::new();
-        let mut columns = Vec::new();
-        for (name, output) in &spec.actual_columns {
-            let array = column(batch, name)?;
-            fields.push(Field::new(output, array.data_type().clone(), true));
-            columns.push(take(array, &indices, None)?);
-        }
-        let out = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?;
+        let out = spec
+            .actual_columns
+            .iter()
+            .map(|(name, out)| Ok((out, filter(column(&batch, name)?, &matched)?, true)))
+            .collect::<Result<Vec<_>>>()?;
+        let out = RecordBatch::try_from_iter_with_nullable(out)?;
         if writer.is_none() {
             writer = Some(ArrowWriter::try_new(
                 File::create(path)?,
@@ -696,7 +388,7 @@ fn write_actuals(
     if let Some(writer) = writer {
         writer.close()?;
     }
-    Ok(())
+    Ok(acc)
 }
 
 /// Exact AUROC and average precision from (score, label) order keys.
@@ -732,25 +424,17 @@ fn ranking_metrics(mut pairs: Vec<u64>) -> (Option<f64>, Option<f64>) {
     (Some(area / (positives * negatives)), Some(precision_sum))
 }
 
-fn metrics(acc: Accumulator, task: EvaluateTask) -> BTreeMap<String, Option<f64>> {
-    let ratio = |num: f64, den: u64| (den > 0).then(|| num / den as f64);
-    let mut out = BTreeMap::new();
+fn metrics(acc: Accumulator, task: EvaluateTask) -> JsonValue {
+    let ratio = |num: f64| (acc.count > 0).then(|| num / acc.count as f64);
     match task {
         EvaluateTask::Binary => {
             let (auroc, ap) = ranking_metrics(acc.pairs);
-            out.insert("auroc".to_string(), auroc);
-            out.insert("ap".to_string(), ap);
+            json!({"auroc": auroc, "ap": ap})
         }
         EvaluateTask::Regression => {
-            out.insert("mae".to_string(), ratio(acc.abs_error, acc.count));
-            out.insert(
-                "rmse".to_string(),
-                ratio(acc.squared_error, acc.count).map(f64::sqrt),
-            );
+            json!({"mae": ratio(acc.sum), "rmse": ratio(acc.squares).map(f64::sqrt)})
         }
-        EvaluateTask::Multiclass => {
-            out.insert("acc".to_string(), ratio(acc.correct as f64, acc.count));
-        }
+        EvaluateTask::Multiclass => json!({"acc": ratio(acc.sum)}),
         EvaluateTask::Link => {
             let k = acc.k.max(1);
             let map: f64 = acc
@@ -758,14 +442,10 @@ fn metrics(acc: Accumulator, task: EvaluateTask) -> BTreeMap<String, Option<f64>
                 .iter()
                 .map(|(labels, numerator)| numerator / (*labels).min(k) as f64)
                 .sum();
-            out.insert(format!("map@{k}"), ratio(map, acc.examples));
-            out.insert(
-                format!("precision@{k}"),
-                ratio(acc.hits / k as f64, acc.examples),
-            );
+            let precision = ratio(acc.sum / k as f64);
+            json!({format!("map@{k}"): ratio(map), format!("precision@{k}"): precision})
         }
     }
-    out
 }
 
 /// Join `prediction_paths` with `label_paths` and compute the realized
@@ -778,154 +458,117 @@ pub fn evaluate_prediction_parquet(
     if spec.prediction_keys.is_empty() || spec.prediction_keys.len() != spec.label_keys.len() {
         bail!("prediction_keys and label_keys must pair up");
     }
-    let (prediction_work, prediction_rows, prediction_schema) = work_items(prediction_paths)?;
-    let (label_work, label_rows, label_schema) = work_items(label_paths)?;
-    let kinds: Vec<KeyKind> = spec
+    let (prediction_groups, prediction_rows, prediction_schema) = row_groups(prediction_paths)?;
+    let (label_groups, label_rows, label_schema) = row_groups(label_paths)?;
+    let types = spec
         .prediction_keys
         .iter()
         .zip(&spec.label_keys)
-        .map(|(prediction, label)| {
-            let field = |schema: &Schema, name: &str| {
-                schema
-                    .field_with_name(name)
-                    .map(|f| f.data_type().clone())
-                    .with_context(|| format!("missing column '{name}'"))
-            };
-            Ok(key_kind(
-                &field(&prediction_schema, prediction)?,
-                &field(&label_schema, label)?,
+        .map(|(p, l)| {
+            Ok(common_type(
+                prediction_schema.field_with_name(p)?.data_type(),
+                label_schema.field_with_name(l)?.data_type(),
             ))
         })
-        .collect::<Result<_>>()?;
-    let partitions = prediction_rows
-        .max(label_rows)
-        .div_ceil(spec.partition_rows.max(1))
-        .max(1);
-    if partitions > 1 {
-        std::fs::create_dir_all(&spec.spill_dir)?;
-    }
-    if let Some(dir) = &spec.actuals_dir {
-        std::fs::create_dir_all(dir)?;
-    }
-
-    let mut prediction_columns = spec.prediction_keys.clone();
-    prediction_columns.push(
-        match spec.task {
-            EvaluateTask::Binary => "True_PROB",
-            EvaluateTask::Regression => "TARGET_PRED",
-            _ => "SCORE",
-        }
-        .to_string(),
-    );
+        .collect::<Result<Vec<_>>>()?;
+    let score = match spec.task {
+        EvaluateTask::Binary => "True_PROB",
+        EvaluateTask::Regression => "TARGET_PRED",
+        EvaluateTask::Multiclass | EvaluateTask::Link => "SCORE",
+    };
+    let mut prediction_columns = vec![score.to_string()];
+    let mut class = DataType::Null;
     if matches!(spec.task, EvaluateTask::Multiclass | EvaluateTask::Link) {
         prediction_columns.push("CLASS".to_string());
+        let mut target = label_schema
+            .field_with_name(&spec.label_target)?
+            .data_type();
+        if spec.task == EvaluateTask::Link {
+            let (DataType::List(item)
+            | DataType::LargeList(item)
+            | DataType::FixedSizeList(item, _)) = target
+            else {
+                bail!("link-prediction labels must be lists, got {target}");
+            };
+            target = item.data_type();
+        }
+        class = common_type(
+            prediction_schema.field_with_name("CLASS")?.data_type(),
+            target,
+        );
     }
-    let mut label_columns = spec.label_keys.clone();
-    label_columns.push(spec.label_target.clone());
+    let mut label_columns = vec![spec.label_target.clone()];
     label_columns.extend(spec.actual_columns.iter().map(|(name, _)| name.clone()));
     label_columns.sort();
     label_columns.dedup();
 
-    let sinks = |side: &str, schema: SchemaRef| -> Vec<Sink> {
+    let partitions = prediction_rows
+        .max(label_rows)
+        .div_ceil(spec.partition_rows.max(1))
+        .max(1);
+    std::fs::create_dir_all(&spec.spill_dir)?;
+    if let Some(dir) = &spec.actuals_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    let sinks = |side: &str| -> Vec<Sink> {
         (0..partitions)
             .map(|p| {
-                if partitions == 1 {
-                    Sink::Memory(Mutex::new(Vec::new()))
-                } else {
-                    Sink::Spill(
-                        Mutex::new(None),
-                        spec.spill_dir.join(format!("{side}-{p:05}.arrow")),
-                        schema.clone(),
-                    )
-                }
+                (
+                    spec.spill_dir.join(format!("{side}-{p:05}.arrow")),
+                    Mutex::default(),
+                )
             })
             .collect()
     };
-    let canonical_prediction_schema = canonical_predictions(
-        &RecordBatch::new_empty(project(&prediction_schema, &prediction_columns)?),
-        spec,
-        &kinds,
-    )?
-    .schema();
-    let prediction_sinks = sinks("predictions", canonical_prediction_schema);
+    let (predictions, labels) = (sinks("predictions"), sinks("labels"));
+    let prediction_keys = (spec.prediction_keys.as_slice(), types.as_slice());
     scatter(
         prediction_paths,
-        &prediction_work,
+        &prediction_groups,
+        prediction_keys,
         &prediction_columns,
-        &prediction_sinks,
-        &|batch| canonical_predictions(batch, spec, &kinds),
+        &predictions,
     )?;
-    let canonical_label_schema = canonical_labels(
-        &RecordBatch::new_empty(project(&label_schema, &label_columns)?),
-        spec,
-        &kinds,
-    )?
-    .schema();
-    let label_sinks = sinks("labels", canonical_label_schema);
+    let label_keys = (spec.label_keys.as_slice(), types.as_slice());
     scatter(
         label_paths,
-        &label_work,
+        &label_groups,
+        label_keys,
         &label_columns,
-        &label_sinks,
-        &|batch| canonical_labels(batch, spec, &kinds),
+        &labels,
     )?;
 
-    let jobs: Vec<(usize, Sink, Sink)> = prediction_sinks
-        .into_iter()
-        .zip(label_sinks)
-        .enumerate()
-        .map(|(p, (prediction, label))| (p, prediction, label))
-        .collect();
-    let mut acc = Accumulator::default();
-    let mut jobs = jobs.into_iter();
-    loop {
-        let wave: Vec<_> = jobs.by_ref().take(MAX_CONCURRENT_JOINS).collect();
-        if wave.is_empty() {
-            break;
-        }
-        let partial = wave
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(MAX_CONCURRENT_JOINS)
+        .build()?;
+    let acc = pool.install(|| {
+        predictions
             .into_par_iter()
-            .map(|(p, prediction, label)| {
-                let actuals = spec
-                    .actuals_dir
-                    .as_ref()
-                    .map(|dir| dir.join(format!("part-{p:05}.parquet")));
-                join_partition(
-                    label.into_batches()?,
-                    prediction.into_batches()?,
+            .zip(labels)
+            .enumerate()
+            .map(|(p, (predictions, labels))| {
+                let actuals =
+                    (spec.actuals_dir.as_ref()).map(|dir| dir.join(format!("part-{p:05}.parquet")));
+                join(
+                    unspill(predictions)?,
+                    unspill(labels)?,
                     spec,
+                    (score, &class),
                     actuals,
                 )
             })
-            .try_reduce(Accumulator::default, |a, b| Ok(a.merge(b)))?;
-        acc = acc.merge(partial);
-    }
-    if partitions > 1 {
-        let _ = std::fs::remove_dir_all(&spec.spill_dir);
-    }
+            .try_reduce(Accumulator::default, |a, b| Ok(a.merge(b)))
+    })?;
+    let _ = std::fs::remove_dir_all(&spec.spill_dir);
     let (rows, labelled) = (acc.rows, acc.labelled);
     Ok(json!({"rows": rows, "labelled": labelled, "metrics": metrics(acc, spec.task)}))
-}
-
-fn project(schema: &Schema, names: &[String]) -> Result<SchemaRef> {
-    Ok(Arc::new(Schema::new(
-        names
-            .iter()
-            .map(|name| {
-                schema
-                    .field_with_name(name)
-                    .cloned()
-                    .with_context(|| format!("missing column '{name}'"))
-            })
-            .collect::<Result<Vec<_>>>()?,
-    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use arrow::array::{
-        BooleanArray, Int64Array, Int64Builder, ListBuilder, StringArray,
+        BooleanArray, Float64Array, Int64Array, Int64Builder, ListBuilder, StringArray,
         TimestampMicrosecondArray, TimestampNanosecondArray,
     };
     use parquet::file::properties::WriterProperties;
