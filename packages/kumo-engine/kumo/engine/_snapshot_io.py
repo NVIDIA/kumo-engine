@@ -7,12 +7,10 @@ import json
 import logging
 import os
 import re
-import shutil
 import threading
 import time
 import warnings
-import zlib
-from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -21,10 +19,10 @@ from pyarrow.fs import FileSelector, FileSystem, FileType
 
 _FORMAT = 1
 _MANIFEST = 'kumo_snapshot.json'
-_EXPORTING = '_EXPORTING'
+_INDEX_MANIFEST = '_MANIFEST.json'
+_SUCCESS = '_SUCCESS'
 _RANGE_BYTES = 64 << 20
 _CHUNK = 8 << 20
-_INDEX_MANIFEST = '_MANIFEST.json'
 _ATTEMPTS = 3
 _KEY = re.compile('[0-9a-f]{64}')
 _PROGRESS_SECONDS = 30
@@ -46,10 +44,18 @@ def _location(connector: Any, path: str) -> Tuple[FileSystem, str]:
     return sink.filesystem(connector, path, parallel_uploads=True)
 
 
+def _files(filesystem: FileSystem) -> Any:
+    from kumo_core.object_store_sink import _ArrowExportFiles
+
+    return _ArrowExportFiles(filesystem, None)
+
+
 def _check_key(graph_key: Any, data_version: Any, snapshot_id: Any) -> None:
+    from kumo.engine.graph import _snapshot_id
+
     if not (isinstance(graph_key, str) and isinstance(data_version, str)
             and _KEY.fullmatch(graph_key) and _KEY.fullmatch(data_version)
-            and snapshot_id == f'{graph_key}@{data_version[:16]}'):
+            and snapshot_id == _snapshot_id(graph_key, data_version)):
         raise ValueError(f'{snapshot_id!r} is not a snapshot id.')
 
 
@@ -65,42 +71,50 @@ class _Client:
                 self.current = self._make()
 
 
-def _parallel(connector: Any, path: str, items: Sequence[Any],
+class _Progress:
+    def __init__(self, action: str, path: str, total: int) -> None:
+        self.action, self.path, self.total = action, path, total
+        self.moved = 0
+        self.started = self.logged = time.monotonic()
+        self._lock = threading.Lock()
+
+    def add(self, size: int) -> None:
+        with self._lock:
+            self.moved += size
+            now = time.monotonic()
+            if (now - self.logged < _PROGRESS_SECONDS
+                    and self.moved < self.total):
+                return
+            self.logged = now
+        logger.info('Snapshot %s of %s: %d of %d bytes, %.2f GB/s',
+                    self.action, self.path, self.moved, self.total,
+                    self.moved / max(now - self.started, 1e-9) / 1e9)
+
+
+def _transfer(connector: Any, path: str, items: Sequence[Any],
               sizes: Sequence[int], work: Callable[..., Any],
               action: str) -> List[Any]:
     from kumo_core.sources.object_store import copies
+    from kumo_core.sources.parallel import run_in_parallel
 
+    if not items:
+        return []
     stop = threading.Event()
-    total = sum(sizes)
-    with copies(items) as workers, ThreadPoolExecutor(workers) as pool:
+    with copies(items) as workers:
         # After `copies`: Arrow's IO pool size sets the connection pool.
         client = _Client(connector, path)
         logger.info('Snapshot %s of %s: %d files, %d bytes, %d workers',
-                    action, path, len(items), total, workers)
-        started = time.monotonic()
-        futures = {
-            pool.submit(_retried, client, work, item, stop): size
-            for item, size in zip(items, sizes)
-        }
-        try:
-            pending, moved = set(futures), 0
-            while pending:
-                done, pending = wait(pending, timeout=_PROGRESS_SECONDS,
-                                     return_when=FIRST_EXCEPTION)
-                for future in done:
-                    if future.exception() is not None:
-                        raise future.exception()
-                    moved += futures[future]
-                elapsed = time.monotonic() - started
-                logger.info('Snapshot %s of %s: %d of %d bytes, %.2f GB/s',
-                            action, path, moved, total,
-                            moved / max(elapsed, 1e-9) / 1e9)
-            return [future.result() for future in futures]
-        except BaseException:
-            stop.set()
-            for future in futures:
-                future.cancel()
-            raise
+                    action, path, len(items), sum(sizes), workers)
+        progress = _Progress(action, path, sum(sizes))
+
+        def run(item: Any, size: int) -> Any:
+            result = _retried(client, work, item, stop)
+            progress.add(size)
+            return result
+
+        return run_in_parallel(
+            [partial(run, item, size) for item, size in zip(items, sizes)],
+            workers=workers, stop=stop)
 
 
 def _retried(client: _Client, work: Callable[..., Any], item: Any,
@@ -130,59 +144,45 @@ def _stopped(stop: threading.Event) -> None:
         raise WorkCancelled('abandoned after another transfer failed')
 
 
-def _stream(source: Path, size: int, stop: threading.Event,
-            write: Optional[Callable[[bytes], Any]] = None) -> List[int]:
-    crcs: List[int] = []
-    with open(source, 'rb', buffering=0) as reader:
-        for offset in range(0, size, _CHUNK):
-            _stopped(stop)
-            chunk = reader.read(min(_CHUNK, size - offset))
-            if len(chunk) != min(_CHUNK, size - offset):
-                raise OSError(f'{source} changed while it was exported')
-            if offset % _RANGE_BYTES == 0:
-                crcs.append(0)
-            crcs[-1] = zlib.crc32(chunk, crcs[-1])
-            if write is not None:
-                write(chunk)
-    return crcs or [0]
-
-
-def _read_json(filesystem: FileSystem, path: str) -> Optional[dict]:
+def _read_json(filesystem: FileSystem, path: str) -> Optional[Any]:
     try:
-        with filesystem.open_input_stream(path) as reader:
-            return json.loads(reader.readall())
+        return json.loads(_files(filesystem).read_text(path))
     except FileNotFoundError:
         return None
 
 
 def _open_output(filesystem: FileSystem, path: str) -> Any:
-    if filesystem.type_name not in ('s3', 'gcs'):
-        filesystem.create_dir(path.rsplit('/', 1)[0], recursive=True)
+    _files(filesystem).makedirs(path.rsplit('/', 1)[0])
     return filesystem.open_output_stream(path)
 
 
-def _write_json(filesystem: FileSystem, path: str, value: dict) -> None:
+def _write(filesystem: FileSystem, path: str, payload: bytes) -> None:
     with _open_output(filesystem, path) as writer:
-        writer.write(json.dumps(value).encode())
+        writer.write(payload)
+
+
+def _fingerprint(index_manifest: bytes) -> str:
+    return hashlib.sha256(index_manifest).hexdigest()
 
 
 def export(snapshot: Any, connector: Any, path: str) -> str:
+    from diskgraph import snapshot_range_checksums
+
     from kumo.engine._provenance import environment
 
     source = Path(snapshot.index_path)
-    graph_key, data_version = source.parent.name, source.name
+    graph_key, data_version = snapshot.graph_key, snapshot.data_version
     _check_key(graph_key, data_version, snapshot.id)
     location = f"{path.rstrip('/')}/{graph_key}/{data_version[:16]}"
     index_manifest = (source / _INDEX_MANIFEST).read_bytes()
-    files = sorted([(entry['rel_path'], int(entry['size_bytes']))
-                    for entry in json.loads(index_manifest)['files']] +
-                   [(_INDEX_MANIFEST, len(index_manifest))],
-                   key=lambda file: -file[1])
-    fingerprint = hashlib.sha256(index_manifest).hexdigest()
-    identity = {'snapshot_id': snapshot.id, 'index_manifest': fingerprint}
+    sizes = {
+        entry['rel_path']: int(entry['size_bytes'])
+        for entry in json.loads(index_manifest)['files']
+    }
+    fingerprint = _fingerprint(index_manifest)
     filesystem, root = _location(connector, location)
 
-    def committed() -> Optional[dict]:
+    def recorded() -> Optional[dict]:
         existing = _read_json(filesystem, f'{root}/{_MANIFEST}')
         found = (existing.get('snapshot_id')
                  if isinstance(existing, dict) else None)
@@ -191,12 +191,11 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
                              f'{snapshot.id!r}; remove it and re-export.')
         return existing
 
-    def finished() -> bool:
-        existing = committed()
-        if existing and existing.get('index_manifest') != fingerprint:
-            raise RuntimeError(f'Another build of {snapshot.id} was exported '
-                               f'to {location} meanwhile; re-export.')
-        return existing is not None
+    def build() -> Optional[str]:
+        return (recorded() or {}).get('index_manifest')
+
+    def committed() -> bool:
+        return _files(filesystem).exists(f'{root}/index/{_SUCCESS}')
 
     def present() -> Dict[str, int]:
         return {
@@ -207,67 +206,72 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
             if info.type is FileType.File
         }
 
-    def upload(client: FileSystem, file: Tuple[str, int],
-               stop: threading.Event) -> List[int]:
-        name, size = file
-        if uploaded.get(name) == size:
-            return _stream(source / name, size, stop)
-        with _open_output(client, f'{root}/index/{name}') as writer:
-            return _stream(source / name, size, stop, writer.write)
+    def upload(client: FileSystem, name: str, stop: threading.Event) -> None:
+        size = len(index_manifest) if name == _INDEX_MANIFEST else sizes[name]
+        with open(source / name, 'rb', buffering=0) as reader, _open_output(
+                client, f'{root}/index/{name}') as writer:
+            for offset in range(0, size, _CHUNK):
+                _stopped(stop)
+                chunk = reader.read(min(_CHUNK, size - offset))
+                if len(chunk) != min(_CHUNK, size - offset):
+                    raise OSError(f'{source / name} changed while it was '
+                                  'exported')
+                writer.write(chunk)
 
-    existing = committed()
-    if existing is not None and existing.get('index_manifest') != fingerprint:
-        logger.info('Keeping the existing export of %s at %s', snapshot.id,
-                    location)
-        return location
-    if existing is not None:
+    def send(names: List[str], action: str) -> None:
+        names.sort(key=lambda name: -sizes.get(name, 0))
+        _transfer(connector, location, names,
+                  [sizes.get(name, len(index_manifest)) for name in names],
+                  upload, action)
+
+    if committed():
+        if build() != fingerprint:
+            logger.info('Keeping the existing export of %s at %s',
+                        snapshot.id, location)
+            return location
         uploaded = present()
-        stale = [file for file in files if uploaded.get(file[0]) != file[1]]
-        if stale:
-            _parallel(connector, location, stale,
-                      [size for _, size in stale], upload, 'repair')
+        send([
+            name for name, size in {
+                **sizes, _INDEX_MANIFEST: len(index_manifest)
+            }.items() if uploaded.get(name) != size
+        ], 'repair')
         return location
-    marker = _read_json(filesystem, f'{root}/{_EXPORTING}')
-    if not isinstance(marker, (dict, type(None))):
-        marker = {}
-    if marker is None and filesystem.get_file_info(
+    existing = recorded()
+    if existing is None and filesystem.get_file_info(
             FileSelector(root, allow_not_found=True)):
         raise ValueError(f'{location} is not empty; remove it and re-export.')
-    if marker is not None and marker.get('snapshot_id') != snapshot.id:
-        raise ValueError(f'{location} holds a partial export of another '
-                         'snapshot; remove it and re-export.')
-    resume = (marker or {}).get('index_manifest') == fingerprint
-    _write_json(filesystem, f'{root}/{_EXPORTING}', identity)
-    uploaded = present() if resume else {}
-    crcs = _parallel(connector, location, files, [size for _, size in files],
-                     upload, 'export')
+    resume = (existing or {}).get('index_manifest') == fingerprint
+    recorded_snapshot = snapshot.manifest
+    metadata = {
+        'format': _FORMAT,
+        'snapshot_id': snapshot.id,
+        'graph_key': graph_key,
+        'data_version': data_version,
+        'index_manifest': fingerprint,
+        'graph_config': snapshot.graph_config,
+        'snapshot': None if recorded_snapshot is None else
+        {k: v
+         for k, v in recorded_snapshot.items() if k != 'loaded'},
+        'environment': environment(),
+        'range_bytes': _RANGE_BYTES,
+    }
+    _write(filesystem, f'{root}/{_MANIFEST}', json.dumps(metadata).encode())
+    with ThreadPoolExecutor(1) as pool:
+        checksums = pool.submit(snapshot_range_checksums, str(source),
+                                _RANGE_BYTES)
+        uploaded = present() if resume else {}
+        send([
+            name for name, size in sizes.items() if uploaded.get(name) != size
+        ], 'export')
+        metadata['crc32'] = checksums.result()
     filesystem, root = _location(connector, location)
-    if finished():
-        return location
-    if (_read_json(filesystem, f'{root}/{_EXPORTING}') != identity
-            and not finished()):
-        raise RuntimeError(f'Another export to {location} started '
-                           'meanwhile; re-export.')
-    recorded = snapshot.manifest
-    _write_json(
-        filesystem, f'{root}/{_MANIFEST}', {
-            'format': _FORMAT,
-            'snapshot_id': snapshot.id,
-            'graph_key': graph_key,
-            'data_version': data_version,
-            'index_manifest': fingerprint,
-            'graph_config': snapshot.graph_config,
-            'snapshot': None if recorded is None else
-            {k: v for k, v in recorded.items() if k != 'loaded'},
-            'environment': environment(),
-            'range_bytes': _RANGE_BYTES,
-            'files': [{'path': name, 'size': size, 'crc32': file_crcs}
-                      for (name, size), file_crcs in zip(files, crcs)],
-        })
-    try:
-        filesystem.delete_file(f'{root}/{_EXPORTING}')
-    except FileNotFoundError:
-        pass
+    if build() != fingerprint:
+        raise RuntimeError(f'Another build of {snapshot.id} was exported to '
+                           f'{location} meanwhile; re-export.')
+    if not committed():
+        _write(filesystem, f'{root}/{_MANIFEST}', json.dumps(metadata).encode())
+        _write(filesystem, f'{root}/index/{_INDEX_MANIFEST}', index_manifest)
+        _write(filesystem, f'{root}/index/{_SUCCESS}', fingerprint.encode())
     return location
 
 
@@ -279,9 +283,10 @@ def _corrupt(path: str, detail: str) -> ValueError:
 def read(connector: Any, path: str) -> Tuple[str, dict]:
     filesystem, root = _location(connector, path)
     manifest = _read_json(filesystem, f'{root}/{_MANIFEST}')
-    if manifest is None:
-        raise FileNotFoundError(f'No complete snapshot export at {path} '
-                                f'({_MANIFEST} is missing); re-run export.')
+    if manifest is None or not _files(filesystem).exists(
+            f'{root}/index/{_SUCCESS}'):
+        raise FileNotFoundError(f'No complete snapshot export at {path}; '
+                                're-run export.')
     if not isinstance(manifest, dict):
         raise _corrupt(path, 'manifest is not a JSON object')
     if manifest.get('format') != _FORMAT:
@@ -291,31 +296,18 @@ def read(connector: Any, path: str) -> Tuple[str, dict]:
             UserWarning, stacklevel=3)
     _check_key(manifest.get('graph_key'), manifest.get('data_version'),
                manifest.get('snapshot_id'))
-    span, files = manifest.get('range_bytes'), manifest.get('files')
-    if (type(span) is not int or span <= 0 or not isinstance(files, list)
+    span, crcs = manifest.get('range_bytes'), manifest.get('crc32')
+    if (type(span) is not int or span <= 0 or not isinstance(crcs, dict)
+            or not isinstance(manifest.get('index_manifest'), str)
             or not isinstance(manifest.get('graph_config'), dict)
             or not isinstance(manifest.get('snapshot'), (dict, type(None)))):
         raise _corrupt(path, 'malformed manifest')
-    seen = set()
-    for entry in files:
-        name, size, crcs = ((entry.get('path'), entry.get('size'),
-                             entry.get('crc32'))
-                            if isinstance(entry, dict) else (None, None, None))
-        if (not isinstance(name, str) or name.startswith('/') or '\\' in name
-                or any(part in ('', '.', '..') for part in name.split('/'))
-                or name in seen or type(size) is not int or size < 0
-                or not isinstance(crcs, list)
-                or any(type(crc) is not int for crc in crcs)
-                or len(crcs) != max(-(-size // span), 1)):
-            raise _corrupt(path, f'bad file entry {name!r}')
-        seen.add(name)
     return root, manifest
 
 
 def _download(root: str, staging: Path, client: FileSystem,
-              item: Tuple[str, int, int, int], stop: threading.Event) -> None:
-    name, offset, length, expected = item
-    crc = 0
+              item: Tuple[str, int, int], stop: threading.Event) -> None:
+    name, offset, length = item
     # Each open is a HEAD: pyarrow cannot open a file from a known size.
     with client.open_input_file(f'{root}/index/{name}') as reader:
         fd = os.open(staging / name, os.O_WRONLY)
@@ -326,60 +318,96 @@ def _download(root: str, staging: Path, client: FileSystem,
                 chunk = reader.read_at(want, start)
                 if len(chunk) != want:
                     raise ValueError(f'{name} is truncated')
-                crc = zlib.crc32(chunk, crc)
                 os.pwrite(fd, chunk, start)
             getattr(os, 'fdatasync', os.fsync)(fd)
         finally:
             os.close(fd)
-    if crc != expected:
-        raise ValueError(f'{name} failed its checksum at offset {offset}')
+
+
+def _index_files(path: str, root: str, manifest: dict,
+                 connector: Any) -> Tuple[bytes, List[Tuple[str, int]]]:
+    from kumo_core.sources.layout import confined
+
+    filesystem, _ = _location(connector, path)
+    with filesystem.open_input_stream(
+            f'{root}/index/{_INDEX_MANIFEST}') as reader:
+        index_manifest = reader.readall()
+    if _fingerprint(index_manifest) != manifest['index_manifest']:
+        raise _corrupt(path, f'{_INDEX_MANIFEST} is not the exported one')
+    try:
+        files = [(confined(entry['rel_path']), int(entry['size_bytes']))
+                 for entry in json.loads(index_manifest)['files']]
+    except Exception as error:
+        raise _corrupt(path, f'bad {_INDEX_MANIFEST}: {error}') from error
+    if len({name for name, _ in files}) != len(files):
+        raise _corrupt(path, f'{_INDEX_MANIFEST} lists a file twice')
+    return index_manifest, files
 
 
 def load_into(connector: Any, path: str, root: str, manifest: dict,
               target: Path) -> None:
-    from diskgraph import format_versions, verify_snapshot_integrity
+    from diskgraph import (
+        DiskgraphCorruptionError,
+        format_versions,
+        snapshot_range_checksums,
+        verify_snapshot_integrity,
+    )
+    from kumo_core.artifacts import FilesystemArtifactStore
     from kumo_core.diskgraph.snapshot import (
         DiskgraphIngestResult,
         write_diskgraph_success_marker,
     )
+    from kumo_core.sources.transfer import discard_destination
 
     from kumo.engine._manifest import write_manifest
     from kumo.engine._provenance import environment
     from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
 
     span = manifest['range_bytes']
-    files = [(entry['path'], entry['size'], entry['crc32'])
-             for entry in manifest['files']]
+    index_manifest, files = _index_files(path, root, manifest, connector)
     staging = target.with_name(f'{target.name}.loading')
-    shutil.rmtree(staging, ignore_errors=True)
+    discard_destination(str(target))
+    discard_destination(str(staging))
     try:
         staging.mkdir(parents=True)
-        # Any old target stays until the rename.
-        needed = sum(size for _, size, _ in files)
+        needed = sum(size for _, size in files)
         disk = os.statvfs(staging)
         if disk.f_bavail * disk.f_frsize < needed:
             raise OSError(f'Loading this snapshot needs {needed} free bytes '
                           f'in {staging}.')
-        for name, size, _ in files:
+        for name, size in files:
             (staging / name).parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(staging / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
             try:
-                os.ftruncate(fd, size)
+                if size:
+                    os.posix_fallocate(fd, 0, size)
             finally:
                 os.close(fd)
-        ranges = sorted(
-            ((name, offset, min(span, size - offset), crcs[index])
-             for name, size, crcs in files
-             for index, offset in enumerate(range(0, size, span))),
-            key=lambda item: -item[2])
+        ranges = sorted(((name, offset, min(span, size - offset))
+                         for name, size in files
+                         for offset in range(0, size, span)),
+                        key=lambda item: -item[2])
         try:
-            _parallel(connector, path, ranges, [item[2] for item in ranges],
+            _transfer(connector, path, ranges, [item[2] for item in ranges],
                       partial(_download, root, staging), 'load')
         except ValueError as error:
             raise _corrupt(path, str(error)) from error
+        (staging / _INDEX_MANIFEST).write_bytes(index_manifest)
         write_diskgraph_success_marker(str(staging),
                                        DiskgraphIngestResult.for_index(target))
-        verify_snapshot_integrity(str(staging))
+        try:
+            verify_snapshot_integrity(str(staging))
+            loaded = snapshot_range_checksums(str(staging), span)
+        except DiskgraphCorruptionError as error:
+            raise _corrupt(path, str(error)) from error
+        for name, crcs in sorted(loaded.items()):
+            expected = manifest['crc32'].get(name)
+            if crcs != expected:
+                offset = next((index * span for index, crc in enumerate(crcs)
+                               if not expected or index >= len(expected)
+                               or crc != expected[index]), 0)
+                raise _corrupt(
+                    path, f'{name} failed its checksum at offset {offset}')
         _check_readable(staging, manifest)
         if manifest.get('snapshot') is not None:
             write_manifest(
@@ -390,13 +418,12 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
                     }
                 })
         for directory in sorted({(staging / name).parent
-                                 for name, _, _ in files} | {staging}):
-            _fsync(directory)
-        shutil.rmtree(target, ignore_errors=True)
+                                 for name, _ in files} | {staging}):
+            FilesystemArtifactStore._fsync_directory(directory)
         os.rename(staging, target)
-        _fsync(target.parent)
+        FilesystemArtifactStore._fsync_directory(target.parent)
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        discard_destination(str(staging))
         raise
 
 
@@ -411,11 +438,3 @@ def _check_readable(index: Path, manifest: dict) -> None:
             f'This DiskGraph cannot open the snapshot: built with formats '
             f'{built}, installed are {format_versions()}. Rebuild it with '
             'this kumo-engine or load it with the exporting one.') from error
-
-
-def _fsync(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)

@@ -60,10 +60,10 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 """
 
 import json
-import os
+import threading
 import warnings
 from dataclasses import dataclass, field, replace
-from functools import cached_property
+from functools import cached_property, partial
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence
 
@@ -80,7 +80,7 @@ from kumo.engine._manifest import (
     stamp,
     write_manifest,
 )
-from kumo.engine._provenance import source_location, source_table
+from kumo.engine._provenance import source_table
 from kumo.engine._scratch import (
     fingerprint,
     get_scratch_dir,
@@ -223,26 +223,31 @@ def _lock(graph_key: str) -> Any:
     return FileLock(f'{persist_dir}.lock')
 
 
-def _loaded(path: str) -> Optional[Any]:
-    from diskgraph import DiskgraphCorruptionError, verify_snapshot_integrity
-    from kumo_core.diskgraph.snapshot import check_diskgraph_output
+def _loaded(store: Any, handle: Any) -> Optional[Any]:
+    from diskgraph import DiskgraphCorruptionError, read_success_marker
+    from kumo_core.diskgraph.snapshot import rebased
 
-    marker = check_diskgraph_output(path)
-    if marker is None or (os.path.realpath(marker.index_path)
-                          != os.path.realpath(path)):
+    path = store.path(handle)
+    if read_success_marker(path) is None:
         return None
     try:
-        verify_snapshot_integrity(path)
-    except DiskgraphCorruptionError as error:
+        store.verify(handle)
+        return rebased(store, handle)
+    except (DiskgraphCorruptionError, ValueError) as error:
         warnings.warn(f"Reloading the damaged graph index at {path}: {error}",
                       UserWarning, stacklevel=3)
         return None
-    return marker
+
+
+def _snapshot_id(graph_key: str, data_version: str) -> str:
+    return f'{graph_key}@{data_version[:16]}'
 
 
 def _comparable(stamp: Any) -> bool:
-    # Views and unversioned sources are stamped on the hour; -1 is undated.
-    return (isinstance(stamp, str) and stamp != '-1'
+    from kumo_core.sources.object_store import UNDATED_VERSION
+
+    # Views and unversioned sources are stamped on the hour.
+    return (isinstance(stamp, str) and stamp != UNDATED_VERSION
             and not (stamp.isdigit() and int(stamp) % 3600 == 0))
 
 
@@ -255,14 +260,13 @@ def _source_change(table: Table, recorded: Any) -> Dict[str, Any]:
         source = table.definition.source_table
         if not isinstance(source, CustomSQLSourceTable):
             connector = table.connector
-            kind = connector.source_type
-            same_source = (recorded.get('connector'),
-                           recorded.get('location')) == (
-                               str(getattr(kind, 'value', kind)),
-                               source_location(connector, table.table_name))
             stamp = connector.source_backend.get_data_version(
                 connector, table.table_name)
-            current = None if stamp is None else str(stamp)
+            now = source_table(connector, table.table_name, None, stamp)
+            current = now['version']
+            same_source = (recorded.get('connector'),
+                           recorded.get('location')) == (now['connector'],
+                                                         now['location'])
     except Exception:
         current = None
     if not (same_source and _comparable(before) and _comparable(current)):
@@ -307,6 +311,17 @@ class GraphSnapshot:
     graph_config: Dict[str, Any]
     record_sources: bool | None = field(default=None, compare=False)
 
+    @property
+    def graph_key(self) -> str:
+        """The `Graph.id` this snapshot was built from."""
+        return Path(self.index_path).parent.name
+
+    @property
+    def data_version(self) -> str:
+        """The full fingerprint of the source versions the index was built
+        from; `id` carries its first 16 characters."""
+        return Path(self.index_path).name
+
     def export(self, connector: Connector, path: str) -> str:
         r"""Copy the index to `<path>/<graph id>/<data version[:16]>` and
         return that location; re-running resumes.
@@ -338,15 +353,15 @@ class GraphSnapshot:
         if graph is not None and graph.id != graph_key:
             warnings.warn(f"Snapshot at {path} was taken of another graph.",
                           UserWarning, stacklevel=2)
-        target = _store().path(
-            DiskgraphSnapshotHandle(
-                graph_key=graph_key,
-                graph_data_version=manifest['data_version']))
+        store = _store()
+        handle = DiskgraphSnapshotHandle(
+            graph_key=graph_key, graph_data_version=manifest['data_version'])
         with _lock(graph_key):
-            result = _loaded(target)
+            result = _loaded(store, handle)
             if result is None:
-                load_into(connector, path, root, manifest, Path(target))
-                result = _loaded(target)
+                load_into(connector, path, root, manifest,
+                          Path(store.path(handle)))
+                result = _loaded(store, handle)
         snapshot = cls(id=manifest['snapshot_id'],
                        index_path=Path(result.index_path),
                        graph_config=manifest['graph_config'])
@@ -372,10 +387,15 @@ class GraphSnapshot:
                         dict(manifest['parents']['source_tables']))
         except Exception:
             recorded = {}
-        return {
-            alias: _source_change(table, recorded.get(alias))
-            for alias, table in graph._named_tables.items()
-        }
+        from kumo_core.sources.parallel import run_in_parallel
+
+        tables = graph._named_tables
+        changes = run_in_parallel(
+            [
+                partial(_source_change, table, recorded.get(alias))
+                for alias, table in tables.items()
+            ], workers=max(1, min(len(tables), 16)), stop=threading.Event())
+        return dict(zip(tables, changes))
 
     @property
     def manifest(self) -> SnapshotManifest | None:
@@ -713,7 +733,7 @@ class Graph:
                     ),
                 )
 
-            snapshot_id = f'{graph_key}@{data_version[:16]}'
+            snapshot_id = _snapshot_id(graph_key, data_version)
             _write_snapshot_manifest(result, snapshot_id, source_tables,
                                      record_sources, fresh=existing is None)
 
