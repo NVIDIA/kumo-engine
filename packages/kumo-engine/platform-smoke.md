@@ -36,9 +36,16 @@ first manual runner executions must validate their installation and runtime.
 
 In GitHub Actions, select **Kumo Engine - Platform smoke**, choose **Run
 workflow**, and select the branch containing this workflow. All three jobs run
-independently. No push or pull-request triggers are enabled. Each dispatch
-tests its selected revision. The workflow builds on native portability commit
+independently. Each dispatch tests its selected revision. The workflow builds
+on native portability commit
 `e4b423c1aeff1a83564e1a26e58de6939cb01003`.
+
+Before the workflow is registered, PR 76 has a temporary push trigger scoped
+only to its trusted `pull-request/76` copy. A maintainer admits the exact PR
+head with `/ok to test <full-head-SHA>`; copy-pr-bot's push starts all three
+jobs without changing `main`. Remove this temporary trigger before merge so
+the delivered workflow remains manual-only. Ordinary fork pushes and
+`pull_request` events do not start these jobs.
 
 | Environment | Runner group | Runner label |
 | --- | --- | --- |
