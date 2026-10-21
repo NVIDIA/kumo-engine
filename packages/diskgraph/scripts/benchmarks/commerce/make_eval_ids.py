@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Shared evaluation ID files for a rung. The 50B rung ships them in <rung>/_eval/; smaller rungs need this.
 
     python make_eval_ids.py --root <rung dir or s3:// prefix> --out <rung dir>/_eval \

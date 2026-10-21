@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Markdown table from results-<rung>.json: seeds/s (time to first batch), warm and cold, per hop count."""
 import json
 import sys

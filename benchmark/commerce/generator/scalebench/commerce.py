@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Graph 1: commerce marketplace (link prediction).
 
 Hidden state (never written to the tables, only to _ground_truth):

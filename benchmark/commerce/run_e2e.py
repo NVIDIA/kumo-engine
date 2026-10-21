@@ -1,7 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """End-to-end Kumo Engine benchmark for one scale-bench rung.
 
-    <kumo venv>/bin/python kumo/run_e2e.py --graph fraud --data <dir or s3://.../fraud/1B> \
-        --scratch <local NVMe dir> --out runs/fraud-1B [--monitor] \
+    <kumo venv>/bin/python kumo/run_e2e.py --graph commerce --data <dir or s3://.../commerce/1B> \
+        --scratch <local NVMe dir> --out runs/commerce-1B [--monitor] \
         [--stages snapshot,tt,fit,pt,predict] [--epochs 1 --max-steps 1000] \
         [--hops 2 --fanout 16,8] [--predict-limit 2000000]
 
@@ -29,6 +32,22 @@ DATA_ROOT = None
 STAGES = ["snapshot", "tt", "fit", "pt", "predict"]
 NEEDS = {"tt": ["snapshot"], "fit": ["snapshot", "tt"], "pt": ["snapshot"],
          "predict": ["snapshot", "tt", "fit", "pt"]}
+
+
+def score_with_loader_workers(score_worker, loader_workers, **kwargs):
+    """Apply the benchmark loader count inside a spawned prediction scorer."""
+    import kumo_core.train.diskgraph_nested_trainer as dnt
+    original = dnt._ttng_diskgraph_runtime_config
+
+    def configured(*args, **options):
+        auto = original(*args, **options)
+        return None if auto is None else dict(auto, num_workers=loader_workers)
+
+    dnt._ttng_diskgraph_runtime_config = configured
+    try:
+        return score_worker(**kwargs)
+    finally:
+        dnt._ttng_diskgraph_runtime_config = original
 
 
 # ---------------------------------------------------------------- monitor (separate process)
@@ -453,7 +472,7 @@ class SubgraphStats:
 
 def parse_args():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--graph", required=True, choices=["commerce", "fraud"])
+    ap.add_argument("--graph", required=True, choices=["commerce"])
     ap.add_argument("--rung", default=None, help="rung name, e.g. 100M, 1B, 50B (reads <data-root>/<graph>/<rung>)")
     ap.add_argument("--data-root", default=DATA_ROOT, help="dataset root, required with --rung")
     ap.add_argument("--data", default=None, help="explicit rung directory (local path or s3://...); overrides --rung")
@@ -628,7 +647,7 @@ def main():
 
     kumo.configure(scratch_dir=str(scratch))
     sys.path.insert(0, str(HERE))
-    from build_graph import commerce_graph, fraud_graph
+    from build_graph import commerce_graph
 
     conn = (kumo.S3Connector(root_dir=args.data, region=args.s3_region) if is_s3
             else kumo.FileConnector(root_dir=str(Path(args.data).resolve())))
@@ -644,7 +663,7 @@ def main():
         return r
     backend_cls.prepare_ingest = timed_prepare
 
-    if args.num_workers:
+    if args.num_workers or args.predict_loader_workers is not None:
         import kumo_core.train.diskgraph_nested_trainer as dnt
         orig_cfg = dnt._ttng_diskgraph_runtime_config
 
@@ -654,11 +673,22 @@ def main():
                 return None
             predicting = (out / ".stage").read_text().startswith("predict")
             workers = args.predict_loader_workers if predicting and args.predict_loader_workers is not None else args.num_workers
-            used = dict(auto, num_workers=workers)
+            used = dict(auto, num_workers=workers) if workers else auto
             print(f"LOADER auto_config={auto} -> used={used}", flush=True)
             state.setdefault("loader", []).append({"auto": auto, "used": used})
             return used
         dnt._ttng_diskgraph_runtime_config = pinned_cfg
+
+        from functools import partial
+        import kumo_core.prediction as prediction
+        original_run_workers = prediction._run_prediction_workers
+        prediction_loaders = args.predict_loader_workers if args.predict_loader_workers is not None else args.num_workers
+
+        def run_prediction_workers(worker_count, score_worker, worker_kwargs):
+            scorer = partial(score_with_loader_workers, score_worker, prediction_loaders) if prediction_loaders else score_worker
+            return original_run_workers(worker_count, scorer, worker_kwargs)
+
+        prediction._run_prediction_workers = run_prediction_workers
 
     import logging
 
@@ -672,7 +702,7 @@ def main():
     sampler_log.setLevel(min(sampler_log.getEffectiveLevel(), logging.INFO))
     sampler_log.addHandler(_PlanCapture(level=logging.INFO))
 
-    graph, query = (commerce_graph if args.graph == "commerce" else fraud_graph)(conn)
+    graph, query = commerce_graph(conn)
     pquery = kumo.PredictiveQuery(graph, query)
     pquery.validate()
     task_type = str(pquery.get_task_type())

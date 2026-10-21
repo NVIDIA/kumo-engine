@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Declared schemas: column types, keys, time columns, FKs and Kumo stypes.
 
 Column tuple: (name, arrow type, nullable, stype). Stypes are Kumo's.
@@ -48,46 +51,7 @@ COMMERCE = {
         ("merchant_id", I64, False, "ID"), ("stars", I64, False, "numerical")]),
 }
 
-FRAUD = {
-    "accounts": _t("account_id", "created_time", {}, [
-        ("account_id", I64, False, "ID"), ("created_time", TS, False, "timestamp"),
-        ("email_domain", STR, False, "categorical"), ("country", STR, False, "categorical"),
-        ("account_type", STR, False, "categorical"), ("loyalty_tier", STR, False, "categorical"),
-        ("is_verified", BOOL, False, "categorical")]),
-    "devices": _t("device_id", "first_seen_time", {}, [
-        ("device_id", I64, False, "ID"), ("first_seen_time", TS, False, "timestamp"),
-        ("os", STR, False, "categorical"), ("browser", STR, False, "categorical"),
-        ("device_type", STR, False, "categorical"), ("language", STR, False, "categorical"),
-        ("timezone", STR, False, "categorical")]),
-    "ip_addresses": _t("ip_id", None, {}, [
-        ("ip_id", I64, False, "ID"), ("isp", STR, False, "categorical"),
-        ("country", STR, False, "categorical"), ("region", STR, False, "categorical"),
-        ("is_proxy", BOOL, False, "categorical"), ("is_datacenter", BOOL, False, "categorical")]),
-    "payment_methods": _t("payment_method_id", None, {}, [
-        ("payment_method_id", I64, False, "ID"), ("card_network", STR, False, "categorical"),
-        ("card_type", STR, False, "categorical"), ("issuing_country", STR, False, "categorical"),
-        ("payer_name", STR, False, "multicategorical")]),
-    "merchants": _t("merchant_id", None, {}, [
-        ("merchant_id", I64, False, "ID"), ("category", STR, False, "categorical"),
-        ("country", STR, False, "categorical"), ("city", STR, False, "categorical"),
-        ("channel", STR, False, "categorical")]),
-    "transactions": _t("transaction_id", "transaction_time", {
-        "account_id": "accounts", "device_id": "devices", "ip_id": "ip_addresses",
-        "payment_method_id": "payment_methods", "merchant_id": "merchants"}, [
-        ("transaction_id", I64, False, "ID"), ("transaction_time", TS, False, "timestamp"),
-        ("account_id", I64, False, "ID"), ("device_id", I64, False, "ID"),
-        ("ip_id", I64, False, "ID"), ("payment_method_id", I64, False, "ID"),
-        ("merchant_id", I64, False, "ID"), ("is_fraud", I64, False, "numerical"),
-        ("amount_usd", F64, False, "numerical"), ("quantity", I64, False, "numerical"),
-        ("currency", STR, False, "categorical"), ("channel", STR, False, "categorical"),
-        ("billing_country", STR, True, "categorical"),
-        ("billing_postal_codes", STR, True, "multicategorical"),
-        ("risk_rule_hits", STR, True, "multicategorical"),
-        ("email_matches_payer", BOOL, False, "categorical"),
-        ("installments", I64, False, "numerical"), ("traveler_name", STR, True, "categorical")]),
-}
-
-GRAPHS = {"commerce": COMMERCE, "fraud": FRAUD}
+GRAPHS = {"commerce": COMMERCE}
 
 # inclusive value bounds; the generator clamps to them and the validator checks them
 BOUNDS = {
@@ -98,17 +62,11 @@ BOUNDS = {
         "searches": {"result_page": (1, None)},
         "reviews": {"stars": (1, 5)},
     },
-    "fraud": {
-        "transactions": {"is_fraud": (0, 1), "amount_usd": (0.01, None), "quantity": (1, None),
-                         "installments": (0, None)},
-    },
 }
 
 QUERIES = {
     "commerce": ("PREDICT LIST_DISTINCT(purchases.merchant_id, 0, 7, days) RANK TOP 10 "
                  "FOR EACH customers.customer_id"),
-    "fraud": ("PREDICT COUNT(transactions.* WHERE transactions.is_fraud = 1, 0, 1, days) > 0 "
-              "FOR EACH accounts.account_id ASSUMING COUNT(transactions.*, 0, 1, days) > 0"),
 }
 
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """DiskGraph neighbourhood context: TemporalMostRecent sampling plus raw feature fetch.
 
     map   --index I --seeds S --n N --out seedmap.parquet         customer_id -> global id for the seeds

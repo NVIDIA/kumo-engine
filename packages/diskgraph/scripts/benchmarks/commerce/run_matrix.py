@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Runs the DiskGraph sampling matrix for one rung: hops 2..6, cold then warm.
 
     python run_matrix.py --rung 50B --index I --seedmap M --vcpus 128 --dg-threads 8 \
