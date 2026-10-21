@@ -168,17 +168,24 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
   one Parquet file inside the confirmed population path, creating the directory first for local
   files; and build the `PredictionTable` from a connector rooted there. Decide from the entity's
   `Table` as you built it: if it has a `time_column`, the population **must** carry it as
-  `TIMESTAMP`. Kumo rejects a population without it, even for a static query, whatever the
-  §7.1 Snowflake example shows (`ValueError: ... missing TIMESTAMP`).
+  `TIMESTAMP`, **cast to a timestamp**. Kumo rejects a population without it, even for a static
+  query, whatever the §7.1 Snowflake example shows (`ValueError: ... missing TIMESTAMP`), and
+  reads a `DATE` anchor as null (`Column 'TIMESTAMP' is date32[day]`): a date column is cast.
 
   ```python
   import os
+  import pyarrow as pa
+  import pyarrow.compute as pc
   import pyarrow.dataset as ds
   import pyarrow.parquet as papq
 
   keep = {ENTITY_KEY: 'ENTITY1', ENTITY_TIME: 'TIMESTAMP'}   # ENTITY_TIME: the entity Table's time_column
   population = ds.dataset(ENTITY_SOURCE, format='parquet').to_table(columns=list(keep))
   population = population.rename_columns([keep[c] for c in population.column_names])
+  if 'TIMESTAMP' in population.column_names:                  # a DATE anchor reads as null
+      i = population.column_names.index('TIMESTAMP')
+      population = population.set_column(i, 'TIMESTAMP',
+                                         pc.cast(population['TIMESTAMP'], pa.timestamp('us')))
   if '://' not in POPULATION_PATH:
       os.makedirs(POPULATION_PATH, exist_ok=True)              # object stores need no directory
   papq.write_table(population, POPULATION_PATH + 'population.parquet')
@@ -204,7 +211,7 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
   r = ws.statement_execution.execute_statement(
       warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='50s',
       statement=(f'CREATE OR REPLACE TABLE {CATALOG}.{POP_SCHEMA}.{POP_TABLE} AS '
-                 f'SELECT {ENTITY_KEY} AS ENTITY1, {ENTITY_TIME} AS TIMESTAMP '
+                 f'SELECT {ENTITY_KEY} AS ENTITY1, CAST({ENTITY_TIME} AS TIMESTAMP) AS TIMESTAMP '
                  f'FROM {CATALOG}.{SCHEMA}.{ENTITY_TABLE}'))
   while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
       time.sleep(5)
