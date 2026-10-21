@@ -133,7 +133,7 @@ from google.cloud import bigquery
 written = next(iter(bigquery.Client(project=PROJECT_ID).query(
     f'SELECT COUNT(*) FROM `{PROJECT_ID}.{OUTPUT_DATASET}.{OUTPUT_TABLE}`').result()))[0]
 
-# Databricks — with the confirmed SQL warehouse
+# Databricks — with the confirmed SQL warehouse; wait_timeout is at most '50s'
 from databricks.sdk import WorkspaceClient
 response = WorkspaceClient().statement_execution.execute_statement(
     warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='30s',
@@ -190,8 +190,29 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
   `ENTITY_SOURCE` is the entity table's file or directory as preflight listed it;
   `POPULATION_PATH` is the confirmed path, ending in `/`.
 - **Snowflake:** the §7.1 SQL, run through the read-back connection above.
-- **BigQuery, Databricks:** not covered on this host. Say so at Node 1d and offer the rows whose
-  target is NULL instead.
+- **Databricks:** create the table through the confirmed SQL warehouse with the statement API,
+  wait for it, and build the `PredictionTable` from a `DatabricksConnector` scoped to the
+  population's schema. The same `TIMESTAMP` rule applies. `wait_timeout` is at most `'50s'`
+  (Databricks rejects more), so poll until the statement finishes:
+
+  ```python
+  import time
+  from databricks.sdk import WorkspaceClient
+  from databricks.sdk.service.sql import StatementState
+
+  ws = WorkspaceClient()
+  r = ws.statement_execution.execute_statement(
+      warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='50s',
+      statement=(f'CREATE OR REPLACE TABLE {CATALOG}.{POP_SCHEMA}.{POP_TABLE} AS '
+                 f'SELECT {ENTITY_KEY} AS ENTITY1, {ENTITY_TIME} AS TIMESTAMP '
+                 f'FROM {CATALOG}.{SCHEMA}.{ENTITY_TABLE}'))
+  while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
+      time.sleep(5)
+      r = ws.statement_execution.get_statement(r.statement_id)
+  assert r.status.state == StatementState.SUCCEEDED, r.status
+  ```
+- **BigQuery:** not covered on this host. Say so at Node 1d and offer the rows whose target is
+  NULL instead.
 
 ---
 
