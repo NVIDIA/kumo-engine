@@ -57,11 +57,7 @@ class ObjectStoreSinkBackend(ABC):
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
                     export_id=None, extra_columns=None,
                     sidecars: Mapping[str, bytes] = {}):
-        """Export selected Parquet without collecting their rows.
-
-        ``sidecars`` are written into a directory destination before
-        ``_SUCCESS``.
-        """
+        """Export selected Parquet without collecting their rows."""
         del project_id
         if write_mode is not WriteMode.OVERWRITE:
             raise NotImplementedError(

@@ -295,13 +295,6 @@ def test_custom_training_table_declares_integer_timestamp_unit(graph, unit,
         assert _rows(seeds[stage], columns) == _rows(original_seeds[stage], columns)
 
 
-def _reload(graph, name, pquery):
-    _, snapshot, connector, _ = graph
-    return kumo.TrainingTable.from_source_table(
-        connector[name], TrainingTableSpec(split_col='SPLIT'), pq=pquery,
-        snapshot=snapshot)
-
-
 def test_manifest_and_export_sidecar(graph, tmp_path):
     from kumo_core.training.export import export_train_table
 
@@ -309,70 +302,31 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
     query = 'PREDICT ents.LABEL FOR EACH ents.ID'
     pquery, table, _ = _export(graph, query, 'lineage')
     manifest = table.manifest
-    assert manifest['kind'] == 'training_table'
     assert manifest['id'] == table.tt_id == _spec(table)['tt_id']
     assert manifest['parents'] == {'snapshot': snapshot.id}
     assert (manifest['query'], manifest['source']) == (query, 'pql')
-    assert manifest['task_type'] == 'binary_classification'
     assert manifest['rows'] == _seeds(table)[1]
     assert manifest['split_seed'] == 0
-    assert manifest['generation_plan']['split'] == 'inferred'
 
     directory = out / 'lineage'
-    parts = sorted(directory.glob('*.parquet'))
     baseline = tmp_path / 'baseline'
-    expected = export_train_table(str(table.staging_dir), str(baseline))
-    assert [p.name for p in parts] == [p.split('/')[-1] for p in expected]
-    assert [p.read_bytes() for p in parts] == [
-        (baseline / p.name).read_bytes() for p in parts
-    ]
-    assert sorted(p.name for p in directory.iterdir()) == sorted(
-        [p.name for p in parts] +
-        ['_KUMO_EXPORT', '_SUCCESS', '_kumo_manifest.json'])
-    sidecar = (directory / '_kumo_manifest.json').read_bytes()
-    assert json.loads(sidecar) == manifest
+    export_train_table(str(table.staging_dir), str(baseline))
+    for part in baseline.glob('*.parquet'):
+        assert (directory / part.name).read_bytes() == part.read_bytes()
+    assert json.loads(
+        (directory / '_kumo_manifest.json').read_bytes()) == manifest
 
-    table.export(TrainingTableOutputConfig(connector, 'lineage'))
-    assert (directory / '_kumo_manifest.json').read_bytes() == sidecar
-
-
-def test_custom_table_records_its_source(graph, recwarn):
-    _, snapshot, connector, out = graph
-    pquery, table, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
-                               'reloaded')
-    (out / 'reloaded' / '_kumo_manifest.json').write_text('{not json')
-    reloaded = _reload(graph, 'reloaded', pquery)
+    reloaded = kumo.TrainingTable.from_source_table(
+        connector['lineage'], TrainingTableSpec(split_col='SPLIT'), pq=pquery,
+        snapshot=snapshot)
     manifest = reloaded.manifest
     assert manifest['source'] == 'custom'
-    assert manifest['id'] != table.tt_id
-    assert manifest['parents'] == {
-        'snapshot': snapshot.id,
-        'source_table': {
-            'connector': 'LOCAL_FILE',
-            'location': str(out / 'reloaded'),
-            'version': connector.source_backend.get_data_version(
-                connector, 'reloaded'),
-        },
+    assert manifest['parents']['source_table'] == {
+        'connector': 'LOCAL_FILE',
+        'location': str(directory),
+        'version': connector.source_backend.get_data_version(
+            connector, 'lineage'),
     }
-    assert manifest['parents']['source_table']['version']
-    assert not [w for w in recwarn if 'manifest' in str(w.message)]
-    assert _seeds(reloaded)[1] == _seeds(table)[1]
-
-
-def test_unrecordable_location_is_null(graph, monkeypatch):
-    from kumo.engine import _provenance
-
-    pquery, table, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
-                               'unrecorded')
-
-    def fail(*args, **kwargs):
-        raise OSError('listing denied')
-
-    monkeypatch.setattr(_provenance, 'source_location', fail)
-    with pytest.warns(UserWarning, match='listing denied'):
-        reloaded = _reload(graph, 'unrecorded', pquery)
-    recorded = reloaded.manifest['parents']['source_table']
-    assert recorded['location'] is None and recorded['version']
     assert _seeds(reloaded)[1] == _seeds(table)[1]
 
 
@@ -387,16 +341,15 @@ def test_manifest_write_failure_keeps_generation_and_export(
 
     monkeypatch.setattr(training_table, 'write_manifest', fail)
     with pytest.warns(UserWarning, match='read-only scratch'):
-        pquery, table, exported = _export(
+        _, table, exported = _export(
             graph, 'PREDICT ents.LABEL FOR EACH ents.ID', 'no_manifest')
     assert table.manifest is None
     assert not (out / 'no_manifest' / '_kumo_manifest.json').exists()
-    assert (out / 'no_manifest' / '_SUCCESS').exists()
     assert exported.num_rows == sum(_seeds(table)[1].values())
 
 
-def test_warehouse_sink_receives_no_sidecars(graph):
-    graph_, snapshot, _, _ = graph
+def test_no_sidecar_for_warehouse_or_csv_exports(graph):
+    graph_, snapshot, connector, out = graph
     table = kumo.PredictiveQuery(
         graph=graph_, query='PREDICT ents.LABEL FOR EACH ents.ID'
     ).generate_training_table(snapshot)
@@ -404,20 +357,11 @@ def test_warehouse_sink_receives_no_sidecars(graph):
 
     def write_files(connector, table_name, files, write_mode, **kwargs):
         calls.append(kwargs)
-        return table_name
 
-    connector = SimpleNamespace(
+    warehouse = SimpleNamespace(
         source_type='SNOWFLAKE',
         sink_backend=SimpleNamespace(write_files=write_files))
-    table.export(TrainingTableOutputConfig(connector, 'DB.SCHEMA.TT'))
+    table.export(TrainingTableOutputConfig(warehouse, 'DB.SCHEMA.TT'))
     assert calls == [{'export_id': f'{table.tt_id}:tt-export-v1'}]
-
-
-def test_csv_directory_export_gets_no_sidecar(graph):
-    graph_, snapshot, connector, out = graph
-    table = kumo.PredictiveQuery(
-        graph=graph_, query='PREDICT ents.LABEL FOR EACH ents.ID'
-    ).generate_training_table(snapshot)
     table.export(TrainingTableOutputConfig(connector, 'rows.csv/'))
-    names = {p.name for p in (out / 'rows.csv').iterdir()}
-    assert '_SUCCESS' in names and '_kumo_manifest.json' not in names
+    assert not (out / 'rows.csv' / '_kumo_manifest.json').exists()

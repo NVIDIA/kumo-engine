@@ -205,8 +205,8 @@ def export_selected_files(files, output_path, *, fs, identity,
 
     Filesystem/authentication and retry wrappers stay with the caller. The
     directory ownership, output names and CSV retry decisions are shared.
-    ``sidecars`` (name to bytes) are written into a directory destination
-    after the data and before ``_SUCCESS``; ``fs`` then needs ``write_bytes``.
+    ``sidecars`` (name to bytes) land in a directory destination before
+    ``_SUCCESS``.
     """
     import os.path as osp
     import tempfile
