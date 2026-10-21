@@ -41,5 +41,4 @@ compatibility adapters.
 This repository is the sole source of truth for DiskGraph. Edit
 `packages/diskgraph` directly and follow its package-local build and test
 instructions. There is no upstream synchronization or mirror verification.
-The [import records](../../tools/migrations/diskgraph/README.md) are historical
-provenance, not a constraint on subsequent changes.
+Its earlier history is in kumo-ai/kumo; see [code provenance](../provenance.md).

@@ -14,6 +14,7 @@ Keep one maintained explanation per topic and link to it from agent guidance.
 | Run tests without cloud credentials | [Public tests](development/public-tests.md) |
 | Choose a validation tier | [Testing](development/testing.md) |
 | Regenerate derived files | [Generated artifacts](development/generated-artifacts.md) |
+| Trace code to its earlier history | [Code provenance](provenance.md) |
 | UI conventions and shared components | [UI development](development/ui.md) |
 | Query and training review | [ML development](development/ml.md) |
 | Review and PR requirements | [Review guide](development/review.md) |
