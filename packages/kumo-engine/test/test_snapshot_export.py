@@ -16,7 +16,6 @@ from unittest.mock import Mock
 
 import pandas as pd
 import pytest
-from diskgraph import format_versions
 from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 
 import kumo.engine as kumo
@@ -98,7 +97,7 @@ def test_export_load_round_trip_relocates_and_is_reused(
     assert loaded.index_path.is_relative_to(tmp_path / 'gpu')
     assert _index_files(loaded.index_path) == _index_files(exported / 'index')
     recorded = loaded.manifest
-    assert recorded.pop('loaded')['formats'] == format_versions()
+    assert set(recorded.pop('loaded')) == {'environment'}
     assert recorded == manifest['snapshot']
     reexported = tmp_path / 'exports' / loaded.export(exports, 'two')
     assert json.loads((reexported / 'kumo_snapshot.json').read_text())[
@@ -321,11 +320,11 @@ def test_load_explains_an_index_the_installed_diskgraph_cannot_open(
 
     def unreadable(manifest):
         manifest['crc32']['index_metadata.json'] = [zlib.crc32(garbage)]
-        manifest['snapshot']['formats'] = {'layout': -1}
+        manifest['environment']['kumo_engine'] = '0.0.1'
 
     _edit_manifest(exported, unreadable)
     scratch('gpu')
-    with pytest.raises(RuntimeError, match=r"formats \{'layout': -1\}"):
+    with pytest.raises(RuntimeError, match='exported by kumo-engine 0.0.1'):
         _load(exports, location)
 
 

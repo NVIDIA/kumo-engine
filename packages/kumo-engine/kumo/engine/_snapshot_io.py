@@ -348,15 +348,14 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
               target: Path) -> None:
     from diskgraph import (
         DiskgraphCorruptionError,
-        format_versions,
         snapshot_range_checksums,
         verify_snapshot_integrity,
     )
-    from kumo_core.artifacts import FilesystemArtifactStore
     from kumo_core.diskgraph.snapshot import (
         DiskgraphIngestResult,
         write_diskgraph_success_marker,
     )
+    from kumo_core.io.filesystem import fsync_directory
     from kumo_core.sources.transfer import discard_destination
 
     from kumo.engine._manifest import write_manifest
@@ -413,28 +412,27 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
             write_manifest(
                 staging / SNAPSHOT_MANIFEST_FILE, {
                     **manifest['snapshot'], 'loaded': {
-                        'formats': format_versions(),
-                        'environment': environment(),
+                        'environment': environment()
                     }
                 })
         for directory in sorted({(staging / name).parent
                                  for name, _ in files} | {staging}):
-            FilesystemArtifactStore._fsync_directory(directory)
+            fsync_directory(directory)
         os.rename(staging, target)
-        FilesystemArtifactStore._fsync_directory(target.parent)
+        fsync_directory(target.parent)
     except BaseException:
         discard_destination(str(staging))
         raise
 
 
 def _check_readable(index: Path, manifest: dict) -> None:
-    from diskgraph import SamplerEngine, format_versions
+    from diskgraph import SamplerEngine
 
     try:
         SamplerEngine(str(index), num_threads=1)
     except Exception as error:
-        built = (manifest.get('snapshot') or {}).get('formats')
+        built = (manifest.get('environment') or {}).get('kumo_engine')
         raise RuntimeError(
-            f'This DiskGraph cannot open the snapshot: built with formats '
-            f'{built}, installed are {format_versions()}. Rebuild it with '
-            'this kumo-engine or load it with the exporting one.') from error
+            f'This DiskGraph cannot open the snapshot exported by kumo-engine '
+            f'{built} ({error}). Rebuild it with this kumo-engine or load it '
+            'with the exporting one.') from error
