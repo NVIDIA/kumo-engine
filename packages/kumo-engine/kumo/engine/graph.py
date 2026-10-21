@@ -326,6 +326,12 @@ class GraphSnapshot:
         from; `id` carries its first 16 characters."""
         return Path(self.index_path).name
 
+    @cached_property
+    def native_graph(self) -> NativeGraph:
+        """`graph_config` in `kumo_core`'s normalized form, as
+        `Graph.native_graph`."""
+        return normalize_graph(self.graph_config)
+
     def export(self, output_config: 'SnapshotOutputConfig') -> str:
         r"""Copy the index to `<path>/<graph id>/<data version[:16]>` and
         return that location. Any earlier export there is replaced; it is not
