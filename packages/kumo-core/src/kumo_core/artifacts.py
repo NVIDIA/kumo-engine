@@ -13,7 +13,14 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, Mapping, Protocol, runtime_checkable
+from typing import (
+    Any,
+    ClassVar,
+    Iterable,
+    Mapping,
+    Protocol,
+    runtime_checkable,
+)
 
 from .io.filesystem import atomic_write_bytes, fsync_directory, local_path
 from .io.json import load_json, save_json
@@ -335,8 +342,20 @@ def verify_model_bundle(bundle: Path) -> str:
     if 'training-spec.json' not in seen and spec_path.is_file():
         verified.append(('training-spec.json',
                          VitalArtifactPublicationPolicy._sha256(spec_path)))
+    return _bundle_id(verified)
+
+
+def bundle_id_from_manifest(bundle: Path) -> str:
+    """The bundle id from the digests a freshly published bundle lists."""
+    manifest_path = Path(bundle) / VitalArtifactPublicationPolicy.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    return _bundle_id((str(entry['relative_path']), str(entry['sha256']))
+                      for entry in manifest['artifacts'])
+
+
+def _bundle_id(pairs: Iterable[tuple[str, str]]) -> str:
     payload = json.dumps(
-        sorted(pair for pair in verified if pair[0] != PROVENANCE_FILE),
+        sorted(pair for pair in pairs if pair[0] != PROVENANCE_FILE),
         separators=(',', ':'))
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 

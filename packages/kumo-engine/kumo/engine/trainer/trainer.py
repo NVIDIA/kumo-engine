@@ -518,7 +518,7 @@ class Trainer:
         provenance: Optional[Mapping[str, Any]] = None,
     ) -> TrainingResult:
         """Commit durable fit outputs before making this trainer usable."""
-        from kumo_core.artifacts import verify_model_bundle
+        from kumo_core.artifacts import bundle_id_from_manifest
 
         from kumo.engine.trainer._provenance import write_provenance
 
@@ -540,7 +540,7 @@ class Trainer:
         try:
             training_result = replace(
                 training_result,
-                bundle_id=verify_model_bundle(training_result.bundle_dir))
+                bundle_id=bundle_id_from_manifest(training_result.bundle_dir))
         except Exception as error:
             warnings.warn(f"Could not compute the bundle id: {error}",
                           UserWarning, stacklevel=3)
