@@ -147,16 +147,13 @@ snapshot = GraphSnapshot.load_from_connector(S3Connector(), path=location)
 `export` writes `<path>/<graph id>/<data version>/` (the two halves of
 `snapshot.id`) and returns it. Files move in parallel with a CRC32 per range,
 an interrupted export resumes, and a load either completes or leaves nothing.
-Exporting a snapshot whose id is already exported there, including one rebuilt
-on another machine, keeps the existing export and returns its location.
-Loading again reuses the local copy unless it fails DiskGraph's integrity
-check, in which case it is downloaded again.
-The snapshot manifest travels with the export; `snapshot.manifest` on the
-loaded copy shows the DiskGraph formats it was built with and, under `loaded`,
-the formats of the machine that loaded it. Load does not compare versions; an
-index this DiskGraph cannot open fails with both sets of formats in the error.
-Load only from paths whose writers you trust: checksums detect corruption, not
-tampering.
+Exporting a snapshot id that is already there, even one rebuilt on another
+machine, keeps the existing export. Loading again reuses the local copy unless
+it fails DiskGraph's integrity check. The snapshot manifest travels with the
+export; on the loaded copy, `snapshot.manifest["loaded"]` records the loading
+machine's DiskGraph formats. An index this DiskGraph cannot open fails with
+both sets of formats in the error. Load only from paths whose writers you
+trust: checksums detect corruption, not tampering.
 
 Snowflake, Databricks and BigQuery connectors cannot hold an export. Instead:
 
@@ -168,9 +165,8 @@ Snowflake, Databricks and BigQuery connectors cannot hold an export. Instead:
   volume or external stage.
 
 `snapshot.source_changes(graph)` reports, per table alias, whether the source
-moved on since the snapshot was built. It asks each connector for the same
-metadata-only version stamp the snapshot recorded (a catalog read or a file
-listing) and never reads or stages rows:
+moved on since the snapshot was built, using the same metadata-only version
+stamp the snapshot recorded (no rows are read):
 
 ```python
 {"users":  {"status": "unchanged", "recorded": "1792539971", "current": "1792539971"},
@@ -178,24 +174,19 @@ listing) and never reads or stages rows:
  "events": {"status": "changed",   "recorded": "1792539971", "current": "1792539974"}}
 ```
 
-The status is `unknown` when there is nothing reliable to compare: the table
-is missing from the manifest, the table now reads from a different connector or
-location than the one recorded, the manifest is absent or was reconstructed for
-an index built before manifests, the version could not be read, the table is
-Custom SQL (its version folds in a 24-hour window, so it cannot separate a data
-change from the window rolling over), or either version is an hour-aligned
-timestamp or `-1`. Views and sources without a readable version are stamped
-with the current hour, so they always report `unknown`; a real version that
-happens to fall exactly on the hour does too. A file-connector table that is a
-folder holding Parquet or CSV files under a `_`- or `.`-prefixed path (a Delta
-`_delta_log` checkpoint, a leftover `_temporary/` part) reports `changed` on
-every call: its listing stamp counts those files, while the stamp recorded at
-build time does not.
-`GraphSnapshot.load_from_connector(..., graph=graph)` makes the same metadata
-call for every table, so the loading machine needs source credentials, and
-warns once naming the `changed` tables. A scoring job should either build a fresh snapshot or load
-one whose `source_changes` are all `unchanged`; loading an older snapshot on
-purpose, for example to reproduce past scores, is legitimate.
+The status is `unknown` when there is nothing reliable to compare: no recorded
+version (no manifest, or one reconstructed for an older index), a different
+connector or location than recorded, an unreadable version, a Custom SQL table
+(its version folds in a 24-hour window), or an hour-aligned or `-1` stamp
+(views and unversioned sources are stamped with the current hour). A
+file-connector folder holding Parquet or CSV files under a `_`- or `.`-prefixed
+path (a Delta `_delta_log` checkpoint, a leftover `_temporary/` part) reports
+`changed` on every call, because its listing stamp counts those files.
+`GraphSnapshot.load_from_connector(..., graph=graph)` makes the same call for
+every table, so the loading machine needs source credentials, and warns once
+naming the `changed` tables. A scoring job should build a fresh snapshot or
+load one whose tables are all `unchanged`, unless it deliberately reproduces
+past scores.
 
 The return values expose the retained files directly:
 

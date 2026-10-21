@@ -224,7 +224,6 @@ def _lock(graph_key: str) -> Any:
 
 
 def _loaded(path: str) -> Optional[Any]:
-    r"""The index a previous load left intact at `path`, if any."""
     from diskgraph import DiskgraphCorruptionError, verify_snapshot_integrity
     from kumo_core.diskgraph.snapshot import check_diskgraph_output
 
@@ -245,8 +244,8 @@ _HOUR_SECONDS = 3600
 
 
 def _comparable(stamp: Any) -> bool:
-    r"""Hour-aligned epoch seconds are what `hour_version()` stamps views and
-    unversioned sources with; `-1` marks an undated source."""
+    # hour_version() stamps views and unversioned sources on the hour; -1 is
+    # an undated source.
     return (isinstance(stamp, str) and stamp != '-1'
             and not (stamp.isdigit() and int(stamp) % _HOUR_SECONDS == 0))
 
@@ -313,16 +312,12 @@ class GraphSnapshot:
     record_sources: bool | None = field(default=None, compare=False)
 
     def export(self, connector: Connector, path: str) -> str:
-        r"""Copy the index to `<path>/<graph id>/<data version[:16]>` under an
-        S3, GCS or file connector and return that location. Re-running
-        resumes.
+        r"""Copy the index to `<path>/<graph id>/<data version[:16]>` and
+        return that location; re-running resumes.
 
-        Where there is no dedicated connector: on Databricks compute, use a
-        `FileConnector` rooted at `/Volumes/<catalog>/<schema>/<volume>`; in
-        SPCS services, or ML Jobs where a stage volume is mounted, a
-        `FileConnector` on that stage volume (not yet tested with multi-GB
-        indexes); otherwise the S3 or
-        GCS connector on the bucket behind an external volume or stage.
+        Args:
+            connector: an S3, GCS or file connector (on Databricks or
+                Snowflake, a `FileConnector` on a mounted volume).
         """
         from kumo.engine._snapshot_io import export
 
@@ -331,14 +326,12 @@ class GraphSnapshot:
     @classmethod
     def load_from_connector(cls, connector: Connector, *, path: str,
                             graph: Optional['Graph'] = None) -> 'GraphSnapshot':
-        r"""Copy the snapshot exported at `path` (the location `export`
-        returned) into the local snapshot store.
+        r"""Copy the snapshot exported at `path` into the local store.
 
-        Given `graph`, reads each table's source version (one metadata call
-        per table, so this machine needs source credentials) and warns once
-        if any changed since the snapshot was built (see `source_changes`). A scoring job should
-        build a fresh snapshot or load one whose `source_changes` are all
-        `unchanged`, unless it deliberately scores an older snapshot.
+        Args:
+            path: the location `export` returned.
+            graph: if given, warn when its source tables changed since the
+                snapshot was built (see `source_changes`).
         """
         from kumo_core.diskgraph.snapshot import DiskgraphSnapshotHandle
 
@@ -383,11 +376,8 @@ class GraphSnapshot:
         return snapshot
 
     def source_changes(self, graph: 'Graph') -> Dict[str, Dict[str, Any]]:
-        r"""Compare each of `graph`'s tables' current source version, read
-        from metadata only, with the version this snapshot recorded. A table
-        is `unknown` when the versions cannot be compared, including when it
-        now reads from a different connector or location than the one
-        recorded. Never raises."""
+        r"""Each of `graph`'s tables' source status since this snapshot:
+        `unchanged`, `changed` or `unknown`. Never raises."""
         try:
             manifest = self.manifest
             recorded = ({} if not manifest or manifest.get('reconstructed') else
