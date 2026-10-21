@@ -70,7 +70,9 @@ def test_genie_ships_only_its_own_host(tmp_path: Path) -> None:
     assert pkg == tmp_path / 'genie' / 'skills' / 'kumo-data-science'
     assert [p.name for p in (pkg / 'hosts').iterdir()] == ['databricks-genie']
     assert sorted(p.name for p in (pkg / 'hosts' / 'databricks-genie').iterdir()) == [
-        'adapter.md', 'runtime.md']
+        'adapter.md', 'job.md', 'runtime.md']
+    for name in package_skill.CAPABILITY:
+        assert (pkg / name / 'SKILL.md').is_file()
     leaks = [str(p.relative_to(pkg)) for p in pkg.rglob('*.md')
              if re.search(r'snowflake-coco|hosts/generic|ml_job\.md', p.read_text())]
     assert leaks == []
@@ -84,6 +86,24 @@ def test_genie_names_no_secret_by_default() -> None:
     assert not re.search(r'dbutils|client_secret|token', code)
     assert "__kumo__" in code
     assert "wait_timeout='50s'" in code and 'get_statement' in code
+
+
+def test_genie_maps_every_snowflake_mechanism() -> None:
+    """The capability skills and batch inference name Snowflake mechanisms; the Genie adapter
+    maps each to its Databricks counterpart, so the Snowflake case groups are covered."""
+    host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
+    adapter, runtime, job = ((host / n).read_text() for n in ('adapter.md', 'runtime.md', 'job.md'))
+    section = adapter[adapter.index('## 6. Capability skills'):adapter.index('## 7.')]
+    for snowflake, here in [('model registry', 'registered model'), ('stage', 'volume'),
+                            ('SHOW VERSIONS', 'version listing'), ('Snowpark', 'run_sql'),
+                            ('ML Job', 'job.md'), ('ARRAY', 'not verified')]:
+        row = next((line for line in section.splitlines() if snowflake in line), '')
+        assert here in row, f'adapter §6 does not map {snowflake!r} to {here!r}'
+    assert 'metric view' in adapter and 'semantic_view.md' in adapter
+    assert 'ModelRegistryLocation(model_name=MODEL_NAME)' in runtime   # UC assigns the version
+    assert 'model_versions.list' in runtime
+    assert 'existing_cluster_id' in job and 'PauseStatus.PAUSED' in job
+    assert not re.search(r'clusters\.create|new_cluster', job)
 
 
 class FakeWorkspace:

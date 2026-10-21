@@ -9,8 +9,8 @@ Kumo is already present on the GPU cluster that runs the notebook; never raise e
 with the user. Generating the notebook — connect step, destinations, read-back and running it —
 is in `runtime.md` in this directory; read it at Step 2.
 
-This host has no job file: it does not submit, schedule or monitor jobs. When asked for one, say
-so and offer the notebook.
+Running the artifact as a Databricks job — when to, the job notebook, submission, run output,
+schedules and cost — is in `job.md`; read it only when the user asks for a job.
 
 ---
 
@@ -23,11 +23,45 @@ catalog named elsewhere in the conversation. Tables are `catalog.schema.table`.
   catalogs you can see. One match settles it; several, ask which catalog — that one question.
 - A name written with a hyphen in chat (`my-catalog`) is the same object as its underscore form
   (`my_catalog`) — resolve, do not ask. Unity Catalog names are lower case.
-- A semantic view, a Snowflake database, an `s3://` or `gs://` path, or a BigQuery dataset is not
+- A Unity Catalog **metric view** (`catalog.schema.view`) is this host's semantic view. It
+  resolves through `kumo-data-science/accept/semantic_view.md`, read as §1.1 says.
+- A Snowflake database or semantic view, an `s3://` or `gs://` path, or a BigQuery dataset is not
   a source on this host. Say so, and say that the data must be in a Unity Catalog schema for this
   host to read it.
+- A connector name (`benchmark_sf`) is not a location here: this host keeps no registry of named
+  connectors. Ask which catalog and schema it points at.
 - The SQL warehouse is not part of `source_scope` and is never asked for at intake. §2 resolves
   it.
+
+### 1.1 Metric views
+
+`kumo-data-science/accept/semantic_view.md` is written for Snowflake's `DESCRIBE SEMANTIC VIEW`.
+Every rule in it holds here; only the reading differs. Read the definition, never query the view:
+
+```sql
+SELECT view_definition FROM <catalog>.information_schema.views
+WHERE table_schema = lower('<schema>') AND table_name = lower('<view>');
+```
+
+A metric view's definition is YAML. A view whose definition is plain SQL is an ordinary view, not
+a metric view: treat it as a query-defined table (the semantic-view rule for a logical table with
+no base table). Map the YAML onto that file's `TABLE` and `RELATIONSHIP` records:
+
+| Metric view YAML | `semantic_view.md` reads it as |
+|---|---|
+| `source: catalog.schema.table` | a `TABLE` with that base table |
+| `source:` a SQL query | a logical table defined by a query → ASK BACK, as that file says |
+| each entry of `joins:` (and of a join's own nested `joins:`) with `source: catalog.schema.table` | a `TABLE` with that base table; its `name` is a logical name |
+| that join's `on: <parent>.<fk> = <name>.<key>`, or `using: [<col>]` | a `RELATIONSHIP` from the parent (`source` for a top-level join, else the enclosing join) to this table: `FOREIGN_KEY` `<fk>`, `REF_KEY` `<key>` |
+| an `on:` that is anything but one column-to-column equality | a non-equality relationship → ASK BACK, as that file says |
+| `dimensions:`, `measures:`, `filter:` | the view's dimensions, facts and metrics: ignored, as that file says |
+
+A metric view declares no primary keys. A joined table's `REF_KEY` column is its key, `[declared]`
+by the relationship, exactly as that file treats a relationship that references a non-primary
+column; every other table's key comes from preflight §3. The one-schema rule, physical names and
+`[declared]` tags apply unchanged, with `catalog.schema` in place of `DB.SCHEMA`.
+
+> **Not verified:** no metric view has been read by this skill in a workspace.
 
 ---
 
@@ -100,10 +134,13 @@ WHERE tc.table_schema = lower('<schema>');
 
 ## 4. Destinations
 
-A Unity Catalog table, `catalog.schema.table`, in any schema the user can create tables in. It is
-written through a `DatabricksConnector` on that catalog and schema
-(`kumoai-reference/references/kumo_finetuning_sdk.md` §9.2). Not destinations here: a path in a
-volume, S3, GCS or local files, and any table outside Unity Catalog.
+Predictions and embeddings go to a Unity Catalog table, `catalog.schema.table`, in any schema the
+user can create tables in. It is written through a `DatabricksConnector` on that catalog and schema
+(`kumoai-reference/references/kumo_finetuning_sdk.md` §9.2). Not destinations for predictions
+here: a path in a volume, S3, GCS or local files, and any table outside Unity Catalog.
+
+A model is published to a Unity Catalog registered model (`runtime.md` §5), and retained run
+files go to a volume path (`runtime.md` §6). Neither is a prediction destination.
 
 ---
 
@@ -116,10 +153,24 @@ a text encoder, report the error and the column; that finding belongs at Node 1c
 
 ## 6. Capability skills
 
-The capability skills were written for, and measured on, Snowflake. Their Kumo calls hold for
-`DatabricksConnector`. Where a step names a Snowflake registry, stage, session or table, say that
-the step is not covered on this host; do not adapt it — including publishing a model to Unity
-Catalog, which no run of this skill has exercised.
+The capability skills and `kumo-data-science/accept/batch_inference.md` were written for
+Snowflake. Their Kumo calls hold for `DatabricksConnector`; read their Snowflake steps with these
+substitutions, which `runtime.md` §4.1, §5 and §6 spell out:
+
+| They say (Snowflake) | On this host |
+|---|---|
+| the Snowflake model registry in `DB.SCHEMA`, a registry connector | a Unity Catalog registered model `catalog.schema.model`, through a `DatabricksConnector` on that catalog and schema (`runtime.md` §5) |
+| a model version you choose (`V1`) when publishing | **Unity Catalog assigns the version**, the next integer; it cannot be named or replaced (`runtime.md` §5.1) |
+| `SHOW VERSIONS`; `version=None` loads the registry default | the version listing in `runtime.md` §5.2; `version=None` loads the newest ready Kumo version — still pass an explicit one |
+| an internal stage for retained artifacts | a Unity Catalog volume path (`runtime.md` §6) |
+| the Snowpark `session`, Snowflake SQL | `run_sql` (`runtime.md` §3) |
+| a Snowflake connector scoped to a population table | a `DatabricksConnector` on the population's catalog and schema (`runtime.md` §4.1) |
+| Snowflake `ARRAY` / `VARIANT` columns arrive as strings | not verified that a Unity Catalog `ARRAY` arrives as a typed list: treat list-typed labels, link weights and forecast sequences as the same supplied-shape limitation |
+| a Snowflake ML Job | a Databricks job run on a GPU cluster (`job.md`) |
+| "the existing Snowflake notebook" | the existing Databricks notebook; run files are on the cluster's local disk |
+
+A step that has no row here and names a Snowflake object is not covered on this host: say so; do
+not adapt it.
 
 ---
 
@@ -128,4 +179,5 @@ Catalog, which no run of this skill has exercised.
 Hosted Kumo — `kumo.init(...)`, an API key, `KUMO_API_KEY` / `KUMO_API_ENDPOINT`, Kumo Studio — is
 not this SDK, and neither is Kumo through Spark (a Spark DataFrame handed to Kumo; no such
 connector exists). If the user is on one of them, say so and stop. Never blend their setup into
-generated code.
+generated code. A Model Serving endpoint is not something this skill creates: a request to deploy
+a Kumo model as a live endpoint is out of scope.

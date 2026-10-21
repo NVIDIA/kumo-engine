@@ -127,7 +127,7 @@ assert written == prediction_result.num_rows, (written, prediction_result.num_ro
 
 Report the destination as `catalog.schema.table`, unchanged.
 
-### 4.1 Static scoring population
+### 4.1 Populations
 
 When Node 1d confirmed a population table (`kumoai-reference/references/kumo_finetuning_sdk.md`
 §7.1), create it with `run_sql` and build the `PredictionTable` from a connector on the
@@ -148,9 +148,115 @@ prediction_table = kumo.PredictionTable.from_source_table(
 
 `ENTITY_TIME` is the entity `Table`'s `time_column`.
 
+**A population the user supplies** — a table of exact scoring rows, or curated labels, weights and
+splits (`kumo-custom-populations/SKILL.md`) — is read through a `DatabricksConnector` on that
+table's own catalog and schema, built with the same `identity` and warehouse. Kumo stages it to
+local Parquet exactly as it does a source table. `PredictionTable.from_source_table` has run this
+way on this host; `TrainingTable.from_source_table` uses the same staging but has not been run
+end to end here.
+
 ---
 
-## 5. Step 3 — running
+## 5. Model registry — Unity Catalog
+
+A published model is a Unity Catalog **registered model**, `catalog.schema.model`. Kumo reaches it
+through a `DatabricksConnector` on that catalog and schema; `ModelRegistryLocation.model_name` is
+the bare model name.
+
+```python
+registry_connector = kumo.DatabricksConnector(
+    catalog=REGISTRY_CATALOG, schema_name=REGISTRY_SCHEMA, identity=identity,
+    warehouse_id=WAREHOUSE_ID)
+```
+
+The user needs `USE CATALOG`, `USE SCHEMA` and `CREATE MODEL` on that schema to publish, and
+`EXECUTE` on the model to load it. Publishing creates the registered model when it does not exist.
+
+### 5.1 Publish during the requested fit
+
+**Unity Catalog assigns the version** — the next integer, `1` for a new model — and Kumo refuses a
+`ModelRegistryLocation` that names one when publishing. So a version the user asks to publish
+*as* ("as V1") cannot be honoured, and an existing version is never replaced: publishing always
+adds a new one. Say so at the gate and restate it — `Publish: <catalog.schema.model>, version
+assigned by Unity Catalog [default]` — rather than asking for a version.
+
+```python
+location = kumo.ModelRegistryLocation(model_name=MODEL_NAME)      # no version= here
+training_result = trainer.fit(
+    training_table, snapshot=snapshot,
+    export_config=kumo.ModelOutputConfig(connector=registry_connector, location=location))
+published = training_result.published_model
+if published is None:
+    raise RuntimeError('Fit returned no publication record')
+print(published.name, published.version, published.uri)   # the version Unity Catalog assigned
+```
+
+Report the assigned version; it is the one every later load names.
+
+### 5.2 Pick the version and load it
+
+Versions are positive integers. A user's `v2` or `V2` is version `2`; pass it as the string `'2'`.
+`version=None` loads the newest *ready Kumo* version, not a registry default — still pass the
+version explicitly, chosen as `kumo-model-persistence/references/reuse.md` says. To list versions
+(the counterpart of `SHOW VERSIONS`):
+
+```python
+from databricks.sdk import WorkspaceClient
+
+for v in WorkspaceClient().model_versions.list(
+        full_name=f'{REGISTRY_CATALOG}.{REGISTRY_SCHEMA}.{MODEL_NAME}'):
+    print(v.version, v.created_at, v.status)        # created_at: epoch milliseconds
+```
+
+"Latest" is the highest version whose status is `READY`; say which one that is and pass it.
+
+```python
+loaded = kumo.Trainer.load_from_connector(
+    registry_connector,
+    location=kumo.ModelRegistryLocation(model_name=MODEL_NAME, version=MODEL_VERSION))
+```
+
+Then rebuild the graph and score exactly as `reuse.md` says, writing to the §4 destination.
+Never delete a model version, and never publish to stand in for one that was deleted.
+
+> **Not verified:** publishing to and loading from Unity Catalog have not been run with this skill.
+
+---
+
+## 6. Retained artifacts — a volume
+
+What `kumo-model-persistence/references/retention.md` puts on a Snowflake stage goes to a Unity
+Catalog volume the user names: `/Volumes/<catalog>/<schema>/<volume>/<run prefix>/`. The cluster
+reads and writes volumes as ordinary paths. The volume must exist; if the user names none, ask.
+Creating one is a write that needs their confirmation.
+
+Build the archive with the packaged helper exactly as `retention.md` says, then copy it — never
+over an existing object — and check the copy's digest:
+
+```python
+import hashlib
+import shutil
+from pathlib import Path
+
+target = Path(VOLUME_PREFIX) / Path(ARCHIVE_PATH).name
+if target.exists():
+    raise FileExistsError(f'{target} exists; choose a new run prefix')
+target.parent.mkdir(parents=True, exist_ok=True)
+shutil.copyfile(ARCHIVE_PATH, target)
+copied = hashlib.sha256(target.read_bytes()).hexdigest()
+if copied != digest:
+    raise RuntimeError(f'Retained archive digest mismatch: {copied} != {digest}')
+print('retained:', target, digest)
+```
+
+To retrieve, copy the exact volume object into a fresh empty directory and pass that file to
+`restore_archive` with the recorded digest, as `retention.md` says.
+
+> **Not verified:** retention to a volume has not been run with this skill.
+
+---
+
+## 7. Step 3 — running
 
 Run only on explicit request (router Step 3).
 

@@ -72,7 +72,8 @@ HOSTS: dict[str, dict] = {
                     capability=True),
     # Databricks Genie Code. Its skills folder holds the one skill directory, like `generic`.
     'genie': dict(prefix='skills',
-                  hosts=['databricks-genie/adapter.md', 'databricks-genie/runtime.md'],
+                  hosts=['databricks-genie/adapter.md', 'databricks-genie/runtime.md',
+                         'databricks-genie/job.md'],
                   capability=True),
 }
 GENIE_SKILLS = '/Users/{user}/.assistant/skills'
