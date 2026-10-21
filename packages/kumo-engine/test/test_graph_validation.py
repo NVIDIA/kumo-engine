@@ -166,10 +166,14 @@ def test_omitted_self_relation_preserves_column_type(tables, original_stype):
                 if col.name == 'user_id').stype == original_stype
 
 
-def test_visualize_exports_escaped_svg_without_source_access(tmp_path):
+@pytest.mark.parametrize('alias, key', [
+    ('<script>alert("账户")</script> & customers', 'customer<&"账户'),
+    ('PURCHASES_AND_TRANSACTIONS', 'O' * 22),
+    ('Ж' * 27, 'Ш' * 22),
+])
+def test_visualize_exports_escaped_svg_without_source_access(
+        tmp_path, alias, key):
     users, events = _s3_tables()
-    alias = '<script>alert("账户")</script> & customers'
-    key = 'customer<&"账户'
     events = replace(
         events, definition=replace(
             events.definition, cols=[
@@ -195,6 +199,12 @@ def test_visualize_exports_escaped_svg_without_source_access(tmp_path):
     assert root.tag == '{http://www.w3.org/2000/svg}svg'
     text = ''.join(root.itertext())
     assert alias in text and key in text
+    if alias.isupper():
+        visible = [
+            element.text
+            for element in root.iter('{http://www.w3.org/2000/svg}text')
+        ]
+        assert alias not in visible and key not in visible
     assert not root.findall('.//{http://www.w3.org/2000/svg}script')
     assert all(not name.lower().startswith('on') for element in root.iter()
                for name in element.attrib)

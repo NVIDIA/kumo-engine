@@ -7,7 +7,7 @@ from collections import deque
 from html import escape
 from math import ceil, sqrt
 from typing import Mapping, Sequence
-from unicodedata import combining, east_asian_width
+from unicodedata import combining
 
 from kumoapi.graph import Edge, validate_edge_endpoints
 from kumoapi.table import TableDefinition
@@ -34,7 +34,7 @@ def _wrap(text: str, width: int) -> list[str]:
             raise ValueError('Table and column names must contain valid XML '
                              'characters to visualize them.')
         char_size = 0 if combining(char) else (
-            2 if east_asian_width(char) in ('W', 'F') or char in 'MWmw' else 1)
+            2 if code > 127 or char.isupper() or char in 'mw@%&#' else 1)
         while line and size + char_size > width:
             if split:
                 lines.append(line[:split])
