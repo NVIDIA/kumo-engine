@@ -98,11 +98,7 @@ class TrainingResult:
 
     @property
     def provenance(self) -> Optional[Dict[str, Any]]:
-        """The bundle's recorded fit provenance; None for older bundles.
-
-        Its `published_model` is the shipped checkpoint's fit mode, unlike
-        the registry record in `TrainingResult.published_model`.
-        """
+        """The bundle's recorded fit provenance; None for older bundles."""
         from kumo.engine.trainer._provenance import read_provenance
 
         return read_provenance(self.bundle_dir)
@@ -329,6 +325,12 @@ class Trainer:
         """Content id of the fitted or loaded model bundle."""
         return getattr(self._training_result, 'bundle_id', None)
 
+    @property
+    def provenance(self) -> Optional[Dict[str, Any]]:
+        """Fit provenance of the fitted or loaded bundle, if recorded."""
+        result = self._training_result
+        return None if result is None else result.provenance
+
     @_without_torch_scatter_hint
     def fit(
         self,
@@ -541,7 +543,7 @@ class Trainer:
 
         holdout_path, holdout_truncated = _published_holdout(
             result.best_trainer)
-        published_model = _published_fit_mode(result.best_trainer)
+        fit_mode = _published_fit_mode(result.best_trainer)
         training_result = TrainingResult(
             metrics=dict(result.metrics),
             artifact_paths=dict(result.artifact_paths),
@@ -561,8 +563,8 @@ class Trainer:
             provenance=dict(train_table=train_table,
                             snapshot_id=snapshot.id,
                             warm_start_bundle_id=warm_start_bundle_id,
-                            started_at=started_at,
-                            published_model=published_model),
+                            started_at=started_at, fit_mode=fit_mode,
+                            snapshot=snapshot),
         )
 
     def _finish_fit(

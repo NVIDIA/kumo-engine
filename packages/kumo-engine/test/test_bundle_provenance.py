@@ -106,14 +106,13 @@ def test_fit_records_listed_provenance(two_trials):
         'warm_start': None,
     }
     assert provenance['training_table'] == {
-        'id': table.tt_id,
         'source': 'pql',
-        'snapshot': snapshot.id,
+        'snapshot': snapshot.id
     }
-    assert not {'seed', 'bundle_format_version', 'trials'} & provenance.keys()
+    assert provenance['source_tables'] == (
+        snapshot.manifest['parents']['source_tables'])
     assert provenance['fit']['seconds'] >= 0
-    assert provenance['selected_trial'] in (0, 1)
-    assert provenance['published_model'] == 'refit_trainval'
+    assert provenance['fit_mode'] == 'refit_trainval'
     assert provenance['environment']['kumo_engine'] == kumo.__version__
     assert trainer.bundle_id == result.bundle_id
 
@@ -121,7 +120,9 @@ def test_fit_records_listed_provenance(two_trials):
 def test_bundle_id_is_content_identity(two_trials, tmp_path):
     trainer, result, *_ = two_trials
     assert re.fullmatch('[0-9a-f]{64}', result.bundle_id)
-    assert kumo.Trainer.load(result.bundle_dir).bundle_id == result.bundle_id
+    loaded = kumo.Trainer.load(result.bundle_dir)
+    assert loaded.bundle_id == result.bundle_id
+    assert loaded.provenance == result.provenance
     copy = tmp_path / 'copy'
     shutil.copytree(result.bundle_dir, copy)
     assert kumo.Trainer.load(copy).bundle_id == result.bundle_id
@@ -132,7 +133,7 @@ def test_bundle_id_is_content_identity(two_trials, tmp_path):
     add_bundle_file(copy, 'provenance', 'provenance.json')
     reloaded = kumo.Trainer.load(copy)
     assert reloaded.bundle_id == result.bundle_id
-    assert reloaded._training_result.provenance['fit']['seconds'] == -1
+    assert reloaded.provenance['fit']['seconds'] == -1
 
     config = copy / 'model' / 'config.json'
     config.write_text(config.read_text() + ' ')
@@ -149,14 +150,14 @@ def test_bundle_without_provenance_loads_and_predicts_identically(
 
     restored = kumo.Trainer.load(old)
     assert restored.bundle_id == result.bundle_id
-    assert restored._training_result.provenance is None
+    assert restored.provenance is None
     pd.testing.assert_frame_equal(_predict(restored, prediction_table,
                                            snapshot),
                                   _predict(trainer, prediction_table, snapshot))
 
     (old / 'provenance.json').write_text(json.dumps(result.provenance))
     stray = kumo.Trainer.load(old)
-    assert stray._training_result.provenance is None
+    assert stray.provenance is None
     assert stray.bundle_id == result.bundle_id
 
 
@@ -174,18 +175,17 @@ def _finish_stub_fit(tmp_path, trainer, manifest=None):
         provenance=dict(train_table=table, snapshot_id='snap',
                         warm_start_bundle_id=None,
                         started_at=datetime.now(timezone.utc),
-                        published_model=None))
+                        fit_mode=None))
 
 
 def test_provenance_without_a_table_manifest(tmp_path):
     result = _finish_stub_fit(tmp_path, kumo.Trainer(ModelPlan()))
     assert result.provenance['parents']['training_table'] == 'tt-1'
     assert result.provenance['training_table'] == {
-        'id': 'tt-1',
         'source': None,
         'snapshot': None
     }
-    assert result.provenance['published_model'] is None
+    assert result.provenance['source_tables'] is None
 
 
 def test_provenance_records_custom_table_source(tmp_path):
@@ -204,7 +204,6 @@ def test_provenance_records_custom_table_source(tmp_path):
     }
     result = _finish_stub_fit(tmp_path, kumo.Trainer(ModelPlan()), manifest)
     assert result.provenance['training_table'] == {
-        'id': 'tt-1',
         'source': 'custom',
         'snapshot': 'snap',
         **source_table,

@@ -1,12 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Descriptive fit record stored as ``provenance.json`` in a model bundle.
-
-It is integrity-covered by the publication manifest but excluded from the
-bundle id, so its volatile fields (times, environment, scheduler) never change
-which model a bundle is.
-"""
+"""Fit record in ``provenance.json``; excluded from the bundle id."""
 
 import json
 from datetime import datetime, timezone
@@ -14,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from kumo.engine._manifest import new_manifest, read_manifest, write_manifest
+from kumo.engine.graph import GraphSnapshot
 from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer._spec import MANIFEST_FILE, PROVENANCE_ROLE
 
@@ -25,11 +21,11 @@ def write_provenance(
     snapshot_id: str,
     warm_start_bundle_id: Optional[str],
     started_at: datetime,
-    published_model: Optional[str],
+    fit_mode: Optional[str],
+    snapshot: Optional[GraphSnapshot] = None,
 ) -> None:
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
 
-    config = _read_json(bundle_dir / 'model' / 'config.json') or {}
     finished_at = datetime.now(timezone.utc)
     tt_id = train_table.tt_id
     parents = {
@@ -47,19 +43,25 @@ def write_provenance(
                 'seconds': round((finished_at - started_at).total_seconds(),
                                  3),
             },
-            training_table=_training_table(tt_id, train_table.manifest),
-            selected_trial=config.get('version'),
-            published_model=published_model,
+            training_table=_training_table(train_table.manifest),
+            source_tables=_source_tables(snapshot),
+            fit_mode=fit_mode,
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
 
 
-def _training_table(tt_id: str,
-                    manifest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _source_tables(
+        snapshot: Optional[GraphSnapshot]) -> Optional[Dict[str, Any]]:
+    manifest = None if snapshot is None else snapshot.manifest
+    if not manifest or manifest.get('reconstructed'):
+        return None
+    return (manifest.get('parents') or {}).get('source_tables')
+
+
+def _training_table(manifest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     manifest = manifest or {}
     parents = manifest.get('parents') or {}
     record = {
-        'id': tt_id,
         'source': manifest.get('source'),
         'snapshot': parents.get('snapshot'),
     }
