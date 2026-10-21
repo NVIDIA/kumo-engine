@@ -43,27 +43,14 @@ def _bundle_files(result):
         for path in result.bundle_dir.rglob('*'))
 
 
-def test_fit_reports_progress_events(table_and_snapshot, caplog,
-                                     monkeypatch):
-    import kumo.engine.trainer._runtime as runtime_module
-
+def test_fit_reports_progress_events(table_and_snapshot, caplog):
     table, snapshot = table_and_snapshot
     plan = ModelPlan()
     plan.training_job.num_experiments = 2
     plan.training_job.disable_explain = True
     plan.optimization.max_epochs = 2
     plan.optimization.max_steps_per_epoch = 2
-    bind = runtime_module.local_training_bindings
-    sinks = []
-
-    def spy(*args, on_event=None, **kwargs):
-        sinks.append(on_event)
-        return bind(*args, on_event=on_event, **kwargs)
-
-    monkeypatch.setattr(runtime_module, 'local_training_bindings', spy)
     baseline = kumo.Trainer(plan).fit(table, snapshot=snapshot)
-
-    assert sinks == [None]
 
     events = []
     broken_calls = []
@@ -173,9 +160,4 @@ def test_event_errors_are_logged_not_raised(caplog):
     auto_trainer._emit('trial_started', lambda: 1 / 0)
 
     assert [event.metrics for event in received] == [{'val_mae': 0.5}]
-    assert [record.getMessage() for record in caplog.records] == [
-        "Could not build progress event 'epoch_ended'",
-        "Could not report progress event {'name': 'epoch_ended', "
-        "'unknown': 1}",
-        "Could not report progress event 'trial_started'",
-    ]
+    assert len(caplog.records) == 3

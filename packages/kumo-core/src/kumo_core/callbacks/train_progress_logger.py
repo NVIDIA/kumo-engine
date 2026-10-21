@@ -190,8 +190,6 @@ class AutoTrainingProgressLogger(MonitoringCallback):  # pragma: no cover
 
 
 class EpochEventEmitter(MonitoringCallback):
-    r"""Reports each finished training epoch's metrics to ``on_event``,
-    best-effort."""
     def __init__(self, on_event: Callable[[dict[str, Any]], None],
                  trial: int):
         super().__init__()

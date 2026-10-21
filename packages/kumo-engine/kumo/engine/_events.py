@@ -61,8 +61,6 @@ def _finite_floats(metrics: Mapping[str, Any]) -> Dict[str, float]:
 
 
 class EventEmitter:
-    r"""Delivers events to callbacks, best-effort: errors are logged as
-    warnings, and a callback that raises is not called again."""
     def __init__(self, run_id: str,
                  callbacks: Sequence[Callable[[Event], None]]) -> None:
         self.run_id = run_id
@@ -98,7 +96,6 @@ class EventEmitter:
 
     @property
     def core_sink(self) -> Optional[Callable[[Dict[str, Any]], None]]:
-        r"""Adapter for kumo-core's dict events, or None when nobody listens."""
         if not self._callbacks:
             return None
         return self._emit_core
