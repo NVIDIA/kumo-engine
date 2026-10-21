@@ -41,6 +41,26 @@ def test_snapshot_bound_query_predicts_like_graph_bound(fitted, tmp_path):
                                   expected)
 
 
+def test_predict_snapshot_scores_with_the_saved_query(fitted, tmp_path):
+    trainer, graph_table, snapshot = fitted
+    expected = _scores(trainer, graph_table, snapshot)
+
+    def scores(**options):
+        return trainer.predict_snapshot(
+            snapshot, binary_classification_threshold=0.5,
+            **options).frame.sort_values('ENTITY').reset_index(drop=True)
+
+    pd.testing.assert_frame_equal(scores(), expected)
+    pd.DataFrame({
+        'ENTITY1': range(50),
+        'TIMESTAMP': [pd.Timestamp(graph_table.timestamps[0])] * 50,
+    }).to_parquet(tmp_path / 'rows.parquet')
+    rows = kumo.FileConnector(root_dir=str(tmp_path))['rows.parquet']
+    pd.testing.assert_frame_equal(scores(entities=rows), expected)
+    with pytest.raises(ValueError, match='not both'):
+        scores(entities=rows, prediction_time=graph_table.timestamps[0])
+
+
 def test_snapshot_bound_query_checks_snapshot_graph(fitted):
     _, graph_table, snapshot = fitted
     query = kumo.PredictiveQuery.from_snapshot(snapshot, graph_table.query)

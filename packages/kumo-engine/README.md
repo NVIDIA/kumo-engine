@@ -413,8 +413,13 @@ Given `pquery = PredictiveQuery(graph, query)` and `snapshot = graph.snapshot()`
 suggest and customize a plan before training. A scoring job without `Graph`
 code loads the snapshot the training job exported
 (`GraphSnapshot.load_from_connector(store, path=location)`, where `location` is
-what `graph.snapshot().export(store, 'snapshots')` returned) and binds the query
-with `PredictiveQuery.from_snapshot(snapshot, trainer.training_query)`.
+what `graph.snapshot().export(store, 'snapshots')` returned) and scores it with
+`trainer.predict_snapshot(snapshot)`, which reuses the trained query and
+table-generation plan (`entities=` scores given rows instead;
+`prediction_time=`, `output_config=` and the thresholds are as in `predict`).
+`PredictiveQuery.from_snapshot(snapshot, trainer.training_query)` binds the
+query directly. Its graph check only means the snapshot belongs to the query's
+graph, not that it is compatible with the trained model.
 
 ```python
 from kumo.engine import Trainer

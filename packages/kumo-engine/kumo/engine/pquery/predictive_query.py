@@ -107,7 +107,13 @@ class PredictiveQuery:
     @classmethod
     def from_snapshot(cls, snapshot: GraphSnapshot,
                       query: str) -> 'PredictiveQuery':
-        r"""Bind `query` to `snapshot`'s graph without its `Graph` object."""
+        r"""Bind `query` to `snapshot`'s graph without its `Graph` object.
+
+        Snapshots passed to this query's methods must come from the same
+        graph (same `graph_key`). That only checks the snapshot belongs to
+        this query's graph; it says nothing about compatibility with a
+        trained model.
+        """
         return cls(graph=snapshot, query=query)
 
     @cached_property
