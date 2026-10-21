@@ -34,9 +34,7 @@ def tracking_uri(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def table_and_snapshot(tmp_path, monkeypatch, tracking_uri):
-    monkeypatch.setattr('kumo.engine._events._progress', None)
-    monkeypatch.delenv('KUMO_ENGINE_PROGRESS', raising=False)
+def table_and_snapshot(tmp_path, tracking_uri):
     previous_scratch = get_scratch_dir()
     kumo.configure(scratch_dir=tmp_path / 'scratch')
     try:
