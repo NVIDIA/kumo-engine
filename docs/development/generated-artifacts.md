@@ -43,3 +43,5 @@ This repository is the sole source of truth for DiskGraph. Edit
 instructions. There is no upstream synchronization or mirror verification.
 The [import records](../../tools/migrations/diskgraph/README.md) are historical
 provenance, not a constraint on subsequent changes.
+
+CI runs DiskGraph's Cargo tests, clippy, and Python binding tests in `.github/workflows/testing.yml`, and its license checks in `.github/workflows/license-notice.yml`.
