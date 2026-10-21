@@ -16,6 +16,7 @@ from kumo.engine.trainer._spec import PROVENANCE_ROLE, listed_file
 def write_provenance(
     bundle_dir: Path,
     *,
+    bundle_id: Optional[str],
     train_table: TrainingTable,
     warm_start_bundle_id: Optional[str],
     started_at: datetime,
@@ -32,7 +33,7 @@ def write_provenance(
     write_manifest(
         bundle_dir / PROVENANCE_FILE,
         new_manifest(
-            'model_bundle', None, parents,
+            'model_bundle', bundle_id, parents,
             fit={
                 'started_at': started_at.isoformat(timespec='seconds'),
                 'finished_at': finished_at.isoformat(timespec='seconds'),
