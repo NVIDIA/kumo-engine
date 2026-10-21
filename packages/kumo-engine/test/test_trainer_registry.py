@@ -668,3 +668,17 @@ def test_alias_needs_an_aliasing_sink() -> None:
     for kwargs in (dict(alias='prod', version='3'), dict(alias='')):
         with pytest.raises(ValueError, match='alias'):
             ModelRegistryLocation('m', **kwargs)
+
+
+def test_invalid_export_alias_is_rejected_before_publishing(
+        tmp_path: Path) -> None:
+    sink = _AliasingSink()
+    trainer = Trainer(ModelPlan())
+    trainer._training_result = TrainingResult({}, {},
+                                              _fake_published_bundle(tmp_path))
+    with pytest.raises(ValueError, match='model alias'):
+        trainer.export(
+            SimpleNamespace(
+                connector=SimpleNamespace(sink_backend=sink), path=None,
+                location=ModelRegistryLocation('CHURN_GNN', alias='LATEST')))
+    assert sink.published == {}

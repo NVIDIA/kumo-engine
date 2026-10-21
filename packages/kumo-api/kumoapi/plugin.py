@@ -21,6 +21,7 @@ distribution, be consumed by the Kumo platform, and still be loaded by
 :class:`~kumoai_studio.backend.LocalBackend`.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -70,7 +71,8 @@ ENGINE_MARKER = 'kumo_engine'
 #: Registry metadata key holding the version's bundle id; the bundle's own
 #: provenance.json holds its lineage.
 BUNDLE_ID_KEY = 'kumo_bundle_id'
-_RESERVED_ALIASES = frozenset({'DEFAULT', 'FIRST', 'LAST'})
+_ALIAS = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,254}')
+_RESERVED_ALIAS = re.compile(r'DEFAULT|FIRST|LAST|LATEST|V[0-9]+', re.I)
 
 
 @dataclass(frozen=True)
@@ -737,17 +739,16 @@ class ModelAliasingSink(ArtifactSink, Protocol):
 
 def check_model_alias(alias: str) -> None:
     r"""Raises :class:`ValueError` unless every model registry can set
-    :obj:`alias`: non-empty, not a Snowflake system alias (``DEFAULT``,
-    ``FIRST``, ``LAST``) and not SageMaker's ``SageMakerLifecycle-``."""
-    if not isinstance(alias, str) or not alias.strip():
-        raise ValueError(f'A model alias must be a non-empty name, not '
-                         f'{alias!r}.')
-    if (alias.upper() in _RESERVED_ALIASES
-            or alias.lower().startswith('sagemakerlifecycle-')):
+    :obj:`alias`: a letter or underscore, then letters, digits or underscores
+    (at most 255), and not ``DEFAULT``, ``FIRST``, ``LAST``, ``LATEST`` or
+    ``v<digits>`` in any case."""
+    if (not isinstance(alias, str) or not _ALIAS.fullmatch(alias)
+            or _RESERVED_ALIAS.fullmatch(alias)):
         raise ValueError(
-            f'{alias!r} is reserved by a model registry; set it with the '
-            f'registry directly (for DEFAULT: ALTER MODEL ... SET '
-            f'DEFAULT_VERSION).')
+            f'{alias!r} cannot be set as a model alias: use letters, digits '
+            f'and underscores, starting with a letter or underscore, and '
+            f'avoid the reserved DEFAULT, FIRST, LAST, LATEST and v<digits> '
+            f'(for DEFAULT use ALTER MODEL ... SET DEFAULT_VERSION).')
 
 
 def registry_lineage(recorded: Mapping[str, Any]) -> Dict[str, str]:

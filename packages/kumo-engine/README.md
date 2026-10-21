@@ -570,8 +570,7 @@ exported snapshot with `GraphSnapshot.load_from_connector(...)` and calls
 source data or graph storage.
 
 With `export_config`, `result.published_model` records the assigned name, version,
-and URI; otherwise it is `None`. Snowflake also records training metrics and
-metadata for model discovery and comparison. Retain the assigned version for reload:
+and URI; otherwise it is `None`. Retain the assigned version for reload:
 
 ```python
 result = trainer.fit(
@@ -607,14 +606,17 @@ trainer = Trainer.load_from_connector(registry, location=ModelRegistryLocation(
     "CHURN_GNN", alias="prod"))
 ```
 
-An export alias is set after publishing; if that fails, `fit()` warns and still
-returns the published model. Snowflake allows one alias per version and reserves
-`DEFAULT`, `FIRST` and `LAST`, which can be loaded but not set. File, S3 and GCS
-connectors have no aliases.
+An alias is a letter or underscore followed by letters, digits or underscores;
+`DEFAULT`, `FIRST`, `LAST`, `LATEST` and `v<digits>` are reserved, and `fit()`
+rejects an invalid export alias before training. The alias is set after
+publishing; if that fails, `fit()` warns and still returns the published model.
+Snowflake allows one alias per version; if moving an alias fails, it is put
+back on the version that held it. Snowflake's `DEFAULT`, `FIRST` and `LAST` can
+be loaded but not set. File, S3 and GCS connectors have no aliases.
 
 Each published version records only pointers: the `kumo_engine` marker and
-`kumo_bundle_id` (Snowflake version metrics, which also hold the training
-metrics; Databricks version tags). The bundle's own `provenance.json` holds its
+`kumo_bundle_id` (Snowflake version metrics, Databricks version tags). Training
+metrics stay in the bundle's `metrics.json` and on the tracked fit run. The bundle's own `provenance.json` holds its
 lineage. `list_models` and `fetch_model` return `kumo_bundle_id` in
 `PublishedModel.metadata`; `load_from_connector`
 warns if the fetched bundle differs from the recorded `kumo_bundle_id`.

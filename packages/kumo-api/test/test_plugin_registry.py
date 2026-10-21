@@ -6,8 +6,10 @@ import pytest
 from kumoapi.plugin import check_model_alias, registry_lineage
 
 
-@pytest.mark.parametrize(
-    'alias', ['', ' ', 'default', 'LAST', 'SageMakerLifecycle-prod', None])
+@pytest.mark.parametrize('alias', [
+    '', ' ', 'default', 'LAST', 'Latest', 'v3', 'my-alias', '2nd', 'a' * 256,
+    None
+])
 def test_check_model_alias_refuses_what_a_registry_reserves(alias):
     with pytest.raises(ValueError):
         check_model_alias(alias)
@@ -15,6 +17,7 @@ def test_check_model_alias_refuses_what_a_registry_reserves(alias):
 
 def test_check_model_alias_accepts_a_plain_name():
     check_model_alias('champion')
+    check_model_alias('_v2_prod')
 
 
 def test_registry_lineage_keeps_kumo_keys_as_strings():

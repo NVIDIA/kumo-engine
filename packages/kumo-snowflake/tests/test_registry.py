@@ -86,7 +86,7 @@ def test_invalid_metrics_preserve_previous_destination(fetch, payload):
     'kumo_bundle_id': 'b1',
     'kumo_engine': '0'
 }])
-def test_publish_records_engine_marker_and_metrics_in_catalog(
+def test_publish_records_only_pointers_in_catalog(
         tmp_path, monkeypatch, metadata):
     bundle = tmp_path / 'bundle'
     bundle.mkdir()
@@ -112,7 +112,6 @@ def test_publish_records_engine_marker_and_metrics_in_catalog(
                                    metadata=metadata,
                                    metrics={'auc': 0.92, 'loss': float('nan')})
     assert calls[0]['metrics'] == {
-        'auc': 0.92,
         **({'kumo_bundle_id': 'b1'} if metadata else {}), 'kumo_engine': '1'
     }
     assert published.metadata == metadata
@@ -237,3 +236,24 @@ def test_fetch_by_alias_reads_the_aliased_version(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match='holds alias'):
         sink.fetch_model(SimpleNamespace(), str(tmp_path / 'other'),
                          location=ModelRegistryLocation('CHURN', alias='V1'))
+
+
+def test_failed_alias_move_puts_it_back(monkeypatch):
+    model = _Model({'V1': ['PROD'], 'V2': []})
+
+    def fail(alias):
+        raise RuntimeError('lost connection')
+
+    def failing_version(name):
+        version = _Model.version(model, name)
+        if name == 'V2':
+            version.set_alias = fail
+        return version
+
+    model.version = failing_version
+    sink = _aliasing_sink(monkeypatch, model)
+    with pytest.raises(RuntimeError, match='lost connection'):
+        sink.set_model_alias(SimpleNamespace(),
+                             ModelRegistryLocation('CHURN', version='V2'),
+                             'prod')
+    assert model.aliases == {'V1': ['PROD'], 'V2': []}

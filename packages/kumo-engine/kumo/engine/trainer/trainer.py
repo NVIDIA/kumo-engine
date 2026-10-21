@@ -38,6 +38,7 @@ from kumoapi.plugin import (
     ModelRegistryLocation,
     PublishedModel,
     SourceConnector,
+    check_model_alias,
 )
 from kumoapi.train import TrainingStage
 from typing_extensions import Self
@@ -243,6 +244,8 @@ def _require_publisher(export_config: ModelOutputConfig) -> None:
         raise NotImplementedError(
             f'{type(export_config.connector).__name__} cannot publish '
             f'models')
+    if export_config.location and export_config.location.alias:
+        check_model_alias(export_config.location.alias)
 
 
 def _publish(training_result: TrainingResult,

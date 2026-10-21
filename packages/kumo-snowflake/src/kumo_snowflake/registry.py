@@ -34,7 +34,6 @@ under today. That path is snowflake-ml's private layout; the marker is ours.
 
 import json
 import logging
-import math
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
@@ -81,7 +80,6 @@ _SPEC_FILE = 'training-spec.json'
 #: merely happens to be named alike.
 _MANIFEST_FILE = 'publication-manifest.json'
 
-_METRICS_LIMIT = 100_000
 _SYSTEM_ALIASES = frozenset({'DEFAULT', 'FIRST', 'LAST'})
 
 _LOG = logging.getLogger(__name__)
@@ -218,21 +216,10 @@ def _refuse_path(path: Optional[str], action: str) -> None:
             f'a path.')
 
 
-def _version_record(metadata: Mapping[str, str],
-                    metrics: Mapping[str, float]) -> Dict[str, Any]:
-    record: Dict[str, Any] = {
-        name: value
-        for name, value in metrics.items()
-        if isinstance(value, (int, float)) and math.isfinite(value)
-    }
-    pointers = {ENGINE_MARKER: '1'}
+def _version_record(metadata: Mapping[str, str]) -> Dict[str, str]:
+    record = {ENGINE_MARKER: '1'}
     if metadata.get(BUNDLE_ID_KEY):
-        pointers[BUNDLE_ID_KEY] = str(metadata[BUNDLE_ID_KEY])
-    record.update(pointers)
-    if len(json.dumps(record)) > _METRICS_LIMIT:
-        _LOG.warning('Training metrics exceed the registry metadata limit '
-                     'and are recorded only in the bundle.')
-        return pointers
+        record[BUNDLE_ID_KEY] = str(metadata[BUNDLE_ID_KEY])
     return record
 
 
@@ -250,6 +237,17 @@ def _alias_holders(model: Any) -> Dict[str, str]:
         for alias in json.loads(row.get('aliases') or '[]'):
             holders[alias] = str(row['name'])
     return holders
+
+
+def _restore_alias(model: Any, version: str, alias: str) -> None:
+    try:
+        model.version(version).set_alias(alias)
+    except Exception as error:
+        _LOG.warning('Alias %s is now unset: restoring it on version %s '
+                     'failed: %s', alias, version, error)
+    else:
+        _LOG.warning('Could not move alias %s; it stays on version %s.',
+                     alias, version)
 
 
 class SnowflakeModelRegistryMixin:
@@ -312,8 +310,8 @@ class SnowflakeModelRegistryMixin:
                 this reports back what it created.
             metadata: Returned with the publication result; its
                 ``kumo_bundle_id`` is also recorded in the version's metrics.
-            metrics: Returned with the publication result, and recorded in
-                the version's metrics when finite.
+            metrics: Returned with the publication result. Training metrics
+                remain in the bundle's metrics.json.
             project_id: Ignored; a local runtime has no projects.
 
         Returns:
@@ -331,7 +329,7 @@ class SnowflakeModelRegistryMixin:
                 f"{bundle} does not look like a published model bundle: it "
                 f"has no {_SPEC_FILE}, which an export writes into every one.")
 
-        record = _version_record(metadata, metrics)
+        record = _version_record(metadata)
         with self._registry(connector) as registry:
             version = registry.log_model(
                 _bundle_model(str(bundle)),
@@ -459,7 +457,8 @@ class SnowflakeModelRegistryMixin:
     ) -> None:
         r"""Points :obj:`alias` at ``location.version``, moving it if held.
 
-        Snowflake allows one alias per version; moving one is not atomic.
+        Snowflake allows one alias per version. A failed move puts the alias
+        back on the version that held it.
         """
         if location.version is None:
             raise ValueError('Setting an alias needs a ModelRegistryLocation '
@@ -482,6 +481,12 @@ class SnowflakeModelRegistryMixin:
                 raise ValueError(
                     f'Version {name} of {location.model_name} already holds '
                     f'alias {held[0]}; unset it first.')
-            if wanted in holders:
-                model.version(alias).unset_alias(alias)
-            target.set_alias(alias)
+            previous = holders.get(wanted)
+            if previous is not None:
+                model.version(previous).unset_alias(alias)
+            try:
+                target.set_alias(alias)
+            except Exception:
+                if previous is not None:
+                    _restore_alias(model, previous, alias)
+                raise
