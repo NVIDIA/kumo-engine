@@ -10,7 +10,7 @@ cloud SDK's `kumo.PredictiveQuery(graph=graph, query=QUERY)` -- not a
 snapshot instead and parses against `snapshot.graph_config`.
 
 Parsing (`kumo_core.pquery.parse_and_validate_query` against
-`self._native_graph`, needing no materialized index) happens lazily, on first
+`self.graph.native_graph`, needing no materialized index) happens lazily, on first
 access to the `_parsed` `cached_property`, and only once:
 `validate()`/`get_task_type()` both read that same property rather than
 re-parsing on every call. Confirmed against the existing local backend's own
@@ -59,9 +59,7 @@ from kumo_core.model_plan import (
 )
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
-    NativeGraph,
     ValidatedNativeQuery,
-    normalize_graph,
     parse_and_validate_query,
     query_is_temporal,
     resolve_query_split,
@@ -113,20 +111,8 @@ class PredictiveQuery:
         return cls(graph=snapshot, query=query)
 
     @cached_property
-    def _native_graph(self) -> NativeGraph:
-        if isinstance(self.graph, GraphSnapshot):
-            return normalize_graph(self.graph.graph_config)
-        return self.graph.native_graph
-
-    @property
-    def _graph_id(self) -> str:
-        if isinstance(self.graph, GraphSnapshot):
-            return self.graph.id.partition('@')[0]
-        return self.graph.id
-
-    @cached_property
     def _parsed(self) -> ValidatedNativeQuery:
-        r"""Parses and validates `self.query` against `self._native_graph`,
+        r"""Parses and validates `self.query` against `self.graph.native_graph`,
         via `kumo_core.pquery.parse_and_validate_query` --
         the same parser `Trainer._predict` already calls directly, and what
         `kumo_core.training.workflow.TrainingWorkflowRequest.from_spec`
@@ -148,19 +134,19 @@ class PredictiveQuery:
         `ValidatedNativeQuery` are all plain `str`; `get_task_type` below
         wraps `task_type` into the shared, public `kumoapi.task.TaskType`.
         """
-        return parse_and_validate_query(self.query, self._native_graph)
+        return parse_and_validate_query(self.query, self.graph.native_graph)
 
     def _require_matching_snapshot(self, snapshot: GraphSnapshot) -> None:
-        # snapshot.id is 'graph_key@data_version_prefix' (see
-        # Graph.snapshot()); self._graph_id is the graph_key alone, so
-        # membership is a prefix check, not equality.
-        if isinstance(self.graph, GraphSnapshot) and (snapshot.id
-                                                      == self.graph.id):
-            return
-        if not snapshot.id.startswith(f'{self._graph_id}@'):
+        if isinstance(self.graph, GraphSnapshot):
+            if snapshot.id == self.graph.id:
+                return
+            graph_key = self.graph.graph_key
+        else:
+            graph_key = self.graph.id
+        if snapshot.graph_key != graph_key:
             raise ValueError(
                 f"snapshot {snapshot.id!r} was not materialized from "
-                f"this query's graph (id {self._graph_id!r}) -- pass a "
+                f"this query's graph (id {graph_key!r}) -- pass a "
                 "snapshot of that graph.")
 
     def validate(self, verbose: bool = True) -> ValidationResponse:
@@ -193,7 +179,7 @@ class PredictiveQuery:
 
     def _model_plan_validation_facts(self, run_mode: RunMode) -> dict[str, Any]:
         parsed = self._parsed
-        graph = self._native_graph
+        graph = self.graph.native_graph
         entity_tables = [parsed.entity_table]
         if parsed.rhs_node_type is not None:
             entity_tables.append(parsed.rhs_node_type)
