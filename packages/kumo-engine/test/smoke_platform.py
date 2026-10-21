@@ -16,6 +16,7 @@ import sys
 import numpy as np
 import pandas as pd
 import torch
+from kumo_core.diskgraph.runner import DiskgraphIngestError
 from kumoapi.model_plan import ModelPlan
 from torch.optim.optimizer import register_optimizer_step_post_hook
 
@@ -110,5 +111,10 @@ def test_platform_train_predict(tmp_path, tmp_path_factory, monkeypatch):
               f'{device} optimizer steps, '
               f'{len(frame)} finite predictions',
               flush=True)
+    except DiskgraphIngestError as error:
+        # This test uses only generated fixture data; expose its subprocess
+        # diagnostics without changing production error privacy or retrying.
+        print(error.private_output_tail, file=sys.stderr, flush=True)
+        raise
     finally:
         kumo.configure(scratch_dir=previous)
