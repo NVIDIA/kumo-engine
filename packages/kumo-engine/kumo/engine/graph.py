@@ -314,7 +314,7 @@ class GraphSnapshot:
     @property
     def graph_key(self) -> str:
         """The `Graph.id` this snapshot was built from."""
-        return Path(self.index_path).parent.name
+        return self.id.partition('@')[0]
 
     @property
     def data_version(self) -> str:
