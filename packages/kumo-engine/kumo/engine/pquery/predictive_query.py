@@ -7,9 +7,7 @@ of scope for this package.
 `PredictiveQuery(graph, query)` binds a `Graph` at construction, matching the
 cloud SDK's `kumo.PredictiveQuery(graph=graph, query=QUERY)` -- not a
 `GraphSnapshot`. `PredictiveQuery.from_snapshot(snapshot, query)` binds a
-snapshot instead, for callers that load a snapshot without its `Graph`; the
-query then parses against `snapshot.graph_config`, the same portable config
-the source `Graph` produces.
+snapshot instead and parses against `snapshot.graph_config`.
 
 Parsing (`kumo_core.pquery.parse_and_validate_query` against
 `self._native_graph`, needing no materialized index) happens lazily, on first
@@ -149,9 +147,6 @@ class PredictiveQuery:
         `task_type`/`task_family`/`query_type` on the returned
         `ValidatedNativeQuery` are all plain `str`; `get_task_type` below
         wraps `task_type` into the shared, public `kumoapi.task.TaskType`.
-
-        For a `Graph`, reuses its cached `native_graph`, shared by
-        `Graph.validate()` and every `PredictiveQuery` bound to it.
         """
         return parse_and_validate_query(self.query, self._native_graph)
 
