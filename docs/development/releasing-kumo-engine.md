@@ -29,6 +29,11 @@ uses by default to encode text columns; without it, a text column cannot be
 encoded and the error asks for `pip install "kumo-engine[text]"`.
 `torch-geometric>=2.8.1,<3` is also resolved separately at install time.
 
+Faiss is selected at install time: `faiss-gpu==1.14.3` on Linux and
+`faiss-cpu==1.14.3` on macOS. These markers live on the engine's direct
+dependencies so merging bundled packages preserves them. This dependency
+selection does not establish macOS wheel or runtime support.
+
 Releases are cut from `NVIDIA/kumo-engine`: its GitHub releases trigger the
 workflows below, which attach the wheels to the release. Their `kitmaker` job
 then has Kitmaker, NVIDIA's release service, fetch the attached wheel and
@@ -152,6 +157,12 @@ Needs `cargo` (and `cargo-zigbuild`, installed on demand), a current committed
 access for component build dependencies. `--verify-image IMAGE` installs the
 wheel into a Docker image and checks that the closure imports and that provider
 dependencies are absent from a bare install.
+
+On Apple Silicon, the same script builds a native macOS wheel with
+`MACOSX_DEPLOYMENT_TARGET=14.0` by default. It disables Zig and glibc checks
+and takes the final platform tag from the built DiskGraph wheel. Rust, Xcode
+Command Line Tools, and CMake are required. This local build path does not
+add macOS publication to the release workflow.
 
 ## PyPI projects
 

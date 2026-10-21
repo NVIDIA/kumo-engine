@@ -1652,6 +1652,7 @@ async def test_sql_inflight_reuses_only_matching_queries(
     release = threading.Event()
     lock = threading.Lock()
     queries = []
+    closed = []
     expected = 1 if same_query else 2
     loop = asyncio.get_running_loop()
 
@@ -1667,7 +1668,13 @@ async def test_sql_inflight_reuses_only_matching_queries(
         result.fetchall_arrow.return_value = pa.table({'query': [query]})
         return result
 
+    def close(*args):
+        # Mock.call_count can lose increments across executor threads.
+        with lock:
+            closed.append(True)
+
     context.cursor.return_value.__enter__.return_value.execute.side_effect = execute
+    context.cursor.return_value.__exit__.side_effect = close
     requested = ['SELECT 1', 'SELECT 1' if same_query else 'SELECT 2']
     method = getattr(connector, entrypoint)
     tasks = [
@@ -1689,7 +1696,7 @@ async def test_sql_inflight_reuses_only_matching_queries(
         assert [str(error) for error in results] == ['query failed'] * 2
     else:
         assert [frame['query'].iloc[0] for frame in results] == requested
-    assert context.cursor.return_value.__exit__.call_count == expected
+    assert len(closed) == expected
 
 
 def _metadata_connector(rows=()):

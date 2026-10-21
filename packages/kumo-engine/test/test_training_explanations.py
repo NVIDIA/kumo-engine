@@ -21,14 +21,16 @@ from kumo.engine import Trainer, TrainingTable
     (False, True, False),
     (False, False, True),
 ])
+@pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
 def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
                                                      monkeypatch, caplog,
                                                      staged_seed_dir, disabled,
                                                      explain_fails,
-                                                     aggregate_fails):
+                                                     aggregate_fails,
+                                                     accelerator):
     plan = ModelPlan()
     plan.training_job.disable_explain = disabled
-    trainer = Trainer(plan)
+    trainer = Trainer(plan, accelerator=accelerator)
     monkeypatch.setattr(type(trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
     table = TrainingTable(
@@ -62,6 +64,8 @@ def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
         'kumo.engine.trainer.trainer.aggregate_subgraph_features', aggregate)
 
     def train(training_input, **kwargs):
+        assert kwargs['bindings'].runtime.trainer_runtime_kwargs()[
+            'accelerator'] == accelerator
         events.append('train')
         return SimpleNamespace(
             metrics={'test_accuracy': 0.8},

@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+from types import SimpleNamespace
+
 import pytest
 import torch
 import torchmetrics
@@ -113,6 +115,97 @@ def test_metric_store() -> None:
         m = metric_store.get_metric_collection(stage)
         assert isinstance(m, torchmetrics.MetricCollection)
         assert set(m.keys()) == {f'{stage}_{metric}' for metric in metrics}
+
+
+@pytest.mark.parametrize('device', ['cpu', 'cuda', 'mps'])
+@pytest.mark.parametrize('stage', TrainingStage.list_stages())
+def test_large_classification_metrics(
+    device: str,
+    stage: TrainingStage,
+) -> None:
+    if device == 'cuda' and not torch.cuda.is_available():
+        pytest.skip('CUDA unavailable')
+    if device == 'mps' and not torch.backends.mps.is_available():
+        pytest.skip('MPS unavailable')
+
+    generator = torch.Generator().manual_seed(17)
+    # More than 2**16 distinct thresholds triggers the MPS padding bug.
+    pred = torch.rand(70_257, generator=generator)
+    target = torch.randint(2, (len(pred), ), generator=generator)
+    encoder = Index()
+    encoder._stats = {ColStatType.CATEGORY_COUNTS: [['A', 1], ['B', 1]]}
+    target_encoder = TargetEncoder.from_encoder(
+        TaskType.BINARY_CLASSIFICATION, encoder)
+
+    def make_store(device: str) -> MetricStore:
+        return MetricStore(
+            TaskType.BINARY_CLASSIFICATION, target_encoder).init_metrics(
+                ['ap', 'auroc', 'auprc'], torch.nn.Module()).to(device)
+
+    reference = make_store('cpu').get_metric_collection(stage)
+    reference.update(pred, target)
+    expected = reference.compute()
+    store = make_store(device)
+    for _ in range(2):
+        for batch_pred, batch_target in zip(pred.split(512),
+                                           target.split(512)):
+            metric = store.get_metric_collection(stage)
+            metric.update(batch_pred.to(device), batch_target.to(device))
+
+        metric = store.get_metric_collection(stage)
+        assert isinstance(metric, torchmetrics.MetricCollection)
+        for member in metric.values(copy_state=False):
+            assert isinstance(
+                member, torchmetrics.classification.BinaryPrecisionRecallCurve)
+            assert member.compute_on_cpu == (device == 'mps')
+            assert member.preds[0].device.type == (
+                'cpu' if device == 'mps' else device)
+        for name, value in metric.compute().items():
+            torch.testing.assert_close(value.cpu(), expected[name])
+        metric.reset()
+
+
+@pytest.mark.parametrize('device', ['cpu', 'cuda', 'mps'])
+def test_large_multilabel_metrics(device: str) -> None:
+    from kumo_core.train.base_module import BaseLightningModule
+
+    if device == 'cuda' and not torch.cuda.is_available():
+        pytest.skip('CUDA unavailable')
+    if device == 'mps' and not torch.backends.mps.is_available():
+        pytest.skip('MPS unavailable')
+
+    encoder = Index()
+    encoder._stats = {ColStatType.CATEGORY_COUNTS: [['A', 1], ['B', 1]]}
+    target_encoder = TargetEncoder.from_encoder(
+        TaskType.MULTILABEL_CLASSIFICATION, encoder)
+    generator = torch.Generator().manual_seed(17)
+    pred = torch.randn(70_257, 2, generator=generator)
+    target = torch.randint(2, pred.shape, generator=generator)
+    expected = None
+    for metric_device in ['cpu', device]:
+        store = MetricStore(
+            TaskType.MULTILABEL_CLASSIFICATION, target_encoder).init_metrics(
+                ['ap_macro', 'auroc_macro', 'auprc_macro'],
+                torch.nn.Module()).to(metric_device)
+        for batch_pred, batch_target in zip(pred.split(512),
+                                           target.split(512)):
+            store.get_metric_collection(TrainingStage.TRAIN).update(
+                batch_pred.to(metric_device), batch_target.to(metric_device))
+        module = SimpleNamespace(
+            metric_store=store,
+            task_type=TaskType.MULTILABEL_CLASSIFICATION,
+            max_multilabel_samples=100_000_000,
+            device=torch.device(metric_device),
+            is_fitting=True,
+            log_epoch=lambda *args: None,
+        )
+        actual = BaseLightningModule.compute_metrics(module,
+                                                    TrainingStage.TRAIN)
+        if expected is None:
+            expected = actual
+        else:
+            for name, value in actual.items():
+                torch.testing.assert_close(value.cpu(), expected[name])
 
 
 def test_validate_diversity() -> None:

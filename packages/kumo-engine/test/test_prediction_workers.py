@@ -79,7 +79,7 @@ def test_bad_class_count_fails_before_prediction_work(count, monkeypatch):
 @pytest.mark.parametrize('count', [None, 1, 3])
 def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
                                           monkeypatch):
-    trainer = Trainer(ModelPlan())
+    trainer = Trainer(ModelPlan(), accelerator='cpu')
     trainer._training_result = SimpleNamespace(artifact_paths={})
     trainer._training_query = 'trained query'
     monkeypatch.setattr(Trainer, 'scratch_dir', property(lambda self: tmp_path))
@@ -117,13 +117,16 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
     trainer.predict(table, snapshot=snapshot, num_classes_to_return=count)
 
     assert score.call_args.kwargs['top_k'] == count
+    assert score.call_args.kwargs['accelerator'] == 'cpu'
 
 
 @pytest.mark.parametrize('population,requested,expected', [(7, 3, 3), (1, 3, 1),
                                                            (0, 3, 0)])
 @pytest.mark.parametrize('extra_fields', [None, {'PREDICTIONS': []}])
+@pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
 def test_partition_counts_devices_and_runtime_allocation(
-        tmp_path, monkeypatch, population, requested, expected, extra_fields):
+        tmp_path, monkeypatch, population, requested, expected, extra_fields,
+        accelerator):
     from kumo_core.resolved_task import ResolvedNumericalTask
     from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
     loads, calls = [], []
@@ -151,7 +154,7 @@ def test_partition_counts_devices_and_runtime_allocation(
 
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load', load)
     monkeypatch.setattr(prediction, '_prediction_worker_devices',
-                        lambda n: tuple(range(n)))
+                        lambda n, accelerator=None: tuple(range(n)))
     monkeypatch.setattr(
         prediction, '_run_prediction_workers',
         lambda n, score, kw: [score(worker_id=i, **kw) for i in range(n)])
@@ -161,7 +164,7 @@ def test_partition_counts_devices_and_runtime_allocation(
         run_id='run', scratch_dir=str(tmp_path),
         artifacts=frozenset({PredictionArtifactType.PREDICTIONS}),
         num_workers=requested, extra_fields=extra_fields,
-        graph_snapshot_id='snapshot',
+        accelerator=accelerator, graph_snapshot_id='snapshot',
         source_config_sha256='2' * 64, embedding_models=store)
     if not expected:
         with pytest.raises(RuntimeError, match='wrote no parquet'):
@@ -173,6 +176,7 @@ def test_partition_counts_devices_and_runtime_allocation(
     assert len(calls) == expected
     assert [load['devices'] for load in loads] == [[i] for i in range(expected)]
     assert all(load['embedding_models'] is store for load in loads)
+    assert all(load.get('accelerator') == accelerator for load in loads)
     assert [call['partition_id'] for call in calls] == list(range(expected))
     assert [call['output_partition_ids']
             for call in calls] == [[i] for i in range(expected)]
@@ -191,7 +195,26 @@ def test_cuda_device_admission(monkeypatch):
         prediction._prediction_worker_devices(2)
     assert prediction._prediction_worker_devices(1) == (None, )
     monkeypatch.setenv('KUMO_ACCELERATOR', 'cpu')
-    assert prediction._prediction_worker_devices(2) == (None, None)
+    with pytest.raises(ValueError, match='only 1 are visible'):
+        prediction._prediction_worker_devices(2)
+    assert prediction._prediction_worker_devices(2, 'cpu') == (None, None)
+
+
+@pytest.mark.parametrize('accelerator', ['cpu', 'mps'])
+def test_explicit_accelerator_skips_cuda_admission(monkeypatch, accelerator):
+    import torch
+    monkeypatch.setenv('KUMO_ACCELERATOR', 'gpu')
+    monkeypatch.setattr(torch.cuda, 'device_count', lambda: 1)
+    assert prediction._prediction_worker_devices(2, accelerator) == (None, None)
+
+
+@pytest.mark.parametrize('accelerator', ['auto', 'gpu'])
+def test_explicit_gpu_selection_overrides_cpu_environment(
+        monkeypatch, accelerator):
+    import torch
+    monkeypatch.setenv('KUMO_ACCELERATOR', 'cpu')
+    monkeypatch.setattr(torch.cuda, 'device_count', lambda: 2)
+    assert prediction._prediction_worker_devices(2, accelerator) == (0, 1)
 
 
 @pytest.mark.parametrize('mismatch', [False, True])
@@ -243,7 +266,7 @@ def test_forecast_options_reach_every_scorer_before_output(
         predict=lambda **kwargs: predicted.append(kwargs),
     )
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load', lambda *a, **k: trainer)
-    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda n:
+    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda n, accelerator=None:
                         (None, ) * n)
     monkeypatch.setattr(
         prediction, '_run_prediction_workers',
