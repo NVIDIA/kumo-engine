@@ -22,6 +22,10 @@ _LOCATED_CONNECTORS = frozenset(
 def _build_commit(version: str) -> Optional[str]:
     if '+' in version:
         return version.split('+', 1)[1]
+    from kumo.engine import _version
+    stamped = getattr(_version, 'BUILD_COMMIT', None)
+    if stamped:
+        return stamped
     root = Path(__file__).resolve().parents[2]
     if not (root / 'pyproject.toml').is_file():
         return None

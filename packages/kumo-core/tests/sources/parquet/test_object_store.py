@@ -144,9 +144,9 @@ def test_version_uses_only_metadata_for_recursive_sources(root, table):
     reader = ObjectStoreSourceReader(MetadataOnlyFilesystem(), root=str(root))
     version = reader.data_version(table)
     if table in ("events", "hive"):
-        assert len(version) == 64
+        assert (len(version), version.kind) == (64, "listing")
     else:
-        assert int(version) > 0
+        assert int(version) > 0 and version.kind == "timestamp"
 
 
 def test_version_of_exact_root_does_not_probe_other_suffixes(root):
