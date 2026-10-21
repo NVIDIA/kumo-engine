@@ -38,12 +38,11 @@ passed ingestion, four CUDA optimizer steps, and 100 finite predictions
 It used WSL2 kernel `6.6.114.1-microsoft`, x86-64, Python 3.12.3,
 Torch 2.12.0+cu130, and a Tesla T4 with driver 596.36.
 
-On GitHub-hosted Windows 2022, [run 39663965343](https://github.com/NVIDIA/kumo-engine/actions/runs/39663965343)
-completed real ingestion and CPU fitting, including finite gradients and
-training metrics. Prediction publication then failed because ownership-path
-normalization mixed Windows backslashes with forward-slash containment checks.
-That normalization is now fixed; the complete Windows smoke still awaits
-qualification.
+Native Windows [run 39667658574](https://github.com/NVIDIA/kumo-engine/actions/runs/39667658574)
+passed ingestion, four CPU optimizer steps, and 100 finite predictions
+(one test passed in 3.86 seconds; source installation took 4m03s).
+It used GitHub-hosted Windows Server 2022, AMD64, Python 3.12.10,
+and Torch 2.12.0+cpu, exercising CPU Faiss and the checkout's DiskGraph source.
 The smoke prints a bounded subprocess output tail for its generated fixture
 on failure, preserving production privacy and failure behavior.
 Linux ARM64 CUDA execution remains unverified.
@@ -109,8 +108,8 @@ Only one Faiss distribution
 is installed because both provide the same Python import namespace. Windows
 CPU Faiss and CPU training do not cover native Windows GPU execution.
 DiskGraph and Python portability changes are maintained in this repository.
-The full native runtime still needs validation before it can be called
-operational.
+The native pass qualifies this smoke's source-execution path, not the full
+runtime or release-wheel distribution.
 
 Native Windows coverage is limited to this isolated engine installation with
 zero DataLoader worker processes, selected by the current Windows and test
