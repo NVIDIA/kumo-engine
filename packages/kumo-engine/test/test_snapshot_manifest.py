@@ -16,14 +16,8 @@ from kumoapi.graph import Edge
 from kumoapi.typing import Stype
 
 import kumo.engine._provenance as provenance
-from kumo.engine import (
-    FileConnector,
-    Graph,
-    S3Connector,
-    Table,
-    __version__,
-    diff_manifests,
-)
+from kumo.engine import FileConnector, Graph, S3Connector, Table, __version__
+from kumo.engine._manifest import diff_manifests
 from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE, GraphSnapshot
 
 _SCHEDULER_ENV = ('KUMO_SCHEDULER', 'KUMO_JOB_ID', 'KUMO_JOB_RUN_ID',
@@ -75,15 +69,11 @@ def make_snapshot(tmp_path, no_scheduler):
 def test_fresh_snapshot_writes_manifest(make_snapshot, tmp_path):
     snapshot = make_snapshot(30)
     manifest = snapshot.manifest
-    graph_id, short_version = snapshot.id.split('@')
 
     assert manifest['kind'] == 'graph_snapshot'
     assert manifest['schema_version'] == 1
     assert manifest['id'] == snapshot.id
-    assert manifest['graph_id'] == graph_id
-    assert manifest['data_version'][:16] == short_version
-    assert len(manifest['data_version']) == 64
-    assert snapshot.index_path.name == manifest['data_version']
+    assert 'graph_id' not in manifest and 'data_version' not in manifest
     assert manifest['formats'] == format_versions()
     sources = manifest['parents']['source_tables']
     data = (tmp_path / 'data').resolve()
@@ -142,7 +132,7 @@ def test_manifest_without_ingest_stats_keeps_identity(tmp_path, no_scheduler):
             'version': '1'
         }
     }
-    _write_snapshot_manifest(result, 'g@d', 'g', 'd' * 64, sources, fresh=True)
+    _write_snapshot_manifest(result, 'g@d', sources, fresh=True)
 
     manifest = GraphSnapshot('g@d', tmp_path, {}).manifest
     assert manifest['id'] == 'g@d'
@@ -172,8 +162,7 @@ def test_appended_rows_show_in_manifest_diff(make_snapshot):
 
     diff = diff_manifests(before, after)
 
-    assert diff['data_version'] == (before['data_version'],
-                                    after['data_version'])
+    assert diff['id'] == (before['id'], after['id'])
     version = 'parents.source_tables.events.version'
     assert version in diff and diff[version][0] != diff[version][1]
     assert diff['tables.events.rows'] == (30, 40)

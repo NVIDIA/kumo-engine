@@ -25,7 +25,6 @@ from kumoapi.graph import Edge
 from kumoapi.plugin import ModelRegistryLocation
 from kumoapi.table import Column
 
-from kumo.engine._manifest import diff_manifests
 from kumo.engine._version import __version__
 from kumo.engine.config import configure
 from kumo.engine.connector import (
@@ -60,7 +59,6 @@ from kumo.engine.trainer import (
 __all__ = [
     "__version__",
     "configure",
-    "diff_manifests",
     "EmbeddingModelStore",
     "GloVeVectors",
     "TokenEmbeddingModel",
