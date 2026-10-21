@@ -176,6 +176,25 @@ def test_concurrent_exports_of_one_snapshot_both_succeed(
     assert _load(exports, raced[0]).id == snapshot.id
 
 
+def test_export_repairs_files_a_dying_concurrent_export_wiped(
+        tmp_path, scratch, graph, exports, monkeypatch):
+    snapshot = graph.snapshot()
+    write, wiped = snapshot_io._write, []
+
+    def wipe_before_commit(filesystem, path, payload):
+        if path.endswith('/index/_MANIFEST.json') and not wiped:
+            wiped.append(path)
+            shutil.rmtree(Path(path).parent)
+        return write(filesystem, path, payload)
+
+    monkeypatch.setattr(snapshot_io, '_write', wipe_before_commit)
+    location, _ = _export(snapshot, exports, tmp_path)
+    assert wiped
+    scratch('gpu')
+    assert _index_files(_load(exports, location).index_path) == _index_files(
+        snapshot.index_path)
+
+
 def test_failed_upload_is_retried_with_a_fresh_client(
         scratch, graph, exports, monkeypatch):
     open_output, clients = snapshot_io._open_output, []
@@ -373,15 +392,15 @@ def dated(tmp_path, graph):
     return data
 
 
-@pytest.mark.parametrize('record_locations', [True, False])
+@pytest.mark.parametrize('record_sources', [True, False])
 def test_source_changes_reads_stamps_without_staging(
-        scratch, graph, dated, monkeypatch, record_locations):
+        scratch, graph, dated, monkeypatch, record_sources):
     from kumo_core.sources.object_store import ObjectStoreSourceReader
 
     from kumo.engine.connector.file import _FileSourceBackend
 
     _set_mtime(dated / 'users.parquet', 1_700_002_800)
-    snapshot = graph.snapshot(record_locations=record_locations)
+    snapshot = graph.snapshot(record_sources=record_sources)
     fail = Mock(side_effect=AssertionError('must not stage'))
     monkeypatch.setattr('kumo_core.sources.prepare.read_table', fail)
     monkeypatch.setattr(ObjectStoreSourceReader, 'prepare', fail)

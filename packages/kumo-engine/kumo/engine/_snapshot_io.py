@@ -12,7 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from pyarrow.fs import FileSystem
 
@@ -39,7 +39,7 @@ def _location(connector: Any, path: str) -> Tuple[FileSystem, str]:
         raise NotImplementedError(
             f'{type(connector).__name__} cannot hold a snapshot export; use '
             'an S3Connector, GCSConnector or a FileConnector on a volume.')
-    return sink.filesystem(connector, path, parallel_uploads=True)
+    return sink.filesystem(connector, path)
 
 
 def _files(filesystem: FileSystem) -> Any:
@@ -195,9 +195,10 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
     }
     snapshot_manifest = _snapshot_manifest(snapshot)
     filesystem, root = _location(connector, location)
-    if _files(filesystem).exists(f'{root}/{_MANIFEST}'):
-        filesystem.delete_file(f'{root}/{_MANIFEST}')
+    _delete_marker(filesystem, root)
     filesystem.delete_dir_contents(root, missing_dir_ok=True)
+    # An export that committed while this one wiped no longer holds its files.
+    _delete_marker(filesystem, root)
 
     def upload(client: FileSystem, name: str, stop: threading.Event) -> None:
         size = sizes[name]
@@ -211,30 +212,66 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
                                   'exported')
                 writer.write(chunk)
 
-    names = sorted(sizes, key=lambda name: -sizes[name])
+    def send(names: List[str], action: str) -> None:
+        names = sorted(names, key=lambda name: -sizes[name])
+        _transfer(connector, location, names, [sizes[name] for name in names],
+                  upload, action)
+
     with ThreadPoolExecutor(1) as pool:
         checksums = pool.submit(snapshot_range_checksums, str(source),
                                 _RANGE_BYTES)
-        _transfer(connector, location, names, [sizes[name] for name in names],
-                  upload, 'export')
+        send(list(sizes), 'export')
         crc32 = checksums.result()
-    filesystem, root = _location(connector, location)
-    _write(filesystem, f'{root}/index/{_INDEX_MANIFEST}', index_manifest)
-    _write(filesystem, f'{root}/{SNAPSHOT_MANIFEST_FILE}', snapshot_manifest)
-    _write(
-        filesystem, f'{root}/{_MANIFEST}',
-        json.dumps({
-            'format': _FORMAT,
-            'snapshot_id': snapshot.id,
-            'graph_key': graph_key,
-            'data_version': data_version,
-            'index_manifest': _fingerprint(index_manifest),
-            'graph_config': snapshot.graph_config,
-            'environment': environment(),
-            'range_bytes': _RANGE_BYTES,
-            'crc32': crc32,
-        }).encode())
-    return location
+    marker = json.dumps({
+        'format': _FORMAT,
+        'snapshot_id': snapshot.id,
+        'graph_key': graph_key,
+        'data_version': data_version,
+        'index_manifest': _fingerprint(index_manifest),
+        'graph_config': snapshot.graph_config,
+        'environment': environment(),
+        'range_bytes': _RANGE_BYTES,
+        'crc32': crc32,
+    }).encode()
+    for _ in range(_ATTEMPTS):
+        filesystem, root = _location(connector, location)
+        _write(filesystem, f'{root}/index/{_INDEX_MANIFEST}', index_manifest)
+        _write(filesystem, f'{root}/{SNAPSHOT_MANIFEST_FILE}',
+               snapshot_manifest)
+        _write(filesystem, f'{root}/{_MANIFEST}', marker)
+        if not _files(filesystem).exists(f'{root}/{_MANIFEST}'):
+            logger.warning('A later export to %s took it over.', location)
+            return location
+        missing = _missing(filesystem, root,
+                           {**sizes, _INDEX_MANIFEST: len(index_manifest)})
+        if not missing:
+            return location
+        logger.warning('Another export to %s removed %d files; uploading '
+                       'them again.', location, len(missing))
+        send([name for name in missing if name in sizes], 'repair')
+    raise OSError(f'Another export to {location} keeps replacing it; run '
+                  'GraphSnapshot.export again once it finishes.')
+
+
+def _delete_marker(filesystem: FileSystem, root: str) -> None:
+    try:
+        filesystem.delete_file(f'{root}/{_MANIFEST}')
+    except FileNotFoundError:
+        pass
+
+
+def _missing(filesystem: FileSystem, root: str,
+             sizes: Dict[str, int]) -> List[str]:
+    from pyarrow.fs import FileSelector, FileType
+
+    prefix = f'{root}/index/'
+    found = {
+        info.path[len(prefix):]: info.size
+        for info in filesystem.get_file_info(
+            FileSelector(prefix, recursive=True, allow_not_found=True))
+        if info.type is FileType.File
+    }
+    return [name for name, size in sizes.items() if found.get(name) != size]
 
 
 def _corrupt(path: str, detail: str) -> ValueError:
