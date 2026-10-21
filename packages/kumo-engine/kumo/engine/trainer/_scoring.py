@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from kumo.engine._manifest import atomic_write
-from kumo.engine.trainer._spec import MANIFEST_FILE, SCORING_DEFAULTS_ROLE
+from kumo.engine.trainer._spec import SCORING_DEFAULTS_ROLE, listed_file
 
 SCORING_DEFAULTS_FILE = 'scoring-defaults.json'
 
@@ -71,15 +71,11 @@ def write_scoring_defaults(bundle_dir: Path, defaults: ScoringDefaults) -> None:
 
 def read_scoring_defaults(bundle_dir: Path,
                           artifact_paths: Mapping[str, str]) -> ScoringDefaults:
+    path = listed_file(bundle_dir, SCORING_DEFAULTS_ROLE)
+    if path is None:
+        return ScoringDefaults()
     try:
-        manifest = json.loads(
-            (bundle_dir / MANIFEST_FILE).read_text(encoding='utf-8'))
-        relative = next((entry['relative_path']
-                         for entry in manifest.get('artifacts') or []
-                         if entry.get('role') == SCORING_DEFAULTS_ROLE), None)
-        if relative is None:
-            return ScoringDefaults()
-        data = json.loads((bundle_dir / relative).read_text(encoding='utf-8'))
+        data = json.loads(path.read_text(encoding='utf-8'))
         return normalized_scoring_defaults(
             ScoringDefaults(data.get('binary_classification_threshold'),
                             data.get('num_classes_to_return')),

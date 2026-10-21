@@ -256,13 +256,12 @@ tuned.predict(prediction_table, snapshot=snapshot)  # thresholds at 0.37
 tuned.export(ModelOutputConfig(registry, location=ModelRegistryLocation("CHURN_GNN")))
 ```
 
-`with_scoring_defaults` works on a copy: the new bundle has its own `bundle_id` and
-records the original's as `provenance["parents"]["derived_from"]`; the original is
-unchanged. `binary_classification_threshold` applies to binary and multilabel
-classification; `num_classes_to_return` to multiclass, multilabel and link
-prediction, unless the query has `TOP k`. Explicit `predict` arguments always win,
-and empty `ScoringDefaults()` removes the defaults. `Trainer.export(config)`
-publishes a fitted or loaded trainer's bundle like `fit(export_config=...)` does.
+`with_scoring_defaults` returns a trainer on a copy with its own `bundle_id`; the copy's
+`provenance["parents"]["derived_from"]` names the original. The threshold applies to
+binary and multilabel classification, `num_classes_to_return` to multiclass, multilabel
+and link prediction. Explicit `predict` arguments and a query's `TOP k` win;
+`ScoringDefaults()` removes the defaults. `Trainer.export(config)` publishes a fitted or
+loaded bundle like `fit(export_config=...)`.
 
 ### Caller-supplied training and prediction rows
 

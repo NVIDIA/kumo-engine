@@ -339,9 +339,7 @@ class Trainer:
         return self._training_result
 
     def with_scoring_defaults(self, defaults: ScoringDefaults) -> Self:
-        r"""Return a trainer on a copy of this bundle that carries
-        ``defaults``, with its own ``bundle_id``. Empty defaults remove them;
-        ``predict`` uses a default only when its argument is omitted."""
+        """Return a trainer on a copy of this bundle that carries ``defaults``."""
         from kumo.engine.trainer._provenance import record_derivation
         from kumo.engine.trainer._scoring import (
             bundle_task_type,
@@ -786,9 +784,7 @@ class Trainer:
         classification defaults to 0.5. Both accept thresholds from 0 to 1;
         thresholds change predicted labels without changing class scores.
 
-        An omitted ``binary_classification_threshold`` falls back to the
-        bundle's :attr:`scoring_defaults`; an omitted ``num_classes_to_return``
-        does too when the query has no ``TOP k``.
+        Omitted arguments fall back to the bundle's :attr:`scoring_defaults`.
         """
         from kumo_core.prediction_options import (
             validate_num_classes_to_return,
