@@ -410,9 +410,11 @@ cols=..., source_table=events.sql(query).to_source_table(), ...))`.
 ## Model-plan suggestions
 
 Given `pquery = PredictiveQuery(graph, query)` and `snapshot = graph.snapshot()`,
-suggest and customize a plan before training. A job that has a snapshot but no
-`Graph` binds the query with `PredictiveQuery.from_snapshot(snapshot, query)`;
-a loaded trainer's query is `trainer.training_query`.
+suggest and customize a plan before training. A scoring job without `Graph`
+code loads the snapshot the training job exported
+(`GraphSnapshot.load_from_connector(store, path=location)`, where `location` is
+what `graph.snapshot().export(store, 'snapshots')` returned) and binds the query
+with `PredictiveQuery.from_snapshot(snapshot, trainer.training_query)`.
 
 ```python
 from kumo.engine import Trainer
