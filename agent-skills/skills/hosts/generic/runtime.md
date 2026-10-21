@@ -163,9 +163,30 @@ assert written == prediction_result.num_rows, (written, prediction_result.num_ro
 When Node 1d confirmed a population table (`kumoai-reference/references/kumo_finetuning_sdk.md`
 §7.1), stage it in the destination's system:
 
-- **Files, S3, GCS:** read the entity key column from the source with `pyarrow.dataset`, rename it
-  `ENTITY1`, and write one Parquet file at the confirmed population path. Build the
-  `PredictionTable` from a connector rooted at that path's directory.
+- **Files, S3, GCS:** read the entity key — and, when the entity table has a time column, that
+  column too — from the source with `pyarrow.dataset`; name them `ENTITY1` and `TIMESTAMP`; write
+  one Parquet file inside the confirmed population path, creating the directory first for local
+  files; and build the `PredictionTable` from a connector rooted there. Kumo rejects a
+  population without `TIMESTAMP` when the entity is timestamped, even for a static query (§7.1).
+
+  ```python
+  import os
+  import pyarrow.dataset as ds
+  import pyarrow.parquet as papq
+
+  keep = {ENTITY_KEY: 'ENTITY1', ENTITY_TIME: 'TIMESTAMP'}       # drop ENTITY_TIME if there is none
+  population = ds.dataset(ENTITY_SOURCE, format='parquet').to_table(columns=list(keep))
+  population = population.rename_columns([keep[c] for c in population.column_names])
+  if '://' not in POPULATION_PATH:
+      os.makedirs(POPULATION_PATH, exist_ok=True)              # object stores need no directory
+  papq.write_table(population, POPULATION_PATH + 'population.parquet')
+  population_connector = kumo.FileConnector(root_dir=POPULATION_PATH)   # or S3Connector / GCSConnector
+  prediction_table = kumo.PredictionTable.from_source_table(
+      population_connector['population'], pq=pquery, snapshot=snapshot)
+  ```
+
+  `ENTITY_SOURCE` is the entity table's file or directory as preflight listed it;
+  `POPULATION_PATH` is the confirmed path, ending in `/`.
 - **Snowflake:** the §7.1 SQL, run through the read-back connection above.
 - **BigQuery, Databricks:** not covered on this host. Say so at Node 1d and offer the rows whose
   target is NULL instead.
