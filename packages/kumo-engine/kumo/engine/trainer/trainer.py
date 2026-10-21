@@ -578,13 +578,6 @@ class Trainer:
             snapshot_id=snapshot_id,
             training_table_generation=training_table_generation,
         )
-        if provenance is not None:
-            try:
-                write_provenance(training_result.bundle_dir, **provenance)
-            except Exception as error:
-                warnings.warn(
-                    f"Publishing the model bundle without provenance.json: "
-                    f"{error}", UserWarning, stacklevel=3)
         try:
             training_result = replace(
                 training_result,
@@ -592,6 +585,15 @@ class Trainer:
         except Exception as error:
             warnings.warn(f"Could not compute the bundle id: {error}",
                           UserWarning, stacklevel=3)
+        if provenance is not None:
+            try:
+                write_provenance(training_result.bundle_dir,
+                                 bundle_id=training_result.bundle_id,
+                                 **provenance)
+            except Exception as error:
+                warnings.warn(
+                    f"Publishing the model bundle without provenance.json: "
+                    f"{error}", UserWarning, stacklevel=3)
         if export_config is not None:
             spec = read_training_spec(training_result.bundle_dir)
             published = export_config.connector.sink_backend.publish_model(
