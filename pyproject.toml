@@ -98,7 +98,9 @@ conflicts = [[{ extra = "cpu" }, { extra = "cu130" }, { extra = "cu132" }, { gro
 # detected or yanked before local and CI installs resolve them.
 exclude-newer = "7 days"
 # Allow the requested PyG 2.8.1 release, published on 2026-10-12.
-exclude-newer-package = { torch-geometric = "2026-10-13T00:00:00Z" }
+# Allow Pillow 13.0.0, released on 2026-10-16, for CVE-2026-112404.
+# Allow Certifi's 2026-10-19 fix for GHSA-6q48-6c7w-9gw2.
+exclude-newer-package = { torch-geometric = "2026-10-13T00:00:00Z", pillow = "2026-10-17T00:00:00Z", certifi = "2026-10-21T00:00:00Z" }
 
 find-links = [
   # The GPU image workflow stages checksum-pinned custom CUDA Faiss wheels

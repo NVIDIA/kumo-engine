@@ -42,7 +42,7 @@ jobs:
             -e '^\.github/workflows/(_docker-kumo-backend-(cpu|gpu)-image-custom|testing_arm_images)\.yml$' \
             -e '^(uv\.lock|setup\.py)$' \
             -e '^3rdparty/kumo-wheels/' \
-            -e '^docker/(Dockerfile\.kumo_backend_(cpu|gpu)|kumodeps_base|build_diskgraph_wheel|Makefile)$' \
+            -e '^docker/(Dockerfile\.kumo_backend_(cpu|gpu)|kumodeps_base|build_diskgraph_wheel|build_temporalio_wheel|temporalio-zip\.patch|Makefile)$' \
             -e '^scripts/(diskgraph|build_faiss_gpu_(amd64|arm64)_wheel\.sh|gen_third_party\.py|update_packages\.sh)$' \
             <<< "$files"; then
             echo images=true >> "$GITHUB_OUTPUT"
