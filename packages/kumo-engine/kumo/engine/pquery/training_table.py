@@ -84,7 +84,13 @@ class TrainingTable:
         root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root) as output:
             files = export_train_table(str(self.staging_dir), output)
-            payload = self._export_manifest(connector, output_config, files)
+            try:
+                payload = self._export_manifest(connector, output_config,
+                                                files)
+            except Exception as error:
+                warnings.warn(f"Exporting without a training-table manifest: "
+                              f"{error}", UserWarning, stacklevel=2)
+                payload = None
             extra = ({} if payload is None else {
                 'sidecars': {
                     EXPORT_MANIFEST_FILE: payload
@@ -174,8 +180,9 @@ class TrainingTable:
             )
         run_id = new_run_id()
         run_dir = train_table_scratch_dir(run_id)
-        rows_path = stage_source_table(source_table, run_dir / "source-table")
-        lineage = _source_lineage(source_table)
+        rows_path, version = stage_source_table(source_table,
+                                                run_dir / "source-table")
+        lineage = _source_lineage(source_table, version)
         generation_plan = from_json_dict(
             to_json_dict(public_plan),
             TrainingTableGenerationPlan,
@@ -280,18 +287,9 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
             f"{error}", UserWarning, stacklevel=3)
 
 
-def _source_lineage(source_table: SourceTable) -> Dict[str, Optional[str]]:
+def _source_lineage(source_table: SourceTable,
+                    version: Optional[str]) -> Dict[str, Optional[str]]:
     from kumo.engine._provenance import source_table as lineage
 
-    connector, name, sql = (source_table.connector, source_table.table_name,
-                            source_table.sql)
-    version = None
-    if sql is None:
-        try:
-            version = connector.source_backend.get_data_version(
-                connector, name)
-        except Exception as error:
-            warnings.warn(
-                f"Could not record the custom table's data version: {error}",
-                UserWarning, stacklevel=3)
-    return lineage(connector, name, sql, version)
+    return lineage(source_table.connector, source_table.table_name,
+                   source_table.sql, version)

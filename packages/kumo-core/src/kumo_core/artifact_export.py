@@ -236,7 +236,12 @@ def export_selected_files(files, output_path, *, fs, identity,
 
     if output_is_dir:
         for name, payload in sidecars.items():
-            fs.write_bytes(osp.join(output_path, name), payload)
+            try:
+                fs.write_bytes(osp.join(output_path, name), payload)
+            except Exception as error:
+                import warnings
+                warnings.warn(f'Exporting without {name}: {error}',
+                              UserWarning, stacklevel=2)
     return publish_export_destination(output_path, fs=fs)
 
 

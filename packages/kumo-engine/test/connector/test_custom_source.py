@@ -40,11 +40,12 @@ def test_stage_source_table_retains_many_parts(tmp_path):
                     "paths": [str(first), str(second)],
                 },
                 credentials=None,
+                version=None,
             )
 
     connector = SimpleNamespace(source_backend=Backend())
     source = SourceTable("curated", connector)
-    output = stage_source_table(source, tmp_path / "staged")
+    output, _ = stage_source_table(source, tmp_path / "staged")
 
     assert output == tmp_path / "staged" / "parts"
     assert pq.read_table(output)["ENTITY1"].to_pylist() == [1, 2]
@@ -62,7 +63,7 @@ def test_stage_source_table_accepts_partitioned_file_connector_directory(
     pq.write_table(pa.table({"ENTITY1": [2]}), parts / "two.parquet")
     connector = FileConnector(root_dir=str(root))
 
-    output = stage_source_table(connector["parts"], tmp_path / "staged")
+    output, _ = stage_source_table(connector["parts"], tmp_path / "staged")
 
     assert output == tmp_path / "staged" / "parts"
     assert sorted(pq.read_table(output)["ENTITY1"].to_pylist()) == [1, 2]
@@ -96,10 +97,10 @@ def test_stage_source_table_preserves_parquet_parts(tmp_path, monkeypatch,
         source={
             "type": "parquet",
             "paths": [str(p) for p in paths]
-        }, credentials=None)
+        }, credentials=None, version=None)
     source = SourceTable("curated", Mock(source_backend=backend))
 
-    output = stage_source_table(source, tmp_path / "staged")
+    output, _ = stage_source_table(source, tmp_path / "staged")
 
     retained = sorted(output.glob("*.parquet"))
     assert len(retained) == 2
@@ -124,7 +125,7 @@ def test_stage_source_table_casts_to_what_the_table_reader_reads(tmp_path):
             "TARGET1": pa.array(["a", "b"]).dictionary_encode(),
         }), root / "curated.parquet")
 
-    output = stage_source_table(
+    output, _ = stage_source_table(
         FileConnector(root_dir=str(root))["curated"], tmp_path / "staged")
 
     assert pq.read_table(output).schema == pa.schema([("ENTITY1", pa.int64()),
@@ -137,7 +138,7 @@ def test_stage_source_table_retains_single_file_in_parts_directory(tmp_path):
     pq.write_table(pa.table({"ENTITY1": [1, 2]}), root / "table.parquet")
     connector = FileConnector(root_dir=str(root))
 
-    output = stage_source_table(connector["table.parquet"], tmp_path / "staged")
+    output, _ = stage_source_table(connector["table.parquet"], tmp_path / "staged")
 
     assert output == tmp_path / "staged" / "parts"
     parts = list(output.glob("*.parquet"))
@@ -171,8 +172,8 @@ def test_stage_source_table_retains_reencoded_float64_weight_parts(
     pq.write_table(table, root / "weighted.parquet")
     connector = FileConnector(root_dir=str(root))
 
-    output = stage_source_table(connector["weighted.parquet"],
-                                tmp_path / "staged")
+    output, _ = stage_source_table(connector["weighted.parquet"],
+                                   tmp_path / "staged")
 
     assert output == tmp_path / "staged" / "parts"
     assert len(list((tmp_path / "staged" / "source").rglob("*.parquet"))) > 1
