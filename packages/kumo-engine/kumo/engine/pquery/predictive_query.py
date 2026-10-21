@@ -316,7 +316,7 @@ class PredictiveQuery:
             required_stages=task_plan.task_dataset.required_stages,
             generation_plan=generation_plan,
         )
-        _record_manifest(table, snapshot, task_plan.train_table, 'pql')
+        _record_manifest(table, snapshot, task_plan.train_table)
         return table
 
     def generate_prediction_table(
