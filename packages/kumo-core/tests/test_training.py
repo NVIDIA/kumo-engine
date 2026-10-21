@@ -529,9 +529,9 @@ def test_hosted_warm_start_rejects_forecasting_before_loading_trainer(
         Runtime()) == (None, None)
 
 
-@pytest.mark.parametrize("extra_logger", [False, True])
-def test_pl_trainer_keeps_tensorboard_and_adds_a_supplied_logger(
-        tmp_path, extra_logger):
+@pytest.mark.parametrize("supplied_loggers", [0, 1, 2])
+def test_pl_trainer_keeps_tensorboard_and_adds_supplied_loggers(
+        tmp_path, supplied_loggers):
     from pytorch_lightning.loggers import CSVLogger, TensorBoardLogger
 
     trainer = CoreTrainer.__new__(CoreTrainer)
@@ -540,14 +540,16 @@ def test_pl_trainer_keeps_tensorboard_and_adds_a_supplied_logger(
     trainer.fit_mode = FitMode.fit
     trainer.tune_metric = "mae"
     trainer.max_epochs = 1
-    supplied = CSVLogger(str(tmp_path))
+    supplied = [CSVLogger(str(tmp_path)) for _ in range(supplied_loggers)]
     trainer.kwargs = {"accelerator": "cpu"}
-    if extra_logger:
+    if supplied_loggers == 1:
+        trainer.kwargs["logger"] = supplied[0]
+    elif supplied_loggers:
         trainer.kwargs["logger"] = supplied
 
     trainer.create_pl_trainer()
 
     loggers = trainer.pl_trainer.loggers
     assert isinstance(loggers[0], TensorBoardLogger)
-    assert loggers[1:] == ([supplied] if extra_logger else [])
+    assert loggers[1:] == supplied
     assert trainer.pl_trainer.log_dir == str(tmp_path / "tensorboard")

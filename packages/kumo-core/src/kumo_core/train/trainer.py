@@ -1441,7 +1441,9 @@ class Trainer(PortableConfigMixin):
             sub_dir='tensorboard',
         )
         extra_logger = self.kwargs.pop("logger", None)
-        if extra_logger is not None:
+        if isinstance(extra_logger, (list, tuple)):
+            pl_logger = [pl_logger, *extra_logger]
+        elif extra_logger is not None:
             pl_logger = [pl_logger, extra_logger]
 
         plugins = self.kwargs.pop('plugins', None)

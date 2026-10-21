@@ -211,7 +211,8 @@ class AutoTrainer:
             load/save :class:`TrainStatus`. If ``None``, the runtime supplies
             its default.
         trial_logger: Called with ``(trial, attempt)`` for each search trial;
-            a returned Lightning logger also receives that trial's metrics.
+            a returned Lightning logger (or list of them) also receives that
+            trial's metrics.
     """
     def __init__(
         self,

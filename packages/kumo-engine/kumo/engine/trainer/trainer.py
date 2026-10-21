@@ -46,7 +46,7 @@ from kumo.engine._embeddings import (
 from kumo.engine._events import Event, EventEmitter, query_sha256
 from kumo.engine._manifest import BundleProvenance
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
-from kumo.engine._tracking import FitContext, Tracking, TrackingSession
+from kumo.engine._tracking import FitContext, Trackers, TrackingSession
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
@@ -293,7 +293,7 @@ class Trainer:
         export_config: Optional[ModelOutputConfig] = None,
         warm_start: Optional[Self] = None,
         callbacks: Sequence[Callable[[Event], None]] = (),
-        tracking: Optional[Tracking] = None,
+        tracking: Trackers = None,
     ) -> TrainingResult:
         r"""Train a model against `train_table`.
 
@@ -321,9 +321,11 @@ class Trainer:
                 match. Forecasting warm starts are unsupported.
             callbacks: called with each progress `Event`; a callback that
                 raises is logged and not called again.
-            tracking: records this fit in an experiment tracker, e.g.
-                `kumo.engine.integrations.mlflow.MlflowTracking`. Tracking
-                errors are logged as warnings and never fail the fit.
+            tracking: records this fit in experiment trackers: one
+                `kumo.engine.Tracking` (e.g.
+                `kumo.engine.integrations.mlflow.MlflowTracking`) or a
+                sequence of them. Tracking errors are logged as warnings and
+                never fail the fit or the other trackers.
         """
         if export_config is not None and not callable(
                 getattr(export_config.connector.sink_backend, 'publish_model',

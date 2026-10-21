@@ -139,6 +139,10 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, caplog):
     for child in children:
         assert child.info.status == 'FINISHED'
         assert child.data.tags['mlflow.parentRunId'] == parent.info.run_id
+        assert child.data.tags['kumo.parent_run'] == (
+            parent.data.tags['kumo.run_id'])
+        assert child.data.tags['kumo.run_id'] == (
+            f"{parent.data.tags['kumo.run_id']}-{child.info.run_name}")
         assert child.data.params['attempt'] == '1'
         assert float(child.data.params['optimization.base_lr']) in (0.01, 0.001)
         assert {'best_val_mae', 'seconds', 'epoch'} <= set(child.data.metrics)
@@ -146,20 +150,39 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, caplog):
         assert {0, 1} <= {metric.value for metric in epochs}
 
 
-def test_fit_nests_under_the_active_run(table_and_snapshot):
+def test_fit_nests_under_the_active_run_beside_another_tracker(
+        table_and_snapshot, tmp_path):
     from mlflow.utils import autologging_utils
+    from pytorch_lightning.loggers import CSVLogger
 
     from kumo.engine.integrations.mlflow import MlflowTracking
+
+    class CsvTracking:
+        def __init__(self):
+            self.events = []
+
+        def start(self, context):
+            pass
+
+        def on_event(self, event):
+            self.events.append(event)
+
+        def finish(self, result, error):
+            pass
+
+        def trial_logger(self, trial, attempt):
+            return CSVLogger(str(tmp_path / 'csv'), name=f'trial-{trial}')
 
     table, snapshot = table_and_snapshot
     client = mlflow.MlflowClient()
     plan = _plan()
     plan.training_job.num_experiments = 1
+    csv = CsvTracking()
     with mlflow.start_run() as outer, \
             autologging_utils.disable_autologging():
         kumo.Trainer(plan).fit(
             table, snapshot=snapshot,
-            tracking=MlflowTracking(log_system_metrics=False))
+            tracking=[MlflowTracking(log_system_metrics=False), csv])
         assert mlflow.active_run().info.run_id == outer.info.run_id
         assert autologging_utils._AUTOLOGGING_GLOBALLY_DISABLED is True
 
@@ -174,6 +197,12 @@ def test_fit_nests_under_the_active_run(table_and_snapshot):
     ]
     assert len(runs) == 3
     assert parent.info.status == child.info.status == 'FINISHED'
+    assert 'val_mae' in client.get_run(child.info.run_id).data.metrics
+    assert list((tmp_path / 'csv' / 'trial-1').rglob('metrics.csv'))
+    assert [
+        event.params['attempt'] for event in csv.events
+        if event.name == 'epoch_ended'
+    ] == [1, 1]
 
 
 def test_failed_fit_marks_the_run_failed(table_and_snapshot, monkeypatch):
@@ -267,18 +296,3 @@ def test_lazy_lightning_lookups_failing_do_not_fail_the_fit(
     assert caplog.text.count('MLflow tracking failed') == 1
     assert 'Trial failed' not in caplog.text
     assert mlflow.active_run() is None
-
-
-def test_only_rank_zero_logs(tracking_uri, monkeypatch):
-    from kumo.engine import FitContext
-    from kumo.engine.integrations.mlflow import MlflowTracking
-
-    monkeypatch.setenv('LOCAL_RANK', '1')
-    tracking = MlflowTracking()
-    tracking.start(
-        FitContext(run_id='r', task_type='regression', snapshot_id='s',
-                   training_table_id='t', query=QUERY, model_plan={}))
-
-    assert tracking.trial_logger(1, 1) is None
-    tracking.finish(None, None)
-    assert _runs(mlflow.MlflowClient()) == []

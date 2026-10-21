@@ -349,6 +349,68 @@ Custom forecasting rows must include precomputed `future_labels` for training,
 year-over-year features when enabled. Constructors preserve these sequences;
 they do not derive them from entity, target, and timestamp columns.
 
+## Experiment tracking
+
+`fit(tracking=...)` records a fit in an experiment tracker: one run per fit,
+one run per hyperparameter-search trial attempt. It is opt-in; tracking errors
+are logged as warnings and never fail the fit. Only global rank 0 tracks.
+
+```python
+from kumo.engine.integrations.mlflow import MlflowTracking  # kumo-engine[mlflow]
+
+result = trainer.fit(training_table, snapshot=snapshot,
+                     tracking=MlflowTracking(experiment_name="users-spend"))
+```
+
+MLflow runs go to `MLFLOW_TRACKING_URI`: on Databricks this is automatic; for
+SageMaker managed MLflow set it to the tracking server ARN with the
+`sagemaker-mlflow` plugin installed. With nothing configured MLflow writes a
+local store in the working directory.
+
+Pass a sequence to record to several trackers; each is isolated from the
+others. Any other system plugs in through the `kumo.engine.Tracking` protocol:
+
+- `start(context)`: a `FitContext` once the model plan is resolved;
+- `on_event(event)`: every progress `Event` (trial events carry
+  `params["attempt"]`);
+- `finish(result, error)`: once, when the fit returns or raises;
+- optional `trial_logger(trial, attempt)`: a Lightning logger for one trial
+  attempt's step metrics, or `None`;
+- optional `capabilities`: a `Capabilities` stating what the adapter records
+  (nested runs, system metrics, step metrics, artifacts, model links).
+
+Build what to log with `run_record(context, result, fit_ended_event)` and
+`trial_record(context, trial_events)`, so every adapter uses the same
+parameter, metric and tag names:
+
+```python
+import json
+from kumo.engine import run_record, trial_record
+
+class JsonTracking:
+    def start(self, context):
+        self.context, self.trials, self.ended = context, {}, None
+        print(json.dumps({"run": run_record(context).tags}))
+
+    def on_event(self, event):
+        if event.trial is not None:
+            key = (event.trial, event.params["attempt"])
+            self.trials.setdefault(key, []).append(event)
+            if event.name == "trial_ended":
+                record = trial_record(self.context, self.trials.pop(key))
+                print(json.dumps({"trial": record.name, "params": record.params,
+                                  "metrics": record.metrics}))
+        elif event.name == "fit_ended":
+            self.ended = event
+
+    def finish(self, result, error):
+        if result is not None:
+            record = run_record(self.context, result, self.ended)
+            print(json.dumps({"metrics": record.metrics}))
+
+trainer.fit(training_table, snapshot=snapshot, tracking=JsonTracking())
+```
+
 ## BigQuery staged ingestion
 
 BigQuery streams through the Storage Read API by default. For large tables,
