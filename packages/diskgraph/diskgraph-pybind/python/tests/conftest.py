@@ -9,6 +9,7 @@ import os
 import json
 import platform
 import subprocess
+from pathlib import Path
 from decimal import Decimal
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -63,13 +64,20 @@ def orders_graph(tmp_path_factory):
         ("order_id", pa.string()),
         ("user_id", pa.string()),
         ("merchant_id", pa.string()),
-        ("timestamp", pa.int64())
+        ("timestamp", pa.timestamp("us")),
+        ("amount", pa.float64()),
+        ("channel", pa.string()),
     ])
     orders_table = pa.Table.from_arrays([
         pa.array(["o1", "o2", "o3"]),
         pa.array(["u1", "u2", "u1"]),
         pa.array(["m1", "m2", "m1"]),
-        pa.array([1609459200000000, 1609545600000000, 1609632000000000])
+        pa.array(
+            [1609459200000000, 1609545600000000, 1609632000000000],
+            type=pa.timestamp("us"),
+        ),
+        pa.array([10.0, 30.0, 20.0]),
+        pa.array(["app", "store", "app"]),
     ], schema=orders_schema)
     orders_path = str(data_dir / "orders.parquet")
     pq.write_table(orders_table, orders_path)
@@ -105,7 +113,9 @@ def orders_graph(tmp_path_factory):
                     {"name": "order_id", "ingested_dtype": "string"},
                     {"name": "user_id", "ingested_dtype": "string"},
                     {"name": "merchant_id", "ingested_dtype": "string"},
-                    {"name": "timestamp", "ingested_dtype": "timestamp"}
+                    {"name": "timestamp", "ingested_dtype": "timestamp"},
+                    {"name": "amount", "ingested_dtype": "float64"},
+                    {"name": "channel", "ingested_dtype": "string"},
                 ],
                 "primary_key": "order_id",
                 "create_time": "timestamp",
@@ -139,6 +149,27 @@ def orders_graph(tmp_path_factory):
         pytest.fail(f"Index ingestion failed with exit code {e.returncode}")
 
     return str(index_dir)
+
+
+@pytest.fixture(scope="session")
+def sorted_orders_graph(orders_graph, tmp_path_factory):
+    """Reuse the small graph's Parquet with a timed users-to-orders relation."""
+    root = tmp_path_factory.mktemp("sorted_orders")
+    config = json.loads((Path(orders_graph).parent / "config.json").read_text())
+    config["tables"][2]["fkeys"][0]["reverse"] = {
+        "time": {"table": "orders_parquet", "column": "timestamp", "unit": "s"}
+    }
+    source = root / "config.json"
+    source.write_text(json.dumps(config))
+    index = root / "index"
+    subprocess.run(
+        ["cargo", "run", "--release", "--bin", "ingest", "--",
+         "--source", str(source), "--dest", "local", "--output", str(index)],
+        cwd=Path(__file__).parents[3],
+        check=True,
+        env=_append_portable_rustflags(dict(os.environ)),
+    )
+    return str(index)
 
 
 @pytest.fixture(scope="session")
