@@ -18,26 +18,10 @@ class WheelLearningTest(unittest.TestCase):
 
     def rows(self):
         return [
-            {
-                'seed': 0,
-                'case': 'learnable',
-                'auroc': .9
-            },
-            {
-                'seed': 0,
-                'case': 'independent',
-                'auroc': .48
-            },
-            {
-                'seed': 1,
-                'case': 'learnable',
-                'auroc': .8
-            },
-            {
-                'seed': 1,
-                'case': 'independent',
-                'auroc': .52
-            },
+            dict(seed=0, case='learnable', auroc=.9),
+            dict(seed=0, case='independent', auroc=.48),
+            dict(seed=1, case='learnable', auroc=.8),
+            dict(seed=1, case='independent', auroc=.52),
         ]
 
     def test_reports_each_case_separately(self):

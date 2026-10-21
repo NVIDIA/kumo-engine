@@ -240,6 +240,9 @@ def main():
                     '--output-dir',
                     str(output / 'learning')
                 ], root, timeout=1200)
+                learning_result = json.loads(
+                    (output / 'learning/learning-result.json').read_text())
+                verify_workflow_result(learning_result, [])
         summary.update(status='PASS', stage='complete')
     except Exception as exc:
         summary.update(status='FAIL', error=f'{type(exc).__name__}: {exc}')

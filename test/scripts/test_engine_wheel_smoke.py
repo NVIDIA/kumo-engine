@@ -4,6 +4,7 @@
 
 import hashlib
 import importlib
+import io
 import json
 import os
 import shutil
@@ -163,6 +164,60 @@ class WheelSmokeTest(unittest.TestCase):
         result = json.loads((output / 'summary.json').read_text())
         self.assertEqual(result['status'], 'FAIL')
         self.assertEqual(result['stage'], 'wheel_identity')
+
+    def test_learning_requires_a_passing_report_after_successful_exit(self):
+        wheel = self.wheel()
+        requirements = self.runner.load_requirements(self.runner.REQUIREMENTS)
+        requirements['configuration'].update(
+            os=sys.platform, machine=self.runner.platform.machine(),
+            python=f'{sys.version_info.major}.{sys.version_info.minor}')
+        install = {
+            'install': [
+                dict(
+                    metadata=dict(name='kumo-engine', version='1.2.3'),
+                    download_info=dict(archive_info=dict(hashes=dict(
+                        sha256=hashlib.sha256(
+                            wheel.read_bytes()).hexdigest()))))
+            ]
+        }
+        workflow = dict(
+            status='PASS',
+            checks={name: 'PASS'
+                    for name in requirements['required_checks']})
+        for status, expected in [(None, 1), ('RUNNING', 1), ('FAIL', 1),
+                                 ('PASS', 0)]:
+            with self.subTest(status=status):
+                output = self.root / f'learning-{status}'
+
+                def commands(command, cwd, log, timeout=60):
+                    # Skip installation and training. Keep result handling real.
+                    log.write_text('')
+                    if log.stem == 'install':
+                        (output / 'install-report.json').write_text(
+                            json.dumps(install))
+                    elif log.stem == 'workflow':
+                        (output / 'workflow-result.json').write_text(
+                            json.dumps(workflow))
+                    elif log.stem == 'learning' and status is not None:
+                        result = output / 'learning/learning-result.json'
+                        result.parent.mkdir()
+                        result.write_text(json.dumps(dict(status=status)))
+
+                with (patch.object(self.runner, 'run_command', commands),
+                      patch.object(self.runner, 'load_requirements',
+                                   return_value=requirements),
+                      patch.object(sys, 'argv', [
+                          str(RUNNER),
+                          str(wheel), '--learning', '--output-dir',
+                          str(output)
+                      ]), patch('sys.stdout', new_callable=io.StringIO),
+                      patch('sys.stderr', new_callable=io.StringIO)):
+                    self.assertEqual(self.runner.main(), expected)
+                report = json.loads((output / 'summary.json').read_text())
+                self.assertEqual(report['status'],
+                                 'PASS' if expected == 0 else 'FAIL')
+                self.assertEqual(report['stage'],
+                                 'complete' if expected == 0 else 'learning')
 
     def test_reference_mode_rejects_a_different_wheel_before_installation(self):
         reference_name = json.loads(self.runner.REQUIREMENTS.read_text()
