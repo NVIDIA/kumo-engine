@@ -31,10 +31,9 @@ class ObjectStoreSinkBackend(ABC):
         """Return the authenticated filesystem and validated bucket/key path."""
         raise NotImplementedError
 
-    def filesystem(self, connector: SourceConnector, path: str, *,
-                   parallel_uploads: bool = False) -> Tuple[FileSystem, str]:
+    def filesystem(self, connector: SourceConnector,
+                   path: str) -> Tuple[FileSystem, str]:
         """The authenticated filesystem and resolved ``path``."""
-        del parallel_uploads
         filesystem, resolved = self._destination(connector, path)
         return filesystem, resolved.rstrip('/')
 
