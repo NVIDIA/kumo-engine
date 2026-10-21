@@ -11,7 +11,6 @@ import queue
 import threading
 import time
 import warnings
-from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
@@ -26,24 +25,20 @@ from typing import (
     Protocol,
     Sequence,
     Tuple,
-    Union,
 )
 
-from kumo.engine._events import Event, call_each
+from kumo.engine._events import Event, _finite_floats
 
 if TYPE_CHECKING:
     from kumo.engine.trainer.trainer import TrainingResult
 
 logger = logging.getLogger(__name__)
 
-# Lightning logs per global step, apart from the per-epoch ``steps``.
-LIGHTNING_PREFIX = 'lightning'
 DROPPED_PARAMS = 'kumo.dropped_params'
 DROPPED_METRICS = 'kumo.dropped_metrics'
 # Tracker calls run on one background thread so a slow tracking server
 # never stalls training; these bound how long the fit waits for it.
 QUEUE_SIZE = 1000
-REPLY_SECONDS = 5.0
 FINISH_SECONDS = 30.0
 
 
@@ -54,15 +49,16 @@ class FitContext:
     run_id: str
     query: str
     model_plan: Mapping[str, Any]
-    #: Datasets the fit reads, by name: their location (path, URI or table).
-    inputs: Mapping[str, str] = field(default_factory=dict)
+    inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
+        default_factory=dict)
 
 
 @dataclass(frozen=True)
 class RunRecord:
     r"""One tracked run; ``steps`` are per-epoch ``(epoch, value)``
     histories, ``artifacts`` map file names to text and ``inputs`` map
-    dataset names to their location."""
+    source table names to their ``connector``, ``location``, ``version`` and
+    ``version_kind``."""
 
     name: Optional[str] = None
     params: Mapping[str, str] = field(default_factory=dict)
@@ -71,19 +67,44 @@ class RunRecord:
                               ...]] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
-    inputs: Mapping[str, str] = field(default_factory=dict)
+    inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
+        default_factory=dict)
 
 
-@dataclass(frozen=True)
-class Capabilities:
-    r"""What a tracking adapter records beyond params, metrics and tags."""
+INPUT_FIELDS = ('connector', 'location', 'version', 'version_kind')
 
-    nested_runs: bool = False
-    system_metrics: bool = False
-    step_metrics: bool = False
-    artifacts: bool = False
-    dataset_inputs: bool = False
-    model_link: bool = False
+
+def fit_inputs(snapshot_dir: Path,
+               table_dir: Path) -> Dict[str, Dict[str, Optional[str]]]:
+    r"""Source tables recorded in the snapshot's manifest, plus a custom
+    training table's source, if those manifests exist."""
+    try:
+        tables = dict(
+            _parents(snapshot_dir / 'snapshot-manifest.json').get(
+                'source_tables') or {})
+        custom = _parents(table_dir / 'training-table-manifest.json').get(
+            'source_table')
+        if custom:
+            tables['training_table'] = custom
+        return {
+            str(name): {key: _text(entry.get(key))
+                        for key in INPUT_FIELDS}
+            for name, entry in tables.items() if isinstance(entry, Mapping)
+        }
+    except Exception:
+        logger.warning('Could not read the fit\'s source tables',
+                       exc_info=True)
+        return {}
+
+
+def _parents(path: Path) -> Mapping[str, Any]:
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text(encoding='utf-8')).get('parents') or {}
+
+
+def _text(value: Any) -> Optional[str]:
+    return None if value is None else str(value)
 
 
 def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
@@ -110,7 +131,7 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
     }
     return RunRecord(
         params=params,
-        metrics=metrics,
+        metrics=_finite_floats(metrics),
         tags={
             **_user_tags(tags, params),
             'kumo.kind': 'fit',
@@ -190,10 +211,8 @@ class Tracking(Protocol):
     record without metrics, `on_trial` a trial attempt's record so far with
     the event that updated it, and `finish` the fit run's final record
     (`None` if tracking stopped early, which should end the run as failed).
-    Optional members: ``prepare()``, called first on the fit's own thread;
-    ``tags`` (extra fit-run tags); ``trial_logger(trial, attempt)`` returning
-    a Lightning logger (whose methods must not raise and are called on the
-    training thread) or None; and ``capabilities``.
+    Optional members: ``prepare()``, called first on the fit's own thread,
+    and ``tags`` (extra fit-run tags).
     """
     def start(self, record: RunRecord) -> None:
         ...
@@ -206,18 +225,9 @@ class Tracking(Protocol):
         ...
 
 
-Trackers = Union[Tracking, Sequence[Tracking], None]
-
-
 class TrackingSession:
-    def __init__(self, tracking: Trackers) -> None:
-        if tracking is None or _rank() != 0:
-            trackers: List[Tracking] = []
-        elif isinstance(tracking, SequenceABC):
-            trackers = list(tracking)
-        else:
-            trackers = [tracking]
-        self._trackers = trackers
+    def __init__(self, tracking: Optional[Tracking]) -> None:
+        self._tracker = tracking if _rank() == 0 else None
         self._context: Optional[FitContext] = None
         self._trials: Dict[int, List[Event]] = {}
         self._fit_ended: Optional[Event] = None
@@ -225,48 +235,28 @@ class TrackingSession:
             QUEUE_SIZE)
         self._worker: Optional[threading.Thread] = None
         self._behind = False
-        self._slow = False
 
     @property
     def enabled(self) -> bool:
-        return bool(self._trackers)
+        return self._tracker is not None
 
     def start(self, context: Callable[[], FitContext]) -> None:
-        if not self._trackers:
+        if self._tracker is None:
             return
         try:
             value = context()
         except Exception:
             logger.warning('Experiment tracking failed; the fit continues',
                            exc_info=True)
-            self._trackers = []
+            self._tracker = None
             return
         self._context = value
-        self._call_all(lambda tracker: getattr(tracker, 'prepare', _none)())
+        self._call(lambda tracker: getattr(tracker, 'prepare', _none)())
         self._worker = threading.Thread(target=self._work,
                                         name='kumo-tracking', daemon=True)
         self._worker.start()
-        self._submit(lambda: self._call_all(lambda tracker: tracker.start(
+        self._submit(lambda: self._call(lambda tracker: tracker.start(
             run_record(value, tags=getattr(tracker, 'tags', None)))))
-
-    def trial_logger(self, trial: int, attempt: int) -> Optional[Any]:
-        if self._worker is None or self._slow:
-            return None
-        reply: 'queue.Queue[List[Any]]' = queue.Queue(1)
-        if not self._submit(lambda: reply.put(self._call_all(
-                lambda tracker: getattr(tracker, 'trial_logger', _none)
-                (trial, attempt)))):
-            return None
-        try:
-            values = reply.get(timeout=REPLY_SECONDS)
-        except queue.Empty:
-            logger.warning(
-                'Experiment tracking did not answer within %ss; this and '
-                'later trials log no per-step metrics', REPLY_SECONDS)
-            self._slow = True
-            return None
-        loggers = [pl_logger for pl_logger in values if pl_logger is not None]
-        return loggers or None
 
     def on_event(self, event: Event) -> None:
         if self._context is None:
@@ -284,7 +274,7 @@ class TrackingSession:
             })
         events.append(event)
         record = trial_record(self._context, events)
-        self._submit(lambda: self._call_all(
+        self._submit(lambda: self._call(
             lambda tracker: tracker.on_trial(record, event)))
 
     def finish(self, result: Optional['TrainingResult'],
@@ -300,14 +290,14 @@ class TrackingSession:
                            exc_info=True)
             record = None
 
-        def finish_all() -> None:
-            trackers, self._trackers = self._trackers, []
-            call_each(trackers, lambda tracker: tracker.finish(record, error),
-                      'Experiment tracking')
+        def finish_tracker() -> None:
+            tracker, self._tracker = self._tracker, None
+            if tracker is not None:
+                tracker.finish(record, error)
 
         deadline = time.monotonic() + FINISH_SECONDS
         try:
-            for job in (finish_all, None):
+            for job in (finish_tracker, None):
                 self._jobs.put(job, timeout=max(0.0,
                                                 deadline - time.monotonic()))
         except queue.Full:
@@ -340,9 +330,18 @@ class TrackingSession:
             except Exception:
                 logger.warning('Experiment tracking failed', exc_info=True)
 
-    def _call_all(self, call: Callable[[Tracking], Any]) -> List[Any]:
-        return call_each(self._trackers, call, 'Experiment tracking',
-                         dropped=_abandon)
+    def _call(self, call: Callable[[Tracking], Any]) -> None:
+        tracker = self._tracker
+        if tracker is None:
+            return
+        try:
+            call(tracker)
+        except Exception:
+            logger.warning(
+                'Experiment tracking failed; it is off for the rest of this '
+                'run', exc_info=True)
+            self._tracker = None
+            _abandon(tracker)
 
 
 def _none(*args: Any) -> None:

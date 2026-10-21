@@ -1432,18 +1432,14 @@ class Trainer(PortableConfigMixin):
         if self.fit_mode.is_refit:
             limit_val_batches = 0
 
-        # The stopper reads ``log_dir``, which comes from the first logger.
-        pl_logger: Any = pl.loggers.TensorBoardLogger(
-            save_dir=self.get_log_dir(local=True),
-            name='',
-            version='',
-            sub_dir='tensorboard',
-        )
-        extra_logger = self.kwargs.pop("logger", None)
-        if isinstance(extra_logger, (list, tuple)):
-            pl_logger = [pl_logger, *extra_logger]
-        elif extra_logger is not None:
-            pl_logger = [pl_logger, extra_logger]
+        pl_logger = self.kwargs.get("logger", None)
+        if pl_logger is None:
+            pl_logger = pl.loggers.TensorBoardLogger(
+                save_dir=self.get_log_dir(local=True),
+                name='',
+                version='',
+                sub_dir='tensorboard',
+            )
 
         plugins = self.kwargs.pop('plugins', None)
         if plugins is None:

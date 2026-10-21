@@ -117,15 +117,15 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, caplog):
         if not name.startswith('system/')
     }
     assert metrics == {**result.metrics, 'seconds': metrics['seconds']}
-    assert 'not called again' not in caplog.text
+    assert 'off for the rest of this run' not in caplog.text
 
     assert [run.info.run_name
             for run in children] == ['trial-1-attempt-1', 'trial-2-attempt-1']
     for child in children:
         assert child.info.status == 'FINISHED'
         assert child.data.tags['kumo.status'] == 'succeeded'
-        assert {'best_val_mae', 'seconds', 'val_mae',
-                'lightning-epoch'} <= set(child.data.metrics)
+        assert {'best_val_mae', 'seconds',
+                'val_mae'} <= set(child.data.metrics)
         history = client.get_metric_history(child.info.run_id, 'val_mae')
         assert sorted(metric.step for metric in history) == [1, 2]
 
@@ -151,24 +151,23 @@ def test_failed_fit_marks_the_run_failed(table_and_snapshot, monkeypatch):
     assert mlflow.active_run() is None
 
 
-@pytest.mark.parametrize('broken', ['log_batch', 'get_run'])
 def test_mlflow_error_ends_runs_failed_and_is_not_raised(
-        tracking_uri, monkeypatch, caplog, broken):
+        tracking_uri, monkeypatch, caplog):
     from mlflow.tracking import MlflowClient
 
     from kumo.engine.integrations.mlflow import MlflowTracking
 
-    original = getattr(MlflowClient, broken)
+    original = MlflowClient.log_batch
 
     def down(self, *args, metrics=(), **kwargs):
-        if broken == 'get_run' or metrics:
+        if metrics:
             raise RuntimeError('tracking server down')
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(MlflowClient, broken, down)
-    replay([MlflowTracking(log_system_metrics=False)])
+    monkeypatch.setattr(MlflowClient, 'log_batch', down)
+    replay(MlflowTracking(log_system_metrics=False))
 
-    assert caplog.text.count('not called again') == 1
+    assert caplog.text.count('off for the rest of this run') == 1
     assert mlflow.active_run() is None
     statuses = {run.info.status for run in _runs(mlflow.MlflowClient())}
     assert statuses == {'FAILED'}
@@ -210,7 +209,6 @@ def test_a_hung_server_does_not_stall_the_fit(hung_server, monkeypatch):
     import kumo.engine._tracking as tracking
     from kumo.engine.integrations.mlflow import MlflowTracking
 
-    monkeypatch.setattr(tracking, 'REPLY_SECONDS', 0.2)
     monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.5)
     monkeypatch.setenv('MLFLOW_HTTP_REQUEST_MAX_RETRIES', '0')
     monkeypatch.delenv('MLFLOW_HTTP_REQUEST_TIMEOUT', raising=False)
@@ -218,7 +216,7 @@ def test_a_hung_server_does_not_stall_the_fit(hung_server, monkeypatch):
     mlflow.set_tracking_uri(hung_server)
     try:
         began = time.monotonic()
-        replay([MlflowTracking(log_system_metrics=False)])
+        replay(MlflowTracking(log_system_metrics=False))
         elapsed = time.monotonic() - began
         limits = {name: os.environ.get(name) for name in (
             'MLFLOW_HTTP_REQUEST_MAX_RETRIES', 'MLFLOW_HTTP_REQUEST_TIMEOUT')}
@@ -228,3 +226,58 @@ def test_a_hung_server_does_not_stall_the_fit(hung_server, monkeypatch):
     assert elapsed < 1.5
     assert limits == {'MLFLOW_HTTP_REQUEST_MAX_RETRIES': '0',
                       'MLFLOW_HTTP_REQUEST_TIMEOUT': '30'}
+
+
+def test_source_tables_are_logged_as_native_inputs(
+        tracking_uri, monkeypatch):
+    from mlflow.data.delta_dataset_source import DeltaDatasetSource
+
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    monkeypatch.setattr(DeltaDatasetSource, '_lookup_table_id',
+                        lambda self, name: 'table-id')
+    replay(MlflowTracking(log_system_metrics=False))
+
+    run, = [run for run in _runs(mlflow.MlflowClient())
+            if run.data.tags['kumo.kind'] == 'fit']
+    inputs = {
+        item.dataset.name: (item.dataset.source_type,
+                            json.loads(item.dataset.source))
+        for item in run.inputs.dataset_inputs
+    }
+    assert inputs == {
+        'ents': ('s3', {'uri': 's3://bucket/ents.parquet'}),
+        'orders': ('delta_table', {
+            'delta_table_name': 'main.sales.orders',
+            'delta_table_version': 7,
+            'is_databricks_uc_table': True,
+            'delta_table_id': 'table-id',
+        }),
+    }
+    orders = next(item for item in run.inputs.dataset_inputs
+                  if item.dataset.name == 'orders')
+    assert mlflow.data.get_source(orders).delta_table_id == 'table-id'
+
+
+def test_fit_inputs_come_from_the_manifests(tmp_path, caplog):
+    from kumo.engine._tracking import fit_inputs
+
+    snapshot, table = tmp_path / 'index', tmp_path / 'table'
+    snapshot.mkdir()
+    table.mkdir()
+    assert fit_inputs(snapshot, table) == {}
+
+    entry = {'connector': 'file', 'location': '/data/ents.parquet',
+             'version': '1790000000', 'version_kind': 'timestamp'}
+    (snapshot / 'snapshot-manifest.json').write_text(json.dumps(
+        {'parents': {'source_tables': {'ents': {**entry, 'extra': 1}}}}))
+    (table / 'training-table-manifest.json').write_text(json.dumps(
+        {'parents': {'source_table': {**entry, 'version': None}}}))
+    assert fit_inputs(snapshot, table) == {
+        'ents': entry,
+        'training_table': {**entry, 'version': None},
+    }
+
+    (snapshot / 'snapshot-manifest.json').write_text('not json')
+    assert fit_inputs(snapshot, table) == {}
+    assert 'source tables' in caplog.text

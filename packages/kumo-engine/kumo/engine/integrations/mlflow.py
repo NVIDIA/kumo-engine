@@ -11,18 +11,12 @@ import os
 import posixpath
 import re
 import time
+import warnings
 from contextlib import ExitStack, contextmanager
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Set, Tuple
 
-from pytorch_lightning.loggers import MLFlowLogger
-
 from kumo.engine._events import Event
-from kumo.engine._tracking import (
-    DROPPED_PARAMS,
-    LIGHTNING_PREFIX,
-    Capabilities,
-    RunRecord,
-)
+from kumo.engine._tracking import DROPPED_PARAMS, RunRecord
 from kumo.engine.connector._extras import import_provider
 
 logger = logging.getLogger(__name__)
@@ -36,13 +30,16 @@ _HTTP_LIMITS = {
     'MLFLOW_HTTP_REQUEST_MAX_RETRIES': '2',
     'MLFLOW_HTTP_REQUEST_TIMEOUT': '30',
 }
+_PATH_CONNECTORS = ('file', 's3', 'gcs', 'adls')
 
 
 class MlflowTracking:
     r"""Records `Trainer.fit` in MLflow: one run per fit (nested under the
-    active run, if any) with a child run per trial attempt. Params MLflow
-    rejects are counted in ``kumo.dropped_params``. Concurrent fits in one
-    process are not supported.
+    active run, if any) with a child run per trial attempt. Source tables
+    are logged as run inputs: Databricks tables as Delta tables (Unity
+    Catalog then links them to a model registered from the run), file and
+    object-store sources by URI. Params MLflow rejects are counted in
+    ``kumo.dropped_params``. Concurrent fits in one process are not supported.
 
     Args:
         experiment_name: experiment for the fit run, created if missing.
@@ -52,10 +49,6 @@ class MlflowTracking:
             ``nvidia-ml-py``) GPU usage on the fit run.
         tags: extra tags for the fit run.
     """
-
-    capabilities = Capabilities(nested_runs=True, system_metrics=True,
-                                step_metrics=True, artifacts=True,
-                                dataset_inputs=True)
 
     def __init__(
         self,
@@ -117,31 +110,11 @@ class MlflowTracking:
         self._experiment_id = run.info.experiment_id
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
-        if record.inputs:
-            entities = mlflow.entities
-            self._client.log_inputs(self._parent, datasets=[
-                entities.DatasetInput(
-                    entities.Dataset(
-                        name=name, digest=hashlib.sha256(
-                            location.encode()).hexdigest()[:8],
-                        source_type='external',
-                        source=json.dumps({'uri': location})),
-                    tags=[entities.InputTag('mlflow.data.context', 'train')])
-                for name, location in record.inputs.items()
-            ])
-
-    def trial_logger(self, trial: int,
-                     attempt: int) -> Optional['_KumoMLFlowLogger']:
-        run_id = self._children.get((trial, attempt))
-        if run_id is None:
-            return None
-        trial_logger = _KumoMLFlowLogger(
-            run_id=run_id, tracking_uri=self._mlflow.get_tracking_uri(),
-            log_model=False, prefix=LIGHTNING_PREFIX, synchronous=False)
-        # Lightning resolves these lazily, outside the tracking guard.
-        trial_logger.experiment
-        trial_logger.version
-        return trial_logger
+        try:
+            self._log_inputs(record.inputs)
+        except Exception:
+            logger.warning('Could not log the fit\'s source tables to MLflow',
+                           exc_info=True)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         key = (event.trial or 0, int(event.params['attempt']))
@@ -191,6 +164,25 @@ class MlflowTracking:
                 self._client.log_text(self._parent, text, name)
                 self._artifacts.add(name)
 
+    def _log_inputs(self,
+                    inputs: Mapping[str, Mapping[str, Optional[str]]]) -> None:
+        meta = import_provider('mlflow.data.meta_dataset', 'mlflow')
+        entities = self._mlflow.entities
+        datasets = []
+        for name, entry in inputs.items():
+            source = _dataset_source(entry)
+            if source is None:
+                continue
+            digest = hashlib.sha256(
+                json.dumps(dict(entry), sort_keys=True).encode()).hexdigest()
+            dataset = meta.MetaDataset(source, name=name, digest=digest[:8])
+            datasets.append(
+                entities.DatasetInput(
+                    dataset._to_mlflow_entity(),
+                    tags=[entities.InputTag('mlflow.data.context', 'train')]))
+        if datasets:
+            self._client.log_inputs(self._parent, datasets=datasets)
+
     def _log_tags(self, run_id: str, tags: Mapping[str, str]) -> None:
         entities = self._mlflow.entities
         self._client.log_batch(
@@ -223,30 +215,35 @@ class MlflowTracking:
             ])
 
 
-class _KumoMLFlowLogger(MLFlowLogger):
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._failed = False
+def _dataset_source(entry: Mapping[str, Optional[str]]) -> Any:
+    connector, location = entry.get('connector'), entry.get('location')
+    if not location or location.startswith('sql:'):
+        return None
+    if connector == 'databricks':
+        delta = import_provider('mlflow.data.delta_dataset_source', 'mlflow')
+        return delta.DeltaDatasetSource(
+            delta_table_name=_unquoted(location),
+            delta_table_version=_delta_version(entry))
+    if connector in _PATH_CONNECTORS:
+        registry = import_provider('mlflow.data.dataset_source_registry',
+                                   'mlflow')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            return registry.resolve_dataset_source(location)
+    return None
 
-    def log_metrics(self, metrics: Mapping[str, float],
-                    step: Optional[int] = None) -> None:
-        self._guarded(super().log_metrics, metrics, step)
 
-    def log_hyperparams(self, params: Any) -> None:
-        self._guarded(super().log_hyperparams, params)
+def _unquoted(name: str) -> str:
+    parts = re.findall(r'`((?:[^`]|``)*)`', name)
+    return '.'.join(part.replace('``', '`') for part in parts) or name
 
-    def _guarded(self, function: Callable[..., Any], *args: Any) -> None:
-        if self._failed:
-            return
-        try:
-            function(*args)
-        except Exception:
-            logger.warning('MLflow logging failed; it is off for this trial',
-                           exc_info=True)
-            self._failed = True
 
-    def finalize(self, status: str = 'success') -> None:
-        pass  # the tracker ends the run
+def _delta_version(entry: Mapping[str, Optional[str]]) -> Optional[int]:
+    version = entry.get('version') or ''
+    head = version.split('_', 1)[0]
+    if entry.get('version_kind') == 'exact' and head.isdigit():
+        return int(head)
+    return None
 
 
 def _mlflow_params(params: Mapping[str, str]) -> Dict[str, str]:

@@ -7,15 +7,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    Dict,
-    Optional,
-    Protocol,
-    Tuple,
-)
+from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol, Tuple
 
 import psutil
 from diskgraph import SamplerEngine
@@ -212,7 +204,6 @@ def local_training_bindings(
     run_name: Optional[str] = None,
     embedding_models: Optional[EmbeddingModelStore] = None,
     instrumentation: Optional[TrainingInstrumentation] = None,
-    trial_logger: Optional[Callable[[int, int], Any]] = None,
 ) -> Any:
     r"""Binds one resolved training input to this process.
 
@@ -237,5 +228,4 @@ def local_training_bindings(
         artifact_publisher=FilesystemVitalArtifactPublisher(
             Path(training_input.home_dir) / 'published-model'),
         load_validation_metrics=_trainer_validation_metrics,
-        trial_logger=trial_logger,
     )

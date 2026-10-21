@@ -370,25 +370,29 @@ result = trainer.fit(training_table, snapshot=snapshot,
 MLflow runs go to `MLFLOW_TRACKING_URI`: on Databricks this is automatic; for
 SageMaker managed MLflow set it to the tracking server ARN with the
 `sagemaker-mlflow` plugin installed. With nothing configured MLflow writes a
-local store in the working directory. Per-epoch metrics use step = epoch;
-Lightning's per-step metrics are prefixed `lightning-`.
+local store in the working directory. Per-epoch metrics use step = epoch.
 
-Pass a list to record to several trackers; a tracker that raises is not
-called again for that fit and its run is ended as failed. Other systems plug
-in through the `kumo.engine.tracking.Tracking` protocol, which receives
-ready-built `RunRecord`s so every tracker records the same names:
-`start(record)` with the fit run, `on_trial(record, event)` with a trial
+The fit's source tables (from the snapshot manifest, plus a custom training
+table's source) are logged as MLflow run inputs: Databricks tables as Delta
+tables at the snapshot's Delta version, so Unity Catalog links each table to a
+model registered from the run in a Databricks notebook or job; file and
+object-store sources by URI. Other warehouse tables and Custom SQL sources are
+not logged as inputs; they stay in the bundle's `provenance.json`.
+
+Other systems plug in through the `kumo.engine.tracking.Tracking` protocol,
+which receives ready-built `RunRecord`s so every tracker records the same
+names: `start(record)` with the fit run, `on_trial(record, event)` with a trial
 attempt's run after each of its events, and `finish(record, error)` with the
-fit run's final record (`None` when tracking stopped early), plus an optional
-`trial_logger(trial, attempt)` returning a Lightning logger. Params are the
-resolved model plan (fit) or searched hyperparameters and `attempt` (trial).
-Runs carry pointers, not lineage: `kumo.kind` and `kumo.run_id` (plus
-`kumo.parent_run`, `kumo.status` and `kumo.error` for outcomes); lineage stays
-in the model bundle, whose `provenance.json` is logged on the fit run when the
-bundle has one, with `query.pql` and `model_plan.json`. MLflow also records
-the fit's input datasets as native run inputs; Snowflake Experiment Tracking
-has no dataset inputs, so it skips them. Your `tags=` are added as given,
-except `kumo.*` names and param names.
+fit run's final record (`None` when tracking stopped early). A tracker that
+raises is not called again for that fit and its run is ended as failed.
+Params are the resolved model plan (fit) or searched hyperparameters and
+`attempt` (trial). Runs carry pointers, not lineage: `kumo.kind` and
+`kumo.run_id` (plus `kumo.parent_run`, `kumo.status` and `kumo.error` for
+outcomes); lineage stays in the model bundle, whose `provenance.json` is logged
+on the fit run when the bundle has one, with `query.pql` and `model_plan.json`.
+`RunRecord.inputs` maps each source table to its `connector`, `location`,
+`version` and `version_kind`. Your `tags=` are added as given, except `kumo.*`
+names and param names.
 
 ## BigQuery staged ingestion
 

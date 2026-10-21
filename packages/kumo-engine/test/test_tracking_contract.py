@@ -21,13 +21,22 @@ from kumo.engine._tracking import (
     TrackingSession,
     run_record,
 )
-from kumo.engine.tracking import Capabilities, RunRecord
+from kumo.engine.tracking import RunRecord
 
 RUN = 'trainer-fit-1'
 USER_TAGS = {'team': 'ents', 'kumo.run_id': 'overridden'}
 QUERY = 'PREDICT ents.Y FOR EACH ents.ID'
+INPUTS = {
+    'ents': {'connector': 's3', 'location': 's3://bucket/ents.parquet',
+             'version': '1790000000', 'version_kind': 'timestamp'},
+    'orders': {'connector': 'databricks',
+               'location': '`main`.`sales`.`orders`',
+               'version': '7_1790000000', 'version_kind': 'exact'},
+    'users': {'connector': 'snowflake', 'location': '"DB"."SCH"."USERS"',
+              'version': '1790000000', 'version_kind': 'timestamp'},
+}
 CONTEXT = FitContext(
-    run_id=RUN, query=QUERY, inputs={'ents': 's3://bucket/ents.parquet'},
+    run_id=RUN, query=QUERY, inputs=INPUTS,
     model_plan={
         'optimization': {'base_lr': [0.01, 0.001], 'max_epochs': 2},
         'training_job': {'tune_metric': 'mae'},
@@ -72,17 +81,28 @@ RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
 
 
 class _Recorder:
-    def __init__(self):
+    def __init__(self, tracker=None):
         self.calls: List[Tuple[str, Any]] = []
+        self.tracker = tracker
+        self.tags = getattr(tracker, 'tags', None)
+
+    def prepare(self):
+        getattr(self.tracker, 'prepare', lambda: None)()
 
     def start(self, record):
         self.calls.append(('start', record))
+        if self.tracker is not None:
+            self.tracker.start(record)
 
     def on_trial(self, record, event):
         self.calls.append(('on_trial', record))
+        if self.tracker is not None:
+            self.tracker.on_trial(record, event)
 
     def finish(self, record, error):
         self.calls.append(('finish', record))
+        if self.tracker is not None:
+            self.tracker.finish(record, error)
 
 
 def join_tracking_threads():
@@ -91,17 +111,15 @@ def join_tracking_threads():
             thread.join(30)
 
 
-def replay(trackers, events=EVENTS, result=RESULT,
+def replay(tracker=None, events=EVENTS, result=RESULT,
            error=None) -> Dict[str, RunRecord]:
-    r"""Feeds the recorded fit to `trackers`; returns the records expected
-    of them."""
-    recorder = _Recorder()
-    session = TrackingSession([recorder, *trackers])
+    r"""Feeds the recorded fit to `tracker`; returns the records expected
+    of it."""
+    recorder = _Recorder(tracker)
+    session = TrackingSession(recorder)
     session.start(lambda: CONTEXT)
     for event in events:
         session.on_event(event)
-        if event.name == 'trial_started':
-            session.trial_logger(event.trial, event.params['attempt'])
     session.finish(result, error)
     records = {
         record.tags['kumo.run_id']: record
@@ -119,7 +137,6 @@ class Observed:
     steps: Mapping[str, Tuple[Tuple[int, float], ...]]
     tags: Mapping[str, str]
     parent: Optional[str] = None
-    inputs: Mapping[str, str] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
 
 
@@ -128,10 +145,14 @@ class Adapter:
     make: Callable[[], Any]
     observe: Callable[[], Dict[str, Observed]]
     kept_params: Callable[[Mapping[str, str]], Mapping[str, str]] = dict
+    nested_runs: bool = False
+    step_metrics: bool = False
+    artifacts: bool = False
 
 
 def gaps(expected: Dict[str, RunRecord], observed: Dict[str, Observed],
-         capabilities: Capabilities, kept_params: Callable) -> List[str]:
+         adapter: Adapter) -> List[str]:
+    kept_params = adapter.kept_params
     found = []
     if set(observed) != set(expected):
         return [f'runs {sorted(observed)} != {sorted(expected)}']
@@ -154,7 +175,7 @@ def gaps(expected: Dict[str, RunRecord], observed: Dict[str, Observed],
         differ('metrics', {k: seen.metrics.get(k) for k in record.metrics},
                dict(record.metrics))
         names = set(record.metrics)
-        if capabilities.step_metrics:
+        if adapter.step_metrics:
             names |= set(record.steps)
             differ('steps', {k: seen.steps.get(k) for k in record.steps},
                    dict(record.steps))
@@ -166,11 +187,9 @@ def gaps(expected: Dict[str, RunRecord], observed: Dict[str, Observed],
             sorted(k for k in seen.tags if k.startswith('kumo.')
                    and k not in (DROPPED_PARAMS, DROPPED_METRICS)),
             sorted(k for k in record.tags if k.startswith('kumo.')))
-        if capabilities.nested_runs:
+        if adapter.nested_runs:
             differ('parent', seen.parent, record.tags.get('kumo.parent_run'))
-        if capabilities.dataset_inputs:
-            differ('inputs', dict(seen.inputs), dict(record.inputs))
-        if capabilities.artifacts:
+        if adapter.artifacts:
             differ('artifacts', dict(seen.artifacts), dict(record.artifacts))
     return found
 
@@ -206,10 +225,6 @@ def mlflow_adapter(tmp_path, monkeypatch):
                     a.path: mlflow.artifacts.load_text(
                         f'{run.info.artifact_uri}/{a.path}')
                     for a in client.list_artifacts(run.info.run_id)
-                },
-                inputs={
-                    d.dataset.name: json.loads(d.dataset.source)['uri']
-                    for d in run.inputs.dataset_inputs
                 })
             for run in runs
         }
@@ -218,7 +233,8 @@ def mlflow_adapter(tmp_path, monkeypatch):
         yield Adapter(
             make=lambda: MlflowTracking(log_system_metrics=False,
                                         tags=USER_TAGS), observe=observe,
-            kept_params=_mlflow_params)
+            kept_params=_mlflow_params, nested_runs=True, step_metrics=True,
+            artifacts=True)
     finally:
         while mlflow.active_run() is not None:
             mlflow.end_run()
@@ -231,7 +247,7 @@ def adapter(request) -> Adapter:
 
 
 def test_records_of_the_recorded_fit():
-    records = replay([])
+    records = replay()
 
     fit = records[RUN]
     assert fit.tags == {'team': 'ents', 'kumo.kind': 'fit', 'kumo.run_id': RUN}
@@ -250,7 +266,7 @@ def test_records_of_the_recorded_fit():
     assert fit.metrics == {'val_mae': 0.3, 'test_mae': 0.32, 'seconds': 9.0}
     assert fit.artifacts['query.pql'] == QUERY
     assert json.loads(fit.artifacts['model_plan.json']) == CONTEXT.model_plan
-    assert fit.inputs == {'ents': 's3://bucket/ents.parquet'}
+    assert fit.inputs == INPUTS
 
     oom = records[f'{RUN}-trial-2-attempt-1']
     assert oom == RunRecord(
@@ -269,38 +285,38 @@ def test_records_of_the_recorded_fit():
                            'val_mae': ((1, 0.5), (2, 0.3))}
 
 
-def test_adapter_records_the_same_runs_beside_a_failing_tracker(
-        adapter, caplog, tmp_path):
+def test_adapter_records_the_same_runs(adapter, tmp_path):
+    (tmp_path / 'provenance.json').write_text('{"bundle": "b"}')
+    result = SimpleNamespace(metrics=RESULT.metrics, bundle_dir=tmp_path)
+    expected = replay(adapter.make(), result=result)
+
+    assert expected[RUN].artifacts['provenance.json'] == '{"bundle": "b"}'
+    assert gaps(expected, adapter.observe(), adapter) == []
+
+
+def test_a_raising_tracker_is_ended_and_not_called_again(caplog):
     class RaisesOnTrial(_Recorder):
         def on_trial(self, record, event):
             super().on_trial(record, event)
             raise RuntimeError('tracker down')
 
-    (tmp_path / 'provenance.json').write_text('{"bundle": "b"}')
-    result = SimpleNamespace(metrics=RESULT.metrics, bundle_dir=tmp_path)
-    broken, tracker = RaisesOnTrial(), adapter.make()
-    expected = replay([broken, tracker], result=result)
-
-    assert expected[RUN].artifacts['provenance.json'] == '{"bundle": "b"}'
+    broken = RaisesOnTrial()
+    replay(broken)
 
     assert [hook for hook, _ in broken.calls] == [
         'start', 'on_trial', 'finish'
     ]
     assert broken.calls[-1] == ('finish', None)
-    assert caplog.text.count('not called again') == 1
-    assert gaps(expected, adapter.observe(), tracker.capabilities,
-                adapter.kept_params) == []
+    assert caplog.text.count('off for the rest of this run') == 1
 
 
 def test_adapter_records_a_failed_fit(adapter):
-    tracker = adapter.make()
     failed = _event('fit_ended', status='failed', error='ValueError: stop')
-    expected = replay([tracker], [*EVENTS[:-1], failed], None,
+    expected = replay(adapter.make(), [*EVENTS[:-1], failed], None,
                       ValueError('stop'))
 
     assert expected[RUN].tags['kumo.error'] == 'ValueError: stop'
-    assert gaps(expected, adapter.observe(), tracker.capabilities,
-                adapter.kept_params) == []
+    assert gaps(expected, adapter.observe(), adapter) == []
 
 
 def test_only_rank_zero_tracks(monkeypatch):
@@ -317,7 +333,6 @@ def test_only_rank_zero_tracks(monkeypatch):
 def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch, caplog):
     import kumo.engine._tracking as tracking
 
-    monkeypatch.setattr(tracking, 'REPLY_SECONDS', 0.2)
     monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.5)
     release = threading.Event()
 
@@ -329,12 +344,11 @@ def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch, caplog):
     hung = Hung()
     began = time.monotonic()
     try:
-        replay([hung])
+        replay(hung)
         elapsed = time.monotonic() - began
     finally:
         release.set()
         join_tracking_threads()
 
     assert elapsed < 1.5
-    assert caplog.text.count('did not answer') == 1
     assert 'did not finish within' in caplog.text

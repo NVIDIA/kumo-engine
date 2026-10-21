@@ -46,7 +46,12 @@ from kumo.engine._embeddings import (
 from kumo.engine._events import Event, EventEmitter, query_sha256
 from kumo.engine._manifest import BundleProvenance
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
-from kumo.engine._tracking import FitContext, Trackers, TrackingSession
+from kumo.engine._tracking import (
+    FitContext,
+    Tracking,
+    TrackingSession,
+    fit_inputs,
+)
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
@@ -293,7 +298,7 @@ class Trainer:
         export_config: Optional[ModelOutputConfig] = None,
         warm_start: Optional[Self] = None,
         callbacks: Sequence[Callable[[Event], None]] = (),
-        tracking: Trackers = None,
+        tracking: Optional[Tracking] = None,
     ) -> TrainingResult:
         r"""Train a model against `train_table`.
 
@@ -321,9 +326,9 @@ class Trainer:
                 match. Forecasting warm starts are unsupported.
             callbacks: called with each progress `Event`; a callback that
                 raises is logged and not called again.
-            tracking: one `kumo.engine.tracking.Tracking` (e.g.
-                `kumo.engine.integrations.mlflow.MlflowTracking`) or a list of
-                them; tracking errors are logged, never raised.
+            tracking: a `kumo.engine.tracking.Tracking`, e.g.
+                `kumo.engine.integrations.mlflow.MlflowTracking`; tracking
+                errors are logged, never raised.
         """
         if export_config is not None and not callable(
                 getattr(export_config.connector.sink_backend, 'publish_model',
@@ -506,6 +511,8 @@ class Trainer:
             run_id=run_id,
             query=train_table.query,
             model_plan=to_json_dict(materialized.model_plan),
+            inputs=fit_inputs(Path(snapshot.index_path),
+                              Path(train_table.staging_dir)),
         ))
         training_input = ResolvedTrainingInput(
             task=materialized.task,
@@ -519,9 +526,7 @@ class Trainer:
             bindings=local_training_bindings(
                 training_input, run_name=run_id,
                 embedding_models=self._embedding_models,
-                instrumentation=events,
-                trial_logger=(tracking.trial_logger
-                              if tracking.enabled else None)),
+                instrumentation=events),
             options=CallableTrainingOptions(),
         )
 

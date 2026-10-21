@@ -3,10 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""API for writing an experiment-tracking adapter for ``fit(tracking=...)``."""
 
-from kumo.engine._tracking import Capabilities, RunRecord, Tracking
+from kumo.engine._tracking import RunRecord, Tracking
 
 __all__ = [
     'Tracking',
     'RunRecord',
-    'Capabilities',
 ]
