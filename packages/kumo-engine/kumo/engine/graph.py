@@ -249,12 +249,7 @@ def _write_snapshot_manifest(result: Any, snapshot_id: str,
         rows = stats.get('source_rows_by_table', {})
         fields = {
             'formats': format_versions(),
-            'tables': {
-                alias: {
-                    'rows': rows.get(alias)
-                }
-                for alias in source_tables
-            },
+            'tables': {a: {'rows': rows.get(a)} for a in source_tables},
             'edges': dict(stats.get('edge_counts', {})),
         }
         if not fresh:
@@ -561,14 +556,13 @@ class Graph:
                 )
 
             snapshot_id = f'{graph_key}@{data_version[:16]}'
-            index_path = Path(result.index_path)
             _write_snapshot_manifest(result, snapshot_id, source_tables,
                                      fresh=existing is None)
 
             _warn_ingest_data_loss(result, graph_config)
             return GraphSnapshot(
                 id=snapshot_id,
-                index_path=index_path,
+                index_path=Path(result.index_path),
                 graph_config=graph_config,
             )
         finally:

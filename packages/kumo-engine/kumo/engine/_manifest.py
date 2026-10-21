@@ -15,7 +15,6 @@ SCHEMA_VERSION = 1
 
 
 def atomic_write(path: Path, payload: bytes) -> None:
-    """Replace one metadata file without exposing partial JSON."""
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent,
@@ -94,7 +93,6 @@ def _flatten(value: Mapping[str, Any], prefix: str = '') -> Dict[str, Any]:
 
 def diff_manifests(a: Mapping[str, Any],
                    b: Mapping[str, Any]) -> Dict[str, Tuple[Any, Any]]:
-    """Return ``{dotted_key: (a_value, b_value)}`` for every differing key."""
     left, right = _flatten(a), _flatten(b)
     return {
         key: (left.get(key), right.get(key))

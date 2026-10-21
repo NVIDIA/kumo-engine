@@ -53,19 +53,8 @@ def environment() -> Dict[str, Optional[str]]:
 
 def _context(platform_name: str, job_id: Optional[str],
              job_run_id: Optional[str]) -> Dict[str, Any]:
-    return {
-        'platform': platform_name,
-        'job_id': job_id,
-        'job_run_id': job_run_id,
-    }
-
-
-def _processing_job() -> Optional[Dict[str, Any]]:
-    try:
-        config = json.loads(PROCESSING_JOB_CONFIG.read_text())
-    except (OSError, ValueError):
-        return None
-    return config if isinstance(config, dict) else None
+    return {'platform': platform_name, 'job_id': job_id,
+            'job_run_id': job_run_id}
 
 
 def _detect() -> Optional[Dict[str, Any]]:
@@ -73,8 +62,11 @@ def _detect() -> Optional[Dict[str, Any]]:
     if env.get('TRAINING_JOB_NAME'):
         return _context('sagemaker', env['TRAINING_JOB_NAME'],
                         env.get('TRAINING_JOB_ARN'))
-    processing = _processing_job()
-    if processing is not None and processing.get('ProcessingJobName'):
+    try:
+        processing = json.loads(PROCESSING_JOB_CONFIG.read_text())
+    except (OSError, ValueError):
+        processing = None
+    if isinstance(processing, dict) and processing.get('ProcessingJobName'):
         return _context('sagemaker', processing['ProcessingJobName'],
                         processing.get('ProcessingJobArn'))
     service = env.get('SNOWFLAKE_SERVICE_NAME')
