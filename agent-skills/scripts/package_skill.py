@@ -24,7 +24,8 @@ tree carries `SKILL-BUILD: source`, so a session quoting that value read an unpa
 folder Genie Code reads skills from, through the Workspace API, then reads every file back and
 compares bytes. It authenticates with `DATABRICKS_HOST` (or `DATABRICKS_URL`) and
 `DATABRICKS_TOKEN` from the environment or `--env-file`. Files already in that folder that the
-package does not ship are reported, not deleted. A new Genie Code chat picks up the change.
+package does not ship are reported, and deleted with `--prune` (only inside
+`kumo-data-science/`). A new Genie Code chat picks up the change.
 
 Every build is checked: each markdown link must resolve relative to the file that holds it, and
 each backticked path naming a package directory must resolve relative to the package root. A
@@ -191,8 +192,9 @@ class Workspace:
     def me(self) -> str:
         return self.api('GET', '/api/2.0/preview/scim/v2/Me')['userName']
 
-    def listing(self, path: str) -> list[str]:
-        """Every file under `path`, recursively; [] when it does not exist."""
+    def listing(self, path: str, dirs: bool = False) -> list[str]:
+        """Every file under `path`, recursively — or, with `dirs`, every directory, deepest
+        first; [] when it does not exist."""
         try:
             objects = self.api('GET', '/api/2.0/workspace/list', query=dict(path=path))
         except SystemExit as e:
@@ -201,8 +203,15 @@ class Workspace:
             raise
         out = []
         for o in objects.get('objects', []):
-            out += self.listing(o['path']) if o['object_type'] == 'DIRECTORY' else [o['path']]
+            if o['object_type'] == 'DIRECTORY':
+                out += self.listing(o['path'], dirs) + ([o['path']] if dirs else [])
+            elif not dirs:
+                out.append(o['path'])
         return out
+
+    def delete(self, path: str) -> None:
+        """Delete one file or one empty directory; never recursive."""
+        self.api('POST', '/api/2.0/workspace/delete', dict(path=path, recursive=False))
 
 
 def read_env_file(path: Path) -> None:
@@ -213,8 +222,13 @@ def read_env_file(path: Path) -> None:
             os.environ.setdefault(key.strip(), value.strip().strip('\'"'))
 
 
-def deploy_genie(pkg: Path, ws: Workspace) -> str:
-    """Upload `pkg` to the user's Genie Code skills folder and read every file back."""
+def deploy_genie(pkg: Path, ws: Workspace, prune: bool = False) -> str:
+    """Upload `pkg` to the user's Genie Code skills folder and read every file back.
+
+    Files in the target that the package does not ship — an older build's host directory, say —
+    are reported, and with `prune` deleted, along with directories they leave empty. Only the
+    `kumo-data-science/` folder is touched; other skills beside it never are.
+    """
     target = f'{GENIE_SKILLS.format(user=ws.me())}/{ROUTER}'
     files = sorted(p for p in pkg.rglob('*') if p.is_file())
     remote = {f'{target}/{p.relative_to(pkg).as_posix()}': p for p in files}
@@ -232,7 +246,18 @@ def deploy_genie(pkg: Path, ws: Workspace) -> str:
     print(f'genie: {len(files)} files deployed and read back byte for byte -> {target}')
     stale = sorted(set(ws.listing(target)) - set(remote))
     for path in stale:
-        print(f'  not in this package, left in place: {path}')
+        if prune:
+            ws.delete(path)
+        print(f"  not in this package, {'deleted' if prune else 'left in place'}: {path}")
+    if prune:
+        shipped_dirs = {path.rsplit('/', 1)[0] for path in remote}
+        for d in ws.listing(target, dirs=True):
+            if d not in shipped_dirs and not any(p.startswith(d + '/') for p in remote):
+                if not ws.listing(d):
+                    ws.delete(d)
+                    print(f'  empty directory deleted: {d}')
+    elif stale:
+        print('  --prune deletes these; the router expects exactly one directory under hosts/.')
     print('Start a new Genie Code chat (agent mode) to load it; ask it to quote SKILL-BUILD.')
     return target
 
@@ -244,12 +269,16 @@ def main() -> None:
     ap.add_argument('--check', action='store_true', help='build and check every host in a temp dir')
     ap.add_argument('--deploy', action='store_true',
                     help='genie: upload to your Genie Code skills folder and read it back')
+    ap.add_argument('--prune', action='store_true',
+                    help='genie --deploy: delete files in the target the package does not ship')
     ap.add_argument('--env-file', type=Path, help='KEY=VALUE file with DATABRICKS_HOST/_TOKEN')
     args = ap.parse_args()
     if not args.check and not args.host:
         ap.error('give a host, or --check')
     if args.deploy and (args.check or args.host != 'genie'):
         ap.error('--deploy is for the genie host')
+    if args.prune and not args.deploy:
+        ap.error('--prune goes with --deploy')
 
     failed = False
     with tempfile.TemporaryDirectory() as tmp:
@@ -270,7 +299,7 @@ def main() -> None:
         token = os.environ.get('DATABRICKS_TOKEN')
         if not host or not token:
             sys.exit('--deploy needs DATABRICKS_HOST (or DATABRICKS_URL) and DATABRICKS_TOKEN')
-        deploy_genie(pkg, Workspace(host, token))
+        deploy_genie(pkg, Workspace(host, token), prune=args.prune)
 
 
 if __name__ == '__main__':

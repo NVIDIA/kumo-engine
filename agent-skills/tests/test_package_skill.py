@@ -92,6 +92,7 @@ class FakeWorkspace:
     def __init__(self, existing: dict[str, bytes] | None = None, corrupt: str = '') -> None:
         self.files = dict(existing or {})
         self.corrupt = corrupt
+        self.deleted: list[str] = []
 
     def me(self) -> str:
         return 'someone@example.com'
@@ -107,8 +108,17 @@ class FakeWorkspace:
             return dict(content=package_skill.base64.b64encode(self.files[query['path']]).decode())
         return {}
 
-    def listing(self, path: str) -> list[str]:
-        return [p for p in self.files if p.startswith(path + '/')]
+    def listing(self, path: str, dirs: bool = False) -> list[str]:
+        files = [p for p in self.files if p.startswith(path + '/')]
+        if not dirs:
+            return files
+        found = {f.rsplit('/', i)[0] for f in files for i in range(1, f[len(path):].count('/'))}
+        return sorted(found - {path}, key=len, reverse=True)
+
+    def delete(self, path: str) -> None:
+        assert path in self.files or not self.listing(path), f'non-empty directory {path}'
+        self.files.pop(path, None)
+        self.deleted.append(path)
 
 
 def test_deploy_reads_every_file_back(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -122,6 +132,21 @@ def test_deploy_reads_every_file_back(tmp_path: Path, capsys: pytest.CaptureFixt
     out = capsys.readouterr().out
     assert 'read back byte for byte' in out
     assert f'left in place: {target}/old-notes.md' in out
+
+
+def test_prune_deletes_only_what_the_package_does_not_ship(tmp_path: Path) -> None:
+    pkg = package_skill.build('genie', tmp_path)
+    skills = '/Users/someone@example.com/.assistant/skills'
+    target = f'{skills}/kumo-data-science'
+    old = {f'{target}/hosts/databricks/adapter.md': b'old', f'{target}/future/a.md': b'old',
+           f'{skills}/tabular/SKILL.md': b'another skill'}
+    ws = FakeWorkspace(old)
+    package_skill.deploy_genie(pkg, ws, prune=True)  # type: ignore[arg-type]
+    assert f'{target}/hosts/databricks/adapter.md' not in ws.files
+    assert f'{target}/future/a.md' not in ws.files
+    assert ws.files[f'{skills}/tabular/SKILL.md'] == b'another skill'
+    assert f'{target}/hosts/databricks-genie/adapter.md' in ws.files
+    assert all(d.startswith(target + '/') for d in ws.deleted)
 
 
 def test_deploy_fails_on_a_mismatch(tmp_path: Path) -> None:
