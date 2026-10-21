@@ -247,7 +247,7 @@ _COMPARABLE = ('exact', 'timestamp')
 
 
 def _source_change(table: Table, recorded: Any,
-                   record_locations: bool) -> Dict[str, Any]:
+                   record_sources: bool) -> Dict[str, Any]:
     from kumoapi.source_table import CustomSQLSourceTable
 
     recorded = recorded if isinstance(recorded, dict) else {}
@@ -260,7 +260,7 @@ def _source_change(table: Table, recorded: Any,
             stamp = connector.source_backend.get_data_version(
                 connector, table.table_name)
             now = source_table(connector, table.table_name, None, stamp,
-                               record_locations=record_locations)
+                               record_sources=record_sources)
             current = now['version']
             comparable = comparable and now['version_kind'] in _COMPARABLE
             same_source = (recorded.get('connector'),
@@ -386,16 +386,16 @@ class GraphSnapshot:
             manifest = self.manifest
             recorded = ({} if not manifest or manifest.get('reconstructed') else
                         dict(manifest['parents']['source_tables']))
-            record_locations = manifest.get('record_locations', True)
+            record_sources = manifest.get('record_sources', True)
         except Exception:
-            recorded, record_locations = {}, True
+            recorded, record_sources = {}, True
         from kumo_core.sources.parallel import run_in_parallel
 
         tables = graph._named_tables
         changes = run_in_parallel(
             [
                 partial(_source_change, table, recorded.get(alias),
-                        record_locations)
+                        record_sources)
                 for alias, table in tables.items()
             ], workers=max(1, min(len(tables), 16)), stop=threading.Event())
         return dict(zip(tables, changes))
