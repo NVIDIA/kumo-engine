@@ -4,8 +4,48 @@
 """Shared manifest owner and local atomic-publication compatibility."""
 
 import json
+import ntpath
 
+import pytest
+from kumo_core.train import artifact_manifest
 from kumo_core.train._artifact_storage import _LOCAL_STORAGE
+
+
+@pytest.mark.parametrize('root, child', [
+    ('C:/work/predictions', 'C:/work/predictions/part.parquet'),
+    (r'C:\work\predictions', r'C:\work\predictions\part.parquet'),
+    ('C:/work/predictions', r'C:\work\predictions\part.parquet'),
+    ('file:///C:/work/predictions',
+     r'file:///C:/work/predictions\part.parquet'),
+    ('s3://bucket/predictions', 's3://bucket/predictions/part.parquet'),
+])
+def test_windows_owned_descendants(monkeypatch, root, child):
+    monkeypatch.setattr(artifact_manifest, 'osp', ntpath)
+    artifact_manifest.require_owned_path(child, root)
+
+
+@pytest.mark.parametrize('candidate', [
+    'C:/work/predictions',
+    'C:/work/predictions-sibling/part.parquet',
+    'C:/work/predictions/../outside/part.parquet',
+    r'C:/work/predictions\..\outside/part.parquet',
+    'D:/work/predictions/part.parquet',
+    's3://bucket/work/predictions/part.parquet',
+])
+def test_windows_owned_paths_reject_escape(monkeypatch, candidate):
+    monkeypatch.setattr(artifact_manifest, 'osp', ntpath)
+    with pytest.raises(ValueError):
+        artifact_manifest.require_owned_path(candidate, 'C:/work/predictions')
+
+
+@pytest.mark.parametrize('path_module', [ntpath, artifact_manifest.osp])
+def test_remote_owned_paths_reject_escape(monkeypatch, path_module):
+    monkeypatch.setattr(artifact_manifest, 'osp', path_module)
+    for candidate in ('s3://bucket/root', 's3://bucket/root-sibling/part',
+                      's3://bucket/root/../outside/part',
+                      's3://other/root/part', 'gs://bucket/root/part'):
+        with pytest.raises(ValueError):
+            artifact_manifest.require_owned_path(candidate, 's3://bucket/root')
 
 
 def test_local_pointer_publication_does_not_replace_existing_selection(

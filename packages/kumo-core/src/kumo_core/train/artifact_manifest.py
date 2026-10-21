@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ntpath
 import os.path as osp
+import posixpath
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -94,11 +96,15 @@ def hash_prediction_config(path: str, *, _storage=_LOCAL_STORAGE) -> str:
 
 
 def _canonical_coordinate(path: str) -> tuple[str, str, str]:
+    # A drive-qualified local path is not a URI with scheme "c".
+    if len(ntpath.splitdrive(path)[0]) == 2 and ntpath.isabs(path):
+        return "local", "", ntpath.normpath(path).replace('\\', '/')
     split = urlsplit(path)
     if split.scheme:
-        normalized = osp.normpath('/' + split.path.lstrip('/'))
+        uri_path = split.path.replace(osp.sep, '/')
+        normalized = posixpath.normpath('/' + uri_path.lstrip('/'))
         return split.scheme.casefold(), split.netloc.casefold(), normalized
-    return "local", "", osp.abspath(path)
+    return "local", "", osp.abspath(path).replace(osp.sep, '/')
 
 
 def require_owned_path(path: str, root: str) -> None:

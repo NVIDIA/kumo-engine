@@ -39,12 +39,8 @@ setup(
         # Unlike kumo-sdk (where this is an optional extra behind
         # CloudBackend), this package has no non-training use case, so
         # kumo-core -- and the Torch/PyG/DiskGraph stack it pulls in -- is a
-        # plain, required dependency here. Pull in the `faiss-gpu` extra
-        # (the official faiss-gpu package) unconditionally: faiss-gpu is a
-        # functional superset of faiss-cpu (its CPU index classes work with
-        # no GPU present), so this avoids requiring every kumo-engine user
-        # to pick a faiss-cpu/faiss-gpu extra, and sidesteps faiss-cpu/
-        # faiss-gpu both being importable as `faiss` and corrupting each
-        # other's install if ever combined.
-        "kumo-core[faiss-gpu]>=0.1.0.dev1",
+        # plain, required dependency here. Windows uses CPU Faiss;
+        # training device selection is independent. Select one package:
+        # both distributions install the same `faiss` import namespace.
+        "kumo-core[faiss]>=0.1.0.dev1",
     ], )

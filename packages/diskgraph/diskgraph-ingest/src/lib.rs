@@ -109,7 +109,9 @@ use parquet::basic::{Encoding, PageType, Type as PhysicalType};
 use parquet::column::page::{Page, PageReader};
 use parquet::file::metadata::ColumnChunkMetaData;
 use parquet::file::reader::{ChunkReader, Length, SerializedPageReader};
+#[cfg(unix)]
 use pprof::protos::Message;
+#[cfg(unix)]
 use pprof::ProfilerGuard;
 use ptr_hash::DefaultPtrHash;
 use ptr_hash::PtrHashScratch;
@@ -12724,6 +12726,7 @@ fn text_stats_from_prefix(
     Ok(result)
 }
 
+#[cfg(unix)]
 fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let guard = ProfilerGuard::new(500).context("start profiler")?;
     let result = f();
@@ -12734,6 +12737,23 @@ fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Re
     let bytes = profile.encode_to_vec();
     file.write_all(&bytes).context("write pprof profile")?;
     result
+}
+
+#[cfg(windows)]
+fn profile_phase<T>(_dir: &Path, _name: &str, _f: impl FnOnce() -> Result<T>) -> Result<T> {
+    anyhow::bail!("CPU profiling is not supported on Windows")
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn rejects_windows_profiling() {
+    let result: Result<()> = profile_phase(Path::new("unused"), "test", || {
+        panic!("unsupported profiling must not run the phase")
+    });
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("not supported on Windows"));
 }
 
 /// Path of the marker file that proves a phase ran to completion.
@@ -13461,6 +13481,7 @@ fn load_sort_key_component_shards(
     Ok(shards)
 }
 
+#[cfg(unix)]
 fn advise_willneed(map: &Mmap) {
     let ret = unsafe {
         libc::madvise(
@@ -13474,6 +13495,7 @@ fn advise_willneed(map: &Mmap) {
     }
 }
 
+#[cfg(unix)]
 fn advise_sequential(map: &Mmap) {
     let ret = unsafe {
         libc::madvise(
@@ -13486,6 +13508,12 @@ fn advise_sequential(map: &Mmap) {
         let _ = std_io::Error::last_os_error();
     }
 }
+
+#[cfg(windows)]
+fn advise_willneed(_map: &Mmap) {}
+
+#[cfg(windows)]
+fn advise_sequential(_map: &Mmap) {}
 
 #[cfg(target_os = "linux")]
 fn advise_file_willneed(file: &fs::File) {

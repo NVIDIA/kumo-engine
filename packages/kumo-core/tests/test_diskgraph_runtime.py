@@ -27,6 +27,7 @@ from kumo_core.diskgraph.snapshot import (
     DiskgraphSnapshotHandle,
     LocalSnapshotStore,
 )
+from kumo_core.io.filesystem import makedirs, open_file
 
 ZERO_COUNTS = ("diskgraph ingest completed: 0 node tables, 0 edge relations, "
                "0 nodes, 0 edges")
@@ -361,6 +362,82 @@ def test_progress_is_logged_while_the_child_is_still_running(
     assert rc == 0
     assert "row-secret" in tail
     assert not any("row-secret" in message for message in _messages(caplog))
+
+
+def test_windows_progress_preserves_child_output(
+        caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        diskgraph_runner, "sys",
+        SimpleNamespace(platform="win32", executable=sys.executable))
+    release = tmp_path / "release"
+    child = ("import pathlib, sys, time\n"
+             "print('2026-10-02T00:00:00Z INFO diskgraph_ingest: table started table=first', flush=True)\n"
+             "deadline = time.monotonic() + 10\n"
+             "while not pathlib.Path(sys.argv[1]).exists():\n"
+             "    if time.monotonic() > deadline: sys.exit(1)\n"
+             "    time.sleep(0.01)\n"
+             "print('2026-10-02T00:00:00Z INFO diskgraph_ingest: table started table=second', flush=True)\n")
+
+    def heartbeat() -> None:
+        if "ingest: table started table=first" in _messages(caplog):
+            with open_file(str(release), "wb"):
+                pass
+
+    caplog.set_level("INFO")
+    rc, tail = diskgraph_runner._run_with_heartbeat(
+        [sys.executable, "-c", child, str(release)], mem_limit_bytes=None,
+        heartbeat_interval_s=0.02, heartbeat=heartbeat)
+
+    assert rc == 0
+    assert "ingest: table started table=first" in _messages(caplog)
+    assert "ingest: table started table=second" in _messages(caplog)
+    lines = tail.splitlines()
+    assert any(line.endswith("table=first") for line in lines)
+    assert any(line.endswith("table=second") for line in lines)
+
+
+@pytest.mark.parametrize("platform,binary", [
+    ("linux", "ingest"),
+    ("win32", "ingest.exe"),
+])
+def test_bundled_ingest_platform_binary(
+        platform: str, binary: str, monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path) -> None:
+    makedirs(str(tmp_path / "bin"))
+    candidate = tmp_path / "bin" / binary
+    with open_file(str(candidate), "wb") as stream:
+        stream.write(b"binary")
+    candidate.chmod(0o700)
+    monkeypatch.delenv("DISKGRAPH_INGEST_BIN", raising=False)
+    monkeypatch.setattr(diskgraph_runner, "sys",
+                        SimpleNamespace(platform=platform))
+    monkeypatch.setitem(sys.modules, "diskgraph",
+                        SimpleNamespace(__file__=str(tmp_path / "__init__.py")))
+
+    assert diskgraph_runner._resolve_ingest_bin() == str(candidate)
+
+
+def test_windows_has_no_posix_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diskgraph_runner, "sys",
+                        SimpleNamespace(platform="win32"))
+    assert diskgraph_runner._soft_nofile_limit() is None
+    with pytest.raises(NotImplementedError, match="POSIX"):
+        diskgraph_runner._run_with_heartbeat(
+            ["ingest.exe"], mem_limit_bytes=1024, heartbeat_interval_s=1)
+
+
+def test_windows_progress_keeps_writer_offset(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(diskgraph_runner, "sys",
+                        SimpleNamespace(platform="win32"))
+    path = str(tmp_path / "output.log")
+    size = diskgraph_runner._PROGRESS_READ_CAP + 10
+    with open_file(path, "wb") as writer, open_file(path, "rb") as reader:
+        writer.write(b"x" * size)
+        writer.flush()
+        diskgraph_runner._forward_progress(reader, 0)
+        assert writer.tell() == size
 
 
 def test_forward_progress_strips_non_sgr_ansi_sequences(

@@ -122,6 +122,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_canonicalize_under_symlink_escape() {
         let dir = tempfile::tempdir().unwrap();
         let parent = dir.path();
