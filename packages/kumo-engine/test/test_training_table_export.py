@@ -327,7 +327,7 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
         'location': str(directory.resolve()),
         'version': connector.source_backend.get_data_version(
             connector, 'lineage'),
-        'version_kind': 'timestamp',
+        'version_kind': 'listing',
     }
     assert _seeds(reloaded)[1] == _seeds(table)[1]
 
