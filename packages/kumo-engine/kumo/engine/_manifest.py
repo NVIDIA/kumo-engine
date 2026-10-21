@@ -4,37 +4,14 @@
 """Shared JSON manifest format for engine artifacts."""
 
 import json
-import os
-import tempfile
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional
+
+from kumo_core.io.filesystem import atomic_write_bytes
 
 SCHEMA_VERSION = 1
-
-
-def atomic_write(path: Path, payload: bytes) -> None:
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=path.parent,
-                                         prefix=f'.{path.name}.',
-                                         delete=False) as out:
-            temporary = Path(out.name)
-            out.write(payload)
-            out.flush()
-            os.fsync(out.fileno())
-        os.replace(temporary, path)
-        temporary = None
-        if hasattr(os, 'O_DIRECTORY'):
-            descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
 
 
 def new_manifest(kind: str, id: str, parents: Mapping[str, Any],
@@ -54,8 +31,8 @@ def new_manifest(kind: str, id: str, parents: Mapping[str, Any],
 
 
 def write_manifest(path: Path, manifest: Mapping[str, Any]) -> None:
-    atomic_write(path, (json.dumps(manifest, indent=2, sort_keys=True) +
-                        '\n').encode('utf-8'))
+    payload = json.dumps(manifest, indent=2, sort_keys=True) + '\n'
+    atomic_write_bytes(path, payload.encode('utf-8'))
 
 
 def read_manifest(path: Path) -> Optional[Dict[str, Any]]:
@@ -78,24 +55,3 @@ def read_manifest(path: Path) -> Optional[Dict[str, Any]]:
         )
         return None
     return manifest
-
-
-def _flatten(value: Mapping[str, Any], prefix: str = '') -> Dict[str, Any]:
-    flat: Dict[str, Any] = {}
-    for key, item in value.items():
-        name = f'{prefix}{key}'
-        if isinstance(item, Mapping) and item:
-            flat.update(_flatten(item, f'{name}.'))
-        elif item is not None:
-            flat[name] = item
-    return flat
-
-
-def diff_manifests(a: Mapping[str, Any],
-                   b: Mapping[str, Any]) -> Dict[str, Tuple[Any, Any]]:
-    left, right = _flatten(a), _flatten(b)
-    return {
-        key: (left.get(key), right.get(key))
-        for key in sorted(left.keys() | right.keys())
-        if key not in left or key not in right or left[key] != right[key]
-    }

@@ -15,9 +15,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict
 
+from kumo_core.io.filesystem import atomic_write_bytes
 from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
-
-from kumo.engine._manifest import atomic_write
 
 #: Bundle metadata filename and schema version.
 SPEC_FILE = 'training-spec.json'
@@ -71,7 +70,7 @@ def write_training_spec(
         training_table_generation=to_json_dict(training_table_generation),
     )
     spec_path = bundle_dir / SPEC_FILE
-    atomic_write(
+    atomic_write_bytes(
         spec_path,
         (json.dumps(asdict(spec), indent=2, sort_keys=True) +
          '\n').encode('utf-8'),
@@ -89,7 +88,7 @@ def write_training_spec(
         'size_bytes': spec_path.stat().st_size,
         'sha256': _sha256(spec_path),
     }]
-    atomic_write(
+    atomic_write_bytes(
         manifest_path,
         (json.dumps(manifest, indent=2, sort_keys=True) + '\n').encode('utf-8'),
     )

@@ -128,6 +128,14 @@ def _warn_low_fk_match_rates(stats: Dict[str, Any],
                 )
 
 
+def _ingest_stats(path: Any) -> Dict[str, Any]:
+    try:
+        stats = json.loads(Path(path).read_text())['stats']
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    return stats if isinstance(stats, dict) else {}
+
+
 def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
     from kumo_core.diskgraph.validation import parse_failure_warning
 
@@ -151,10 +159,8 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
                 warnings.warn(parse_failure_warning(name, column, count),
                               UserWarning, stacklevel=3)
 
-    try:
-        report = json.loads(Path(result.ingest_stats_path).read_text())
-        stats = report['stats']
-    except (AttributeError, OSError, ValueError, KeyError, TypeError):
+    stats = _ingest_stats(getattr(result, 'ingest_stats_path', None))
+    if not stats:
         return
     tables = {table['table_name']: table for table in graph_config['tables']}
     duplicates: Dict[str, int] = {}
@@ -226,14 +232,17 @@ class GraphSnapshot:
         """The snapshot manifest stored next to the index, if any."""
         return read_manifest(Path(self.index_path) / SNAPSHOT_MANIFEST_FILE)
 
+    @property
+    def counts(self) -> Dict[str, Dict[str, int]]:
+        """Source rows per table and edges per edge type in this index."""
+        from kumo_core.diskgraph.snapshot import DiskgraphIngestResult
 
-def _ingest_stats(result: Any) -> Dict[str, Any]:
-    try:
-        stats = json.loads(Path(
-            result.ingest_stats_path).read_text()).get('stats')
-    except (AttributeError, OSError, TypeError, ValueError):
-        return {}
-    return stats if isinstance(stats, dict) else {}
+        stats = _ingest_stats(
+            DiskgraphIngestResult.for_index(self.index_path).ingest_stats_path)
+        return {
+            'rows': dict(stats.get('source_rows_by_table', {})),
+            'edges': dict(stats.get('edge_counts', {})),
+        }
 
 
 def _write_snapshot_manifest(result: Any, snapshot_id: str,
@@ -243,18 +252,8 @@ def _write_snapshot_manifest(result: Any, snapshot_id: str,
     if not fresh and path.exists():
         return
     try:
-        from diskgraph import format_versions
-
-        stats = _ingest_stats(result)
-        rows = stats.get('source_rows_by_table', {})
-        fields = {
-            'formats': format_versions(),
-            'tables': {a: {'rows': rows.get(a)} for a in source_tables},
-            'edges': dict(stats.get('edge_counts', {})),
-        }
-        if not fresh:
-            fields.update(created_at=None, environment=None, scheduler=None,
-                          formats=None, reconstructed=True)
+        fields = {} if fresh else dict(created_at=None, environment=None,
+                                       scheduler=None, reconstructed=True)
         write_manifest(
             path,
             new_manifest('graph_snapshot', snapshot_id,

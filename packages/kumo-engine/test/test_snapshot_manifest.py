@@ -11,13 +11,21 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
-from diskgraph import format_versions
+from kumo_core.version import get_kumo_version
 from kumoapi.graph import Edge
 from kumoapi.typing import Stype
 
 import kumo.engine._provenance as provenance
-from kumo.engine import FileConnector, Graph, S3Connector, Table, __version__
-from kumo.engine._manifest import diff_manifests
+from kumo.engine import (
+    BigQueryConnector,
+    DatabricksConnector,
+    FileConnector,
+    Graph,
+    S3Connector,
+    SnowflakeConnector,
+    Table,
+)
+from kumo.engine.connector.identity import DatabricksIdentity
 from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE, GraphSnapshot
 
 _SCHEDULER_ENV = ('KUMO_SCHEDULER', 'KUMO_JOB_ID', 'KUMO_JOB_RUN_ID',
@@ -73,24 +81,26 @@ def test_snapshot_manifest_records_sources_and_diffs(make_snapshot,
 
     assert manifest['kind'] == 'graph_snapshot'
     assert manifest['id'] == before.id
-    assert manifest['formats'] == format_versions()
     data = (tmp_path / 'data').resolve()
     assert {a: e['location']
             for a, e in manifest['parents']['source_tables'].items()} == {
                 'ents': str(data / 'ents.parquet'),
                 'events': str(data / 'events.parquet'),
             }
-    assert manifest['tables'] == {'ents': {'rows': 5}, 'events': {'rows': 30}}
-    assert manifest['edges']['events_ENT_ID_to_ents_ID'] == 30
-    assert manifest['environment']['kumo_engine'] == __version__
+    assert 'tables' not in manifest and 'edges' not in manifest
+    assert before.counts['rows'] == {'ents': 5, 'events': 30}
+    assert before.counts['edges']['events_ENT_ID_to_ents_ID'] == 30
+    assert manifest['environment']['kumo_engine'] == get_kumo_version()
     assert manifest['scheduler'] is None
     assert datetime.fromisoformat(manifest['created_at']).tzinfo is not None
     assert str(tmp_path / 'scratch') not in json.dumps(manifest)
 
-    diff = diff_manifests(manifest, make_snapshot(40).manifest)
-    assert diff['tables.events.rows'] == (30, 40)
-    assert 'parents.source_tables.events.version' in diff
-    assert 'parents.source_tables.ents.version' not in diff
+    after = make_snapshot(40)
+    assert after.counts['rows']['events'] == 40
+    sources = manifest['parents']['source_tables']
+    new_sources = after.manifest['parents']['source_tables']
+    assert new_sources['ents'] == sources['ents']
+    assert new_sources['events']['version'] != sources['events']['version']
 
 
 def test_index_without_manifest_is_reused_and_backfilled(
@@ -106,11 +116,10 @@ def test_index_without_manifest_is_reused_and_backfilled(
     reused = make_snapshot()
 
     assert reused == snapshot
-    changed = diff_manifests(original, reused.manifest)
-    assert changed['reconstructed'] == (None, True)
-    assert all(key.split('.')[0] in ('created_at', 'reconstructed',
-                                     'environment', 'formats')
-               for key in changed)
+    assert reused.manifest == {
+        **original, 'created_at': None, 'environment': None,
+        'scheduler': None, 'reconstructed': True
+    }
 
 
 def test_manifest_write_failure_leaves_snapshot_unchanged(
@@ -164,8 +173,16 @@ def test_unsupported_manifest_is_ignored(tmp_path, content):
 @pytest.mark.parametrize('connector, name, sql, location', [
     (S3Connector(root_dir='s3://bucket-a/data/'), 'exports/tt/', None,
      's3://bucket-a/data/exports/tt'),
-    (SimpleNamespace(config=None, source_backend=None, database='DB',
-                     schema_name='SCHEMA'), 'TT', None, 'DB.SCHEMA.TT'),
+    (SnowflakeConnector(warehouse='wh', database='db', schema_name='sch'),
+     'TT', None, '"DB"."SCH"."TT"'),
+    (DatabricksConnector(
+        catalog='cat', schema_name='sch', warehouse_id='w',
+        identity=DatabricksIdentity(host='https://workspace.example.com',
+                                    client_id='c', client_secret='s')),
+     'cat.sch.tt', None, '`cat`.`sch`.`tt`'),
+    (BigQueryConnector(project_id='data-project', dataset_id='analytics'),
+     'tt', None, 'data-project.analytics.tt'),
+    (SimpleNamespace(config=None, source_backend=None), 'TT', None, 'TT'),
     (None, 'synthetic', 'SELECT 1', 'sql:' +
      hashlib.sha256(b'SELECT 1').hexdigest()),
 ])

@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from kumo_core.io.filesystem import atomic_write_bytes, fsync_directory
+
 
 class _LocalFiles:
     @staticmethod
@@ -54,7 +56,7 @@ class _LocalFiles:
                 os.link(temporary, path)
             except FileExistsError:
                 return False
-        _fsync_directory(Path(path).parent)
+        fsync_directory(Path(path).parent)
         return True
 
 
@@ -74,20 +76,9 @@ def _temporary_text(path, text):
             os.unlink(temporary)
 
 
-def _fsync_directory(directory):
-    if not hasattr(os, "O_DIRECTORY"):
-        return
-    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def _save_json_atomic(value, path):
-    with _temporary_text(path, json.dumps(value, indent=2)) as temporary:
-        os.replace(temporary, path)
-    _fsync_directory(Path(path).parent)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(path, json.dumps(value, indent=2).encode('utf-8'))
 
 
 @dataclass(frozen=True)

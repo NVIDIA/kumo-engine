@@ -10,18 +10,10 @@ import platform
 import subprocess
 import warnings
 from functools import cache
-from importlib import metadata
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 PROCESSING_JOB_CONFIG = Path('/opt/ml/config/processingjobconfig.json')
-
-
-def _version(distribution: str) -> Optional[str]:
-    try:
-        return metadata.version(distribution)
-    except metadata.PackageNotFoundError:
-        return None
 
 
 @cache
@@ -40,13 +32,18 @@ def _build_commit(version: str) -> Optional[str]:
 
 
 def environment() -> Dict[str, Optional[str]]:
+    from kumo_core.version import (
+        get_kumo_version,
+        installed_distribution_version,
+    )
+
     from kumo.engine._version import __version__
 
     return {
-        'kumo_engine': __version__,
+        'kumo_engine': get_kumo_version(),
         'build_commit': _build_commit(__version__),
-        'kumo_core': _version('kumo-core'),
-        'torch': _version('torch'),
+        'kumo_core': installed_distribution_version('kumo-core'),
+        'torch': installed_distribution_version('torch'),
         'python': platform.python_version(),
     }
 
@@ -100,13 +97,10 @@ def source_location(connector: Any, table_name: str,
     root = getattr(connector.config, 'root_dir', None)
     if root is not None:
         return str(Path(root, table_name))
-    table_uri = getattr(connector.source_backend, 'table_uri', None)
-    if table_uri is not None:
-        return table_uri(connector, table_name)
-    namespace = (getattr(connector, field, None)
-                 for field in ('database', 'catalog', 'project_id',
-                               'schema_name', 'dataset_id'))
-    return '.'.join([*filter(None, namespace), table_name])
+    backend = connector.source_backend
+    locate = (getattr(backend, 'table_uri', None)
+              or getattr(backend, 'table_location', None))
+    return table_name if locate is None else locate(connector, table_name)
 
 
 def source_table(connector: Any, table_name: str, sql: Optional[str],
