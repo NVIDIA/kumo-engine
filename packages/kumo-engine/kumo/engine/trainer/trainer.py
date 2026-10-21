@@ -200,20 +200,6 @@ def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
     return _find_holdout(trainer.get_log_dir(fit_mode=published))
 
 
-def _fit_started_params(train_table: TrainingTable,
-                        snapshot: GraphSnapshot) -> Dict[str, str]:
-    try:
-        return {
-            'snapshot_id': snapshot.id,
-            'query_sha256': hashlib.sha256(
-                train_table.query.encode()).hexdigest(),
-        }
-    except Exception:
-        logger.warning('Could not describe fit for progress events',
-                       exc_info=True)
-        return {}
-
-
 def _collect_garbage(stage: str) -> None:
     # Lightning links each trainer to its data module and model in reference
     # cycles; free a finished run now rather than at a later collection.
@@ -330,13 +316,8 @@ class Trainer:
                 state, fitted encoders, architecture and neighbor sampling;
                 this trainer's training controls still apply. Task types must
                 match. Forecasting warm starts are unsupported.
-            callbacks: called with each progress `Event`, in order:
-                ``fit_started``, then per trial ``trial_started``,
-                ``epoch_ended`` per epoch and ``trial_ended``, then
-                ``fit_ended``. Ended events carry ``params['status']`` and,
-                on failure, ``params['error']`` (error type and message, at
-                most 200 characters). A callback that raises is logged and
-                not called again; it never fails the fit.
+            callbacks: called with each progress `Event`; a callback that
+                raises is logged and not called again.
         """
         if export_config is not None and not callable(
                 getattr(export_config.connector.sink_backend, 'publish_model',
@@ -347,9 +328,11 @@ class Trainer:
         run_id = f'{self._id}-fit-{new_run_id()}'
         events = EventEmitter(run_id, callbacks)
         fit_start = time.monotonic()
-        if events.listening:
-            events.emit('fit_started',
-                        params=_fit_started_params(train_table, snapshot))
+        events.emit('fit_started', params={
+            'snapshot_id': snapshot.id,
+            'query_sha256': hashlib.sha256(
+                train_table.query.encode()).hexdigest(),
+        })
         try:
             result = self._fit(train_table, snapshot=snapshot,
                                export_config=export_config,
