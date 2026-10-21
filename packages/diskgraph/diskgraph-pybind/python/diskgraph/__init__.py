@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from ._c import (
+    __version__,
+    BUILD_COMMIT,
     export_tt_artifacts,
     convert_kumo_config,
     ingest,

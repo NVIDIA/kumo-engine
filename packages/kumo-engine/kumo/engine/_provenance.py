@@ -31,6 +31,14 @@ def _build_commit(version: str) -> Optional[str]:
         return None
 
 
+def _diskgraph() -> Any:
+    try:
+        import diskgraph
+        return diskgraph
+    except ImportError:
+        return None
+
+
 def environment() -> Dict[str, Optional[str]]:
     from kumo_core.version import (
         get_kumo_version,
@@ -39,10 +47,13 @@ def environment() -> Dict[str, Optional[str]]:
 
     from kumo.engine._version import __version__
 
+    diskgraph = _diskgraph()
     return {
         'kumo_engine': get_kumo_version(),
         'build_commit': _build_commit(__version__),
         'kumo_core': installed_distribution_version('kumo-core'),
+        'diskgraph': getattr(diskgraph, '__version__', None),
+        'diskgraph_build_commit': getattr(diskgraph, 'BUILD_COMMIT', None),
         'torch': installed_distribution_version('torch'),
         'python': platform.python_version(),
     }
@@ -94,9 +105,6 @@ def source_location(connector: Any, table_name: str,
                     sql: Optional[str] = None) -> str:
     if sql is not None:
         return 'sql:' + hashlib.sha256(sql.encode()).hexdigest()
-    root = getattr(connector.config, 'root_dir', None)
-    if root is not None:
-        return str(Path(root, table_name))
     backend = connector.source_backend
     locate = (getattr(backend, 'table_uri', None)
               or getattr(backend, 'table_location', None))
@@ -104,16 +112,28 @@ def source_location(connector: Any, table_name: str,
 
 
 def source_table(connector: Any, table_name: str, sql: Optional[str],
-                 version: Any) -> Dict[str, Optional[str]]:
-    entry: Dict[str, Optional[str]] = {
+                 version: Any, *,
+                 record_locations: bool = True) -> Dict[str, Any]:
+    from kumo_core.sources.identity import version_kind
+
+    entry: Dict[str, Any] = {
         'connector': None,
         'location': None,
         'version': None if version is None else str(version),
+        'version_kind': version_kind(version),
     }
+    dependencies = getattr(version, 'dependencies', None)
+    if dependencies is not None:
+        entry['dependencies'] = {
+            name: str(value)
+            for name, value in dependencies.items()
+        }
     try:
         kind = connector.source_type
         entry['connector'] = str(getattr(kind, 'value', kind))
-        entry['location'] = source_location(connector, table_name, sql)
+        entry['location'] = (source_location(connector, table_name, sql)
+                             if record_locations or sql is not None else
+                             table_name)
     except Exception as error:
         warnings.warn(f"Could not record a source table's location: {error}",
                       UserWarning, stacklevel=3)

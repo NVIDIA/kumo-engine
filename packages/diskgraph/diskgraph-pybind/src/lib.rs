@@ -1593,6 +1593,8 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "DiskgraphCorruptionError",
         m.py().get_type::<DiskgraphCorruptionError>(),
     )?;
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add("BUILD_COMMIT", env!("DISKGRAPH_BUILD_COMMIT"))?;
     m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
     m.add_function(wrap_pyfunction!(convert_kumo_config, m)?)?;
     m.add_function(wrap_pyfunction!(ingest, m)?)?;
