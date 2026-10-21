@@ -243,7 +243,7 @@ def _snapshot_id(graph_key: str, data_version: str) -> str:
     return f'{graph_key}@{data_version[:16]}'
 
 
-_COMPARABLE = ('exact', 'timestamp')
+_COMPARABLE = ('exact', 'timestamp', 'listing')
 
 
 def _source_change(table: Table, recorded: Any,
