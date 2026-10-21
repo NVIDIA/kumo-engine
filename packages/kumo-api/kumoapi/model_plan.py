@@ -98,7 +98,7 @@ def compat_field(
 
 class RunMode(StrEnum):
     r"""Defines the run mode for AutoML. Please see the
-    `Kumo documentation <https://docs.kumo.ai/docs/whats-the-recommended-way-to-cut-down-on-model-training-time>`_
+    `Kumo documentation <https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/legacy-ui-references/training-time>`_
     for more information."""  # noqa
     #: Speeds up the search process—typically about 4x faster than
     #: using the normal mode.

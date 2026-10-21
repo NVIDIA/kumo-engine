@@ -57,6 +57,7 @@ describe("ModelPlannerEditor", () => {
 
     afterEach(() => {
         queryClient.clear();
+        vi.restoreAllMocks();
     });
 
     const renderEditor = (props = defaultProps) =>
@@ -213,24 +214,59 @@ describe("ModelPlannerEditor", () => {
         });
     });
 
-    // Test 10: Info icon hover shows HoverCard popover content
-    it("info icon hover shows popover content", async () => {
-        await act(async () => {
-            renderEditor();
-        });
-        // Find hover card triggers (data-slot="hover-card-trigger")
-        const infoTriggers = document.querySelectorAll(
-            "[data-slot='hover-card-trigger']"
-        );
-        expect(infoTriggers.length).toBeGreaterThan(0);
-        // Hover over first trigger
-        await userEvent.hover(infoTriggers[0] as HTMLElement);
-        await waitFor(() => {
-            expect(
-                screen.getByText(/Defines how Kumo splits your data/i)
-            ).toBeInTheDocument();
-        });
-    });
+    it.each([
+        [
+            0,
+            "mp-training-table-generation-info",
+            "https://kumo.ai/docs/model-planner/"
+        ],
+        [
+            1,
+            "mp-training-job-info",
+            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/legacy-ui-references/metrics"
+        ],
+        [
+            2,
+            "mp-column-processing-info",
+            "https://kumo.ai/docs/reference/column_processing/"
+        ],
+        [
+            3,
+            "mp-neighbor-sampling-info",
+            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/legacy-ui-references/neighbor-sampling"
+        ],
+        [
+            4,
+            "mp-model-architecture-info",
+            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/model-settings/model-planner#architecture-search"
+        ]
+    ])(
+        "opens the intended documentation from popover %i",
+        async (index, id, url) => {
+            const open = vi
+                .spyOn(window, "open")
+                .mockImplementation(() => null);
+            await act(async () => {
+                renderEditor();
+            });
+            // Find hover card triggers (data-slot="hover-card-trigger")
+            const infoTriggers = document.querySelectorAll(
+                "[data-slot='hover-card-trigger']"
+            );
+            expect(infoTriggers.length).toBeGreaterThan(0);
+            await userEvent.hover(infoTriggers[index] as HTMLElement);
+            if (index === 0) {
+                expect(
+                    await screen.findByText(/Defines how Kumo splits your data/i)
+                ).toBeInTheDocument();
+            }
+            const link = await screen.findByTestId(`testid-${id}`);
+            expect(link).toHaveAttribute("href", url);
+            expect(link).toHaveAttribute("target", "_blank");
+            await userEvent.click(link);
+            expect(open).toHaveBeenCalledWith(url, "_blank");
+        }
+    );
 
     it("offers only the default text embedding model, and keeps another one a plan names", async () => {
         await act(async () => {
