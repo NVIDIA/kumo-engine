@@ -86,7 +86,8 @@ def test_provenance_records_custom_or_missing_table_source(tmp_path):
     source_table = {
         'connector': 'S3',
         'location': 's3://bucket/exports/tt',
-        'version': '17'
+        'version': '17',
+        'version_kind': 'timestamp',
     }
     manifest = {
         'parents': {
