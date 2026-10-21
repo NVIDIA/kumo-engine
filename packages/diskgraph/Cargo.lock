@@ -1632,6 +1632,7 @@ dependencies = [
  "diskgraph-limits",
  "futures-util",
  "object_store",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1782,6 +1783,7 @@ dependencies = [
  "ureq",
  "url",
  "uuid-simd",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
