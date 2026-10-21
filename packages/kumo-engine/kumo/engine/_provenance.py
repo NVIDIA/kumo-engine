@@ -119,7 +119,7 @@ def _connector_kind(connector: Any) -> str:
 
 def source_table(connector: Any, table_name: str, sql: Optional[str],
                  version: Any, *,
-                 record_locations: bool = True) -> Dict[str, Any]:
+                 record_sources: bool = True) -> Dict[str, Any]:
     from kumo_core.sources.identity import version_kind
 
     entry: Dict[str, Any] = {
@@ -137,8 +137,11 @@ def source_table(connector: Any, table_name: str, sql: Optional[str],
     try:
         entry['connector'] = _connector_kind(connector)
         entry['location'] = (source_location(connector, table_name, sql)
-                             if record_locations or sql is not None else
+                             if record_sources or sql is not None else
                              table_name)
+        if sql is not None and record_sources:
+            entry['sql'] = sql
+            entry['dialect'] = entry['connector'].lower()
     except Exception as error:
         warnings.warn(f"Could not record a source table's location: {error}",
                       UserWarning, stacklevel=3)

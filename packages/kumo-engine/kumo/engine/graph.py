@@ -247,16 +247,16 @@ class GraphSnapshot:
 
 def _write_snapshot_manifest(result: Any, snapshot_id: str,
                              source_tables: Dict[str, Dict[str, Any]],
-                             record_locations: bool, *, fresh: bool) -> None:
+                             record_sources: bool, *, fresh: bool) -> None:
     path = Path(result.index_path) / SNAPSHOT_MANIFEST_FILE
     try:
         if not fresh and path.exists():
             existing = read_manifest(path)
-            if existing is None or existing.get('record_locations',
-                                                True) == record_locations:
+            if existing is None or existing.get('record_sources',
+                                                True) == record_sources:
                 return
             manifest = {
-                **existing, 'record_locations': record_locations,
+                **existing, 'record_sources': record_sources,
                 'parents': {
                     **existing['parents'], 'source_tables': source_tables
                 }
@@ -266,7 +266,7 @@ def _write_snapshot_manifest(result: Any, snapshot_id: str,
                                            scheduler=None, reconstructed=True)
             manifest = new_manifest('graph_snapshot', snapshot_id,
                                     {'source_tables': source_tables},
-                                    record_locations=record_locations,
+                                    record_sources=record_sources,
                                     **fields)
         write_manifest(path, manifest)
     except Exception as error:
@@ -409,7 +409,7 @@ class Graph:
         """
         self.native_graph
 
-    def snapshot(self, *, record_locations: bool = True) -> GraphSnapshot:
+    def snapshot(self, *, record_sources: bool = True) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
         result through `kumo-core` to build column stats and the on-disk
         index. The index is stored under a directory keyed by both `self.id`
@@ -420,9 +420,9 @@ class Graph:
         it's reused as is.
 
         Args:
-            record_locations: if False, the snapshot manifest records each
+            record_sources: if False, the snapshot manifest records each
                 source as connector and table name only (no bucket, path or
-                account).
+                account) and Custom SQL as a hash only (no SQL text).
         """
         from filelock import FileLock
 
@@ -453,10 +453,10 @@ class Graph:
         # lock behind after a crash.
         with FileLock(f'{persist_dir}.lock'):
             return self._snapshot_no_lock(graph_key, persist_dir,
-                                          record_locations)
+                                          record_sources)
 
     def _snapshot_no_lock(self, graph_key: str, persist_dir: Path,
-                          record_locations: bool = True) -> GraphSnapshot:
+                          record_sources: bool = True) -> GraphSnapshot:
         r"""`snapshot()`'s body, run under its `FileLock`. Not meant to be
         called on its own -- `persist_dir`, unlike everything else here,
         isn't a pure function of `self` alone (it's `snapshot()`'s lock key,
@@ -524,7 +524,7 @@ class Graph:
                 table_data_versions[alias] = prepared.version
                 source_tables[alias] = source_table(
                     connector, name, sql, prepared.version,
-                    record_locations=record_locations)
+                    record_sources=record_sources)
 
                 paths = prepared.source.get('paths') or []
                 if paths:
@@ -575,7 +575,7 @@ class Graph:
 
             snapshot_id = f'{graph_key}@{data_version[:16]}'
             _write_snapshot_manifest(result, snapshot_id, source_tables,
-                                     record_locations, fresh=existing is None)
+                                     record_sources, fresh=existing is None)
 
             _warn_ingest_data_loss(result, graph_config)
             return GraphSnapshot(
