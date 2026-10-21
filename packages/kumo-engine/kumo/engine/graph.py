@@ -76,6 +76,7 @@ from kumo.engine._scratch import (
     snapshot_scratch_dir,
 )
 from kumo.engine._storage import network_storage
+from kumo.engine._visualization import SVG
 from kumo.engine.table import Table
 
 _warned_scratch: set[Path] = set()
@@ -345,6 +346,26 @@ class Graph:
         source type has no Kumo dtype and that no declared dtype resolved.
         """
         self.native_graph
+
+    def visualize(self, path: str | Path | None = None, *,
+                  show_cols: bool = False) -> SVG:
+        """Display table relationships inline in notebooks and return SVG text.
+
+        Args:
+            path: Optional local file to write as UTF-8 SVG, overwriting it.
+            show_cols: Add columns up to 10 rows per table (5 above 10 tables).
+                Primary and foreign keys are always included, even above this
+                limit. False shows only keys.
+
+        Uses declared schemas without reading source data. Self-relations
+        and missing schema/key definitions raise ValueError.
+        """
+        from kumo.engine._visualization import render
+
+        svg = render(self._named_tables, self.edges, show_cols=show_cols)
+        if path is not None:
+            Path(path).write_text(svg, encoding='utf-8')
+        return svg
 
     def snapshot(self) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
