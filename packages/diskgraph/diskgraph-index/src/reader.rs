@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::layout::{
-    EdgeListView, OffsetFileHeader, RelationLayout, EDGES_FILENAME, OFFSETS_FILENAME,
+    EdgeListView, OffsetFileHeader, RelationLayout, DELTA_CHUNK, EDGES_FILENAME, OFFSETS_FILENAME,
 };
 use anyhow::Result;
 use diskgraph_core::errors::DiskgraphError;
@@ -13,20 +13,13 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-#[derive(Debug)]
-struct OffsetChunk {
-    base_idx: u64,
-    count: u16,
-    data_offset: usize,
-}
-
 /// Memory-mapped shard reader. Provides zero-copy edge list access by decoding
 /// offsets and slicing into the edge data file.
 pub struct ShardReader {
     offsets_mmap: Mmap,
     edges: Mmap,
     header: OffsetFileHeader,
-    chunks: Vec<OffsetChunk>,
+    header_len: usize,
     layouts: Arc<Vec<RelationLayout>>,
     edge_count: u64,
     has_node_data: bool,
@@ -63,12 +56,6 @@ impl ShardReader {
                 DiskgraphError::InvalidMetadata("node data len width invalid".into()).into(),
             );
         }
-        let chunks = parse_offset_chunks(
-            &offsets,
-            header.total_offsets,
-            header.delta_bytes,
-            header_len,
-        )?;
         let edge_count = header.edge_count;
         tracing::info!(
             dir = %dir.display(),
@@ -82,7 +69,7 @@ impl ShardReader {
             offsets_mmap: offsets,
             edges,
             header,
-            chunks,
+            header_len,
             layouts,
             edge_count,
             has_node_data,
@@ -112,15 +99,15 @@ impl ShardReader {
         }
         let start = decode_offset(
             &self.offsets_mmap,
-            &self.chunks,
-            node_idx,
             self.header.delta_bytes,
+            self.header_len,
+            node_idx,
         )?;
         let end = decode_offset(
             &self.offsets_mmap,
-            &self.chunks,
-            node_idx + 1,
             self.header.delta_bytes,
+            self.header_len,
+            node_idx + 1,
         )?;
         let start_byte = start as usize;
         let end_byte = end as usize;
@@ -152,42 +139,13 @@ fn advise_random(map: &Mmap) {
     }
 }
 
-fn parse_offset_chunks(
-    offsets: &Mmap,
-    total_offsets: u64,
+pub(crate) fn decode_offset(
+    offsets: &[u8],
     delta_bytes: u8,
     header_len: usize,
-) -> Result<Vec<OffsetChunk>> {
-    let mut chunks = Vec::new();
-    let mut cursor = header_len;
-    let mut base_idx = 0u64;
-    while (cursor as u64) < offsets.len() as u64 && base_idx < total_offsets {
-        if cursor + 2 + 8 > offsets.len() {
-            break;
-        }
-        let count = u16::from_le_bytes([offsets[cursor], offsets[cursor + 1]]);
-        let base_offset_bytes = &offsets[cursor + 2..cursor + 10];
-        let _base = u64::from_le_bytes(base_offset_bytes.try_into().unwrap());
-        chunks.push(OffsetChunk {
-            base_idx,
-            count,
-            data_offset: cursor,
-        });
-        let chunk_bytes = 2 + 8 + (count.saturating_sub(1) as usize) * delta_bytes as usize;
-        cursor += chunk_bytes;
-        base_idx += count as u64;
-    }
-    Ok(chunks)
-}
-
-fn decode_offset(offsets: &Mmap, chunks: &[OffsetChunk], idx: u64, delta_bytes: u8) -> Result<u64> {
-    let chunk = find_chunk(chunks, idx)?;
-    let within = idx - chunk.base_idx;
-    let mut cursor = chunk.data_offset;
-    let count = u16::from_le_bytes([offsets[cursor], offsets[cursor + 1]]);
-    if count != chunk.count {
-        return Err(DiskgraphError::InvalidMetadata("offset chunk count mismatch".into()).into());
-    }
+    idx: u64,
+) -> Result<u64> {
+    let (mut cursor, within) = locate_chunk(offsets, delta_bytes, header_len, idx)?;
     cursor += 2;
     let base_bytes: [u8; 8] = offsets[cursor..cursor + 8]
         .try_into()
@@ -279,20 +237,26 @@ fn decode_offset(offsets: &Mmap, chunks: &[OffsetChunk], idx: u64, delta_bytes: 
     Ok(acc)
 }
 
-fn find_chunk(chunks: &[OffsetChunk], idx: u64) -> Result<&OffsetChunk> {
-    if chunks.is_empty() {
-        return Err(DiskgraphError::InvalidMetadata("no offset chunks".into()).into());
+/// Chunks are fixed-size (`DELTA_CHUNK` offsets, last one partial), so a
+/// chunk's byte position follows from its index without a directory.
+fn locate_chunk(
+    offsets: &[u8],
+    delta_bytes: u8,
+    header_len: usize,
+    idx: u64,
+) -> Result<(usize, u64)> {
+    let chunk = DELTA_CHUNK as u64;
+    let chunk_idx = idx / chunk;
+    let stride = 10 + (chunk - 1) * delta_bytes as u64;
+    let cursor = header_len as u64 + chunk_idx * stride;
+    if cursor + 10 > offsets.len() as u64 {
+        return Err(DiskgraphError::InvalidMetadata("offset chunk missing".into()).into());
     }
-    let chunk_idx = (idx / crate::layout::DELTA_CHUNK as u64) as usize;
-    let chunk = chunks
-        .get(chunk_idx)
-        .ok_or_else(|| DiskgraphError::InvalidMetadata("offset chunk missing".into()))?;
-    // Validate the chunk really covers this index.
-    if idx < chunk.base_idx {
+    let cursor = cursor as usize;
+    let count = u16::from_le_bytes([offsets[cursor], offsets[cursor + 1]]) as u64;
+    let within = idx % chunk;
+    if within >= count {
         return Err(DiskgraphError::InvalidMetadata("offset chunk range mismatch".into()).into());
     }
-    if idx >= chunk.base_idx + chunk.count as u64 {
-        return Err(DiskgraphError::InvalidMetadata("offset chunk range mismatch".into()).into());
-    }
-    Ok(chunk)
+    Ok((cursor, within))
 }
