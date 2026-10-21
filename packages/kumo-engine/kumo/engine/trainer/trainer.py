@@ -328,11 +328,15 @@ class Trainer:
         run_id = f'{self._id}-fit-{new_run_id()}'
         events = EventEmitter(run_id, callbacks)
         fit_start = time.monotonic()
-        events.emit('fit_started', params={
-            'snapshot_id': snapshot.id,
-            'query_sha256': hashlib.sha256(
-                train_table.query.encode()).hexdigest(),
-        })
+        try:
+            started = {
+                'snapshot_id': snapshot.id,
+                'query_sha256': hashlib.sha256(
+                    train_table.query.encode()).hexdigest(),
+            }
+        except Exception:
+            started = {}
+        events.emit('fit_started', params=started)
         try:
             result = self._fit(train_table, snapshot=snapshot,
                                export_config=export_config,
