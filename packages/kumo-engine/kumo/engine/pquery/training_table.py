@@ -236,9 +236,11 @@ class TrainingTable:
         )
         _record_manifest(
             table, snapshot, task_plan.train_table,
-            source_table=provenance.source_table(source_table.connector,
-                                                 source_table.table_name,
-                                                 source_table.sql, version))
+            source_table=provenance.source_table(
+                source_table.connector, source_table.table_name,
+                source_table.sql, version,
+                record_locations=(snapshot.manifest
+                                  or {}).get('record_locations', True)))
         return table
 
 
