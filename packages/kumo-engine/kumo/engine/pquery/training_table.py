@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -56,6 +57,14 @@ class TrainingTable:
     def manifest(self) -> Optional[Dict[str, Any]]:
         """Lineage recorded at generation; None for older tables."""
         return read_manifest(self.staging_dir / STAGING_MANIFEST_FILE)
+
+    @property
+    def source_mode(self) -> Optional[str]:
+        """``pquery`` or ``custom_tt``, as DiskGraph recorded at generation."""
+        try:
+            return json.loads(self.manifest_path.read_text())['source_mode']
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
 
     def export(self, output_config: "TrainingTableOutputConfig") -> str:
         r"""Write the staged rows with a ``SPLIT`` column (``0`` train, ``1``
@@ -226,7 +235,7 @@ class TrainingTable:
             generation_plan=generation_plan,
         )
         _record_manifest(
-            table, snapshot, task_plan.train_table, 'custom',
+            table, snapshot, task_plan.train_table,
             source_table=provenance.source_table(source_table.connector,
                                                  source_table.table_name,
                                                  source_table.sql, version))
@@ -234,14 +243,12 @@ class TrainingTable:
 
 
 def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
-                     request: Any, source: str, *,
+                     request: Any, *,
                      source_table: Optional[Dict[str, Any]] = None) -> None:
     path = table.staging_dir / STAGING_MANIFEST_FILE
     try:
         from kumo_core.io.json import to_json_dict
-        from kumo_core.training.export import read_spec
 
-        spec = read_spec(str(table.staging_dir))
         seed = None
         if request.split_family in _RANDOM_SPLITS:
             seed = (request.split_config or {}).get('rnd_seed') or 0
@@ -251,16 +258,11 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
         write_manifest(
             path,
             new_manifest(
-                'training_table', spec['tt_id'], parents,
+                'training_table', table.tt_id, parents,
                 query=table.query,
                 generation_plan=to_json_dict(table.generation_plan),
                 task_type=request.task_type,
-                rows={
-                    stage['key']: stage['row_count']
-                    for stage in spec.get('split_stages') or []
-                },
                 split_seed=seed,
-                source=source,
             ))
     except Exception as error:
         warnings.warn(

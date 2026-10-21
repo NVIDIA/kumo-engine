@@ -304,8 +304,9 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
     manifest = table.manifest
     assert manifest['id'] == table.tt_id == _spec(table)['tt_id']
     assert manifest['parents'] == {'snapshot': snapshot.id}
-    assert (manifest['query'], manifest['source']) == (query, 'pql')
-    assert manifest['rows'] == _seeds(table)[1]
+    assert manifest['query'] == query
+    assert 'rows' not in manifest and 'source' not in manifest
+    assert table.source_mode == 'pquery'
     assert manifest['split_seed'] == 0
 
     directory = out / 'lineage'
@@ -320,7 +321,7 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
         connector['lineage'], TrainingTableSpec(split_col='SPLIT'), pq=pquery,
         snapshot=snapshot)
     manifest = reloaded.manifest
-    assert manifest['source'] == 'custom'
+    assert reloaded.source_mode == 'custom_tt'
     assert manifest['parents']['source_table'] == {
         'connector': 'LOCAL_FILE',
         'location': str(directory),
