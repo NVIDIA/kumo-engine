@@ -60,7 +60,6 @@ stale lock behind. Deliberately not ported from the cloud SDK: its
 remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 """
 
-import hashlib
 import json
 import warnings
 from dataclasses import dataclass, field
@@ -72,6 +71,7 @@ from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
 
 from kumo.engine._manifest import new_manifest, read_manifest, write_manifest
+from kumo.engine._provenance import source_table
 from kumo.engine._scratch import (
     fingerprint,
     get_scratch_dir,
@@ -237,7 +237,7 @@ def _ingest_stats(result: Any) -> Dict[str, Any]:
 
 def _write_snapshot_manifest(result: Any, snapshot_id: str, graph_key: str,
                              data_version: str,
-                             source_tables: Dict[str, Dict[str, str]], *,
+                             source_tables: Dict[str, Dict[str, Any]], *,
                              fresh: bool) -> None:
     path = Path(result.index_path) / SNAPSHOT_MANIFEST_FILE
     if not fresh and path.exists():
@@ -476,7 +476,7 @@ class Graph:
 
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
-        source_tables: Dict[str, Dict[str, str]] = {}
+        source_tables: Dict[str, Dict[str, Any]] = {}
 
         try:
             for alias, table in self._named_tables.items():
@@ -488,13 +488,10 @@ class Graph:
                 dest_dir.mkdir(parents=True, exist_ok=True)
 
                 name, sql = table.table_name, None
-                coordinate = name
                 source = table.definition.source_table
                 if isinstance(source, CustomSQLSourceTable):
                     checked = checked_sql(connector, source.sql)
                     name, sql = checked.table, checked.sql
-                    coordinate = ('sql:' +
-                                  hashlib.sha256(sql.encode()).hexdigest()[:16])
                 prepared = source_backend.prepare_ingest(
                     connector,
                     name,
@@ -513,10 +510,8 @@ class Graph:
                         "limitation in kumoai/backend/local/graph.py's "
                         "_stage_sources, which raises the same way.")
                 table_data_versions[alias] = prepared.version
-                source_tables[alias] = {
-                    'source': f'{connector.source_type}:{coordinate}',
-                    'version': prepared.version,
-                }
+                source_tables[alias] = source_table(connector, name, sql,
+                                                    prepared.version)
 
                 paths = prepared.source.get('paths') or []
                 if paths:

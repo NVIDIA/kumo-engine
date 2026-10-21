@@ -104,6 +104,11 @@ class ObjectStoreSessions(ABC):
                                        fetch=access.fetch,
                                        object_identity=access.object_identity)
 
+    def table_uri(self, connector: SourceConnector, table_name: str) -> str:
+        """Full ``scheme://bucket/key`` of ``table_name``, without credentials."""
+        _, root, name, _ = self._placement(connector, table_name)
+        return f'{self.scheme}://{posixpath.join(root, name).rstrip("/")}'
+
     def _placement(self, connector: SourceConnector,
                    table_name: str) -> Tuple[str, str, str, Optional[str]]:
         root = self._root_for(connector)
