@@ -108,8 +108,8 @@ def test_fit_records_listed_provenance(two_trials):
     }
     assert provenance['training_table'] == {
         'id': table.tt_id,
-        'derived_from': None,
-        'modified': None,
+        'source': 'pql',
+        'snapshot': snapshot.id,
     }
     assert provenance['seed'] is None
     assert provenance['fit']['seconds'] >= 0
@@ -172,13 +172,13 @@ def test_bundle_without_provenance_loads_and_predicts_identically(
     assert stray.bundle_id == result.bundle_id
 
 
-def _finish_stub_fit(tmp_path, trainer):
+def _finish_stub_fit(tmp_path, trainer, manifest=None):
     bundle = tmp_path / 'bundle'
     (bundle / 'model').mkdir(parents=True)
     (bundle / 'model' / 'config.json').write_text('{}')
     (bundle / MANIFEST_FILE).write_text(json.dumps({'artifacts': []}))
     add_bundle_file(bundle, 'trainer_config', 'model/config.json')
-    table = type('Table', (), {'tt_id': 'tt-1', 'manifest': None})()
+    table = type('Table', (), {'tt_id': 'tt-1', 'manifest': manifest})()
     return trainer._finish_fit(
         TrainingResult({}, {}, bundle), predictive_query='PREDICT x',
         snapshot_id='snap', export_config=None,
@@ -193,7 +193,31 @@ def test_provenance_without_trial_logs_still_records_parents(tmp_path):
     result = _finish_stub_fit(tmp_path, kumo.Trainer(ModelPlan()))
     assert result.provenance['trials'] == []
     assert result.provenance['parents']['training_table'] == 'tt-1'
+    assert result.provenance['training_table'] == {
+        'id': 'tt-1',
+        'source': None,
+        'snapshot': None
+    }
     assert result.provenance['published_model'] is None
+
+
+def test_provenance_records_custom_table_source(tmp_path):
+    source_table = {'location': 's3://bucket/exports/tt', 'version': '17'}
+    manifest = {
+        'source': 'custom',
+        'query': 'PREDICT x',
+        'parents': {
+            'snapshot': 'snap',
+            'source_table': source_table
+        },
+    }
+    result = _finish_stub_fit(tmp_path, kumo.Trainer(ModelPlan()), manifest)
+    assert result.provenance['training_table'] == {
+        'id': 'tt-1',
+        'source': 'custom',
+        'snapshot': 'snap',
+        **source_table,
+    }
 
 
 @pytest.mark.parametrize('flags,mode', [

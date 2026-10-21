@@ -45,7 +45,6 @@ def write_provenance(
     config = _read_json(bundle_dir / 'model' / 'config.json') or {}
     finished_at = datetime.now(timezone.utc)
     tt_id = train_table.tt_id
-    table_manifest = train_table.manifest or {}
     parents = {
         'training_table': tt_id,
         'snapshot': snapshot_id,
@@ -63,17 +62,28 @@ def write_provenance(
                 'seconds': round((finished_at - started_at).total_seconds(),
                                  3),
             },
-            training_table={
-                'id': tt_id,
-                'derived_from':
-                (table_manifest.get('parents') or {}).get('derived_from'),
-                'modified': table_manifest.get('modified'),
-            },
+            training_table=_training_table(tt_id, train_table.manifest),
             selected_trial=config.get('version'),
             published_model=published_model,
             trials=_trials(home_dir, config.get('root_dir')),
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
+
+
+def _training_table(tt_id: str,
+                    manifest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    manifest = manifest or {}
+    parents = manifest.get('parents') or {}
+    record = {
+        'id': tt_id,
+        'source': manifest.get('source'),
+        'snapshot': parents.get('snapshot'),
+    }
+    if record['source'] == 'custom':
+        source_table = parents.get('source_table') or {}
+        record.update(location=source_table.get('location'),
+                      version=source_table.get('version'))
+    return record
 
 
 def read_provenance(bundle_dir: Path) -> Optional[Dict[str, Any]]:
