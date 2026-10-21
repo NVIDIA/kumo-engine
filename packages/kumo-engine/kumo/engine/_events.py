@@ -3,11 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Progress events reported by `Trainer.fit`."""
 
-import json
 import logging
 import math
-import os
-import sys
 import time
 from dataclasses import dataclass, field
 from typing import (
@@ -25,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 EventName = Literal['fit_started', 'trial_started', 'epoch_ended',
                     'trial_ended', 'fit_ended']
-Progress = Literal['json', 'off']
 
 
 @dataclass(frozen=True)
@@ -52,37 +48,6 @@ class Event:
         }
 
 
-_progress: Optional[Progress] = None
-
-
-def set_progress(progress: Progress) -> None:
-    global _progress
-    if progress not in ('json', 'off'):
-        raise ValueError(f"progress must be 'json' or 'off', got {progress!r}")
-    _progress = progress
-
-
-def get_progress() -> Progress:
-    if _progress is not None:
-        return _progress
-    value = os.environ.get('KUMO_ENGINE_PROGRESS', 'off')
-    if value not in ('json', 'off'):
-        logger.warning("Ignoring KUMO_ENGINE_PROGRESS=%r; expected 'json' or "
-                       "'off'", value)
-        return 'off'
-    return value  # type: ignore[return-value]
-
-
-def _print_json(event: Event) -> None:
-    line = json.dumps({'event': 'kumo.engine', **event.to_dict()},
-                      allow_nan=False, default=str)
-    tqdm = sys.modules.get('tqdm')
-    if tqdm is not None and getattr(tqdm.tqdm, '_instances', None):
-        # An open progress bar leaves stdout mid-line.
-        line = '\n' + line
-    print(line, flush=True)
-
-
 def _finite_floats(metrics: Mapping[str, Any]) -> Dict[str, float]:
     result = {}
     for key, value in metrics.items():
@@ -102,8 +67,6 @@ class EventEmitter:
                  callbacks: Sequence[Callable[[Event], None]]) -> None:
         self.run_id = run_id
         self._callbacks: List[Callable[[Event], None]] = list(callbacks)
-        if get_progress() == 'json':
-            self._callbacks.append(_print_json)
 
     def emit(self, name: EventName, *, trial: Optional[int] = None,
              epoch: Optional[int] = None,

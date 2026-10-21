@@ -21,13 +21,12 @@ in-progress `Graph`/`Trainer`.
 """
 
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Optional, Union
 
 
 def configure(
     *,
     scratch_dir: Optional[Union[str, Path]] = None,
-    progress: Optional[Literal['json', 'off']] = None,
 ) -> None:
     r"""Sets process-wide configuration for this package.
 
@@ -40,20 +39,11 @@ def configure(
             DiskGraph and GNN training read and write it directly, so a
             remote URI (an `s3://`/`gs://` path, a Snowflake stage) isn't
             accepted here. `None` leaves the current setting unchanged.
-        progress: ``'json'`` prints each `Trainer.fit` progress event as
-            one JSON line on stdout; ``'off'`` prints nothing. Defaults to
-            the ``KUMO_ENGINE_PROGRESS`` environment variable, else
-            ``'off'``. `None` leaves the current setting unchanged.
 
     Raises:
-        ValueError: if `scratch_dir` isn't a local filesystem path, or
-            `progress` isn't ``'json'`` or ``'off'``.
+        ValueError: if `scratch_dir` isn't a local filesystem path.
     """
     if scratch_dir is not None:
         from kumo.engine._scratch import set_scratch_dir
 
         set_scratch_dir(scratch_dir)
-    if progress is not None:
-        from kumo.engine._events import set_progress
-
-        set_progress(progress)

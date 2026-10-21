@@ -14,8 +14,7 @@ from kumo.engine._scratch import get_scratch_dir
 
 
 @pytest.fixture
-def table_and_snapshot(tmp_path, monkeypatch):
-    monkeypatch.setattr('kumo.engine._events._progress', None)
+def table_and_snapshot(tmp_path):
     previous_scratch = get_scratch_dir()
     kumo.configure(scratch_dir=tmp_path / 'scratch')
     try:
@@ -44,7 +43,7 @@ def _bundle_files(result):
         for path in result.bundle_dir.rglob('*'))
 
 
-def test_fit_reports_progress_events(table_and_snapshot, capsys, caplog,
+def test_fit_reports_progress_events(table_and_snapshot, caplog,
                                      monkeypatch):
     import kumo.engine.trainer._runtime as runtime_module
 
@@ -62,12 +61,9 @@ def test_fit_reports_progress_events(table_and_snapshot, capsys, caplog,
         return bind(*args, on_event=on_event, **kwargs)
 
     monkeypatch.setattr(runtime_module, 'local_training_bindings', spy)
-    monkeypatch.delenv('KUMO_ENGINE_PROGRESS', raising=False)
-    kumo.configure(progress='off')
     baseline = kumo.Trainer(plan).fit(table, snapshot=snapshot)
 
     assert sinks == [None]
-    assert '"event": "kumo.engine"' not in capsys.readouterr().out
 
     events = []
     broken_calls = []
@@ -76,7 +72,6 @@ def test_fit_reports_progress_events(table_and_snapshot, capsys, caplog,
         broken_calls.append(event)
         raise RuntimeError('callback bug')
 
-    kumo.configure(progress='json')
     result = kumo.Trainer(plan).fit(table, snapshot=snapshot,
                                     callbacks=[broken, events.append])
 
@@ -109,11 +104,8 @@ def test_fit_reports_progress_events(table_and_snapshot, capsys, caplog,
     assert set(result.metrics) == set(baseline.metrics)
     assert _bundle_files(result) == _bundle_files(baseline)
     assert events[-1].params == {'status': 'succeeded'}
-
-    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()
-             if line.startswith('{"event": "kumo.engine"')]
-    assert lines == [{'event': 'kumo.engine', **event.to_dict()}
-                     for event in events]
+    assert [json.loads(json.dumps(event.to_dict()))['name']
+            for event in events] == names
 
 
 def test_failed_fit_reports_fit_ended(table_and_snapshot, monkeypatch):
