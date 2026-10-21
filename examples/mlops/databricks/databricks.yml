@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Train and daily score jobs for kumo-engine; see README.md.
+
+bundle:
+  name: kumo-engine-users-churn
+
+sync:
+  paths:
+    - ..
+
+variables:
+  catalog:
+    description: Unity Catalog catalog holding the users, items and orders tables
+    default: <catalog>
+  schema:
+    description: schema holding the tables, the registered model and the predictions
+    default: <schema>
+  volume:
+    description: Unity Catalog volume for exported models and snapshots
+    default: <volume>
+  warehouse_id:
+    description: SQL warehouse that reads the source tables and writes predictions
+    default: <warehouse_id>
+  kumo_engine_wheel:
+    description: kumo-engine wheel (and its dependencies) on a volume or workspace path
+    default: /Volumes/<catalog>/<schema>/<volume>/wheels/<kumo_engine_wheel>.whl
+  spark_version:
+    description: a GPU ML runtime, for example 16.4.x-gpu-ml-scala2.12
+    default: <dbr_gpu_ml_version>
+  node_type_id:
+    description: a GPU node type with local NVMe disks
+    default: <gpu_node_type>
+  experiment:
+    description: MLflow experiment (workspace path) for train and score runs
+    default: /Shared/kumo-engine/users-churn
+
+resources:
+  jobs:
+    kumo_train:
+      name: kumo-engine-train
+      max_concurrent_runs: 1
+      job_clusters:
+        - job_cluster_key: kumo
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
+            spark_env_vars:
+              KUMO_SOURCE: databricks
+              KUMO_DATABRICKS_CATALOG: ${var.catalog}
+              KUMO_DATABRICKS_SCHEMA: ${var.schema}
+              KUMO_DATABRICKS_WAREHOUSE_ID: ${var.warehouse_id}
+              KUMO_ARTIFACT_ROOT: /Volumes/${var.catalog}/${var.schema}/${var.volume}/kumo
+              MLFLOW_TRACKING_URI: databricks
+              MLFLOW_REGISTRY_URI: databricks-uc
+              MLFLOW_EXPERIMENT_NAME: ${var.experiment}
+              KUMO_REGISTRY: mlflow
+              KUMO_SCRATCH_DIR: /local_disk0/kumo
+              KUMO_MODEL_NAME: ${var.catalog}.${var.schema}.users_churn
+      tasks:
+        - task_key: fit
+          job_cluster_key: kumo
+          libraries:
+            - whl: ${var.kumo_engine_wheel}
+          spark_python_task:
+            python_file: ${workspace.file_path}/fit_job.py
+            parameters:
+              - --job-id
+              - "{{job.id}}"
+              - --job-run-id
+              - "{{job.run_id}}"
+
+    kumo_score:
+      name: kumo-engine-score
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: 0 0 3 * * ?
+        timezone_id: UTC
+        pause_status: PAUSED
+      job_clusters:
+        - job_cluster_key: kumo
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
+            spark_env_vars:
+              KUMO_SOURCE: databricks
+              KUMO_DATABRICKS_CATALOG: ${var.catalog}
+              KUMO_DATABRICKS_SCHEMA: ${var.schema}
+              KUMO_DATABRICKS_WAREHOUSE_ID: ${var.warehouse_id}
+              KUMO_ARTIFACT_ROOT: /Volumes/${var.catalog}/${var.schema}/${var.volume}/kumo
+              MLFLOW_TRACKING_URI: databricks
+              MLFLOW_REGISTRY_URI: databricks-uc
+              MLFLOW_EXPERIMENT_NAME: ${var.experiment}
+              KUMO_REGISTRY: mlflow
+              KUMO_SCRATCH_DIR: /local_disk0/kumo
+              KUMO_MODEL_NAME: ${var.catalog}.${var.schema}.users_churn
+              KUMO_PREDICTIONS_TABLE: users_churn_predictions
+      tasks:
+        - task_key: score
+          job_cluster_key: kumo
+          libraries:
+            - whl: ${var.kumo_engine_wheel}
+          spark_python_task:
+            python_file: ${workspace.file_path}/score_job.py
+            parameters:
+              - --job-id
+              - "{{job.id}}"
+              - --job-run-id
+              - "{{job.run_id}}"
