@@ -234,8 +234,7 @@ def _ingest_stats(result: Any) -> Dict[str, Any]:
     return stats if isinstance(stats, dict) else {}
 
 
-def _write_snapshot_manifest(result: Any, snapshot_id: str, graph_key: str,
-                             data_version: str,
+def _write_snapshot_manifest(result: Any, snapshot_id: str,
                              source_tables: Dict[str, Dict[str, Any]], *,
                              fresh: bool) -> None:
     path = Path(result.index_path) / SNAPSHOT_MANIFEST_FILE
@@ -247,8 +246,6 @@ def _write_snapshot_manifest(result: Any, snapshot_id: str, graph_key: str,
         stats = _ingest_stats(result)
         rows = stats.get('source_rows_by_table', {})
         fields = {
-            'graph_id': graph_key,
-            'data_version': data_version,
             'formats': format_versions(),
             'tables': {
                 alias: {
@@ -561,8 +558,7 @@ class Graph:
 
             snapshot_id = f'{graph_key}@{data_version[:16]}'
             index_path = Path(result.index_path)
-            _write_snapshot_manifest(result, snapshot_id, graph_key,
-                                     data_version, source_tables,
+            _write_snapshot_manifest(result, snapshot_id, source_tables,
                                      fresh=existing is None)
 
             _warn_ingest_data_loss(result, graph_config)
