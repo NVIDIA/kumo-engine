@@ -188,8 +188,9 @@ predictions = prediction_result.frame  # collect them into a pandas DataFrame
 
 `fit(callbacks=[...])` calls each callback with every progress `Event`:
 `fit_started`, then per search trial `trial_started`, `epoch_ended` and
-`trial_ended`, then `fit_ended`. A callback that raises is logged and not called
-again; it never fails the fit. For JSON lines on stdout:
+`trial_ended`, then `fit_ended`. Ended events carry `params["status"]` and, on
+failure, a short `params["error"]`. A callback that raises is logged and not
+called again; it never fails the fit. For JSON lines on stdout:
 
 ```python
 import json

@@ -333,8 +333,10 @@ class Trainer:
             callbacks: called with each progress `Event`, in order:
                 ``fit_started``, then per trial ``trial_started``,
                 ``epoch_ended`` per epoch and ``trial_ended``, then
-                ``fit_ended``. A callback that raises is logged and not
-                called again; it never fails the fit.
+                ``fit_ended``. Ended events carry ``params['status']`` and,
+                on failure, ``params['error']`` (error type and message, at
+                most 200 characters). A callback that raises is logged and
+                not called again; it never fails the fit.
         """
         if export_config is not None and not callable(
                 getattr(export_config.connector.sink_backend, 'publish_model',
@@ -356,7 +358,7 @@ class Trainer:
         except BaseException as error:
             events.emit('fit_ended', params={
                 'status': 'failed',
-                'error': type(error).__name__,
+                'error': f'{type(error).__name__}: {error}'[:200],
             })
             raise
         events.emit('fit_ended', metrics={

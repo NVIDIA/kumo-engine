@@ -940,7 +940,7 @@ class AutoTrainer:
                     break
 
                 except RuntimeError as e:
-                    error = type(e).__name__
+                    error = f'{type(e).__name__}: {e}'[:200]
                     self._emit('trial_ended', lambda: {
                         'trial': i + 1,
                         'params': {

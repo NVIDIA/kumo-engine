@@ -124,7 +124,10 @@ def test_failed_fit_reports_fit_ended(table_and_snapshot, monkeypatch):
                                       callbacks=[events.append])
 
     assert [event.name for event in events] == ['fit_started', 'fit_ended']
-    assert events[-1].params == {'status': 'failed', 'error': 'ValueError'}
+    assert events[-1].params == {
+        'status': 'failed',
+        'error': 'ValueError: stop'
+    }
 
 
 def test_trial_failing_after_training_ends_once(table_and_snapshot,
@@ -148,7 +151,11 @@ def test_trial_failing_after_training_ends_once(table_and_snapshot,
                                callbacks=[events.append])
 
     ended = [event for event in events if event.name == 'trial_ended']
-    assert [event.params['status'] for event in ended] == ['failed']
+    assert [event.params for event in ended] == [{
+        'status': 'failed',
+        'attempt': 1,
+        'error': 'RuntimeError: searcher down'
+    }]
 
 
 def test_event_errors_are_logged_not_raised(caplog):
