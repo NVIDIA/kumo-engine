@@ -97,7 +97,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                  '--artifact-root', '--tracking-arn'):
         parser.add_argument(flag, required=True)
     parser.add_argument('--experiment', default='kumo-engine-users-churn')
-    parser.add_argument('--instance-type', default='<gpu_instance_type>')
+    parser.add_argument('--instance-type', required=True)
     parser.add_argument('--start', action='store_true')
     args = vars(parser.parse_args(argv))
     start = args.pop('start')

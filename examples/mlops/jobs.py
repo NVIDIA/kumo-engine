@@ -15,9 +15,10 @@ from the platform identity.
   (optional with a registry and a predictions table).
 - ``KUMO_REGISTRY``: ``mlflow`` (register ``KUMO_MODEL_NAME`` through
   ``MlflowTracking``), ``snowflake`` (the Snowflake Model Registry, tracked in
-  Snowflake Experiment Tracking) or unset (publish to
-  ``KUMO_ARTIFACT_ROOT/runs/<run>/model``). Fit moves the ``champion`` alias
-  to the new version; scoring loads ``champion``.
+  Snowflake Experiment Tracking) or unset (fit publishes to
+  ``KUMO_ARTIFACT_ROOT/runs/<run>/model``; scoring loads ``KUMO_MODEL_PATH``,
+  that path relative to ``KUMO_ARTIFACT_ROOT``). With a registry, fit moves
+  the ``champion`` alias to the new version and scoring loads ``champion``.
 - ``KUMO_SCRATCH_DIR``: local disk for snapshots, tables and bundles.
 - ``KUMO_PREDICTIONS_TABLE``: write predictions to this table of the source
   connector instead of ``KUMO_ARTIFACT_ROOT/runs/<run>/predictions/``.
@@ -154,7 +155,8 @@ def load_champion(connector: Connector) -> Trainer:
         return Trainer.load_from_connector(
             connector, location=ModelRegistryLocation(
                 _env('KUMO_MODEL_NAME'), alias=CHAMPION))
-    return Trainer.load_from_connector(run_artifacts(), path='model')
+    return Trainer.load_from_connector(artifacts(),
+                                       path=_env('KUMO_MODEL_PATH'))
 
 
 def prediction_output(connector: Connector) -> PredictionOutputConfig:

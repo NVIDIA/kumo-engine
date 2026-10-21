@@ -103,24 +103,36 @@ def test_fit_then_score_locally(tmp_path, monkeypatch, capsys):
                          'FOR EACH users.USER_ID')):
         monkeypatch.setenv(name, value)
     for name in ('KUMO_REGISTRY', 'KUMO_PREDICTIONS_TABLE', 'KUMO_SNAPSHOT',
+                 'KUMO_MODEL_PATH',
                  'KUMO_SCHEDULER', 'KUMO_JOB_ID', 'KUMO_JOB_RUN_ID'):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.syspath_prepend(str(_examples()))
     monkeypatch.delitem(sys.modules, 'jobs', raising=False)
 
-    ids = ['--job-id', 'local', '--job-run-id', 'run-1']
-    _module('fit_job').main(ids)
+    _module('fit_job').main(['--job-id', 'local', '--job-run-id', 'run-1'])
     fit = _summary(capsys)
     assert fit['status'] == 'succeeded', fit
     assert fit['scheduler']['job_run_id'] == 'run-1'
     assert fit['outputs']['model']['uri']
 
-    _module('score_job').main(ids)
+    monkeypatch.setenv('KUMO_MODEL_PATH', 'runs/run-1/model')
+    _module('score_job').main(['--job-id', 'local', '--job-run-id', 'run-2'])
     score = _summary(capsys)
     assert score['status'] == 'succeeded', score
     assert (score['bundle_id'], score['snapshot_id']) != (None, None)
     assert score['bundle_id'] == fit['bundle_id']
-    predictions = pd.read_parquet(tmp_path / 'artifacts' / 'runs' / 'run-1' /
+    predictions = pd.read_parquet(tmp_path / 'artifacts' / 'runs' / 'run-2' /
                                   score['outputs']['predictions'])
     assert len(predictions) == 50
     assert 'ANCHOR_TIMESTAMP' in predictions
+
+
+def test_sagemaker_pipeline_needs_an_instance_type(capsys):
+    pipeline = _module('sagemaker/pipeline')
+    args = [
+        '--role', 'r', '--image', 'i', '--code', 'c', '--data-root', 'd',
+        '--artifact-root', 'a', '--tracking-arn', 't'
+    ]
+    with pytest.raises(SystemExit):
+        pipeline.main(args)
+    assert '--instance-type' in capsys.readouterr().err

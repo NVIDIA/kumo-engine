@@ -18,7 +18,7 @@ Two plain Python job scripts that use the normal `kumo.engine` API inside
 |---|---|---|---|
 | [databricks](databricks/README.md) | Databricks Jobs (Asset Bundle) | Unity Catalog through MLflow | train on demand, score daily |
 | [sagemaker](sagemaker/README.md) | SageMaker Pipelines | SageMaker managed MLflow | fit step, then score step |
-| [snowflake](snowflake/README.md) | Snowflake ML Jobs + Tasks | Snowflake Model Registry, Snowflake Experiment Tracking | train weekly, score daily |
+| [snowflake](snowflake/README.md) (experimental, preview APIs) | Snowflake ML Jobs + Tasks | Snowflake Model Registry, Snowflake Experiment Tracking | train weekly, score daily |
 
 ## Run locally
 
@@ -28,20 +28,22 @@ With `users.parquet`, `items.parquet` and `orders.parquet` in a directory:
 cd examples/mlops
 export KUMO_SOURCE=file KUMO_DATA_ROOT=<data dir> KUMO_ARTIFACT_ROOT=<artifact dir>
 python fit_job.py --job-id local --job-run-id run-1
-python score_job.py --job-id local --job-run-id run-1
+KUMO_MODEL_PATH=runs/run-1/model python score_job.py --job-id local --job-run-id run-2
 ```
 
-Without `KUMO_REGISTRY` the model is published to
-`<artifact dir>/runs/run-1/model` and scored from there. The query needs
+Without `KUMO_REGISTRY` the fit publishes the model to
+`<artifact dir>/runs/<fit run>/model` (also in its summary's `outputs.model`),
+and the score job loads the path `KUMO_MODEL_PATH` names under
+`KUMO_ARTIFACT_ROOT`; scheduled score runs have their own run ids, so set it to
+the fit run you want to score with. The query needs
 several 30-day windows of order history; for a small sample set `KUMO_QUERY`
 to a shorter window and `KUMO_NUM_EXPERIMENTS=1`.
 
 ## What every scheduler sees
 
-- **Exit codes.** `0` ok, `10` a source refused the request (do not retry),
-  `20` transient (retry), `30` other failure, `143` SIGTERM (timeout or
-  cancel). Databricks, SageMaker and Snowflake retry policies only see zero vs
-  non-zero.
+- **Exit codes.** `0` ok, `1` failure, `143` SIGTERM (timeout or cancel).
+  The summary's `error.kind` says whether a failure is `transient` (worth a
+  retry), `permanent` or `unknown`.
 - **Output.** Each script prints one JSON line on stdout when it ends:
   `status`, `exit_code`, `scheduler`, `bundle_id`, `snapshot_id`, `run_id`,
   `outputs` (the exported snapshot and published model, or the prediction

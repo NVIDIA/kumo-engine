@@ -1,4 +1,9 @@
-# Snowflake ML Jobs and Tasks
+# Snowflake ML Jobs and Tasks (experimental)
+
+**Experimental.** This template is built on preview Snowflake APIs
+(`MLJobDefinition` is in preview and the `SYSTEM$EXECUTE_ML_JOB` statement it
+generates is undocumented) and has not been run end to end; see
+[Unverified](#unverified). They may change without notice.
 
 `register_jobs.py` registers two ML Job definitions whose payload is this
 `examples/mlops` directory, and one Task per definition from `task.sql`.

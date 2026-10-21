@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Register fit_job.py/score_job.py as Snowflake ML Jobs with one Task each
-(snowflake-ml-python 2.6); see README.md."""
+"""Experimental: register fit_job.py/score_job.py as Snowflake ML Jobs with
+one Task each (snowflake-ml-python 2.6, preview API); see README.md."""
 
 import argparse
 from pathlib import Path
