@@ -4,15 +4,13 @@
 
 import hashlib
 import json
+from pathlib import Path
+from runpy import run_path
 
-import numpy as np
-import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from kumoapi.graph import Edge
 from kumoapi.model_plan import ModelPlan
-from kumoapi.typing import Stype
 
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
@@ -96,41 +94,16 @@ def fitted(tmp_path_factory):
     previous = get_scratch_dir()
     kumo.configure(scratch_dir=root / 'scratch')
     try:
-        rng = np.random.default_rng(0)
-        data = root / 'data'
-        data.mkdir()
-        pd.DataFrame({'ID': np.arange(50)}).to_parquet(data / 'ents.parquet')
-        pd.DataFrame({
-            'EID':
-            np.arange(3000),
-            'ENT_ID':
-            rng.integers(0, 50, 3000),
-            'TS':
-            pd.Timestamp('2024-01-01') +
-            pd.to_timedelta(rng.integers(0, 120, 3000), unit='D'),
-        }).to_parquet(data / 'events.parquet')
-        connector = kumo.FileConnector(root_dir=str(data))
-        events = kumo.Table.from_source_table(
-            connector['events.parquet'], primary_key='EID',
-            time_column='TS').infer_metadata().with_column(
-                'ENT_ID', stype=Stype.ID)
-        graph = kumo.Graph(
-            tables={
-                'ents':
-                kumo.Table.from_source_table(connector['ents.parquet'],
-                                             primary_key='ID').infer_metadata(),
-                'events':
-                events,
-            },
-            edges=[Edge(src_table='events', fkey='ENT_ID', dst_table='ents')])
+        settings = Path(__file__).with_name('wheel_workflow.json')
+        fixture = json.loads(settings.read_text())['fixture']
+        graph = run_path(str(settings.with_suffix('.py')))['create_graph'](
+            root / 'data', fixture)
         snapshot = graph.snapshot()
-        pquery = kumo.PredictiveQuery(
-            graph=graph, query='PREDICT COUNT(events.*, 0, 7, days) > 0 '
-            'FOR EACH ents.ID')
+        pquery = kumo.PredictiveQuery(graph=graph, query=fixture['query'])
         plan = ModelPlan()
         plan.training_job.disable_explain = True
-        plan.optimization.max_epochs = 1
-        plan.optimization.max_steps_per_epoch = 2
+        plan.optimization.max_epochs = fixture['epochs']
+        plan.optimization.max_steps_per_epoch = fixture['steps_per_epoch']
         trainer = kumo.Trainer(model_plan=plan)
         trainer.fit(pquery.generate_training_table(snapshot), snapshot=snapshot)
         yield trainer, pquery.generate_prediction_table(snapshot), snapshot

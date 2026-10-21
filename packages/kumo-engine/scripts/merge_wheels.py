@@ -411,7 +411,12 @@ def main():
                 owners[target_name] = component['name']
                 destination = staging / target_name
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(archive.read(info))
+                contents = archive.read(info)
+                if target_name == 'kumo/engine/_version.py':
+                    contents = re.sub(rb'(?m)^__version__\s*=.*$',
+                                      f'__version__ = {version!r}'.encode(),
+                                      contents)
+                destination.write_bytes(contents)
                 # The zip's executable bit matters: DiskGraph's bundled ingest
                 # binary is spawned as a subprocess.
                 mode = info.external_attr >> 16

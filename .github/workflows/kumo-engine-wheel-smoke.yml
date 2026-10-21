@@ -1,0 +1,111 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo Engine - Wheel smoke
+
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      wheel_artifact:
+        description: Artifact from this run that contains the selected wheel.
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release to test; blank uses the approved reference.
+        type: string
+        default: ''
+  pull_request:
+    paths:
+      - .github/workflows/kumo-engine-wheel*.yml
+      - packages/kumo-engine/scripts/smoke_wheel.py
+      - packages/kumo-engine/scripts/check_pypi_requirements.py
+      - packages/kumo-engine/test/wheel_workflow.py
+      - packages/kumo-engine/test/conftest.py
+      - packages/kumo-engine/test/wheel_workflow.json
+      - test/scripts/test_engine_wheel_smoke.py
+      - docs/development/testing.md
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+      OPENBLAS_NUM_THREADS: '4'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Checkout test harness
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      # Plain PyPI dependencies currently include CUDA libraries, even on CPU.
+      - name: Free unused SDK space on the disposable runner
+        timeout-minutes: 2
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+
+      - name: Test identity and failure reporting
+        shell: bash
+        run: |
+          python -m unittest discover -s test/scripts -p test_engine_wheel_smoke.py \
+            2>&1 | tee "$RUNNER_TEMP/wheel-smoke-unit.log"
+
+      - name: Download the wheel built in this run
+        if: ${{ inputs.wheel_artifact != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: ${{ inputs.wheel_artifact }}
+          path: dist
+
+      # PR runs test the harness against a released wheel, not PR source code.
+      - name: Download an existing release wheel
+        id: release
+        if: ${{ inputs.wheel_artifact == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          reference_tag="$(python -c 'import json; print("kumo-engine-v" + json.load(open("packages/kumo-engine/test/wheel_workflow.json"))["reference"]["wheel"]["version"])')"
+          RELEASE_TAG="${RELEASE_TAG:-$reference_tag}"
+          gh release download "$RELEASE_TAG" --pattern 'kumo_engine-*x86_64.whl' --dir dist
+          if [[ "$RELEASE_TAG" == "$reference_tag" ]]; then
+            echo 'check_reference=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install, train, predict, and reload
+        timeout-minutes: 17
+        run: >-
+          python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
+          --output-dir "$RUNNER_TEMP/wheel-smoke"
+
+      - name: Verify the approved reference with fixed dependencies
+        if: ${{ steps.release.outputs.check_reference == 'true' }}
+        timeout-minutes: 17
+        run: >-
+          python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
+          --reference --output-dir "$RUNNER_TEMP/wheel-smoke-reference"
+
+      - name: Preserve results and logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: kumo-engine-wheel-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/wheel-smoke/
+            ${{ runner.temp }}/wheel-smoke-reference/
+            ${{ runner.temp }}/wheel-smoke-unit.log
+          retention-days: 14
+          if-no-files-found: warn
