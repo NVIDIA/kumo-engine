@@ -2,26 +2,23 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import json
-import logging
 import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumoapi.model_plan import \
     TrainingTableGenerationPlan as PublicGenerationPlan
 from kumoapi.train import TrainingTableSpec
 
+from kumo.engine import _provenance as provenance
 from kumo.engine._manifest import new_manifest, read_manifest, write_manifest
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
 
 if TYPE_CHECKING:
     from kumo.engine.trainer.output_config import TrainingTableOutputConfig
-
-logger = logging.getLogger(__name__)
 
 STAGING_MANIFEST_FILE = 'training-table-manifest.json'
 EXPORT_MANIFEST_FILE = '_kumo_manifest.json'
@@ -84,40 +81,22 @@ class TrainingTable:
         root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root) as output:
             files = export_train_table(str(self.staging_dir), output)
-            try:
-                payload = self._export_manifest(connector, output_config,
-                                                files)
-            except Exception as error:
-                warnings.warn(f"Exporting without a training-table manifest: "
-                              f"{error}", UserWarning, stacklevel=2)
-                payload = None
-            extra = ({} if payload is None else {
-                'sidecars': {
-                    EXPORT_MANIFEST_FILE: payload
-                }
-            })
             return write_files(connector, output_config.table_name, files,
                                output_config.write_mode, export_id=export_id,
-                               **extra)
+                               **self._export_sidecars(connector,
+                                                       output_config))
 
-    def _export_manifest(self, connector, output_config,
-                         files: Sequence[str]) -> Optional[bytes]:
+    def _export_sidecars(self, connector, output_config) -> Dict[str, Any]:
         from kumo_core.object_store_sink import ObjectStoreSinkBackend
         from kumo_core.sources import layout
 
-        name = output_config.table_name
+        manifest = self.staging_dir / STAGING_MANIFEST_FILE
+        name = output_config.table_name.rstrip('/')
         if (not isinstance(connector.sink_backend, ObjectStoreSinkBackend)
-                or not (name.endswith('/') or len(files) > 1)
-                or layout.file_type(name.rstrip('/')) not in (
-                    None, layout.PARQUET)):
-            logger.debug('Training-table manifests are only exported to '
-                         'Parquet directories on files or object stores.')
-            return None
-        manifest = self.manifest
-        if manifest is None:
-            return None
-        return (json.dumps(manifest, indent=2, sort_keys=True) +
-                '\n').encode('utf-8')
+                or layout.file_type(name) == layout.CSV
+                or not manifest.is_file()):
+            return {}
+        return {'sidecars': {EXPORT_MANIFEST_FILE: manifest.read_bytes()}}
 
     @classmethod
     def from_source_table(
@@ -182,7 +161,6 @@ class TrainingTable:
         run_dir = train_table_scratch_dir(run_id)
         rows_path, version = stage_source_table(source_table,
                                                 run_dir / "source-table")
-        lineage = _source_lineage(source_table, version)
         generation_plan = from_json_dict(
             to_json_dict(public_plan),
             TrainingTableGenerationPlan,
@@ -247,8 +225,11 @@ class TrainingTable:
             required_stages=task_plan.task_dataset.required_stages,
             generation_plan=generation_plan,
         )
-        _record_manifest(table, snapshot, task_plan.train_table, 'custom',
-                         source_table=lineage)
+        _record_manifest(
+            table, snapshot, task_plan.train_table, 'custom',
+            source_table=provenance.source_table(source_table.connector,
+                                                 source_table.table_name,
+                                                 source_table.sql, version))
         return table
 
 
@@ -285,11 +266,3 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
         warnings.warn(
             f"Could not write the training-table manifest at {path}: "
             f"{error}", UserWarning, stacklevel=3)
-
-
-def _source_lineage(source_table: SourceTable,
-                    version: Optional[str]) -> Dict[str, Optional[str]]:
-    from kumo.engine._provenance import source_table as lineage
-
-    return lineage(source_table.connector, source_table.table_name,
-                   source_table.sql, version)

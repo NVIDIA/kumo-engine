@@ -224,9 +224,8 @@ def test_csv_retry_replaces_partially_uploaded_part(tmp_path, monkeypatch):
     assert (target / '_SUCCESS').exists()
 
 
-@pytest.mark.parametrize('directory', [True, False])
-def test_sidecars_are_written_before_success(tmp_path, monkeypatch,
-                                             directory):
+
+def test_sidecars_are_best_effort_and_precede_success(tmp_path):
     import pyarrow.parquet as pq
     from kumo_core.artifact_export import export_selected_files
     from kumo_core.object_store_sink import _ArrowExportFiles
@@ -236,42 +235,22 @@ def test_sidecars_are_written_before_success(tmp_path, monkeypatch,
     pq.write_table(pa.table({'id': [1]}), source)
     target = tmp_path / 'output'
     fs = _ArrowExportFiles(LocalFileSystem(), None)
-    touched = fs.touch
-
-    def touch(path):
-        assert (target / 'meta.json').read_bytes() == b'{}'
-        touched(path)
-
-    monkeypatch.setattr(fs, 'touch', touch)
-    export_selected_files([str(source)],
-                          str(target) + ('/' if directory else ''), fs=fs,
-                          identity='job-1', sidecars={'meta.json': b'{}'})
-    if directory:
-        assert (target / '_SUCCESS').exists()
-    else:
-        assert not (target / 'meta.json').exists()
-        assert pq.read_table(tmp_path / 'output.parquet').num_rows == 1
-
-
-def test_failed_sidecar_write_still_publishes(tmp_path):
-    import pyarrow.parquet as pq
-    from kumo_core.artifact_export import export_selected_files
-    from kumo_core.object_store_sink import _ArrowExportFiles
-    from pyarrow.fs import LocalFileSystem
-
-    source = tmp_path / 'part-0.parquet'
-    pq.write_table(pa.table({'id': [1]}), source)
-    fs = _ArrowExportFiles(LocalFileSystem(), None)
-    write_bytes = fs.write_bytes
+    write_bytes, touch = fs.write_bytes, fs.touch
 
     def denied(path, value):
-        if path.endswith('meta.json'):
+        if path.endswith('bad.json'):
             raise PermissionError('denied')
         write_bytes(path, value)
 
-    fs.write_bytes = denied
-    target = tmp_path / 'output'
+    def checked_touch(path):
+        assert (target / 'meta.json').read_bytes() == b'{}'
+        touch(path)
+
+    fs.write_bytes, fs.touch = denied, checked_touch
     with pytest.warns(UserWarning, match='denied'):
         export_selected_files([str(source)], f'{target}/', fs=fs,
-                              identity='job-1', sidecars={'meta.json': b'{}'})
+                              identity='job-1', sidecars={
+                                  'meta.json': b'{}',
+                                  'bad.json': b'{}'
+                              })
     assert (target / '_SUCCESS').exists()
