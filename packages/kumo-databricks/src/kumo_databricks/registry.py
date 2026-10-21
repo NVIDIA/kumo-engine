@@ -200,7 +200,7 @@ def _bundle_metadata(bundle: Path) -> tuple[dict[str, str], dict[str, float]]:
 def _download(client: WorkspaceClient, remote: str, destination: Path) -> None:
     for entry in client.files.list_directory_contents(remote):
         # A server-provided path must stay an immediate child of this directory.
-        path = entry.path or ''
+        path = (entry.path or '').rstrip('/')
         prefix = remote + '/'
         child = path[len(prefix):] if path.startswith(prefix) else ''
         if not child or '/' in child or child in ('.', '..') or '\\' in child:

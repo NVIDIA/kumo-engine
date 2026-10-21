@@ -207,8 +207,11 @@ class Client:
             if key.startswith(path + '/'):
                 relative = key[len(path) + 1:]
                 child = relative.split('/')[0]
-                children[child] = SimpleNamespace(path=path + '/' + child,
-                                                  is_directory='/' in relative)
+                directory = '/' in relative
+                # The Files API lists directories with a trailing slash.
+                children[child] = SimpleNamespace(
+                    path=f"{path}/{child}{'/' if directory else ''}",
+                    is_directory=directory)
         return children.values()
 
     def download(self, path):
