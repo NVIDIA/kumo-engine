@@ -144,49 +144,24 @@ location = graph.snapshot().export(S3Connector(), "s3://bucket/snapshots")
 snapshot = GraphSnapshot.load_from_connector(S3Connector(), path=location)
 ```
 
-`export` writes `<path>/<graph id>/<data version>/` (the two halves of
-`snapshot.id`) and returns it. Files move in parallel with a CRC32 per range,
-an interrupted export resumes, and a load either completes or leaves nothing.
-Exporting a snapshot id that is already there, even one rebuilt on another
-machine, keeps the existing export. Loading again reuses the local copy unless
-it fails DiskGraph's integrity check. The snapshot manifest travels with the
-export; on the loaded copy, `snapshot.manifest["loaded"]` records the loading
-machine's DiskGraph formats. An index this DiskGraph cannot open fails with
-both sets of formats in the error. Load only from paths whose writers you
-trust: checksums detect corruption, not tampering.
+`export` writes `<path>/<graph id>/<data version>/` and returns it; an
+interrupted export resumes, and a load either completes or leaves nothing.
+Snowflake, Databricks and BigQuery connectors cannot hold an export: use a
+`FileConnector` on a mounted volume (e.g. `/Volumes/<catalog>/<schema>/<volume>`)
+or the S3/GCS connector on the bucket behind it. Load only from paths whose
+writers you trust: checksums detect corruption, not tampering.
 
-Snowflake, Databricks and BigQuery connectors cannot hold an export. Instead:
-
-- On Databricks compute, use a `FileConnector` on a Unity Catalog Volume:
-  `FileConnector(root_dir="/Volumes/<catalog>/<schema>/<volume>")`.
-- In SPCS services, or Snowflake ML Jobs where a stage volume is mounted, use a
-  `FileConnector` on that stage volume (not yet tested with multi-GB indexes).
-- Otherwise, use the S3 or GCS connector on the bucket behind an external
-  volume or external stage.
-
-`snapshot.source_changes(graph)` reports, per table alias, whether the source
-moved on since the snapshot was built, using the same metadata-only version
-stamp the snapshot recorded (no rows are read):
+`snapshot.source_changes(graph)` reports, per table, whether the source moved
+on since the snapshot was built, from metadata only:
 
 ```python
 {"users":  {"status": "unchanged", "recorded": "1792539971", "current": "1792539971"},
- "items":  {"status": "unknown",   "recorded": "1792537200", "current": "1792537200"},
  "events": {"status": "changed",   "recorded": "1792539971", "current": "1792539974"}}
 ```
 
-The status is `unknown` when there is nothing reliable to compare: no recorded
-version (no manifest, or one reconstructed for an older index), a different
-connector or location than recorded, an unreadable version, a Custom SQL table
-(its version folds in a 24-hour window), or an hour-aligned or `-1` stamp
-(views and unversioned sources are stamped with the current hour). A
-file-connector folder holding Parquet or CSV files under a `_`- or `.`-prefixed
-path (a Delta `_delta_log` checkpoint, a leftover `_temporary/` part) reports
-`changed` on every call, because its listing stamp counts those files.
-`GraphSnapshot.load_from_connector(..., graph=graph)` makes the same call for
-every table, so the loading machine needs source credentials, and warns once
-naming the `changed` tables. A scoring job should build a fresh snapshot or
-load one whose tables are all `unchanged`, unless it deliberately reproduces
-past scores.
+The status is `unknown` when there is nothing reliable to compare (no recorded
+version, a different source location, Custom SQL, or an hour-aligned stamp from
+a view). `load_from_connector(..., graph=graph)` warns when tables `changed`.
 
 The return values expose the retained files directly:
 

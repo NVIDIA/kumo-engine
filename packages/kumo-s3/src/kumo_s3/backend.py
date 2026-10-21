@@ -109,8 +109,7 @@ class S3Sessions(ObjectStoreSessions):
                     ) -> S3FileSystem:
         r"""A ready filesystem is taken as it is: it may address a service
         that is not AWS at all, and probing its bucket name against AWS would
-        answer for somebody else's bucket. ``options`` are extra
-        ``S3FileSystem`` keywords.
+        answer for somebody else's bucket.
         """
 
         session, allow_anonymous, connection = self._resolved_session(
