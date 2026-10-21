@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterator, Mapping, NoReturn, Optional
 _MAX_MESSAGE = 500
 _MAX_WARNING = 300
 _MAX_WARNINGS = 20
+_DEPRECATIONS = (DeprecationWarning, PendingDeprecationWarning, FutureWarning)
 
 
 class Terminated(BaseException):
@@ -87,7 +88,7 @@ def job(*, job_id: Optional[str] = None,
     body writes. Logs go to stderr. On exit, however the body ends, one JSON
     line goes to stdout: ``status``, ``exit_code``, the scheduler context, what
     the body passed to :meth:`JobRun.record`, the first 20 distinct warnings
-    (300 characters each), and ``error``
+    other than deprecations (300 characters each), and ``error``
     (``type``, ``kind``: ``transient``/``permanent``/``unknown``, ``message``)
     on failure. A failed body exits the process with 1; SIGTERM with 143.
 
@@ -106,12 +107,13 @@ def job(*, job_id: Optional[str] = None,
     run = JobRun()
     shown = warnings.showwarning
 
-    def show(message: Any, *args: Any, **kwargs: Any) -> None:
+    def show(message: Any, category: Any, *args: Any, **kwargs: Any) -> None:
         text = str(message)[:_MAX_WARNING]
         recorded = run.summary['warnings']
-        if text not in recorded and len(recorded) < _MAX_WARNINGS:
+        if (not issubclass(category, _DEPRECATIONS) and text not in recorded
+                and len(recorded) < _MAX_WARNINGS):
             recorded.append(text)
-        shown(message, *args, **kwargs)
+        shown(message, category, *args, **kwargs)
 
     warnings.showwarning = show
     error: Optional[BaseException] = None

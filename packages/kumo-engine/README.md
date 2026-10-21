@@ -524,8 +524,8 @@ with kumo.job() as run:
 ```
 
 The summary carries `status`, `exit_code`, the scheduler context, the recorded
-ids and outputs, the first 20 distinct warnings (300 characters each), and
-`error` on failure. The line is printed
+ids and outputs, the first 20 distinct warnings other than deprecations (300
+characters each), and `error` on failure. The line is printed
 however the body ends, including Ctrl-C and `sys.exit()`. The job exits 0 on
 success, 1 on failure and 143 on SIGTERM; `error.kind` says whether a failure
 is `transient` (a source, connection or timeout error worth retrying),

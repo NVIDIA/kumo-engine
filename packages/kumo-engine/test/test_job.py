@@ -32,9 +32,10 @@ def test_summary_records_ids_warnings_and_scheduler(capsys):
         run.record(bundle_id='b-1', snapshot_id='s-1')
         run.record(run_id='r-1', outputs={'predictions': 's3://out/p'})
         warnings.warn('threshold not set', UserWarning)
+        warnings.warn('use the new API', FutureWarning)
         for i in range(30):
-            warnings.warn(f'{i}' * 400, FutureWarning)
-            warnings.warn(f'{i}' * 400, FutureWarning)
+            warnings.warn(f'{i}' * 400, RuntimeWarning)
+            warnings.warn(f'{i}' * 400, RuntimeWarning)
 
     assert manifest['scheduler'] == {
         'platform': 'other',
@@ -54,6 +55,7 @@ def test_summary_records_ids_warnings_and_scheduler(capsys):
         'warnings': summary['warnings'],
     }
     assert summary['warnings'][0] == 'threshold not set'
+    assert 'use the new API' not in summary['warnings']
     assert len(summary['warnings']) == 20
     assert len(set(summary['warnings'])) == 20
     assert max(map(len, summary['warnings'])) == 300
