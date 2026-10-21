@@ -12,7 +12,7 @@ separate and must be supplied through a compatible prediction snapshot.
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from kumo_core.io.filesystem import atomic_write_bytes
 from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
@@ -101,6 +101,17 @@ def read_training_spec(bundle_dir: Path) -> TrainingSpec:
         snapshot_id=data['snapshot_id'],
         training_table_generation=data['training_table_generation'],
     )
+
+
+def listed_file(bundle_dir: Path, role: str) -> Optional[Path]:
+    try:
+        manifest = json.loads(
+            (bundle_dir / MANIFEST_FILE).read_text(encoding='utf-8'))
+        entries = manifest.get('artifacts') or []
+    except (OSError, ValueError, AttributeError):
+        return None
+    return next((bundle_dir / entry['relative_path']
+                 for entry in entries if entry.get('role') == role), None)
 
 
 def read_bundle_artifact_paths(

@@ -73,9 +73,6 @@ class TrainingResult:
     model bundle. The file is capped at 1 GiB in memory; `holdout_truncated` is
     true when rows were dropped to fit, and `None` when the size record could
     not be read.
-
-    `bundle_id` is the content id of the model bundle's scoring files,
-    computed when the bundle is written or loaded.
     """
 
     metrics: Dict[str, float]
