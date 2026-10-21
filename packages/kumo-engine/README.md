@@ -814,9 +814,10 @@ report = trainer.evaluate(run, snapshot=newer_snapshot)
 drift = trainer.score_drift(run)
 ```
 
-`load_from_connector` fetches only the run's `_kumo_manifest.json`; `score_drift`
-needs nothing else, and the Parquet parts are downloaded in parallel when
-`evaluate` (or `files`) first reads them. A run exported by an older engine has no manifest: temporal queries then need
+`load_from_connector` requires the export's `_SUCCESS` marker and fetches only
+the run's `_kumo_manifest.json`; `score_drift` needs nothing else, and the
+Parquet parts are downloaded in parallel when `evaluate` (or `files`) first
+reads them, into a scratch directory removed with the result. A run exported by an older engine has no manifest: temporal queries then need
 the `ANCHOR_TIMESTAMP` column (request it with `extra_fields`), and
 `score_drift` reports `psi` as `None`.
 
