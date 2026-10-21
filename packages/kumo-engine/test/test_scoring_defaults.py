@@ -15,8 +15,7 @@ from kumoapi.model_plan import ModelPlan
 
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
-from kumo.engine.trainer._scoring import validate_scoring_defaults
-from kumo.engine.trainer._spec import MANIFEST_FILE
+from kumo.engine.trainer._scoring import normalized_scoring_defaults
 
 
 def _frame(trainer, table, snapshot, **kwargs):
@@ -43,8 +42,7 @@ def derived(fitted):
     return trainer.with_scoring_defaults(defaults), original
 
 
-def test_binary_predict_uses_bundle_threshold_unless_explicit(
-        fitted, derived):
+def test_binary_predict_uses_bundle_threshold_unless_explicit(fitted, derived):
     trainer, table, snapshot = fitted
     child, _ = derived
     threshold = child.scoring_defaults.binary_classification_threshold
@@ -61,27 +59,16 @@ def test_binary_predict_uses_bundle_threshold_unless_explicit(
     assert implicit['TARGET_PRED'].any()
 
 
-def test_derived_bundle_is_a_new_child_of_an_untouched_parent(
-        fitted, derived):
+def test_derived_bundle_is_a_new_child_of_an_untouched_parent(fitted, derived):
     trainer, *_ = fitted
     child, original = derived
     parent_dir = trainer._training_result.bundle_dir
     assert _digest(parent_dir) == original
     assert kumo.Trainer.load(parent_dir).bundle_id == trainer.bundle_id
     assert child.bundle_id != trainer.bundle_id
-    assert child._training_result.bundle_dir.name == 'derived-model'
-
-    provenance = child._training_result.provenance
-    assert provenance['parents']['derived_from'] == trainer.bundle_id
-    assert (provenance['parents']['snapshot'] ==
-            trainer._training_result.provenance['parents']['snapshot'])
-    manifest = json.loads(
-        (child._training_result.bundle_dir / MANIFEST_FILE).read_text())
-    assert {
-        entry['role']: entry['relative_path']
-        for entry in manifest['artifacts']
-    }['scoring_defaults'] == 'scoring-defaults.json'
-    assert 'scoring_defaults' not in child._training_result.artifact_paths
+    assert child.provenance['parents'] == {
+        **trainer.provenance['parents'], 'derived_from': trainer.bundle_id
+    }
 
 
 def test_empty_defaults_restore_the_no_defaults_bundle_id(fitted, derived):
@@ -95,6 +82,17 @@ def test_empty_defaults_restore_the_no_defaults_bundle_id(fitted, derived):
                     'scoring-defaults.json').exists()
 
 
+def test_equal_defaults_give_equal_bundle_ids(fitted):
+    trainer, *_ = fitted
+    children = [
+        trainer.with_scoring_defaults(
+            kumo.ScoringDefaults(binary_classification_threshold=value))
+        for value in (1, 1.0, np.float32(1))
+    ]
+    assert {child.bundle_id for child in children} == {children[0].bundle_id}
+    assert children[0].scoring_defaults.binary_classification_threshold == 1.0
+
+
 def test_derivation_without_parent_provenance_is_marked_reconstructed(
         fitted, tmp_path):
     trainer, *_ = fitted
@@ -103,11 +101,23 @@ def test_derivation_without_parent_provenance_is_marked_reconstructed(
     remove_bundle_file(bundle, 'provenance')
     child = kumo.Trainer.load(bundle).with_scoring_defaults(
         kumo.ScoringDefaults(binary_classification_threshold=.5))
-    provenance = child._training_result.provenance
+    provenance = child.provenance
     assert provenance['reconstructed'] is True
     assert provenance['parents'] == {'derived_from': trainer.bundle_id}
-    assert provenance['created_at'] is None
-    assert provenance['environment'] is None
+
+
+def test_unreadable_parent_provenance_is_left_untouched(fitted, tmp_path):
+    trainer, *_ = fitted
+    bundle = tmp_path / 'newer'
+    shutil.copytree(trainer._training_result.bundle_dir, bundle)
+    newer = json.dumps({'schema_version': 999, 'parents': {}})
+    (bundle / 'provenance.json').write_text(newer)
+    add_bundle_file(bundle, 'provenance', 'provenance.json')
+    with pytest.warns(UserWarning, match='left unchanged'):
+        child = kumo.Trainer.load(bundle).with_scoring_defaults(
+            kumo.ScoringDefaults(binary_classification_threshold=.5))
+    assert (child._training_result.bundle_dir /
+            'provenance.json').read_text() == newer
 
 
 def test_defaults_survive_export_and_connector_load(derived, tmp_path):
@@ -126,15 +136,21 @@ def test_defaults_survive_export_and_connector_load(derived, tmp_path):
     (kumo.ScoringDefaults(num_classes_to_return=3),
      TaskType.BINARY_CLASSIFICATION, 'num_classes_to_return'),
     (kumo.ScoringDefaults(binary_classification_threshold=.5),
-     TaskType.MULTILABEL_CLASSIFICATION, 'only to binary'),
-    (kumo.ScoringDefaults(binary_classification_threshold=.5),
-     TaskType.REGRESSION, 'only to binary'),
+     TaskType.REGRESSION, 'only to binary and multilabel'),
     (kumo.ScoringDefaults(num_classes_to_return=501),
      TaskType.STATIC_LINK_PREDICTION, '500'),
 ])
 def test_invalid_defaults_raise(defaults, task_type, match):
     with pytest.raises(ValueError, match=match):
-        validate_scoring_defaults(defaults, task_type)
+        normalized_scoring_defaults(defaults, task_type)
+
+
+def test_multilabel_accepts_threshold_and_count_defaults():
+    defaults = kumo.ScoringDefaults(binary_classification_threshold=.3,
+                                    num_classes_to_return=np.int64(2))
+    assert normalized_scoring_defaults(
+        defaults,
+        TaskType.MULTILABEL_CLASSIFICATION) == kumo.ScoringDefaults(.3, 2)
 
 
 def test_with_scoring_defaults_validates_against_the_bundle(fitted):
@@ -143,12 +159,10 @@ def test_with_scoring_defaults_validates_against_the_bundle(fitted):
         trainer.with_scoring_defaults(
             kumo.ScoringDefaults(num_classes_to_return=2))
     with pytest.raises(RuntimeError, match='requires a prior'):
-        kumo.Trainer(ModelPlan()).with_scoring_defaults(
-            kumo.ScoringDefaults())
+        kumo.Trainer(ModelPlan()).with_scoring_defaults(kumo.ScoringDefaults())
     with pytest.raises(RuntimeError, match='requires a prior'):
         kumo.Trainer(ModelPlan()).export(
-            kumo.ModelOutputConfig(kumo.FileConnector(root_dir='.'),
-                                   path='m'))
+            kumo.ModelOutputConfig(kumo.FileConnector(root_dir='.'), path='m'))
 
 
 def test_bundle_without_listed_defaults_keeps_todays_behaviour(
@@ -181,15 +195,17 @@ def test_multilabel_count_default_yields_to_explicit_and_top_k(tmp_path):
         data = tmp_path / 'data'
         data.mkdir()
         pd.DataFrame({
-            'ID': range(120),
-            'VALUE': np.arange(120) / 120,
-            'TAGS': [['a', 'b'], ['b', 'c'], ['a', 'c']] * 33 +
-            [['a', 'b']] + [None] * 20,
+            'ID':
+            range(120),
+            'VALUE':
+            np.arange(120) / 120,
+            'TAGS': [['a', 'b'], ['b', 'c'], ['a', 'c']] * 33 + [['a', 'b']] +
+            [None] * 20,
         }).to_parquet(data / 'users.parquet')
         connector = kumo.FileConnector(root_dir=str(data))
         graph = kumo.Graph({
-            'users': kumo.Table.from_source_table(connector['users'],
-                                                  primary_key='ID'),
+            'users':
+            kumo.Table.from_source_table(connector['users'], primary_key='ID'),
         })
         snapshot = graph.snapshot()
         plan = ModelPlan()

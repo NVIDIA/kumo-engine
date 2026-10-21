@@ -6,6 +6,7 @@ r"""Scoring defaults stored as ``scoring-defaults.json`` in a model bundle."""
 import json
 import warnings
 from dataclasses import asdict, dataclass
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -31,32 +32,32 @@ def bundle_task_type(artifact_paths: Mapping[str, str]) -> Any:
     return TaskType(schema['task_type'])
 
 
-def validate_scoring_defaults(defaults: ScoringDefaults,
-                              task_type: Any) -> None:
+def normalized_scoring_defaults(defaults: ScoringDefaults,
+                                task_type: Any) -> ScoringDefaults:
     from kumo_core.prediction_options import (
         resolve_classification_threshold,
         resolve_num_classes_to_return,
     )
-    from kumo_core.types import TaskType
 
     threshold = defaults.binary_classification_threshold
+    count = defaults.num_classes_to_return
     if threshold is not None:
-        if task_type is not TaskType.BINARY_CLASSIFICATION:
-            raise ValueError(
-                'binary_classification_threshold applies only to binary '
-                f'classification, not {task_type.value}')
-        if isinstance(threshold, bool) or not isinstance(
-                threshold, (int, float)):
+        if isinstance(threshold, bool) or not isinstance(threshold, Real):
             raise ValueError('binary_classification_threshold must be a '
                              f'number, but got {threshold!r}')
-        resolve_classification_threshold(task_type, threshold)
-    if defaults.num_classes_to_return is not None:
-        resolve_num_classes_to_return(task_type,
-                                      defaults.num_classes_to_return)
+        threshold = float(threshold)
+        if resolve_classification_threshold(task_type, threshold) is None:
+            raise ValueError(
+                'binary_classification_threshold applies only to binary and '
+                f'multilabel classification, not {task_type.value}')
+    if isinstance(count, Integral) and not isinstance(count, bool):
+        count = int(count)
+    if count is not None:
+        resolve_num_classes_to_return(task_type, count)
+    return ScoringDefaults(threshold, count)
 
 
-def write_scoring_defaults(bundle_dir: Path,
-                           defaults: ScoringDefaults) -> None:
+def write_scoring_defaults(bundle_dir: Path, defaults: ScoringDefaults) -> None:
     from kumo_core.artifacts import add_bundle_file, remove_bundle_file
 
     if defaults == ScoringDefaults():
@@ -68,9 +69,8 @@ def write_scoring_defaults(bundle_dir: Path,
     add_bundle_file(bundle_dir, SCORING_DEFAULTS_ROLE, SCORING_DEFAULTS_FILE)
 
 
-def read_scoring_defaults(
-        bundle_dir: Path, artifact_paths: Mapping[str,
-                                                  str]) -> ScoringDefaults:
+def read_scoring_defaults(bundle_dir: Path,
+                          artifact_paths: Mapping[str, str]) -> ScoringDefaults:
     try:
         manifest = json.loads(
             (bundle_dir / MANIFEST_FILE).read_text(encoding='utf-8'))
@@ -80,12 +80,11 @@ def read_scoring_defaults(
         if relative is None:
             return ScoringDefaults()
         data = json.loads((bundle_dir / relative).read_text(encoding='utf-8'))
-        defaults = ScoringDefaults(data.get('binary_classification_threshold'),
-                                   data.get('num_classes_to_return'))
-        validate_scoring_defaults(defaults, bundle_task_type(artifact_paths))
-        return defaults
+        return normalized_scoring_defaults(
+            ScoringDefaults(data.get('binary_classification_threshold'),
+                            data.get('num_classes_to_return')),
+            bundle_task_type(artifact_paths))
     except Exception as error:
-        warnings.warn(
-            f'Ignoring the scoring defaults in {bundle_dir}: {error}',
-            UserWarning, stacklevel=3)
+        warnings.warn(f'Ignoring the scoring defaults in {bundle_dir}: {error}',
+                      UserWarning, stacklevel=3)
         return ScoringDefaults()

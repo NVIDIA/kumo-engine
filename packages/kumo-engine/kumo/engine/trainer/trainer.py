@@ -339,24 +339,18 @@ class Trainer:
         return self._training_result
 
     def with_scoring_defaults(self, defaults: ScoringDefaults) -> Self:
-        r"""Return a trainer whose new bundle carries ``defaults``.
-
-        ``defaults`` replace any the bundle already carries; empty defaults
-        remove them. The bundle is copied, so this trainer's bundle and
-        ``bundle_id`` are unchanged. The copy records this bundle's id as
-        ``provenance['parents']['derived_from']`` and gets its own
-        ``bundle_id``. ``predict`` uses a default only when its argument is
-        omitted.
-        """
+        r"""Return a trainer on a copy of this bundle that carries
+        ``defaults``, with its own ``bundle_id``. Empty defaults remove them;
+        ``predict`` uses a default only when its argument is omitted."""
         from kumo.engine.trainer._provenance import record_derivation
         from kumo.engine.trainer._scoring import (
             bundle_task_type,
-            validate_scoring_defaults,
+            normalized_scoring_defaults,
             write_scoring_defaults,
         )
 
         training_result = self._fitted('with_scoring_defaults')
-        validate_scoring_defaults(
+        defaults = normalized_scoring_defaults(
             defaults, bundle_task_type(training_result.artifact_paths))
         bundle_dir = trainer_scratch_dir(new_run_id()) / 'derived-model'
         shutil.copytree(training_result.bundle_dir, bundle_dir,
