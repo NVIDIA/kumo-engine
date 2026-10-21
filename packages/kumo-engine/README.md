@@ -524,9 +524,11 @@ with kumo.job() as run:
 ```
 
 The summary carries `status`, `exit_code`, the scheduler context, the recorded
-ids and outputs, warnings raised, and `error` on failure. Exit codes: 0 ok, 10 a
-source refused the request (do not retry), 20 a transient source, connection or
-timeout error (retry), 30 any other failure, 143 SIGTERM. Scheduler ids come
+ids and outputs, warnings raised, and `error` on failure. The line is printed
+however the body ends, including Ctrl-C and `sys.exit()`. The job exits 0 on
+success, 1 on failure and 143 on SIGTERM; `error.kind` says whether a failure
+is `transient` (a source, connection or timeout error worth retrying),
+`permanent` (a source refused the request) or `unknown`. Scheduler ids come
 from `job(job_id=..., job_run_id=...)`, `KUMO_JOB_ID`/`KUMO_JOB_RUN_ID`, or the
 detected platform, and are recorded in every manifest and tracking run the job
 writes. Logs go to stderr.

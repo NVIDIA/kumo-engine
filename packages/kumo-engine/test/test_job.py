@@ -60,25 +60,41 @@ def _wrapped(cause):
         return error
 
 
-@pytest.mark.parametrize('error, code', [
-    (_wrapped(TransientSourceError('busy')), 20),
-    (ConnectionResetError(), 20),
-    (TimeoutError(), 20),
-    (SourceNotFoundError('missing'), 10),
-    (OSError(28, 'No space left on device'), 30),
-    (ValueError('x' * 2000), 30),
+@pytest.mark.parametrize('error, kind', [
+    (_wrapped(TransientSourceError('busy')), 'transient'),
+    (ConnectionResetError(), 'transient'),
+    (SourceNotFoundError('missing'), 'permanent'),
+    (ValueError('x' * 2000), 'unknown'),
 ])
-def test_failure_exits_with_a_retry_aware_code(capsys, error, code):
+def test_failure_exits_non_zero_with_a_retry_hint(capsys, error, kind):
     with pytest.raises(SystemExit) as exited:
-        with kumo.job() as run:
+        with kumo.job(job_id='job-7') as run:
             run.record(snapshot_id='s-1')
             raise error
-    assert exited.value.code == code
+    assert exited.value.code == 1
     summary = _summary(capsys)
-    assert (summary['status'], summary['exit_code']) == ('failed', code)
+    assert (summary['status'], summary['exit_code']) == ('failed', 1)
     assert summary['snapshot_id'] == 's-1'
+    assert summary['scheduler']['job_id'] == 'job-7'
     assert summary['error']['type'] == type(error).__name__
+    assert summary['error']['kind'] == kind
     assert len(summary['error']['message']) <= 500
+    assert 'KUMO_JOB_ID' not in os.environ
+
+
+@pytest.mark.parametrize('error, code', [
+    (KeyboardInterrupt(), 130),
+    (SystemExit(3), 3),
+    (SystemExit(0), 0),
+])
+def test_interrupt_and_exit_still_print_the_summary(capsys, error, code):
+    with pytest.raises(type(error)):
+        with kumo.job(job_id='job-7'):
+            raise error
+    summary = _summary(capsys)
+    assert summary['exit_code'] == code
+    assert summary['status'] == ('succeeded' if code == 0 else 'failed')
+    assert 'KUMO_JOB_ID' not in os.environ
 
 
 def test_sigterm_prints_the_summary_and_exits_143(capsys):

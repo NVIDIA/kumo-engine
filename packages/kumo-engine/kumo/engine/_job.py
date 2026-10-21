@@ -13,12 +13,6 @@ import traceback
 import warnings
 from typing import Any, Dict, Iterator, Mapping, NoReturn, Optional
 
-EXIT_OK = 0
-EXIT_REFUSED = 10
-EXIT_TRANSIENT = 20
-EXIT_FAILED = 30
-EXIT_TERMINATED = 143
-
 _MAX_MESSAGE = 500
 
 
@@ -50,10 +44,7 @@ class JobRun:
         self.summary['outputs'].update(outputs or {})
 
 
-def exit_code(error: BaseException) -> int:
-    r"""The exit code for a failure: 10 a source refused the request (do not
-    retry), 20 a transient source, connection or timeout error (retry), 30
-    anything else, 143 SIGTERM."""
+def _error_kind(error: BaseException) -> str:
     from kumo_core.sources.errors import (
         PermanentSourceError,
         TransientSourceError,
@@ -61,15 +52,26 @@ def exit_code(error: BaseException) -> int:
 
     cause: Optional[BaseException] = error
     while cause is not None:
-        if isinstance(cause, Terminated):
-            return EXIT_TERMINATED
         if isinstance(cause, PermanentSourceError):
-            return EXIT_REFUSED
+            return 'permanent'
         if isinstance(cause,
                       (TransientSourceError, ConnectionError, TimeoutError)):
-            return EXIT_TRANSIENT
+            return 'transient'
         cause = cause.__cause__
-    return EXIT_FAILED
+    return 'unknown'
+
+
+def _exit_code(error: Optional[BaseException]) -> int:
+    if error is None:
+        return 0
+    if isinstance(error, SystemExit):
+        code = error.code
+        return code if isinstance(code, int) else 0 if code is None else 1
+    if isinstance(error, KeyboardInterrupt):
+        return 130
+    if isinstance(error, Terminated):
+        return 143
+    return 1
 
 
 @contextlib.contextmanager
@@ -79,10 +81,11 @@ def job(*, job_id: Optional[str] = None,
 
     ``job_id``/``job_run_id`` (else ``KUMO_JOB_ID``/``KUMO_JOB_RUN_ID`` or the
     detected scheduler) are recorded in the manifests and tracking tags the
-    body writes. Logs go to stderr. On exit one JSON line goes to stdout:
-    ``status``, ``exit_code``, the scheduler context, what the body passed to
-    :meth:`JobRun.record`, warnings raised, and ``error`` on failure. A failed
-    body exits the process with :func:`exit_code`; SIGTERM exits with 143.
+    body writes. Logs go to stderr. On exit, however the body ends, one JSON
+    line goes to stdout: ``status``, ``exit_code``, the scheduler context, what
+    the body passed to :meth:`JobRun.record`, warnings raised, and ``error``
+    (``type``, ``kind``: ``transient``/``permanent``/``unknown``, ``message``)
+    on failure. A failed body exits the process with 1; SIGTERM with 143.
 
     Example::
 
@@ -90,8 +93,6 @@ def job(*, job_id: Optional[str] = None,
             result = Trainer(plan).fit(table, snapshot=snapshot)
             run.record(bundle_id=result.bundle_id, snapshot_id=snapshot.id)
     """
-    from kumo.engine._provenance import scheduler_context
-
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     ids = {'KUMO_JOB_ID': job_id, 'KUMO_JOB_RUN_ID': job_run_id}
     previous = {name: os.environ.get(name) for name in ids}
@@ -110,32 +111,42 @@ def job(*, job_id: Optional[str] = None,
     try:
         with _sigterm_raises():
             yield run
-    except (Exception, Terminated) as raised:
+    except BaseException as raised:
         error = raised
+        if isinstance(raised, (Exception, Terminated)):
+            traceback.print_exception(raised, file=sys.stderr)
+            raise SystemExit(_exit_code(raised)) from raised
+        raise
     finally:
         warnings.showwarning = shown
-    code = EXIT_OK if error is None else exit_code(error)
+        try:
+            _print_summary(run, error)
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+
+def _print_summary(run: JobRun, error: Optional[BaseException]) -> None:
+    from kumo.engine._provenance import scheduler_context
+
+    code = _exit_code(error)
     line = {
         'event': 'kumo.engine.job',
-        'status': 'succeeded' if error is None else 'failed',
+        'status': 'succeeded' if code == 0 else 'failed',
         'exit_code': code,
         'scheduler': scheduler_context(),
         **run.summary,
     }
-    for name, value in previous.items():
-        if value is None:
-            os.environ.pop(name, None)
-        else:
-            os.environ[name] = value
-    if error is not None:
-        traceback.print_exception(error, file=sys.stderr)
+    if code != 0 and error is not None:
         line['error'] = {
             'type': type(error).__name__,
-            'message': str(error)[:_MAX_MESSAGE]
+            'kind': _error_kind(error),
+            'message': str(error)[:_MAX_MESSAGE],
         }
     print(json.dumps(line, default=str), flush=True)
-    if error is not None:
-        raise SystemExit(code) from error
 
 
 def _terminate(signum: int, frame: Any) -> NoReturn:
