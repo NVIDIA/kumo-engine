@@ -241,7 +241,50 @@ def mlflow_adapter(tmp_path, monkeypatch):
         mlflow.set_tracking_uri(previous)
 
 
-@pytest.fixture(params=['mlflow'])
+@pytest.fixture
+def snowflake_adapter(monkeypatch):
+    import _snowflake_experiment_fake
+
+    fake = _snowflake_experiment_fake.install(monkeypatch)
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+
+    def observe():
+        observed = {}
+        for run in fake._instance.runs.values():
+            names: Dict[Optional[str], Dict[str, Dict[str, Any]]] = {}
+
+            def bucket(key):
+                prefix, _, name = key.rpartition('/')
+                return names.setdefault(prefix or None, {
+                    'params': {}, 'tags': {}, 'metrics': {}, 'steps': {}
+                }), name
+
+            for key, value in run['params'].items():
+                runs, name = bucket(key)
+                # Snowflake has no tags: they are params of the same name.
+                if name.startswith('kumo.') or name in USER_TAGS:
+                    runs['tags'][name] = value
+                else:
+                    runs['params'][name] = value
+            for key, value, step in run['metrics']:
+                runs, name = bucket(key)
+                runs['metrics'][name] = value
+                runs['steps'][name] = (*runs['steps'].get(name, ()),
+                                       (step, value))
+            for prefix, runs in names.items():
+                observed[runs['tags']['kumo.run_id']] = Observed(
+                    name=prefix,
+                    artifacts=run['artifacts'] if prefix is None else {},
+                    **runs)
+        return observed
+
+    return Adapter(
+        make=lambda: SnowflakeTracking(_snowflake_experiment_fake.FakeSession(),
+                                       experiment_name='ents', tags=USER_TAGS),
+        observe=observe, step_metrics=True, artifacts=True)
+
+
+@pytest.fixture(params=['mlflow', 'snowflake'])
 def adapter(request) -> Adapter:
     return request.getfixturevalue(f'{request.param}_adapter')
 

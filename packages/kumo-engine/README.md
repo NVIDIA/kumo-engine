@@ -352,8 +352,8 @@ they do not derive them from entity, target, and timestamp columns.
 ## Experiment tracking
 
 `fit(tracking=...)` records a fit in an experiment tracker: one run per fit,
-one run per hyperparameter-search trial attempt. It is opt-in; tracking errors
-are logged as warnings and never fail the fit. Only global rank 0 tracks.
+with each hyperparameter-search trial attempt as a child run (MLflow) or
+inside the fit run (Snowflake). It is opt-in; tracking errors are logged as warnings and never fail the fit. Only global rank 0 tracks.
 Tracker calls run on a background thread, so a slow or unreachable tracking
 server does not hold up training: at the end of the fit, `fit` waits at most
 30 s for tracking to finish (the rest continues in the background). During
@@ -379,6 +379,26 @@ tables at the snapshot's Delta version, so Unity Catalog links each table to a
 model registered from the run in a Databricks notebook or job; file and
 object-store sources by URI. Other warehouse tables and Custom SQL sources are
 not logged as inputs; they stay in the bundle's `provenance.json`.
+
+Snowflake records the fit in Snowflake Experiment Tracking (Snowsight: AI & ML
+» Experiments), using a Snowpark session:
+
+```python
+from kumo.engine.integrations.snowflake import SnowflakeTracking  # kumo-engine[snowflake]
+
+result = trainer.fit(training_table, snapshot=snapshot,
+                     tracking=SnowflakeTracking(session, experiment_name="users_spend"))
+```
+
+Snowflake has no child runs or tags, so trial attempts are logged in the fit
+run as `trial-1-attempt-1/<name>` params and metrics, and tags are params of
+the same name. `native_model_lineage=True` links a model the fit publishes
+through Snowflake lineage. Names beyond Snowflake's 200 metrics and 1000 params
+per run are counted in `kumo.dropped_metrics` / `kumo.dropped_params`. If a
+Snowflake run is already active in the process, the fit is not tracked there;
+an existing run is never resumed (a taken `run_name` gets a suffix). Snowflake
+Experiment Tracking has no dataset inputs, so source tables are not recorded
+there. The Snowpark session's parameters are left as they are.
 
 Other systems plug in through the `kumo.engine.tracking.Tracking` protocol,
 which receives ready-built `RunRecord`s so every tracker records the same
