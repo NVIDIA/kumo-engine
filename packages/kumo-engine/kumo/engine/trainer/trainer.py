@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Mapping, Optional, cast
+from typing import Any, Dict, Mapping, Optional, cast
 
 import pandas as pd
 from kumo_core.embedding_models import EmbeddingModelStore
@@ -66,11 +66,12 @@ class TrainingResult:
     `published_model` records the destination's assigned name, version and URI
     when `fit()` exports the bundle. It is `None` without an export.
 
-    `holdout_path` is the holdout Parquet file written by `fit()`, or `None`
-    when the task produced none (also for results of `Trainer.load`). It is
-    not part of the published model bundle. The file is capped at 1 GiB in
-    memory; `holdout_truncated` is true when rows were dropped to fit, and
-    `None` when the size record could not be read.
+    `holdout_path` is the published model's holdout Parquet file written by
+    `fit()`, or `None` when it has none (no holdout task, a model refit on the
+    full data, or results of `Trainer.load`). It is not part of the published
+    model bundle. The file is capped at 1 GiB in memory; `holdout_truncated` is
+    true when rows were dropped to fit, and `None` when the size record could
+    not be read.
     """
 
     metrics: Dict[str, float]
@@ -174,6 +175,17 @@ def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
             'truncation is unknown.', meta)
         truncated = None
     return path, truncated
+
+
+def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
+    from kumo_core.training.config import FitMode
+
+    published = trainer.published_fit_mode()
+    if published is FitMode.refit_full:
+        logger.info('The published model is refit on the full data, including '
+                    'the test split, so it has no holdout predictions.')
+        return None, False
+    return _find_holdout(trainer.get_log_dir(fit_mode=published))
 
 
 def _collect_garbage(stage: str) -> None:
@@ -445,8 +457,8 @@ class Trainer:
                     'failed for run %s. The trained model remains available.',
                     run_id)
 
-        holdout_path, holdout_truncated = _find_holdout(
-            result.best_trainer.log_dir)
+        holdout_path, holdout_truncated = _published_holdout(
+            result.best_trainer)
         training_result = TrainingResult(
             metrics=dict(result.metrics),
             artifact_paths=dict(result.artifact_paths),

@@ -2,6 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import re
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -65,13 +67,16 @@ def graph(tmp_path_factory):
 QUERY = 'PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH ents.ID'
 
 
-def _fit(graph, query):
+def _fit(graph, query, refit_trainval=True, refit_full=False, explain=False):
     graph, snapshot = graph
     pquery = kumo.PredictiveQuery(graph=graph, query=query)
     plan = ModelPlan()
-    plan.training_job.disable_explain = True
+    plan.training_job.disable_explain = not explain
+    plan.training_job.refit_trainval = refit_trainval
+    plan.training_job.refit_full = refit_full
     plan.optimization.max_epochs = 1
-    plan.optimization.max_steps_per_epoch = 2
+    # refit_full splits each epoch's batches across 3 stages.
+    plan.optimization.max_steps_per_epoch = 3 if refit_full else 2
     trainer = kumo.Trainer(model_plan=plan)
     return trainer.fit(pquery.generate_training_table(snapshot),
                        snapshot=snapshot)
@@ -88,6 +93,23 @@ def test_holdout_df_after_fit(graph):
     assert len(frame) > 0
     assert {'ENTITY', 'TARGET_PRED'} <= set(frame.columns)
     assert not (result.bundle_dir / 'test_df.parquet').exists()
+
+
+@pytest.mark.parametrize('refit_trainval,refit_full,explain,suffix', [
+    (False, False, False, ''),
+    (True, False, True, '_refit_trainval'),
+    (True, True, False, None),
+])
+def test_holdout_is_the_published_models(graph, refit_trainval, refit_full,
+                                         explain, suffix):
+    result = _fit(graph, QUERY, refit_trainval, refit_full, explain)
+
+    if suffix is None:
+        assert result.holdout_path is None
+    else:
+        assert re.fullmatch(rf'version_\d+{suffix}',
+                            result.holdout_path.parent.name)
+        assert len(result.holdout_df()) > 0
 
 
 def test_no_holdout(graph):
