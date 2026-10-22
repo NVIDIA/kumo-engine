@@ -20,11 +20,10 @@ from functools import lru_cache
 
 import numpy as np
 import pyarrow as pa
-from scipy.special import ndtr, ndtri
-
 from scalebench import core
 from scalebench import profile as P
 from scalebench.base import EVENT_STRIDE, GraphGen, correlated, owners
+from scipy.special import ndtr, ndtri
 
 CUSTOMER_EDGES = {"purchases": "purchases.customer_id->customers",
                   "merchant_views": "merchant_views.customer_id->customers",

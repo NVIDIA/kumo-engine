@@ -18,15 +18,14 @@ import io
 import json
 import math
 import multiprocessing as mp
-from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-
 from scalebench import profile as P
 from scalebench import schema, storage
 from scalebench.commerce import Commerce

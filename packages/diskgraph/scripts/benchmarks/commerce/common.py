@@ -10,15 +10,6 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-ROOT = Path(__file__).resolve().parent
-TABLES = ["customers", "merchants", "purchases", "merchant_views", "searches", "favorites", "reviews"]
-EVENTS = ["purchases", "merchant_views", "searches", "favorites", "reviews"]
-TIME = {"customers": "signup_time", "merchants": "created_time", "purchases": "purchase_time",
-        "merchant_views": "view_time", "searches": "search_time", "favorites": "created_time",
-        "reviews": "review_time"}
-PK = {"customers": "customer_id", "merchants": "merchant_id"}
-FKS = {e: (["customer_id", "merchant_id"] if e != "searches" else ["customer_id"]) for e in EVENTS}
-FK_DST = {"customer_id": "customers", "merchant_id": "merchants"}
 # Columns that identify a raw row.
 KEY = {"customers": ["customer_id"], "merchants": ["merchant_id"], "purchases": ["purchase_id"],
        "merchant_views": ["customer_id", "merchant_id", "view_time", "source"],
@@ -30,16 +21,6 @@ PLAN6 = [24, 8, 6, 8, 6, 8]
 
 def plan(hops):
     return PLAN6[:hops]
-
-
-def relations():
-    """(src_type, dst_type, kind, column): every FK in both directions, as DiskGraph builds them."""
-    out = []
-    for e in EVENTS:
-        for col in FKS[e]:
-            out.append((FK_DST[col], e, "rev", col))
-            out.append((e, FK_DST[col], "fk", col))
-    return out
 
 
 def load_seeds(path, n, offset=0):
