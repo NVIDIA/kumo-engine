@@ -15,8 +15,6 @@ and <out>/eval_ids.json. Rules:
 """
 import argparse
 import json
-import os
-import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -26,7 +24,6 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.fs as pafs
 import pyarrow.parquet as pq
-
 
 
 class H:

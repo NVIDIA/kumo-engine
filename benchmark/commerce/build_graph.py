@@ -22,6 +22,7 @@ DELIM = "|"
 COMMERCE_QUERY = ("PREDICT LIST_DISTINCT(purchases.merchant_id, 0, 7, days) RANK TOP 10 "
                   "FOR EACH customers.customer_id")
 
+
 def table(files, name, pk=None, time_col=None, stypes=None, multicat=()):
     t = Table.from_source_table(files[name], primary_key=pk, time_column=time_col)
     for col, stype in (stypes or {}).items():

@@ -25,28 +25,24 @@ COMMERCE = {
         ("region", STR, False, "categorical"), ("primary_category", STR, False, "categorical"),
         ("tags", STR, True, "multicategorical"), ("price_tier", STR, False, "categorical"),
         ("is_partner", BOOL, False, "categorical"), ("avg_rating", F64, True, "numerical")]),
-    "purchases": _t("purchase_id", "purchase_time",
-                    {"customer_id": "customers", "merchant_id": "merchants"}, [
+    "purchases": _t("purchase_id", "purchase_time", {"customer_id": "customers", "merchant_id": "merchants"}, [
         ("purchase_id", I64, False, "ID"), ("purchase_time", TS, False, "timestamp"),
         ("customer_id", I64, False, "ID"), ("merchant_id", I64, False, "ID"),
         ("channel", STR, False, "categorical"), ("fulfillment", STR, False, "categorical"),
         ("item_count", I64, False, "numerical"), ("subtotal", F64, False, "numerical"),
         ("fees", F64, False, "numerical"), ("tip", F64, True, "numerical"),
         ("is_first_purchase", BOOL, False, "categorical"), ("rating", I64, True, "numerical")]),
-    "merchant_views": _t(None, "view_time",
-                         {"customer_id": "customers", "merchant_id": "merchants"}, [
+    "merchant_views": _t(None, "view_time", {"customer_id": "customers", "merchant_id": "merchants"}, [
         ("view_time", TS, False, "timestamp"), ("customer_id", I64, False, "ID"),
         ("merchant_id", I64, False, "ID"), ("source", STR, False, "categorical")]),
     "searches": _t(None, "search_time", {"customer_id": "customers"}, [
         ("search_time", TS, False, "timestamp"), ("customer_id", I64, False, "ID"),
         ("query_term", STR, False, "categorical"), ("category", STR, True, "categorical"),
         ("result_page", I64, False, "numerical")]),
-    "favorites": _t(None, "created_time",
-                    {"customer_id": "customers", "merchant_id": "merchants"}, [
+    "favorites": _t(None, "created_time", {"customer_id": "customers", "merchant_id": "merchants"}, [
         ("created_time", TS, False, "timestamp"), ("customer_id", I64, False, "ID"),
         ("merchant_id", I64, False, "ID")]),
-    "reviews": _t(None, "review_time",
-                  {"customer_id": "customers", "merchant_id": "merchants"}, [
+    "reviews": _t(None, "review_time", {"customer_id": "customers", "merchant_id": "merchants"}, [
         ("review_time", TS, False, "timestamp"), ("customer_id", I64, False, "ID"),
         ("merchant_id", I64, False, "ID"), ("stars", I64, False, "numerical")]),
 }
