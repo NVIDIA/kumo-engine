@@ -1,0 +1,143 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import json
+import re
+import shutil
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
+from kumo_core.artifacts import add_bundle_file
+from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
+
+import kumo.engine as kumo
+from kumo.engine._manifest import (
+    BundleProvenance,
+    BundleTrainingTable,
+    SourceTableEntry,
+    TrainingTableParents,
+    read_manifest,
+    write_manifest,
+)
+from kumo.engine.trainer._spec import MANIFEST_FILE
+from kumo.engine.trainer.trainer import TrainingResult
+
+
+def test_fit_records_provenance(fitted):
+    trainer, _, snapshot = fitted
+    result = trainer._training_result
+    provenance = result.provenance
+    parents = provenance.parents
+    assert parents.training_table and parents.warm_start is None
+    assert parents.extra == {}
+    assert provenance.training_table == BundleTrainingTable(
+        source='pquery', snapshot=snapshot.id)
+    assert provenance.source_tables == snapshot.manifest.parents.source_tables
+    assert provenance.fit_mode == 'refit_trainval'
+    assert re.fullmatch('[0-9a-f]{64}', trainer.bundle_id)
+    assert trainer.bundle_id == result.bundle_id == provenance.id
+    assert kumo.Trainer.load(result.bundle_dir).bundle_id == provenance.id
+
+
+def test_provenance_round_trips_unchanged(fitted, tmp_path):
+    trainer, _, _ = fitted
+    newer = json.loads(
+        (trainer._training_result.bundle_dir / 'provenance.json').read_text())
+    newer['future'] = True
+    newer['fit']['gpu_seconds'] = 1.5
+    newer['training_table'].update(connector='S3', location='s3://b/tt',
+                                   version='1', version_kind='exact')
+    source = tmp_path / 'newer.json'
+    source.write_text(json.dumps(newer, indent=2, sort_keys=True) + '\n')
+
+    provenance = read_manifest(source, BundleProvenance)
+    write_manifest(tmp_path / 'out.json', provenance)
+
+    assert (tmp_path / 'out.json').read_bytes() == source.read_bytes()
+    assert provenance.extra == {'future': True}
+    assert provenance.fit.extra == {'gpu_seconds': 1.5}
+    assert provenance.training_table.source_table.location == 's3://b/tt'
+
+
+def test_bundle_without_provenance_loads_and_predicts_identically(
+        fitted, tmp_path):
+    trainer, prediction_table, snapshot = fitted
+    result = trainer._training_result
+    loaded = kumo.Trainer.load(result.bundle_dir)
+    assert (loaded.bundle_id, loaded.provenance) == (result.bundle_id,
+                                                     result.provenance)
+
+    old = tmp_path / 'old'
+    shutil.copytree(result.bundle_dir, old)
+    manifest = json.loads((old / MANIFEST_FILE).read_text())
+    manifest['artifacts'] = [
+        entry for entry in manifest['artifacts']
+        if entry['role'] != 'provenance'
+    ]
+    (old / MANIFEST_FILE).write_text(json.dumps(manifest))
+    (old / 'provenance.json').unlink()
+    restored = kumo.Trainer.load(old)
+    assert restored.bundle_id == result.bundle_id
+    assert restored.provenance is None
+
+    def predict(model):
+        return model.predict(
+            prediction_table, snapshot=snapshot,
+            binary_classification_threshold=.5).frame.sort_values(
+                'ENTITY').reset_index(drop=True)
+
+    pd.testing.assert_frame_equal(predict(restored), predict(trainer))
+
+
+def _finish_stub_fit(bundle, trainer, manifest=None, source_mode=None):
+    (bundle / 'model').mkdir(parents=True)
+    (bundle / 'model' / 'config.json').write_text('{}')
+    (bundle / MANIFEST_FILE).write_text(json.dumps({'artifacts': []}))
+    add_bundle_file(bundle, 'trainer_config', 'model/config.json')
+    table = SimpleNamespace(tt_id='tt-1', manifest=manifest,
+                            source_mode=source_mode)
+    return trainer._finish_fit(
+        TrainingResult({}, {}, bundle), predictive_query='PREDICT x',
+        snapshot_id='snap', export_config=None,
+        training_table_generation=TrainingTableGenerationPlan(),
+        provenance=dict(train_table=table, warm_start_bundle_id=None,
+                        started_at=datetime.now(timezone.utc), fit_mode=None))
+
+
+def test_provenance_records_custom_or_missing_table_source(tmp_path):
+    source_table = SourceTableEntry(connector='S3',
+                                    location='s3://bucket/exports/tt',
+                                    version='17', version_kind='timestamp')
+    manifest = SimpleNamespace(parents=TrainingTableParents(
+        snapshot='snap', source_table=source_table))
+    custom = _finish_stub_fit(tmp_path / 'custom', kumo.Trainer(ModelPlan()),
+                              manifest, 'custom_tt')
+    assert custom.provenance.training_table == BundleTrainingTable(
+        source='custom_tt', snapshot='snap', source_table=source_table)
+    assert json.loads((tmp_path / 'custom' /
+                       'provenance.json').read_text())['training_table'] == {
+                           'source': 'custom_tt',
+                           'snapshot': 'snap',
+                           **source_table.to_dict()
+                       }
+    older = _finish_stub_fit(tmp_path / 'older', kumo.Trainer(ModelPlan()))
+    assert older.provenance.training_table == BundleTrainingTable(
+        source=None, snapshot=None)
+
+
+def test_provenance_failure_warns_and_still_publishes(tmp_path, monkeypatch):
+    from kumo.engine.trainer import _provenance
+
+    def fail(*args):
+        raise RuntimeError('unreadable manifest')
+
+    monkeypatch.setattr(_provenance, '_training_table', fail)
+    trainer = kumo.Trainer(ModelPlan())
+    with pytest.warns(UserWarning, match='unreadable manifest'):
+        result = _finish_stub_fit(tmp_path / 'bundle', trainer)
+    assert result.provenance is None
+    assert re.fullmatch('[0-9a-f]{64}', result.bundle_id)
+    assert trainer._training_result is result

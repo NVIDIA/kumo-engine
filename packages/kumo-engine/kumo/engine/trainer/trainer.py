@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import time
+import warnings
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +42,7 @@ from kumo.engine._embeddings import (
     require_embedding_models,
     require_trained_embedding_models,
 )
+from kumo.engine._manifest import BundleProvenance
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine.connector.base import Connector
 from kumo.engine.graph import GraphSnapshot
@@ -80,6 +82,14 @@ class TrainingResult:
     published_model: Optional[PublishedModel] = None
     holdout_path: Optional[Path] = None
     holdout_truncated: Optional[bool] = False
+    bundle_id: Optional[str] = None
+
+    @property
+    def provenance(self) -> Optional[BundleProvenance]:
+        """The bundle's recorded fit provenance; None for older bundles."""
+        from kumo.engine.trainer._provenance import read_provenance
+
+        return read_provenance(self.bundle_dir)
 
     def holdout_df(self) -> pd.DataFrame:
         r"""Read the holdout predictions as a pandas DataFrame.
@@ -255,6 +265,17 @@ class Trainer:
     def scratch_dir(self) -> Path:
         return trainer_scratch_dir(self._id)
 
+    @property
+    def bundle_id(self) -> Optional[str]:
+        """Content id of the fitted or loaded model bundle."""
+        return getattr(self._training_result, 'bundle_id', None)
+
+    @property
+    def provenance(self) -> Optional[BundleProvenance]:
+        """Fit provenance of the fitted or loaded bundle, if recorded."""
+        result = self._training_result
+        return None if result is None else result.provenance
+
     def fit(
         self,
         train_table: TrainingTable,
@@ -315,18 +336,21 @@ class Trainer:
             raise NotImplementedError(
                 f'{type(export_config.connector).__name__} cannot publish '
                 f'models')
+        started_at = datetime.now(timezone.utc)
         run_id = f'{self._id}-fit-{new_run_id()}'
         run_dir = self.scratch_dir / 'runs' / run_id
 
         model_plan = _to_core_model_plan(self._model_plan)
         warm_start_artifacts = None
+        warm_start_bundle_id = None
         effective_plan = self._model_plan
         if warm_start is not None:
             if warm_start._training_result is None:
                 raise ValueError(
                     "warm_start requires a fitted or loaded Trainer")
-            warm_start_artifacts = read_bundle_artifact_paths(
-                warm_start._training_result.bundle_dir)
+            warm_start_artifacts, warm_start_bundle_id = (
+                read_bundle_artifact_paths(
+                    warm_start._training_result.bundle_dir))
             inherit_warm_start_model_plan(
                 model_plan,
                 load_json(warm_start_artifacts['resolved_model_plan'],
@@ -459,6 +483,8 @@ class Trainer:
 
         holdout_path, holdout_truncated = _published_holdout(
             result.best_trainer)
+        fit_mode = result.best_trainer.published_fit_mode()
+        fit_mode = None if fit_mode is None else fit_mode.value
         training_result = TrainingResult(
             metrics=dict(result.metrics),
             artifact_paths=dict(result.artifact_paths),
@@ -475,6 +501,10 @@ class Trainer:
             training_table_generation=train_table.generation_plan,
             export_config=export_config,
             model_plan=effective_plan,
+            provenance=dict(train_table=train_table,
+                            warm_start_bundle_id=warm_start_bundle_id,
+                            started_at=started_at, fit_mode=fit_mode,
+                            snapshot=snapshot),
         )
 
     def _finish_fit(
@@ -486,8 +516,13 @@ class Trainer:
         training_table_generation: TrainingTableGenerationPlan,
         export_config: Optional[ModelOutputConfig],
         model_plan: Optional[ModelPlan] = None,
+        provenance: Optional[Mapping[str, Any]] = None,
     ) -> TrainingResult:
         """Commit durable fit outputs before making this trainer usable."""
+        from kumo_core.artifacts import bundle_id_from_manifest
+
+        from kumo.engine.trainer._provenance import write_provenance
+
         effective_plan = model_plan if model_plan is not None else self._model_plan
         write_training_spec(
             training_result.bundle_dir,
@@ -496,6 +531,22 @@ class Trainer:
             snapshot_id=snapshot_id,
             training_table_generation=training_table_generation,
         )
+        try:
+            training_result = replace(
+                training_result,
+                bundle_id=bundle_id_from_manifest(training_result.bundle_dir))
+        except Exception as error:
+            warnings.warn(f"Could not compute the bundle id: {error}",
+                          UserWarning, stacklevel=3)
+        if provenance is not None:
+            try:
+                write_provenance(training_result.bundle_dir,
+                                 bundle_id=training_result.bundle_id,
+                                 **provenance)
+            except Exception as error:
+                warnings.warn(
+                    f"Publishing the model bundle without provenance.json: "
+                    f"{error}", UserWarning, stacklevel=3)
         if export_config is not None:
             spec = read_training_spec(training_result.bundle_dir)
             published = export_config.connector.sink_backend.publish_model(
@@ -776,7 +827,7 @@ class Trainer:
         embedding_models: Optional[EmbeddingModelStore] = None,
     ) -> Self:
         bundle_dir = bundle_dir.resolve()
-        paths = read_bundle_artifact_paths(bundle_dir)
+        paths, bundle_id = read_bundle_artifact_paths(bundle_dir)
         spec = read_training_spec(bundle_dir)
         from kumo_core.io.json import from_json_dict
         plan = from_json_dict(spec.model_plan, ModelPlan)
@@ -788,5 +839,6 @@ class Trainer:
         trainer._training_query = spec.predictive_query
         trainer._training_table_generation_plan = from_json_dict(
             spec.training_table_generation, TrainingTableGenerationPlan)
-        trainer._training_result = TrainingResult(metrics, paths, bundle_dir)
+        trainer._training_result = TrainingResult(metrics, paths, bundle_dir,
+                                                  bundle_id=bundle_id)
         return trainer

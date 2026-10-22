@@ -13,7 +13,14 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, Mapping, Protocol, runtime_checkable
+from typing import (
+    Any,
+    ClassVar,
+    Iterable,
+    Mapping,
+    Protocol,
+    runtime_checkable,
+)
 
 from .io.filesystem import atomic_write_bytes, fsync_directory, local_path
 from .io.json import load_json, save_json
@@ -244,14 +251,16 @@ class VitalArtifactPublicationPolicy:
         return digest.hexdigest()
 
 
+PROVENANCE_FILE = 'provenance.json'
+
+
 def verify_model_bundle(bundle: Path) -> str:
     """Verify fetched artifacts before parsing or staging a model bundle.
 
-    Preserves the local SDK import verifier's error and content-identity
-    contract. Paths must stay inside the bundle after symlink resolution;
-    declared sizes and SHA-256 digests must match. Older manifests may omit
-    sizes or leave training-spec.json unlisted; its digest still participates
-    in the returned content identity.
+    Returns the bundle id, a SHA-256 over every verified file except
+    ``provenance.json``. Paths must stay inside the bundle after symlink
+    resolution; declared sizes and SHA-256 digests must match. Older
+    manifests may omit sizes or leave training-spec.json unlisted.
     """
     from .sources import layout
     from .sources.errors import PermanentSourceError
@@ -269,7 +278,7 @@ def verify_model_bundle(bundle: Path) -> str:
 
     artifacts = manifest.get('artifacts')
     problems: list[str] = []
-    verified: list[tuple[str, str, str]] = []
+    verified: list[tuple[str, str]] = []
     seen = set()
     claimed = set()
     if not artifacts:
@@ -321,7 +330,7 @@ def verify_model_bundle(bundle: Path) -> str:
         if VitalArtifactPublicationPolicy._sha256(path) != expected:
             problems.append(f'{relative} does not match its digest')
             continue
-        verified.append((role, safe, expected))
+        verified.append((safe, expected))
     if problems:
         raise ValueError(
             f"The model bundle at {bundle} did not survive the transfer: "
@@ -331,11 +340,46 @@ def verify_model_bundle(bundle: Path) -> str:
     if not spec_path.resolve().is_relative_to(bundle):
         raise ValueError('Training specification is not below the bundle')
     if 'training-spec.json' not in seen and spec_path.is_file():
-        verified.append(('training_spec', 'training-spec.json',
+        verified.append(('training-spec.json',
                          VitalArtifactPublicationPolicy._sha256(spec_path)))
-    payload = json.dumps(sorted(verified), sort_keys=True,
-                         separators=(',', ':'), default=str)
-    return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]
+    return _bundle_id(verified)
+
+
+def bundle_id_from_manifest(bundle: Path) -> str:
+    """The bundle id from the digests a freshly published bundle lists."""
+    manifest_path = Path(bundle) / VitalArtifactPublicationPolicy.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    return _bundle_id((str(entry['relative_path']), str(entry['sha256']))
+                      for entry in manifest['artifacts'])
+
+
+def _bundle_id(pairs: Iterable[tuple[str, str]]) -> str:
+    payload = json.dumps(
+        sorted(pair for pair in pairs if pair[0] != PROVENANCE_FILE),
+        separators=(',', ':'))
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def add_bundle_file(bundle_dir: Path, role: str, relative_path: str) -> None:
+    """List one file already written in a bundle in its publication manifest."""
+    bundle_dir = Path(bundle_dir)
+    path = bundle_dir / relative_path
+    manifest_path = bundle_dir / VitalArtifactPublicationPolicy.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    manifest['artifacts'] = [
+        entry for entry in manifest.get('artifacts') or []
+        if entry.get('relative_path') != relative_path
+        and entry.get('role') != role
+    ] + [
+        PublishedArtifact(
+            role=role,
+            relative_path=relative_path,
+            size_bytes=path.stat().st_size,
+            sha256=VitalArtifactPublicationPolicy._sha256(path),
+        ).to_dict()
+    ]
+    payload = json.dumps(manifest, indent=2, sort_keys=True) + '\n'
+    atomic_write_bytes(manifest_path, payload.encode('utf-8'))
 
 
 @runtime_checkable
