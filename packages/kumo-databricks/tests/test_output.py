@@ -15,6 +15,10 @@ def test_an_output_names_its_schema_and_its_table():
                                 "features") == ("features", "churn")
 
 
+def test_a_bare_table_name_lands_in_the_connector_schema():
+    assert output.within_schema("churn", "features") == ("features", "churn")
+
+
 def test_unity_catalog_resolves_a_schema_without_regard_to_case():
     assert output.within_schema("FEATURES__kumo__churn",
                                 "features") == ("FEATURES", "churn")
@@ -22,7 +26,7 @@ def test_unity_catalog_resolves_a_schema_without_regard_to_case():
 
 @pytest.mark.parametrize(
     "name",
-    ["churn", "a__kumo__b__kumo__c", "__kumo__churn", "features__kumo__"])
+    ["a__kumo__b__kumo__c", "__kumo__churn", "features__kumo__", ""])
 def test_a_name_that_is_not_one_schema_and_one_table_is_refused(name):
     with pytest.raises(ValueError, match="exactly one schema"):
         output.within_schema(name, "features")
