@@ -371,6 +371,7 @@ MLflow runs go to `MLFLOW_TRACKING_URI`: on Databricks this is automatic; for
 SageMaker managed MLflow set it to the tracking server ARN with the
 `sagemaker-mlflow` plugin installed. With nothing configured MLflow writes a
 local store in the working directory. Per-epoch metrics use step = epoch.
+After the fit, `tracking.run_id` is the fit run's MLflow run id.
 
 The fit's source tables (from the snapshot manifest, plus a custom training
 table's source) are logged as MLflow run inputs: Databricks tables as Delta

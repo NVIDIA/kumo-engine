@@ -86,9 +86,9 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     mlflow.pytorch.autolog()
     try:
         with mlflow.start_run() as outer:
-            result = kumo.Trainer(plan).fit(
-                table, snapshot=snapshot,
-                tracking=MlflowTracking(experiment_name='ents'))
+            tracking = MlflowTracking(experiment_name='ents')
+            result = kumo.Trainer(plan).fit(table, snapshot=snapshot,
+                                            tracking=tracking)
             assert mlflow.active_run().info.run_id == outer.info.run_id
         assert autologging_utils._AUTOLOGGING_GLOBALLY_DISABLED is False
     finally:
@@ -99,6 +99,7 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
         run for run in runs
         if run.data.tags.get('mlflow.parentRunId') == outer.info.run_id
     ]
+    assert tracking.run_id == parent.info.run_id
     children = sorted(
         (run for run in runs
          if run.data.tags.get('mlflow.parentRunId') == parent.info.run_id),

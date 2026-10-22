@@ -48,6 +48,8 @@ class MlflowTracking:
         log_system_metrics: sample CPU, memory, disk, network and (with
             ``nvidia-ml-py``) GPU usage on the fit run.
         tags: extra tags for the fit run.
+
+    ``run_id`` is the MLflow id of the latest fit run, once it has started.
     """
 
     def __init__(
@@ -63,6 +65,7 @@ class MlflowTracking:
         self.log_system_metrics = log_system_metrics
         self.tags = dict(tags or {})
         self._outer: Optional[str] = None
+        self.run_id: Optional[str] = None
         self._reset()
 
     def _reset(self) -> None:
@@ -79,6 +82,7 @@ class MlflowTracking:
 
     def start(self, record: RunRecord) -> None:
         self._reset()
+        self.run_id = None
         self._guard.enter_context(_limited_http())
         try:
             autologging = import_provider('mlflow.utils.autologging_utils',
@@ -106,7 +110,7 @@ class MlflowTracking:
             tags=record.tags,
             log_system_metrics=self.log_system_metrics,
         )
-        self._parent = run.info.run_id
+        self._parent = self.run_id = run.info.run_id
         self._experiment_id = run.info.experiment_id
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
