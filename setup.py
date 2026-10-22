@@ -294,7 +294,7 @@ test_requires = [
     "pytorch-frame==0.3.0",
     "pytorch-lightning==2.6.5",
     # kumo-engine's `mlflow` extra; its wheel is tested with --no-deps.
-    "mlflow>=3.0,<4",
+    "mlflow>=3.13,<4",
 ]
 
 dev_requires = test_requires + [

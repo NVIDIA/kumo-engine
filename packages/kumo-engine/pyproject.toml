@@ -64,7 +64,7 @@ gcs=[
 ]
 # nvidia-ml-py adds GPU system metrics.
 mlflow=[
-    "mlflow>=3.0,<4",
+    "mlflow>=3.13,<4",
     "nvidia-ml-py",
 ]
 
