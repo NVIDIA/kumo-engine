@@ -199,6 +199,7 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path, refit) -> None:
 
     class SourceTrainer(SimpleNamespace):
         _set_fit_mode_to_use = Trainer._set_fit_mode_to_use
+        published_fit_mode = Trainer.published_fit_mode
 
         @property
         def best_ckpt(self):
