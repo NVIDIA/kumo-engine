@@ -17,15 +17,22 @@ on:  # yamllint disable-line rule:truthy
         description: Existing release to test; blank uses the approved reference.
         type: string
         default: ''
+      learning_comparison:
+        description: Report learning against the fixed reference (experimental).
+        type: boolean
+        default: false
   pull_request:
     paths:
       - .github/workflows/kumo-engine-wheel*.yml
       - packages/kumo-engine/scripts/smoke_wheel.py
       - packages/kumo-engine/scripts/check_pypi_requirements.py
       - packages/kumo-engine/test/wheel_workflow.py
+      - packages/kumo-engine/test/wheel_learning.py
+      - packages/kumo-engine/test/wheel_learning_report.py
       - packages/kumo-engine/test/conftest.py
       - packages/kumo-engine/test/wheel_workflow.json
       - test/scripts/test_engine_wheel_smoke.py
+      - test/scripts/test_engine_wheel_learning.py
       - docs/development/testing.md
 
 permissions:
@@ -34,7 +41,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.learning_comparison && 35 || 20 }}
     env:
       OMP_NUM_THREADS: '4'
       MKL_NUM_THREADS: '4'
@@ -86,17 +93,36 @@ jobs:
           fi
 
       - name: Install, train, predict, and reload
+        if: ${{ !inputs.learning_comparison }}
         timeout-minutes: 17
         run: >-
           python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
           --output-dir "$RUNNER_TEMP/wheel-smoke"
 
       - name: Verify the approved reference with fixed dependencies
-        if: ${{ steps.release.outputs.check_reference == 'true' }}
+        if: ${{ !inputs.learning_comparison && steps.release.outputs.check_reference == 'true' }}
         timeout-minutes: 17
         run: >-
           python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
           --reference --output-dir "$RUNNER_TEMP/wheel-smoke-reference"
+
+      - name: Download the learning reference
+        if: ${{ inputs.learning_comparison }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          reference_tag="$(python -c 'import json; print("kumo-engine-v" + json.load(open("packages/kumo-engine/test/wheel_workflow.json"))["reference"]["wheel"]["version"])')"
+          gh release download "$reference_tag" --pattern 'kumo_engine-*x86_64.whl' --dir dist/reference
+
+      - name: Compare reference and candidate learning
+        if: ${{ inputs.learning_comparison }}
+        timeout-minutes: 30
+        run: >-
+          python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
+          --compare-with dist/reference/kumo_engine-*.whl
+          --report-learning
+          --output-dir "$RUNNER_TEMP/wheel-learning-comparison"
 
       - name: Preserve results and logs
         if: ${{ always() }}
@@ -106,6 +132,7 @@ jobs:
           path: |
             ${{ runner.temp }}/wheel-smoke/
             ${{ runner.temp }}/wheel-smoke-reference/
+            ${{ runner.temp }}/wheel-learning-comparison/
             ${{ runner.temp }}/wheel-smoke-unit.log
           retention-days: 14
           if-no-files-found: warn

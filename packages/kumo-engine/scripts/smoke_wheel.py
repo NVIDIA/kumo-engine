@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Install and exercise one wheel in a fresh environment outside the checkout."""
+"""Install engine wheels in fresh environments outside the checkout."""
 
 import argparse
 import hashlib
@@ -91,8 +91,8 @@ def verify_reference_dependencies(report, expected):
             'Installed dependencies differ from the approved reference')
 
 
-def verify_workflow_result(result, required_checks):
-    if result.get('status') != 'PASS' or any(
+def verify_workflow_result(result, required_checks, *, status='PASS'):
+    if result.get('status') != status or any(
             result.get('checks', {}).get(check) != 'PASS'
             for check in required_checks):
         raise ValueError('A required workflow check is missing or failed')
@@ -138,21 +138,14 @@ def run_command(command, cwd, log, timeout=60):
                        env=environment)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('wheel', type=Path)
-    parser.add_argument('--learning', action='store_true',
-                        help='Also run provisional paired learning checks')
-    parser.add_argument(
-        '--reference', action='store_true',
-        help='Require the approved reference wheel and dependency versions')
-    parser.add_argument('--output-dir', type=Path, required=True,
-                        help='New directory for logs and JSON results')
-    args = parser.parse_args()
-    wheel = args.wheel.resolve()
-    output = args.output_dir.resolve()
+def check_wheel(wheel, output, *, reference=False, learning=False,
+                fixed_dependencies=False, measure_learning=False,
+                compare_with=None, report_learning=False):
+    wheel = wheel.resolve()
+    output = output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
+    measurement = measure_learning or report_learning
     summary = {
         'status': 'RUNNING',
         'stage': 'wheel_identity',
@@ -176,8 +169,8 @@ def main():
             REQUIREMENTS.read_bytes()).hexdigest()
         summary['configuration'] = requirements['configuration']
         summary['fixture'] = requirements['fixture']
-        summary['reference_mode'] = args.reference
-        if args.reference:
+        summary['reference_mode'] = reference
+        if reference:
             summary['stage'] = 'reference'
             if identity != requirements['reference']['wheel']:
                 raise ValueError(
@@ -195,7 +188,7 @@ def main():
             python = str(venv / 'bin/python')
             run('venv', [sys.executable, '-I', '-m', 'venv', str(venv)], root)
             constraints = []
-            if args.reference:
+            if reference or fixed_dependencies:
                 pins = output / 'reference-constraints.txt'
                 pins.write_text(
                     ''.join(f'{name}=={version}\n' for name, version in
@@ -211,7 +204,7 @@ def main():
             summary['stage'] = 'installed_identity'
             report = json.loads((output / 'install-report.json').read_text())
             verify_install(report, identity)
-            if args.reference:
+            if reference or fixed_dependencies:
                 verify_reference_dependencies(
                     report, requirements['reference']['dependencies'])
             run('pip-check', [python, '-I', '-m', 'pip', '--isolated', 'check'],
@@ -230,20 +223,69 @@ def main():
             ], root, timeout=300)
             result = json.loads((output / 'workflow-result.json').read_text())
             verify_workflow_result(result, requirements['required_checks'])
-            if args.learning:
+            if learning or measurement:
                 learning = root / 'wheel_learning.py'
                 shutil.copyfile(REQUIREMENTS.with_name('wheel_learning.py'),
                                 learning)
-                run('learning', [
-                    python, '-I',
-                    str(learning), '--version', identity['version'],
-                    '--output-dir',
-                    str(output / 'learning')
-                ], root, timeout=1200)
+                try:
+                    run('learning', [
+                        python, '-I',
+                        str(learning), '--version', identity['version'],
+                        '--output-dir',
+                        str(output / 'learning'),
+                        *(['--measure'] if measurement else [])
+                    ], root, timeout=1200)
+                except subprocess.CalledProcessError as exc:
+                    failed_report = output / 'learning/learning-result.json'
+                    if failed_report.is_file():
+                        summary['learning'] = json.loads(
+                            failed_report.read_text())
+                        raise ValueError(summary['learning'].get('error')
+                                         or 'Learning worker failed') from exc
+                    raise
                 learning_result = json.loads(
                     (output / 'learning/learning-result.json').read_text())
-                verify_workflow_result(learning_result, [])
-        summary.update(status='PASS', stage='complete')
+                verify_workflow_result(
+                    learning_result, [],
+                    status='MEASURED' if measurement else 'PASS')
+                summary['learning'] = learning_result
+                if compare_with is not None:
+                    inputs = root / 'comparison-input.json'
+                    inputs.write_text(
+                        json.dumps([
+                            compare_with,
+                            dict(
+                                summary, status='MEASURED' if report_learning
+                                else 'PASS'), requirements['learning']
+                        ]))
+                    comparison = output / 'comparison-result.json'
+                    command = [
+                        python, '-I', '-c', 'import json, runpy, sys\n'
+                        'reference, candidate, baseline = json.load(open(sys.argv[1]))\n'
+                        'result = runpy.run_path(sys.argv[2])["compare_results"]('
+                        'reference, candidate, baseline)\n'
+                        'json.dump(result, open(sys.argv[3], "w"))\n',
+                        str(inputs),
+                        str(learning),
+                        str(comparison)
+                    ]
+                    if report_learning:
+                        reporter = root / 'wheel_learning_report.py'
+                        shutil.copyfile(REQUIREMENTS.with_name(reporter.name),
+                                        reporter)
+                        command = [
+                            python, '-I',
+                            str(reporter),
+                            str(inputs),
+                            str(comparison)
+                        ]
+                    run('comparison', command, root)
+                    summary['comparison'] = json.loads(comparison.read_text())
+                    verify_workflow_result(
+                        summary['comparison'], [],
+                        status='MEASURED' if report_learning else 'PASS')
+        summary.update(status='MEASURED' if measurement else 'PASS',
+                       stage='complete')
     except Exception as exc:
         summary.update(status='FAIL', error=f'{type(exc).__name__}: {exc}')
         traceback.print_exc()
@@ -251,7 +293,74 @@ def main():
         summary['elapsed_seconds'] = round(time.monotonic() - started, 3)
         (output / 'summary.json').write_text(json.dumps(summary, indent=2))
         print(json.dumps(summary, indent=2), flush=True)
-    return 0 if summary['status'] == 'PASS' else 1
+    return 0 if summary['status'] in ('PASS', 'MEASURED') else 1
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('wheel', type=Path)
+    parser.add_argument('--learning', action='store_true',
+                        help='Also run paired learning checks')
+    parser.add_argument(
+        '--measure-learning', action='store_true',
+        help='Collect reference variation without quality limits')
+    parser.add_argument(
+        '--report-learning', action='store_true',
+        help='Report scores and missed limits; do not approve release')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
+        '--reference', action='store_true',
+        help='Require the approved reference wheel and dependencies')
+    modes.add_argument(
+        '--compare-with', type=Path,
+        help='Compare learning with this approved reference wheel')
+    parser.add_argument('--output-dir', type=Path, required=True,
+                        help='New directory for logs and JSON results')
+    args = parser.parse_args()
+    if args.measure_learning and not args.reference:
+        parser.error('--measure-learning requires --reference')
+    if args.report_learning and args.compare_with is None:
+        parser.error('--report-learning requires --compare-with')
+    if args.compare_with is None:
+        return check_wheel(args.wheel, args.output_dir,
+                           reference=args.reference, learning=args.learning,
+                           measure_learning=args.measure_learning)
+    output = args.output_dir.resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    summary = dict(status='RUNNING', stage='reference',
+                   report_only=args.report_learning)
+    try:
+        requirements = load_requirements(REQUIREMENTS)
+        if wheel_identity(
+                args.compare_with) != requirements['reference']['wheel']:
+            raise ValueError(
+                'Selected comparison wheel differs from the approved reference')
+        for name, wheel in [('reference', args.compare_with),
+                            ('candidate', args.wheel)]:
+            summary['stage'] = name
+            code = check_wheel(wheel, output / name,
+                               reference=name == 'reference', learning=True,
+                               fixed_dependencies=True,
+                               report_learning=args.report_learning,
+                               compare_with=summary.get('reference'))
+            summary[name] = json.loads(
+                (output / name / 'summary.json').read_text())
+            if code:
+                if summary[name].get('stage') == 'comparison':
+                    summary['stage'] = 'comparison'
+                raise ValueError(
+                    f'{name} wheel check failed: '
+                    f'{summary[name].get("error", "see saved evidence")}')
+        summary['comparison'] = summary['candidate']['comparison']
+        summary.update(status='MEASURED' if args.report_learning else 'PASS',
+                       stage='complete')
+    except Exception as exc:
+        summary.update(status='FAIL', error=f'{type(exc).__name__}: {exc}')
+        traceback.print_exc()
+    finally:
+        (output / 'summary.json').write_text(json.dumps(summary, indent=2))
+        print(json.dumps(summary, indent=2), flush=True)
+    return 0 if summary['status'] in ('PASS', 'MEASURED') else 1
 
 
 if __name__ == '__main__':

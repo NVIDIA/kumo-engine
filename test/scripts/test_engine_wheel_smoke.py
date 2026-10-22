@@ -165,12 +165,14 @@ class WheelSmokeTest(unittest.TestCase):
         self.assertEqual(result['status'], 'FAIL')
         self.assertEqual(result['stage'], 'wheel_identity')
 
-    def test_learning_requires_a_passing_report_after_successful_exit(self):
+    def test_learning_status_and_worker_errors_are_preserved(self):
         wheel = self.wheel()
         requirements = self.runner.load_requirements(self.runner.REQUIREMENTS)
         requirements['configuration'].update(
             os=sys.platform, machine=self.runner.platform.machine(),
             python=f'{sys.version_info.major}.{sys.version_info.minor}')
+        requirements['reference']['wheel'] = self.runner.wheel_identity(wheel)
+        requirements['reference']['dependencies'] = {}
         install = {
             'install': [
                 dict(
@@ -184,40 +186,146 @@ class WheelSmokeTest(unittest.TestCase):
             status='PASS',
             checks={name: 'PASS'
                     for name in requirements['required_checks']})
-        for status, expected in [(None, 1), ('RUNNING', 1), ('FAIL', 1),
-                                 ('PASS', 0)]:
-            with self.subTest(status=status):
-                output = self.root / f'learning-{status}'
+        requirements['learning'] = {}
+        cases = [(None, 'learning', 1), ('RUNNING', 'learning', 1),
+                 ('FAIL', 'learning', 1), ('PASS', 'learning', 0),
+                 ('MEASURED', 'learning', 1), ('MEASURED', 'measure', 0),
+                 ('PASS', 'measure', 1), ('FAIL', 'failed-process', 1)]
+        cases += [(status, 'comparison', 0 if status == 'PASS' else 1)
+                  for status in (None, 'RUNNING', 'FAIL', 'MEASURED', 'PASS')]
+        cases += [(status, 'report-comparison',
+                   0 if status == 'MEASURED' else 1)
+                  for status in (None, 'RUNNING', 'FAIL', 'MEASURED', 'PASS')]
+        for status, mode, expected in cases:
+            with self.subTest(status=status, mode=mode):
+                output = self.root / f'{mode}-{status}'
+                interpreters = {}
 
                 def commands(command, cwd, log, timeout=60):
                     # Skip installation and training. Keep result handling real.
                     log.write_text('')
+                    interpreters[log.stem] = command[0]
                     if log.stem == 'install':
                         (output / 'install-report.json').write_text(
                             json.dumps(install))
                     elif log.stem == 'workflow':
                         (output / 'workflow-result.json').write_text(
                             json.dumps(workflow))
-                    elif log.stem == 'learning' and status is not None:
+                    elif log.stem == 'learning' and (
+                            status is not None
+                            or mode in ('comparison', 'report-comparison')):
                         result = output / 'learning/learning-result.json'
                         result.parent.mkdir()
-                        result.write_text(json.dumps(dict(status=status)))
+                        learning_status = status
+                        if mode in ('comparison', 'report-comparison'):
+                            learning_status = 'MEASURED' if '--measure' in command else 'PASS'
+                        result.write_text(
+                            json.dumps(dict(status=learning_status)))
+                        if mode == 'failed-process':
+                            result.write_text(
+                                json.dumps(
+                                    dict(status='FAIL',
+                                         error='learnable AUROC is too low',
+                                         mean_auroc={'learnable': 0.891132})))
+                            subprocess.run(
+                                [sys.executable, '-c', 'raise SystemExit(1)'],
+                                check=True)
+                    elif log.stem == 'comparison' and status is not None:
+                        (output / 'comparison-result.json').write_text(
+                            json.dumps(dict(status=status)))
 
                 with (patch.object(self.runner, 'run_command', commands),
                       patch.object(self.runner, 'load_requirements',
                                    return_value=requirements),
-                      patch.object(sys, 'argv', [
-                          str(RUNNER),
-                          str(wheel), '--learning', '--output-dir',
-                          str(output)
-                      ]), patch('sys.stdout', new_callable=io.StringIO),
+                      patch('sys.stdout', new_callable=io.StringIO),
                       patch('sys.stderr', new_callable=io.StringIO)):
-                    self.assertEqual(self.runner.main(), expected)
+                    code = self.runner.check_wheel(
+                        wheel, output, learning=True,
+                        reference=mode == 'measure',
+                        measure_learning=mode == 'measure',
+                        report_learning=mode == 'report-comparison',
+                        compare_with={'status': 'PASS'}
+                        if mode in ('comparison',
+                                    'report-comparison') else None)
+                    self.assertEqual(code, expected)
                 report = json.loads((output / 'summary.json').read_text())
-                self.assertEqual(report['status'],
-                                 'PASS' if expected == 0 else 'FAIL')
-                self.assertEqual(report['stage'],
-                                 'complete' if expected == 0 else 'learning')
+                self.assertEqual(
+                    report['status'],
+                    ('MEASURED' if mode in ('measure',
+                                            'report-comparison') else 'PASS')
+                    if expected == 0 else 'FAIL')
+                self.assertEqual(
+                    report['stage'],
+                    'complete' if expected == 0 else 'comparison' if mode in (
+                        'comparison', 'report-comparison') else 'learning')
+                if mode == 'failed-process':
+                    self.assertIn('learnable AUROC is too low', report['error'])
+                    self.assertEqual(report['learning']['status'], 'FAIL')
+                    self.assertEqual(report['learning']['mean_auroc'],
+                                     {'learnable': 0.891132})
+                if mode in ('comparison', 'report-comparison'):
+                    self.assertEqual(interpreters['comparison'],
+                                     interpreters['install'])
+                    self.assertEqual(interpreters['comparison'],
+                                     interpreters['learning'])
+
+    def test_comparison_preserves_each_result(self):
+        wheel = self.wheel()
+        reference = self.wheel(version='1.0.0')
+        requirements = self.runner.load_requirements(self.runner.REQUIREMENTS)
+        requirements['reference']['wheel'] = self.runner.wheel_identity(
+            reference)
+        for failed_stage in ('reference', 'candidate', 'comparison', None):
+            output = self.root / f'comparison-{failed_stage}'
+
+            def check_wheel(wheel, evidence, **kwargs):
+                evidence.mkdir()
+                self.assertTrue(kwargs['learning'])
+                self.assertTrue(kwargs['fixed_dependencies'])
+                self.assertEqual(kwargs['reference'],
+                                 evidence.name == 'reference')
+                previous = kwargs.get('compare_with')
+                if evidence.name == 'candidate':
+                    self.assertEqual(previous['wheel'],
+                                     requirements['reference']['wheel'])
+                else:
+                    self.assertIsNone(previous)
+                failed = evidence.name == failed_stage or (
+                    failed_stage == 'comparison'
+                    and evidence.name == 'candidate')
+                stage = 'comparison' if failed_stage == 'comparison' and failed else 'learning'
+                report = dict(status='FAIL' if failed else 'PASS', stage=stage,
+                              wheel=self.runner.wheel_identity(wheel))
+                if previous:
+                    report['comparison'] = dict(status='PASS',
+                                                mean_auroc_drop=0)
+                if failed:
+                    report[
+                        'error'] = 'AUROC drop' if stage == 'comparison' else 'learning failed'
+                (evidence / 'summary.json').write_text(json.dumps(report))
+                return 1 if failed else 0
+
+            with (patch.object(self.runner, 'check_wheel', check_wheel),
+                  patch.object(self.runner, 'load_requirements',
+                               return_value=requirements),
+                  patch.object(sys, 'argv', [
+                      str(RUNNER),
+                      str(wheel), '--compare-with',
+                      str(reference), '--output-dir',
+                      str(output)
+                  ]), patch('sys.stdout', new_callable=io.StringIO),
+                  patch('sys.stderr', new_callable=io.StringIO)):
+                code = self.runner.main()
+            self.assertEqual(code, 1 if failed_stage else 0)
+            report = json.loads((output / 'summary.json').read_text())
+            self.assertEqual(report['status'],
+                             'FAIL' if failed_stage else 'PASS')
+            self.assertEqual(report['stage'], failed_stage or 'complete')
+            if failed_stage == 'comparison':
+                self.assertIn('AUROC drop', report['error'])
+            elif failed_stage is None:
+                self.assertEqual(report['comparison']['status'], 'PASS')
+                self.assertEqual(report['comparison']['mean_auroc_drop'], 0)
 
     def test_reference_mode_rejects_a_different_wheel_before_installation(self):
         reference_name = json.loads(self.runner.REQUIREMENTS.read_text()
@@ -241,6 +349,75 @@ class WheelSmokeTest(unittest.TestCase):
                 self.assertEqual(report['stage'], 'reference')
                 self.assertIn('approved reference', report['error'])
                 self.assertFalse((output / 'install.log').exists())
+
+    def test_reporting_collects_both_wheels_but_preserves_execution_failures(
+            self):
+        wheel = self.wheel()
+        reference = self.wheel(version='1.0.0')
+        requirements = self.runner.load_requirements(self.runner.REQUIREMENTS)
+        requirements['reference']['wheel'] = self.runner.wheel_identity(
+            reference)
+        for failed_stage in (None, 'install', 'workflow', 'learning'):
+            output = self.root / f'reporting-{failed_stage}'
+
+            def check_wheel(selected, evidence, **options):
+                evidence.mkdir()
+                measured = options.get('report_learning', False)
+                failed = failed_stage is not None
+                report = dict(
+                    status='FAIL' if failed else
+                    'MEASURED' if measured else 'PASS', stage=failed_stage
+                    or 'complete', wheel=self.runner.wheel_identity(selected))
+                if measured:
+                    report['learning'] = dict(status='MEASURED',
+                                              mean_auroc={'learnable': .1})
+                if options.get('compare_with'):
+                    report['comparison'] = dict(
+                        status='MEASURED', quality_status='FAIL',
+                        failed_limits=[dict(check='learnable_min')],
+                        mean_auroc_drop=.2, release_approved=False)
+                if failed:
+                    report['error'] = 'deliberate execution failure'
+                (evidence / 'summary.json').write_text(json.dumps(report))
+                return 1 if failed else 0
+
+            with (patch.object(self.runner, 'check_wheel', check_wheel),
+                  patch.object(self.runner, 'load_requirements',
+                               return_value=requirements),
+                  patch.object(sys, 'argv', [
+                      str(RUNNER),
+                      str(wheel), '--compare-with',
+                      str(reference), '--report-learning', '--output-dir',
+                      str(output)
+                  ]), patch('sys.stdout', new_callable=io.StringIO),
+                  patch('sys.stderr', new_callable=io.StringIO)):
+                try:
+                    code = self.runner.main()
+                except SystemExit as exc:
+                    code = exc.code
+            self.assertEqual(code, 1 if failed_stage else 0)
+            result = json.loads((output / 'summary.json').read_text())
+            self.assertEqual(result['status'],
+                             'FAIL' if failed_stage else 'MEASURED')
+            if failed_stage:
+                self.assertNotIn('candidate', result)
+            else:
+                self.assertIn('reference', result)
+                self.assertIn('candidate', result)
+                self.assertEqual(result['comparison']['quality_status'], 'FAIL')
+                self.assertFalse(result['comparison']['release_approved'])
+
+    def test_reporting_requires_a_comparison_wheel(self):
+        output = self.root / 'invalid-reporting'
+        completed = subprocess.run([
+            sys.executable,
+            str(RUNNER),
+            str(self.wheel()), '--report-learning', '--output-dir',
+            str(output)
+        ], capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn('requires --compare-with', completed.stderr)
+        self.assertFalse(output.exists())
 
     def test_missing_or_invalid_requirements_are_rejected(self):
         original = json.loads(self.runner.REQUIREMENTS.read_text())

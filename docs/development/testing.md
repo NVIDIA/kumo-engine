@@ -70,18 +70,68 @@ Run the runner tests without engine dependencies:
 python3.12 -m unittest discover -s test/scripts -p test_engine_wheel_smoke.py
 ```
 
-Add `--learning` to train two fresh models per seed on the same installed wheel.
-One case has a known relationship. The other keeps the graph but uses independent random labels.
-Both use seeds `0–4`, 1,200 training rows, 400 validation rows, and 400 evaluation rows.
-Evaluation rows stay out of training. The target column stays out of model features.
+To report learning scores, compare a candidate wheel with the reference:
 
-The test computes AUROC, a ranking score, from saved probabilities. Constant scores give `0.50`.
-Provisional limits require mean AUROC of at least `0.75` for learnable labels
-and `0.45–0.55` for independent labels. These limits need release-owner approval.
-This option does not change release gates. It does not compare a candidate with a quality reference yet.
-Results under `learning/` include every score, split, probability, model plan, dependency version, and source fingerprint.
+```bash
+python3.12 packages/kumo-engine/scripts/smoke_wheel.py /path/to/candidate.whl \
+  --compare-with /path/to/reference.whl --report-learning \
+  --output-dir /path/to/new-comparison
+```
 
-Run the learning unit tests in an environment with pandas, NumPy, and scikit-learn:
+Each wheel gets a fresh environment with the same fixed dependencies.
+Each trains a fresh graph neural network for seeds `0–4` on two cases.
+One case has a known relationship. The other uses independent random labels on the same graph.
+Each case has 1,200 training rows, 400 validation rows, and 400 evaluation rows.
+Evaluation rows stay out of training. Labels stay out of model features.
+
+The fixed recipe uses 16 channels, batch size 64, Adam, learning rate `0.01`,
+and at most ten epochs of twenty steps. Early stopping can shorten training.
+The test rejects changes to requested settings in the selected training plan.
+
+AUROC measures how well probabilities rank the correct answers. Constant scores give `0.50`.
+The settings file records limits from repeated reference runs.
+The report lists missed limits for learnable mean AUROC, individual seeds,
+the reference learning floor, and independent-label means near `0.50`.
+Its `comparison` field contains both means, signed score drops, limits, and `failed_limits`.
+Positive drops mean that the candidate scored lower than the reference.
+The command completes both wheels when only these provisional limits fail.
+It returns zero with `status: MEASURED` and `release_approved: false`.
+The report's `quality_status` records whether the provisional limits passed.
+Installation, training, prediction, reload, and evidence failures still return nonzero.
+Missing or unfinished results cannot pass. Data, plan, and dependency mismatches still fail.
+Omit `--report-learning` to enforce the provisional limits in the strict comparison.
+Shuffled-label tests reject suspicious associations in the independent cases.
+These checks remain strict in reporting mode.
+The fixed policy uses 999 shuffles, seed `0`, and `p <= 0.01`.
+Calibration shares each label shuffle across arms that repeat the same fixture.
+This policy is separate from measured repeat limits.
+Evidence includes saved probabilities, splits, plans, dependency versions, and source fingerprints.
+Mismatched data, plans, dependencies, or worker source fail the comparison.
+
+The manual `Kumo Engine - Wheel smoke` workflow exposes `learning_comparison` in reporting mode.
+This experiment does not block publication. Its limits cover one VM and five fixtures of one generated graph pattern.
+They do not establish a false-alarm rate or broader model quality.
+
+A subsequent full same-version check rejected the unchanged reference.
+Its mean AUROC was `0.891132`, below the frozen floor of `0.891182`.
+This profile needs further review before it can block releases.
+The runner preserves a failed learning report and its specific error in the summary.
+
+Run calibration in the wheel environment with NumPy and SciPy installed.
+Collect six pairs with `--reference --measure-learning` under `calibration/pair-N/{a,b}`.
+Freeze the limits. Then collect two new pairs under `reserved/pair-N/{a,b}`.
+
+```bash
+python3.12 packages/kumo-engine/test/wheel_learning.py --calibrate calibration --output-dir frozen
+# After collecting reserved runs:
+python3.12 packages/kumo-engine/test/wheel_learning.py --calibrate calibration \
+  --validate-with reserved --output-dir checked
+```
+
+Only copy `checked/learning-baseline.json` into the settings file's `learning` field after reserved runs pass.
+Keep failed evidence. Do not widen limits using reserved results.
+
+Run the learning unit tests in the installed wheel environment:
 
 ```bash
 python3.12 -m unittest discover -s test/scripts -p test_engine_wheel_learning.py
