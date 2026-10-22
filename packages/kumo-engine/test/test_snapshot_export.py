@@ -337,9 +337,8 @@ def test_snapshot_manifest_travels_unchanged_or_is_reconstructed(
         assert shipped == b'{"schema_version": 99, "future": [1]}'
     else:
         manifest = loaded.manifest
-        assert (manifest['id'], manifest['reconstructed']) == (snapshot.id,
-                                                               True)
-        assert manifest['parents'] == {'source_tables': {}}
+        assert (manifest.id, manifest.reconstructed) == (snapshot.id, True)
+        assert manifest.parents.source_tables == {}
 
 
 def test_warehouse_connectors_are_not_supported(scratch, graph):

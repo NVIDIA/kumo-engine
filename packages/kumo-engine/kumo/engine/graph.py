@@ -246,13 +246,14 @@ def _snapshot_id(graph_key: str, data_version: str) -> str:
 _COMPARABLE = ('exact', 'timestamp', 'listing')
 
 
-def _source_change(table: Table, recorded: Any,
+def _source_change(table: Table, recorded: Optional[SourceTableEntry],
                    record_sources: bool) -> Dict[str, Any]:
     from kumoapi.source_table import CustomSQLSourceTable
 
-    recorded = recorded if isinstance(recorded, dict) else {}
-    before, current, same_source = recorded.get('version'), None, False
-    comparable = recorded.get('version_kind') in _COMPARABLE
+    before = None if recorded is None else recorded.version
+    current, same_source = None, False
+    comparable = (recorded is not None
+                  and recorded.version_kind in _COMPARABLE)
     try:
         source = table.definition.source_table
         if not isinstance(source, CustomSQLSourceTable):
@@ -261,11 +262,11 @@ def _source_change(table: Table, recorded: Any,
                 connector, table.table_name)
             now = source_table(connector, table.table_name, None, stamp,
                                record_sources=record_sources)
-            current = now['version']
-            comparable = comparable and now['version_kind'] in _COMPARABLE
-            same_source = (recorded.get('connector'),
-                           recorded.get('location')) == (now['connector'],
-                                                         now['location'])
+            current = now.version
+            comparable = comparable and now.version_kind in _COMPARABLE
+            same_source = recorded is not None and (
+                recorded.connector, recorded.location) == (now.connector,
+                                                           now.location)
     except Exception:
         current = None
     if not (same_source and comparable and before is not None
@@ -384,9 +385,10 @@ class GraphSnapshot:
         `unchanged`, `changed` or `unknown`. Never raises."""
         try:
             manifest = self.manifest
-            recorded = ({} if not manifest or manifest.get('reconstructed') else
-                        dict(manifest['parents']['source_tables']))
-            record_sources = manifest.get('record_sources', True)
+            recorded = ({} if manifest is None or manifest.reconstructed else
+                        dict(manifest.parents.source_tables))
+            record_sources = (manifest is None
+                              or manifest.record_sources is not False)
         except Exception:
             recorded, record_sources = {}, True
         from kumo_core.sources.parallel import run_in_parallel

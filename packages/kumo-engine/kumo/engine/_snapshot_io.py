@@ -168,17 +168,20 @@ def _fingerprint(index_manifest: bytes) -> str:
 
 
 def _snapshot_manifest(snapshot: Any) -> bytes:
-    from kumo.engine._manifest import new_manifest
+    from kumo.engine._manifest import (
+        RECONSTRUCTED,
+        SnapshotManifest,
+        SnapshotParents,
+    )
     from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
 
     try:
         return (Path(snapshot.index_path) / SNAPSHOT_MANIFEST_FILE).read_bytes()
     except OSError:
-        manifest = new_manifest('graph_snapshot', snapshot.id,
-                                {'source_tables': {}}, created_at=None,
-                                environment=None, scheduler=None,
-                                reconstructed=True)
-        return (json.dumps(manifest, indent=2, sort_keys=True) +
+        manifest = SnapshotManifest(
+            id=snapshot.id, parents=SnapshotParents(source_tables={}),
+            **RECONSTRUCTED)
+        return (json.dumps(manifest.to_dict(), indent=2, sort_keys=True) +
                 '\n').encode()
 
 
@@ -233,7 +236,7 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
         'data_version': data_version,
         'index_manifest': _fingerprint(index_manifest),
         'graph_config': snapshot.graph_config,
-        'environment': environment(),
+        'environment': environment().to_dict(),
         'range_bytes': _RANGE_BYTES,
         'crc32': crc32,
     }).encode()
