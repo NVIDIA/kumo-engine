@@ -52,6 +52,7 @@ from kumo.engine._embeddings import (
     require_embedding_models,
     require_trained_embedding_models,
 )
+from kumo.engine._manifest import BundleProvenance
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine.connector.base import Connector
 from kumo.engine.graph import GraphSnapshot
@@ -94,7 +95,7 @@ class TrainingResult:
     bundle_id: Optional[str] = None
 
     @property
-    def provenance(self) -> Optional[Dict[str, Any]]:
+    def provenance(self) -> Optional[BundleProvenance]:
         """The bundle's recorded fit provenance; None for older bundles."""
         from kumo.engine.trainer._provenance import read_provenance
 
@@ -313,7 +314,7 @@ class Trainer:
         return getattr(self._training_result, 'bundle_id', None)
 
     @property
-    def provenance(self) -> Optional[Dict[str, Any]]:
+    def provenance(self) -> Optional[BundleProvenance]:
         """Fit provenance of the fitted or loaded bundle, if recorded."""
         result = self._training_result
         return None if result is None else result.provenance

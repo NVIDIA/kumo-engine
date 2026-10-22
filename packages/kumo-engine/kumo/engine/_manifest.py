@@ -16,6 +16,7 @@ from typing import (
     List,
     Mapping,
     Optional,
+    Self,
     Type,
     TypeVar,
     Union,
@@ -222,6 +223,56 @@ class TrainingTableManifest(Manifest):
     generation_plan: Optional[Dict[str, Any]] = None
     task_type: Optional[str] = None
     split_seed: Optional[int] = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class BundleParents(Record):
+    training_table: str
+    warm_start: Optional[str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class FitTiming(Record):
+    started_at: str
+    finished_at: str
+    seconds: float
+
+
+@dataclass(frozen=True, kw_only=True)
+class BundleTrainingTable(Record):
+    """Written with ``source_table``'s keys inline."""
+
+    source: Optional[str]
+    snapshot: Optional[str]
+    source_table: Optional[SourceTableEntry] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {**self.extra, 'source': self.source, 'snapshot': self.snapshot}
+        if self.source_table is not None:
+            data.update(self.source_table.to_dict())
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        rest = {
+            key: value
+            for key, value in data.items() if key not in ('source', 'snapshot')
+        }
+        if 'version_kind' not in rest:
+            return cls(source=data.get('source'), snapshot=data.get('snapshot'),
+                       extra=rest)
+        return cls(source=data.get('source'), snapshot=data.get('snapshot'),
+                   source_table=SourceTableEntry.from_dict(rest))
+
+
+@dataclass(frozen=True, kw_only=True)
+class BundleProvenance(Manifest):
+    kind: str = 'model_bundle'
+    parents: BundleParents
+    fit: FitTiming
+    training_table: BundleTrainingTable
+    source_tables: Optional[Dict[str, SourceTableEntry]]
+    fit_mode: Optional[str]
 
 
 def write_manifest(path: Path, manifest: Manifest) -> None:

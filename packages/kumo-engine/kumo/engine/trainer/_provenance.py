@@ -5,9 +5,18 @@
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
-from kumo.engine._manifest import new_manifest, read_manifest, write_manifest
+from kumo.engine._manifest import (
+    BundleParents,
+    BundleProvenance,
+    BundleTrainingTable,
+    FitTiming,
+    SourceTableEntry,
+    read_manifest,
+    stamp,
+    write_manifest,
+)
 from kumo.engine.graph import GraphSnapshot
 from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer._spec import PROVENANCE_ROLE, listed_file
@@ -26,46 +35,43 @@ def write_provenance(
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
 
     finished_at = datetime.now(timezone.utc)
-    parents = {
-        'training_table': train_table.tt_id,
-        'warm_start': warm_start_bundle_id,
-    }
     write_manifest(
         bundle_dir / PROVENANCE_FILE,
-        new_manifest(
-            'model_bundle', bundle_id, parents,
-            fit={
-                'started_at': started_at.isoformat(timespec='seconds'),
-                'finished_at': finished_at.isoformat(timespec='seconds'),
-                'seconds': round((finished_at - started_at).total_seconds(),
-                                 3),
-            },
+        BundleProvenance(
+            id=bundle_id,
+            parents=BundleParents(training_table=train_table.tt_id,
+                                  warm_start=warm_start_bundle_id),
+            fit=FitTiming(
+                started_at=started_at.isoformat(timespec='seconds'),
+                finished_at=finished_at.isoformat(timespec='seconds'),
+                seconds=round((finished_at - started_at).total_seconds(), 3),
+            ),
             training_table=_training_table(train_table),
             source_tables=_source_tables(snapshot),
             fit_mode=fit_mode,
+            **stamp(),
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
 
 
 def _source_tables(
-        snapshot: Optional[GraphSnapshot]) -> Optional[Dict[str, Any]]:
+        snapshot: Optional[GraphSnapshot]
+) -> Optional[Dict[str, SourceTableEntry]]:
     manifest = None if snapshot is None else snapshot.manifest
-    if not manifest or manifest.get('reconstructed'):
+    if manifest is None or manifest.reconstructed:
         return None
-    return (manifest.get('parents') or {}).get('source_tables')
+    return manifest.parents.source_tables
 
 
-def _training_table(train_table: TrainingTable) -> Dict[str, Any]:
-    parents = (train_table.manifest or {}).get('parents') or {}
-    record = {
-        'source': train_table.source_mode,
-        'snapshot': parents.get('snapshot'),
-    }
-    if 'source_table' in parents:
-        record.update(parents['source_table'] or {})
-    return record
+def _training_table(train_table: TrainingTable) -> BundleTrainingTable:
+    manifest = train_table.manifest
+    return BundleTrainingTable(
+        source=train_table.source_mode,
+        snapshot=None if manifest is None else manifest.parents.snapshot,
+        source_table=None
+        if manifest is None else manifest.parents.source_table)
 
 
-def read_provenance(bundle_dir: Path) -> Optional[Dict[str, Any]]:
+def read_provenance(bundle_dir: Path) -> Optional[BundleProvenance]:
     path = listed_file(bundle_dir, PROVENANCE_ROLE)
-    return None if path is None else read_manifest(path)
+    return None if path is None else read_manifest(path, BundleProvenance)
