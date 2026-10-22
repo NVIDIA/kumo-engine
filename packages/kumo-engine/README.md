@@ -416,7 +416,9 @@ code loads the snapshot the training job exported
 what `graph.snapshot().export(store, 'snapshots')` returned) and scores it with
 `trainer.predict_snapshot(snapshot)`, which reuses the trained query and
 table-generation plan (`entities=` scores given rows instead;
-`prediction_time=`, `output_config=` and the thresholds are as in `predict`).
+`prediction_time=`, `output_config=` and the thresholds are as in `predict`;
+it warns when the snapshot was taken of a different graph than the training
+snapshot).
 `PredictiveQuery.from_snapshot(snapshot, trainer.training_query)` binds the
 query directly. Its graph check only means the snapshot belongs to the query's
 graph, not that it is compatible with the trained model.

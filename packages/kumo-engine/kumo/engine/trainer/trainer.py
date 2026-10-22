@@ -595,7 +595,8 @@ class Trainer:
         ``prediction_time`` (as :meth:`PredictiveQuery.generate_prediction_table`).
         ``entities`` is a source table of ``ENTITY1`` (and ``TIMESTAMP`` where
         the task needs one) rows to score instead. Other arguments are as in
-        :meth:`predict`.
+        :meth:`predict`. Warns when ``snapshot`` was taken of a different
+        graph than the one the model was trained on.
         """
         from kumo.engine.pquery.predictive_query import PredictiveQuery
 
@@ -606,6 +607,12 @@ class Trainer:
         if entities is not None and prediction_time is not None:
             raise ValueError("Pass prediction_time or entities, not both; "
                              "put anchor times in the entities' TIMESTAMP.")
+        trained = (self._snapshot_id or '').partition('@')[0]
+        if trained and snapshot.graph_key != trained:
+            warnings.warn(
+                f"Snapshot {snapshot.id} was taken of graph "
+                f"{snapshot.graph_key}, but this model was trained on a "
+                f"snapshot of graph {trained}.", UserWarning, stacklevel=2)
         query = PredictiveQuery.from_snapshot(snapshot, self._training_query)
         plan = self._training_table_generation_plan
         table = (query.generate_prediction_table(
