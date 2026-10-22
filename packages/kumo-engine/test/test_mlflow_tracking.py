@@ -266,7 +266,16 @@ def test_source_tables_are_logged_as_native_inputs(
     assert mlflow.data.get_source(orders).delta_table_id == 'table-id'
 
 
-def test_fit_inputs_come_from_the_manifests(tmp_path, caplog):
+def test_fit_inputs_come_from_the_manifests(tmp_path):
+    from kumo.engine._manifest import (
+        RECONSTRUCTED,
+        SnapshotManifest,
+        SnapshotParents,
+        SourceTableEntry,
+        TrainingTableManifest,
+        TrainingTableParents,
+        write_manifest,
+    )
     from kumo.engine._tracking import fit_inputs
 
     snapshot, table = tmp_path / 'index', tmp_path / 'table'
@@ -276,15 +285,25 @@ def test_fit_inputs_come_from_the_manifests(tmp_path, caplog):
 
     entry = {'connector': 'LOCAL_FILE', 'location': '/data/ents.parquet',
              'version': '1790000000', 'version_kind': 'timestamp'}
-    (snapshot / 'snapshot-manifest.json').write_text(json.dumps(
-        {'parents': {'source_tables': {'ents': {**entry, 'extra': 1}}}}))
-    (table / 'training-table-manifest.json').write_text(json.dumps(
-        {'parents': {'source_table': {**entry, 'version': None}}}))
+    write_manifest(
+        snapshot / 'snapshot-manifest.json',
+        SnapshotManifest(id='s', parents=SnapshotParents(source_tables={
+            'ents': SourceTableEntry(**entry, sql='SELECT 1')}),
+                         **RECONSTRUCTED))
+    write_manifest(
+        table / 'training-table-manifest.json',
+        TrainingTableManifest(
+            id='t', parents=TrainingTableParents(
+                snapshot='s',
+                source_table=SourceTableEntry(**{**entry, 'version': None})),
+            query='q', generation_plan={}, task_type='x', split_seed=None,
+            **RECONSTRUCTED))
     assert fit_inputs(snapshot, table) == {
         'ents': entry,
         'training_table': {**entry, 'version': None},
     }
 
     (snapshot / 'snapshot-manifest.json').write_text('not json')
-    assert fit_inputs(snapshot, table) == {}
-    assert 'source tables' in caplog.text
+    with pytest.warns(UserWarning, match='unreadable manifest'):
+        assert fit_inputs(snapshot, table) == {
+            'training_table': {**entry, 'version': None}}

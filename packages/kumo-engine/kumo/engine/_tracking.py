@@ -78,29 +78,32 @@ def fit_inputs(snapshot_dir: Path,
                table_dir: Path) -> Dict[str, Dict[str, Optional[str]]]:
     r"""Source tables recorded in the snapshot's manifest, plus a custom
     training table's source, if those manifests exist."""
+    from kumo.engine._manifest import (
+        SnapshotManifest,
+        TrainingTableManifest,
+        read_manifest,
+    )
+    from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
+    from kumo.engine.pquery.training_table import STAGING_MANIFEST_FILE
+
     try:
-        tables = dict(
-            _parents(snapshot_dir / 'snapshot-manifest.json').get(
-                'source_tables') or {})
-        custom = _parents(table_dir / 'training-table-manifest.json').get(
-            'source_table')
-        if custom:
-            tables['training_table'] = custom
+        snapshot = read_manifest(snapshot_dir / SNAPSHOT_MANIFEST_FILE,
+                                 SnapshotManifest)
+        table = read_manifest(table_dir / STAGING_MANIFEST_FILE,
+                              TrainingTableManifest)
+        tables = {} if snapshot is None else dict(
+            snapshot.parents.source_tables)
+        if table is not None and table.parents.source_table is not None:
+            tables['training_table'] = table.parents.source_table
         return {
-            str(name): {key: _text(entry.get(key))
+            str(name): {key: _text(getattr(entry, key))
                         for key in INPUT_FIELDS}
-            for name, entry in tables.items() if isinstance(entry, Mapping)
+            for name, entry in tables.items()
         }
     except Exception:
         logger.warning('Could not read the fit\'s source tables',
                        exc_info=True)
         return {}
-
-
-def _parents(path: Path) -> Mapping[str, Any]:
-    if not path.is_file():
-        return {}
-    return json.loads(path.read_text(encoding='utf-8')).get('parents') or {}
 
 
 def _text(value: Any) -> Optional[str]:
