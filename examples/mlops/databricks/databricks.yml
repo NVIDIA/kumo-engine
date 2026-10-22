@@ -31,8 +31,8 @@ variables:
     description: requirements.txt for kumo-engine's dependencies, starting with --prefer-binary
     default: /Volumes/<catalog>/<schema>/<volume>/wheels/requirements.txt
   spark_version:
-    description: a GPU ML runtime, for example 16.4.x-gpu-ml-scala2.12
-    default: <dbr_gpu_ml_version>
+    description: a standard (non-ML) runtime, for example 16.4.x-scala2.12
+    default: <dbr_version>
   node_type_id:
     description: a GPU node type with local NVMe disks
     default: <gpu_node_type>
