@@ -1060,7 +1060,7 @@ class Trainer:
         source_identity = [
             snapshot.id, prediction_table.query, timestamps,
             sorted(kind.value for kind in artifacts), num_classes_to_return,
-            threshold, extra_fields, self.bundle_id
+            threshold, extra_fields
         ] + ([lineage] if lineage else [])
         selection = score_prediction(
             materialized=materialized,

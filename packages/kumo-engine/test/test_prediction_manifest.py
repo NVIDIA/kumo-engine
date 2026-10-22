@@ -4,8 +4,6 @@
 
 import hashlib
 import json
-from dataclasses import replace
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -239,21 +237,3 @@ def test_manifest_failures_warn_and_keep_outputs(graph, classifier, tmp_path,
     assert not (tmp_path / 'bare' / '_kumo_manifest.json').exists()
     assert (exported == partial_exported == unknown_exported ==
             bare_exported)
-
-
-def test_bundle_id_enters_source_config_digest(graph, classifier,
-                                               monkeypatch):
-    _, snapshot = graph
-    trainer, table = classifier
-
-    def digest():
-        result = trainer.predict(table, snapshot=snapshot,
-                                 binary_classification_threshold=0.5)
-        return json.loads(Path(result.selection.manifest_path).read_text())[
-            'source_config_sha256']
-
-    first = digest()
-    assert digest() == first
-    monkeypatch.setattr(trainer, '_training_result',
-                        replace(trainer._training_result, bundle_id='0' * 64))
-    assert digest() != first
