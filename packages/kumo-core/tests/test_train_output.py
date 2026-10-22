@@ -171,6 +171,35 @@ def test_streaming_writer_stats_match_post_parquet_prefixes(tmp_path, table):
     assert stats.file_count == len(paths)
 
 
+def test_constant_columns_are_appended_to_every_part(tmp_path):
+    from kumo_core.train.artifact_stats import schema_fingerprint
+    stamp = {"KUMO_RUN_ID": "run-1", "KUMO_BUNDLE_ID": "b1"}
+    writer = StreamingFrameWriter(
+        str(tmp_path / "part"),
+        max_file_size=256,
+        max_buffer_size=128,
+        stats_sample_rows=10,
+        index=False,
+        constant_columns=stamp,
+    )
+    source = pa.table({"ID": np.arange(100, dtype=np.int64),
+                       "COUNT": pa.array([None, 3] * 50, pa.int64())})
+    writer.write(source)
+    writer.close()
+
+    paths = sorted(tmp_path.glob("part-*.parquet"))
+    assert len(paths) > 1
+    out = _read_parts(tmp_path)
+    assert out.schema.names == ["ID", "COUNT", *stamp]
+    assert out.select(["ID", "COUNT"]).equals(source)
+    for name, value in stamp.items():
+        assert out.column(name).type == pa.string()
+        assert set(out.column(name).to_pylist()) == {value}
+    assert writer.stats.num_cols == 4
+    assert writer.stats.schema_fingerprint == schema_fingerprint(
+        pq.read_schema(paths[0]))
+
+
 def test_stats_enabled_writer_enforces_row_group_memory_ceiling(tmp_path):
     writer = StreamingFrameWriter(
         str(tmp_path / "part"),

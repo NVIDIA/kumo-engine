@@ -16,7 +16,7 @@ import tempfile
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any, Mapping, TypeAlias
 
 import pandas as pd
 import pyarrow as pa
@@ -161,6 +161,7 @@ class StreamingFrameWriter:
         spool_root: str | os.PathLike[str] | None = None,
         max_row_group_rows: int = _DEFAULT_ROW_GROUP_ROWS,
         stats_sample_rows: int | None = None,
+        constant_columns: Mapping[str, str] | None = None,
     ) -> None:
         if max_file_size <= 0 or max_buffer_size <= 0:
             raise ValueError("Parquet stream size limits must be positive")
@@ -190,6 +191,7 @@ class StreamingFrameWriter:
             )
         self._peak_row_group_bytes = 0
         self._schema: pa.Schema | None = None
+        self._constant_columns = dict(constant_columns or {})
         self._index_offset = 0
         self._closed = False
         self._aborted = False
@@ -295,6 +297,18 @@ class StreamingFrameWriter:
         if not table.schema.equals(self._schema, check_metadata=False):
             table = table.cast(self._schema.remove_metadata(), safe=False)
         return table.replace_schema_metadata(self._schema.metadata)
+
+    def _file_schema(self) -> pa.Schema:
+        schema = self._schema or pa.schema([])
+        for name in self._constant_columns:
+            schema = schema.append(pa.field(name, pa.string()))
+        return schema
+
+    def _stamped(self, table: pa.Table) -> pa.Table:
+        for name, value in self._constant_columns.items():
+            table = table.append_column(
+                name, pa.repeat(pa.scalar(value, pa.string()), table.num_rows))
+        return table
 
     def _slices(self, table: pa.Table, max_size: int) -> list[pa.Table]:
         if table.num_rows == 0:
@@ -486,9 +500,8 @@ class StreamingFrameWriter:
                 slot_held = True
                 self._check_error()
                 local_path = self._temp_dir / f"part-{part_index:05d}.parquet"
-                assert self._schema is not None
-                writer = pq.ParquetWriter(local_path, self._schema)
-            table = pa.concat_tables(group)
+                writer = pq.ParquetWriter(local_path, self._file_schema())
+            table = self._stamped(pa.concat_tables(group))
             writer.write_table(table, row_group_size=table.num_rows)
             current_size += group_size
             current_rows += group_rows
@@ -594,7 +607,7 @@ class StreamingFrameWriter:
             except Exception as error:
                 close_error = close_error or error
             if close_error is None and self.collect_stats:
-                schema = self._schema or pa.schema([])
+                schema = self._file_schema()
                 sample_rows = len(self._sample_prefix_logical_bytes) - 1
                 self._final_stats = FrameWriterStats(
                     path_prefix=self.path_prefix,

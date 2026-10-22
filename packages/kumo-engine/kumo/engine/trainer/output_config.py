@@ -24,6 +24,9 @@ class PredictionOutputConfig:
     ``artifact_type`` and ``table_name`` for one legacy destination.
     ``extra_fields`` applies to every selected artifact, only when passed to
     ``Trainer.predict``; ``PredictionResult.export`` rejects it.
+    ``lineage_columns`` writes constant ``KUMO_RUN_ID``, ``KUMO_BUNDLE_ID``
+    and ``KUMO_SNAPSHOT_ID`` columns into every output row, only when passed
+    to ``Trainer.predict``; enable it only on a new table or directory.
     """
 
     connector: Connector
@@ -33,6 +36,7 @@ class PredictionOutputConfig:
     extra_fields: List[MetadataField] = field(default_factory=list)
 
     output_paths: Optional[Mapping[str, str]] = None
+    lineage_columns: bool = False
 
     def __post_init__(self) -> None:
         if self.output_paths is not None:

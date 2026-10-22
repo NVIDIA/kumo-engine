@@ -516,6 +516,7 @@ def test_ttng_link_pred_predict_receives_runtime_and_top_k():
         "ignore_time_col": False,
         "pred_time_col_name": None,
         "output_extra_fields": None,
+        "output_constant_columns": None,
         "max_output_file_size": 1024**3,
         "progress_log_dir": None,
         "progress_log_id": 0,

@@ -324,3 +324,69 @@ def test_multilabel_thresholds_preserve_scores(tmp_path, num_workers):
                                 binary_classification_threshold=threshold)
     finally:
         kumo.configure(scratch_dir=previous)
+
+
+def test_lineage_columns_are_written_by_the_scorer(graph, classifier,
+                                                   tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    _, snapshot, _ = graph
+    trainer, _, table = classifier
+    connector = kumo.FileConnector(root_dir=str(tmp_path))
+    kinds = ('predictions', 'embeddings')
+
+    def config(name, lineage):
+        return PredictionOutputConfig(
+            connector=connector,
+            output_paths={kind: f'{name}/{kind}/' for kind in kinds},
+            lineage_columns=lineage)
+
+    def read(name, kind):
+        return pa.concat_tables(
+            pq.read_table(path)
+            for path in sorted((tmp_path / name / kind).glob('*.parquet')))
+
+    result = trainer.predict(table, snapshot=snapshot,
+                             output_config=config('on', True),
+                             binary_classification_threshold=0.5)
+    trainer.predict(table, snapshot=snapshot,
+                    output_config=config('off', False),
+                    binary_classification_threshold=0.5)
+    result.export(config('copy', False))
+    lineage = {
+        'KUMO_RUN_ID': result.selection.job_id,
+        'KUMO_BUNDLE_ID': trainer.bundle_id,
+        'KUMO_SNAPSHOT_ID': snapshot.id,
+    }
+    assert trainer.bundle_id is not None
+    assert list(result.frame.columns[-3:]) == list(lineage)
+
+    for kind in kinds:
+        on, off, copy = (read(name, kind) for name in ('on', 'off', 'copy'))
+        assert on.num_rows == off.num_rows > 0
+        assert on.schema.names == off.schema.names + list(lineage)
+        for field in off.schema:
+            assert on.schema.field(field.name).type == field.type
+        for name, value in lineage.items():
+            assert on.column(name).type == pa.string()
+            assert set(on.column(name).to_pylist()) == {value}
+        assert copy.equals(on)
+
+
+def test_lineage_export_of_a_result_without_them_warns(
+        graph, classifier, tmp_path):
+    from kumo.engine.trainer.trainer import PredictionResult
+
+    _, snapshot, _ = graph
+    trainer, _, table = classifier
+    result = trainer.predict(table, snapshot=snapshot,
+                             binary_classification_threshold=0.5)
+    legacy = PredictionResult(result.selection, result.artifact_type)
+    assert legacy == result and hash(legacy) == hash(result)
+
+    with pytest.warns(UserWarning, match='lineage_columns'):
+        result.export(PredictionOutputConfig(
+            connector=kumo.FileConnector(root_dir=str(tmp_path)),
+            output_paths={'predictions': 'preds/'}, lineage_columns=True))
+    assert not {'KUMO_RUN_ID', 'KUMO_BUNDLE_ID'} & set(result.frame)

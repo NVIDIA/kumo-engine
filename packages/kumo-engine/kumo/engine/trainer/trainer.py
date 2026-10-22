@@ -11,7 +11,7 @@ import os
 import shutil
 import time
 import warnings
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, cast
@@ -131,10 +131,13 @@ class PredictionResult:
     ``num_rows`` reads bounded producer metadata; ``files`` resolves selected
     Parquet files. Accessing ``frame`` explicitly collects the whole result
     into memory and is intended only for outputs that fit in memory.
+    ``bundle_id`` and ``snapshot_id`` identify the model and graph scored.
     """
 
     selection: PredictionSelectionRef
     artifact_type: PredictionArtifactType
+    bundle_id: Optional[str] = field(default=None, compare=False)
+    snapshot_id: Optional[str] = field(default=None, compare=False)
 
     @property
     def num_rows(self) -> int:
@@ -167,7 +170,18 @@ class PredictionResult:
                 'extra_fields are chosen at prediction time and cannot be '
                 'applied to an existing result; pass them to '
                 'Trainer.predict(output_config=...)')
+        if output_config.lineage_columns and not self._has_lineage_columns():
+            warnings.warn(
+                'lineage_columns are written at prediction time; this result '
+                'has none, so the export has none either.', UserWarning,
+                stacklevel=2)
         self._export(output_config)
+
+    def _has_lineage_columns(self) -> bool:
+        from pyarrow import parquet
+        files = self.files
+        return bool(files) and LINEAGE_RUN_ID in parquet.read_schema(
+            files[0]).names
 
     def _export(self, output_config: PredictionOutputConfig) -> None:
         write_files = getattr(output_config.connector.sink_backend,
@@ -184,6 +198,9 @@ class PredictionResult:
             write_files(output_config.connector, destination, list(files),
                         output_config.write_mode,
                         export_id=f'{self.selection.job_id}-{kind.value}')
+
+
+LINEAGE_RUN_ID = 'KUMO_RUN_ID'
 
 
 def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
@@ -951,11 +968,20 @@ class Trainer:
 
         extra_fields = ([f.value for f in output_config.extra_fields]
                         if output_config is not None else [])
+        lineage = {}
+        if output_config is not None and output_config.lineage_columns:
+            lineage = {
+                name: value
+                for name, value in ((LINEAGE_RUN_ID, run_id),
+                                    ('KUMO_BUNDLE_ID', self.bundle_id),
+                                    ('KUMO_SNAPSHOT_ID', snapshot.id))
+                if value is not None
+            }
         source_identity = [
             snapshot.id, prediction_table.query, timestamps,
             sorted(kind.value for kind in artifacts), num_classes_to_return,
             threshold, extra_fields
-        ]
+        ] + ([lineage] if lineage else [])
         selection = score_prediction(
             materialized=materialized,
             model_dir=model_dir,
@@ -977,11 +1003,14 @@ class Trainer:
             forecast_options=forecast_options,
             embedding_models=self._embedding_models,
             encoders=encoders,
+            constant_columns=lineage,
         )
 
         del encoders
         _collect_garbage('predict')
-        result = PredictionResult(selection, artifact_type)
+        result = PredictionResult(selection, artifact_type,
+                                  bundle_id=self.bundle_id,
+                                  snapshot_id=snapshot.id)
         if output_config is not None:
             result._export(output_config)
         return result
