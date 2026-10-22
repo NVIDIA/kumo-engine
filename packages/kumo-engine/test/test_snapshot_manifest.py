@@ -11,7 +11,9 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from kumo_core.custom_sql import custom_sql_synthetic_name
 from kumo_core.sources.identity import SourceVersion
+from kumo_core.types import ConnectorType
 from kumo_core.version import get_kumo_version
 from kumoapi.graph import Edge
 from kumoapi.typing import Stype
@@ -227,7 +229,15 @@ def test_custom_sql_records_text_unless_sources_are_off(record_sources):
         'dependencies': {'orders': '17'},
     }
     if record_sources:
-        expected.update(sql='SELECT * FROM orders', dialect='snowflake')
+        expected.update(sql='SELECT * FROM orders', dialect='snowflake',
+                        namespace=['db', 'sch'])
+    reformatted = provenance.source_table(
+        SnowflakeConnector(warehouse='wh', database='db', schema_name='sch'),
+        'q', 'select *\n  from ORDERS -- note', version)
+    assert entry.pop('normalized_sql_fingerprint') == reformatted[
+        'normalized_sql_fingerprint'] == custom_sql_synthetic_name(
+            'SELECT * FROM orders', ConnectorType.SNOWFLAKE)
+    assert reformatted['location'] != entry['location']
     assert entry == expected
 
 

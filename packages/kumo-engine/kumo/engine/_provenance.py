@@ -143,10 +143,28 @@ def source_table(connector: Any, table_name: str, sql: Optional[str],
         entry['location'] = (source_location(connector, table_name, sql)
                              if record_sources or sql is not None else
                              table_name)
-        if sql is not None and record_sources:
-            entry['sql'] = sql
-            entry['dialect'] = entry['connector'].lower()
+        if sql is not None:
+            _record_sql(entry, connector, sql, record_sources)
     except Exception as error:
         warnings.warn(f"Could not record a source table's location: {error}",
                       UserWarning, stacklevel=3)
     return entry
+
+
+def _record_sql(entry: Dict[str, Any], connector: Any, sql: str,
+                record_sources: bool) -> None:
+    from kumo_core.custom_sql import (
+        CUSTOM_SQL_NAMESPACE_ATTRS,
+        custom_sql_synthetic_name,
+    )
+    from kumo_core.types import ConnectorType
+
+    kind = ConnectorType[entry['connector']]
+    entry['normalized_sql_fingerprint'] = custom_sql_synthetic_name(sql, kind)
+    if record_sources:
+        entry['sql'] = sql
+        entry['dialect'] = entry['connector'].lower()
+        entry['namespace'] = [
+            getattr(connector.config, attr)
+            for attr in CUSTOM_SQL_NAMESPACE_ATTRS[kind]
+        ]
