@@ -1,22 +1,14 @@
 # kumo-api
 
-The `kumo-api` library defines a RESTful API resource schema and specification
-for HTTP-compatible clients to interact with Kumo AI's cloud services. Resource
-schemas are defined as Pydantic dataclasses.
+Shared Pydantic schemas for Kumo's service and clients.
 
-While it is possible to interface with Kumo directly using these datamodels,
-users are recommended to install the Python SDK (via `pip install kumoai-studio`)
-for a smoother experience.
+The package is bundled into the `kumo-engine` release wheel.
 
 ## Development
 
-This package is maintained in the Kumo monorepo at `packages/kumo-api`.
 From the repository root:
 
 ```bash
 uv pip install -e 'packages/kumo-api[test]'
 uv run --no-project pytest packages/kumo-api/test
 ```
-
-Package-specific automation lives in `.github/workflows/kumo-api-*` at the
-repository root. See `MIGRATION.md` for history and release-ref details.

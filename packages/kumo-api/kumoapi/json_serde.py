@@ -139,5 +139,7 @@ def from_json(obj: Any, cls: Union[Type[T], object]) -> T:
     if isinstance(obj, str):
         obj = json.loads(obj)
     from pydantic import TypeAdapter
-    adapter = TypeAdapter(cls)
+
+    # cls can be a runtime type expression, including Union and generic aliases.
+    adapter = TypeAdapter(cls)  # ty: ignore[invalid-type-form]
     return adapter.validate_python(obj)
