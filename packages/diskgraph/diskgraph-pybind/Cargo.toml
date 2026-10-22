@@ -17,6 +17,7 @@ default = []
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
+gxhash = "3.5.0"
 # abi3-py311: build a single stable-ABI (limited API) extension whose
 # floor is CPython 3.11 (the org-wide minimum). One `cp311-abi3` wheel
 # loads unchanged on 3.11, 3.12, 3.13 and 3.14+ — no per-version

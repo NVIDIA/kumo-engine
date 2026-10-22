@@ -81,9 +81,11 @@ struct SequencePlan {
     columns: Vec<String>,
     order: SequenceOrder,
     limit: Option<usize>,
+    #[serde(default)]
+    output_order: Option<SequenceOrder>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SequenceOrder {
     Ascending,
@@ -631,6 +633,22 @@ fn take_batch(batch: &RecordBatch, rows: &[u64], columns: &[usize]) -> Result<Re
         .map_err(|error| error.to_string())
 }
 
+fn sort_frame_rows(rows: &mut [(usize, Option<i64>, ScalarValue)]) {
+    rows.sort_by_key(|row| row.1);
+    let mut start = 0;
+    while start < rows.len() {
+        let mut stop = start + 1;
+        while stop < rows.len() && rows[stop].1 == rows[start].1 {
+            stop += 1;
+        }
+        // Format the existing primary-key tie breaker only when time ties.
+        if stop - start > 1 {
+            rows[start..stop].sort_by_cached_key(|row| row.2.stable_sort_key());
+        }
+        start = stop;
+    }
+}
+
 fn materialize_frame(
     reader: &GraphIndexReader,
     plan: &FramePlan,
@@ -794,7 +812,7 @@ fn materialize_frame(
         let upper = plan
             .stop_seconds
             .map(|value| cutoffs[anchor].saturating_add(value));
-        let mut anchor_rows = Vec::<(usize, Option<i64>, (String, String))>::new();
+        let mut anchor_rows = Vec::<(usize, Option<i64>, ScalarValue)>::new();
         for row in input_offsets[anchor]..input_offsets[anchor + 1] {
             let timestamp = match time_position {
                 Some(position) => Some(
@@ -812,11 +830,10 @@ fn materialize_frame(
             }) {
                 continue;
             }
-            let key =
-                scalar_at(decoded.column(primary_key_position).as_ref(), row)?.stable_sort_key();
+            let key = scalar_at(decoded.column(primary_key_position).as_ref(), row)?;
             anchor_rows.push((row, timestamp, key));
         }
-        anchor_rows.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.2.cmp(&right.2)));
+        sort_frame_rows(&mut anchor_rows);
         for (row, timestamp, _) in anchor_rows {
             selected_rows.push(row as u64);
             node_ids.push(flat_nodes[row]);
@@ -869,6 +886,9 @@ fn sequence_result(
         }
         if let Some(limit) = plan.limit {
             rows.truncate(limit);
+        }
+        if plan.output_order.is_some_and(|order| order != plan.order) {
+            rows.reverse();
         }
         for row in rows {
             selected.push(row as u64);
@@ -1654,6 +1674,55 @@ pub(crate) fn config_error(error: String) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_sort_keeps_existing_tie_order_for_every_scalar_kind() {
+        use rand::{seq::SliceRandom, SeedableRng};
+        let keys = [
+            ScalarValue::Null,
+            ScalarValue::Bool(true),
+            ScalarValue::Bool(false),
+            ScalarValue::I64(-20),
+            ScalarValue::I64(2),
+            ScalarValue::I64(10),
+            ScalarValue::U64(u64::MAX),
+            ScalarValue::F64(-0.0),
+            ScalarValue::F64(f64::NAN),
+            ScalarValue::F64(f64::INFINITY),
+            ScalarValue::String("café".into()),
+            ScalarValue::String("\"a".into()),
+        ];
+        let mut rng = rand::rngs::StdRng::seed_from_u64(93);
+        for clock in 0..3 {
+            for _ in 0..100 {
+                let mut actual = (0..60)
+                    .map(|row| {
+                        (
+                            row,
+                            match clock {
+                                0 => None,
+                                1 => Some(0),
+                                _ => Some((row % 7) as i64),
+                            },
+                            keys[row % keys.len()].clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                actual.shuffle(&mut rng);
+                let mut expected = actual
+                    .iter()
+                    .map(|(row, time, key)| (*row, *time, key.stable_sort_key()))
+                    .collect::<Vec<_>>();
+                expected
+                    .sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.2.cmp(&right.2)));
+                sort_frame_rows(&mut actual);
+                assert_eq!(
+                    actual.iter().map(|row| row.0).collect::<Vec<_>>(),
+                    expected.iter().map(|row| row.0).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
 
     fn row(value: Option<ScalarValue>) -> OwnedRow {
         OwnedRow {
