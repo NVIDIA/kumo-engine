@@ -5,6 +5,7 @@
 import posixpath
 import shutil
 from abc import ABC, abstractmethod
+from functools import partial
 from pathlib import Path
 from typing import Mapping, Optional, Tuple
 
@@ -31,6 +32,9 @@ class ObjectStoreSinkBackend(ABC):
         """Return the authenticated filesystem and validated bucket/key path."""
         raise NotImplementedError
 
+    def _uri(self, path: str) -> str:
+        return f'{self.scheme}://{path}'
+
     def write_table(
         self,
         connector: SourceConnector,
@@ -41,7 +45,11 @@ class ObjectStoreSinkBackend(ABC):
         *,
         export_id: Optional[str] = None,
     ) -> str:
-        """Write a frame as one object, or parts when the path ends in a slash."""
+        """Write a frame as one object, or parts when the path ends in a slash.
+
+        Streaming output is not transactional: Arrow closes its output stream
+        after serialization errors, which can publish partial data.
+        """
         del project_id
         if write_mode is not WriteMode.OVERWRITE:
             raise NotImplementedError(
@@ -65,12 +73,14 @@ class ObjectStoreSinkBackend(ABC):
         from kumo_core.sources import layout
         filesystem, path = self._destination(connector, table_name)
         kind = layout.file_type(path.rstrip('/')) or layout.PARQUET
-        storage = _ArrowExportFiles(filesystem, extra_columns)
+        storage = _ArrowExportFiles(
+            filesystem, extra_columns, upload=partial(self._upload_file,
+                                                      filesystem))
         _, output = export_selected_files(files, path, fs=storage,
                                           identity=export_id or str(files),
                                           file_type=kind,
                                           convert_csv=storage.convert_csv)
-        return f'{self.scheme}://{output}'
+        return self._uri(output)
 
     def publish_model(
         self,
@@ -103,15 +113,25 @@ class ObjectStoreSinkBackend(ABC):
                              if item.is_file()):
             target = f'{destination}/{source.relative_to(root).as_posix()}'
             _prepared(filesystem, posixpath.dirname(target))
-            with open(source, 'rb') as reader, \
-                    filesystem.open_output_stream(target) as writer:
-                shutil.copyfileobj(reader, writer, _CHUNK)
+            self._upload_file(filesystem, str(source), target)
         return PublishedModel(
             name=posixpath.basename(destination),
             version=destination,
-            uri=f'{self.scheme}://{destination}',
+            uri=self._uri(destination),
             metadata=dict(metadata),
         )
+
+    def _upload_file(self, filesystem, source, destination):
+        """Providers may transfer an already prepared local file directly."""
+        with open(source, 'rb') as reader, \
+                filesystem.open_output_stream(destination) as writer:
+            shutil.copyfileobj(reader, writer, _CHUNK)
+
+    def _download_file(self, filesystem, source, destination):
+        """Providers may transfer a model file without the streaming fallback."""
+        with filesystem.open_input_stream(source) as reader, \
+                open(destination, 'wb') as writer:
+            shutil.copyfileobj(reader, writer, _CHUNK)
 
     def fetch_model(
         self,
@@ -156,15 +176,13 @@ class ObjectStoreSinkBackend(ABC):
             # the local bundle, even when it contains parent components.
             target = destination / confined(info.path[len(source) + 1:])
             target.parent.mkdir(parents=True, exist_ok=True)
-            with filesystem.open_input_stream(info.path) as reader, \
-                    open(target, 'wb') as writer:
-                shutil.copyfileobj(reader, writer, _CHUNK)
+            self._download_file(filesystem, info.path, str(target))
         if not found:
             raise ValueError(
                 f"Nothing is published at {self.scheme}://{source}. Check the "
                 f"path the model was exported to.")
         return PublishedModel(name=posixpath.basename(source), version=source,
-                              uri=f'{self.scheme}://{source}')
+                              uri=self._uri(source))
 
     def _write(self, filesystem: FileSystem, frame: pd.DataFrame, path: str,
                export_id: Optional[str] = None) -> str:
@@ -186,12 +204,12 @@ class ObjectStoreSinkBackend(ABC):
                        kind)
             with filesystem.open_output_stream(f'{directory}/_SUCCESS'):
                 pass
-            return f'{self.scheme}://{directory}/'
+            return self._uri(f'{directory}/')
         if not path.casefold().endswith(f'.{kind}'):
             path += f'.{kind}'
         _prepared(filesystem, posixpath.dirname(path))
         _write_one(filesystem, frame, path, kind)
-        return f'{self.scheme}://{path}'
+        return self._uri(path)
 
     def _occupied(self, filesystem: FileSystem, directory: str,
                   marker: Optional[str]) -> bool:
@@ -259,9 +277,10 @@ def _marker(export_id: Optional[str]) -> Optional[str]:
 
 class _ArrowExportFiles:
     """Adapt authenticated Arrow output to the shared hosted export operation."""
-    def __init__(self, filesystem, extra_columns):
+    def __init__(self, filesystem, extra_columns, upload=None):
         self.filesystem = filesystem
         self.extra_columns = extra_columns
+        self.upload = upload
 
     def exists(self, path):
         from pyarrow.fs import FileType
@@ -309,6 +328,9 @@ class _ArrowExportFiles:
         # CSV conversion already applied this destination's metadata.
         columns = self.extra_columns if source.endswith('.parquet') else None
         with prepared_artifact_file(source, columns) as prepared:
+            if self.upload is not None:
+                self.upload(prepared, destination)
+                return
             with open(prepared,
                       'rb') as reader, self.filesystem.open_output_stream(
                           destination) as writer:

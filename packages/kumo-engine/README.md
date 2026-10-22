@@ -29,6 +29,7 @@ The base install reads local CSV and Parquet files. For other data sources, inst
 | --- | --- |
 | Amazon S3 | `pip install "kumo-engine[s3]"` |
 | Google Cloud Storage | `pip install "kumo-engine[gcs]"` |
+| Azure Data Lake Storage Gen2 | `pip install "kumo-engine[adls]"` |
 | BigQuery | `pip install "kumo-engine[bigquery]"` |
 | Snowflake | `pip install "kumo-engine[snowflake]"` |
 | Databricks | `pip install "kumo-engine[databricks]"` |
@@ -91,6 +92,7 @@ To use your own data, point `FileConnector` at a directory of CSV or Parquet fil
 
 ## Documentation
 
+- [ADLS connector guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-adls/README.md): setup, authentication, supported reads and exports.
 - [Kumo Engine documentation](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview): prerequisites, GPU sizing, installation, and end-to-end workflows. Its User Code Guide covers connecting data, tables and graphs, training, and prediction.
 - [Predictive query examples](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/workflows-and-solutions/predictive-query-examples): common prediction tasks written as predictive queries.
 
