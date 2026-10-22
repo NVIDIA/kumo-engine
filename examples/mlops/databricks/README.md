@@ -22,7 +22,12 @@ cluster. Each task is a `spark_python_task` running a job script with
    volume and set `kumo_engine_wheel` and `requirements`. Start the
    requirements file with `--prefer-binary`: DBR 16.4's setuptools cannot
    build the SQLAlchemy sdist MLflow pulls. Each task installs the
-   requirements, then the wheel.
+   requirements, then the wheel. On an ML runtime, kumo-engine's torch
+   replaces the preinstalled one and the runtime's torchvision then fails on
+   import (`operator torchvision::nms does not exist`): add the matching build,
+   e.g. `torchvision==0.27.0+cpu` for `torch==2.12.0+cpu` (with
+   `--extra-index-url https://download.pytorch.org/whl/cpu`), or use a non-ML
+   runtime.
 2. Replace the `<...>` placeholders in `databricks.yml` (or pass
    `--var catalog=...`). The parent folder of the MLflow experiment
    path must already exist in the workspace.
