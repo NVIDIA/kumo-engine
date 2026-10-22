@@ -169,11 +169,13 @@ def _user_tags(tags: Optional[Mapping[str, Any]],
 def _scheduler_tags() -> Dict[str, str]:
     from kumo.engine._provenance import scheduler_context
 
-    scheduler = scheduler_context() or {}
+    scheduler = scheduler_context()
+    if scheduler is None:
+        return {}
     tags = {
-        'kumo.scheduler': scheduler.get('platform'),
-        'kumo.job_id': scheduler.get('job_id'),
-        'kumo.job_run_id': scheduler.get('job_run_id'),
+        'kumo.scheduler': scheduler.platform,
+        'kumo.job_id': scheduler.job_id,
+        'kumo.job_run_id': scheduler.job_run_id,
     }
     return {key: str(value) for key, value in tags.items() if value}
 

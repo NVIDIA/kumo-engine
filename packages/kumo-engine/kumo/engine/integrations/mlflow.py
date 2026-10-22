@@ -31,6 +31,7 @@ from typing import (
 from kumoapi.plugin import PublishedModel, check_model_alias
 
 from kumo.engine._events import Event
+from kumo.engine._manifest import BundleProvenance
 from kumo.engine._tracking import DROPPED_PARAMS, INPUT_FIELDS, RunRecord
 from kumo.engine._version import __version__
 from kumo.engine.connector._extras import import_provider
@@ -299,7 +300,7 @@ def log_model(
         raise ValueError('log_model requires a fitted or loaded Trainer')
     with _in_run(mlflow, run_id) as active:
         _log_inputs(mlflow, mlflow.MlflowClient(), active,
-                    _provenance_inputs(result.provenance or {}))
+                    _provenance_inputs(result.provenance))
         info = _log_model(mlflow, result, snapshot, name=name, run_id=active,
                           serving_snapshot=serving_snapshot)
     if result.metrics:
@@ -370,15 +371,19 @@ def _log_model(mlflow: Any, result: 'TrainingResult',
 
 
 def _provenance_inputs(
-        provenance: Mapping[str, Any]) -> Dict[str, Mapping[str, Any]]:
-    tables = dict(provenance.get('source_tables') or {})
-    custom = provenance.get('training_table') or {}
-    if custom.get('location'):
+    provenance: Optional[BundleProvenance]
+) -> Dict[str, Mapping[str, Any]]:
+    if provenance is None:
+        return {}
+    tables = dict(provenance.source_tables or {})
+    custom = (None if provenance.training_table is None else
+              provenance.training_table.source_table)
+    if custom is not None and custom.location:
         tables['training_table'] = custom
     return {
-        name: {key: entry.get(key)
+        name: {key: getattr(entry, key)
                for key in INPUT_FIELDS}
-        for name, entry in tables.items() if isinstance(entry, Mapping)
+        for name, entry in tables.items()
     }
 
 

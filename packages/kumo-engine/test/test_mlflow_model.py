@@ -75,7 +75,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     assert info.metadata == {'kumo_bundle_id': result.bundle_id}
     provenance = json.loads(mlflow.artifacts.load_text(
         f'{model.artifact_location}/artifacts/provenance.json'))
-    assert provenance == result.provenance
+    assert provenance == result.provenance.to_dict()
     assert provenance['tracking'] == {
         'run_id': parent.data.tags['kumo.run_id']
     }
