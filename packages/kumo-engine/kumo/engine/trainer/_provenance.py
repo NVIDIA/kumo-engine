@@ -7,7 +7,7 @@ import warnings
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 from kumo_core.types import TaskType
 
@@ -17,6 +17,7 @@ from kumo.engine._manifest import (
     BundleProvenance,
     BundleTrainingTable,
     FitTiming,
+    HoldoutStats,
     SourceTableEntry,
     TrackingRef,
     read_manifest,
@@ -46,7 +47,7 @@ def write_provenance(
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
 
     finished_at = datetime.now(timezone.utc)
-    holdout: Optional[Dict[str, Any]] = None
+    holdout: Optional[HoldoutStats] = None
     if holdout_path is not None and task_type in SCORE_COLUMNS:
         try:
             holdout = holdout_baseline(holdout_path, task_type,
@@ -122,9 +123,8 @@ def read_provenance(bundle_dir: Path) -> Optional[BundleProvenance]:
     return None if path is None else read_manifest(path, BundleProvenance)
 
 
-
 def holdout_baseline(path: Path, task_type: TaskType, *,
-                     truncated: Optional[bool]) -> Dict[str, Any]:
+                     truncated: Optional[bool]) -> HoldoutStats:
     from kumo.engine._score_stats import (
         TOP_SCORE,
         parquet_stats,
@@ -132,16 +132,19 @@ def holdout_baseline(path: Path, task_type: TaskType, *,
         top_score_stats,
     )
 
-    record: Dict[str, Any] = {'truncated': truncated}
     if task_type is TaskType.BINARY_CLASSIFICATION:
         stats = parquet_stats([path], ['True_PROB', 'TARGET'])
-        record.update(rows=stats['TARGET']['count'],
-                      columns={'True_PROB': stats['True_PROB']},
-                      label_positive_rate=positive_rate(stats['TARGET']))
-    elif task_type.has_numerical_target:
+        return HoldoutStats.from_dict({
+            'truncated': truncated,
+            'rows': stats['TARGET']['count'],
+            'columns': {'True_PROB': stats['True_PROB']},
+            'label_positive_rate': positive_rate(stats['TARGET']),
+        })
+    if task_type.has_numerical_target:
         columns = parquet_stats([path], ['TARGET_PRED', 'TARGET'])
-        record.update(rows=columns['TARGET_PRED']['count'], columns=columns)
-    else:
-        top = top_score_stats([path])
-        record.update(rows=top['count'], columns={TOP_SCORE: top})
-    return record
+        return HoldoutStats(truncated=truncated,
+                            rows=columns['TARGET_PRED']['count'],
+                            columns=columns)
+    top = top_score_stats([path])
+    return HoldoutStats(truncated=truncated, rows=top['count'],
+                        columns={TOP_SCORE: top})

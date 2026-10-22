@@ -159,5 +159,5 @@ def test_holdout_stats_failure_keeps_provenance(tmp_path, monkeypatch):
         result = _finish_stub_fit(tmp_path / 'bundle',
                                   kumo.Trainer(ModelPlan()),
                                   holdout_path=tmp_path / 'test_df.parquet')
-    assert result.provenance['parents']['training_table'] == 'tt-1'
-    assert 'holdout' not in result.provenance
+    assert result.provenance.parents.training_table == 'tt-1'
+    assert result.provenance.holdout is None
