@@ -114,6 +114,7 @@ def test_fit_then_score_locally(tmp_path, monkeypatch, capsys):
     assert fit['status'] == 'succeeded', fit
     assert fit['scheduler']['job_run_id'] == 'run-1'
     assert fit['outputs']['model']['uri']
+    assert fit['outputs']['model']['version'] is None
 
     monkeypatch.setenv('KUMO_MODEL_PATH', 'runs/run-1/model')
     _module('score_job').main(['--job-id', 'local', '--job-run-id', 'run-2'])

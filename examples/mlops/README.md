@@ -32,7 +32,8 @@ KUMO_MODEL_PATH=runs/run-1/model python score_job.py --job-id local --job-run-id
 ```
 
 Without `KUMO_REGISTRY` the fit publishes the model to
-`<artifact dir>/runs/<fit run>/model` (also in its summary's `outputs.model`),
+`<artifact dir>/runs/<fit run>/model` (its summary's `outputs.model.uri`; the
+`version` there is null, as no registry assigned one),
 and the score job loads the path `KUMO_MODEL_PATH` names under
 `KUMO_ARTIFACT_ROOT`; scheduled score runs have their own run ids, so set it to
 the fit run you want to score with. The query needs

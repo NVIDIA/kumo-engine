@@ -47,10 +47,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
         registered = getattr(tracking, 'registered', None)
         published = registered or result.published_model
-        run.record(
-            bundle_id=result.bundle_id,
-            run_id=getattr(tracking, 'run_id', None),
-            outputs={'model': published and asdict(published)})
+        model = published and asdict(published)
+        if model and not os.environ.get('KUMO_REGISTRY'):
+            model['version'] = None
+        run.record(bundle_id=result.bundle_id,
+                   run_id=getattr(tracking, 'run_id', None),
+                   outputs={'model': model})
 
 
 if __name__ == '__main__':
