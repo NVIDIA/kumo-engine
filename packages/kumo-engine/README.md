@@ -184,6 +184,21 @@ print(prediction_result.files)     # selected Parquet files
 predictions = prediction_result.frame  # collect them into a pandas DataFrame
 ```
 
+### Progress events
+
+`fit(callbacks=[...])` calls each callback with every progress `Event`:
+`fit_started`, then per search trial `trial_started`, `epoch_ended` and
+`trial_ended`, then `fit_ended`. Ended events carry `params["status"]` and, on
+failure, a short `params["error"]`. A callback that raises is logged and not
+called again; it never fails the fit. For JSON lines on stdout:
+
+```python
+import json
+
+trainer.fit(training_table, snapshot=snapshot,
+            callbacks=[lambda e: print(json.dumps(e.to_dict()))])
+```
+
 ### Holdout predictions
 
 `fit_result.holdout_df()` reads test predictions from `holdout_path` into a pandas
