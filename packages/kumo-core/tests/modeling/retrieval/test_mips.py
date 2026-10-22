@@ -3,9 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 import pytest
 import torch
+from kumo_core.modeling.retrieval.mips import MIPSBruteForce, MIPSFaiss
 from torch_geometric.testing import noMac, withCUDA
 
-from kumo_core.modeling.retrieval.mips import MIPSBruteForce, MIPSFaiss
+
+def require_backend(device: torch.device) -> None:
+    faiss = pytest.importorskip('faiss')
+    if device.type == 'cuda' and not hasattr(faiss, 'StandardGpuResources'):
+        pytest.skip('CUDA retrieval requires GPU FAISS')
 
 
 @noMac
@@ -27,6 +32,7 @@ def test_mips_faiss(
     with_exclude: bool,
     requires_grad: bool,
 ) -> None:
+    require_backend(device)
     lhs = torch.randn(
         (num_lhs, dim),
         dtype=dtype,
@@ -126,6 +132,8 @@ def test_empty(
     cls: type[MIPSBruteForce | MIPSFaiss],
     device: torch.device,
 ) -> None:
+    if cls is MIPSFaiss:
+        require_backend(device)
     lhs = torch.randn(4, 8, device=device)
     rhs = torch.randn(0, 8, device=device)
     mips_structure = cls(rhs)

@@ -28,6 +28,8 @@ classifiers=[
 ]
 
 [project.optional-dependencies]
+faiss-cpu=["kumo-core[faiss-cpu]>=0.1.0.dev1"]
+faiss-gpu=["kumo-core[faiss-gpu]>=0.1.0.dev1"]
 test=[
     "boto3>=1.34,<2",
     "botocore>=1.34,<2",
@@ -37,8 +39,7 @@ test=[
     "pytest-mock",
     "torch>=2.9,<2.13",
 ]
-# kumo-core (Torch/PyG/DiskGraph/faiss-gpu included, via the `gpu` extra) is
-# a required dependency of this package now, not an extra -- see setup.py.
+# kumo-core (Torch/PyG/DiskGraph included) is required; Faiss is optional.
 # Unlike kumo-sdk, where the equivalent `core` extra is optional because
 # CloudBackend is the default path, this package has no non-training use
 # case. These per-vendor extras only need to add their own plugin package on

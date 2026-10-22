@@ -29,29 +29,38 @@ an automatic repair.
 
 ## Choose the core Faiss dependency
 
-The local SDK imports core code that requires Faiss. Bare `kumo-core` does not
-install either Faiss variant. Choose one of these installation inputs according
-to the workload and environment:
+Faiss is optional for the local SDK and core runtime. Install one variant when
+using link-prediction retrieval; without it, those operations raise an
+actionable error. Other tasks do not need Faiss. The same extras are available
+on `kumo-engine`, `kumo-core`, and the assembled engine bundle:
 
 | Package selection | When to use it | Faiss dependency |
 | --- | --- | --- |
-| `kumo-core[cpu]` | Use CPU Faiss, including CPU workloads on a GPU node | Installs `faiss-cpu` |
-| `kumo-core[gpu]` | Use GPU Faiss with a compatible GPU, driver, and CUDA runtime | Installs `faiss-gpu` |
-| `kumo-core` | Reuse a compatible Faiss installation already provided by your environment | Installs neither variant |
+| `kumo-engine[faiss-cpu]` | Run retrieval on the CPU | Installs `faiss-cpu` |
+| `kumo-engine[faiss-gpu]` | Run retrieval with a compatible GPU, driver, and CUDA runtime | Installs `faiss-gpu` |
+| `kumo-engine` | Run without retrieval, or use an existing compatible Faiss installation | Installs neither variant |
 
 The [core package metadata](../../packages/kumo-core/pyproject.toml) specifies
 the versions for each extra. These extras select the Faiss dependency; they do
 not select the PyTorch CPU/CUDA build or provision a complete GPU environment.
 A GPU node can still use CPU Faiss. Select one variant per environment rather
-than combining `[cpu,gpu]`.
+than combining `[faiss-cpu,faiss-gpu]`. CPU Faiss cannot perform CUDA retrieval;
+select a CPU device for that workload. There is no automatic PyTorch fallback.
 
-For an in-tree installation, use `'./packages/kumo-core[cpu]'`,
-`'./packages/kumo-core[gpu]'`, or `./packages/kumo-core` as the corresponding
+For ARM GPU execution, install your compatible source-built `faiss-gpu` wheel
+before installing `kumo-engine`, or supply its directory with `--find-links`
+when installing `kumo-engine[faiss-gpu]`. The extra requires the version pinned
+in core metadata. Service CPU/GPU extras and their source-build workflows keep
+their explicit Faiss selection. Core test/dev extras do not select Faiss;
+add the matching Faiss extra when running retrieval tests.
+
+For an in-tree installation, use `'./packages/kumo-core[faiss-cpu]'`,
+`'./packages/kumo-core[faiss-gpu]'`, or `./packages/kumo-core` as the corresponding
 package input to your installer, alongside the other in-tree packages and
 runtime prerequisites.
 
 The [local SDK example](../../examples/sdk-local/README.md) was tested using
-`[cpu]`. You can retain an already installed compatible Faiss variant instead;
+CPU Faiss. You can retain an already installed compatible Faiss variant instead;
 run the example to check the local SDK workflow after preparing the environment.
 
 ## Working with an existing environment

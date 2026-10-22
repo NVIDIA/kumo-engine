@@ -12,8 +12,8 @@ No Kumo service, account, connector credentials, or external dataset is needed.
 Use a [development environment](../../docs/development/setup.md) with the
 runtime dependencies already installed, including DiskGraph and its native
 ingest executable. Follow the [Faiss selection guide](../../docs/development/setup.md#choose-the-core-faiss-dependency)
-to choose `kumo-core[cpu]`, `kumo-core[gpu]`, or reuse a compatible preinstalled
-Faiss with bare `kumo-core`.
+to choose `kumo-core[faiss-cpu]` or `kumo-core[faiss-gpu]` for retrieval.
+Bare `kumo-core` supports other tasks and compatible preinstalled Faiss.
 From the repository root:
 
 ```bash

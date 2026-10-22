@@ -2904,6 +2904,7 @@ tracing = [
 
 [package.dev-dependencies]
 public-tests = [
+    { name = "kumo-core", extra = ["faiss-gpu"], marker = "(extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra != 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests') or (extra != 'extra-4-kumo-cpu' and extra != 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests')" },
     { name = "torch", version = "2.12.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests')" },
     { name = "torch", version = "2.12.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests')" },
 ]
@@ -3106,7 +3107,10 @@ requires-dist = [
 provides-extras = ["tracing", "drawing", "rest", "full", "test", "dev", "data-platform", "cpu", "cu130", "cu132"]
 
 [package.metadata.requires-dev]
-public-tests = [{ name = "torch", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "kumo", group = "public-tests" } }]
+public-tests = [
+    { name = "kumo-core", extras = ["faiss-gpu"], editable = "packages/kumo-core" },
+    { name = "torch", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "kumo", group = "public-tests" } },
+]
 
 [[package]]
 name = "kumo-api"
@@ -3222,7 +3226,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "faiss-gpu" },
     { name = "packaging" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -3235,7 +3238,6 @@ faiss-gpu = [
     { name = "faiss-gpu" },
 ]
 test = [
-    { name = "faiss-gpu" },
     { name = "packaging" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -3248,9 +3250,7 @@ text = [
 requires-dist = [
     { name = "diskgraph", editable = "packages/diskgraph" },
     { name = "faiss-cpu", marker = "extra == 'faiss-cpu'", specifier = "==1.14.2" },
-    { name = "faiss-gpu", marker = "extra == 'dev'", specifier = "==1.14.3" },
     { name = "faiss-gpu", marker = "extra == 'faiss-gpu'", specifier = "==1.14.3" },
-    { name = "faiss-gpu", marker = "extra == 'test'", specifier = "==1.14.3" },
     { name = "filelock", specifier = ">=3.13.1" },
     { name = "fsspec", specifier = ">=2023.5.0" },
     { name = "kumo-api", editable = "packages/kumo-api" },
@@ -3322,7 +3322,7 @@ source = { editable = "packages/kumo-engine" }
 dependencies = [
     { name = "filelock" },
     { name = "kumo-api" },
-    { name = "kumo-core", extra = ["faiss-gpu"] },
+    { name = "kumo-core" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },
@@ -3335,6 +3335,12 @@ bigquery = [
 ]
 databricks = [
     { name = "kumo-databricks" },
+]
+faiss-cpu = [
+    { name = "kumo-core", extra = ["faiss-cpu"] },
+]
+faiss-gpu = [
+    { name = "kumo-core", extra = ["faiss-gpu"] },
 ]
 gcs = [
     { name = "kumo-gcs" },
@@ -3370,7 +3376,9 @@ requires-dist = [
     { name = "filelock", specifier = ">=3.0.0" },
     { name = "kumo-api", editable = "packages/kumo-api" },
     { name = "kumo-bigquery", marker = "extra == 'bigquery'", editable = "packages/kumo-bigquery" },
-    { name = "kumo-core", extras = ["faiss-gpu"], editable = "packages/kumo-core" },
+    { name = "kumo-core", editable = "packages/kumo-core" },
+    { name = "kumo-core", extras = ["faiss-cpu"], marker = "extra == 'faiss-cpu'", editable = "packages/kumo-core" },
+    { name = "kumo-core", extras = ["faiss-gpu"], marker = "extra == 'faiss-gpu'", editable = "packages/kumo-core" },
     { name = "kumo-databricks", marker = "extra == 'databricks'", editable = "packages/kumo-databricks" },
     { name = "kumo-gcs", marker = "extra == 'gcs'", editable = "packages/kumo-gcs" },
     { name = "kumo-glove-6b-50d", marker = "extra == 'text'", editable = "tools/glove-6b-50d" },
@@ -3385,7 +3393,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'test'", specifier = ">=2.9,<2.13" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
 ]
-provides-extras = ["test", "snowflake", "databricks", "bigquery", "s3", "text", "gcs"]
+provides-extras = ["faiss-cpu", "faiss-gpu", "test", "snowflake", "databricks", "bigquery", "s3", "text", "gcs"]
 
 [[package]]
 name = "kumo-gcs"

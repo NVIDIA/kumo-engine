@@ -110,11 +110,14 @@ def _wheel(directory, name, requires=(), extras=(), tag='py3-none-any',
 
 CORE_COMPONENTS = ['kumo-engine', 'kumo-api', 'kumo-pql', 'kumo-core',
                    'diskgraph']
-ENGINE_EXTRAS = ['snowflake', 'databricks', 's3', 'text', 'test']
+ENGINE_EXTRAS = ['snowflake', 'databricks', 's3', 'text', 'test',
+                 'faiss-cpu', 'faiss-gpu']
 COMPONENTS = {
     'kumo-engine': {
         'requires': [
-            'pandas', 'kumo-core[gpu]>=1.0', 'pytest; extra == "test"',
+            'pandas', 'kumo-core>=1.0', 'pytest; extra == "test"',
+            'kumo-core[faiss-cpu]>=1.0; extra == "faiss-cpu"',
+            'kumo-core[faiss-gpu]>=1.0; extra == "faiss-gpu"',
             'kumo-snowflake[sdk]>=1.0; extra == "snowflake"',
             'kumo-databricks; extra == "databricks"', 'kumo-s3; extra == "s3"',
             'kumo-glove-6b-50d==1.0.0; extra == "text"'
@@ -126,10 +129,10 @@ COMPONENTS = {
         'requires': [
             'requests>=2.31', 'torch>=2.7.0,<3', 'diskgraph>=0.1.0',
             'kumo-api>=3', 'kumo-pql>=0.1', 'torch-geometric>=2.8.1,<3',
-            'faiss-gpu==1.14.3; extra == "gpu"',
-            'faiss-cpu==1.14.2; extra == "cpu"'
+            'faiss-gpu==1.14.3; extra == "faiss-gpu"',
+            'faiss-cpu==1.14.2; extra == "faiss-cpu"'
         ],
-        'extras': ['gpu', 'cpu'],
+        'extras': ['faiss-gpu', 'faiss-cpu'],
     },
     'kumo-api': {
         'requires': ['pydantic>=2.7'],
@@ -214,7 +217,7 @@ def test_provider_dependencies_only_come_with_their_extra(tmp_path, providers):
     requirements = set(metadata.get_all('Requires-Dist'))
 
     # Base install: engine + core closure, no provider dependency at all.
-    base = {'pandas', 'requests>=2.31', 'torch>=2.7.0,<3', 'faiss-gpu==1.14.3',
+    base = {'pandas', 'requests>=2.31', 'torch>=2.7.0,<3',
             'pydantic>=2.7', 'antlr4-python3-runtime==4.9.3',
             'torch-geometric>=2.8.1,<3'}
     assert {r for r in requirements if 'extra ==' not in r} == base
@@ -234,10 +237,13 @@ def test_provider_dependencies_only_come_with_their_extra(tmp_path, providers):
     }
     assert requirements - base == set().union(
         {'kumo-glove-6b-50d==1.0.0; extra == "text"'},
+        {'faiss-cpu==1.14.2; extra == "faiss-cpu"',
+         'faiss-gpu==1.14.3; extra == "faiss-gpu"'},
         *(expected_extras[p] for p in providers))
     # `test` is a development extra; `text` points at the PyPI glove package.
     provided = set(metadata.get_all('Provides-Extra'))
-    assert provided == {'text', *(p.removeprefix('kumo-') for p in providers)}
+    assert provided == {'text', 'faiss-cpu', 'faiss-gpu',
+                        *(p.removeprefix('kumo-') for p in providers)}
     # Extras for providers that are not bundled would point at a package that
     # is not on any index; the only first-party requirement left is glove.
     assert {r
