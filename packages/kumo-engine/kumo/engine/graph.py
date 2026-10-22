@@ -221,11 +221,14 @@ class GraphSnapshot:
             `TrainingWorkflowRequest.from_spec`/`materialize(...)`). Computed
             once here, at snapshot time, rather than being rebuilt on every
             `Trainer.fit`/`predict` call.
+        record_sources: the `record_sources` choice this snapshot was taken
+            with; `None` when unknown (built elsewhere or loaded).
     """
 
     id: str
     index_path: Path
     graph_config: Dict[str, Any]
+    record_sources: bool | None = field(default=None, compare=False)
 
     @property
     def manifest(self) -> Dict[str, Any] | None:
@@ -582,6 +585,7 @@ class Graph:
                 id=snapshot_id,
                 index_path=Path(result.index_path),
                 graph_config=graph_config,
+                record_sources=record_sources,
             )
         finally:
             discard_destination(str(persist_dir))

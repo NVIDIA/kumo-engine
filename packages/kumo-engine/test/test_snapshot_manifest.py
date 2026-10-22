@@ -239,9 +239,11 @@ def test_record_sources_false_keeps_table_names_only(make_snapshot,
     assert {alias: e['location'] for alias, e in sources.items()} == names
     assert str(tmp_path) not in json.dumps(redacted.manifest)
     assert redacted.manifest['record_sources'] is False
+    assert redacted.record_sources is False
 
     full = make_snapshot(record_sources=True)
     assert full == redacted
+    assert full.record_sources is True
     assert full.manifest['parents']['source_tables']['ents'][
         'location'] == str((tmp_path / 'data' / 'ents.parquet').resolve())
     assert full.manifest['created_at'] == redacted.manifest['created_at']
