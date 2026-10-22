@@ -195,6 +195,21 @@ def test_export_repairs_files_a_dying_concurrent_export_wiped(
         snapshot.index_path)
 
 
+def test_export_gives_up_when_another_export_keeps_wiping_it(
+        scratch, graph, exports, monkeypatch):
+    write = snapshot_io._write
+
+    def wipe_before_commit(filesystem, path, payload):
+        if path.endswith('/index/_MANIFEST.json'):
+            shutil.rmtree(Path(path).parent)
+        return write(filesystem, path, payload)
+
+    monkeypatch.setattr(snapshot_io, '_write', wipe_before_commit)
+    with pytest.raises(snapshot_io.ConcurrentExportError,
+                       match='keeps replacing it'):
+        graph.snapshot().export(exports, 'one')
+
+
 def test_failed_upload_is_retried_with_a_fresh_client(
         scratch, graph, exports, monkeypatch):
     open_output, clients = snapshot_io._open_output, []
