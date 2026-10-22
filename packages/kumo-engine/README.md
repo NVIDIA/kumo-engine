@@ -447,9 +447,11 @@ that scores where `kumo-engine[s3,gcs]` of the same version is installed (its
 pip requirement); `load_model(uri)` restores the `Trainer`.
 `MlflowTracking(registered_model_name=..., aliases=...)` logs, registers and
 aliases the fit's model on the fit run (a failed fit logs none). `fit()` waits
-for the upload and registration however long they take, before it returns;
-if they fail, `fit()` warns, still returns its result, and the run ends
-`FAILED`. The model's metadata is `kumo_bundle_id`; its `provenance.json`
+for the upload and registration before it returns, for up to an hour, with a
+600 s MLflow HTTP timeout during the upload (unless
+`MLFLOW_HTTP_REQUEST_TIMEOUT` is set); if they fail, the tracking thread stops
+or the hour passes, `fit()` warns, still returns its result, the run ends
+`FAILED`, and a model that finishes uploading later is not registered. The model's metadata is `kumo_bundle_id`; its `provenance.json`
 artifact is the bundle's. A tracker can do the same through the optional
 `log_model(result, snapshot)` protocol member.
 

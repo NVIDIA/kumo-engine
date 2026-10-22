@@ -19,6 +19,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    FrozenSet,
     Iterator,
     Mapping,
     Optional,
@@ -51,6 +52,8 @@ _HTTP_LIMITS = {
     'MLFLOW_HTTP_REQUEST_MAX_RETRIES': '2',
     'MLFLOW_HTTP_REQUEST_TIMEOUT': '30',
 }
+# Model upload only, and only where the limits above apply.
+_UPLOAD_HTTP = {'MLFLOW_HTTP_REQUEST_TIMEOUT': '600'}
 _PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS', 'ADLS')
 
 
@@ -116,6 +119,7 @@ class MlflowTracking:
         self._children: Dict[Tuple[int, int], str] = {}
         self._artifacts: Set[str] = set()
         self._model_id: Optional[str] = None
+        self._http_owned: FrozenSet[str] = frozenset()
         self._guard = ExitStack()
 
     def prepare(self) -> None:
@@ -126,7 +130,9 @@ class MlflowTracking:
         self._reset()
         self.run_id = None
         self.registered = None
-        self._guard.enter_context(_limited_http())
+        self._http_owned = frozenset(name for name in _HTTP_LIMITS
+                                     if name not in os.environ)
+        self._guard.enter_context(_limited_http(self._http_owned))
         try:
             autologging = import_provider('mlflow.utils.autologging_utils',
                                           'mlflow')
@@ -180,11 +186,25 @@ class MlflowTracking:
 
     def log_model(self, result: 'TrainingResult',
                   snapshot: 'GraphSnapshot') -> None:
-        if not self.logs_model or self._parent is None:
+        run_id = self._parent
+        if not self.logs_model or run_id is None:
             return
-        info = _log_model(self._mlflow, result, snapshot, name='model',
-                          run_id=self._parent,
-                          serving_snapshot=self.serving_snapshot)
+        upload = {
+            name: value
+            for name, value in _UPLOAD_HTTP.items() if name in self._http_owned
+        }
+        os.environ.update(upload)
+        try:
+            info = _log_model(self._mlflow, result, snapshot, name='model',
+                              run_id=run_id,
+                              serving_snapshot=self.serving_snapshot)
+        finally:
+            if self._parent == run_id:
+                os.environ.update({name: _HTTP_LIMITS[name] for name in upload})
+        if self._parent != run_id:
+            logger.warning('The fit run %s ended before its model was '
+                           'logged; the model is not registered', run_id)
+            return
         self._model_id = info.model_id
         if self.registered_model_name is not None:
             self.registered = _register(self._mlflow, info,
@@ -472,11 +492,10 @@ def _quietly(function: Callable[..., Any], *args: Any) -> None:
 
 
 @contextmanager
-def _limited_http() -> Iterator[None]:
-    unset = [name for name in _HTTP_LIMITS if name not in os.environ]
-    os.environ.update({name: _HTTP_LIMITS[name] for name in unset})
+def _limited_http(names: FrozenSet[str]) -> Iterator[None]:
+    os.environ.update({name: _HTTP_LIMITS[name] for name in names})
     try:
         yield
     finally:
-        for name in unset:
+        for name in names:
             os.environ.pop(name, None)

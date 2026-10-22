@@ -41,6 +41,7 @@ DROPPED_METRICS = 'kumo.dropped_metrics'
 # never stalls training; these bound how long the fit waits for it.
 QUEUE_SIZE = 1000
 FINISH_SECONDS = 30.0
+MODEL_SECONDS = 3600.0
 
 
 @dataclass(frozen=True)
@@ -233,8 +234,9 @@ class Tracking(Protocol):
     (`None` if tracking stopped early, which should end the run as failed).
     Optional members: ``prepare()``, called first on the fit's own thread;
     ``log_model(result, snapshot)``, called after a fit that succeeded and
-    before `finish`, which the fit waits for without a time limit (an error
-    ends the run as failed); and ``tags`` (extra fit-run tags).
+    before `finish`, which the fit waits for while the tracking thread is
+    alive, up to an hour (an error, a stopped thread or the time limit ends
+    the run as failed); and ``tags`` (extra fit-run tags).
     """
     def start(self, record: RunRecord) -> None:
         ...
@@ -314,13 +316,28 @@ class TrackingSession:
                 tracker = self._tracker
                 if tracker is not None:
                     getattr(tracker, 'log_model')(result, snapshot)
-            except Exception as error:
+            except BaseException as error:
                 failed.append(error)
             finally:
                 done.set()
 
-        self._jobs.put(log)
-        done.wait()
+        worker = self._worker
+        deadline = time.monotonic() + MODEL_SECONDS
+        try:
+            self._jobs.put(log, timeout=MODEL_SECONDS)
+        except queue.Full:
+            pass
+        while not done.wait(1.0):
+            if worker.is_alive() and time.monotonic() < deadline:
+                continue
+            failed.append(
+                TimeoutError(f'it did not finish within {MODEL_SECONDS:.0f}s')
+                if worker.is_alive() else
+                RuntimeError('the tracking thread stopped'))
+            tracker, self._tracker = self._tracker, None
+            if tracker is not None:
+                _abandon(tracker)
+            break
         if failed:
             warnings.warn(f'Could not log the model: {failed[0]}',
                           UserWarning, stacklevel=3)
