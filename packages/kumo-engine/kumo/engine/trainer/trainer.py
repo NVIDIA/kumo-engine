@@ -688,8 +688,11 @@ class Trainer:
             model_plan=effective_plan,
             provenance=dict(train_table=train_table,
                             warm_start_bundle_id=warm_start_bundle_id,
-                            started_at=started_at, fit_mode=fit_mode,
-                            snapshot=snapshot,
+                            started_at=started_at,
+                            task_type=TaskType(workflow.query.task_type),
+                            holdout_path=holdout_path,
+                            holdout_truncated=holdout_truncated,
+                            fit_mode=fit_mode, snapshot=snapshot,
                             tracked_run_id=run_id if tracking.enabled else None),
         )
 

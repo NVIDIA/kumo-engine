@@ -93,23 +93,30 @@ def test_holdout_df_after_fit(graph):
     assert len(frame) > 0
     assert {'ENTITY', 'TARGET_PRED'} <= set(frame.columns)
     assert not (result.bundle_dir / 'test_df.parquet').exists()
+    holdout = result.provenance.holdout
+    assert holdout.rows == len(frame)
+    assert holdout.label_positive_rate == frame['TARGET'].mean()
+    assert holdout.truncated is False
 
 
-@pytest.mark.parametrize('refit_trainval,refit_full,explain,suffix', [
-    (False, False, False, ''),
-    (True, False, True, '_refit_trainval'),
-    (True, True, False, None),
+@pytest.mark.parametrize('refit_trainval,refit_full,explain,model', [
+    (False, False, False, 'fit'),
+    (True, False, True, 'refit_trainval'),
+    (True, True, True, None),
 ])
 def test_holdout_is_the_published_models(graph, refit_trainval, refit_full,
-                                         explain, suffix):
+                                         explain, model):
     result = _fit(graph, QUERY, refit_trainval, refit_full, explain)
 
-    if suffix is None:
+    assert result.provenance.fit_mode == (model or 'refit_full')
+    if model is None:
         assert result.holdout_path is None
+        assert result.provenance.holdout is None
     else:
+        suffix = '' if model == 'fit' else '_refit_trainval'
         assert re.fullmatch(rf'version_\d+{suffix}',
                             result.holdout_path.parent.name)
-        assert len(result.holdout_df()) > 0
+        assert result.provenance.holdout.rows == len(result.holdout_df())
 
 
 def test_no_holdout(graph):
@@ -119,6 +126,7 @@ def test_no_holdout(graph):
 
     assert result.holdout_path is None
     assert not result.holdout_truncated
+    assert result.provenance.holdout is None
     with pytest.raises(FileNotFoundError, match='No holdout'):
         result.holdout_df()
 
@@ -131,6 +139,8 @@ def test_loaded_trainer_has_no_holdout(graph):
     loaded = kumo.Trainer.load(result.bundle_dir)
 
     assert loaded._training_result.holdout_path is None
+    assert (loaded._training_result.provenance.holdout ==
+            result.provenance.holdout)
 
 
 def test_truncation_is_recorded(tmp_path):
@@ -156,6 +166,7 @@ def test_fit_reports_truncation(graph, monkeypatch, caplog):
     result = _fit(graph, QUERY)
 
     assert result.holdout_truncated is True
+    assert result.provenance.holdout.truncated is True
     with caplog.at_level('WARNING'):
         assert len(result.holdout_df()) > 0
     assert 'truncated' in caplog.text

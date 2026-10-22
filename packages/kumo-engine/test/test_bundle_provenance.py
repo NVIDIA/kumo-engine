@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from kumo_core.artifacts import add_bundle_file
+from kumo_core.types import TaskType
 from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
 
 import kumo.engine as kumo
@@ -93,7 +94,8 @@ def test_bundle_without_provenance_loads_and_predicts_identically(
     pd.testing.assert_frame_equal(predict(restored), predict(trainer))
 
 
-def _finish_stub_fit(bundle, trainer, manifest=None, source_mode=None):
+def _finish_stub_fit(bundle, trainer, manifest=None, source_mode=None,
+                     holdout_path=None):
     (bundle / 'model').mkdir(parents=True)
     (bundle / 'model' / 'config.json').write_text('{}')
     (bundle / MANIFEST_FILE).write_text(json.dumps({'artifacts': []}))
@@ -105,7 +107,10 @@ def _finish_stub_fit(bundle, trainer, manifest=None, source_mode=None):
         snapshot_id='snap', export_config=None,
         training_table_generation=TrainingTableGenerationPlan(),
         provenance=dict(train_table=table, warm_start_bundle_id=None,
-                        started_at=datetime.now(timezone.utc), fit_mode=None))
+                        started_at=datetime.now(timezone.utc),
+                        task_type=TaskType.BINARY_CLASSIFICATION,
+                        holdout_path=holdout_path, holdout_truncated=False,
+                        fit_mode=None))
 
 
 def test_provenance_records_custom_or_missing_table_source(tmp_path):
@@ -142,3 +147,17 @@ def test_provenance_failure_warns_and_still_publishes(tmp_path, monkeypatch):
     assert result.provenance is None
     assert re.fullmatch('[0-9a-f]{64}', result.bundle_id)
     assert trainer._training_result is result
+
+
+def test_holdout_stats_failure_keeps_provenance(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise ValueError('unreadable holdout')
+
+    monkeypatch.setattr('kumo.engine.trainer._provenance.holdout_baseline',
+                        fail)
+    with pytest.warns(UserWarning, match='unreadable holdout'):
+        result = _finish_stub_fit(tmp_path / 'bundle',
+                                  kumo.Trainer(ModelPlan()),
+                                  holdout_path=tmp_path / 'test_df.parquet')
+    assert result.provenance.parents.training_table == 'tt-1'
+    assert result.provenance.holdout is None
