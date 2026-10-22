@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use diskgraph_core::dataset::DatasetId;
 use diskgraph_index::layout::RelationLayout;
 
 fn sample(times: &[u8], fanout: u32, seed: u64, mode: SamplingMode) -> Result<Vec<u64>> {
@@ -37,22 +36,6 @@ fn sample(times: &[u8], fanout: u32, seed: u64, mode: SamplingMode) -> Result<Ve
         local_id: 0,
         seed_type_id: 0,
     };
-    let request = BatchSamplingRequest {
-        dataset_id: DatasetId::nil(),
-        seed_nodes: HashMap::new(),
-        seed_timestamps: None,
-        seed_timestamp_unit: TimeUnit::Seconds,
-        plan: SamplingPlan { layers: vec![] },
-        flags: SamplingFlags {
-            replace: false,
-            directed: true,
-            disjoint: true,
-            return_edge_id: false,
-            adaptive: false,
-            fused_feature_fetching: false,
-            swap_edge_direction: false,
-        },
-    };
     let spec = FanoutSpec {
         fanout,
         mode,
@@ -69,7 +52,7 @@ fn sample(times: &[u8], fanout: u32, seed: u64, mode: SamplingMode) -> Result<Ve
         0,
         &segment,
         &spec,
-        &request,
+        &[],
         &mut Vec::new(),
         &mut Vec::new(),
         Some(&cutoff),

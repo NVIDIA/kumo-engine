@@ -2459,13 +2459,13 @@ fn per_seed_recording_matches_legacy_recording() {
         None,
         diskgraph_core::time::TimeUnit::Seconds,
         Some(42),
-        Some(2),
+        Some(4),
     );
 
     let requests: Vec<BatchSamplingRequest> = (0..6)
         .map(|i| {
             let mode = if i % 2 == 0 { SamplingMode::TemporalMostRecent } else { SamplingMode::Uniform };
-            let seeds: Vec<u64> = (0..rng.gen_range(1..60)).map(|_| rng.gen_range(0..n as u64)).collect();
+            let seeds: Vec<u64> = (0..[1, 40, 700][i % 3]).map(|_| rng.gen_range(0..n as u64)).collect();
             let mut req = make_sampling_request_with_mode(seeds.clone(), vec![6, 4, 3, 5], mode);
             req.seed_timestamp_unit = diskgraph_core::time::TimeUnit::Seconds;
             req.seed_timestamps = Some([("User".to_string(), seeds.iter().map(|_| rng.gen_range(0..1_000)).collect())].into());
