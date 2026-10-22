@@ -227,10 +227,14 @@ def trial_record(context: FitContext, events: Sequence[Event]) -> RunRecord:
     )
 
 
-def prediction_record(manifest: Mapping[str, Any]) -> RunRecord:
+def prediction_record(manifest: Mapping[str, Any],
+                      error: Optional[BaseException] = None) -> RunRecord:
     r"""A prediction run's record, from its `PredictionResult.manifest`:
     scoring options as params, row counts and score percentiles as metrics,
-    pointer tags, and the manifest as an artifact."""
+    pointer tags (``kumo.error`` when ``error`` ended the run), and the
+    manifest as an artifact."""
+    from kumo_core.instrumentation import format_error
+
     from kumo.engine.trainer._run_manifest import MANIFEST_FILE
 
     table = manifest.get('prediction_table') or {}
@@ -254,6 +258,7 @@ def prediction_record(manifest: Mapping[str, Any]) -> RunRecord:
         'kumo.scheduler': scheduler.get('platform'),
         'kumo.job_id': scheduler.get('job_id'),
         'kumo.job_run_id': scheduler.get('job_run_id'),
+        'kumo.error': None if error is None else format_error(error),
     }
     return RunRecord(
         name=manifest.get('id'),
@@ -277,14 +282,22 @@ def prediction_record(manifest: Mapping[str, Any]) -> RunRecord:
     )
 
 
+def record_failure(record: RunRecord) -> Optional[Exception]:
+    r"""The error a run record says ended its run (its ``kumo.error``)."""
+    error = record.tags.get('kumo.error')
+    return None if error is None else RuntimeError(error)
+
+
 def log_prediction_run(result: 'PredictionResult',
-                       tracking: Optional['Tracking']) -> None:
-    r"""Record a prediction run in ``tracking``; never raises."""
+                       tracking: Optional['Tracking'],
+                       error: Optional[BaseException] = None) -> None:
+    r"""Record a prediction run in ``tracking``, failed if ``error`` ended
+    it; never raises."""
     session = TrackingSession(tracking)
     if not session.enabled:
         return
     try:
-        record = prediction_record(result.manifest)
+        record = prediction_record(result.manifest, error)
     except Exception:
         logger.warning('Experiment tracking failed; the prediction run is '
                        'not tracked', exc_info=True)
@@ -315,7 +328,8 @@ class Tracking(Protocol):
     before `finish`, which the fit waits for while the tracking thread is
     alive, up to an hour (an error, a stopped thread or the time limit ends
     the run as failed); ``tags`` (extra fit-run tags); and
-    ``log_prediction_run(record)`` for ``predict(tracking=...)``.
+    ``log_prediction_run(record)`` for ``predict(tracking=...)`` (a record
+    with a ``kumo.error`` tag is a failed run).
     """
     def start(self, record: RunRecord) -> None:
         ...

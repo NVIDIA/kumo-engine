@@ -14,7 +14,12 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from kumo_core.sources.sql import resolve_snowflake_identifier
 
 from kumo.engine._events import Event
-from kumo.engine._tracking import DROPPED_METRICS, DROPPED_PARAMS, RunRecord
+from kumo.engine._tracking import (
+    DROPPED_METRICS,
+    DROPPED_PARAMS,
+    RunRecord,
+    record_failure,
+)
 from kumo.engine.connector._extras import import_provider
 
 logger = logging.getLogger(__name__)
@@ -120,7 +125,7 @@ class SnowflakeTracking:
 
     def log_prediction_run(self, record: RunRecord) -> None:
         self.start(record)
-        self.finish(record, None)
+        self.finish(record, record_failure(record))
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         if self._run is None:

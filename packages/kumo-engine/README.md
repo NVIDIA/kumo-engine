@@ -448,7 +448,10 @@ id: scoring options as params; row counts and score statistics (for example
 (`prediction`), `kumo.run_id`, `kumo.bundle_id` (which joins it to the fit run)
 and the scheduler's `kumo.scheduler`, `kumo.job_id` and `kumo.job_run_id`; and
 `prediction-manifest.json` as an artifact, which holds the run's lineage.
-Custom trackers opt in with a `log_prediction_run(record)` hook. The call runs
+If an export raises, the run is still recorded, ended as failed with a
+`kumo.error` tag, and `predict` raises the export's error.
+Custom trackers opt in with a `log_prediction_run(record)` hook (a record with
+a `kumo.error` tag is a failed run). The call runs
 on the tracking thread with the fit's time limit, and tracking errors never fail
 the prediction.
 

@@ -1261,11 +1261,15 @@ class Trainer:
                           UserWarning, stacklevel=2)
         written: Optional[List[PredictionOutput]] = []
         status = 'failed'
+        error: Optional[BaseException] = None
         try:
             if output_config is not None and result._export(
                     output_config, manifest, written) is None:
                 written = None
             status = 'succeeded'
+        except BaseException as raised:
+            error = raised
+            raise
         finally:
             if manifest is not None:
                 _write_run_manifest(
@@ -1276,8 +1280,8 @@ class Trainer:
                                 finished_at=datetime.now(
                                     timezone.utc).isoformat(
                                         timespec='seconds'))))
-        if tracking is not None:
-            log_prediction_run(result, tracking)
+            if tracking is not None:
+                log_prediction_run(result, tracking, error)
         return result
 
     def evaluate(self, run: PredictionResult, *,

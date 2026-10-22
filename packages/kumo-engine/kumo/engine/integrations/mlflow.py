@@ -32,7 +32,12 @@ from kumoapi.plugin import PublishedModel, check_model_alias
 
 from kumo.engine._events import Event
 from kumo.engine._manifest import BundleProvenance
-from kumo.engine._tracking import DROPPED_PARAMS, INPUT_FIELDS, RunRecord
+from kumo.engine._tracking import (
+    DROPPED_PARAMS,
+    INPUT_FIELDS,
+    RunRecord,
+    record_failure,
+)
 from kumo.engine._version import __version__
 from kumo.engine.connector._extras import import_provider
 
@@ -171,7 +176,7 @@ class MlflowTracking:
 
     def log_prediction_run(self, record: RunRecord) -> None:
         self.start(record)
-        self.finish(record, None)
+        self.finish(record, record_failure(record))
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         key = (event.trial or 0, int(event.params['attempt']))
