@@ -1,6 +1,6 @@
 # Databricks Jobs
 
-`databricks.yml` is an Asset Bundle with two jobs on a single-node GPU job
+`databricks.yml` is an Asset Bundle with two jobs on a single-node CPU job
 cluster. Each task is a `spark_python_task` running a job script with
 `--job-id {{job.id}} --job-run-id {{job.run_id}}`; the cluster's
 `spark_env_vars` configure `jobs.py`.
@@ -25,6 +25,8 @@ cluster. Each task is a `spark_python_task` running a job script with
    requirements, then the wheel.
    Use a standard (non-ML) DBR runtime: the ML runtime's preinstalled
    torch, torchvision and pyOpenSSL conflict with kumo-engine's pins.
+   Databricks GPU nodes require a GPU ML runtime, so use a CPU node
+   type with local NVMe disks (for example m5d.xlarge).
 2. Replace the `<...>` placeholders in `databricks.yml` (or pass
    `--var catalog=...`). The parent folder of the MLflow experiment
    path must already exist in the workspace.

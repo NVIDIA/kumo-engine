@@ -34,8 +34,8 @@ variables:
     description: a standard (non-ML) runtime, for example 16.4.x-scala2.12
     default: <dbr_version>
   node_type_id:
-    description: a GPU node type with local NVMe disks
-    default: <gpu_node_type>
+    description: a CPU node type with local NVMe disks, for example m5d.xlarge
+    default: <node_type>
   experiment:
     description: MLflow experiment (workspace path) for train and score runs
     default: /Shared/kumo-engine/users-churn
