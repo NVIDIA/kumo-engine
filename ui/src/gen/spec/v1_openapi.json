@@ -8529,7 +8529,7 @@
                 "type": "string",
                 "enum": ["fast", "normal", "best", "debug"],
                 "title": "RunMode",
-                "description": "Defines the run mode for AutoML. Please see the\n`Kumo documentation <https://docs.kumo.ai/docs/whats-the-recommended-way-to-cut-down-on-model-training-time>`_\nfor more information."
+                "description": "Defines the run mode for AutoML. Please see the\n`Kumo documentation <https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/legacy-ui-references/training-time>`_\nfor more information."
             },
             "S3PredictionTableSource": {
                 "properties": {
