@@ -54,8 +54,8 @@ class SnowflakeTracking:
         native_model_lineage: keep the run open as a context for the whole
             fit, so models registered meanwhile are linked to it.
 
-    ``run_id`` is the latest fit run's name (Snowflake runs are identified
-    by name), once it has started.
+    ``run_id`` is the name of the most recent tracked run (fit or predict;
+    Snowflake runs are identified by name), once it has started.
     """
 
     def __init__(

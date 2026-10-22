@@ -88,7 +88,8 @@ class MlflowTracking:
         serving_snapshot: exported snapshot URI the served model loads at
             startup (see `log_model`).
 
-    ``run_id`` is the MLflow id of the latest fit run, once it has started.
+    ``run_id`` is the MLflow id of the most recent tracked run (fit or
+    predict), once it has started.
     After a fit, ``registered`` is the registered model version, else None.
 
     Raises:
