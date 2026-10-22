@@ -37,6 +37,7 @@ def test_fit_records_provenance(fitted):
         source='pquery', snapshot=snapshot.id)
     assert provenance.source_tables == snapshot.manifest.parents.source_tables
     assert provenance.fit_mode == 'refit_trainval'
+    assert provenance.tracking is None
     assert re.fullmatch('[0-9a-f]{64}', trainer.bundle_id)
     assert trainer.bundle_id == result.bundle_id == provenance.id
     assert kumo.Trainer.load(result.bundle_dir).bundle_id == provenance.id

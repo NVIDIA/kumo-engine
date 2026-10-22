@@ -220,6 +220,11 @@ class BundleTrainingTable(Record):
 
 
 @dataclass(frozen=True, kw_only=True)
+class TrackingRef(Record):
+    run_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class BundleProvenance(Manifest):
     """A reconstructed record (a derived bundle whose parent had none) writes
     only the fields it knows."""
@@ -230,6 +235,7 @@ class BundleProvenance(Manifest):
     training_table: Optional[BundleTrainingTable] = None
     source_tables: Optional[Dict[str, SourceTableEntry]] = None
     fit_mode: Optional[str] = None
+    tracking: Optional[TrackingRef] = omit_none()
 
     def to_dict(self) -> Dict[str, Any]:
         data = super().to_dict()

@@ -30,6 +30,7 @@ from typing import (
 from kumo.engine._events import Event, _finite_floats
 
 if TYPE_CHECKING:
+    from kumo.engine.graph import GraphSnapshot
     from kumo.engine.trainer.trainer import TrainingResult
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ DROPPED_METRICS = 'kumo.dropped_metrics'
 # never stalls training; these bound how long the fit waits for it.
 QUEUE_SIZE = 1000
 FINISH_SECONDS = 30.0
+MODEL_SECONDS = 3600.0
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,7 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
                tags: Optional[Mapping[str, str]] = None) -> RunRecord:
     r"""The fit run's record; ``tags`` are the user's extra tags."""
     metrics: Dict[str, float] = {}
+    pointers = _scheduler_tags()
     artifacts = {
         'query.pql': context.query,
         'model_plan.json': json.dumps(dict(context.model_plan), indent=2,
@@ -124,6 +127,8 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
         metrics.update(result.metrics)
         if fit_ended is not None and 'seconds' in fit_ended.metrics:
             metrics['seconds'] = fit_ended.metrics['seconds']
+        if getattr(result, 'bundle_id', None):
+            pointers['kumo.bundle_id'] = str(result.bundle_id)
         provenance = Path(result.bundle_dir) / 'provenance.json'
         if provenance.is_file():
             artifacts['provenance.json'] = provenance.read_text(
@@ -139,6 +144,7 @@ def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
             **_user_tags(tags, params),
             'kumo.kind': 'fit',
             'kumo.run_id': context.run_id,
+            **pointers,
             **_error_tag(fit_ended),
         },
         artifacts=artifacts,
@@ -158,6 +164,20 @@ def _user_tags(tags: Optional[Mapping[str, Any]],
         key: str(value)
         for key, value in (tags or {}).items() if key not in dropped
     }
+
+
+def _scheduler_tags() -> Dict[str, str]:
+    from kumo.engine._provenance import scheduler_context
+
+    scheduler = scheduler_context()
+    if scheduler is None:
+        return {}
+    tags = {
+        'kumo.scheduler': scheduler.platform,
+        'kumo.job_id': scheduler.job_id,
+        'kumo.job_run_id': scheduler.job_run_id,
+    }
+    return {key: str(value) for key, value in tags.items() if value}
 
 
 def _error_tag(ended: Optional[Event]) -> Dict[str, str]:
@@ -214,8 +234,11 @@ class Tracking(Protocol):
     record without metrics, `on_trial` a trial attempt's record so far with
     the event that updated it, and `finish` the fit run's final record
     (`None` if tracking stopped early, which should end the run as failed).
-    Optional members: ``prepare()``, called first on the fit's own thread,
-    and ``tags`` (extra fit-run tags).
+    Optional members: ``prepare()``, called first on the fit's own thread;
+    ``log_model(result, snapshot)``, called after a fit that succeeded and
+    before `finish`, which the fit waits for while the tracking thread is
+    alive, up to an hour (an error, a stopped thread or the time limit ends
+    the run as failed); and ``tags`` (extra fit-run tags).
     """
     def start(self, record: RunRecord) -> None:
         ...
@@ -279,6 +302,49 @@ class TrackingSession:
         record = trial_record(self._context, events)
         self._submit(lambda: self._call(
             lambda tracker: tracker.on_trial(record, event)))
+
+    def log_model(self, result: 'TrainingResult',
+                  snapshot: 'GraphSnapshot') -> Optional[BaseException]:
+        r"""Runs the tracker's ``log_model`` on the tracking thread and waits
+        for it; returns the error it raised."""
+        if (self._worker is None
+                or not hasattr(self._tracker, 'log_model')):
+            return None
+        done = threading.Event()
+        failed: List[BaseException] = []
+
+        def log() -> None:
+            try:
+                tracker = self._tracker
+                if tracker is not None:
+                    getattr(tracker, 'log_model')(result, snapshot)
+            except BaseException as error:
+                failed.append(error)
+            finally:
+                done.set()
+
+        worker = self._worker
+        deadline = time.monotonic() + MODEL_SECONDS
+        try:
+            self._jobs.put(log, timeout=MODEL_SECONDS)
+        except queue.Full:
+            pass
+        while not done.wait(1.0):
+            if worker.is_alive() and time.monotonic() < deadline:
+                continue
+            failed.append(
+                TimeoutError(f'it did not finish within {MODEL_SECONDS:.0f}s')
+                if worker.is_alive() else
+                RuntimeError('the tracking thread stopped'))
+            tracker, self._tracker = self._tracker, None
+            if tracker is not None:
+                _abandon(tracker)
+            break
+        if failed:
+            warnings.warn(f'Could not log the model: {failed[0]}',
+                          UserWarning, stacklevel=3)
+            return failed[0]
+        return None
 
     def finish(self, result: Optional['TrainingResult'],
                error: Optional[BaseException]) -> None:

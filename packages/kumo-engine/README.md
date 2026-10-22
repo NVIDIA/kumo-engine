@@ -436,6 +436,79 @@ on the fit run when the bundle has one, with `query.pql` and `model_plan.json`.
 `version` and `version_kind`. Your `tags=` are added as given, except `kumo.*`
 names and param names.
 
+The fit run also carries `kumo.bundle_id` once the fit has a bundle, and
+under a scheduler `kumo.scheduler`, `kumo.job_id` and `kumo.job_run_id`. In the
+other direction, a tracked fit's bundle records `"tracking": {"run_id": ...}`
+in `provenance.json`, the `kumo.run_id` every tracker tags its fit run with.
+
+MLflow models: `log_model(trainer, snapshot=...)` logs a bundle as a pyfunc
+model, with the bundle's source tables as inputs of the run it is logged in,
+that scores where `kumo-engine[s3,gcs]` of the same version is installed (its
+pip requirement); `load_model(uri)` restores the `Trainer`.
+`MlflowTracking(registered_model_name=..., aliases=...)` logs, registers and
+aliases the fit's model on the fit run (a failed fit logs none). `fit()` waits
+for the upload and registration before it returns, for up to an hour, with a
+600 s MLflow HTTP timeout during the upload (unless
+`MLFLOW_HTTP_REQUEST_TIMEOUT` is set); if they fail, the tracking thread stops
+or the hour passes, `fit()` warns, still returns its result, the run ends
+`FAILED`, and a model that finishes uploading later is not registered. The model's metadata is `kumo_bundle_id`; its `provenance.json`
+artifact is the bundle's. A tracker can do the same through the optional
+`log_model(result, snapshot)` protocol member.
+
+```python
+from kumo.engine.integrations.mlflow import MlflowTracking
+
+result = trainer.fit(training_table, snapshot=snapshot, tracking=MlflowTracking(
+    experiment_name="/Shared/users_spend",
+    registered_model_name="main.ml.users_spend", aliases=["champion"]))
+```
+
+```python
+model = mlflow.pyfunc.load_model("models:/users-spend@champion")
+scores = model.predict(entities, params={"snapshot": "s3://<bucket>/snapshots/<id>"})
+```
+
+The pyfunc model loads a snapshot on its first `predict` with that URI and
+keeps it for the life of the process: each serving replica, and each Spark
+executor of `mlflow.pyfunc.spark_udf`, downloads the snapshot once and keeps
+every snapshot it has loaded (no eviction), so its disk must hold them. With
+`serving_snapshot=<exported snapshot URI>` (on `log_model` or
+`MlflowTracking`), each replica downloads that snapshot when it starts, and
+`predict` uses it when no `snapshot` param is given.
+`params={"population": True}` scores every entity and returns the whole
+frame in memory; for large populations use `Trainer.predict` with a
+`PredictionOutputConfig`. Each `predict` call works in its own scratch
+directory and removes it before returning.
+
+The `mlflow` extra needs an MLflow 3.13 or later client: DiskGraph pins
+pyarrow 24, which older MLflow releases exclude. SageMaker managed MLflow
+servers run MLflow 3.0; a 3.17 client against a 3.0 server handles logging,
+registration, aliases and `load_model`.
+
+On Databricks, the parent folder of an MLflow experiment path must exist.
+Registering to Unity Catalog from outside Databricks also needs `boto3`, which
+the `mlflow` extra does not install.
+
+#### Which registry
+
+There are two ways to register a model; pick one per registered model, since
+the two store different formats. Both record only the `kumo_bundle_id`
+pointer; lineage stays in the bundle's `provenance.json`, which an MLflow
+model also carries as its `provenance.json` artifact. An MLflow model logs
+each source table (and a custom training table) as a run input, Unity
+Catalog tables as Delta datasets. Both accept the same aliases
+(`kumoapi.plugin.check_model_alias`).
+
+| | Connector registry | MLflow model |
+|---|---|---|
+| Publish | `fit(export_config=ModelOutputConfig(connector, location=ModelRegistryLocation(name, alias=...)))` or `Trainer.export` | `MlflowTracking(registered_model_name=..., aliases=[...])` or `log_model(...)` |
+| Load | `Trainer.load_from_connector(connector, location=...)` | `mlflow.pyfunc.load_model(uri)` or `load_model(uri)` |
+| Promote | `set_model_alias(connector, location, alias)` | MLflow's `set_registered_model_alias` |
+| Databricks | `DatabricksConnector` (Unity Catalog) | Unity Catalog through MLflow |
+| SageMaker | `S3Connector` path | SageMaker managed MLflow (`MLFLOW_TRACKING_URI` = tracking server ARN) |
+| Snowflake | `SnowflakeConnector` (Snowflake Model Registry) | not available |
+| Plain VM | `FileConnector`, `S3Connector`, `GCSConnector` path (no aliases) | any MLflow tracking server |
+
 ## BigQuery staged ingestion
 
 BigQuery streams through the Storage Read API by default. For large tables,
