@@ -257,7 +257,9 @@ describe("ModelPlannerEditor", () => {
             await userEvent.hover(infoTriggers[index] as HTMLElement);
             if (index === 0) {
                 expect(
-                    await screen.findByText(/Defines how Kumo splits your data/i)
+                    await screen.findByText(
+                        /Defines how Kumo splits your data/i
+                    )
                 ).toBeInTheDocument();
             }
             const link = await screen.findByTestId(`testid-${id}`);
