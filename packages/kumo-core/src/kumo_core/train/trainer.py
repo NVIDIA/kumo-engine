@@ -8,7 +8,6 @@ import gc
 import logging
 import logging as std_logging
 import math
-import os
 import os.path as osp
 import re
 import sys
@@ -399,6 +398,7 @@ class Trainer(PortableConfigMixin):
             since the global state doesn't get picked up correctly.
         raise_fake_trial_error_msg (str, optional): A fake error message to
             raise for test purpose.
+        accelerator (str): Lightning accelerator selection. Defaults to auto.
         enable_compile (bool, optional): If set, the model and head are
             compiled using torch.compile. (default: :obj:`False`)
         **kwargs (optional): Additional arguments of
@@ -471,6 +471,7 @@ class Trainer(PortableConfigMixin):
         artifact_runtime: TrainingArtifactRuntime | None = None,
         diskgraph_runtime: DiskgraphTrainingRuntime | None = None,
         embedding_models: EmbeddingModelStore | None = None,
+        accelerator: str = 'auto',
         **kwargs,
     ) -> None:
         self._embedding_models = embedding_models
@@ -648,6 +649,7 @@ class Trainer(PortableConfigMixin):
         # `torch.nn.functional`
         self.loss = loss
         self.binary_threshold = binary_threshold
+        self.accelerator = accelerator
         self.kwargs = kwargs
 
         # Allow Trainer instance to be created with deferred initialization via
@@ -1450,16 +1452,15 @@ class Trainer(PortableConfigMixin):
             plugins = [plugins]
         plugins.append(KumoCheckpointIO())
 
-        # Constructor kwargs override the placement defaults, e.g. a
-        # batch-prediction worker pinned with ``devices=[i]``:
+        # Prediction workers can pin a device with ``devices=[i]``.
         placement = {
-            'accelerator': os.environ.get('KUMO_ACCELERATOR', 'auto'),
             'strategy': 'auto',
             'devices': 1,
             **self.kwargs,
         }
 
         self.pl_trainer = pl.Trainer(
+            accelerator=self.accelerator,
             max_epochs=max_epochs,
             logger=pl_logger,
             callbacks=callbacks,
