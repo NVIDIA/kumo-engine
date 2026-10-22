@@ -15,6 +15,7 @@ class FakeService:
     """Azure SDK-shaped storage using real public property models."""
     def __init__(self):
         self.files = {}
+        self.uncommitted = {}
         self.directories = {'curated', 'curated/orders'}
         self.downloads = []
         self.created = []
@@ -95,11 +96,13 @@ class FakeFile:
         if overwrite:
             self.create_file()
         self.service.files[self.name] = stream.read()
+        self.service.uncommitted.pop(self.name, None)
         assert len(self.service.files[self.name]) == length
 
     def create_file(self):
         self.service.created.append(self.name)
         self.service.files[self.name] = b''
+        self.service.uncommitted[self.name] = b''
         return {'etag': self.get_file_properties().etag}
 
     def create_directory(self):
@@ -107,17 +110,19 @@ class FakeFile:
 
     def append_data(self, data, offset, length):
         assert length == len(data)
-        assert offset == len(self.service.files[self.name])
-        self.service.files[self.name] += data
+        assert offset == len(self.service.uncommitted[self.name])
+        self.service.uncommitted[self.name] += data
 
     def flush_data(self, offset):
-        assert offset == len(self.service.files[self.name])
+        assert offset == len(self.service.uncommitted[self.name])
+        self.service.files[self.name] = self.service.uncommitted.pop(self.name)
 
     def delete_file(self, **kwargs):
         if kwargs.get(
                 'etag') and kwargs['etag'] != self.get_file_properties().etag:
             raise ResourceModifiedError('object was changed')
         self.service.files.pop(self.name)
+        self.service.uncommitted.pop(self.name, None)
 
     def delete_directory(self):
         self.service.files = {

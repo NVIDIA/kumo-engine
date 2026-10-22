@@ -154,11 +154,11 @@ def test_failed_write_aborts_without_retry_or_masking_original_error(
         attempts.append('flush')
         raise RuntimeError('original failure')
 
-    def delete(self):
+    def delete(self, **kwargs):
         attempts.append('delete')
         if cleanup_fails:
             raise RuntimeError('cleanup failure')
-        original_delete(self)
+        original_delete(self, **kwargs)
 
     monkeypatch.setattr(FakeFile, 'append_data', append)
     monkeypatch.setattr(FakeFile, 'delete_file', delete)
@@ -178,6 +178,70 @@ def test_failed_write_aborts_without_retry_or_masking_original_error(
     assert stream.closed
     if not cleanup_fails:
         assert 'curated/failed' not in service.files
+
+
+@pytest.mark.parametrize('failure', ['append', 'flush', 'body'])
+def test_failed_streaming_write_preserves_replacement(service, monkeypatch,
+                                                      failure):
+    from azure.core import MatchConditions
+    from fakes import FakeFile
+
+    replacement = b'other writer completed'
+    append = FakeFile.append_data
+    deleted = []
+    delete = FakeFile.delete_file
+
+    def append_or_fail(self, *args, **kwargs):
+        if failure == 'append':
+            service.files[self.name] = replacement
+            raise RuntimeError('original failure')
+        return append(self, *args, **kwargs)
+
+    def flush_or_fail(self, offset):
+        service.files[self.name] = replacement
+        raise RuntimeError('original failure')
+
+    def conditional_delete(self, **kwargs):
+        assert kwargs['match_condition'] == MatchConditions.IfNotModified
+        deleted.append(kwargs['etag'])
+        return delete(self, **kwargs)
+
+    monkeypatch.setattr(FakeFile, 'append_data', append_or_fail)
+    monkeypatch.setattr(FakeFile, 'delete_file', conditional_delete)
+    if failure == 'flush':
+        monkeypatch.setattr(FakeFile, 'flush_data', flush_or_fail)
+    filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
+    with pytest.raises(RuntimeError, match='original failure'):
+        with filesystem.open(AUTHORITY + '/shared', 'wb',
+                             block_size=4) as stream:
+            stream.write(b'abcd')
+            if failure == 'body':
+                service.files['curated/shared'] = replacement
+                raise RuntimeError('original failure')
+    assert len(deleted) == 1
+    assert service.files['curated/shared'] == replacement
+    assert stream.closed
+
+
+def test_streaming_creation_without_etag_never_deletes_unknown_object(
+        service, monkeypatch):
+    from fakes import FakeFile
+
+    create = FakeFile.create_file
+
+    def unidentified(self):
+        create(self)
+        return {}
+
+    delete = Mock(side_effect=AssertionError('must not delete unknown object'))
+    monkeypatch.setattr(FakeFile, 'create_file', unidentified)
+    monkeypatch.setattr(FakeFile, 'delete_file', delete)
+    filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
+    with pytest.raises(TransientSourceError, match='object identity'):
+        with filesystem.open(AUTHORITY + '/unknown', 'wb',
+                             block_size=4) as stream:
+            stream.write(b'abcd')
+    delete.assert_not_called()
 
 
 def test_exception_before_first_upload_does_not_create_file(service):

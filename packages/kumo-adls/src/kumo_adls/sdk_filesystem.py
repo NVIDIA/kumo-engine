@@ -84,11 +84,15 @@ class _WriteFile(AbstractBufferedFile):
     """
     def __init__(self, filesystem, path, client, **kwargs):
         self.client = client
+        self._creation_etag = None
         super().__init__(filesystem, path, mode='wb', **kwargs)
 
     def _initiate_upload(self):
         with translated():
-            self.client.create_file()
+            self._creation_etag = self.client.create_file().get('etag')
+            if not self._creation_etag:
+                raise TransientSourceError(
+                    'ADLS upload returned no object identity')
 
     def _upload_chunk(self, final=False):
         data = self.buffer.getvalue()
@@ -108,10 +112,14 @@ class _WriteFile(AbstractBufferedFile):
         if self.closed:
             return
         self.closed = True
-        if self.offset is None:
+        if not self._creation_etag:
             return
         try:
-            self.client.delete_file()
+            # Append is unfenced: its response cannot prove we still own the
+            # path. Delete only the original creation, never a replacement.
+            self.client.delete_file(
+                etag=self._creation_etag,
+                match_condition=MatchConditions.IfNotModified)
         except Exception:
             # Cleanup must preserve the original upload failure.
             pass
