@@ -19,6 +19,13 @@ from kumoapi.train import TrainingTableSpec
 from kumoapi.typing import Stype
 
 import kumo.engine as kumo
+from kumo.engine._manifest import (
+    SourceTableEntry,
+    TrainingTableManifest,
+    TrainingTableParents,
+    read_manifest,
+    write_manifest,
+)
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.trainer.output_config import TrainingTableOutputConfig
 
@@ -303,12 +310,12 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
     query = 'PREDICT ents.LABEL FOR EACH ents.ID'
     pquery, table, _ = _export(graph, query, 'lineage')
     manifest = table.manifest
-    assert manifest['id'] == table.tt_id == _spec(table)['tt_id']
-    assert manifest['parents'] == {'snapshot': snapshot.id}
-    assert manifest['query'] == query
-    assert 'rows' not in manifest and 'source' not in manifest
+    assert manifest.id == table.tt_id == _spec(table)['tt_id']
+    assert manifest.parents == TrainingTableParents(snapshot=snapshot.id)
+    assert manifest.query == query
+    assert manifest.extra == {}
     assert table.source_mode == 'pquery'
-    assert manifest['split_seed'] == 0
+    assert manifest.split_seed == 0
 
     directory = out / 'lineage'
     baseline = tmp_path / 'baseline'
@@ -316,21 +323,39 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
     for part in baseline.glob('*.parquet'):
         assert (directory / part.name).read_bytes() == part.read_bytes()
     assert json.loads(
-        (directory / '_kumo_manifest.json').read_bytes()) == manifest
+        (directory / '_kumo_manifest.json').read_bytes()) == manifest.to_dict()
 
     reloaded = kumo.TrainingTable.from_source_table(
         connector['lineage'], TrainingTableSpec(split_col='SPLIT'), pq=pquery,
         snapshot=snapshot)
     manifest = reloaded.manifest
     assert reloaded.source_mode == 'custom_tt'
-    assert manifest['parents']['source_table'] == {
-        'connector': 'LOCAL_FILE',
-        'location': str(directory.resolve()),
-        'version': connector.source_backend.get_data_version(
+    assert manifest.parents.source_table == SourceTableEntry(
+        connector='LOCAL_FILE',
+        location=str(directory.resolve()),
+        version=connector.source_backend.get_data_version(
             connector, 'lineage'),
-        'version_kind': 'listing',
-    }
+        version_kind='listing',
+    )
     assert _seeds(reloaded)[1] == _seeds(table)[1]
+
+
+def test_training_table_manifest_round_trips_unchanged(graph, tmp_path):
+    _, table, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
+                          'round_trip')
+    newer = json.loads(
+        (table.staging_dir / 'training-table-manifest.json').read_text())
+    newer['future'] = 1
+    newer['parents']['label_source'] = 'x'
+    source = tmp_path / 'newer.json'
+    source.write_text(json.dumps(newer, indent=2, sort_keys=True) + '\n')
+
+    manifest = read_manifest(source, TrainingTableManifest)
+    write_manifest(tmp_path / 'out.json', manifest)
+
+    assert (tmp_path / 'out.json').read_bytes() == source.read_bytes()
+    assert manifest.extra == {'future': 1}
+    assert manifest.parents.extra == {'label_source': 'x'}
 
 
 def test_custom_table_follows_the_snapshots_record_sources(
@@ -343,7 +368,7 @@ def test_custom_table_follows_the_snapshots_record_sources(
         table = kumo.TrainingTable.from_source_table(
             connector['unlocated'], TrainingTableSpec(split_col='SPLIT'),
             pq=pquery, snapshot=snapshot)
-        return table.manifest['parents']['source_table']['location']
+        return table.manifest.parents.source_table.location
 
     try:
         assert location(graph_.snapshot(record_sources=False)) == 'unlocated'

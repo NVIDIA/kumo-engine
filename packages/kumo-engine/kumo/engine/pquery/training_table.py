@@ -14,7 +14,14 @@ from kumoapi.model_plan import \
 from kumoapi.train import TrainingTableSpec
 
 from kumo.engine import _provenance as provenance
-from kumo.engine._manifest import new_manifest, read_manifest, write_manifest
+from kumo.engine._manifest import (
+    SourceTableEntry,
+    TrainingTableManifest,
+    TrainingTableParents,
+    read_manifest,
+    stamp,
+    write_manifest,
+)
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
 
@@ -54,9 +61,10 @@ class TrainingTable:
         return read_spec(str(self.staging_dir))['tt_id']
 
     @property
-    def manifest(self) -> Optional[Dict[str, Any]]:
+    def manifest(self) -> Optional[TrainingTableManifest]:
         """Lineage recorded at generation; None for older tables."""
-        return read_manifest(self.staging_dir / STAGING_MANIFEST_FILE)
+        return read_manifest(self.staging_dir / STAGING_MANIFEST_FILE,
+                             TrainingTableManifest)
 
     @property
     def source_mode(self) -> Optional[str]:
@@ -252,12 +260,13 @@ class TrainingTable:
 def _record_sources(snapshot: GraphSnapshot) -> bool:
     if snapshot.record_sources is not None:
         return snapshot.record_sources
-    return (snapshot.manifest or {}).get('record_sources') is True
+    manifest = snapshot.manifest
+    return manifest is not None and manifest.record_sources is True
 
 
 def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
                      request: Any, *,
-                     source_table: Optional[Dict[str, Any]] = None) -> None:
+                     source_table: Optional[SourceTableEntry] = None) -> None:
     path = table.staging_dir / STAGING_MANIFEST_FILE
     try:
         from kumo_core.io.json import to_json_dict
@@ -265,17 +274,17 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
         seed = None
         if request.split_family in _RANDOM_SPLITS:
             seed = (request.split_config or {}).get('rnd_seed') or 0
-        parents: Dict[str, Any] = {'snapshot': snapshot.id}
-        if source_table is not None:
-            parents['source_table'] = source_table
         write_manifest(
             path,
-            new_manifest(
-                'training_table', table.tt_id, parents,
+            TrainingTableManifest(
+                id=table.tt_id,
+                parents=TrainingTableParents(snapshot=snapshot.id,
+                                             source_table=source_table),
                 query=table.query,
                 generation_plan=to_json_dict(table.generation_plan),
                 task_type=request.task_type,
                 split_seed=seed,
+                **stamp(),
             ))
     except Exception as error:
         warnings.warn(

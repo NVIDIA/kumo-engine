@@ -205,6 +205,22 @@ class SnapshotManifest(Manifest):
     record_sources: Optional[bool] = omit_none()
 
 
+@dataclass(frozen=True, kw_only=True)
+class TrainingTableParents(Record):
+    snapshot: str
+    source_table: Optional[SourceTableEntry] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
+class TrainingTableManifest(Manifest):
+    kind: str = 'training_table'
+    parents: TrainingTableParents
+    query: str
+    generation_plan: Dict[str, Any]
+    task_type: str
+    split_seed: Optional[int]
+
+
 def write_manifest(path: Path, manifest: Manifest) -> None:
     payload = json.dumps(manifest.to_dict(), indent=2, sort_keys=True) + '\n'
     atomic_write_bytes(path, payload.encode('utf-8'))
