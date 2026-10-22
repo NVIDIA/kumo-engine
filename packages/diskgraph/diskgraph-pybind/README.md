@@ -130,14 +130,6 @@ cutoffs, and a JSON plan with:
 - `aggregates`: reductions over a frame, optionally after one or more nested
   grouping stages.
 
-Sequence `order` selects the earliest (`ascending`) or latest (`descending`)
-rows before `limit`. Optional `output_order` independently controls the returned
-direction; omitting it preserves `order`. For example, `order="descending"`,
-`limit=64`, `output_order="ascending"` returns the latest 64 events oldest-first.
-Reversing direction also reverses the
-established primary-key order within equal timestamps. Row selection and
-aggregate results do not change.
-
 Frames are the unit of shared work. A sequence and several aggregates naming
 the same frame perform one traversal and one rowpack decode. Results include
 Arrow sequence batches, aligned offsets/timestamps, scalar aggregate values,
@@ -177,13 +169,6 @@ returns those vectors as Arrow arrays as well, avoiding one Python object per
 value when a caller will immediately encode a batch. Sequence `batch` values
 are Arrow `RecordBatch` objects in both formats. Query semantics, ordering,
 limits, reductions, nulls, timings, and statistics are identical.
-
-### Reusable string lookup
-
-`StringLookup(keys).lookup(values)` accepts Arrow string arrays and returns
-nullable int32 positions into `keys`, matching Arrow `index_in` (including
-first-match and null-key behavior). Callers retain responsibility for fitting
-vocabularies and mapping positions to token IDs.
 
 `SamplerEngine.query_temporal_lengths(seed_nodes, seed_timestamps, plan_json)`
 is the exact scheduling companion. It visits only frames named by sequences,
