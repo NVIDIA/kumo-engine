@@ -28,6 +28,10 @@ _PROGRESS_SECONDS = 30
 logger = logging.getLogger(__name__)
 
 
+class ConcurrentExportError(TimeoutError):
+    pass
+
+
 def _location(connector: Any, path: str) -> Tuple[FileSystem, str]:
     from kumo_core.object_store_sink import ObjectStoreSinkBackend
 
@@ -249,8 +253,9 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
         logger.warning('Another export to %s removed %d files; uploading '
                        'them again.', location, len(missing))
         send([name for name in missing if name in sizes], 'repair')
-    raise OSError(f'Another export to {location} keeps replacing it; run '
-                  'GraphSnapshot.export again once it finishes.')
+    raise ConcurrentExportError(
+        f'Another export to {location} keeps replacing it; run '
+        'GraphSnapshot.export again once it finishes.')
 
 
 def _delete_marker(filesystem: FileSystem, root: str) -> None:
