@@ -41,9 +41,9 @@ def test_long_format_holdouts_take_each_predictions_top_score(tmp_path):
     for task_type in (TaskType.MULTILABEL_CLASSIFICATION,
                       TaskType.MULTICLASS_CLASSIFICATION):
         holdout = holdout_baseline(path, task_type, truncated=None)
-        assert holdout['rows'] == entities
-        _close_to_ranks(holdout['columns']['top_score'], score.max(axis=1))
-        assert holdout['truncated'] is None
+        assert holdout.rows == entities
+        _close_to_ranks(holdout.columns['top_score'], score.max(axis=1))
+        assert holdout.truncated is None
     _close_to_ranks(top_score_stats(parts), score.max(axis=1))
 
 
@@ -77,10 +77,10 @@ def test_binary_and_regression_holdouts(tmp_path):
     regression = holdout_baseline(tmp_path / 'regression.parquet',
                                   TaskType.REGRESSION, truncated=False)
 
-    assert binary['rows'] == 1000
-    assert binary['label_positive_rate'] == pytest.approx(
+    assert binary.rows == 1000
+    assert binary.label_positive_rate == pytest.approx(
         pd.read_parquet(tmp_path / 'binary.parquet')['TARGET'].mean())
-    _close_to_ranks(binary['columns']['True_PROB'], prob)
-    assert regression['rows'] == 3
-    assert regression['columns']['TARGET']['max'] == 5.
-    assert regression['columns']['TARGET_PRED']['mean'] == pytest.approx(8 / 3)
+    _close_to_ranks(binary.columns['True_PROB'], prob)
+    assert regression.rows == 3
+    assert regression.columns['TARGET']['max'] == 5.
+    assert regression.columns['TARGET_PRED']['mean'] == pytest.approx(8 / 3)
