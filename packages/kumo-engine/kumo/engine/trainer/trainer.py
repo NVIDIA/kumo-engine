@@ -32,10 +32,13 @@ from kumo_core.training.workflow import TrainingWorkflowRequest
 from kumo_core.types import ExplainMethod, PredictionArtifactType
 from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
 from kumoapi.plugin import (
+    BUNDLE_ID_KEY,
+    ModelAliasingSink,
     ModelFetchingSink,
     ModelRegistryLocation,
     PublishedModel,
     SourceConnector,
+    check_model_alias,
 )
 from kumoapi.train import TrainingStage
 from typing_extensions import Self
@@ -241,22 +244,41 @@ def _require_publisher(export_config: ModelOutputConfig) -> None:
         raise NotImplementedError(
             f'{type(export_config.connector).__name__} cannot publish '
             f'models')
+    if export_config.location and export_config.location.alias:
+        check_model_alias(export_config.location.alias)
 
 
 def _publish(training_result: TrainingResult,
              export_config: ModelOutputConfig) -> PublishedModel:
     spec = read_training_spec(training_result.bundle_dir)
-    return export_config.connector.sink_backend.publish_model(
+    metadata = {
+        name: str(getattr(spec, name))
+        for name in ('spec_version', 'predictive_query', 'snapshot_id')
+    }
+    if training_result.bundle_id:
+        metadata[BUNDLE_ID_KEY] = training_result.bundle_id
+    location = export_config.location
+    alias = location.alias if location else None
+    if location and alias:
+        location = replace(location, alias=None)
+    published = export_config.connector.sink_backend.publish_model(
         export_config.connector,
         str(training_result.bundle_dir),
         path=export_config.path,
-        location=export_config.location,
-        metadata={
-            name: str(getattr(spec, name))
-            for name in ('spec_version', 'predictive_query', 'snapshot_id')
-        },
+        location=location,
+        metadata=metadata,
         metrics=training_result.metrics,
     )
+    if location and alias:
+        try:
+            set_model_alias(export_config.connector,
+                            replace(location, version=published.version),
+                            alias)
+        except Exception as error:
+            warnings.warn(
+                f"Published {published.name} version {published.version} "
+                f"without alias {alias}: {error}", UserWarning, stacklevel=4)
+    return published
 
 
 def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
@@ -1004,9 +1026,23 @@ class Trainer:
         if not isinstance(sink, ModelFetchingSink):
             raise TypeError(
                 'model_registry.sink_backend must implement ModelFetchingSink')
-        sink.fetch_model(cast(SourceConnector, model_registry), str(bundle_dir),
-                         path=address.path, location=address.location)
-        return cls._load_bundle(bundle_dir, embedding_models)
+        alias = None if location is None else location.alias
+        if alias is not None and not isinstance(sink, ModelAliasingSink):
+            raise NotImplementedError(
+                f'{type(model_registry).__name__} cannot fetch models by '
+                f'alias')
+        published = sink.fetch_model(cast(SourceConnector, model_registry),
+                                     str(bundle_dir), path=address.path,
+                                     location=address.location)
+        trainer = cls._load_bundle(bundle_dir, embedding_models)
+        recorded = (getattr(published, 'metadata', None)
+                    or {}).get(BUNDLE_ID_KEY)
+        if recorded and trainer.bundle_id and recorded != trainer.bundle_id:
+            warnings.warn(
+                f"The registry records bundle {recorded} for this version, "
+                f"but the fetched bundle is {trainer.bundle_id}.", UserWarning,
+                stacklevel=2)
+        return trainer
 
     @classmethod
     def _load_bundle(
@@ -1031,3 +1067,13 @@ class Trainer:
                                                   bundle_id=bundle_id)
         trainer._scoring_defaults = read_scoring_defaults(bundle_dir, paths)
         return trainer
+
+
+def set_model_alias(connector: Connector, location: ModelRegistryLocation,
+                    alias: str) -> None:
+    """Point a registry alias at ``location``'s exact version."""
+    sink = connector.sink_backend
+    if not isinstance(sink, ModelAliasingSink):
+        raise NotImplementedError(
+            f'{type(connector).__name__} cannot set model aliases')
+    sink.set_model_alias(cast(SourceConnector, connector), location, alias)
