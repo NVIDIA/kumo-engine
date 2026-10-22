@@ -9,6 +9,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import traceback
 import warnings
 from typing import Any, Dict, Iterator, Mapping, NoReturn, Optional
@@ -25,7 +26,6 @@ class Terminated(BaseException):
 
 class JobRun:
     r"""What a job records for its summary line; see :func:`job`."""
-
     def __init__(self) -> None:
         self.summary: Dict[str, Any] = {
             'bundle_id': None,
@@ -36,8 +36,7 @@ class JobRun:
         }
 
     def record(self, *, bundle_id: Optional[str] = None,
-               snapshot_id: Optional[str] = None,
-               run_id: Optional[str] = None,
+               snapshot_id: Optional[str] = None, run_id: Optional[str] = None,
                outputs: Optional[Mapping[str, Any]] = None) -> None:
         r"""Adds ids and outputs (name to absolute URI or table) to the
         summary; ``None`` leaves a field."""
@@ -106,14 +105,23 @@ def job(*, job_id: Optional[str] = None,
             os.environ[name] = value
     run = JobRun()
     shown = warnings.showwarning
+    showing = threading.local()
 
     def show(message: Any, category: Any, *args: Any, **kwargs: Any) -> None:
+        if getattr(showing, 'active', False):
+            warnings._showwarnmsg_impl(  # type: ignore[attr-defined]
+                warnings.WarningMessage(message, category, *args, **kwargs))
+            return
         text = str(message)[:_MAX_WARNING]
         recorded = run.summary['warnings']
         if (not issubclass(category, _DEPRECATIONS) and text not in recorded
                 and len(recorded) < _MAX_WARNINGS):
             recorded.append(text)
-        shown(message, category, *args, **kwargs)
+        showing.active = True
+        try:
+            shown(message, category, *args, **kwargs)
+        finally:
+            showing.active = False
 
     warnings.showwarning = show
     error: Optional[BaseException] = None

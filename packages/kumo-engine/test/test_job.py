@@ -51,7 +51,9 @@ def test_summary_records_ids_warnings_and_scheduler(capsys):
         'bundle_id': 'b-1',
         'snapshot_id': 's-1',
         'run_id': 'r-1',
-        'outputs': {'predictions': 's3://out/p'},
+        'outputs': {
+            'predictions': 's3://out/p'
+        },
         'warnings': summary['warnings'],
     }
     assert summary['warnings'][0] == 'threshold not set'
@@ -60,6 +62,23 @@ def test_summary_records_ids_warnings_and_scheduler(capsys):
     assert len(set(summary['warnings'])) == 20
     assert max(map(len, summary['warnings'])) == 300
     assert 'KUMO_JOB_ID' not in os.environ
+
+
+def test_warning_survives_a_patcher_that_wraps_kumos_showwarning(capsys):
+    original = {}
+
+    def patched(*args, **kwargs):
+        original['show'](*args, **kwargs)
+
+    with pytest.warns(UserWarning, match='threshold not set'):
+        original['show'] = warnings.showwarning
+        warnings.showwarning = patched
+        with kumo.job():
+            original['show'] = warnings.showwarning
+            warnings.showwarning = patched
+            warnings.warn('threshold not set', UserWarning)
+
+    assert _summary(capsys)['warnings'] == ['threshold not set']
 
 
 def _wrapped(cause):
