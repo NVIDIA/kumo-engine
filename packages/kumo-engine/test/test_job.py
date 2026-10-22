@@ -11,7 +11,7 @@ import pytest
 from kumo_core.sources.errors import SourceNotFoundError, TransientSourceError
 
 import kumo.engine as kumo
-from kumo.engine._manifest import new_manifest
+from kumo.engine._manifest import SchedulerContext, stamp
 
 
 @pytest.fixture(autouse=True)
@@ -28,7 +28,7 @@ def _summary(capsys):
 
 def test_summary_records_ids_warnings_and_scheduler(capsys):
     with kumo.job(job_id='job-7', job_run_id='run-7') as run:
-        manifest = new_manifest('model_bundle', 'b-1', {})
+        scheduler = stamp()['scheduler']
         run.record(bundle_id='b-1', snapshot_id='s-1')
         run.record(run_id='r-1', outputs={'predictions': 's3://out/p'})
         warnings.warn('threshold not set', UserWarning)
@@ -37,17 +37,14 @@ def test_summary_records_ids_warnings_and_scheduler(capsys):
             warnings.warn(f'{i}' * 400, RuntimeWarning)
             warnings.warn(f'{i}' * 400, RuntimeWarning)
 
-    assert manifest['scheduler'] == {
-        'platform': 'other',
-        'job_id': 'job-7',
-        'job_run_id': 'run-7'
-    }
+    assert scheduler == SchedulerContext(platform='other', job_id='job-7',
+                                         job_run_id='run-7')
     summary = _summary(capsys)
     assert summary == {
         'event': 'kumo.engine.job',
         'status': 'succeeded',
         'exit_code': 0,
-        'scheduler': manifest['scheduler'],
+        'scheduler': scheduler.to_dict(),
         'bundle_id': 'b-1',
         'snapshot_id': 's-1',
         'run_id': 'r-1',

@@ -150,11 +150,12 @@ def _print_summary(run: JobRun, error: Optional[BaseException]) -> None:
     from kumo.engine._provenance import scheduler_context
 
     code = _exit_code(error)
+    scheduler = scheduler_context()
     line = {
         'event': 'kumo.engine.job',
         'status': 'succeeded' if code == 0 else 'failed',
         'exit_code': code,
-        'scheduler': scheduler_context(),
+        'scheduler': None if scheduler is None else scheduler.to_dict(),
         **run.summary,
     }
     if code != 0 and error is not None:
