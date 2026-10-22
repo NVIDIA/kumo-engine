@@ -104,8 +104,8 @@ tools with `vswhere`, activates their developer environment, and checks that
 `cl`, `link`, and `cmake` are available. It fails explicitly when prerequisites
 are absent; it does not install system toolchains or reboot the runner.
 
-Engine metadata selects `kumo-core[faiss]`, whose platform markers choose
-CPU Faiss on native Windows and GPU Faiss elsewhere, including WSL.
+Engine metadata declares concrete platform-marked Faiss dependencies, choosing
+GPU Faiss on Linux, including WSL, and CPU Faiss on Windows and macOS.
 Only one Faiss distribution
 is installed because both provide the same Python import namespace. Windows
 CPU Faiss and CPU training do not cover native Windows GPU execution.

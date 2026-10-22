@@ -217,6 +217,12 @@ jobs:
           uv pip check
           if ($LASTEXITCODE -ne 0) { throw 'Engine dependency check failed.' }
 
+      - name: Test native Windows path ownership
+        working-directory: packages/diskgraph
+        run: |
+          cargo test --manifest-path Cargo.toml -p diskgraph-ingest --lib disk_manager::path_safety::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows path ownership tests failed.' }
+
       - name: Run real ingest, CPU training, and prediction
         run: |
           python -m pytest -q -s packages/kumo-engine/test/smoke_platform.py --junitxml=platform-cpu-results.xml
