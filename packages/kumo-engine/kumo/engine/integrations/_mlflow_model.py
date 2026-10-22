@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -58,7 +57,7 @@ class KumoModel(_pyfunc.PythonModel):
 
 def predict(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
             params: Mapping[str, Any]) -> pd.DataFrame:
-    from kumo.engine._scratch import prediction_table_scratch_dir
+    from kumo.engine._scratch import scoped_scratch_dir
     from kumo.engine.connector.file import FileConnector
 
     time = params.get('prediction_time')
@@ -68,29 +67,22 @@ def predict(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
             'binary_classification_threshold'),
         num_classes_to_return=params.get('num_classes_to_return'),
     )
-    scratch = [
-        trainer.scratch_dir / 'runs',
-        prediction_table_scratch_dir('-').parent
-    ]
-    before = {path for parent in scratch for path in parent.glob('*')}
     trainer.scratch_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=trainer.scratch_dir) as tmp:
-        try:
-            if len(rows) == 0:
-                return trainer.predict_snapshot(
-                    snapshot, prediction_time=None
-                    if time is None else time.to_pydatetime(), **options).frame
-            rows = rows.rename(columns={'ENTITY': 'ENTITY1'})
-            if time is not None and 'TIMESTAMP' not in rows:
-                rows = rows.assign(TIMESTAMP=time)
-            rows.to_parquet(Path(tmp) / 'rows.parquet', index=False)
+    with tempfile.TemporaryDirectory(dir=trainer.scratch_dir) as tmp, \
+            scoped_scratch_dir(Path(tmp) / 'scratch'):
+        if len(rows) == 0:
             return trainer.predict_snapshot(
-                snapshot, entities=FileConnector(root_dir=tmp)['rows.parquet'],
-                **options).frame
-        finally:
-            after = {path for parent in scratch for path in parent.glob('*')}
-            for path in after - before:
-                shutil.rmtree(path, ignore_errors=True)
+                snapshot, prediction_time=None
+                if time is None else time.to_pydatetime(), **options).frame
+        rows = rows.rename(columns={'ENTITY': 'ENTITY1'})
+        if time is not None and 'TIMESTAMP' not in rows:
+            rows = rows.assign(TIMESTAMP=time)
+        (Path(tmp) / 'rows').mkdir()
+        rows.to_parquet(Path(tmp) / 'rows' / 'rows.parquet', index=False)
+        return trainer.predict_snapshot(
+            snapshot,
+            entities=FileConnector(root_dir=str(Path(tmp) / 'rows'))[
+                'rows.parquet'], **options).frame
 
 
 def snapshot_location(uri: str) -> Tuple[Connector, str]:

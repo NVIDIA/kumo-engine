@@ -475,11 +475,13 @@ every snapshot it has loaded (no eviction), so its disk must hold them. With
 `predict` uses it when no `snapshot` param is given.
 `params={"population": True}` scores every entity and returns the whole
 frame in memory; for large populations use `Trainer.predict` with a
-`PredictionOutputConfig`.
+`PredictionOutputConfig`. Each `predict` call works in its own scratch
+directory and removes it before returning.
 
-SageMaker managed MLflow servers run MLflow 3.0; kumo-engine needs a newer
-client (3.11 or later, since DiskGraph pins pyarrow 24). A 3.17 client against
-a 3.0 server handles logging, registration, aliases and `load_model`.
+The `mlflow` extra needs an MLflow 3.13 or later client: DiskGraph pins
+pyarrow 24, which older MLflow releases exclude. SageMaker managed MLflow
+servers run MLflow 3.0; a 3.17 client against a 3.0 server handles logging,
+registration, aliases and `load_model`.
 
 On Databricks, the parent folder of an MLflow experiment path must exist.
 Registering to Unity Catalog from outside Databricks also needs `boto3`, which

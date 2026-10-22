@@ -107,7 +107,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
 
 
 def test_logged_model_scores_the_query_population_and_timed_rows(
-        fitted, tracking_uri, tmp_path):
+        fitted, tracking_uri, tmp_path, monkeypatch):
     from kumo.engine.integrations.mlflow import log_model
 
     trainer, table, snapshot = fitted
@@ -136,7 +136,15 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
         trainer.predict(table, snapshot=snapshot,
                         binary_classification_threshold=0.5).frame)
     empty = pd.DataFrame({'ENTITY': pd.Series([], dtype='int64')})
-    tables = set((get_scratch_dir() / 'prediction_tables').glob('*'))
+    tables = get_scratch_dir() / 'prediction_tables'
+    before = set(tables.glob('*'))
+    predict = kumo.Trainer.predict
+
+    def predict_beside_another_call(self, *args, **kwargs):
+        (tables / 'other-call').mkdir(parents=True, exist_ok=True)
+        return predict(self, *args, **kwargs)
+
+    monkeypatch.setattr(kumo.Trainer, 'predict', predict_beside_another_call)
 
     assert pyfunc.predict(empty, params=params).empty
     served = pyfunc.unwrap_python_model()._snapshots
@@ -154,8 +162,8 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
                                params={**params, 'population': population})),
             expected)
     scratch = pyfunc.unwrap_python_model()._trainer.scratch_dir
-    assert not list((scratch / 'runs').glob('*'))
-    assert set((get_scratch_dir() / 'prediction_tables').glob('*')) == tables
+    assert list(scratch.iterdir()) == []
+    assert set(tables.glob('*')) == before | {tables / 'other-call'}
 
 
 @pytest.mark.parametrize('options', [
@@ -211,3 +219,4 @@ def test_fit_waits_for_model_logging_and_fails_the_run_if_it_fails(
         assert tracker.calls[2] == ('finish', error)
         assert (error is not None) is fail
         assert any('upload failed' in str(w.message) for w in caught) is fail
+
