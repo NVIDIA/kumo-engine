@@ -13,8 +13,4 @@ adapters, `packages/kumo-core`, PQL, and DiskGraph.
 - Add focused regression coverage for behavior changes; explain removed tests
   and restrictions. Keep unrelated changes separate.
 
-Use [ML review patterns](ml-review-patterns.md) for concrete examples,
-[query orchestration guidance](../../kumo/pquery/AGENTS.md) for service rules,
-and [PQL instructions](../../packages/kumo-pql/AGENTS.md) for parser changes.
-Follow the [DiskGraph source boundary](generated-artifacts.md#diskgraph-source)
-for native-engine changes.
+Use [ML review patterns](ml-review-patterns.md) for concrete examples, [query orchestration guidance](../../kumo/pquery/AGENTS.md) for service rules, and [PQL instructions](../../packages/kumo-pql/AGENTS.md) for parser changes. Follow the [DiskGraph build and test instructions](../../packages/diskgraph/README.md#python-wheel-builds) for native-engine changes.

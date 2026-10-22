@@ -68,7 +68,7 @@ Validated tables + statistics  → consumed by kumo/train and REST ML workflows
 
 `TrainingTableGeneratorV2` and `PredictionTableGeneratorV2` require a `diskgraph_index_path` and delegate to `kumo.data.generic.diskgraph_train_table` and `kumo.data.generic.diskgraph_batch_pred`. The production training adapter delegates to `kumo_core.training.table.generate_train_table()` in `packages/kumo-core/src/kumo_core/training/table.py`, which instantiates `DiskGraphPlanCompiler`. The prediction adapter instantiates the compiler directly. Both pass the validated query to the compiler from the `diskgraph` wheel.
 
-The retired Python planner and `DataProcessingBackend` execution model are not part of production paths. Compiler semantics and plan-node changes belong with [DiskGraph in this repository](../../docs/development/generated-artifacts.md#diskgraph-source), with compatible adapter changes in this repository when the wheel interface changes.
+The retired Python planner and `DataProcessingBackend` execution model are not part of production paths. Compiler semantics and plan-node changes belong with [DiskGraph in this repository](../../packages/diskgraph/README.md#python-wheel-builds), with compatible adapter changes in this repository when the wheel interface changes.
 
 ## Key Components
 

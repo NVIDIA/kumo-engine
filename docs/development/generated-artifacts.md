@@ -29,16 +29,3 @@ by hand. The initial content came from docs commit
 The website is maintained and published from `kumo-ai/docs`. Kumo builds use
 the committed JSON and do not require that checkout, Fern, or a docs token.
 Website publication and Kumo releases remain independent.
-
-Root `CLAUDE.md` links to `AGENTS.md`; component compatibility adapters import
-their adjacent instructions. Skills have one authored source. The
-[documentation hook](../../.agents/hooks/README.md#documentation-validator) can
-sync an existing root skills table; it does not generate the skill sources or
-compatibility adapters.
-
-## DiskGraph source
-
-This repository is the sole source of truth for DiskGraph. Edit
-`packages/diskgraph` directly and follow its package-local build and test
-instructions. There is no upstream synchronization or mirror verification.
-Its earlier history is in kumo-ai/kumo; see [code provenance](../provenance.md).
