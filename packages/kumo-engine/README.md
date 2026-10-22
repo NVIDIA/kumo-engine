@@ -398,7 +398,8 @@ per run are counted in `kumo.dropped_metrics` / `kumo.dropped_params`. If a
 Snowflake run is already active in the process, the fit is not tracked there;
 an existing run is never resumed (a taken `run_name` gets a suffix). Snowflake
 Experiment Tracking has no dataset inputs, so source tables are not recorded
-there. The Snowpark session's parameters are left as they are.
+there. The Snowpark session's parameters are left as they are. After the fit,
+`tracking.run_id` is the fit run's name.
 
 Other systems plug in through the `kumo.engine.tracking.Tracking` protocol,
 which receives ready-built `RunRecord`s so every tracker records the same

@@ -46,6 +46,9 @@ class SnowflakeTracking:
         tags: extra tags for the fit run.
         native_model_lineage: keep the run open as a context for the whole
             fit, so models registered meanwhile are linked to it.
+
+    ``run_id`` is the latest fit run's name (Snowflake runs are identified
+    by name), once it has started.
     """
 
     def __init__(
@@ -67,6 +70,7 @@ class SnowflakeTracking:
         self.run_name = run_name
         self.tags = dict(tags or {})
         self.native_model_lineage = native_model_lineage
+        self.run_id: Optional[str] = None
         self._reset()
 
     def _reset(self) -> None:
@@ -83,6 +87,7 @@ class SnowflakeTracking:
 
     def start(self, record: RunRecord) -> None:
         self._reset()
+        self.run_id = None
         cls = self._module.ExperimentTracking
         tracking = getattr(cls, '_instance', None)
         if tracking is None:
@@ -102,6 +107,7 @@ class SnowflakeTracking:
         self._run = tracking.start_run(
             self._new_run_name(tracking, experiment.name,
                                record.tags['kumo.run_id']))
+        self.run_id = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)

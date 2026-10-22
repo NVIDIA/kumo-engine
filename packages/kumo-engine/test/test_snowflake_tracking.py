@@ -146,9 +146,11 @@ def test_an_existing_run_is_never_resumed(fake, taken, caplog):
         user._run = None  # still running, in another process
     run_name = 'fit' if taken == 'FIT' else 'my_run'
 
-    _replay(_tracking(session, run_name=run_name))
+    tracking = _tracking(session, run_name=run_name)
+    _replay(tracking)
 
     new = f"{run_name}_{CONTEXT.run_id.rsplit('-', 1)[-1][:8]}".upper()
+    assert tracking.run_id == new
     assert set(user.runs) == {taken, new}
     assert user.runs[taken]['params'] == {}
     assert user.runs[new]['status'] == 'FINISHED'
