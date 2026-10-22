@@ -55,10 +55,9 @@ after changing it. `KUMO_SOURCE_COPY_WORKERS` lowers the shared file-copy
 ceiling. Both controls limit concurrency rather than total memory; SDK and
 projected-read buffers need additional headroom.
 
-See the [storage contract](../../docs/cloud-storage/adls.md),
-[implementation and resource controls](docs/implementation.md), and
-[performance methodology](docs/performance.md) for authentication scope,
-consistency, memory estimates, export behavior, and benchmark limits.
+See the [storage contract](../../docs/cloud-storage/adls.md)
+and [implementation and resource controls](docs/implementation.md) for
+authentication scope, consistency, memory estimates, and export behavior.
 
 ## Tests
 

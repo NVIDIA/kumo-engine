@@ -95,17 +95,3 @@ requires explicitly managed permissions. Temporary files are closed before
 promotion with `os.replace`, including on failure cleanup paths. This avoids
 requiring POSIX open-file replacement; it does not establish full Windows
 engine support.
-
-These settings remove known serial paths and request amplification; they are
-not evidence of optimal live Azure throughput. Validate full logical tables,
-client placement, resource limits, retries, and service throttling before making
-production performance claims.
-See the [performance methodology](performance.md) for complete-table
-validation, native-host comparisons, per-reader cache scope, and resource
-tradeoffs. The [matched-request stream method](../../../scripts/benchmarks/object_store/matched-transfer.md)
-separately controls HEADs, range GETs, bytes, and worker limits for ADLS and
-native S3; it uses fixed historical diagnostic geometry rather than the
-production 16 MiB download configuration or full connector ingestion.
-For live comparisons on Linux using your own storage locations, the
-[bulk-reader transfer harness](../../../scripts/benchmarks/object_store/compare_live.py) accepts complete-table
-manifests and verifies staged files after each production bulk-reader trial.
