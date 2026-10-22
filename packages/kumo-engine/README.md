@@ -509,6 +509,31 @@ Catalog tables as Delta datasets. Both accept the same aliases
 | Snowflake | `SnowflakeConnector` (Snowflake Model Registry) | not available |
 | Plain VM | `FileConnector`, `S3Connector`, `GCSConnector` path (no aliases) | any MLflow tracking server |
 
+## Scheduled jobs
+
+Wrap a job script's body in `kumo.job()` so a scheduler gets one JSON summary
+line on stdout and an exit code it can act on:
+
+```python
+import kumo.engine as kumo
+
+with kumo.job() as run:
+    snapshot = graph.snapshot()
+    result = kumo.Trainer(plan).fit(training_table, snapshot=snapshot)
+    run.record(bundle_id=result.bundle_id, snapshot_id=snapshot.id)
+```
+
+The summary carries `status`, `exit_code`, the scheduler context, the recorded
+ids and outputs, the first 20 distinct warnings other than deprecations (300
+characters each), and `error` on failure. The line is printed
+however the body ends, including Ctrl-C and `sys.exit()`. The job exits 0 on
+success, 1 on failure and 143 on SIGTERM; `error.kind` says whether a failure
+is `transient` (a source, connection or timeout error worth retrying),
+`permanent` (a source refused the request) or `unknown`. Scheduler ids come
+from `job(job_id=..., job_run_id=...)`, `KUMO_JOB_ID`/`KUMO_JOB_RUN_ID`, or the
+detected platform, and are recorded in every manifest and tracking run the job
+writes. Logs go to stderr.
+
 ## BigQuery staged ingestion
 
 BigQuery streams through the Storage Read API by default. For large tables,

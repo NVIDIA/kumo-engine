@@ -26,6 +26,7 @@ from kumoapi.plugin import ModelRegistryLocation
 from kumoapi.table import Column
 
 from kumo.engine._events import Event
+from kumo.engine._job import JobRun, job
 from kumo.engine._version import __version__
 from kumo.engine.config import configure
 from kumo.engine.connector import (
@@ -63,6 +64,8 @@ __all__ = [
     "__version__",
     "configure",
     "Event",
+    "job",
+    "JobRun",
     "EmbeddingModelStore",
     "GloVeVectors",
     "TokenEmbeddingModel",
