@@ -6,7 +6,7 @@ r"""Materialized prediction tables and their shared compile path."""
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Literal, Mapping, Optional, Tuple
 
 from kumo_core.model_plan import \
     TrainingTableGenerationPlan as CoreGenerationPlan
@@ -70,6 +70,8 @@ class PredictionTable:
     compiler_options: Optional[Mapping[str, Any]] = None
     #: Effective temporal step used by the fitted forecast task.
     forecast_timeframe_step: Optional[int] = None
+    #: ``'pql'`` when generated from the query, ``'custom'`` from a source.
+    source: Literal['pql', 'custom'] = 'pql'
 
     @classmethod
     def from_source_table(
@@ -135,6 +137,7 @@ class PredictionTable:
             required_stages=request.task_dataset.required_stages,
             compiler_options=request.compiler_options,
             forecast_timeframe_step=request.forecast_timeframe_step,
+            source='custom',
         )
 
 
