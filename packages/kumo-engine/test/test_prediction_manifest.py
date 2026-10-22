@@ -17,6 +17,17 @@ from kumoapi.model_plan import ModelPlan
 from kumoapi.typing import Stype
 
 import kumo.engine as kumo
+from kumo.engine._manifest import (
+    ArtifactStats,
+    OutputDestination,
+    PredictionManifest,
+    PredictionOutput,
+    PredictionParents,
+    PredictionTableRecord,
+    RunScoring,
+    read_manifest,
+    write_manifest,
+)
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.trainer.output_config import PredictionOutputConfig
 
@@ -88,47 +99,64 @@ def test_manifest_records_run_and_directory_export(graph, classifier,
     assert not [w for w in recwarn if 'location' in str(w.message)]
 
     manifest = result.manifest
-    assert manifest['kind'] == 'prediction_run'
-    assert manifest['id'] == result.run_id == result.selection.job_id
-    assert manifest['parents'] == {
-        'bundle': trainer.bundle_id,
-        'snapshot': snapshot.id,
-        'prediction_table': table.tt_id,
-    }
-    assert manifest['source_tables'] == snapshot.manifest['parents'][
-        'source_tables']
+    assert manifest.kind == 'prediction_run'
+    assert manifest.id == result.run_id == result.selection.job_id
+    assert manifest.parents == PredictionParents(
+        bundle=trainer.bundle_id, snapshot=snapshot.id,
+        prediction_table=table.tt_id)
+    assert manifest.source_tables == snapshot.manifest.parents.source_tables
     anchor = pd.Timestamp(table.timestamps[0], unit='ns', tz='UTC')
-    assert manifest['prediction_table'] == {
-        'query_sha256': hashlib.sha256(table.query.encode()).hexdigest(),
-        'source': 'pql', 'anchors': [anchor.isoformat()],
-        'rows': table.row_count,
-    }
-    assert manifest['scoring'] == {
-        'binary_classification_threshold': 0.4, 'threshold_source': 'argument',
-        'num_classes_to_return': None, 'count_source': 'none',
-        'num_workers': 1, 'lineage_columns': False,
-    }
-    assert [o['destination'] for o in manifest['outputs']] == [{
-        'connector': 'LOCAL_FILE', 'location': str(tmp_path / name)
-    } for name in ('preds', 'embs')]
-    assert manifest['timings']['started_at'] <= manifest['timings'][
-        'finished_at']
-    assert manifest['status'] == 'succeeded'
-    assert manifest['stats']['embeddings'] == {'rows': table.row_count}
+    assert manifest.prediction_table == PredictionTableRecord(
+        query_sha256=hashlib.sha256(table.query.encode()).hexdigest(),
+        source='pql', anchors=[anchor.isoformat()], rows=table.row_count)
+    assert manifest.scoring == RunScoring(
+        binary_classification_threshold=0.4, threshold_source='argument',
+        num_classes_to_return=None, count_source='none', num_workers=1,
+        lineage_columns=False)
+    assert [o.destination for o in manifest.outputs] == [
+        OutputDestination(connector='LOCAL_FILE',
+                          location=str(tmp_path / name))
+        for name in ('preds', 'embs')
+    ]
+    assert manifest.timings.started_at <= manifest.timings.finished_at
+    assert manifest.status == 'succeeded'
+    assert manifest.stats['embeddings'] == ArtifactStats(rows=table.row_count)
 
     frame = result.frame
-    stats = manifest['stats']['predictions']
-    assert stats['rows'] == len(frame)
-    _quantiles_match(stats['columns']['True_PROB'], frame['True_PROB'])
-    assert stats['predicted_positive_rate'] == pytest.approx(
+    stats = manifest.stats['predictions']
+    assert stats.rows == len(frame)
+    _quantiles_match(stats.columns['True_PROB'], frame['True_PROB'])
+    assert stats.predicted_positive_rate == pytest.approx(
         (frame['True_PROB'] > 0.4).mean())
 
     for name in ('preds', 'embs'):
         sidecar = json.loads(
             (tmp_path / name / '_kumo_manifest.json').read_text())
-        assert sidecar['id'] == manifest['id']
-        assert sidecar['outputs'] == manifest['outputs']
-    assert table.query not in json.dumps(manifest)
+        assert sidecar['id'] == manifest.id
+        assert sidecar['outputs'] == manifest.to_dict()['outputs']
+    assert table.query not in json.dumps(manifest.to_dict())
+
+
+def test_prediction_manifest_round_trips_unchanged(graph, classifier,
+                                                   tmp_path):
+    _, snapshot = graph
+    trainer, table = classifier
+    result = trainer.predict(table, snapshot=snapshot,
+                             binary_classification_threshold=0.4)
+    newer = json.loads(result._manifest_path.read_text())
+    newer['future'] = {'a': 1}
+    newer['scoring']['calibration'] = 'none'
+    newer['stats']['predictions']['predicted_positive_rate'] = None
+    source = tmp_path / 'newer.json'
+    source.write_text(json.dumps(newer, indent=2, sort_keys=True) + '\n')
+
+    manifest = read_manifest(source, PredictionManifest)
+    write_manifest(tmp_path / 'out.json', manifest)
+
+    assert (tmp_path / 'out.json').read_bytes() == source.read_bytes()
+    assert manifest.extra == {'future': {'a': 1}}
+    assert manifest.scoring.extra == {'calibration': 'none'}
+    assert manifest.stats['predictions'].predicted_positive_rate is None
 
 
 @pytest.mark.parametrize('argument, source', [(None, 'bundle'),
@@ -141,9 +169,9 @@ def test_manifest_records_bundle_scoring_defaults_as_bundle(
         kumo.ScoringDefaults(binary_classification_threshold=0.3))
     scoring = child.predict(
         table, snapshot=snapshot,
-        binary_classification_threshold=argument).manifest['scoring']
-    assert (scoring['binary_classification_threshold'],
-            scoring['threshold_source']) == (argument or 0.3, source)
+        binary_classification_threshold=argument).manifest.scoring
+    assert (scoring.binary_classification_threshold,
+            scoring.threshold_source) == (argument or 0.3, source)
 
 
 def test_top_scores_per_entity_and_anchor_across_files(tmp_path):
@@ -192,18 +220,19 @@ def test_export_records_outputs_and_skips_non_parquet_sidecars(
                                        'PREDS')
     result.export(warehouse)
     assert len(calls) == 1 and 'sidecars' not in calls[0]
-    assert result.manifest['outputs'] == [{
-        'artifact': 'predictions',
-        'destination': {'connector': 'SNOWFLAKE',
-                        'location': 'DB.SCHEMA.PREDS'},
-    }]
+    assert result.manifest.outputs == [
+        PredictionOutput(
+            artifact='predictions',
+            destination=OutputDestination(connector='SNOWFLAKE',
+                                          location='DB.SCHEMA.PREDS'))
+    ]
 
     result.export(
         PredictionOutputConfig(
             connector=kumo.FileConnector(root_dir=str(tmp_path)),
             output_paths={'predictions': 'preds.csv/'}))
     assert not (tmp_path / 'preds.csv' / '_kumo_manifest.json').exists()
-    assert len(result.manifest['outputs']) == 2
+    assert len(result.manifest.outputs) == 2
 
     def fail(*args):
         raise OSError('read-only scratch')
@@ -239,13 +268,13 @@ def test_manifest_failures_warn_and_keep_outputs(graph, classifier, tmp_path,
     monkeypatch.setattr(_run_manifest, 'output_stats', fail)
     with pytest.warns(UserWarning, match='without output score statistics'):
         partial, partial_exported = run('partial')
-    assert partial.manifest['stats'] == {
-        'predictions': {'rows': table.row_count}
+    assert partial.manifest.stats == {
+        'predictions': ArtifactStats(rows=table.row_count)
     }
     monkeypatch.setattr(_run_manifest, 'output_record', fail)
     with pytest.warns(UserWarning, match='Exporting without a prediction'):
         unknown, unknown_exported = run('unknown')
-    assert unknown.manifest['outputs'] is None
+    assert unknown.manifest.outputs is None
     monkeypatch.setattr(_run_manifest, 'run_manifest', fail)
     with pytest.warns(UserWarning, match='without a prediction manifest'):
         bare, bare_exported = run('bare')

@@ -266,14 +266,77 @@ class BundleProvenance(Manifest):
         }
 
 
+@dataclass(frozen=True, kw_only=True)
+class PredictionParents(Record):
+    bundle: Optional[str]
+    snapshot: Optional[str]
+    prediction_table: Optional[str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionTableRecord(Record):
+    query_sha256: str
+    source: Optional[str]
+    anchors: List[str]
+    rows: Optional[int]
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunScoring(Record):
+    binary_classification_threshold: Optional[float]
+    threshold_source: str
+    num_classes_to_return: Optional[int]
+    count_source: str
+    num_workers: Optional[int]
+    lineage_columns: bool
+
+
+@dataclass(frozen=True, kw_only=True)
+class OutputDestination(Record):
+    connector: str
+    location: Optional[str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionOutput(Record):
+    artifact: str
+    destination: OutputDestination
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunTimings(Record):
+    started_at: str
+    finished_at: Optional[str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ArtifactStats(Record):
+    rows: Optional[int]
+    columns: Optional[Dict[str, Dict[str, Any]]] = omit_none()
+    predicted_positive_rate: Optional[float] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionManifest(Manifest):
+    kind: str = 'prediction_run'
+    parents: PredictionParents
+    source_tables: Optional[Dict[str, SourceTableEntry]]
+    prediction_table: PredictionTableRecord
+    scoring: RunScoring
+    outputs: Optional[List[PredictionOutput]]
+    status: Optional[str]
+    timings: RunTimings
+    stats: Dict[str, ArtifactStats]
+
+
 def manifest_bytes(manifest: Union[Record, Mapping[str, Any]]) -> bytes:
     if isinstance(manifest, Record):
         manifest = manifest.to_dict()
     return (json.dumps(manifest, indent=2, sort_keys=True) + '\n').encode()
 
 
-def write_manifest(path: Path,
-                   manifest: Union[Record, Mapping[str, Any]]) -> None:
+def write_manifest(path: Path, manifest: Union[Record, Mapping[str,
+                                                               Any]]) -> None:
     atomic_write_bytes(path, manifest_bytes(manifest))
 
 

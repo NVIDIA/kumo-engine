@@ -14,7 +14,7 @@ import warnings
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence, cast
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, cast
 
 import pandas as pd
 from kumo_core.embedding_models import EmbeddingModelStore
@@ -49,7 +49,12 @@ from kumo.engine._embeddings import (
     require_trained_embedding_models,
 )
 from kumo.engine._events import Event, EventEmitter, query_sha256
-from kumo.engine._manifest import BundleProvenance
+from kumo.engine._manifest import (
+    BundleProvenance,
+    PredictionManifest,
+    PredictionOutput,
+    RunScoring,
+)
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine._tracking import (
     FitContext,
@@ -151,10 +156,10 @@ class PredictionResult:
         return Path(self.selection.pointer_path).parent / MANIFEST_FILE
 
     @property
-    def manifest(self) -> Optional[Dict[str, Any]]:
+    def manifest(self) -> Optional[PredictionManifest]:
         from kumo.engine._manifest import read_manifest
 
-        return read_manifest(self._manifest_path)
+        return read_manifest(self._manifest_path, PredictionManifest)
 
     @property
     def num_rows(self) -> int:
@@ -193,14 +198,15 @@ class PredictionResult:
                 'has none, so the export has none either.', UserWarning,
                 stacklevel=2)
         manifest = self.manifest
-        written: list = []
+        written: List[PredictionOutput] = []
         try:
             self._export(output_config, manifest, written)
         finally:
             if manifest is not None and written:
                 _write_run_manifest(
-                    self, {**manifest, 'outputs':
-                           [*(manifest.get('outputs') or []), *written]})
+                    self,
+                    replace(manifest,
+                            outputs=[*(manifest.outputs or []), *written]))
 
     def _has_lineage_columns(self) -> bool:
         from pyarrow import parquet
@@ -209,8 +215,9 @@ class PredictionResult:
             files[0]).names
 
     def _export(self, output_config: PredictionOutputConfig,
-                manifest: Optional[Dict[str, Any]] = None,
-                written: Optional[list] = None) -> Optional[list]:
+                manifest: Optional[PredictionManifest] = None,
+                written: Optional[List[PredictionOutput]] = None
+                ) -> Optional[List[PredictionOutput]]:
         write_files = getattr(output_config.connector.sink_backend,
                               'write_files', None)
         if not callable(write_files):
@@ -237,8 +244,8 @@ LINEAGE_RUN_ID = 'KUMO_RUN_ID'
 
 
 def _output_records(output_config: PredictionOutputConfig, outputs: list,
-                    manifest: Optional[Dict[str, Any]]
-                    ) -> tuple[Optional[list], list]:
+                    manifest: Optional[PredictionManifest]
+                    ) -> tuple[Optional[List[PredictionOutput]], list]:
     from kumo_core.object_store_sink import ObjectStoreSinkBackend
     from kumo_core.sources import layout
 
@@ -252,7 +259,7 @@ def _output_records(output_config: PredictionOutputConfig, outputs: list,
             for kind, destination, _ in outputs
         ]
         payload = None if manifest is None else manifest_bytes(
-            {**manifest, 'outputs': records})
+            replace(manifest, outputs=records))
     except Exception as error:
         warnings.warn(f"Exporting without a prediction manifest: {error}",
                       UserWarning, stacklevel=4)
@@ -305,7 +312,7 @@ def _option_source(argument: Any, requested: Any, value: Any,
 
 
 def _write_run_manifest(result: PredictionResult,
-                        manifest: Dict[str, Any]) -> None:
+                        manifest: PredictionManifest) -> None:
     from kumo.engine._manifest import write_manifest
 
     try:
@@ -1108,24 +1115,24 @@ class Trainer:
             from kumo.engine.trainer._run_manifest import run_manifest
             manifest = run_manifest(
                 result=result, prediction_table=prediction_table,
-                task_type=task_type, scoring={
-                    'binary_classification_threshold': threshold,
-                    'threshold_source': _option_source(
+                task_type=task_type, scoring=RunScoring(
+                    binary_classification_threshold=threshold,
+                    threshold_source=_option_source(
                         arguments[0], binary_classification_threshold,
                         threshold, 'default'),
-                    'num_classes_to_return': num_classes_to_return,
-                    'count_source': _option_source(
+                    num_classes_to_return=num_classes_to_return,
+                    count_source=_option_source(
                         arguments[1], requested_classes,
                         num_classes_to_return, 'query'),
-                    'num_workers': num_workers,
-                    'lineage_columns': bool(output_config
-                                            and output_config.lineage_columns),
-                }, source_tables=_source_tables(snapshot),
+                    num_workers=num_workers,
+                    lineage_columns=bool(output_config
+                                         and output_config.lineage_columns),
+                ), source_tables=_source_tables(snapshot),
                 started_at=started_at.isoformat(timespec='seconds'))
         except Exception as error:
             warnings.warn(f"Predicting without a prediction manifest: {error}",
                           UserWarning, stacklevel=2)
-        written: Optional[list] = []
+        written: Optional[List[PredictionOutput]] = []
         status = 'failed'
         try:
             if output_config is not None and result._export(
@@ -1134,10 +1141,14 @@ class Trainer:
             status = 'succeeded'
         finally:
             if manifest is not None:
-                manifest.update(outputs=written, status=status)
-                manifest['timings']['finished_at'] = datetime.now(
-                    timezone.utc).isoformat(timespec='seconds')
-                _write_run_manifest(result, manifest)
+                _write_run_manifest(
+                    result,
+                    replace(manifest, outputs=written, status=status,
+                            timings=replace(
+                                manifest.timings,
+                                finished_at=datetime.now(
+                                    timezone.utc).isoformat(
+                                        timespec='seconds'))))
         return result
 
     @classmethod
