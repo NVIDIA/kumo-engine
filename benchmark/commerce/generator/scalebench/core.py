@@ -3,13 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared generation primitives: keyed RNG, time model, column builders."""
 import hashlib
-from functools import lru_cache
 from datetime import datetime
+from functools import lru_cache
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
-
 from scalebench import profile as P
 
 DAY = 86_400

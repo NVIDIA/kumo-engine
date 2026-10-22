@@ -4,7 +4,7 @@
 """End-to-end Kumo Engine benchmark for one scale-bench rung.
 
     <kumo venv>/bin/python kumo/run_e2e.py --graph commerce --data <dir or s3://.../commerce/1B> \
-        --scratch <local NVMe dir> --out runs/commerce-1B [--monitor] \
+        --scratch <local NVMe dir> --out runs/commerce-1B \
         [--stages snapshot,tt,fit,pt,predict] [--epochs 1 --max-steps 1000] \
         [--hops 2 --fanout 16,8] [--predict-limit 2000000]
 
@@ -49,151 +49,13 @@ def score_with_loader_workers(score_worker, loader_workers, **kwargs):
         dnt._ttng_diskgraph_runtime_config = original
 
 
-# ---------------------------------------------------------------- monitor (separate process)
+# ---------------------------------------------------------------- environment
 
 def _meminfo():
     out = {}
     for line in open("/proc/meminfo"):
         k, v = line.split(":", 1)
         out[k] = int(v.split()[0]) * 1024
-    return out
-
-
-def _proc_tree(root):
-    children = {}
-    for d in os.listdir("/proc"):
-        if not d.isdigit():
-            continue
-        try:
-            stat = open(f"/proc/{d}/stat").read()
-        except OSError:
-            continue
-        ppid = int(stat.rsplit(")", 1)[1].split()[1])
-        children.setdefault(ppid, []).append(int(d))
-    tree, todo = [], [root]
-    while todo:
-        p = todo.pop()
-        tree.append(p)
-        todo.extend(children.get(p, []))
-    return tree
-
-
-def _rss(pid):
-    try:
-        return int(open(f"/proc/{pid}/statm").read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
-    except OSError:
-        return 0
-
-
-def _pss(pid):
-    try:
-        for line in open(f"/proc/{pid}/smaps_rollup"):
-            if line.startswith("Pss:"):
-                return int(line.split()[1]) * 1024
-    except OSError:
-        pass
-    return 0
-
-
-def _block_device(path):
-    st = os.stat(path)
-    try:
-        name = Path(os.path.realpath(f"/sys/dev/block/{os.major(st.st_dev)}:{os.minor(st.st_dev)}")).name
-    except OSError:
-        return None
-    return name
-
-
-def _diskstats(dev):
-    for line in open("/proc/diskstats"):
-        f = line.split()
-        if f[2] == dev:
-            return {"rd_sect": int(f[5]), "wr_sect": int(f[9]), "io_ms": int(f[12]), "t": time.time()}
-    return None
-
-
-def _gpu():
-    try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used",
-                              "--format=csv,noheader,nounits"], capture_output=True, text=True,
-                             timeout=10).stdout
-        rows = [list(map(float, r.split(","))) for r in out.strip().splitlines()]
-        return {"gpu_util": max(r[0] for r in rows), "gpu_mem_mib": sum(r[1] for r in rows)}
-    except Exception:
-        return {}
-
-
-def _du(path):
-    try:
-        out = subprocess.run(["du", "-sb", str(path)], capture_output=True, text=True, timeout=300).stdout
-        return int(out.split()[0])
-    except Exception:
-        return None
-
-
-def monitor_main(pid, out, scratch, interval, heavy_interval):
-    out, scratch = Path(out), Path(scratch)
-    dev = _block_device(scratch)
-    prev = _diskstats(dev) if dev else None
-    last_heavy = 0.0
-    with open(out / "monitor.jsonl", "a") as f:
-        while os.path.exists(f"/proc/{pid}") and not (out / ".monitor_stop").exists():
-            now = time.time()
-            m = _meminfo()
-            stage = (out / ".stage").read_text().strip() if (out / ".stage").exists() else ""
-            tree = _proc_tree(pid)
-            usage = shutil.disk_usage(scratch)
-            s = {"t": now, "stage": stage,
-                 "mem_available": m["MemAvailable"], "anon": m["AnonPages"], "cached": m["Cached"],
-                 "mapped": m["Mapped"], "dirty": m["Dirty"], "shmem": m["Shmem"],
-                 "main_rss": _rss(pid), "tree_rss": sum(_rss(p) for p in tree), "nprocs": len(tree),
-                 "scratch_fs_used": usage.used, **_gpu()}
-            cur = _diskstats(dev) if dev else None
-            if prev and cur and cur["t"] > prev["t"]:
-                dt = cur["t"] - prev["t"]
-                s["read_mbps"] = (cur["rd_sect"] - prev["rd_sect"]) * 512 / dt / 1e6
-                s["write_mbps"] = (cur["wr_sect"] - prev["wr_sect"]) * 512 / dt / 1e6
-                s["disk_util"] = min(100.0, (cur["io_ms"] - prev["io_ms"]) / dt / 10)
-            prev = cur
-            if now - last_heavy >= heavy_interval:
-                last_heavy = now
-                s["main_pss"] = _pss(pid)
-                s["tree_pss"] = sum(_pss(p) for p in tree)
-                s["scratch_du"] = _du(scratch)
-            f.write(json.dumps(s) + "\n")
-            f.flush()
-            time.sleep(max(0.0, interval - (time.time() - now)))
-
-
-def summarize_monitor(path, mem_total):
-    rows = [json.loads(line) for line in open(path)] if path.exists() else []
-    if not rows:
-        return {}
-
-    def peaks(rs):
-        def mx(k):
-            v = [r[k] for r in rs if r.get(k) is not None]
-            return max(v) if v else None
-
-        def mean(k):
-            v = [r[k] for r in rs if r.get(k) is not None]
-            return round(sum(v) / len(v), 1) if v else None
-        avail = [r["mem_available"] for r in rs]
-        return {"samples": len(rs), "seconds": round(rs[-1]["t"] - rs[0]["t"], 1),
-                "box_used_gib_peak": round((mem_total - min(avail)) / 2**30, 2),
-                "mem_available_gib_min": round(min(avail) / 2**30, 2),
-                **{f"{k}_gib_peak": (round(mx(k) / 2**30, 2) if mx(k) is not None else None)
-                   for k in ("anon", "cached", "mapped", "main_rss", "tree_rss", "main_pss",
-                             "tree_pss", "scratch_du")},
-                "scratch_fs_growth_gib_peak": round((mx("scratch_fs_used") - rows[0]["scratch_fs_used"]) / 2**30, 2),
-                "read_mbps_peak": mx("read_mbps"), "write_mbps_peak": mx("write_mbps"),
-                "read_mbps_mean": mean("read_mbps"), "disk_util_mean": mean("disk_util"),
-                "gpu_util_mean": mean("gpu_util"), "gpu_util_peak": mx("gpu_util"),
-                "gpu_mem_gib_peak": round(mx("gpu_mem_mib") / 1024, 2) if mx("gpu_mem_mib") else None,
-                "nprocs_peak": mx("nprocs")}
-    out = {"overall": peaks(rows), "by_stage": {}}
-    for st in dict.fromkeys(r["stage"] for r in rows):
-        out["by_stage"][st] = peaks([r for r in rows if r["stage"] == st])
     return out
 
 
@@ -269,204 +131,6 @@ class Tee:
         return getattr(self.stream, name)
 
 
-# ---------------------------------------------------------------- sampled-subgraph statistics
-
-def _pcts(a):
-    import numpy as np
-    a = np.asarray(a, dtype=np.float64)
-    if a.size == 0:
-        return None
-    p50, p90, p99 = np.percentile(a, [50, 90, 99])
-    return {"mean": round(float(a.mean()), 2), "p50": float(p50), "p90": float(p90), "p99": float(p99),
-            "max": float(a.max())}
-
-
-def _bitmap(maps, key, size):
-    import numpy as np
-    bm = maps.get(key)
-    if bm is None or bm.size < size:
-        maps[key] = np.zeros(size, dtype=bool)
-        if bm is not None:
-            maps[key][:bm.size] = bm
-    return maps[key]
-
-
-class SubgraphStats:
-    """Per-seed sizes, within-seed duplicates and distinct node coverage of sampled batches.
-
-    Reads the HeteroData each step receives: per node type `n_id` (global node ids), `batch`
-    (which seed tree a node belongs to) and `num_sampled_nodes` (per-hop counts, nodes ordered by
-    hop); per edge type `edge_index` and `num_sampled_edges`. Per-seed sizes come from `batch`.
-    """
-
-    def __init__(self, limit, node_counts, seed_type):
-        self.limit, self.node_counts, self.seed_type = limit, dict(node_counts or {}), seed_type
-        self.phases = {}
-
-    def _phase(self, name):
-        return self.phases.setdefault(name, {"batches": 0, "seeds": [], "cols": {}, "nodes_hop": {},
-                                             "edges_hop": {}, "totals": {}, "back_to_seed": 0,
-                                             "seen": {}, "seen_hop": {}, "curve": [], "t_in": [], "t_out": [],
-                                             "gpu_peak": 0, "structure": None})
-
-    def collect(self, phase, batch, per_seed=True):
-        import numpy as np
-        ph = self._phase(phase)
-        t_in = time.perf_counter()
-        ph["t_in"].append(t_in)
-        if ph["batches"] >= self.limit and per_seed:
-            ph["t_out"].append(time.perf_counter())
-            return
-        h = batch
-        ntypes = [t for t in h.node_types if "n_id" in h[t]]
-        S = 0
-        for t in ntypes:
-            if "batch" in h[t] and h[t].batch.numel():
-                S = max(S, int(h[t].batch.max()) + 1)
-        if ph["structure"] is None:
-            ph["structure"] = {"node_types": ntypes, "edge_types": ["__".join(e) for e in h.edge_types]}
-        rows = {}
-        seed_gid = None
-        if self.seed_type in ntypes and "batch_size" in h[self.seed_type]:
-            seed_gid = h[self.seed_type].n_id[:int(h[self.seed_type].batch_size)].cpu().numpy()
-        for t in ntypes:
-            nid = h[t].n_id.cpu().numpy().astype(np.int64)
-            if nid.size == 0:
-                continue
-            nsn = [int(x) for x in getattr(h[t], "num_sampled_nodes", [nid.size])]
-            hop = np.repeat(np.arange(len(nsn)), nsn) if sum(nsn) == nid.size else np.zeros(nid.size, np.int64)
-            for k, c in enumerate(np.bincount(hop)):
-                ph["nodes_hop"].setdefault(t, {}).setdefault(k, 0)
-                ph["nodes_hop"][t][k] += int(c)
-            need = max(int(nid.max()) + 1, self.node_counts.get(t) or 0)
-            _bitmap(ph["seen"], t, need)[nid] = True
-            for k in np.unique(hop):
-                _bitmap(ph["seen_hop"].setdefault(t, {}), int(k), need)[nid[hop == k]] = True
-            tot = ph["totals"].setdefault(t, {"nodes": 0, "dup": 0})
-            tot["nodes"] += int(nid.size)
-            if not per_seed or "batch" not in h[t] or S == 0:
-                continue
-            b = h[t].batch.cpu().numpy().astype(np.int64)
-            tot["dup"] += int(nid.size - np.unique(b * need + nid).size)
-            if t == self.seed_type and seed_gid is not None:
-                m = hop > 0
-                if b.max(initial=-1) < seed_gid.size:
-                    ph["back_to_seed"] += int((nid[m] == seed_gid[b[m]]).sum())
-            H = len(nsn)
-            mat = np.bincount(b * H + hop, minlength=S * H).reshape(S, H)
-            for k in range(H):
-                rows[f"nodes/{t}/hop{k}"] = mat[:, k]
-            rows[f"nodes/{t}"] = mat.sum(1)
-        for et in h.edge_types:
-            if "edge_index" not in h[et]:
-                continue
-            orig = getattr(h[et], "_orig_edge_index", None)
-            ei = orig if orig is not None else h[et].edge_index
-            name = "__".join(et)
-            nse = [int(x) for x in getattr(h[et], "num_sampled_edges", [ei.shape[1]])]
-            for k, c in enumerate(nse):
-                ph["edges_hop"].setdefault(name, {}).setdefault(k, 0)
-                ph["edges_hop"][name][k] += c
-            if per_seed and ei.numel() and "batch" in h[et[2]] and S:
-                rows[f"edges/{name}"] = np.bincount(h[et[2]].batch[ei[1]].cpu().numpy(), minlength=S)
-        if per_seed and S:
-            rows["nodes/_all"] = sum((v for k, v in rows.items() if k.startswith("nodes/") and k.count("/") == 1),
-                                     np.zeros(S, np.int64))
-            rows["edges/_all"] = sum((v for k, v in rows.items() if k.startswith("edges/")), np.zeros(S, np.int64))
-            for k, v in rows.items():
-                ph["cols"].setdefault(k, []).append((len(ph["seeds"]), v))
-            ph["seeds"].append(S)
-        ph["batches"] += 1
-        if ph["batches"] in (1, 10, 25, 50, 100, 200, 500, 1000, 2000) or (ph["batches"] % 1000 == 0):
-            ph["curve"].append({"batches": ph["batches"], **{t: int(m.sum()) for t, m in ph["seen"].items()}})
-        ph["t_out"].append(time.perf_counter())
-
-    def summary(self):
-        import numpy as np
-        out = {}
-        for name, ph in self.phases.items():
-            nb = ph["batches"]
-            if not nb:
-                continue
-            seeds = ph["seeds"]
-            per_seed = {}
-            for k, lst in sorted(ph["cols"].items()):
-                arrs = [np.zeros(s, np.int64) for s in seeds]
-                for i, v in lst:
-                    arrs[i] = v
-                per_seed[k] = _pcts(np.concatenate(arrs))
-            curve = ph["curve"]
-            if not curve or curve[-1]["batches"] != nb:
-                curve.append({"batches": nb, **{t: int(m.sum()) for t, m in ph["seen"].items()}})
-            cov = {}
-            for t, m in ph["seen"].items():
-                total = self.node_counts.get(t) or m.size
-                d = int(m.sum())
-                c = {"distinct": d, "node_count": total, "fraction": round(d / total, 6)}
-                prev = [p for p in curve if p["batches"] <= nb // 2]
-                if prev and nb > prev[-1]["batches"]:
-                    rate = (d - prev[-1].get(t, 0)) / (nb - prev[-1]["batches"])
-                    c["proj_1000_batches_linear_upper"] = round(min(1.0, (d + rate * max(0, 1000 - nb)) / total), 6)
-                cov[t] = c
-            gaps = [ph["t_in"][i + 1] - ph["t_out"][i] for i in range(min(len(ph["t_in"]) - 1, len(ph["t_out"])))]
-            gaps = gaps[5:] if len(gaps) > 20 else gaps
-            spent = [b - a for a, b in zip(ph["t_in"], ph["t_out"])]
-            totals = {t: dict(v, dup_share=round(v["dup"] / v["nodes"], 6) if v["nodes"] else None)
-                      for t, v in ph["totals"].items()}
-            out[name] = {
-                "batches": nb, "seeds": int(sum(seeds)), "seeds_per_batch": _pcts(seeds),
-                "per_seed": per_seed,
-                "batch_nodes_by_type_hop": {t: {f"hop{k}": round(v / nb, 1) for k, v in sorted(d.items())}
-                                            for t, d in ph["nodes_hop"].items()},
-                "batch_edges_by_type_hop": {t: {f"hop{k}": round(v / nb, 1) for k, v in sorted(d.items())}
-                                            for t, d in ph["edges_hop"].items()},
-                "duplicates": totals,
-                "dup_share_all": round(sum(v["dup"] for v in totals.values())
-                                       / max(1, sum(v["nodes"] for v in totals.values())), 6),
-                "back_to_seed_nodes_per_seed": round(ph["back_to_seed"] / max(1, sum(seeds)), 3),
-                "coverage": cov, "coverage_curve": curve,
-                "distinct_by_hop": {t: {f"hop{k}": int(m.sum()) for k, m in sorted(d.items())}
-                                    for t, d in ph["seen_hop"].items()},
-                "steps_timed": len(gaps),
-                "its_excl_stats": round(1 / float(np.median(gaps)), 3) if gaps else None,
-                "its_excl_stats_mean": round(len(gaps) / sum(gaps), 3) if gaps and sum(gaps) > 0 else None,
-                "stats_overhead_s": round(sum(spent), 1),
-                "gpu_peak_alloc_gib": round(ph["gpu_peak"] / 2**30, 2) if ph["gpu_peak"] else None,
-                "structure": ph["structure"]}
-        return out
-
-    def callback(self):
-        import pytorch_lightning as pl
-        import torch
-        stats = self
-
-        class _CB(pl.Callback):
-            def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
-                stats.collect("fit", batch)
-                if torch.cuda.is_available():
-                    torch.cuda.reset_peak_memory_stats()
-
-            def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-                if torch.cuda.is_available():
-                    ph = stats._phase("fit")
-                    ph["gpu_peak"] = max(ph["gpu_peak"], torch.cuda.max_memory_allocated())
-
-            def on_predict_batch_start(self, trainer, pl_module, batch, batch_idx, dataloader_idx=0):
-                stats.collect("predict", batch, per_seed=stats._phase("predict")["batches"] < stats.limit)
-        return _CB()
-
-    def install(self):
-        import kumo_core.train.diskgraph_nested_trainer as dnt
-        cls, cb = dnt.DiskgraphNestedTrainer, self.callback()
-        orig = cls.create_pl_trainer
-
-        def create_pl_trainer(trainer_self, *a, **k):
-            r = orig(trainer_self, *a, **k)
-            trainer_self.pl_trainer.callbacks.append(cb)
-            return r
-        cls.create_pl_trainer = create_pl_trainer
-
-
 # ---------------------------------------------------------------- main
 
 def parse_args():
@@ -476,7 +140,7 @@ def parse_args():
     ap.add_argument("--data-root", default=DATA_ROOT, help="dataset root, required with --rung")
     ap.add_argument("--data", default=None, help="explicit rung directory (local path or s3://...); overrides --rung")
     ap.add_argument("--scratch", required=True, help="local NVMe scratch root (KUMO_HOME)")
-    ap.add_argument("--out", required=True, help="run directory for results.json, run.log, monitor.jsonl")
+    ap.add_argument("--out", required=True, help="run directory for results.json and run.log")
     ap.add_argument("--stages", default=",".join(STAGES))
     ap.add_argument("--s3-region", default=None)
     ap.add_argument("--run-mode", default="fast", choices=["debug", "fast", "normal", "best"])
@@ -490,13 +154,6 @@ def parse_args():
                     help="sampling hops (default 3); 0 = no graph (entity features only); "
                          "'suggested' keeps suggest_model_plan's neighbours")
     ap.add_argument("--fanout", default="64,12,6,4,4,4", help="neighbours per hop, comma list (first --hops used)")
-    ap.add_argument("--eval-seeds", default=None,
-                    help="Parquet (local or s3://) of test seeds: customer_id, anchor, target; after each predict, "
-                         "score them at their own anchor and run --eval-script on the top-k")
-    ap.add_argument("--eval-script", default=None, help="evaluate.py: --seeds S --pred P --k K --json OUT")
-    ap.add_argument("--also-fanout", action="append", default=[],
-                    help="after the main fit and predict, fit and predict again on the same snapshot and training "
-                         "table with this fanout (all hops); repeatable. Results go under stages['fit@hopsN:<fanout>']")
     ap.add_argument("--no-explain", action="store_true", help="skip post-fit explanations")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--predict-limit", type=int, default=None, help="score only the first N prediction rows")
@@ -508,13 +165,6 @@ def parse_args():
     ap.add_argument("--predict-loader-workers", type=int, default=None, help="loader workers per prediction scorer; defaults to --num-workers")
     ap.add_argument("--top-k", type=int, default=10, help="predictions per entity for link prediction")
     ap.add_argument("--threshold", type=float, default=0.5, help="binary classification threshold")
-    ap.add_argument("--subgraph-stats", type=int, default=0, metavar="N",
-                    help="record sampled-subgraph sizes per seed for N train batches (all predict batches for "
-                         "coverage) into stages.fit/predict.subgraph_stats")
-    ap.add_argument("--monitor", action="store_true")
-    ap.add_argument("--monitor-interval", type=float, default=10.0)
-    ap.add_argument("--monitor-heavy-interval", type=float, default=60.0, help="PSS (smaps) and du cadence")
-    ap.add_argument("--_monitor", nargs=5, help=argparse.SUPPRESS)
     return ap.parse_args()
 
 
@@ -553,10 +203,6 @@ def limits():
 
 def main():
     args = parse_args()
-    if args._monitor:
-        pid, out, scratch, iv, hv = args._monitor
-        monitor_main(int(pid), out, scratch, float(iv), float(hv))
-        return
 
     if args.data is None:
         if args.rung is None or args.data_root is None:
@@ -587,24 +233,13 @@ def main():
     log = open(out / "run.log", "a", buffering=1)
     sys.stdout, sys.stderr = Tee(sys.stdout, log, state), Tee(sys.stderr, log, state)
 
-    requested = [s.strip() for s in args.stages.split(",") if s.strip()]
-    bad = set(requested) - set(STAGES)
-    if bad:
-        sys.exit(f"unknown stages {sorted(bad)}; choose from {STAGES}")
     run = {s for r in requested for s in [r, *NEEDS.get(r, [])]}
     stages = [s for s in STAGES if s in run]
 
-    for f in ("monitor.jsonl", ".monitor_stop", ".stage"):
-        (out / f).unlink(missing_ok=True)
-    mon = None
-    if args.monitor:
-        mon = subprocess.Popen([sys.executable, __file__, "--graph", args.graph, "--data", "-", "--scratch", "-",
-                                "--out", "-", "--_monitor", str(os.getpid()), str(out), str(scratch),
-                                str(args.monitor_interval), str(args.monitor_heavy_interval)])
-
     t_import = time.time()
-    import kumo.engine as kumo  # raises the soft NOFILE limit
     from importlib.metadata import PackageNotFoundError, version
+
+    import kumo.engine as kumo  # raises the soft NOFILE limit
 
     def _version(dist):
         try:
@@ -679,6 +314,7 @@ def main():
         dnt._ttng_diskgraph_runtime_config = pinned_cfg
 
         from functools import partial
+
         import kumo_core.prediction as prediction
         original_run_workers = prediction._run_prediction_workers
         prediction_loaders = args.predict_loader_workers if args.predict_loader_workers is not None else args.num_workers
@@ -709,22 +345,11 @@ def main():
     results["config"]["task_type"] = task_type
 
     ctx = {}
-    if args.subgraph_stats:
-        ctx["subgraph_stats"] = SubgraphStats(args.subgraph_stats, {}, re.search(r"FOR EACH (\w+)\.", query).group(1))
-        ctx["subgraph_stats"].install()
-    tail = ["eval"] if args.eval_seeds and "fit" in stages else []
-    runs = [(s, s, None) for s in stages + tail]
-    if "fit" in stages:
-        for fan in args.also_fanout:
-            tag = f"hops{len(fan.split(','))}:{fan}"
-            runs += [(f"{s}@{tag}", s, fan) for s in ("fit", "predict", *tail) if s in stages + tail]
-    for stage, fn, fan in runs:
-        if fan:
-            args.hops, args.fanout = str(len(fan.split(","))), fan
+    for stage in stages:
         (out / ".stage").write_text(stage)
         t0 = time.time()
         try:
-            info = STAGE_FNS[fn](args, kumo, graph, pquery, ctx, scratch, out, state, staging)
+            info = STAGE_FNS[stage](args, kumo, graph, pquery, ctx, scratch, out, state, staging)
         except BaseException as e:
             secs = time.time() - t0
             traceback.print_exc()
@@ -739,11 +364,6 @@ def main():
         mark(stage, secs, **{k: v for k, v in info.items() if not isinstance(v, (dict, list)) and "/" not in str(v)})
         save()
 
-    (out / ".stage").write_text("done")
-    if mon:
-        (out / ".monitor_stop").touch()
-        mon.wait(timeout=max(30, args.monitor_heavy_interval + 30))
-        results["monitor"] = summarize_monitor(out / "monitor.jsonl", _meminfo()["MemTotal"])
     results["total_seconds"] = round(sum(s["seconds"] for s in results["stages"].values()), 1)
     save()
     print("RESULTS", out / "results.json", flush=True)
@@ -751,10 +371,6 @@ def main():
 
 
 # ---------------------------------------------------------------- stages
-
-def _dir_bytes(path):
-    return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file())
-
 
 def stage_snapshot(args, kumo, graph, pquery, ctx, scratch, out, state, staging):
     before = {p.parent for p in (scratch / "snapshots").glob("*/*/_SUCCESS")}
@@ -771,7 +387,6 @@ def stage_snapshot(args, kumo, graph, pquery, ctx, scratch, out, state, staging)
     by_dir.pop("train_tables", None)
     index_bytes = sum(by_dir.values())
     src = stats.get("source_bytes_by_table", {})
-    ctx["node_counts"] = stats.get("node_counts") or {}
     return {"reused": idx in before, "index_path": str(idx), "index_bytes": index_bytes,
             "index_gib": round(index_bytes / 2**30, 2), "nodes": stats.get("total_nodes"),
             "edges": stats.get("total_edges"), "source_rows": sum(stats.get("source_rows_by_table", {}).values()),
@@ -844,9 +459,6 @@ def stage_fit(args, kumo, graph, pquery, ctx, scratch, out, state, staging):
     state.pop("oom_halvings", None)
     state.pop("sampling_plans", None)
     t0 = time.time()
-    sg = ctx.get("subgraph_stats")
-    if sg:
-        sg.node_counts = dict(ctx.get("node_counts") or {})
     res = trainer.fit(ctx["tt"], snapshot=snap)
     fit_s = time.time() - t0
     metrics = {k: (round(v, 5) if isinstance(v, float) else v) for k, v in res.metrics.items()}
@@ -864,8 +476,6 @@ def stage_fit(args, kumo, graph, pquery, ctx, scratch, out, state, staging):
             "num_neighbors": _compact(plan.neighbor_sampling.num_neighbors),
             "suggested_num_neighbors": _compact(suggested_nn),
             "effective_sampling_plan": (state.get("sampling_plans") or [None])[0], "loader": state.get("loader", [])[-1:]}
-    if sg:
-        info["subgraph_stats"] = sg.summary().get("fit")
     if info["train_its"] and bs:
         info["train_samples_per_s"] = round(info["train_its"] * bs, 1)
     for k in ("val_auroc", "test_auroc", "val_auprc", "test_auprc", "val_map@10", "test_map@10"):
@@ -934,71 +544,10 @@ def stage_predict(args, kumo, graph, pquery, ctx, scratch, out, state, staging):
     info.update(scored_rows=pt.row_count, predict_s=round(secs, 1), rows_per_s=round(pt.row_count / secs, 1),
                 output_rows=rows, files=len(res.files), predict_bar=state.get("predict_bar"),
                 full_population_est_s=round(full / (pt.row_count / secs), 1))
-    if ctx.get("subgraph_stats"):
-        info["subgraph_stats"] = ctx["subgraph_stats"].summary().get("predict")
     return info
 
 
-def stage_eval(args, kumo, graph, pquery, ctx, scratch, out, state, staging):
-    import pyarrow as pa
-    import pyarrow.compute as pc
-    import pyarrow.dataset as ds
-    import pyarrow.parquet as pq
-    d = scratch / "eval" / f"run-{os.getpid()}"
-    shutil.rmtree(d, ignore_errors=True)
-    (d / "rows").mkdir(parents=True)
-    seeds = ds.dataset(args.eval_seeds, format="parquet").to_table()
-    pq.write_table(seeds, d / "seeds.parquet")
-    pt_type = ds.dataset(str(ctx["pt"].table_path), format="parquet").schema
-    ts_type = pt_type.field("TIMESTAMP").type
-    if pa.types.is_integer(ts_type):  # match the prediction table's integer epoch unit
-        v = ds.dataset(str(ctx["pt"].table_path), format="parquet").head(1, columns=["TIMESTAMP"])[0][0].as_py()
-        unit = next(u for u, lo in (("ns", 1e17), ("us", 1e14), ("ms", 1e11), ("s", 0)) if abs(v) >= lo)
-        ts = pc.cast(pc.cast(seeds["anchor"], pa.timestamp(unit)), ts_type)
-    else:
-        ts = pc.cast(seeds["anchor"], ts_type)
-    rows = pa.table({"ENTITY1": pc.cast(seeds["customer_id"], pt_type.field("ENTITY1").type), "TIMESTAMP": ts})
-    pq.write_table(rows, d / "rows" / "part-0.parquet")
-    anchors = sorted({str(t) for t in pc.unique(rows["TIMESTAMP"]).to_pylist()})
-    print(f"EVAL seeds={rows.num_rows} anchors={anchors[:4]}", flush=True)
-    pt = kumo.PredictionTable.from_source_table(kumo.FileConnector(root_dir=str(d))["rows"],
-                                                pq=pquery, snapshot=ctx["snapshot"])
-    t0 = time.time()
-    res = ctx["trainer"].predict(pt, snapshot=ctx["snapshot"], num_workers=args.predict_workers,
-                                 num_classes_to_return=args.top_k)
-    predict_s = time.time() - t0
-    raw = ds.dataset(list(res.files), format="parquet").to_table()
-    print(f"EVAL predict output schema: {raw.schema}", flush=True)
-    names = {c.upper(): c for c in raw.column_names}
-    ent = names.get("ENTITY") or names.get("ENTITY1") or raw.column_names[0]
-    cls = next(c for c in raw.column_names if "CLASS" in c.upper())
-    score = next((c for c in raw.column_names if "SCORE" in c.upper()), None)
-    if pa.types.is_list(raw[cls].type):
-        lens = pc.list_value_length(raw[cls])
-        idx = pc.list_parent_indices(raw[cls])
-        flat = {"customer_id": pc.take(raw[ent], idx), "merchant_id": pc.list_flatten(raw[cls])}
-        if score and pa.types.is_list(raw[score].type):
-            flat["score"] = pc.list_flatten(raw[score])
-        else:
-            starts = pc.take(pc.subtract(pc.cumulative_sum(lens), lens), idx)
-            flat["rank"] = pc.add(pc.subtract(pa.array(range(len(idx)), pa.int64()), starts), 1)
-        preds = pa.table(flat)
-    else:
-        preds = pa.table({"customer_id": raw[ent], "merchant_id": raw[cls], "score": raw[score]})
-    preds = preds.set_column(0, "customer_id", pc.cast(preds["customer_id"], pa.int64()))
-    preds = preds.set_column(1, "merchant_id", pc.cast(preds["merchant_id"], pa.int64()))
-    pq.write_table(preds, d / "preds.parquet")
-    r = subprocess.run([sys.executable, args.eval_script, "--seeds", str(d / "seeds.parquet"), "--pred",
-                        str(d / "preds.parquet"), "--k", str(args.top_k), "--json", str(d / "eval.json")],
-                       capture_output=True, text=True)
-    print(r.stdout, r.stderr, flush=True)
-    r.check_returncode()
-    return {"seeds": rows.num_rows, "anchors": anchors[:4], "predict_s": round(predict_s, 1),
-            "pred_rows": preds.num_rows, "pred_schema": str(raw.schema)[:1000],
-            **json.loads((d / "eval.json").read_text())}
-
-
-STAGE_FNS = {"snapshot": stage_snapshot, "tt": stage_tt, "fit": stage_fit, "pt": stage_pt, "predict": stage_predict, "eval": stage_eval}
+STAGE_FNS = {"snapshot": stage_snapshot, "tt": stage_tt, "fit": stage_fit, "pt": stage_pt, "predict": stage_predict}
 
 if __name__ == "__main__":
     main()

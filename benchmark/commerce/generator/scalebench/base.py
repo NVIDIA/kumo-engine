@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared shard-level machinery for both graphs."""
 import numpy as np
-from scipy.special import ndtr
-
-from scalebench import core, schema
+from scalebench import core
 from scalebench import profile as P
+from scalebench import schema
+from scipy.special import ndtr
 
 EVENT_STRIDE = 1 << 32  # event PK = shard * EVENT_STRIDE + counter within shard
 
