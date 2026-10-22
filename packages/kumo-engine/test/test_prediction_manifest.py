@@ -131,6 +131,21 @@ def test_manifest_records_run_and_directory_export(graph, classifier,
     assert table.query not in json.dumps(manifest)
 
 
+@pytest.mark.parametrize('argument, source', [(None, 'bundle'),
+                                              (0.4, 'argument')])
+def test_manifest_records_bundle_scoring_defaults_as_bundle(
+        graph, classifier, argument, source):
+    _, snapshot = graph
+    trainer, table = classifier
+    child = trainer.with_scoring_defaults(
+        kumo.ScoringDefaults(binary_classification_threshold=0.3))
+    scoring = child.predict(
+        table, snapshot=snapshot,
+        binary_classification_threshold=argument).manifest['scoring']
+    assert (scoring['binary_classification_threshold'],
+            scoring['threshold_source']) == (argument or 0.3, source)
+
+
 def test_top_scores_per_entity_and_anchor_across_files(tmp_path):
     from kumo_core.types import TaskType
 

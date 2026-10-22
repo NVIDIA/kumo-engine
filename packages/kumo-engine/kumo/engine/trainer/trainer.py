@@ -295,10 +295,13 @@ def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
     return _find_holdout(trainer.get_log_dir(fit_mode=published))
 
 
-def _option_source(argument: Any, value: Any, fallback: str) -> str:
+def _option_source(argument: Any, requested: Any, value: Any,
+                   fallback: str) -> str:
     if value is None:
         return 'none'
-    return 'argument' if argument is not None else fallback
+    if argument is not None:
+        return 'argument'
+    return 'bundle' if requested is not None else fallback
 
 
 def _write_run_manifest(result: PredictionResult,
@@ -919,6 +922,7 @@ class Trainer:
         validate_prediction_workers(num_workers)
         validate_num_classes_to_return(num_classes_to_return)
         training_result = self._fitted('predict')
+        arguments = binary_classification_threshold, num_classes_to_return
         if binary_classification_threshold is None:
             binary_classification_threshold = (
                 self._scoring_defaults.binary_classification_threshold)
@@ -1107,11 +1111,12 @@ class Trainer:
                 task_type=task_type, scoring={
                     'binary_classification_threshold': threshold,
                     'threshold_source': _option_source(
-                        binary_classification_threshold, threshold,
-                        'default'),
+                        arguments[0], binary_classification_threshold,
+                        threshold, 'default'),
                     'num_classes_to_return': num_classes_to_return,
                     'count_source': _option_source(
-                        requested_classes, num_classes_to_return, 'query'),
+                        arguments[1], requested_classes,
+                        num_classes_to_return, 'query'),
                     'num_workers': num_workers,
                     'lineage_columns': bool(output_config
                                             and output_config.lineage_columns),
