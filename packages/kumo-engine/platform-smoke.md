@@ -4,7 +4,7 @@ The manual [Platform smoke workflow](../../.github/workflows/kumo-engine-platfor
 installs the checked-out engine and DiskGraph source, then runs
 [smoke_platform.py](test/smoke_platform.py): local Parquet ingestion, a short
 training run, and prediction. Linux ARM64 and WSL train on CUDA; native
-Windows uses CPU Faiss and CPU training. Failed installation or a missing
+Windows uses CPU training. Failed installation or a missing
 requested device fails the job.
 This tests source execution; it does not build or publish a release wheel.
 
@@ -12,9 +12,19 @@ From the repository root, with engine dependencies installed:
 
 ```bash
 python -m pytest -q -s packages/kumo-engine/test/smoke_platform.py
-# For CPU training (PowerShell: $env:KUMO_SMOKE_DEVICE = 'cpu'):
+# For CPU training in Bash:
 KUMO_SMOKE_DEVICE=cpu python -m pytest -q -s packages/kumo-engine/test/smoke_platform.py
 ```
+
+For native Windows CPU training in PowerShell:
+
+```powershell
+$env:KUMO_SMOKE_DEVICE = 'cpu'
+.venv\Scripts\python.exe -m pytest -q -s packages/kumo-engine/test/smoke_platform.py
+```
+
+The existing Linux/WSL jobs exercise CUDA; GPU validation is not a requirement
+for the planned Windows, WSL, and Linux ARM64 wheel distribution.
 
 Acceptance requires real snapshot ingestion, finite gradients observed
 at an optimizer step, finite training metrics, and finite predictions for all
@@ -104,11 +114,12 @@ tools with `vswhere`, activates their developer environment, and checks that
 `cl`, `link`, and `cmake` are available. It fails explicitly when prerequisites
 are absent; it does not install system toolchains or reboot the runner.
 
-Engine metadata selects `kumo-core[faiss]`, whose platform markers choose
-CPU Faiss on native Windows and GPU Faiss elsewhere, including WSL.
-Only one Faiss distribution
-is installed because both provide the same Python import namespace. Windows
-CPU Faiss and CPU training do not cover native Windows GPU execution.
+Engine metadata requires GPU Faiss on Linux x86-64, including WSL, and CPU
+Faiss on macOS. Faiss is optional for native Windows and Linux ARM64; the
+existing ARM CUDA job explicitly builds and installs GPU Faiss. The engine
+`cpu` extra opts into CPU Faiss on Windows and ARM64. Avoid installing both
+Faiss distributions because they share the same Python import namespace.
+Native CPU training does not cover native Windows GPU execution.
 DiskGraph and Python portability changes are maintained in this repository.
 The native pass qualifies this smoke's source-execution path, not the full
 runtime or release-wheel distribution.
@@ -117,10 +128,11 @@ Native Windows coverage is limited to this isolated engine installation with
 zero DataLoader worker processes, selected by the current Windows and test
 configuration. The existing Unix worker-pool paths are not qualified by this
 smoke. Root `kumo[cu130]`, `kumo[cu132]`, and full-workspace installs remain
-unsupported: root GPU extras also request GPU Faiss, conflicting with CPU
-Faiss selection. Root extras are unchanged.
+outside this smoke's coverage: root GPU extras request GPU Faiss.
+Root extras are unchanged.
 
-Native versus WSL wheel distribution remains undecided. Enable PR checks only
+Wheel distribution is planned for native Windows, WSL, and Linux ARM64.
+Enable PR checks only
 after manual runs are
 reliable; enterprise runner checks should follow the repository's trusted
 copy-pr-bot workflow.
