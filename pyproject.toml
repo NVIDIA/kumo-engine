@@ -180,7 +180,6 @@ exclude = [
   ".venv/",
   "3rdparty/",
   "kumo/pquery/grammar/",
-  # The other repository-wide Python checks also exclude DiskGraph.
   "packages/diskgraph/",
   "*/conftest.py",
   "*/examples/*",
