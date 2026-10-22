@@ -165,3 +165,45 @@ def test_scripts_import_without_dunder_file(name, monkeypatch):
     namespace = {'__name__': 'spark_python_task'}
     exec(compile(path.read_text(), str(path), 'exec'), namespace)
     assert callable(namespace['main'])
+
+
+def test_snowflake_registry_scores_with_a_snowflake_tracking(monkeypatch):
+    from _snowflake_experiment_fake import FakeSession, install
+    from types import SimpleNamespace
+
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+
+    install(monkeypatch)
+    monkeypatch.setenv('KUMO_REGISTRY', 'snowflake')
+    monkeypatch.setenv('KUMO_MODEL_NAME', 'churn')
+    monkeypatch.delenv('KUMO_SNAPSHOT', raising=False)
+    monkeypatch.syspath_prepend(str(_examples()))
+    monkeypatch.delitem(sys.modules, 'jobs', raising=False)
+    score_job = _module('score_job')
+    jobs = sys.modules['jobs']
+
+    session = FakeSession()
+    connector = object.__new__(jobs.SnowflakeConnector)
+    monkeypatch.setattr(jobs.SnowflakeConnector, 'session',
+                        lambda self: session, raising=False)
+    seen = {}
+
+    def predict_snapshot(snapshot, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(selection=SimpleNamespace(job_id='run-2'))
+
+    trainer = SimpleNamespace(
+        bundle_id='b', predict_snapshot=predict_snapshot,
+        scoring_defaults=SimpleNamespace(
+            binary_classification_threshold=None))
+    graph = SimpleNamespace(snapshot=lambda: SimpleNamespace(id='s'))
+    monkeypatch.setattr(jobs, 'source', lambda: connector)
+    monkeypatch.setattr(jobs, 'load_champion', lambda c: trainer)
+    monkeypatch.setattr(jobs, 'build_graph', lambda c: graph)
+    monkeypatch.setattr(jobs, 'prediction_output', lambda c: 'output')
+    monkeypatch.setattr(jobs, 'prediction_destinations', lambda o: {})
+
+    score_job.main(['--job-id', 'local', '--job-run-id', 'run-2'])
+
+    assert isinstance(seen['tracking'], SnowflakeTracking)
+    assert seen['output_config'] == 'output'
