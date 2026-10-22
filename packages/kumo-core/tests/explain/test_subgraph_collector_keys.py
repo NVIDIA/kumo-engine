@@ -7,7 +7,6 @@ import warnings
 import numpy as np
 import pandas as pd
 import pytest
-
 from kumo_core.explain.subgraph_collector import _set_column_values
 
 

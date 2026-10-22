@@ -8,7 +8,6 @@ from typing import Any
 
 import optuna
 import pytest
-
 from kumo_core.automl.optuna_searcher import TPESearcher
 
 SPACE = SimpleNamespace(training_job=SimpleNamespace(tune_metric='auroc'))

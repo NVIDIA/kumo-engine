@@ -2817,14 +2817,15 @@ class Trainer(PortableConfigMixin):
         from kumo_core.diskgraph.lightning_data import (
             suppress_lightning_leafspec_warning,
         )
-        with temporary_callbacks(self.pl_trainer, callbacks), \
-                suppress_lightning_leafspec_warning():
-            step_outputs = self.pl_trainer.predict(
-                model=self.pl_model, datamodule=datamodule,
-                ckpt_path=(fsspec_mangle(self.best_ckpt) if
-                           not self._prediction_model_weight_loaded else None))
-            self._prediction_model_weight_loaded = True
-        self.pl_trainer.predict_loop.setup_data()
+        with suppress_lightning_leafspec_warning():
+            with temporary_callbacks(self.pl_trainer, callbacks):
+                step_outputs = self.pl_trainer.predict(
+                    model=self.pl_model, datamodule=datamodule,
+                    ckpt_path=(fsspec_mangle(self.best_ckpt)
+                               if not self._prediction_model_weight_loaded
+                               else None))
+                self._prediction_model_weight_loaded = True
+            self.pl_trainer.predict_loop.setup_data()
 
         # Post-processing =====================================================
 
