@@ -80,7 +80,7 @@ Live table generation requires a `diskgraph_index_path` and delegates PQL compil
 
 ### Compiler Ownership
 
-`DiskGraphPlanCompiler` consumes `ValidatedPredictiveQuery` directly. Compiler semantics and plan-node changes belong in `packages/diskgraph`; this module should only prepare and pass supported compiler inputs. This repository is the [source of truth](../../docs/development/generated-artifacts.md#diskgraph-source) for DiskGraph.
+`DiskGraphPlanCompiler` consumes `ValidatedPredictiveQuery` directly. Compiler semantics and plan-node changes belong in `packages/diskgraph`; this module should only prepare and pass supported compiler inputs. This repository is the [source of truth](../../packages/diskgraph/README.md#python-wheel-builds) for DiskGraph.
 
 ### Generation validation
 

@@ -19,4 +19,4 @@ uv run --no-project pytest packages/kumo-api/test
 ```
 
 Package-specific automation lives in `.github/workflows/kumo-api-*` at the
-repository root. See `MIGRATION.md` for history and release-ref details.
+repository root.

@@ -57,10 +57,7 @@ Resolved from a graph handle by `DiskgraphService.local_snapshot_path()` in
 
 ### Running Locally
 
-Use the current [devserver guide](devserver.md) for coordinator commands,
-resource-policy selection, and the local Temporal variant. The in-tree
-[DiskGraph source ownership](development/generated-artifacts.md#diskgraph-source)
-describe how the native dependency is supplied.
+Use the current [devserver guide](devserver.md) for coordinator commands, resource-policy selection, and the local Temporal variant. The [DiskGraph build instructions](../packages/diskgraph/README.md#python-wheel-builds) describe how the native dependency is supplied.
 
 ## Stage Details
 
