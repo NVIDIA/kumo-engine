@@ -1,20 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""
-How To: Generate Public REST API Docs
-
-1. Run `DISABLE_AUTH=1 make devserver`
-2. Fetch the schema using an API-key header:
-   `curl -H 'X-API-Key: test:test' http://localhost:10002/openapi.json \
-       -o openapi.json`
-3. Open the downloaded JSON file
-4. Go to https://dash.readme.com/project/kumoai/{{VERSION}}/reference and
-    upload the file
-5. Fix any errors using this script
-6. Once uploaded, hide any private apis (eg v1 apis)
-7. Verify at https://kumo.ai/docs/reference/pq-reference-overview
-"""
+"""Clean openapi.json and write the result to openapi_cleaned.json."""
 import json
 
 SOURCE_FILE = 'openapi.json'
