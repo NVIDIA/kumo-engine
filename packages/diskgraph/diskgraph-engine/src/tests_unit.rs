@@ -2421,3 +2421,52 @@ fn test_finalize_preserves_anchor_major_seed_prefix() {
         "next B*M node_ids must be the negatives, anchor-major, in order"
     );
 }
+
+#[test]
+fn repeated_runs_give_identical_output() {
+    let (dir_lhs, dir_rhs) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let (lhs, _, lhs_ctx) = build_temporal_shard(dir_lhs.path(), &[(1, 1), (2, 1)], 2);
+    let (rhs, _, rhs_ctx) = build_temporal_shard(dir_rhs.path(), &[(1, 1), (2, 1)], 2);
+    let shard = |reader| vec![ShardHandle { reader: Arc::new(reader), min_id: 0, max_id: 2 }];
+    let sampler = DiskGraphEngine::new(
+        [("lhs".to_string(), shard(lhs)), ("rhs".to_string(), shard(rhs))].into(),
+        [
+            (0, ("LhsToRhs".to_string(), "lhs".to_string(), "rhs".to_string())),
+            (1, ("RhsToRhs".to_string(), "rhs".to_string(), "rhs".to_string())),
+        ]
+        .into(),
+        [
+            (0usize, SortKeyDecoder::new(&temporal_sortkey_meta())),
+            (1usize, SortKeyDecoder::new(&temporal_sortkey_meta())),
+        ]
+        .into(),
+        [
+            ("lhs".to_string(), RowPackDecoder::new(lhs_ctx).unwrap()),
+            ("rhs".to_string(), RowPackDecoder::new(rhs_ctx).unwrap()),
+        ]
+        .into(),
+        None,
+        diskgraph_core::time::TimeUnit::Seconds,
+        Some(42),
+        Some(1),
+    );
+    for fused in [false, true] {
+        let mut req = make_sampling_request_with_mode(vec![], vec![10], SamplingMode::Uniform);
+        let layer = &mut req.plan.layers[0];
+        layer.default_fanout = layer.fanouts.drain().next().map(|(_, f)| f);
+        req.seed_nodes = [("lhs".to_string(), vec![0]), ("rhs".to_string(), vec![0])].into();
+        req.flags.fused_feature_fetching = fused;
+        let runs: Vec<_> = (0..16)
+            .map(|_| {
+                let mut state = crate::state::StatePool::new().acquire();
+                let mut output = MockOutput { edges: vec![], feature_batches: vec![], schema: None, fused_batches: vec![] };
+                sampler.sample(&req, &mut state, &mut output).unwrap();
+                let rhs: Vec<_> = state.type_states[&1].nodes.iter().map(|n| (n.global_id, n.seed_type_id)).collect();
+                (output.edges, rhs, output.fused_batches)
+            })
+            .collect();
+        assert_eq!(runs[0].0.len(), 4);
+        assert_eq!(runs[0].2.len(), if fused { 2 } else { 0 });
+        assert!(runs.iter().all(|r| *r == runs[0]), "fused={fused}");
+    }
+}
