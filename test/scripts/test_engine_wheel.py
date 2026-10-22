@@ -91,6 +91,31 @@ def test_removed_component_selection_flag_is_rejected(tmp_path):
     assert "unknown argument '--extra-components'" in result.stderr
 
 
+@pytest.mark.parametrize('target', [
+    '10.15', '11', '12.7', '13', '13.9', 'invalid', '14.invalid',
+])
+def test_macos_deployment_target_rejected_before_build(tmp_path, target):
+    uname = tmp_path / 'uname'
+    uname.write_text('#!/bin/sh\necho Darwin\n')
+    uname.chmod(0o755)
+    marker = tmp_path / 'python-invoked'
+    python = tmp_path / 'python'
+    python.write_text(
+        f'#!{sys.executable}\nfrom pathlib import Path\n'
+        f'Path({str(marker)!r}).touch()\n')
+    python.chmod(0o755)
+
+    result = subprocess.run(
+        ['bash', str(SCRIPT)],
+        env=dict(os.environ, MACOSX_DEPLOYMENT_TARGET=target, USE_ZIG='0',
+                 PYTHON=str(python), PATH=f'{tmp_path}:{os.environ["PATH"]}'),
+        capture_output=True, text=True)
+
+    assert result.returncode == 1
+    assert 'MACOSX_DEPLOYMENT_TARGET >= 14.0' in result.stderr
+    assert not marker.exists()
+
+
 def _wheel(directory, name, requires=(), extras=(), tag='py3-none-any',
            python='>=3.11', files=None):
     """Write a component wheel with just enough metadata to merge."""
@@ -539,10 +564,15 @@ def test_wheel_verify_script_checks_base_install(tmp_path):
         ([], '2.5.0+unknown'),  # VERSION + commit (not a git repo here)
         (['--release'], '2.5.0'),
     ])
-@pytest.mark.parametrize('host_os', ['Linux', 'Darwin'])
+@pytest.mark.parametrize('host_os,target', [
+    ('Linux', ''), ('Darwin', ''), ('Darwin', '14'), ('Darwin', '15.0'),
+])
 def test_wheel_uses_torch_fallbacks_without_native_extensions(
-        tmp_path, args, version, host_os):
+        tmp_path, args, version, host_os, target):
     """Run the real assembly script with local stand-ins for component builds."""
+    deployment_target = target or '14.0'
+    major, minor, *_ = deployment_target.split('.') + ['0']
+    native_tag = f'cp311-abi3-macosx_{major}_{minor}_arm64'
     repo = tmp_path / 'repo'
     for name in CORE_COMPONENTS:
         package = repo / 'packages' / name
@@ -574,8 +604,8 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
     name = Path(source).name.split('==')[0].replace('-', '_')
     if name == 'diskgraph' and os.environ['TEST_HOST_OS'] == 'Darwin':
         assert os.environ['DISKGRAPH_BUILD_ZIG'] == '0'
-        assert os.environ['MACOSX_DEPLOYMENT_TARGET'] == '14.0'
-    tag = ('cp311-abi3-macosx_14_0_arm64' if name == 'diskgraph'
+        assert os.environ['MACOSX_DEPLOYMENT_TARGET'] == {deployment_target!r}
+    tag = ({native_tag!r} if name == 'diskgraph'
            and os.environ['TEST_HOST_OS'] == 'Darwin' else 'py3-none-any')
     with ZipFile(directory / (name + '-1-' + tag + '.whl'), 'w') as archive:
         metadata = 'Metadata-Version: 2.1\\nName: ' + name + '\\nVersion: 1\\n'
@@ -613,7 +643,7 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
         env=dict(os.environ, KUMO_REPO=str(repo), PYTHON=str(python),
                  BUILD_CALLS=str(calls), TMPDIR=str(tmp_path),
                  TEST_HOST_OS=host_os, USE_ZIG='', PLATFORM_TAG='',
-                 MACOSX_DEPLOYMENT_TARGET='',
+                 MACOSX_DEPLOYMENT_TARGET=target,
                  THIRD_PARTY_NOTICE=str(repo / 'THIRD-PARTY.txt'),
                  PATH=f'{tmp_path}:{os.environ["PATH"]}'),
         capture_output=True,
@@ -626,8 +656,7 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
     ]
     assert not downloads
     if host_os == 'Darwin':
-        assert next(output.glob('*.whl')).name.endswith(
-            '-cp311-abi3-macosx_14_0_arm64.whl')
+        assert next(output.glob('*.whl')).name.endswith(f'-{native_tag}.whl')
     with ZipFile(next(output.glob('*.whl'))) as archive:
         assert not any(name.startswith('torch_geometric/')
                        for name in archive.namelist())
@@ -650,7 +679,6 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
         assert 'Requires-Dist: kumo-glove-6b-50d; extra == "text"' in metadata
         assert 'Requires-Dist: pyg-lib' not in metadata
         assert 'Requires-Dist: torch-scatter' not in metadata
-    expected_tag = ('cp311-abi3-macosx_14_0_arm64'
-                    if host_os == 'Darwin' else 'py3-none-any')
+    expected_tag = native_tag if host_os == 'Darwin' else 'py3-none-any'
     assert next(output.glob('*.whl')).name == (
         f'kumo_engine-{version}-{expected_tag}.whl')

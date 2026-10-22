@@ -159,7 +159,8 @@ wheel into a Docker image and checks that the closure imports and that provider
 dependencies are absent from a bare install.
 
 On Apple Silicon, the same script builds a native macOS wheel with
-`MACOSX_DEPLOYMENT_TARGET=14.0` by default. It disables Zig and glibc checks
+`MACOSX_DEPLOYMENT_TARGET=14.0` by default; overrides below 14.0 are rejected
+to match the Faiss dependency. It disables Zig and glibc checks
 and takes the final platform tag from the built DiskGraph wheel. Rust, Xcode
 Command Line Tools, and CMake are required. This local build path does not
 add macOS publication to the release workflow.
