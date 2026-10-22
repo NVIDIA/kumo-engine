@@ -62,6 +62,11 @@ text=[
 gcs=[
     "kumo-gcs>=0.1.0.dev1",
 ]
+# nvidia-ml-py adds GPU system metrics.
+mlflow=[
+    "mlflow>=3.13,<4",
+    "nvidia-ml-py",
+]
 
 # Reports this wheel's release version as the Kumo version. The provider is a
 # top-level module (see `[tool.setuptools] py-modules`) because importing
