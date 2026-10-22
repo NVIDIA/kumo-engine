@@ -94,6 +94,9 @@ where=["."]
 include=["kumo*"]
 namespaces=true
 
+[tool.setuptools.package-data]
+"kumo.engine.datasets" = ["shop/*.parquet"]
+
 # The version is the root VERSION file, stamped into this module by
 # scripts/stamp_version.py (shared with kumo-sdk, the platform and the charts).
 [tool.setuptools.dynamic]
