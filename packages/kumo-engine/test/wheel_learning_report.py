@@ -2,13 +2,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Report provisional quality limits while rejecting incompatible evidence."""
+"""Compare learning scores and retain historical limits as diagnostics."""
 
 import argparse
 import json
 import math
 import runpy
-import statistics
+from fractions import Fraction
 from pathlib import Path
 
 WORKER = runpy.run_path(str(Path(__file__).with_name('wheel_learning.py')))
@@ -16,6 +16,10 @@ WORKER = runpy.run_path(str(Path(__file__).with_name('wheel_learning.py')))
 
 def report_comparison(reference, candidate, baseline):
     limits = baseline['limits']
+    alert_limit = baseline.get('release_max_mean_drop', limits['max_mean_drop'])
+    if (type(alert_limit) not in (int, float) or not math.isfinite(alert_limit)
+            or not 0 <= alert_limit <= 1):
+        raise ValueError('Invalid reporting mean-drop limit')
     if any(not math.isfinite(limits[key]) or not 0 <= limits[key] <= 1
            for key in ('learnable_min', 'independent_distance', 'max_mean_drop',
                        'max_seed_drop')):
@@ -60,6 +64,7 @@ def report_comparison(reference, candidate, baseline):
             raise ValueError(f'Wheel environments differ: {field}')
     old = {(row['seed'], row['case']): row for row in before['runs']}
     drops = []
+    exact_drops = []
     for row in sorted(after['runs'], key=lambda row:
                       (row['seed'], row['case'])):
         previous = old[row['seed'], row['case']]
@@ -67,30 +72,64 @@ def report_comparison(reference, candidate, baseline):
             if previous[field] != row[field]:
                 raise ValueError(f'Unmatched learning runs: {field}')
         if row['case'] == 'learnable':
-            drop = previous['auroc'] - row['auroc']
+            drop = (Fraction(str(previous['auroc'])) -
+                    Fraction(str(row['auroc'])))
+            exact_drops.append(drop)
             drops.append(
                 dict(seed=row['seed'], reference=previous['auroc'],
-                     candidate=row['auroc'], drop=drop))
-            check('candidate', 'max_seed_drop', drop, seed=row['seed'])
-    mean_drop = statistics.mean(row['drop'] for row in drops)
-    check('candidate', 'max_mean_drop', mean_drop)
+                     candidate=row['auroc'], drop=float(drop)))
+            check('candidate', 'max_seed_drop', float(drop), seed=row['seed'])
+    mean_drop = sum(exact_drops) / len(exact_drops)
+    check('candidate', 'max_mean_drop', float(mean_drop))
     return dict(
         status='MEASURED', quality_status='FAIL' if failures else 'PASS',
-        mean_auroc=means, mean_auroc_drop=mean_drop, per_seed_auroc_drop=drops,
-        limits=limits, failed_limits=failures,
-        chance_sanity=WORKER['chance_sanity']([before, after],
-                                              baseline['seeds']),
-        release_approved=False)
+        mean_auroc=means, mean_auroc_drop=float(mean_drop),
+        per_seed_auroc_drop=drops,
+        mean_drop_alert=dict(limit=alert_limit, exceeded=mean_drop
+                             > Fraction(str(alert_limit))), limits=limits,
+        failed_limits=failures, chance_sanity=WORKER['chance_sanity'](
+            [before, after], baseline['seeds']), release_approved=False)
+
+
+def compare_release(reference, candidate, baseline):
+    seeds = baseline['seeds']
+    if (not isinstance(seeds, list) or len(seeds) != 5
+            or any(type(seed) is not int or seed < 0 for seed in seeds)
+            or len(set(seeds)) != 5):
+        raise ValueError(
+            'Release comparison requires five distinct integer seeds')
+    if 'release_max_mean_drop' not in baseline:
+        raise ValueError('Release mean-drop limit is required')
+    seen = set()
+    for result in (reference, candidate):
+        WORKER['verify_unique_evidence'](result, seen)
+        report = result['learning']
+        if any(type(seed) is not int for seed in report['seeds']):
+            raise ValueError('Training seeds must be integers')
+        for row in report['runs']:
+            if (type(row['seed']) is not int
+                    or type(row['training_seed']) is not int
+                    or row['training_seed'] != row['seed']):
+                raise ValueError(
+                    'Training seed differs from the requested seed')
+    result = report_comparison(reference, candidate, baseline)
+    passed = not result['mean_drop_alert']['exceeded']
+    result.update(status='PASS' if passed else 'FAIL', release_approved=passed)
+    return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--release', action='store_true',
+                        help='Enforce the approved five-seed mean-drop limit')
     args = parser.parse_args()
-    result = report_comparison(*json.loads(args.input.read_text()))
+    compare = compare_release if args.release else report_comparison
+    result = compare(*json.loads(args.input.read_text()))
     args.output.write_text(json.dumps(result, indent=2))
+    return 1 if result['status'] == 'FAIL' else 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

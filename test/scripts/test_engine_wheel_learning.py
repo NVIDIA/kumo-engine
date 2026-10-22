@@ -92,6 +92,131 @@ class WheelLearningTest(unittest.TestCase):
         self.assertTrue(reporter.is_file(), 'The learning reporter is missing')
         return runpy.run_path(str(reporter))['report_comparison']
 
+    def release_pair(self):
+        reference, _, baseline = self.comparison()
+        baseline = copy.deepcopy(baseline)
+        baseline.update(seeds=list(range(5)), release_max_mean_drop=.001)
+        learning = reference['learning']
+        learning.update(status='MEASURED', seeds=baseline['seeds'],
+                        run_id='reference-run')
+        first_seed = learning['runs'][:2]
+        learning['runs'] = [
+            dict(copy.deepcopy(row), seed=seed, training_seed=seed,
+                 data_sha256=str(seed), plan_sha256=str(seed))
+            for seed in baseline['seeds'] for row in first_seed
+        ]
+        reference['status'] = 'MEASURED'
+        candidate = copy.deepcopy(reference)
+        candidate['learning']['run_id'] = 'candidate-run'
+        return reference, candidate, baseline
+
+    def release_gate(self):
+        reporter = runpy.run_path(
+            str(WORKER.with_name('wheel_learning_report.py')))
+        self.assertIn('compare_release', reporter.keys(),
+                      'The release gate must enforce the approved mean drop')
+        return reporter['compare_release']
+
+    def test_release_gate_uses_the_signed_mean_and_exact_boundary(self):
+        for scores, passed in [
+            ([.8991] * 5, True),
+            ([.899] * 5, True),
+            ([.8989999999999999] * 5, False),
+            ([.8989] * 5, False),
+            ([.895, .9, .9, .9, .9], True),
+            ([.89, .91, .9, .9, .9], True),
+        ]:
+            reference, candidate, baseline = self.release_pair()
+            baseline['limits'].update(learnable_min=.95, max_mean_drop=.0001,
+                                      max_seed_drop=.0001)
+            for row in reference['learning']['runs']:
+                if row['case'] == 'learnable':
+                    row['auroc'] = .9
+            for row in candidate['learning']['runs']:
+                if row['case'] == 'learnable':
+                    row['auroc'] = scores[row['seed']]
+            candidate['learning']['runs'].reverse()
+            with self.subTest(scores=scores):
+                result = self.release_gate()(reference, candidate, baseline)
+                self.assertEqual(result['status'], 'PASS' if passed else 'FAIL')
+                self.assertEqual(result['release_approved'], passed)
+                self.assertEqual(result['mean_drop_alert'],
+                                 dict(limit=.001, exceeded=not passed))
+                self.assertEqual(result['quality_status'], 'FAIL')
+                self.assertTrue(result['failed_limits'])
+                self.assertEqual(result['limits'], baseline['limits'])
+                self.assertEqual(len(result['per_seed_auroc_drop']), 5)
+
+    def test_release_gate_requires_five_distinct_integer_seeds(self):
+        for seeds in ([0, 1, 2, 3], list(range(6)), [0, 1, 2, 3,
+                                                     3], [False, 1, 2, 3,
+                                                          4], [-1, 1, 2, 3, 4]):
+            reference, candidate, baseline = self.release_pair()
+            baseline['seeds'] = seeds
+            for result in (reference, candidate):
+                result['learning']['seeds'] = seeds
+            with self.subTest(seeds=seeds), self.assertRaises(ValueError):
+                self.release_gate()(reference, candidate, baseline)
+
+    def test_release_gate_rejects_missing_or_mismatched_runs(self):
+        for mutation in ('missing', 'duplicate', 'training_seed', 'reused',
+                         'failed', 'policy'):
+            reference, candidate, baseline = self.release_pair()
+            if mutation == 'missing':
+                candidate['learning']['runs'].pop()
+            elif mutation == 'duplicate':
+                candidate['learning']['runs'][-1] = copy.deepcopy(
+                    candidate['learning']['runs'][-2])
+            elif mutation == 'training_seed':
+                for result in (reference, candidate):
+                    result['learning']['runs'][0]['training_seed'] = 99
+            elif mutation == 'reused':
+                candidate['learning']['run_id'] = 'reference-run'
+            elif mutation == 'failed':
+                candidate['learning']['status'] = 'FAIL'
+            else:
+                del baseline['release_max_mean_drop']
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.release_gate()(reference, candidate, baseline)
+
+    def test_release_gate_keeps_the_random_label_control_strict(self):
+        reference, candidate, baseline = self.release_pair()
+        for row in candidate['learning']['runs']:
+            if row['case'] == 'independent':
+                self.set_control(row, 1)
+        with self.assertRaisesRegex(ValueError, 'independent'):
+            self.release_gate()(reference, candidate, baseline)
+
+    def test_release_cli_saves_failed_gate_before_returning_failure(self):
+        reporter = WORKER.with_name('wheel_learning_report.py')
+        for score, code in ((.899, 0), (.8989, 1)):
+            reference, candidate, baseline = self.release_pair()
+            baseline['limits']['max_mean_drop'] = .0001
+            for row in reference['learning']['runs']:
+                if row['case'] == 'learnable':
+                    row['auroc'] = .9
+            for row in candidate['learning']['runs']:
+                if row['case'] == 'learnable':
+                    row['auroc'] = score
+            with self.subTest(
+                    score=score), tempfile.TemporaryDirectory() as tmp:
+                source, output = Path(tmp) / 'input.json', Path(
+                    tmp) / 'result.json'
+                source.write_text(json.dumps([reference, candidate, baseline]))
+                completed = subprocess.run([
+                    sys.executable,
+                    str(reporter),
+                    str(source),
+                    str(output), '--release'
+                ], capture_output=True, text=True)
+                self.assertEqual(completed.returncode, code, completed.stderr)
+                result = json.loads(output.read_text())
+                self.assertEqual(result['status'],
+                                 'PASS' if code == 0 else 'FAIL')
+                self.assertEqual(result['release_approved'], code == 0)
+                self.assertEqual(len(result['per_seed_auroc_drop']), 5)
+                self.assertTrue(result['failed_limits'])
+
     def test_reporting_lists_all_missed_limits_without_approving_release(self):
         reference, candidate, baseline = self.comparison()
         baseline = copy.deepcopy(baseline)
@@ -151,6 +276,43 @@ class WheelLearningTest(unittest.TestCase):
             candidate['learning']['runs'][0]['auroc'] = value
             with self.subTest(value=value), self.assertRaises(ValueError):
                 report(reference, candidate, baseline)
+
+    def test_reporting_average_alert_uses_all_five_signed_drops(self):
+        reference, _, baseline = self.release_pair()
+        baseline['limits']['max_mean_drop'] = .0001
+        original_limits = copy.deepcopy(baseline['limits'])
+        scenarios = [
+            ([.0015, 0, 0, 0, 0], .0003, False),
+            ([.001] * 5, .001, False),
+            ([.0011] * 5, .0011, True),
+            ([-.0015] * 5, -.0015, False),
+        ]
+        for drops, expected_mean, exceeded in scenarios:
+            candidate = copy.deepcopy(reference)
+            for row in candidate['learning']['runs']:
+                if row['case'] == 'learnable':
+                    row['auroc'] -= drops[row['seed']]
+            with self.subTest(drops=drops):
+                result = self.reporting()(reference, candidate, baseline)
+                self.assertEqual(result['status'], 'MEASURED')
+                self.assertAlmostEqual(result['mean_auroc_drop'], expected_mean)
+                self.assertIn('mean_drop_alert', result)
+                self.assertEqual(result['mean_drop_alert'],
+                                 dict(limit=.001, exceeded=exceeded))
+                self.assertEqual(len(result['per_seed_auroc_drop']), 5)
+                self.assertEqual(result['limits'], original_limits)
+                self.assertEqual(baseline['limits'], original_limits)
+                self.assertFalse(result['release_approved'])
+
+    def test_reporting_rejects_an_invalid_average_alert(self):
+        for value in (None, True, '0.001', float('nan'), float('inf'), -1, 2):
+            reference, candidate, baseline = self.comparison()
+            for result in (reference, candidate):
+                result['status'] = result['learning']['status'] = 'MEASURED'
+            baseline['release_max_mean_drop'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(
+                    ValueError, 'reporting.*limit'):
+                self.reporting()(reference, candidate, baseline)
 
     def test_reporting_does_not_bypass_the_chance_control(self):
         reference, candidate, baseline = self.comparison()

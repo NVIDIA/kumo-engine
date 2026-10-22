@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -197,10 +198,15 @@ class WheelSmokeTest(unittest.TestCase):
         cases += [(status, 'report-comparison',
                    0 if status == 'MEASURED' else 1)
                   for status in (None, 'RUNNING', 'FAIL', 'MEASURED', 'PASS')]
+        cases += [('PASS', mode, 1)
+                  for mode in ('comparison-nonzero', 'comparison-timeout',
+                               'comparison-malformed', 'comparison-unapproved')]
         for status, mode, expected in cases:
             with self.subTest(status=status, mode=mode):
                 output = self.root / f'{mode}-{status}'
                 interpreters = {}
+                compares = mode.startswith(
+                    'comparison') or mode == 'report-comparison'
 
                 def commands(command, cwd, log, timeout=60):
                     # Skip installation and training. Keep result handling real.
@@ -215,13 +221,13 @@ class WheelSmokeTest(unittest.TestCase):
                         self.assertNotIn('--measure-variation', command)
                         (output / 'workflow-result.json').write_text(
                             json.dumps(workflow))
-                    elif log.stem == 'learning' and (
-                            status is not None
-                            or mode in ('comparison', 'report-comparison')):
+                    elif log.stem == 'learning' and (status is not None
+                                                     or compares):
                         result = output / 'learning/learning-result.json'
                         result.parent.mkdir()
                         learning_status = status
-                        if mode in ('comparison', 'report-comparison'):
+                        if compares:
+                            self.assertIn('--measure', command)
                             learning_status = 'MEASURED' if '--measure' in command else 'PASS'
                         result.write_text(
                             json.dumps(dict(status=learning_status)))
@@ -235,8 +241,22 @@ class WheelSmokeTest(unittest.TestCase):
                                 [sys.executable, '-c', 'raise SystemExit(1)'],
                                 check=True)
                     elif log.stem == 'comparison' and status is not None:
+                        self.assertEqual('--release' in command, mode
+                                         != 'report-comparison')
+                        self.assertEqual(
+                            Path(command[2]).name, 'wheel_learning_report.py')
+                        result = dict(status=status,
+                                      release_approved=status == 'PASS',
+                                      quality_status='FAIL')
+                        if mode == 'comparison-unapproved':
+                            result['release_approved'] = False
                         (output / 'comparison-result.json').write_text(
-                            json.dumps(dict(status=status)))
+                            'not json' if mode ==
+                            'comparison-malformed' else json.dumps(result))
+                        if mode == 'comparison-nonzero':
+                            raise subprocess.CalledProcessError(7, command)
+                        if mode == 'comparison-timeout':
+                            raise subprocess.TimeoutExpired(command, timeout)
 
                 with (patch.object(self.runner, 'run_command', commands),
                       patch.object(self.runner, 'load_requirements',
@@ -248,26 +268,26 @@ class WheelSmokeTest(unittest.TestCase):
                         reference=mode == 'measure',
                         measure_learning=mode == 'measure',
                         report_learning=mode == 'report-comparison',
-                        compare_with={'status': 'PASS'}
-                        if mode in ('comparison',
-                                    'report-comparison') else None)
+                        compare_with={'status': 'MEASURED'}
+                        if compares else None)
                     self.assertEqual(code, expected)
                 report = json.loads((output / 'summary.json').read_text())
                 self.assertEqual(
                     report['status'],
-                    ('MEASURED' if mode in ('measure',
-                                            'report-comparison') else 'PASS')
+                    ('MEASURED' if mode == 'measure' or compares else 'PASS')
                     if expected == 0 else 'FAIL')
                 self.assertEqual(
-                    report['stage'],
-                    'complete' if expected == 0 else 'comparison' if mode in (
-                        'comparison', 'report-comparison') else 'learning')
+                    report['stage'], 'complete' if expected == 0 else
+                    'comparison' if compares else 'learning')
                 if mode == 'failed-process':
                     self.assertIn('learnable AUROC is too low', report['error'])
                     self.assertEqual(report['learning']['status'], 'FAIL')
                     self.assertEqual(report['learning']['mean_auroc'],
                                      {'learnable': 0.891132})
-                if mode in ('comparison', 'report-comparison'):
+                if mode in ('comparison-nonzero', 'comparison-timeout'):
+                    self.assertEqual(report['comparison']['status'], 'PASS')
+                    self.assertTrue(report['comparison']['release_approved'])
+                if compares:
                     self.assertEqual(interpreters['comparison'],
                                      interpreters['install'])
                     self.assertEqual(interpreters['comparison'],
@@ -298,10 +318,12 @@ class WheelSmokeTest(unittest.TestCase):
                     failed_stage == 'comparison'
                     and evidence.name == 'candidate')
                 stage = 'comparison' if failed_stage == 'comparison' and failed else 'learning'
-                report = dict(status='FAIL' if failed else 'PASS', stage=stage,
+                report = dict(status='FAIL' if failed else 'MEASURED',
+                              stage=stage,
                               wheel=self.runner.wheel_identity(wheel))
                 if previous:
                     report['comparison'] = dict(status='PASS',
+                                                release_approved=True,
                                                 mean_auroc_drop=0)
                 if failed:
                     report[
@@ -330,6 +352,67 @@ class WheelSmokeTest(unittest.TestCase):
             elif failed_stage is None:
                 self.assertEqual(report['comparison']['status'], 'PASS')
                 self.assertEqual(report['comparison']['mean_auroc_drop'], 0)
+
+    def test_release_comparison_requires_measured_runs_and_explicit_approval(
+            self):
+        wheel = self.wheel()
+        reference = self.wheel(version='1.0.0')
+        requirements = self.runner.load_requirements(self.runner.REQUIREMENTS)
+        requirements['reference']['wheel'] = self.runner.wheel_identity(
+            reference)
+        passed = dict(status='PASS', release_approved=True,
+                      quality_status='FAIL',
+                      failed_limits=[dict(check='max_seed_drop')],
+                      mean_auroc_drop=.001)
+        cases = [
+            ('pass', passed, 0, 0),
+            ('missing', None, 0, 1),
+            ('unapproved', dict(passed, release_approved=False), 0, 1),
+            ('missing-approval', dict(status='PASS'), 0, 1),
+            ('measured', dict(passed, status='MEASURED'), 0, 1),
+            ('failed', dict(passed, status='FAIL'), 0, 1),
+            ('execution-failed', passed, 7, 1),
+        ]
+        for name, comparison, execution_code, expected in cases:
+            with self.subTest(case=name):
+                output = self.root / f'release-comparison-{name}'
+                observed = []
+
+                def check_wheel(selected, evidence, **options):
+                    evidence.mkdir()
+                    observed.append(options)
+                    result = dict(status='MEASURED', stage='complete',
+                                  wheel=self.runner.wheel_identity(selected),
+                                  learning=dict(status='MEASURED'))
+                    if options.get('compare_with'
+                                   ) is not None and comparison is not None:
+                        result['comparison'] = comparison
+                    (evidence / 'summary.json').write_text(json.dumps(result))
+                    return execution_code if options.get(
+                        'compare_with') is not None else 0
+
+                with (patch.object(self.runner, 'check_wheel', check_wheel),
+                      patch.object(self.runner, 'load_requirements',
+                                   return_value=requirements),
+                      patch.object(sys, 'argv', [
+                          str(RUNNER),
+                          str(wheel), '--compare-with',
+                          str(reference), '--output-dir',
+                          str(output)
+                      ]), patch('sys.stdout', new_callable=io.StringIO),
+                      patch('sys.stderr', new_callable=io.StringIO)):
+                    code = self.runner.main()
+                result = json.loads((output / 'summary.json').read_text())
+                self.assertEqual(code, expected)
+                self.assertEqual(result['status'],
+                                 'FAIL' if expected else 'PASS')
+                self.assertFalse(result['report_only'])
+                if name == 'execution-failed':
+                    self.assertEqual(result['comparison'], passed)
+                self.assertEqual(len(observed), 2)
+                for options in observed:
+                    self.assertTrue(options.get('measure_learning'))
+                    self.assertFalse(options['report_learning'])
 
     def test_reference_mode_rejects_a_different_wheel_before_installation(self):
         reference_name = json.loads(self.runner.REQUIREMENTS.read_text()
@@ -704,6 +787,58 @@ class WheelSmokeTest(unittest.TestCase):
                     'venv', 'install', 'pip-check', 'packages', 'run-001',
                     *([] if failed_check else ['run-002'])
                 ])
+
+    def test_release_workflow_rejects_missing_or_unapproved_learning_results(
+            self):
+        workflow = RUNNER.parents[
+            3] / '.github/workflows/kumo-engine-wheel-smoke.yml'
+        steps = workflow.read_text().split('\n      - ')
+        guards = [
+            step for step in steps if '\n        id: release_gate\n' in step
+        ]
+        self.assertEqual(len(guards), 1,
+                         'A verified result must authorize release')
+        script = textwrap.dedent(guards[0].split('        run: |\n', 1)[1])
+        passed = dict(
+            status='PASS', stage='complete', report_only=False,
+            comparison=dict(status='PASS', release_approved=True,
+                            quality_status='FAIL'))
+        cases = [
+            None, {},
+            dict(passed, report_only=True),
+            dict(passed, status='RUNNING'),
+            dict(passed, status='MEASURED'),
+            dict(passed, status='FAIL'),
+            dict(passed, stage='comparison'),
+            dict(passed, comparison={}),
+            dict(passed, comparison=dict(status='FAIL', release_approved=True)),
+            dict(passed, comparison=dict(status='PASS',
+                                         release_approved=False)), passed
+        ]
+        for index, report in enumerate(cases):
+            with self.subTest(report=report):
+                folder = self.root / f'release-result-{index}'
+                evidence = folder / 'wheel-learning-comparison'
+                evidence.mkdir(parents=True)
+                if report is not None:
+                    (evidence / 'summary.json').write_text(json.dumps(report))
+                output = folder / 'github-output'
+                output.write_text('')
+                completed = subprocess.run(
+                    ['bash', '-e', '-o', 'pipefail', '-c', script], env={
+                        **os.environ, 'RUNNER_TEMP':
+                        str(folder),
+                        'GITHUB_OUTPUT':
+                        str(output),
+                        'PATH':
+                        str(Path(sys.executable).parent) + os.pathsep +
+                        os.environ['PATH']
+                    }, capture_output=True, text=True)
+                valid = index == len(cases) - 1
+                self.assertEqual(completed.returncode == 0, valid,
+                                 completed.stderr)
+                self.assertEqual(output.read_text(),
+                                 'release_ready=true\n' if valid else '')
 
 
 if __name__ == '__main__':

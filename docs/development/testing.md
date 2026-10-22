@@ -30,7 +30,7 @@ It builds its prerequisites and runs without cloud credentials. The
 ## Finished Kumo Engine wheel
 
 The wheel test runs after every manual or release build on Linux x64, Python 3.12, CPU.
-Failure blocks release attachment and Kitmaker publication. The limit is 20 minutes.
+A failed or missing result blocks release attachment and Kitmaker publication.
 It installs in a fresh environment outside the checkout, uses PyPI, and ignores
 host pip settings. CUDA libraries still install, but no GPU is required.
 
@@ -52,8 +52,8 @@ The default smoke check passes only when:
 
 [Settings and the approved reference](../../packages/kumo-engine/test/wheel_workflow.json)
 fix the data, query, seed `0`, and one epoch with two steps per trial and refit.
-This checks workflow correctness. Learning quality, speed limits, and other
-platforms need separate tests.
+The default smoke check covers workflow correctness. The paired learning check
+below covers the release quality rule. Speed limits and other platforms need separate tests.
 
 CI saves `summary.json`, `workflow-result.json`, settings, installation and
 dependency reports, model configuration, graph statistics, predictions, and logs
@@ -70,16 +70,16 @@ Run the runner tests without engine dependencies:
 python3.12 -m unittest discover -s test/scripts -p test_engine_wheel_smoke.py
 ```
 
-To report learning scores, compare a candidate wheel with the reference:
+To enforce the release learning rule, compare a candidate wheel with the reference:
 
 ```bash
 python3.12 packages/kumo-engine/scripts/smoke_wheel.py /path/to/candidate.whl \
-  --compare-with /path/to/reference.whl --report-learning \
+  --compare-with /path/to/reference.whl \
   --output-dir /path/to/new-comparison
 ```
 
 Each wheel gets a fresh environment with the same fixed dependencies.
-Each trains a fresh graph neural network for seeds `0–4` on two cases.
+Each trains a fresh graph neural network for the same five seeds, `0–4`, on each of two cases.
 One case has a known relationship. The other uses independent random labels on the same graph.
 Each case has 1,200 training rows, 400 validation rows, and 400 evaluation rows.
 Evaluation rows stay out of training. Labels stay out of model features.
@@ -89,33 +89,35 @@ and at most ten epochs of twenty steps. Early stopping can shorten training.
 The test rejects changes to requested settings in the selected training plan.
 
 AUROC measures how well probabilities rank the correct answers. Constant scores give `0.50`.
-The settings file records limits from repeated reference runs.
-The report lists missed limits for learnable mean AUROC, individual seeds,
-the reference learning floor, and independent-label means near `0.50`.
-Its `comparison` field contains both means, signed score drops, limits, and `failed_limits`.
-Positive drops mean that the candidate scored lower than the reference.
-The command completes both wheels when only these provisional limits fail.
-It returns zero with `status: MEASURED` and `release_approved: false`.
-The report's `quality_status` records whether the provisional limits passed.
-Installation, training, prediction, reload, and evidence failures still return nonzero.
-Missing or unfinished results cannot pass. Data, plan, and dependency mismatches still fail.
-Omit `--report-learning` to enforce the provisional limits in the strict comparison.
+For the case with a known relationship, subtract the candidate mean from the reference mean across all five matching seeds.
+An average drop greater than `0.001` blocks release. A drop equal to `0.001` passes.
+Improvements give negative drops.
+The profile sets `learning.release_max_mean_drop` to `0.001` AUROC.
+
+The `comparison` result keeps both means, individual scores, signed drops, and the decision in `mean_drop_alert`.
+Historical `limits`, `failed_limits`, and `quality_status` remain diagnostics, even when they report a failure.
+The old score floor, per-seed limits, and measured mean-drop limit cannot override the release rule.
+Frozen calibration evidence stays unchanged, including its historical `learning.release_approved: false` field.
+The current release decision is `comparison.release_approved`.
+Strict runs return `status: PASS` with `comparison.release_approved: true` only after all required checks pass.
+
+Add `--report-learning` to report the same decision without blocking on its average drop.
+Reporting returns zero with `status: MEASURED` and `comparison.release_approved: false` when execution and evidence checks pass.
+Installation, training, prediction, reload, and evidence failures return nonzero in both modes.
+Missing or unfinished results cannot pass. Data, plan, dependency, and seed mismatches fail.
 Shuffled-label tests reject suspicious associations in the independent cases.
 These checks remain strict in reporting mode.
-The fixed policy uses 999 shuffles, seed `0`, and `p <= 0.01`.
+The control uses 999 shuffles and seed `0`. It fails when `p <= 0.01`.
 Calibration shares each label shuffle across arms that repeat the same fixture.
 This policy is separate from measured repeat limits.
 Evidence includes saved probabilities, splits, plans, dependency versions, and source fingerprints.
 Mismatched data, plans, dependencies, or worker source fail the comparison.
 
+The build workflow requires the strict comparison before release attachment or publication.
 The manual `Kumo Engine - Wheel smoke` workflow exposes `learning_comparison` in reporting mode.
-This experiment does not block publication. Its limits cover one VM and five fixtures of one generated graph pattern.
-They do not establish a false-alarm rate or broader model quality.
-
-A subsequent full same-version check rejected the unchanged reference.
-Its mean AUROC was `0.891132`, below the frozen floor of `0.891182`.
-This profile needs further review before it can block releases.
-The runner preserves a failed learning report and its specific error in the summary.
+The rule covers five fixtures of one generated graph pattern. It does not establish a false-alarm rate or broader model quality.
+An unchanged reference previously missed the historical score floor. That floor remains a diagnostic.
+The runner preserves failed learning evidence and its specific error in the summary.
 
 Run calibration in the wheel environment with NumPy and SciPy installed.
 Collect six pairs with `--reference --measure-learning` under `calibration/pair-N/{a,b}`.
@@ -128,7 +130,8 @@ python3.12 packages/kumo-engine/test/wheel_learning.py --calibrate calibration \
   --validate-with reserved --output-dir checked
 ```
 
-Only copy `checked/learning-baseline.json` into the settings file's `learning` field after reserved runs pass.
+These calibration commands preserve the historical repeat limits. They do not set the release mean-drop rule.
+Only replace the recorded baseline after reserved runs pass and the reference update is approved.
 Keep failed evidence. Do not widen limits using reserved results.
 
 Run the learning unit tests in the installed wheel environment:

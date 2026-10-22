@@ -243,7 +243,8 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
-    measurement = measure_learning or report_learning
+    measurement = (measure_learning or report_learning
+                   or compare_with is not None)
     summary = {
         'status': 'RUNNING',
         'stage': 'wheel_identity',
@@ -389,36 +390,33 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                     inputs.write_text(
                         json.dumps([
                             compare_with,
-                            dict(
-                                summary, status='MEASURED' if report_learning
-                                else 'PASS'), requirements['learning']
+                            dict(summary, status='MEASURED'),
+                            requirements['learning']
                         ]))
                     comparison = output / 'comparison-result.json'
-                    command = [
-                        python, '-I', '-c', 'import json, runpy, sys\n'
-                        'reference, candidate, baseline = json.load(open(sys.argv[1]))\n'
-                        'result = runpy.run_path(sys.argv[2])["compare_results"]('
-                        'reference, candidate, baseline)\n'
-                        'json.dump(result, open(sys.argv[3], "w"))\n',
-                        str(inputs),
-                        str(learning),
-                        str(comparison)
-                    ]
-                    if report_learning:
-                        reporter = root / 'wheel_learning_report.py'
-                        shutil.copyfile(REQUIREMENTS.with_name(reporter.name),
-                                        reporter)
-                        command = [
+                    reporter = root / 'wheel_learning_report.py'
+                    shutil.copyfile(REQUIREMENTS.with_name(reporter.name),
+                                    reporter)
+                    try:
+                        run('comparison', [
                             python, '-I',
                             str(reporter),
                             str(inputs),
-                            str(comparison)
-                        ]
-                    run('comparison', command, root)
-                    summary['comparison'] = json.loads(comparison.read_text())
+                            str(comparison),
+                            *([] if report_learning else ['--release'])
+                        ], root)
+                    finally:
+                        if comparison.is_file():
+                            summary['comparison'] = json.loads(
+                                comparison.read_text())
                     verify_workflow_result(
                         summary['comparison'], [],
                         status='MEASURED' if report_learning else 'PASS')
+                    if (not report_learning
+                            and summary['comparison'].get('release_approved')
+                            is not True):
+                        raise ValueError(
+                            'Release comparison did not approve release')
         summary.update(
             status='MEASURED' if measurement or measure_variation else 'PASS',
             stage='complete')
@@ -493,18 +491,27 @@ def main():
             summary['stage'] = name
             code = check_wheel(wheel, output / name,
                                reference=name == 'reference', learning=True,
-                               fixed_dependencies=True,
+                               fixed_dependencies=True, measure_learning=True,
                                report_learning=args.report_learning,
                                compare_with=summary.get('reference'))
             summary[name] = json.loads(
                 (output / name / 'summary.json').read_text())
+            if 'comparison' in summary[name]:
+                summary['comparison'] = summary[name]['comparison']
             if code:
                 if summary[name].get('stage') == 'comparison':
                     summary['stage'] = 'comparison'
                 raise ValueError(
                     f'{name} wheel check failed: '
                     f'{summary[name].get("error", "see saved evidence")}')
+            verify_workflow_result(summary[name], [], status='MEASURED')
         summary['comparison'] = summary['candidate']['comparison']
+        verify_workflow_result(
+            summary['comparison'], [],
+            status='MEASURED' if args.report_learning else 'PASS')
+        if (not args.report_learning
+                and summary['comparison'].get('release_approved') is not True):
+            raise ValueError('Release comparison did not approve release')
         summary.update(status='MEASURED' if args.report_learning else 'PASS',
                        stage='complete')
     except Exception as exc:

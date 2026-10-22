@@ -11,6 +11,10 @@ on:  # yamllint disable-line rule:truthy
         description: Artifact from this run that contains the selected wheel.
         type: string
         required: true
+    outputs:
+      release_ready:
+        description: The built wheel passed the required learning comparison.
+        value: ${{ jobs.smoke.outputs.release_ready }}
   workflow_dispatch:
     inputs:
       release_tag:
@@ -41,7 +45,9 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.learning_comparison && 35 || 20 }}
+    timeout-minutes: ${{ (inputs.wheel_artifact != '' || inputs.learning_comparison) && 35 || 20 }}
+    outputs:
+      release_ready: ${{ steps.release_gate.outputs.release_ready }}
     env:
       OMP_NUM_THREADS: '4'
       MKL_NUM_THREADS: '4'
@@ -93,21 +99,21 @@ jobs:
           fi
 
       - name: Install, train, predict, and reload
-        if: ${{ !inputs.learning_comparison }}
+        if: ${{ inputs.wheel_artifact == '' && !inputs.learning_comparison }}
         timeout-minutes: 17
         run: >-
           python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
           --output-dir "$RUNNER_TEMP/wheel-smoke"
 
       - name: Verify the approved reference with fixed dependencies
-        if: ${{ !inputs.learning_comparison && steps.release.outputs.check_reference == 'true' }}
+        if: ${{ inputs.wheel_artifact == '' && !inputs.learning_comparison && steps.release.outputs.check_reference == 'true' }}
         timeout-minutes: 17
         run: >-
           python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
           --reference --output-dir "$RUNNER_TEMP/wheel-smoke-reference"
 
       - name: Download the learning reference
-        if: ${{ inputs.learning_comparison }}
+        if: ${{ inputs.wheel_artifact != '' || inputs.learning_comparison }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -115,14 +121,41 @@ jobs:
           reference_tag="$(python -c 'import json; print("kumo-engine-v" + json.load(open("packages/kumo-engine/test/wheel_workflow.json"))["reference"]["wheel"]["version"])')"
           gh release download "$reference_tag" --pattern 'kumo_engine-*x86_64.whl' --dir dist/reference
 
-      - name: Compare reference and candidate learning
-        if: ${{ inputs.learning_comparison }}
+      - name: Report reference and candidate learning
+        if: ${{ inputs.wheel_artifact == '' && inputs.learning_comparison }}
         timeout-minutes: 30
         run: >-
           python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
           --compare-with dist/reference/kumo_engine-*.whl
           --report-learning
           --output-dir "$RUNNER_TEMP/wheel-learning-comparison"
+
+      - name: Require reference and candidate learning before release
+        if: ${{ inputs.wheel_artifact != '' }}
+        timeout-minutes: 30
+        run: >-
+          python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
+          --compare-with dist/reference/kumo_engine-*.whl
+          --output-dir "$RUNNER_TEMP/wheel-learning-comparison"
+
+      - name: Require a complete passing release result
+        id: release_gate
+        if: ${{ inputs.wheel_artifact != '' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'wheel-learning-comparison/summary.json').read_text())
+          comparison = result.get('comparison', {})
+          if (result.get('status') != 'PASS' or result.get('stage') != 'complete'
+                  or result.get('report_only') is not False
+                  or comparison.get('status') != 'PASS'
+                  or comparison.get('release_approved') is not True):
+              raise SystemExit('A complete passing learning comparison is required for release')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('release_ready=true', file=output)
+          PY
 
       - name: Preserve results and logs
         if: ${{ always() }}

@@ -167,6 +167,7 @@
     },
     "method": "observed_reference_repeat_envelope",
     "release_approved": false,
+    "release_max_mean_drop": 0.001,
     "chance_sanity": {
       "method": "joint_monte_carlo_label_permutation",
       "draws": 999,
