@@ -1,155 +1,84 @@
 # kumo-adls
 
 Azure Data Lake Storage Gen2 source and sink provider for `kumo-engine`.
-Install through `kumo-engine[adls]`. The package registers source, sink, and
-identity plugins using the same entry-point groups as other providers.
+The provider supplies an authenticated Arrow filesystem and conditional SDK
+file transfers to the shared object-store machinery in `kumo-core`. Core owns
+CSV/Parquet layout, conversion, local staging, and output.
+
+`backend.py` and `sink.py` implement the local `SourceBackend` and
+`ArtifactSink` contracts. Installing this distribution registers source, sink,
+and identity plugins. Engine imports the provider lazily through its extra.
+
+## Local workflow
+
+```sh
+pip install "kumo-engine[adls]"
+```
+
+Use a wheel or source checkout containing this provider; this does not establish
+availability in an older published release.
 
 ```python
-from kumo.engine import ADLSConnector, Table
+from kumo.engine import ADLSConnector, Graph, Table
 
 lake = ADLSConnector(
     root_dir="abfss://curated@companylake.dfs.core.windows.net/orders/",
 )
 orders = Table.from_source_table(lake["orders.parquet"], primary_key="id")
+snapshot = Graph(tables=[orders]).snapshot()
 ```
 
-A rooted connector discovers and reads CSV/Parquet tables beneath its
-filesystem/prefix and writes predictions, embeddings, and model bundles there.
-A rootless connector reads exact canonical `abfss://` URIs; discovery and output
-are unavailable. SQL and append output are unsupported.
+Reads use shared `ObjectStoreSourceReader.prepare` in `ReadMode.STREAMED`,
+including local file staging. `Graph.snapshot()` passes the staged Parquet to
+DiskGraph through the existing ingestion interface; DiskGraph needs no Azure
+credentials for those local files.
+
+A rooted connector discovers CSV/Parquet tables and writes predictions,
+embeddings, and model bundles beneath its filesystem/prefix. A rootless
+connector reads exact canonical `abfss://` URIs; discovery and output are
+unavailable. SQL, warehouse-style `ReadMode.STAGED`, and append output are
+unsupported. Prepared exports use parallel SDK uploads; publication is not
+atomic, so consumers must wait for export completion.
+
+## Authentication and resources
 
 Without an identity, requests use Azure's ambient credential chain. An explicit
 `ADLSIdentity(tenant_id=..., client_id=..., cloud=...)` uses workload federation
-with `AZURE_FEDERATED_TOKEN_FILE`. Identity secrets, storage keys, and SAS tokens
-are not connector arguments. The selected identity cloud must match the URI's
-public, US Government, or China endpoint. See the shared
-[ADLS storage contract](../../docs/cloud-storage/adls.md).
+with `AZURE_FEDERATED_TOKEN_FILE`. Secrets, storage keys, and SAS tokens are not
+connector arguments. The identity cloud must match the public, US Government,
+or China URI endpoint. Probing checks token acquisition only; list or read the
+configured source to verify storage permissions and connectivity.
 
-The provider adapts Azure SDK operations to shared Arrow source and sink
-machinery in `kumo-core`. ETags guard range/full-file reads and source versions;
-account-qualified paths distinguish accounts and clouds. Azure Identity refreshes
-tokens, and identity cleanup closes cached clients. Sessions are cached for the
-process lifetime, without automatic eviction; identity cleanup or
-`kumo_adls.session.close()` releases them. Construction runs under a global lock
-to prevent duplicate clients, so concurrent first use of different accounts can
-serialize. Arrow/fsspec wrappers are lightweight and created per access.
+Set a positive `KUMO_ADLS_TRANSFER_WORKERS` before the provider's first import
+to lower ADLS transfer concurrency and HTTP pooling. Restart existing processes
+after changing it. `KUMO_SOURCE_COPY_WORKERS` lowers the shared file-copy
+ceiling. Both controls limit concurrency rather than total memory; SDK and
+projected-read buffers need additional headroom.
 
-Identity probing checks token acquisition only. It does not verify storage
-existence, RBAC/ACL permissions, or connectivity; list or read the configured
-source to verify those.
+See the [storage contract](../../docs/cloud-storage/adls.md),
+[implementation and resource controls](docs/implementation.md), and
+[performance methodology](docs/performance.md) for authentication scope,
+consistency, memory estimates, export behavior, and benchmark limits.
 
-Bulk downloads use one conditional SDK stream per file, with 16 MiB initial
-and subsequent responses and 16 MiB HTTP transport blocks. Files download
-concurrently; each file holds one transfer slot and uses no per-file executor
-or queued chunk futures. The SDK writes each response to the local temporary
-file before requesting the next chunk. The initial response remains buffered
-for the stream's lifetime; this is not zero-copy network-to-disk streaming.
-Prepared uploads retain up to four 4 MiB chunks. Large projected Arrow reads
-can use up to four SDK workers, bounded by the shared transfer slots. A 64 MiB
-range uses up to three workers; ranges above 64 MiB can use four. The initial
-response plus four 16 MiB chunks can account for about 80 MiB before transport
-buffers, SDK copies, and the complete requested range returned by `readall()`.
-Projected reads are not covered by the 64 MiB bulk-copy reservation.
+## Tests
 
-Transfers across files and accounts share a CPU-derived concurrency ceiling
-(at most 128, lowered by `KUMO_SOURCE_COPY_WORKERS`). The HTTP connection pool
-matches that ceiling. Metadata bypasses transfer slots and shares the HTTP
-transport. Uploads reserve 64 MiB per active file through the shared memory
-ledger; source bulk copies use the core copy reservation. These reservations
-are accounting estimates, not caps on total process RSS. Larger responses
-reduce requests and fragment assembly while increasing memory per active file.
-Plan roughly 48–64 MiB of payload buffers per active bulk download, with
-additional headroom for SDK copies and other allocations. At 128 active files,
-that estimate alone is 6–8 GiB; the reservation does not guarantee that this
-fits a host's memory limit. Actual memory depends on allocation lifetimes.
+From the repository root, run public tests without cloud credentials:
 
-For memory-constrained hosts, set `KUMO_ADLS_TRANSFER_WORKERS=4` before
-importing the provider to limit ADLS transfer requests and its HTTP pool
-without lowering other providers' copy limits. The value must be a positive
-integer and cannot raise the shared copy/CPU ceiling. The limit is process-wide
-across ADLS accounts and readers; it is read once at import. Even with one slot,
-files use the same serial SDK stream. Arrow buffers, cached bytes, SDK copies,
-loaded libraries, and Python overhead still consume memory. Reduced ceilings
-are covered by correctness tests; a fixed-RAM host requires separate validation.
-An invalid value fails at the provider's first import. Set these variables in
-the launching environment and restart an existing process after changing them.
-Catchable allocation failures inside ADLS SDK operations retain their original
-exception and traceback, with a note suggesting these controls if the failure
-occurred during a transfer. They may not help with listing or session setup.
-An operating-system OOM kill cannot provide a Python error message.
-Reducing the shared copy ceiling
-also limits waiting file workers and their buffers; the ADLS-only limit does not.
-
-Projected Arrow reads disable fsspec read-ahead, avoiding unrelated column data.
-Successful small ranges can reuse immutable bytes under the opened file's raw
-ETag. The process-wide LRU holds at most 64 MiB of payload/1,024 entries, admits
-ranges up to 128 KiB, and isolates filesystem/principal namespaces. Opening a
-file still performs fresh properties checks; metadata is never cached here.
-Existing opened streams may reuse their pinned version, while ingest's final
-identity checks still reject source changes. Filesystem cleanup releases its
-cached ranges; Python container/key overhead is additional. Each source access
-creates a new filesystem namespace. This cache avoids repeated footer reads
-within one reader, not across separate reads or connector operations. The
-64 MiB limit bounds aggregate retained payload across concurrent readers; it
-is not a persistent connector cache or a preallocated buffer.
-Recursive discovery uses Azure's paginated recursive listing. Version ETag
-checks use fresh bounded listings when complete ETags are available, falling
-back to concurrent HEADs for missing metadata, narrow permissions, and exact
-single files. ADLS uses the shared object-store `prepare`: discover files once,
-stamp the version from that same selected list, and read those files. A supplied
-version is stamped without refreshing it, matching S3/GCS. Shared per-file
-identity guards check selected objects before and after reading; files added
-after discovery belong to a subsequent read. Identity checks may still perform
-listings or HEADs, so one discovery does not mean one metadata request.
-ETag quote and directory-path normalization can invalidate existing version
-hashes once, requiring restaging.
-Prepared export files and model files use seekable parallel uploads; Arrow
-writers keep the buffered streaming path. Failed prepared uploads delete only
-the object matching their creation ETag, preserving another writer's output.
-Prepared uploads create the destination before uploading; concurrent readers
-can observe an empty or incomplete object. Publishing an individual file is
-not atomic, so consumers must wait for export completion.
-Streaming writes are not transactional: Arrow closes its wrapper without
-forwarding serialization exceptions to the fsspec context manager, so failed
-serialization can leave partial output. Direct fsspec contexts can discard
-on caller errors; upload failures also trigger best-effort cleanup.
-
-Downloaded files remain owner-private, matching the S3 staging path. Local
-engine ingestion uses the same OS user; sharing scratch files across users
-requires explicitly managed permissions. Temporary files are closed before
-promotion with `os.replace`, including on failure cleanup paths. This avoids
-requiring POSIX open-file replacement; it does not establish full Windows
-engine support.
-
-These settings remove known serial paths and request amplification; they are
-not evidence of optimal live Azure throughput. Validate full logical tables,
-client placement, resource limits, retries, and service throttling before making
-production performance claims.
-See the [performance methodology](docs/performance.md) for complete-table
-validation, native-host comparisons, per-reader cache scope, and resource
-tradeoffs. The [matched-request stream method](../../scripts/benchmarks/object_store/matched-transfer.md)
-separately controls HEADs, range GETs, bytes, and worker limits for ADLS and
-native S3; it uses fixed historical diagnostic geometry rather than the
-production 16 MiB download configuration or full connector ingestion.
-For live comparisons on Linux using your own storage locations, the
-[bulk-reader transfer harness](../../scripts/benchmarks/object_store/compare_live.py) accepts complete-table
-manifests and verifies staged files after each production bulk-reader trial.
-
-Run offline provider and existing filesystem tests from the repository root:
-
-```bash
+```sh
 python3 scripts/test_public.py --group adls
 ```
 
-Live access, token renewal, RBAC/ACL propagation, and sovereign endpoints require
-validation against an explicitly configured Azure environment. Offline tests do
-not establish live cloud support.
+See the [public test guide](../../docs/development/public-tests.md) for setup
+and the [test matrix](../../docs/connector-test-matrix.md#reader-groups) for coverage.
 
-Run the read-only live filesystem checks with an existing HNS directory:
+Read-only live filesystem checks require an existing HNS directory and ambient
+credentials; they do not create or delete cloud paths:
 
-```bash
+```sh
 KUMO_ADLS_LIVE_ROOT='abfss://filesystem@account.dfs.core.windows.net/existing-directory/' \
 python -m pytest packages/kumo-adls/tests/live --confcutdir=packages/kumo-adls/tests
 ```
 
-The live checks use ambient credentials and do not create or delete cloud paths.
+Live token renewal, RBAC/ACL propagation, sovereign endpoints, and full graph
+workloads require separate validation. Offline tests and raw-copy measurements
+do not establish end-to-end graph performance or live cloud support.
