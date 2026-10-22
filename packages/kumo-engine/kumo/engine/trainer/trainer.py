@@ -193,11 +193,14 @@ class PredictionResult:
                 'has none, so the export has none either.', UserWarning,
                 stacklevel=2)
         manifest = self.manifest
-        records = self._export(output_config, manifest)
-        if manifest is not None and records is not None:
-            _write_run_manifest(
-                self, {**manifest,
-                       'outputs': [*(manifest.get('outputs') or []), *records]})
+        written: list = []
+        try:
+            self._export(output_config, manifest, written)
+        finally:
+            if manifest is not None and written:
+                _write_run_manifest(
+                    self, {**manifest, 'outputs':
+                           [*(manifest.get('outputs') or []), *written]})
 
     def _has_lineage_columns(self) -> bool:
         from pyarrow import parquet
@@ -206,7 +209,8 @@ class PredictionResult:
             files[0]).names
 
     def _export(self, output_config: PredictionOutputConfig,
-                manifest: Optional[Dict[str, Any]] = None) -> Optional[list]:
+                manifest: Optional[Dict[str, Any]] = None,
+                written: Optional[list] = None) -> Optional[list]:
         write_files = getattr(output_config.connector.sink_backend,
                               'write_files', None)
         if not callable(write_files):
@@ -218,11 +222,14 @@ class PredictionResult:
             files = replace(self, artifact_type=kind).files
             outputs.append((kind, destination, files))
         records, sidecars = _output_records(output_config, outputs, manifest)
-        for (kind, destination, files), extra in zip(outputs, sidecars):
+        for index, ((kind, destination, files), extra) in enumerate(
+                zip(outputs, sidecars)):
             write_files(output_config.connector, destination, list(files),
                         output_config.write_mode,
                         export_id=f'{self.run_id}-{kind.value}',
                         **extra)
+            if records is not None and written is not None:
+                written.append(records[index])
         return records
 
 
@@ -1113,14 +1120,19 @@ class Trainer:
         except Exception as error:
             warnings.warn(f"Predicting without a prediction manifest: {error}",
                           UserWarning, stacklevel=2)
-        if output_config is not None:
-            outputs = result._export(output_config, manifest)
+        written: Optional[list] = []
+        status = 'failed'
+        try:
+            if output_config is not None and result._export(
+                    output_config, manifest, written) is None:
+                written = None
+            status = 'succeeded'
+        finally:
             if manifest is not None:
-                manifest['outputs'] = outputs
-        if manifest is not None:
-            manifest['timings']['finished_at'] = datetime.now(
-                timezone.utc).isoformat(timespec='seconds')
-            _write_run_manifest(result, manifest)
+                manifest.update(outputs=written, status=status)
+                manifest['timings']['finished_at'] = datetime.now(
+                    timezone.utc).isoformat(timespec='seconds')
+                _write_run_manifest(result, manifest)
         return result
 
     @classmethod

@@ -53,6 +53,7 @@ def run_manifest(*, result: Any, prediction_table: Any, task_type: TaskType,
         },
         scoring=scoring,
         outputs=[],
+        status=None,
         timings={'started_at': started_at, 'finished_at': None},
         stats=stats,
     )

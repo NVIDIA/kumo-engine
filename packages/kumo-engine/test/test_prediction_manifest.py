@@ -113,6 +113,7 @@ def test_manifest_records_run_and_directory_export(graph, classifier,
     } for name in ('preds', 'embs')]
     assert manifest['timings']['started_at'] <= manifest['timings'][
         'finished_at']
+    assert manifest['status'] == 'succeeded'
     assert manifest['stats']['embeddings'] == {'rows': table.row_count}
 
     frame = result.frame
@@ -237,3 +238,37 @@ def test_manifest_failures_warn_and_keep_outputs(graph, classifier, tmp_path,
     assert not (tmp_path / 'bare' / '_kumo_manifest.json').exists()
     assert (exported == partial_exported == unknown_exported ==
             bare_exported)
+
+
+def test_failed_export_still_writes_manifest(graph, classifier, tmp_path,
+                                             monkeypatch):
+    _, snapshot = graph
+    trainer, table = classifier
+    connector = kumo.FileConnector(root_dir=str(tmp_path))
+    sink = type(connector.sink_backend)
+    write_files = sink.write_files
+
+    def fail_second(self, connector, name, *args, **kwargs):
+        if name.startswith('embs'):
+            raise OSError('disk full')
+        return write_files(self, connector, name, *args, **kwargs)
+
+    monkeypatch.setattr(sink, 'write_files', fail_second)
+    output = PredictionOutputConfig(
+        connector=connector,
+        output_paths={'predictions': 'preds/', 'embeddings': 'embs/'})
+    with pytest.raises(OSError, match='disk full'):
+        trainer.predict(table, snapshot=snapshot, output_config=output,
+                        binary_classification_threshold=0.5)
+
+    manifest, = [
+        json.loads(path.read_text()) for path in trainer.scratch_dir.glob(
+            'predict_output/*/prediction-manifest.json')
+        if json.loads(path.read_text())['status'] == 'failed'
+    ]
+    assert manifest['outputs'] == [{
+        'artifact': 'predictions',
+        'destination': {'connector': 'LOCAL_FILE',
+                        'location': str(tmp_path / 'preds')},
+    }]
+    assert manifest['timings']['finished_at'] is not None
