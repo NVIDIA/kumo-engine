@@ -68,7 +68,8 @@ def _runs(client):
         [e.experiment_id for e in client.search_experiments()])
 
 
-def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, caplog):
+def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
+                                              caplog):
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     table, snapshot = table_and_snapshot
@@ -118,6 +119,11 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, caplog):
     }
     assert metrics == {**result.metrics, 'seconds': metrics['seconds']}
     assert 'off for the rest of this run' not in caplog.text
+    ents, = parent.inputs.dataset_inputs
+    assert (ents.dataset.name, ents.dataset.source_type) == ('ents', 'local')
+    assert json.loads(ents.dataset.source) == {
+        'uri': str((tmp_path / 'data' / 'ents.parquet').resolve())
+    }
 
     assert [run.info.run_name
             for run in children] == ['trial-1-attempt-1', 'trial-2-attempt-1']
@@ -267,7 +273,7 @@ def test_fit_inputs_come_from_the_manifests(tmp_path, caplog):
     table.mkdir()
     assert fit_inputs(snapshot, table) == {}
 
-    entry = {'connector': 'file', 'location': '/data/ents.parquet',
+    entry = {'connector': 'LOCAL_FILE', 'location': '/data/ents.parquet',
              'version': '1790000000', 'version_kind': 'timestamp'}
     (snapshot / 'snapshot-manifest.json').write_text(json.dumps(
         {'parents': {'source_tables': {'ents': {**entry, 'extra': 1}}}}))

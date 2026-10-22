@@ -27,12 +27,12 @@ RUN = 'trainer-fit-1'
 USER_TAGS = {'team': 'ents', 'kumo.run_id': 'overridden'}
 QUERY = 'PREDICT ents.Y FOR EACH ents.ID'
 INPUTS = {
-    'ents': {'connector': 's3', 'location': 's3://bucket/ents.parquet',
+    'ents': {'connector': 'S3', 'location': 's3://bucket/ents.parquet',
              'version': '1790000000', 'version_kind': 'timestamp'},
-    'orders': {'connector': 'databricks',
+    'orders': {'connector': 'DATABRICKS',
                'location': '`main`.`sales`.`orders`',
                'version': '7_1790000000', 'version_kind': 'exact'},
-    'users': {'connector': 'snowflake', 'location': '"DB"."SCH"."USERS"',
+    'users': {'connector': 'SNOWFLAKE', 'location': '"DB"."SCH"."USERS"',
               'version': '1790000000', 'version_kind': 'timestamp'},
 }
 CONTEXT = FitContext(

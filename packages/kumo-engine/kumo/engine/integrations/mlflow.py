@@ -30,7 +30,7 @@ _HTTP_LIMITS = {
     'MLFLOW_HTTP_REQUEST_MAX_RETRIES': '2',
     'MLFLOW_HTTP_REQUEST_TIMEOUT': '30',
 }
-_PATH_CONNECTORS = ('file', 's3', 'gcs', 'adls')
+_PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS', 'ADLS')
 
 
 class MlflowTracking:
@@ -216,10 +216,11 @@ class MlflowTracking:
 
 
 def _dataset_source(entry: Mapping[str, Optional[str]]) -> Any:
-    connector, location = entry.get('connector'), entry.get('location')
+    connector = (entry.get('connector') or '').upper()
+    location = entry.get('location')
     if not location or location.startswith('sql:'):
         return None
-    if connector == 'databricks':
+    if connector == 'DATABRICKS':
         delta = import_provider('mlflow.data.delta_dataset_source', 'mlflow')
         return delta.DeltaDatasetSource(
             delta_table_name=_unquoted(location),
