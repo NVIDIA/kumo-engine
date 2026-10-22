@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'darwin' and extra != 'extra-4-kumo-cpu' and extra != 'extra-4-kumo-cu130' and extra != 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests'",
@@ -3139,7 +3139,7 @@ requires-dist = [
     { name = "fsspec" },
     { name = "kumo-api", editable = "packages/kumo-api" },
     { name = "kumo-core", editable = "packages/kumo-core" },
-    { name = "pyarrow", specifier = ">=14" },
+    { name = "pyarrow", specifier = ">=24,<25" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" },
     { name = "requests", specifier = ">=2.31,<3" },
 ]

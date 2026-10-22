@@ -17,7 +17,7 @@ license-files = ["LICENSE"]
 dependencies = [
   "kumo-core==0.1.0.dev1",
   "kumo-api>=3.0.0",
-  "pyarrow>=14",
+  "pyarrow>=24,<25",
   "fsspec",
   "requests>=2.31,<3",
   "azure-core>=1.31,<2",
