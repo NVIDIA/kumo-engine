@@ -188,6 +188,7 @@ mod col_stats_export;
 mod custom_tt_entry;
 mod index_metadata;
 mod success_marker;
+mod string_lookup;
 mod runtime_batch_iterator;
 mod custom_tt_contract;
 mod temporal;
@@ -1720,6 +1721,7 @@ fn validated_index_resume_progress(output_dir: &str) -> PyResult<Option<Vec<Stri
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<string_lookup::StringLookup>()?;
     let _ = pyo3_log::try_init();
     let _ = tracing_log::LogTracer::init();
     // Cap otherwise-global rayon users (col stats, TT-gen, pass-B) to

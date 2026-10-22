@@ -213,6 +213,50 @@ def test_model_and_length_paths_agree(history_graph):
     assert lengths == np.diff(inspected["offsets"]).tolist()
 
 
+@pytest.mark.parametrize("order", ["ascending", "descending"])
+@pytest.mark.parametrize("output_order", ["ascending", "descending"])
+@pytest.mark.parametrize("limit", [1, 3, 100, None])
+@pytest.mark.parametrize("shared", [False, True])
+@pytest.mark.parametrize("output_format", ["inspectable", "model"])
+def test_output_order_preserves_selected_rows_and_aggregates(
+    history_graph, order, output_order, limit, shared, output_format
+):
+    plan = plan_for(history_graph, order=order, limit=limit)
+    if shared:
+        plan["aggregates"] = [
+            {"name": "total", "frame": "f", "operation": "sum", "column": "value"}
+        ]
+    original = query(history_graph, plan, output_format)
+    plan["sequences"][0]["output_order"] = output_order
+    actual = query(history_graph, plan, output_format)
+    before, after = original["sequences"][0], actual["sequences"][0]
+    offsets = before["offsets"]
+    if output_format == "model":
+        offsets = offsets.to_pylist()
+    indices = [
+        row
+        for start, stop in zip(offsets, offsets[1:])
+        for row in (
+            range(start, stop)
+            if order == output_order
+            else range(stop - 1, start - 1, -1)
+        )
+    ]
+    assert after["batch"].equals(before["batch"].take(pa.array(indices, type=pa.int64())))
+    for name in ("node_ids", "timestamps"):
+        expected, result = before[name], after[name]
+        if output_format == "model":
+            expected, result = expected.to_pylist(), result.to_pylist()
+        assert result == [expected[i] for i in indices]
+    assert (
+        after["offsets"].to_pylist() if output_format == "model" else after["offsets"]
+    ) == offsets
+    assert actual["stats"] == original["stats"]
+    for a, b in zip(actual["aggregates"], original["aggregates"]):
+        a, b = a["values"], b["values"]
+        assert a.equals(b) if output_format == "model" else a == b
+
+
 def test_randomized_limits_match_aggregate_shared_full_frame(history_graph):
     rng = np.random.default_rng(93)
     for _ in range(160):
