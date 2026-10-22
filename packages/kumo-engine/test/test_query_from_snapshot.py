@@ -60,6 +60,12 @@ def test_predict_snapshot_scores_with_the_saved_query(fitted, tmp_path):
     pd.testing.assert_frame_equal(scores(entities=rows), expected)
     with pytest.raises(ValueError, match='not both'):
         scores(entities=rows, prediction_time=graph_table.timestamps[0])
+    other = replace(snapshot, id='other@' + snapshot.id.split('@')[1])
+    with pytest.warns(UserWarning, match='trained on a snapshot of graph'):
+        scored = trainer.predict_snapshot(
+            other, binary_classification_threshold=0.5).frame
+    pd.testing.assert_frame_equal(
+        scored.sort_values('ENTITY').reset_index(drop=True), expected)
 
 
 def test_exported_snapshot_scores_in_a_fresh_scratch_without_a_graph(
