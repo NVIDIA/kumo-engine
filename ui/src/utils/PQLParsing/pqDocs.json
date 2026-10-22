@@ -5,9 +5,7 @@
             "language": "PQLANG_V2",
             "key": "!=",
             "aliases": [],
-            "configuredKeys": [
-                "page"
-            ],
+            "configuredKeys": ["page"],
             "title": "!=",
             "syntax": "`<expression> != <value>`",
             "description": "Implements the NOT EQUAL TO operator. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can be applied to columns of all types. The constant data type needs to match the aggregation/column data type.",
@@ -19,9 +17,7 @@
             "language": "PQLANG_V2",
             "key": "<",
             "aliases": [],
-            "configuredKeys": [
-                "page-1"
-            ],
+            "configuredKeys": ["page-1"],
             "title": "<",
             "syntax": "`<expression> < <value>`",
             "description": "Implements the LESS THAN operator. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `numerical` and `timestamp` columns.",
@@ -33,9 +29,7 @@
             "language": "PQLANG_V2",
             "key": "<=",
             "aliases": [],
-            "configuredKeys": [
-                "page-2"
-            ],
+            "configuredKeys": ["page-2"],
             "title": "<=",
             "syntax": "`<expression> <= <value>`",
             "description": "Implements the LESS THAN OR EQUAL TO operator. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `numerical` and `timestamp` columns.",
@@ -47,9 +41,7 @@
             "language": "PQLANG_V2",
             "key": "=",
             "aliases": [],
-            "configuredKeys": [
-                "page-3"
-            ],
+            "configuredKeys": ["page-3"],
             "title": "=",
             "syntax": "`<expression> = <value>`",
             "description": "Implements the EQUAL TO operator. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can be applied to columns of all types. The constant data type needs to match the aggregation/column data type.",
@@ -61,9 +53,7 @@
             "language": "PQLANG_V2",
             "key": ">",
             "aliases": [],
-            "configuredKeys": [
-                "page-4"
-            ],
+            "configuredKeys": ["page-4"],
             "title": ">",
             "syntax": "`<expression> > <value>`",
             "description": "Implements the GREATER THAN operator. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `numerical` and `timestamp` columns.",
@@ -75,9 +65,7 @@
             "language": "PQLANG_V2",
             "key": ">=",
             "aliases": [],
-            "configuredKeys": [
-                "page-5"
-            ],
+            "configuredKeys": ["page-5"],
             "title": ">=",
             "syntax": "`<expression> >= <value>`",
             "description": "Implements the GREATER THAN OR EQUAL TO operator. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `numerical` and `timestamp` columns.",
@@ -89,9 +77,7 @@
             "language": "PQLANG_V2",
             "key": "and",
             "aliases": [],
-            "configuredKeys": [
-                "and"
-            ],
+            "configuredKeys": ["and"],
             "title": "AND",
             "syntax": "`<expression_A> AND <expression_B>`",
             "description": "Allows joining multiple filter expressions with a CONJUNCTION operator. Each `<expression>` must itself be a filter operation.\n\nThis operator is supported for all filter fields and targets.",
@@ -103,9 +89,7 @@
             "language": "PQLANG_V2",
             "key": "assuming",
             "aliases": [],
-            "configuredKeys": [
-                "assuming"
-            ],
+            "configuredKeys": ["assuming"],
             "title": "ASSUMING",
             "syntax": "ASSUMING <condition>",
             "description": "Specifies an optional what-if condition after the entity clause.",
@@ -116,9 +100,7 @@
             "language": "PQLANG_V2",
             "key": "avg",
             "aliases": [],
-            "configuredKeys": [
-                "avg"
-            ],
+            "configuredKeys": ["avg"],
             "title": "AVG",
             "syntax": "AVG(<table>.<column>, <start>, <end>, <unit>)",
             "description": "Returns the average in the specified column over the time interval. The start is excluded and the end is included.",
@@ -129,9 +111,7 @@
             "language": "PQLANG_V2",
             "key": "contains",
             "aliases": [],
-            "configuredKeys": [
-                "contains"
-            ],
+            "configuredKeys": ["contains"],
             "title": "CONTAINS",
             "syntax": "`<expression> CONTAINS <value>`",
             "description": "Evaluates to True if the value returned by `<expression>` has `<value>` as a substring at any point. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `text` columns.",
@@ -143,9 +123,7 @@
             "language": "PQLANG_V2",
             "key": "count",
             "aliases": [],
-            "configuredKeys": [
-                "count"
-            ],
+            "configuredKeys": ["count"],
             "title": "COUNT",
             "syntax": "COUNT(<table>.<column>, <start>, <end>, <unit>)",
             "description": "Counts rows matching the aggregation filters over the time interval, including rows with null column values. The start is excluded and the end is included.",
@@ -156,9 +134,7 @@
             "language": "PQLANG_V2",
             "key": "count_distinct",
             "aliases": [],
-            "configuredKeys": [
-                "count_distinct"
-            ],
+            "configuredKeys": ["count_distinct"],
             "title": "COUNT_DISTINCT",
             "syntax": "COUNT_DISTINCT(<table>.<column>, <start>, <end>, <unit>)",
             "description": "Returns the number of distinct values in the specified column over the time interval. The start is excluded and the end is included.",
@@ -169,9 +145,7 @@
             "language": "PQLANG_V2",
             "key": "ends with",
             "aliases": [],
-            "configuredKeys": [
-                "ends_with"
-            ],
+            "configuredKeys": ["ends_with"],
             "title": "ENDS WITH",
             "syntax": "`<expression> ENDS WITH <value>`",
             "description": "Evaluates to True if the value returned by `<expression>` has `<value>` as a substring at the end. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `text` columns.",
@@ -183,9 +157,7 @@
             "language": "PQLANG_V2",
             "key": "first",
             "aliases": [],
-            "configuredKeys": [
-                "first"
-            ],
+            "configuredKeys": ["first"],
             "title": "FIRST",
             "syntax": "FIRST(<table>.<column>, <start>, <end>, <unit>)",
             "description": "Returns the first value in the specified column over the time interval. The start is excluded and the end is included.",
@@ -196,9 +168,7 @@
             "language": "PQLANG_V2",
             "key": "for each",
             "aliases": [],
-            "configuredKeys": [
-                "for-each"
-            ],
+            "configuredKeys": ["for-each"],
             "title": "FOR EACH",
             "syntax": "FOR EACH <entity_table>.<primary_key>",
             "description": "Specifies the entities for which to generate predictions. An optional WHERE condition filters the entity column.",
@@ -209,9 +179,7 @@
             "language": "PQLANG_V2",
             "key": "forecast",
             "aliases": [],
-            "configuredKeys": [
-                "forecast"
-            ],
+            "configuredKeys": ["forecast"],
             "title": "FORECAST",
             "syntax": "FORECAST <N> TIMEFRAMES",
             "description": "Requests 1 to 10,000 forecast timeframes for a numerical target with a forward-looking time range.",
@@ -222,9 +190,7 @@
             "language": "PQLANG_V2",
             "key": "is in",
             "aliases": [],
-            "configuredKeys": [
-                "is_in"
-            ],
+            "configuredKeys": ["is_in"],
             "title": "IS IN",
             "syntax": "<expression> IS IN (<value>, <value>, ...)",
             "description": "Tests whether a value is one of the values in a list. Lists contain at least two values; use equality for a single value.",
@@ -235,9 +201,7 @@
             "language": "PQLANG_V2",
             "key": "is not null",
             "aliases": [],
-            "configuredKeys": [
-                "is_not_null"
-            ],
+            "configuredKeys": ["is_not_null"],
             "title": "IS NOT NULL",
             "syntax": "`<expression> IS NOT NULL <value>`",
             "description": "Evaluates to True if the value returned by `<expression>` doesn't equate to **Null or N/A**. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can be applied to columns of all types.",
@@ -249,9 +213,7 @@
             "language": "PQLANG_V2",
             "key": "is null",
             "aliases": [],
-            "configuredKeys": [
-                "is_null"
-            ],
+            "configuredKeys": ["is_null"],
             "title": "IS NULL",
             "syntax": "`<expression> IS NULL <value>`",
             "description": "Evaluates to True if the value returned by `<expression>` equals **Null or N/A**. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can be applied to columns of all types.",
@@ -263,9 +225,7 @@
             "language": "PQLANG_V2",
             "key": "last",
             "aliases": [],
-            "configuredKeys": [
-                "last"
-            ],
+            "configuredKeys": ["last"],
             "title": "LAST",
             "syntax": "LAST(<table>.<column>, <start>, <end>, <unit>)",
             "description": "Returns the last value in the specified column over the time interval. The start is excluded and the end is included.",
@@ -276,9 +236,7 @@
             "language": "PQLANG_V2",
             "key": "like",
             "aliases": [],
-            "configuredKeys": [
-                "like"
-            ],
+            "configuredKeys": ["like"],
             "title": "LIKE",
             "syntax": "`<expression> LIKE <value>`",
             "description": "Corresponds to the SQL LIKE operation, which matches `<expression>` with `<value>` using `%` as a wildcard. This functionality can be replicated using the `STARTS WITH`, `ENDS WITH`, and `CONTAINS` operators. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `text` columns.",
@@ -290,9 +248,7 @@
             "language": "PQLANG_V2",
             "key": "list_distinct",
             "aliases": [],
-            "configuredKeys": [
-                "list_distinct"
-            ],
+            "configuredKeys": ["list_distinct"],
             "title": "LIST_DISTINCT",
             "syntax": "LIST_DISTINCT(<table>.<column>, <start>, <end>, <unit>)",
             "description": "Returns the distinct values in the specified column over the time interval. The start is excluded and the end is included.",
@@ -303,9 +259,7 @@
             "language": "PQLANG_V2",
             "key": "max",
             "aliases": [],
-            "configuredKeys": [
-                "max"
-            ],
+            "configuredKeys": ["max"],
             "title": "MAX",
             "syntax": "MAX(<table>.<column>, <start>, <end>, <unit>)",
             "description": "Returns the maximum in the specified column over the time interval. The start is excluded and the end is included.",
@@ -316,9 +270,7 @@
             "language": "PQLANG_V2",
             "key": "min",
             "aliases": [],
-            "configuredKeys": [
-                "min"
-            ],
+            "configuredKeys": ["min"],
             "title": "MIN",
             "syntax": "MIN(<table>.<column>, <start>, <end>, <unit>)",
             "description": "Returns the minimum in the specified column over the time interval. The start is excluded and the end is included.",
@@ -329,9 +281,7 @@
             "language": "PQLANG_V2",
             "key": "not",
             "aliases": [],
-            "configuredKeys": [
-                "not"
-            ],
+            "configuredKeys": ["not"],
             "title": "NOT",
             "syntax": "`NOT <expression>`",
             "description": "Allows conditioning an expression with a NEGATION operator. The `<expression>` must itself be a filter operation.\n\nThis operator is supported for all filter fields and targets.",
@@ -343,9 +293,7 @@
             "language": "PQLANG_V2",
             "key": "not contains",
             "aliases": [],
-            "configuredKeys": [
-                "not_contains"
-            ],
+            "configuredKeys": ["not_contains"],
             "title": "NOT CONTAINS",
             "syntax": "`<expression> NOT CONTAINS <value>`",
             "description": "Evaluates to True if the value returned by `<expression>` does not have `<value>` as a substring at any point. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `text` columns.",
@@ -357,9 +305,7 @@
             "language": "PQLANG_V2",
             "key": "not like",
             "aliases": [],
-            "configuredKeys": [
-                "not-like"
-            ],
+            "configuredKeys": ["not-like"],
             "title": "NOT LIKE",
             "syntax": "`<expression> NOT LIKE <value>`",
             "description": "Corresponds to the SQL NOT LIKE operation, which matches `<expression>` with `<value>` using `%` as a wildcard. This functionality can be replicated using the `STARTS WITH`, `ENDS WITH`, and `CONTAINS` operators. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `text` columns.",
@@ -371,9 +317,7 @@
             "language": "PQLANG_V2",
             "key": "or",
             "aliases": [],
-            "configuredKeys": [
-                "or"
-            ],
+            "configuredKeys": ["or"],
             "title": "OR",
             "syntax": "`<expression_A> OR <expression_B>`",
             "description": "Allows joining multiple filter expressions with a DISJUNCTION operator. Each `<expression>` must itself be a filter operation.\n\nThis operator is supported for all filter fields and targets.",
@@ -385,9 +329,7 @@
             "language": "PQLANG_V2",
             "key": "predict",
             "aliases": [],
-            "configuredKeys": [
-                "predict"
-            ],
+            "configuredKeys": ["predict"],
             "title": "PREDICT",
             "syntax": "PREDICT <target>",
             "description": "Defines the prediction target as a column, aggregation, or condition. The FOR EACH clause selects the prediction entities.",
@@ -398,9 +340,7 @@
             "language": "PQLANG_V2",
             "key": "rank",
             "aliases": [],
-            "configuredKeys": [
-                "rank"
-            ],
+            "configuredKeys": ["rank"],
             "title": "RANK TOP K",
             "syntax": "RANK TOP <K>",
             "description": "Ranks a multicategorical target and returns its top K values. K must be at least 1.",
@@ -411,9 +351,7 @@
             "language": "PQLANG_V2",
             "key": "starts with",
             "aliases": [],
-            "configuredKeys": [
-                "starts_with"
-            ],
+            "configuredKeys": ["starts_with"],
             "title": "STARTS WITH",
             "syntax": "`<expression> STARTS WITH <value>`",
             "description": "Evaluates to True if the value returned by `<expression>` has `<value>` as a substring at the start. `<expression>` can be `<table>.<column>` or`AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `text` columns.",
@@ -425,9 +363,7 @@
             "language": "PQLANG_V2",
             "key": "sum",
             "aliases": [],
-            "configuredKeys": [
-                "sum"
-            ],
+            "configuredKeys": ["sum"],
             "title": "SUM",
             "syntax": "SUM(<table>.<column>, <start>, <end>, <unit>)",
             "description": "Returns the sum in the specified column over the time interval. The start is excluded and the end is included.",
@@ -438,9 +374,7 @@
             "language": "PQLANG_V2",
             "key": "timeframes",
             "aliases": [],
-            "configuredKeys": [
-                "timeframes"
-            ],
+            "configuredKeys": ["timeframes"],
             "title": "TIMEFRAMES",
             "syntax": "FORECAST <N> TIMEFRAMES",
             "description": "Requests 1 to 10,000 forecast timeframes for a numerical target with a forward-looking time range.",
@@ -451,9 +385,7 @@
             "language": "PQLANG_V2",
             "key": "where",
             "aliases": [],
-            "configuredKeys": [
-                "where"
-            ],
+            "configuredKeys": ["where"],
             "title": "WHERE",
             "syntax": "<table>.<column> WHERE <condition>",
             "description": "Filters a column by a condition. A filtered column can be used in an aggregation or in the FOR EACH entity clause.",
@@ -476,9 +408,7 @@
             "language": "YAML",
             "key": "activation",
             "aliases": [],
-            "configuredKeys": [
-                "activation"
-            ],
+            "configuredKeys": ["activation"],
             "title": "activation",
             "syntax": "`activation: <list[relu | leaky_relu | elu | gelu]>` (Optional)",
             "description": "A list of activation functions for AutoML to explore. Possible values are `relu`, `leaky_relu`, `elu`, and `gelu`.",
@@ -490,9 +420,7 @@
             "language": "YAML",
             "key": "aggregation",
             "aliases": [],
-            "configuredKeys": [
-                "gnn_aggregation"
-            ],
+            "configuredKeys": ["gnn_aggregation"],
             "title": "aggregation",
             "syntax": "aggregation: <list[list[sum | mean | min | max | std | var]]>",
             "description": "Lists the aggregation operator combinations for the graph neural network model to explore.",
@@ -635,9 +563,7 @@
             "language": "YAML",
             "key": "base_lr",
             "aliases": [],
-            "configuredKeys": [
-                "base_lr"
-            ],
+            "configuredKeys": ["base_lr"],
             "title": "base_lr",
             "syntax": "`base_lr: <list[float]>` (Optional)",
             "description": "A list of potential learning rates in model optimizer during model optimization.\n\n* `base_lr` must be `> 0`.",
@@ -649,9 +575,7 @@
             "language": "YAML",
             "key": "batch_size",
             "aliases": [],
-            "configuredKeys": [
-                "batch_size"
-            ],
+            "configuredKeys": ["batch_size"],
             "title": "batch_size",
             "syntax": "`batch_size: <list[int]>` (Optional)",
             "description": "A list of potential batch sizes during data loading.\n\n* `batch_size` must be `<=2048`.",
@@ -663,9 +587,7 @@
             "language": "YAML",
             "key": "channels",
             "aliases": [],
-            "configuredKeys": [
-                "gnn_channels"
-            ],
+            "configuredKeys": ["gnn_channels"],
             "title": "channels",
             "syntax": "channels: <list[int]>",
             "description": "Lists candidate hidden dimensions for the message passing model. Each value must be even and between 2 and 512.",
@@ -676,9 +598,7 @@
             "language": "YAML",
             "key": "distance_measure",
             "aliases": [],
-            "configuredKeys": [
-                "distance_measure"
-            ],
+            "configuredKeys": ["distance_measure"],
             "title": "distance_measure",
             "syntax": "`distance_measure: <list[dot_product | cosine]>` (Optional)",
             "description": "Distance measure when measuring distance between node vector embeddings in link prediction. Using cosine similarity (`cosine`) instead of dot product (`dot_product`) tends to reduce popularity bias and tends to increase the diversity of predictions, often at the expense of accuracy.",
@@ -690,9 +610,7 @@
             "language": "YAML",
             "key": "dropout",
             "aliases": [],
-            "configuredKeys": [
-                "gt_dropout"
-            ],
+            "configuredKeys": ["gt_dropout"],
             "title": "dropout",
             "syntax": "dropout: <list[float]>",
             "description": "Lists candidate GraphTransformer dropout rates. Each rate is at least 0 and less than 1. GraphTransformer supports node prediction tasks.",
@@ -703,9 +621,7 @@
             "language": "YAML",
             "key": "early_stopping",
             "aliases": [],
-            "configuredKeys": [
-                "early_stopping"
-            ],
+            "configuredKeys": ["early_stopping"],
             "title": "early_stopping",
             "syntax": "`early_stopping: <list[list[EarlyStopper]]>` (Optional)",
             "description": "A list of potential early stopping strategies for AutoML to explore.\n\nAn early stopping strategy can be empty (in which case no early stopping is applied), or it can be configured through two parameters: `min_delta` and `patience`:\n\n* `min_delta` (default: `0.0`): The minimum absolute change in the monitored tune metric to qualify as an improvement. Must be `>= 0.0`.\n* `patience` (default: `3`): The number of epochs with no improvement after which training will be stopped. Must be `> 0`.\n\nBy default, training is stopped after `3` consecutive epochs with no improvements of the tune metric on the validation set.",
@@ -717,10 +633,7 @@
             "language": "YAML",
             "key": "encoder_overrides",
             "aliases": [],
-            "configuredKeys": [
-                "column_processing",
-                "encoder_overrides"
-            ],
+            "configuredKeys": ["column_processing", "encoder_overrides"],
             "title": "encoder_overrides",
             "syntax": "encoder_overrides: <dict[table.column, encoder]>",
             "description": "Maps table.column names to encoders in the column_processing model plan. Unspecified columns use their default encoders.",
@@ -731,9 +644,7 @@
             "language": "YAML",
             "key": "end_time",
             "aliases": [],
-            "configuredKeys": [
-                "end_time"
-            ],
+            "configuredKeys": ["end_time"],
             "title": "end_time",
             "syntax": "`end_time: <integer | str>` (Optional)",
             "description": "Defines the timestamp for the ending of the training data or numerical offset from the most recent entry to not use to generate training data labels. Unless a custom time unit is specified in the aggregation, this value is in `days`. This can be used to make sure the query only generates labels on data from the last `end_time` days. Regardless of this value, all data is used as an input to the model, but this value can help limit what labels are generated.\n\n- `end_time` needs to be \\<= 0 or the string format of a timestamp, i.e. ‘2024-04-01’\n- If used at the same time as `start_time`, `end_time` should be strictly larger.",
@@ -769,9 +680,7 @@
             "language": "YAML",
             "key": "forecast_length",
             "aliases": [],
-            "configuredKeys": [
-                "forecast_length"
-            ],
+            "configuredKeys": ["forecast_length"],
             "title": "forecast_length",
             "syntax": "`forecast_length: <integer>` (Optional)",
             "description": "Turns a node regression problem into a forecasting problem. The given target is forecasted for `forecast_length` steps into the future. This only applies to temporal queries (queries that include a temporal aggregation such as `SUM(TRANSACTIONS.AMOUNT, 0, 2, days))`.",
@@ -783,9 +692,7 @@
             "language": "YAML",
             "key": "forecast_type",
             "aliases": [],
-            "configuredKeys": [
-                "forecast_type"
-            ],
+            "configuredKeys": ["forecast_type"],
             "title": "forecast_type",
             "syntax": "`forecast_type: <str>` (Optional)",
             "description": "Chooses the type of forecasting model being used. Possible options are:\n\n* `mlp`: Uses an MLP to make the final prediction across all future timestamps.\n\n* `implicit`: Uses a shared MLP across all future timestamps, conditioned on the future timestamp.\n\n* `autoregressive`: Uses an RNN-based forecasting head with support for autoregressive prediction.\n\nThe default setting is `forecast_type=mlp`.",
@@ -797,9 +704,7 @@
             "language": "YAML",
             "key": "handle_new_target_entities",
             "aliases": [],
-            "configuredKeys": [
-                "handle_new_target_entities"
-            ],
+            "configuredKeys": ["handle_new_target_entities"],
             "title": "handle_new_target_entities",
             "syntax": "`handle_new_target_entities: <bool>` (Optional)",
             "description": "Controls whether [Link Prediction](/task-types) model handles predictions on new target entities at batch prediction time.\n\nKeeping this option to `false` generally provides better model performance. It is recommended to keep this option `false` unless you need to predict unseen target entities at batch prediction time.",
@@ -811,9 +716,7 @@
             "language": "YAML",
             "key": "lag_timesteps",
             "aliases": [],
-            "configuredKeys": [
-                "lag_timesteps"
-            ],
+            "configuredKeys": ["lag_timesteps"],
             "title": "lag_timesteps",
             "syntax": "`lag_timesteps: <integer>` (Optional)",
             "description": "For forecasting problems, leverage the auto-regressive labels as inputs. This parameter controls the number of previous values should be considered as auto-regressive labels.",
@@ -825,9 +728,7 @@
             "language": "YAML",
             "key": "loss",
             "aliases": [],
-            "configuredKeys": [
-                "loss"
-            ],
+            "configuredKeys": ["loss"],
             "title": "loss",
             "syntax": "`loss: <list[str]>` **(Optional)**",
             "description": "The loss type to use during model optimization depending on the task type.\n\n**Available Options:**\n\n| Task Type                                       | Available loss options                          |\n| :---------------------------------------------- | :---------------------------------------------- |\n| Binary Classification/Multilabel Classification | `binary_cross_entropy` (default) <br /> `focal` |\n| Multiclass Classification                       | `cross_entropy` (default) <br /> `ordinal_log`  |\n| Regression/Forecasting                          | `mae` <br /> `mse` <br /> `huber` (default) <br /> `wape` <br /> `multi_quantile` |\n| Temporal Link Prediction                        | `cross_entropy` (default) <br /> `binary_cross_entropy` |\n| Static Link Prediction                          | `cross_entropy` (default) <br /> `binary_cross_entropy` |\n| Multilabel Ranking                              | `cross_entropy` (default) <br /> `ordinal_log`  |\n\nBy default, `focal` loss uses an `alpha` value of `0.25` (the weighting factor to balance positive vs. negative examples), and a `gamma` value of `2.0` (the balance between easy vs. hard examples). You can further customize this in the model plan by replacing the string by a dictionary:\n\n```\nloss:\n- name: focal\n  alpha: 0.5\n  gamma: 4.0\n```\n\nBy default, `huber` loss uses a delta value of `1.0`. You can further customize this in the model plan by replacing the string by a dictionary:\n\n```\nloss:\n- name: huber\n  delta: 2.0\n```\n\nUse `multi_quantile` for regression or forecasting tasks when you want prediction intervals in addition to the median prediction. It trains multiple quantiles with pinball loss and writes `TARGET_PRED` together with 27 quantile columns named `q_0.005`, `q_0.01`, ..., `q_0.995`:\n\n```\nloss:\n- multi_quantile\n```\n\nThe full quantile column set is:\n\n```\nq_0.005 q_0.01  q_0.02  q_0.025 q_0.05  q_0.1   q_0.15\nq_0.2   q_0.25  q_0.3   q_0.35  q_0.4   q_0.45  q_0.5\nq_0.55  q_0.6   q_0.65  q_0.7   q_0.75  q_0.8   q_0.85\nq_0.9   q_0.95  q_0.975 q_0.98  q_0.99  q_0.995\n```",
@@ -839,9 +740,7 @@
             "language": "YAML",
             "key": "lr_scheduler",
             "aliases": [],
-            "configuredKeys": [
-                "lr_scheduler"
-            ],
+            "configuredKeys": ["lr_scheduler"],
             "title": "lr_scheduler",
             "syntax": "`lr_scheduler: <list[list[LRScheduler]]` (Optional)",
             "description": "A list of potential learning rate schedulers for AutoML to explore.\n\nA learning rate scheduler strategy can be empty (in which case no learning rate scheduling is applied), or can be configured through three parameters: `name`, `interval` and `kwargs`:\n\n* `name`: The name of the learning rate scheduler strategy. Valid learning rate scheduler strategies are:\n\n  * `constant_with_warmup`: Uses a constant learning rate preceded by a warmup period which increases the learning rate from 0 to `base_lr`. Number of warmup steps can be specified through `kwargs` via `warmup_ratio_or_steps`.\n  * `linear_with_warmup`: Decays the learning rate linearly from `base_lr` to `0`, preceded by a warmup period which increases the learning rate from 0 to `base_lr`. Number of warmup steps can be specified through `kwargs` via `warmup_ratio_or_steps`.\n  * `exponential`: Decays the learning rate by `gamma`. `gamma` can be specified through `kwargs`.\n  * `cosine_with_warmup`: Adjusts the learning rate between `base_lr` and `0` following a cosine function, preceded by a warmup period which increases the learning rate from 0 to `base_lr`. Number of warmup steps can be specified through `kwargs` via `warmup_ratio_or_steps`.\n  * `cosine_with_warmup_restarts`: Adjusts the learning rate between `base_lr` and `0` following a cosine function, with several hard restarts. Preceded by a warmup period which increases the learning rate from `0` to `base_lr`. Number of hard restarts can be configured through `kwargs` via `num_cycles` (`3` by default). Number of warmup steps can be specified through `kwargs` via `warmup_ratio_or_steps`.\n\n* `interval`: Specifies whether learning rate scheduling is applied per optimization step (`step`) or per epoch (`epoch`).\n\n* `kwargs`: Additional arguments depending on the chosen LR scheduler strategy. See above for detailed information.",
@@ -865,9 +764,7 @@
             "language": "YAML",
             "key": "majority_sampling_ratio",
             "aliases": [],
-            "configuredKeys": [
-                "majority_sampling_ratio"
-            ],
+            "configuredKeys": ["majority_sampling_ratio"],
             "title": "majority_sampling_ratio",
             "syntax": "`majority_sampling_ratio: <list[float]>` (Optional)",
             "description": "A list of majority sampling ratios for AutoML to explore.\n\nThe `majority_sampling_ratio` parameter controls undersampling of the majority class in binary classification tasks.\\\nIt specifies how many majority-class examples to keep **per minority-class example** during training.",
@@ -914,9 +811,7 @@
             "language": "YAML",
             "key": "max_epochs",
             "aliases": [],
-            "configuredKeys": [
-                "max_epochs"
-            ],
+            "configuredKeys": ["max_epochs"],
             "title": "max_epochs",
             "syntax": "`max_epochs: <int>` (Optional)",
             "description": "The maximum number of epochs to train. An epoch is defined as the process of completing the specified number of steps, i.e., `max_steps_per_epoch` steps, and Kumo evaluates your model on the validation set at the end of each epoch.\n\n* `max_epochs`must be `> 0`.",
@@ -928,9 +823,7 @@
             "language": "YAML",
             "key": "max_steps_per_epoch",
             "aliases": [],
-            "configuredKeys": [
-                "max_steps_per_epoch"
-            ],
+            "configuredKeys": ["max_steps_per_epoch"],
             "title": "max_steps_per_epoch",
             "syntax": "`max_steps_per_epoch: <int>` (Optional)",
             "description": "`max_steps_per_epoch` controls the maximum number of steps performed in a single epoch during training.\n\n* A step is defined as training your model on a single mini-batch of size `batch_size`\n* An epoch is defined as the process of completing the specified number of steps, i.e., `max_steps_per_epoch` steps, after which validation is performed.\n\nThis is particularly useful for managing the trade-off between training time and validation frequency.\n\nFor example, to double the validation frequency while keeping the total number of mini-batches the model processes unchanged, halve `max_steps_per_epoch` and double `max_epochs`.\n\n* `max_steps_per_epoch` must be `> 0`.",
@@ -942,9 +835,7 @@
             "language": "YAML",
             "key": "max_target_neighbors_per_entity",
             "aliases": [],
-            "configuredKeys": [
-                "max_target_neighbors_per_entity"
-            ],
+            "configuredKeys": ["max_target_neighbors_per_entity"],
             "title": "max_target_neighbors_per_entity",
             "syntax": "max_target_neighbors_per_entity: <list[int]>",
             "description": "Limits target neighbors per entity for temporal queries and static link prediction. Values range from -1 to 512; -1 includes all target neighbors.",
@@ -955,9 +846,7 @@
             "language": "YAML",
             "key": "max_test_steps",
             "aliases": [],
-            "configuredKeys": [
-                "max_test_steps"
-            ],
+            "configuredKeys": ["max_test_steps"],
             "title": "max_test_steps",
             "syntax": "`max_test_steps: <integer>` (Optional)",
             "description": "The maximum number of test steps to perform. If set, `max_test_steps` will override the number of test steps set by [`run_mode`](/run-mode). Setting `max_test_steps` is useful for customizing the time spent on testing the model.\n\n* By default `max_test_steps` is set according to [`run_mode`](/run-mode).\n* `max_test_steps`must be `> 0`.",
@@ -969,9 +858,7 @@
             "language": "YAML",
             "key": "max_val_steps",
             "aliases": [],
-            "configuredKeys": [
-                "max_val_steps"
-            ],
+            "configuredKeys": ["max_val_steps"],
             "title": "max_val_steps",
             "syntax": "`max_val_steps: <integer>` (Optional)",
             "description": "The maximum number of validation steps to perform. If set, `max_val_steps` will override the number of steps set by [`run_mode`](/run-mode). Setting `max_val_steps` is useful for customizing the time spent on validation the model.\n\n* By default `max_val_steps` is set according to [`run_mode`](/run-mode).\n\n* `max_val_steps`must be `> 0`.",
@@ -983,9 +870,7 @@
             "language": "YAML",
             "key": "metrics",
             "aliases": [],
-            "configuredKeys": [
-                "metrics"
-            ],
+            "configuredKeys": ["metrics"],
             "title": "metrics",
             "syntax": "`metrics: List[str]` (Optional)",
             "description": "This field specifies the metrics to use for evaluating your model. Available metrics vary per task, with incompatible metrics resulting in a validation error.",
@@ -1008,9 +893,7 @@
             "language": "YAML",
             "key": "module",
             "aliases": [],
-            "configuredKeys": [
-                "module"
-            ],
+            "configuredKeys": ["module"],
             "title": "module",
             "syntax": "`module: <ranking | embedding>` (Optional)",
             "description": "By default, Kumo selects the model architecture and designs the hyperparameter search space that best fits your query. However, if you have specific requirements for your use case, you can customize the model architecture to suit your desired output/objective.\n\nThe module to choose from:\n\n* `embedding`: A link prediction GNN model that optimizes link prediction with entity embedding outputs. The ranking scores can be obtained by fast vector calculations (default to inner product) on the embedding space.\n* `ranking`: A link prediction GNN that is optimized for link prediction performance. It produces the ranking scores directly. It can also produce embeddings but their inner product is not perfectly aligned to the ranking.",
@@ -1058,9 +941,7 @@
             "language": "YAML",
             "key": "normalization",
             "aliases": [],
-            "configuredKeys": [
-                "normalization"
-            ],
+            "configuredKeys": ["normalization"],
             "title": "normalization",
             "syntax": "`normalization: <list[layer_norm | batch_norm | None]>` (Optional)",
             "description": "The normalization layer to apply. Possible values are `batch_norm`, `layer_norm` or `None` to skip normalization.",
@@ -1072,9 +953,7 @@
             "language": "YAML",
             "key": "num_experiments",
             "aliases": [],
-            "configuredKeys": [
-                "num_experiments"
-            ],
+            "configuredKeys": ["num_experiments"],
             "title": "num_experiments",
             "syntax": "`num_experiments: <int>` (Optional)",
             "description": "The number of experiments to run during AutoML. AutoML selects hyperparameter configurations via random sampling without replacement (best effort). If the candidate search space is smaller than `num_experiments`, or constraints/pruning reduce the viable pool, Kumo may reuse a configuration or run fewer unique experiments.\n\n* `num_experiments` must be `> 0`.",
@@ -1086,9 +965,7 @@
             "language": "YAML",
             "key": "num_heads",
             "aliases": [],
-            "configuredKeys": [
-                "gt_num_heads"
-            ],
+            "configuredKeys": ["gt_num_heads"],
             "title": "num_heads",
             "syntax": "num_heads: <list[int]>",
             "description": "Lists candidate numbers of attention heads in GraphTransformer. Each value is between 1 and 32. GraphTransformer supports node prediction tasks.",
@@ -1099,9 +976,7 @@
             "language": "YAML",
             "key": "num_layers",
             "aliases": [],
-            "configuredKeys": [
-                "gt_num_layers"
-            ],
+            "configuredKeys": ["gt_num_layers"],
             "title": "num_layers",
             "syntax": "num_layers: <list[int]>",
             "description": "Lists candidate numbers of GraphTransformer layers. Each value is between 1 and 12. GraphTransformer supports node prediction tasks.",
@@ -1112,9 +987,7 @@
             "language": "YAML",
             "key": "num_neighbors",
             "aliases": [],
-            "configuredKeys": [
-                "num_neighbors"
-            ],
+            "configuredKeys": ["num_neighbors"],
             "title": "num_neighbors",
             "syntax": "`num_neighbors: <list[NumNeighbors]>` (Optional)",
             "description": "Kumo generates embeddings and predictions by sampling and aggregating features from a node’s local neighborhood. The `num_neighbors` parameter determines how Kumo samples these local subgraphs by specifying how many neighbors are sampled for each node in each iteration.\n\nBy default, `num_neighbors` is determined using the [`run_mode`](/run-mode) argument , and a two-hop subgraph is sampled. Different sampling strategies can be specified and tuned via AutoML:\n\n<CodeGroup>\n  ```yaml Field\n  num_neighbors:\n  - hop1:\n      default: 16\n    hop2:\n      default: 8\n  ```\n</CodeGroup>\n\nThis configuration means that Kumo samples a maximum of 16 nodes for each primary key/foreign key connection in the first hop, and a maximum of 8 nodes for each primary key/foreign key connection in the second hop. Kumo supports sampling depths of up to 6 hops. Note that deeper subgraphs will increase runtime and memory requirements of the model, and it is advised to specify a smaller batch size in case deeper subgraphs are desired.\n\nIn each hop, we can also customize the neighborhood count to sample for specific connections. For example,\n\n<CodeGroup>\n  ```yaml yaml\n  num_neighbors:\n  - hop1:\n      default: 16\n      USERS.USER_ID->TRANSACTIONS.USER_ID: 128\n    hop2:\n      default: 8\n      TRANSACTIONS.STORE_ID->STORES.STORE_ID: 0\n  ```\n</CodeGroup>\n\nmeans that we sample a maximum of 128 transactions per user in the first hop, while we don’t want to sample any stores from these transactions in the second hop. This allows for fine-grained control to give more or less importance to specific connections.\n\nThe maximum neighbors to sample per hop by default is 128, and 512 for specific connections.\n\nFor temporal queries, the default model planner will give special treatment to the `{entity}->{target}` connection, e.g., in queries such as:\n\n<CodeGroup>\n  ```Text PQL\n  PREDICT COUNT(TRANSACTIONS.*, 0, 7) FOR EACH USERS.USER_ID\n  ```\n</CodeGroup>\n\nThe model trainer will be set as:\n\n<CodeGroup>\n  ```yaml yaml\n  num_neighbors:\n  - hop1:\n      default: 16\n      USERS.USER_ID->TRANSACTIONS.USER_ID: inferred\n    hop2:\n      default: 16\n  ```\n</CodeGroup>\n\nHere, the inferred value indicates to Kumo that it should determine an optimal value based on edge degree statistics between the entity table and the target table. The inferred option is currently only supported for the entity/target connection in the first hop. You are able to confirm the inferred value in the final model plan once training finishes.",
@@ -1126,9 +999,7 @@
             "language": "YAML",
             "key": "num_post_message_passing_layers",
             "aliases": [],
-            "configuredKeys": [
-                "num_post_message_passing_layers"
-            ],
+            "configuredKeys": ["num_post_message_passing_layers"],
             "title": "num_post_message_passing_layers",
             "syntax": "`num_post_message_passing_layers: <list[int]>` (Optional)",
             "description": "A list of potential number of multilayer perceptron layers after message passing layer in the graph neural network model for AutoML to explore.\n\n* Each value in `num_post_message_passing_layers` must satisfy `1 <= num_post_mp_layers <= 8`.",
@@ -1140,9 +1011,7 @@
             "language": "YAML",
             "key": "num_pre_message_passing_layers",
             "aliases": [],
-            "configuredKeys": [
-                "num_pre_message_passing_layers"
-            ],
+            "configuredKeys": ["num_pre_message_passing_layers"],
             "title": "num_pre_message_passing_layers",
             "syntax": "`num_pre_message_passing_layers: <list[int]>` (Optional)",
             "description": "A list of potential number of multilayer perceptron layers before message passing layer in the graph neural network model for AutoML to explore.\n\n* Each value in `num_pre_message_passing_layers` must satisfy `0 <= num_pre_message_passing_layers <= 4`.",
@@ -1154,9 +1023,7 @@
             "language": "YAML",
             "key": "output_embedding_dim",
             "aliases": [],
-            "configuredKeys": [
-                "output_embedding_dim"
-            ],
+            "configuredKeys": ["output_embedding_dim"],
             "title": "output_embedding_dim",
             "syntax": "`output_embedding_dim: <list[int]>` (Optional)",
             "description": "A list of output embedding dimensions for link prediction models for AutoML to explore.\n\n`output_embedding_dim` must satisfy `0 < output_embedding <= 256`.",
@@ -1168,9 +1035,7 @@
             "language": "YAML",
             "key": "positional_encodings",
             "aliases": [],
-            "configuredKeys": [
-                "gt_positional_encodings"
-            ],
+            "configuredKeys": ["gt_positional_encodings"],
             "title": "positional_encodings",
             "syntax": "positional_encodings: <list[list[hop | random_gnn]]>",
             "description": "Lists combinations of hop and random_gnn positional encodings for GraphTransformer. GraphTransformer supports node prediction tasks.",
@@ -1205,9 +1070,7 @@
             "language": "YAML",
             "key": "prediction_time_encodings",
             "aliases": [],
-            "configuredKeys": [
-                "prediction_time_encodings"
-            ],
+            "configuredKeys": ["prediction_time_encodings"],
             "title": "prediction_time_encodings",
             "syntax": "prediction_time_encodings",
             "description": "Adds the prediction anchor timestamp to the model input.",
@@ -1218,9 +1081,7 @@
             "language": "YAML",
             "key": "ranking_embedding_loss_coeff",
             "aliases": [],
-            "configuredKeys": [
-                "ranking_embedding_loss_coeff"
-            ],
+            "configuredKeys": ["ranking_embedding_loss_coeff"],
             "title": "ranking_embedding_loss_coeff",
             "syntax": "`ranking_embedding_loss_coeff: <list[float]>` (Optional)",
             "description": "A list of coefficients of the embedding loss applied to train ranking-based link prediction model for AutoML to explore.\n\nBy default, `ranking_embedding_loss_coeff` is set to `0.0`, which means that the model is solely trained to optimize for the final predicted ranking.\n\nIt is only recommended to change this value in case you are interested in embeddings. For embedding-based ranking predictions, the recommended value of `ranking_embedding_loss_coeff` is `0.2`, or a positive value otherwise. This instructs Kumo to explicitly train embeddings to produce high-quality inner-product scores for ranking prediction.",
@@ -1256,9 +1117,7 @@
             "language": "YAML",
             "key": "refit_full",
             "aliases": [],
-            "configuredKeys": [
-                "refit_full"
-            ],
+            "configuredKeys": ["refit_full"],
             "title": "refit_full",
             "syntax": "`refit_full: (false (default) | true)` (Optional)",
             "description": "Specifies whether to refit the best AutoML model (fitted on train data) on the full (train+val+test) data.\n\nAfter we complete all the requested experiments by training on the train split and using the validation split for early stopping, Kumo will take the best-performing model and retrain it using all available data, which includes the training, validation, and holdout data splits. This allows us the final model used to generate predictions to use as much and as recent data as possible while avoiding leakage in AutoML.\n\nNOTE: This option can be used together with [`refit_trainval`](/reference/refit_trainval) option. If [`refit_trainval`](/reference/refit_trainval) is also set to `true`, Kumo reports the holdout results based on a model re-trained on train+val data. The Batch Predictions will still be based on a model refitted on the full data.",
@@ -1270,9 +1129,7 @@
             "language": "YAML",
             "key": "refit_trainval",
             "aliases": [],
-            "configuredKeys": [
-                "refit_trainval"
-            ],
+            "configuredKeys": ["refit_trainval"],
             "title": "refit_trainval",
             "syntax": "`refit_trainval: (false (default) | true)` (Optional)",
             "description": "Specifies whether to refit the best AutoML model (fitted on train+validation data) to new training values. After we complete all the requested experiments by training on the train split and using the validation split for early stopping, Kumo will take the best-performing model and retrain it using both the training and validation data splits. This allows us the final model used to generate predictions to use as much and as recent data as possible while avoiding leakage in AutoML.",
@@ -1296,9 +1153,7 @@
             "language": "YAML",
             "key": "run_mode",
             "aliases": [],
-            "configuredKeys": [
-                "run_mode"
-            ],
+            "configuredKeys": ["run_mode"],
             "title": "run_mode",
             "syntax": "run_mode: fast | normal | best | debug",
             "description": "Selects the AutoML search mode used when suggesting a model plan.",
@@ -1310,9 +1165,7 @@
             "language": "YAML",
             "key": "sample_from_entity_table",
             "aliases": [],
-            "configuredKeys": [
-                "sample_from_entity_table"
-            ],
+            "configuredKeys": ["sample_from_entity_table"],
             "title": "sample_from_entity_table",
             "syntax": "`sample_from_entity_table: <bool>` (Optional)",
             "description": "Whether to allow sampling of other entities in the entity table besides the seed entity. It is useful to set it to `false` in case entities represent candidates/hypothetical examples and to restrict information flow between different candidates.",
@@ -1336,9 +1189,7 @@
             "language": "YAML",
             "key": "split",
             "aliases": [],
-            "configuredKeys": [
-                "split"
-            ],
+            "configuredKeys": ["split"],
             "title": "split",
             "syntax": "`split: (ApproxDateOffsetSplit | DateOffsetSplit | RandomSplit | TemporalSplit | TimeRangeSplit)` (Optional)",
             "description": "Kumo will generate a training table with entities and labels according to your predictive query to be used in GNN training. A default split method will be used to split the generated training table to 3 disjoint training, validation, and holdout sets for training the predictive query\n\n- When the predictive query is temporal node prediction, the default split method is `ApproxDateOffsetSplit([0.8, 0.1, 0.1])`.\n- When the predictive query is temporal link prediction, the default split method is `DateOffsetSplit([-target_aggregation_end_date, 0])`\n- When the predictive query is static and the entity or the target table has a time column, the default split method is `TemporalSplit([0.8, 0.1, 0.1])`.\n- When the predictive query is static and the entity and target table does not have a time column, the default split method is `RandomSplit([0.8, 0.1, 0.1])`.\n\nYou can specify a custom split method and parameter to generate a training, validation, and test set by setting the `split`value in the Model Planner input field.",
@@ -1350,9 +1201,7 @@
             "language": "YAML",
             "key": "start_time",
             "aliases": [],
-            "configuredKeys": [
-                "start_time"
-            ],
+            "configuredKeys": ["start_time"],
             "title": "start_time",
             "syntax": "`start_time: <integer | str>` (Optional)",
             "description": "Defines the timestamp for the beginning of the training data or numerical offset from the most recent entry to use to generate training data labels. Unless a custom time unit is specified in the aggregation, this value is in `days`. This can be used to make sure the query only generates labels on data from the last `start_time` days. Regardless of this value, all data is used as an input to the model, but this value can help limit what labels are generated.\n\n- `start_time` needs to be \\<= 0 or the string format of a timestamp, i.e. ‘2024-04-01’",
@@ -1364,9 +1213,7 @@
             "language": "YAML",
             "key": "target_embedding_mode",
             "aliases": [],
-            "configuredKeys": [
-                "target_embedding_mode"
-            ],
+            "configuredKeys": ["target_embedding_mode"],
             "title": "target_embedding_mode",
             "syntax": "`target_embedding_mode: list[lookup | feature | fusion]` (Optional)",
             "description": "A list of target embedding modes use in the final link prediction calculation, i.e., dot product, for AutoML to explore. The mode should be either `lookup`, `feature`, or `fusion`.\n\n* The `lookup` mode uses lookup embeddings for target nodes.\n* The `feature` mode generates target node embeddings based purely on target node features.\n* The `fusion` mode fuses the lookup embeddings and feature-based embeddings.",
@@ -1378,9 +1225,7 @@
             "language": "YAML",
             "key": "timeframe_step",
             "aliases": [],
-            "configuredKeys": [
-                "timeframe_step"
-            ],
+            "configuredKeys": ["timeframe_step"],
             "title": "timeframe_step",
             "syntax": "`timeframe_step: <integer>` (Optional)",
             "description": "Defines the step size of generating time intervals for training table generation. This only applies to temporal queries (queries that include a temporal aggregation such as `SUM(TRANSACTIONS.AMOUNT, 0, 2, days)`). The time unit of this step is the same as the time unit in the aggregation.\n\n* `timeframe_step` must be `< full time range - target aggregation`.",
@@ -1392,9 +1237,7 @@
             "language": "YAML",
             "key": "train_end_offset",
             "aliases": [],
-            "configuredKeys": [
-                "train_end_offset"
-            ],
+            "configuredKeys": ["train_end_offset"],
             "title": "train_end_offset",
             "syntax": "`train_end_offset: <integer>` (Optional)",
             "description": "Defines the numerical offset from the most recent entry to not use to generate training data labels. Unless a custom time unit is specified in the aggregation, this value is in `days`. This can be used to make sure the query does not generate labels on data from the last `train_end_offset` days. Regardless of this value, all data is used as an input to the model, but this value can help limit what labels are generated.\n\n* `train_end_offset`must be > `0`.\n* If used at the same time as `train_start_offset`, `train_end_offset` should be strictly smaller.",
@@ -1406,9 +1249,7 @@
             "language": "YAML",
             "key": "train_start_offset",
             "aliases": [],
-            "configuredKeys": [
-                "train_start_offset"
-            ],
+            "configuredKeys": ["train_start_offset"],
             "title": "train_start_offset",
             "syntax": "`train_start_offset: <integer>` (Optional)",
             "description": "Defines the numerical offset from the most recent entry to use to generate training data labels. Unless a custom time unit is specified in the aggregation, this value is in `days`. This can be used to make sure the query only generates labels on data from the last `train_start_offset` days. Regardless of this value, all data is used as an input to the model, but this value can help limit what labels are generated.\n\n* `train_start_offset`must be > ` 0`.",
@@ -1420,9 +1261,7 @@
             "language": "YAML",
             "key": "tune_metric",
             "aliases": [],
-            "configuredKeys": [
-                "tune_metric"
-            ],
+            "configuredKeys": ["tune_metric"],
             "title": "tune_metric",
             "syntax": "`tune_metric: <string>` (Optional)",
             "description": "Specifies a metric that you want AutoML to use for optimizing training experiments.\n\n* The tune metric needs to be present in the list of metrics in the model plan.\n* The tune metric is used for early stopping and model selection.\n* For available metrics, please refer to [Kumo Evaluation Metrics](/evaluation-metrics).\n\n**Valid values:** Any metric accepted by [`metrics`](/reference/metrics) for the task, provided it is included in the model plan's `metrics` list. `loss` is also valid for non-link-prediction tasks and does not need to be listed in `metrics`.",
@@ -1434,9 +1273,7 @@
             "language": "YAML",
             "key": "use_seq_id",
             "aliases": [],
-            "configuredKeys": [
-                "use_seq_id"
-            ],
+            "configuredKeys": ["use_seq_id"],
             "title": "use_seq_id",
             "syntax": "`use_seq_id: <list[bool]>` (Optional)",
             "description": "If set to `true`, Kumo uses positional encodings of the sequence order of facts as an additional model feature.",
@@ -1448,9 +1285,7 @@
             "language": "YAML",
             "key": "weight_decay",
             "aliases": [],
-            "configuredKeys": [
-                "weight_decay"
-            ],
+            "configuredKeys": ["weight_decay"],
             "title": "weight_decay",
             "syntax": "`weight_decay: <list[float]>` (Optional)",
             "description": "A list of potential `weight_decay` values for AutoML to explore.\n\nWeight decay, also known as L2 regularization, is a technique that penalizes large weights in neural networks. It encourages smaller, more stable weight values, which can help the model generalize better and avoid overfitting.\n\nEach value in `weight_decay` must be `>= 0.0`.",
@@ -1462,9 +1297,7 @@
             "language": "YAML",
             "key": "weight_mode",
             "aliases": [],
-            "configuredKeys": [
-                "weight_mode"
-            ],
+            "configuredKeys": ["weight_mode"],
             "title": "weight_mode",
             "syntax": "`weight_mode: (sample | weighted_loss)` (Optional)",
             "description": "`weight_mode` specifies how Kumo applies training weights when either a training-table `WEIGHT` column is present and/or `majority_sampling_ratio` is configured for binary classification.\n\nThe training-table `WEIGHT` column can come from either:\n\n- SDK/custom training-table workflows (see [How do I assign different weights to training samples?](/troubleshooting/can-i-perform-weighted-training))\n- generated weights via [weight_col](/reference/weight_col) in `training_table_generation`\n\n- `sample`: samples training examples with replacement according to the effective weight distribution.\n- `weighted_loss`: weighs training examples in the loss function according to the effective weight distribution.\n\nWhen both a training-table weight column and `majority_sampling_ratio` are set for binary classification:\n\n- In `sample` mode, row and class weights are combined for sampling.\n- In `weighted_loss` mode, row and class weights are combined in loss weighting.",
@@ -1476,9 +1309,7 @@
             "language": "YAML",
             "key": "year_over_year",
             "aliases": [],
-            "configuredKeys": [
-                "year_over_year"
-            ],
+            "configuredKeys": ["year_over_year"],
             "title": "year_over_year",
             "syntax": "`year_over_year: <boolean>` (Optional, default=False)",
             "description": "For forecasting problems, incorporate year-over-year (YoY) features as additional inputs.\\\nWhen enabled, the model includes the target value from the same period in the previous year (e.g., 364 days earlier for daily windows) as an auto-regressive signal to help capture seasonal patterns.",

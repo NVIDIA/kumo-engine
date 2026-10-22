@@ -22,7 +22,13 @@ Editor help in `ui/src/utils/PQLParsing/pqDocs.json` is generated from
 `kumo-ai/docs` `ui-hints/editor-hints.json` by `scripts/build_pq_docs.py`.
 Edit that authored registry for hover text, exact editor keys, aliases, highlight types and explicit documentation links.
 The registry records deliberate missing hints and retains legacy tuples for compatible generation.
-Run the docs generator with `--output <engine-checkout>/ui/src/utils/PQLParsing/pqDocs.json`, then run the CodeEditor tests; do not edit the JSON by hand.
+Run the docs generator with `--output <engine-checkout>/ui/src/utils/PQLParsing/pqDocs.json`, then format the output from the Engine checkout with its locked formatter:
+
+```bash
+(cd ui && npx --yes --package="prettier@$(node -p "require('./package-lock.json').packages['node_modules/prettier'].version")" prettier --write src/utils/PQLParsing/pqDocs.json)
+```
+
+Run the CodeEditor and YAML tokenizer tests; do not edit the JSON by hand.
 The docs synchronization workflow opens reviewed Draft PRs against `NVIDIA/kumo-engine` with source revision provenance, after checking that its default branch supports the registry format.
 The compatible Engine consumer and bundled registry must merge before the docs synchronization format switch or hint-only source deletion.
 The adapter also accepts legacy tuple data; token dictionaries retain syntax metadata without authored hover text.
