@@ -37,6 +37,8 @@ SEARCH_TERMS_PER_CLUSTER = 40
 class Commerce(GraphGen):
     graph = "commerce"
     main = "customers"
+    degree_drop_sub1 = True
+    tail_stretch_max = 4.0
     families = {"customers": ["customers", "_truth_customers"],
                 "merchants": ["merchants", "_truth_merchants"],
                 "activity": ["merchant_views", "purchases", "favorites", "reviews"],
