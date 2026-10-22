@@ -5,6 +5,7 @@
 import hashlib
 import json
 import os
+from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -27,6 +28,13 @@ from kumo.engine import (
     S3Connector,
     SnowflakeConnector,
     Table,
+)
+from kumo.engine._manifest import (
+    SchedulerContext,
+    SnapshotManifest,
+    SourceTableEntry,
+    read_manifest,
+    write_manifest,
 )
 from kumo.engine.connector.identity import (
     DatabricksIdentity,
@@ -85,32 +93,32 @@ def test_snapshot_manifest_records_sources_and_diffs(make_snapshot,
     before = make_snapshot(30)
     manifest = before.manifest
 
-    assert manifest['kind'] == 'graph_snapshot'
-    assert manifest['id'] == before.id
+    assert manifest.kind == 'graph_snapshot'
+    assert manifest.id == before.id
     data = (tmp_path / 'data').resolve()
-    assert {a: e['location']
-            for a, e in manifest['parents']['source_tables'].items()} == {
+    assert {a: e.location
+            for a, e in manifest.parents.source_tables.items()} == {
                 'ents': str(data / 'ents.parquet'),
                 'events': str(data / 'events.parquet'),
             }
-    assert {e['version_kind']
-            for e in manifest['parents']['source_tables'].values()
+    assert {e.version_kind
+            for e in manifest.parents.source_tables.values()
             } == {'timestamp'}
-    assert 'tables' not in manifest and 'edges' not in manifest
+    assert manifest.extra == {}
     assert before.counts['rows'] == {'ents': 5, 'events': 30}
     assert before.counts['edges']['events_ENT_ID_to_ents_ID'] == 30
-    assert manifest['environment']['kumo_engine'] == get_kumo_version()
-    assert manifest['environment']['diskgraph']
-    assert manifest['scheduler'] is None
-    assert datetime.fromisoformat(manifest['created_at']).tzinfo is not None
-    assert str(tmp_path / 'scratch') not in json.dumps(manifest)
+    assert manifest.environment.kumo_engine == get_kumo_version()
+    assert manifest.environment.diskgraph
+    assert manifest.scheduler is None
+    assert datetime.fromisoformat(manifest.created_at).tzinfo is not None
+    assert str(tmp_path / 'scratch') not in json.dumps(manifest.to_dict())
 
     after = make_snapshot(40)
     assert after.counts['rows']['events'] == 40
-    sources = manifest['parents']['source_tables']
-    new_sources = after.manifest['parents']['source_tables']
+    sources = manifest.parents.source_tables
+    new_sources = after.manifest.parents.source_tables
     assert new_sources['ents'] == sources['ents']
-    assert new_sources['events']['version'] != sources['events']['version']
+    assert new_sources['events'].version != sources['events'].version
 
 
 def test_index_without_manifest_is_reused_and_backfilled(
@@ -126,10 +134,9 @@ def test_index_without_manifest_is_reused_and_backfilled(
     reused = make_snapshot()
 
     assert reused == snapshot
-    assert reused.manifest == {
-        **original, 'created_at': None, 'environment': None,
-        'scheduler': None, 'reconstructed': True
-    }
+    assert reused.manifest == replace(original, created_at=None,
+                                      environment=None, scheduler=None,
+                                      reconstructed=True)
 
 
 def test_manifest_write_failure_leaves_snapshot_unchanged(
@@ -164,8 +171,8 @@ def test_scheduler_context(no_scheduler, env, processing, expected):
 
     context = provenance.scheduler_context()
 
-    assert context == (expected and dict(
-        zip(('platform', 'job_id', 'job_run_id'), expected)))
+    assert context == (expected and SchedulerContext(
+        **dict(zip(('platform', 'job_id', 'job_run_id'), expected))))
 
 
 @pytest.mark.parametrize('content', [
@@ -211,8 +218,8 @@ def test_source_location(connector, name, sql, location):
 def test_unrecordable_location_is_null():
     with pytest.warns(UserWarning, match='location'):
         entry = provenance.source_table(None, 'users', None, 7)
-    assert entry == {'connector': None, 'location': None, 'version': '7',
-                     'version_kind': 'unknown'}
+    assert entry == SourceTableEntry(connector=None, location=None,
+                                     version='7', version_kind='unknown')
 
 
 @pytest.mark.parametrize('record_sources', [True, False])
@@ -220,7 +227,8 @@ def test_custom_sql_records_text_unless_sources_are_off(record_sources):
     version = SourceVersion('abc', 'hour_bucket', {'orders': '17'})
     entry = provenance.source_table(
         SnowflakeConnector(warehouse='wh', database='db', schema_name='sch'),
-        'q', 'SELECT * FROM orders', version, record_sources=record_sources)
+        'q', 'SELECT * FROM orders', version,
+        record_sources=record_sources).to_dict()
     expected = {
         'connector': 'SNOWFLAKE',
         'location': 'sql:' + hashlib.sha256(b'SELECT * FROM orders').hexdigest(),
@@ -234,10 +242,10 @@ def test_custom_sql_records_text_unless_sources_are_off(record_sources):
     reformatted = provenance.source_table(
         SnowflakeConnector(warehouse='wh', database='db', schema_name='sch'),
         'q', 'select *\n  from ORDERS -- note', version)
-    assert entry.pop('normalized_sql_fingerprint') == reformatted[
-        'normalized_sql_fingerprint'] == custom_sql_synthetic_name(
+    assert entry.pop('normalized_sql_fingerprint') == (
+        reformatted.normalized_sql_fingerprint) == custom_sql_synthetic_name(
             'SELECT * FROM orders', ConnectorType.SNOWFLAKE)
-    assert reformatted['location'] != entry['location']
+    assert reformatted.location != entry['location']
     assert entry == expected
 
 
@@ -245,15 +253,32 @@ def test_record_sources_false_keeps_table_names_only(make_snapshot,
                                                      tmp_path):
     names = {'ents': 'ents', 'events': 'events.parquet'}
     redacted = make_snapshot(30, record_sources=False)
-    sources = redacted.manifest['parents']['source_tables']
-    assert {alias: e['location'] for alias, e in sources.items()} == names
-    assert str(tmp_path) not in json.dumps(redacted.manifest)
-    assert redacted.manifest['record_sources'] is False
+    sources = redacted.manifest.parents.source_tables
+    assert {alias: e.location for alias, e in sources.items()} == names
+    assert str(tmp_path) not in json.dumps(redacted.manifest.to_dict())
+    assert redacted.manifest.record_sources is False
     assert redacted.record_sources is False
 
     full = make_snapshot(record_sources=True)
     assert full == redacted
     assert full.record_sources is True
-    assert full.manifest['parents']['source_tables']['ents'][
-        'location'] == str((tmp_path / 'data' / 'ents.parquet').resolve())
-    assert full.manifest['created_at'] == redacted.manifest['created_at']
+    assert full.manifest.parents.source_tables['ents'].location == str(
+        (tmp_path / 'data' / 'ents.parquet').resolve())
+    assert full.manifest.created_at == redacted.manifest.created_at
+
+
+def test_snapshot_manifest_round_trips_unchanged(make_snapshot, tmp_path):
+    written = make_snapshot(30).index_path / SNAPSHOT_MANIFEST_FILE
+    newer = json.loads(written.read_text())
+    newer['future'] = {'kept': [1, 2]}
+    newer['environment']['cuda'] = '13.0'
+    newer['parents']['source_tables']['ents']['row_count'] = 5
+    source = tmp_path / 'newer.json'
+    source.write_text(json.dumps(newer, indent=2, sort_keys=True) + '\n')
+
+    manifest = read_manifest(source, SnapshotManifest)
+    write_manifest(tmp_path / 'out.json', manifest)
+
+    assert (tmp_path / 'out.json').read_bytes() == source.read_bytes()
+    assert manifest.extra == {'future': {'kept': [1, 2]}}
+    assert manifest.environment.extra == {'cuda': '13.0'}

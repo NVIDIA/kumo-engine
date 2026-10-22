@@ -62,7 +62,7 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 
 import json
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
@@ -70,7 +70,15 @@ from typing import Any, Dict, Mapping, Sequence
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
 
-from kumo.engine._manifest import new_manifest, read_manifest, write_manifest
+from kumo.engine._manifest import (
+    RECONSTRUCTED,
+    SnapshotManifest,
+    SnapshotParents,
+    SourceTableEntry,
+    read_manifest,
+    stamp,
+    write_manifest,
+)
 from kumo.engine._provenance import source_table
 from kumo.engine._scratch import (
     fingerprint,
@@ -231,9 +239,10 @@ class GraphSnapshot:
     record_sources: bool | None = field(default=None, compare=False)
 
     @property
-    def manifest(self) -> Dict[str, Any] | None:
+    def manifest(self) -> SnapshotManifest | None:
         """The snapshot manifest stored next to the index, if any."""
-        return read_manifest(Path(self.index_path) / SNAPSHOT_MANIFEST_FILE)
+        return read_manifest(Path(self.index_path) / SNAPSHOT_MANIFEST_FILE,
+                             SnapshotManifest)
 
     @property
     def counts(self) -> Dict[str, Dict[str, int]]:
@@ -249,28 +258,25 @@ class GraphSnapshot:
 
 
 def _write_snapshot_manifest(result: Any, snapshot_id: str,
-                             source_tables: Dict[str, Dict[str, Any]],
+                             source_tables: Dict[str, SourceTableEntry],
                              record_sources: bool, *, fresh: bool) -> None:
     path = Path(result.index_path) / SNAPSHOT_MANIFEST_FILE
     try:
         if not fresh and path.exists():
-            existing = read_manifest(path)
-            if existing is None or existing.get('record_sources',
-                                                True) == record_sources:
+            existing = read_manifest(path, SnapshotManifest)
+            if existing is None or (existing.record_sources
+                                    is not False) == record_sources:
                 return
-            manifest = {
-                **existing, 'record_sources': record_sources,
-                'parents': {
-                    **existing['parents'], 'source_tables': source_tables
-                }
-            }
+            manifest = replace(
+                existing, record_sources=record_sources,
+                parents=replace(existing.parents,
+                                source_tables=source_tables))
         else:
-            fields = {} if fresh else dict(created_at=None, environment=None,
-                                           scheduler=None, reconstructed=True)
-            manifest = new_manifest('graph_snapshot', snapshot_id,
-                                    {'source_tables': source_tables},
-                                    record_sources=record_sources,
-                                    **fields)
+            manifest = SnapshotManifest(
+                id=snapshot_id,
+                parents=SnapshotParents(source_tables=source_tables),
+                record_sources=record_sources,
+                **(stamp() if fresh else RECONSTRUCTED))
         write_manifest(path, manifest)
     except Exception as error:
         if fresh or path not in _warned_backfill:
@@ -491,7 +497,7 @@ class Graph:
 
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
-        source_tables: Dict[str, Dict[str, Any]] = {}
+        source_tables: Dict[str, SourceTableEntry] = {}
 
         try:
             for alias, table in self._named_tables.items():
