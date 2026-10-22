@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -83,6 +84,37 @@ def local_path(path: str) -> Path:
     if not isinstance(fs, LocalFileSystem):
         raise ValueError(f"path is not on a local filesystem: {path}")
     return Path(fs_path)
+
+
+def fsync_directory(directory: str | Path) -> None:
+    if not hasattr(os, "O_DIRECTORY"):
+        return
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def atomic_write_bytes(path: str | Path, payload: bytes) -> None:
+    """Replace a local file so readers see the old or the new bytes."""
+    path = Path(path)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent,
+                                         prefix=f".{path.name}.",
+                                         suffix=".tmp",
+                                         delete=False) as out:
+            temporary = Path(out.name)
+            out.write(payload)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        fsync_directory(path.parent)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def listdir(path: str) -> list[str]:

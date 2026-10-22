@@ -62,7 +62,7 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 
 import json
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
@@ -70,6 +70,16 @@ from typing import Any, Dict, Mapping, Sequence
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
 
+from kumo.engine._manifest import (
+    RECONSTRUCTED,
+    SnapshotManifest,
+    SnapshotParents,
+    SourceTableEntry,
+    read_manifest,
+    stamp,
+    write_manifest,
+)
+from kumo.engine._provenance import source_table
 from kumo.engine._scratch import (
     fingerprint,
     get_scratch_dir,
@@ -78,7 +88,10 @@ from kumo.engine._scratch import (
 from kumo.engine._storage import network_storage
 from kumo.engine.table import Table
 
+SNAPSHOT_MANIFEST_FILE = 'snapshot-manifest.json'
+
 _warned_scratch: set[Path] = set()
+_warned_backfill: set[Path] = set()
 
 
 def _warn_if_network_scratch(root: Path) -> None:
@@ -123,6 +136,14 @@ def _warn_low_fk_match_rates(stats: Dict[str, Any],
                 )
 
 
+def _ingest_stats(path: Any) -> Dict[str, Any]:
+    try:
+        stats = json.loads(Path(path).read_text())['stats']
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    return stats if isinstance(stats, dict) else {}
+
+
 def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
     from kumo_core.diskgraph.validation import parse_failure_warning
 
@@ -146,10 +167,8 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
                 warnings.warn(parse_failure_warning(name, column, count),
                               UserWarning, stacklevel=3)
 
-    try:
-        report = json.loads(Path(result.ingest_stats_path).read_text())
-        stats = report['stats']
-    except (AttributeError, OSError, ValueError, KeyError, TypeError):
+    stats = _ingest_stats(getattr(result, 'ingest_stats_path', None))
+    if not stats:
         return
     tables = {table['table_name']: table for table in graph_config['tables']}
     duplicates: Dict[str, int] = {}
@@ -210,11 +229,64 @@ class GraphSnapshot:
             `TrainingWorkflowRequest.from_spec`/`materialize(...)`). Computed
             once here, at snapshot time, rather than being rebuilt on every
             `Trainer.fit`/`predict` call.
+        record_sources: the `record_sources` choice this snapshot was taken
+            with; `None` when unknown (built elsewhere or loaded).
     """
 
     id: str
     index_path: Path
     graph_config: Dict[str, Any]
+    record_sources: bool | None = field(default=None, compare=False)
+
+    @property
+    def manifest(self) -> SnapshotManifest | None:
+        """The snapshot manifest stored next to the index, if any."""
+        return read_manifest(Path(self.index_path) / SNAPSHOT_MANIFEST_FILE,
+                             SnapshotManifest)
+
+    @property
+    def counts(self) -> Dict[str, Dict[str, int]]:
+        """Source rows per table and edges per edge type in this index."""
+        from kumo_core.diskgraph.snapshot import DiskgraphIngestResult
+
+        stats = _ingest_stats(
+            DiskgraphIngestResult.for_index(self.index_path).ingest_stats_path)
+        return {
+            'rows': dict(stats.get('source_rows_by_table', {})),
+            'edges': dict(stats.get('edge_counts', {})),
+        }
+
+
+def _write_snapshot_manifest(result: Any, snapshot_id: str,
+                             source_tables: Dict[str, SourceTableEntry],
+                             record_sources: bool, *, fresh: bool) -> None:
+    path = Path(result.index_path) / SNAPSHOT_MANIFEST_FILE
+    try:
+        if not fresh and path.exists():
+            existing = read_manifest(path, SnapshotManifest)
+            if existing is None or (existing.record_sources
+                                    is not False) == record_sources:
+                return
+            manifest = replace(
+                existing, record_sources=record_sources,
+                parents=replace(existing.parents,
+                                source_tables=source_tables))
+        else:
+            manifest = SnapshotManifest(
+                id=snapshot_id,
+                parents=SnapshotParents(source_tables=source_tables),
+                record_sources=record_sources,
+                **(stamp() if fresh else RECONSTRUCTED))
+        write_manifest(path, manifest)
+    except Exception as error:
+        if fresh or path not in _warned_backfill:
+            if not fresh:
+                _warned_backfill.add(path)
+            warnings.warn(
+                f"Could not write the snapshot manifest at {path}: {error}",
+                UserWarning,
+                stacklevel=4,
+            )
 
 
 @dataclass(frozen=True)
@@ -346,7 +418,7 @@ class Graph:
         """
         self.native_graph
 
-    def snapshot(self) -> GraphSnapshot:
+    def snapshot(self, *, record_sources: bool = True) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
         result through `kumo-core` to build column stats and the on-disk
         index. The index is stored under a directory keyed by both `self.id`
@@ -355,6 +427,11 @@ class Graph:
         and `GraphSnapshot`'s docstring for the resulting `id` shape. If a
         valid build already exists for that exact key, ingest is skipped and
         it's reused as is.
+
+        Args:
+            record_sources: if False, the snapshot manifest records each
+                source as connector and table name only (no bucket, path or
+                account) and Custom SQL as a hash only (no SQL text).
         """
         from filelock import FileLock
 
@@ -384,10 +461,11 @@ class Graph:
         # processes, and a lock-file-existence mutex would leave a stale
         # lock behind after a crash.
         with FileLock(f'{persist_dir}.lock'):
-            return self._snapshot_no_lock(graph_key, persist_dir)
+            return self._snapshot_no_lock(graph_key, persist_dir,
+                                          record_sources)
 
-    def _snapshot_no_lock(self, graph_key: str, persist_dir: Path) \
-            -> GraphSnapshot:
+    def _snapshot_no_lock(self, graph_key: str, persist_dir: Path,
+                          record_sources: bool = True) -> GraphSnapshot:
         r"""`snapshot()`'s body, run under its `FileLock`. Not meant to be
         called on its own -- `persist_dir`, unlike everything else here,
         isn't a pure function of `self` alone (it's `snapshot()`'s lock key,
@@ -419,6 +497,7 @@ class Graph:
 
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
+        source_tables: Dict[str, SourceTableEntry] = {}
 
         try:
             for alias, table in self._named_tables.items():
@@ -452,6 +531,9 @@ class Graph:
                         "limitation in kumoai/backend/local/graph.py's "
                         "_stage_sources, which raises the same way.")
                 table_data_versions[alias] = prepared.version
+                source_tables[alias] = source_table(
+                    connector, name, sql, prepared.version,
+                    record_sources=record_sources)
 
                 paths = prepared.source.get('paths') or []
                 if paths:
@@ -500,11 +582,16 @@ class Graph:
                     ),
                 )
 
+            snapshot_id = f'{graph_key}@{data_version[:16]}'
+            _write_snapshot_manifest(result, snapshot_id, source_tables,
+                                     record_sources, fresh=existing is None)
+
             _warn_ingest_data_loss(result, graph_config)
             return GraphSnapshot(
-                id=f'{graph_key}@{data_version[:16]}',
+                id=snapshot_id,
                 index_path=Path(result.index_path),
                 graph_config=graph_config,
+                record_sources=record_sources,
             )
         finally:
             discard_destination(str(persist_dir))

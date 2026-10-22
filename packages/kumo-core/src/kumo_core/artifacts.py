@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Mapping, Protocol, runtime_checkable
 
-from .io.filesystem import local_path
+from .io.filesystem import atomic_write_bytes, fsync_directory, local_path
 from .io.json import load_json, save_json
 from .manifest import RunManifest, RunPaths
 
@@ -62,36 +62,7 @@ class FilesystemArtifactStore:
             ensure_ascii=False,
             allow_nan=False,
         ) + "\n"
-        temporary_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    encoding="utf-8",
-                    dir=paths.manifest_path.parent,
-                    prefix=f".{paths.manifest_path.name}.",
-                    suffix=".tmp",
-                    delete=False,
-            ) as temporary:
-                temporary_path = Path(temporary.name)
-                temporary.write(payload)
-                temporary.flush()
-                os.fsync(temporary.fileno())
-            os.replace(temporary_path, paths.manifest_path)
-            temporary_path = None
-            self._fsync_directory(paths.manifest_path.parent)
-        finally:
-            if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
-
-    @staticmethod
-    def _fsync_directory(directory: Path) -> None:
-        if not hasattr(os, "O_DIRECTORY"):
-            return
-        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        atomic_write_bytes(paths.manifest_path, payload.encode("utf-8"))
 
 
 @dataclass(frozen=True)
@@ -258,7 +229,7 @@ class VitalArtifactPublicationPolicy:
                 encoding="utf-8",
             )
             os.replace(staging, destination)
-            FilesystemArtifactStore._fsync_directory(destination.parent)
+            fsync_directory(destination.parent)
             return publication
         finally:
             if staging.exists():
