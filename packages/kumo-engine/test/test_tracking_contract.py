@@ -1,12 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Every tracking adapter records the same run records as a recorded fit."""
+"""Every tracking adapter records the same run records as a recorded fit
+and a recorded prediction run."""
 
 import json
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
@@ -14,11 +15,18 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 import pytest
 
 from kumo.engine import Event
+from kumo.engine._manifest import (
+    ArtifactStats,
+    PredictionManifest,
+    PredictionParents,
+)
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
     FitContext,
     TrackingSession,
+    log_prediction_run,
+    prediction_record,
     run_record,
 )
 from kumo.engine.tracking import RunRecord
@@ -78,6 +86,56 @@ EVENTS = [
 ]
 RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
                          bundle_dir=Path('no-bundle'))
+
+PREDICTION_RUN = 'trainer-predict-1'
+PREDICTION_MANIFEST = PredictionManifest.from_dict({
+    'kind': 'prediction_run',
+    'schema_version': 1,
+    'id': PREDICTION_RUN,
+    'parents': {'bundle': '2e020d21', 'snapshot': 'snap@1',
+                'prediction_table': 'pt-1'},
+    'created_at': '2026-10-21T00:00:00+00:00',
+    'environment': {'kumo_engine': '1.0.0', 'build_commit': '0e5d8523',
+                    'kumo_core': None, 'diskgraph': None,
+                    'diskgraph_build_commit': None, 'torch': None,
+                    'python': '3.14.0'},
+    'scheduler': {
+        'platform': 'airflow',
+        'job_id': 'daily_scores',
+        'job_run_id': 'scheduled__2026-10-21',
+    },
+    'source_tables': None,
+    'prediction_table': {
+        'query_sha256': '69dab700',
+        'source': 'pql',
+        'anchors': ['2024-04-29T00:00:00+00:00'],
+        'rows': 50,
+    },
+    'scoring': {
+        'binary_classification_threshold': 0.4,
+        'threshold_source': 'argument',
+        'num_classes_to_return': None,
+        'count_source': 'none',
+        'num_workers': None,
+        'lineage_columns': False,
+    },
+    'outputs': [],
+    'status': 'succeeded',
+    'timings': {'started_at': '2026-10-21T00:00:00+00:00',
+                'finished_at': '2026-10-21T00:01:00+00:00'},
+    'stats': {
+        'predictions': {
+            'rows': 50,
+            'columns': {
+                'True_PROB': {
+                    'count': 50,
+                    'percentiles': [q / 100 for q in range(1, 100)],
+                }
+            },
+            'predicted_positive_rate': 0.62,
+        },
+    },
+})
 
 
 class _Recorder:
@@ -250,7 +308,7 @@ def snowflake_adapter(monkeypatch):
 
     def observe():
         observed = {}
-        for run in fake._instance.runs.values():
+        for run_name, run in fake._instance.runs.items():
             names: Dict[Optional[str], Dict[str, Dict[str, Any]]] = {}
 
             def bucket(key):
@@ -273,7 +331,7 @@ def snowflake_adapter(monkeypatch):
                                        (step, value))
             for prefix, runs in names.items():
                 observed[runs['tags']['kumo.run_id']] = Observed(
-                    name=prefix,
+                    name=prefix or run_name,
                     artifacts=run['artifacts'] if prefix is None else {},
                     **runs)
         return observed
@@ -395,3 +453,74 @@ def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch, caplog):
 
     assert elapsed < 1.5
     assert 'did not finish within' in caplog.text
+
+
+def test_prediction_record_of_the_recorded_run():
+    record = prediction_record(PREDICTION_MANIFEST)
+
+    assert record.name == PREDICTION_RUN
+    assert record.params == {
+        'anchors': '["2024-04-29T00:00:00+00:00"]',
+        'binary_classification_threshold': '0.4',
+        'threshold_source': 'argument',
+        'count_source': 'none',
+        'lineage_columns': 'false',
+    }
+    assert record.metrics == {
+        'prediction_table.rows': 50.0,
+        'predictions.rows': 50.0,
+        'predictions.True_PROB.count': 50.0,
+        **{
+            f'predictions.True_PROB.q{q:02d}': q / 100
+            for q in (1, 5, 25, 50, 75, 95, 99)
+        },
+        'predictions.predicted_positive_rate': 0.62,
+    }
+    assert record.tags == {
+        'kumo.kind': 'prediction',
+        'kumo.run_id': PREDICTION_RUN,
+        'kumo.bundle_id': '2e020d21',
+        'kumo.scheduler': 'airflow',
+        'kumo.job_id': 'daily_scores',
+        'kumo.job_run_id': 'scheduled__2026-10-21',
+    }
+    assert json.loads(record.artifacts['prediction-manifest.json']) == (
+        PREDICTION_MANIFEST.to_dict())
+
+
+def test_prediction_record_of_a_partial_manifest():
+    record = prediction_record(
+        replace(PREDICTION_MANIFEST, scheduler=None,
+                parents=PredictionParents(bundle=None, snapshot=None,
+                                          prediction_table=None),
+                scoring=replace(PREDICTION_MANIFEST.scoring,
+                                num_classes_to_return=3),
+                stats={'predictions': ArtifactStats(rows=150, columns={
+                    'top_score': {'count': 150, 'percentiles': []}}),
+                       'embeddings': ArtifactStats(rows=150)}))
+
+    assert record.params['num_classes_to_return'] == '3'
+    assert record.metrics == {'prediction_table.rows': 50.0,
+                              'predictions.rows': 150.0,
+                              'predictions.top_score.count': 150.0,
+                              'embeddings.rows': 150.0}
+    assert record.tags == {'kumo.kind': 'prediction',
+                           'kumo.run_id': PREDICTION_RUN}
+
+
+def test_adapter_records_the_same_prediction_run(adapter):
+    tracker = adapter.make()
+    log_prediction_run(SimpleNamespace(manifest=PREDICTION_MANIFEST), tracker)
+
+    expected = {PREDICTION_RUN: prediction_record(PREDICTION_MANIFEST)}
+    assert gaps(expected, adapter.observe(), adapter) == []
+
+
+def test_prediction_run_without_a_manifest_or_hook_is_skipped(caplog):
+    recorder = _Recorder()
+    log_prediction_run(SimpleNamespace(manifest=None), recorder)
+    log_prediction_run(SimpleNamespace(manifest=PREDICTION_MANIFEST),
+                       recorder)
+
+    assert recorder.calls == []
+    assert 'not tracked' in caplog.text

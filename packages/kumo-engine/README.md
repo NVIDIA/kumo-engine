@@ -441,6 +441,26 @@ under a scheduler `kumo.scheduler`, `kumo.job_id` and `kumo.job_run_id`. In the
 other direction, a tracked fit's bundle records `"tracking": {"run_id": ...}`
 in `provenance.json`, the `kumo.run_id` every tracker tags its fit run with.
 
+`predict(tracking=...)` (and `predict_snapshot(tracking=...)`) take the same
+tracker and record each prediction run as one more run named by its kumo run
+id: scoring options as params; row counts and score statistics (for example
+`predictions.True_PROB.q50`) as metrics; the pointers `kumo.kind`
+(`prediction`), `kumo.run_id`, `kumo.bundle_id` (which joins it to the fit run)
+and the scheduler's `kumo.scheduler`, `kumo.job_id` and `kumo.job_run_id`; and
+`prediction-manifest.json` as an artifact, which holds the run's lineage.
+If an export raises, the run is still recorded, ended as failed with a
+`kumo.error` tag, and `predict` raises the export's error.
+Custom trackers opt in with a `log_prediction_run(record)` hook (a record with
+a `kumo.error` tag is a failed run). The call runs
+on the tracking thread with the fit's time limit, and tracking errors never fail
+the prediction.
+
+```python
+scores = trainer.predict(prediction_table, snapshot=snapshot,
+                         binary_classification_threshold=0.5,
+                         tracking=MlflowTracking(experiment_name="users-churn"))
+```
+
 MLflow models: `log_model(trainer, snapshot=...)` logs a bundle as a pyfunc
 model, with the bundle's source tables as inputs of the run it is logged in,
 that scores where `kumo-engine[s3,gcs]` of the same version is installed (its

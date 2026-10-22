@@ -34,6 +34,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         defaults = trainer.scoring_defaults.binary_classification_threshold
         result = trainer.predict_snapshot(
             snapshot, output_config=output,
+            tracking=jobs.tracking(connector),
             binary_classification_threshold=None
             if defaults is not None else 0.5)
         run.record(run_id=result.selection.job_id,

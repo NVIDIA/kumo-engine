@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""MLflow tracking and models for `Trainer.fit`
+r"""MLflow tracking and models for `Trainer.fit` and `Trainer.predict`
 (``pip install 'kumo-engine[mlflow]'``)."""
 
 import hashlib
@@ -32,7 +32,12 @@ from kumoapi.plugin import PublishedModel, check_model_alias
 
 from kumo.engine._events import Event
 from kumo.engine._manifest import BundleProvenance
-from kumo.engine._tracking import DROPPED_PARAMS, INPUT_FIELDS, RunRecord
+from kumo.engine._tracking import (
+    DROPPED_PARAMS,
+    INPUT_FIELDS,
+    RunRecord,
+    record_failure,
+)
 from kumo.engine._version import __version__
 from kumo.engine.connector._extras import import_provider
 
@@ -65,6 +70,9 @@ class MlflowTracking:
     Catalog then links them to a model registered from the run), file and
     object-store sources by URI. Params MLflow rejects are counted in
     ``kumo.dropped_params``. Concurrent fits in one process are not supported.
+    ``predict(tracking=...)`` records each prediction run as one run named by
+    its kumo run id, placed like a fit run; ``run_name`` and ``tags`` apply to
+    fit runs only.
 
     Args:
         experiment_name: experiment for the fit run, created if missing.
@@ -80,7 +88,8 @@ class MlflowTracking:
         serving_snapshot: exported snapshot URI the served model loads at
             startup (see `log_model`).
 
-    ``run_id`` is the MLflow id of the latest fit run, once it has started.
+    ``run_id`` is the MLflow id of the most recent tracked run (fit or
+    predict), once it has started.
     After a fit, ``registered`` is the registered model version, else None.
 
     Raises:
@@ -155,7 +164,7 @@ class MlflowTracking:
                                  self.experiment_name))
         run = mlflow.start_run(
             experiment_id=experiment_id,
-            run_name=self.run_name,
+            run_name=record.name or self.run_name,
             parent_run_id=self._outer,
             tags=record.tags,
             log_system_metrics=self.log_system_metrics,
@@ -165,6 +174,10 @@ class MlflowTracking:
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
         _log_inputs(mlflow, self._client, self._parent, record.inputs)
+
+    def log_prediction_run(self, record: RunRecord) -> None:
+        self.start(record)
+        self.finish(record, record_failure(record))
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         key = (event.trial or 0, int(event.params['attempt']))

@@ -284,10 +284,16 @@ def test_manifest_failures_warn_and_keep_outputs(graph, classifier, tmp_path,
             bare_exported)
 
 
-def test_failed_export_still_writes_manifest(graph, classifier, tmp_path,
-                                             monkeypatch):
+def test_failed_export_still_writes_manifest_and_tracked_run(
+        graph, classifier, tmp_path, monkeypatch):
+    mlflow = pytest.importorskip('mlflow')
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
     _, snapshot = graph
     trainer, table = classifier
+    monkeypatch.chdir(tmp_path)
+    previous = mlflow.get_tracking_uri()
+    mlflow.set_tracking_uri(f'sqlite:///{tmp_path / "mlflow.db"}')
     connector = kumo.FileConnector(root_dir=str(tmp_path))
     sink = type(connector.sink_backend)
     write_files = sink.write_files
@@ -301,9 +307,15 @@ def test_failed_export_still_writes_manifest(graph, classifier, tmp_path,
     output = PredictionOutputConfig(
         connector=connector,
         output_paths={'predictions': 'preds/', 'embeddings': 'embs/'})
-    with pytest.raises(OSError, match='disk full'):
-        trainer.predict(table, snapshot=snapshot, output_config=output,
-                        binary_classification_threshold=0.5)
+    try:
+        with pytest.raises(OSError, match='disk full'):
+            trainer.predict(table, snapshot=snapshot, output_config=output,
+                            binary_classification_threshold=0.5,
+                            tracking=MlflowTracking(experiment_name='scores'))
+        run, = mlflow.MlflowClient().search_runs(
+            [mlflow.get_experiment_by_name('scores').experiment_id])
+    finally:
+        mlflow.set_tracking_uri(previous)
 
     manifest, = [
         json.loads(path.read_text()) for path in trainer.scratch_dir.glob(
@@ -316,3 +328,40 @@ def test_failed_export_still_writes_manifest(graph, classifier, tmp_path,
                         'location': str(tmp_path / 'preds')},
     }]
     assert manifest['timings']['finished_at'] is not None
+    assert run.info.status == 'FAILED'
+    assert run.data.tags['kumo.error'] == 'OSError: disk full'
+    assert run.data.tags['kumo.run_id'] == manifest['id']
+
+
+def test_predict_tracking_logs_the_run_and_never_changes_it(
+        graph, classifier, caplog):
+    from kumo.engine._tracking import prediction_record
+
+    _, snapshot = graph
+    trainer, table = classifier
+
+    class Recorder:
+        def __init__(self):
+            self.records = []
+
+        def log_prediction_run(self, record):
+            self.records.append(record)
+
+    class Raising:
+        def log_prediction_run(self, record):
+            raise RuntimeError('tracker down')
+
+    recorder = Recorder()
+    untracked = trainer.predict(table, snapshot=snapshot,
+                                binary_classification_threshold=0.4)
+    tracked = trainer.predict(table, snapshot=snapshot,
+                              binary_classification_threshold=0.4,
+                              tracking=recorder)
+    failed = trainer.predict(table, snapshot=snapshot,
+                             binary_classification_threshold=0.4,
+                             tracking=Raising())
+
+    for result in (tracked, failed):
+        pd.testing.assert_frame_equal(result.frame, untracked.frame)
+    assert recorder.records == [prediction_record(tracked.manifest)]
+    assert caplog.text.count('off for the rest of this run') == 1

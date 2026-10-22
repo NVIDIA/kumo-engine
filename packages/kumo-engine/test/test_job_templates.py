@@ -86,7 +86,14 @@ def _summary(capsys):
     return json.loads(lines[-1])
 
 
-def test_fit_then_score_locally(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('registry', [None, 'mlflow'])
+def test_fit_then_score_locally(registry, tmp_path, monkeypatch, capsys):
+    if registry:
+        mlflow = pytest.importorskip(registry)
+        monkeypatch.setenv('MLFLOW_TRACKING_URI',
+                           f'sqlite:///{tmp_path}/mlflow.db')
+        monkeypatch.setenv('KUMO_REGISTRY', registry)
+        monkeypatch.setenv('KUMO_MODEL_NAME', 'churn')
     _data(tmp_path / 'data')
     plan = ModelPlan()
     plan.training_job.num_experiments = 1
@@ -102,7 +109,7 @@ def test_fit_then_score_locally(tmp_path, monkeypatch, capsys):
                         ('KUMO_QUERY', 'PREDICT COUNT(orders.*, 0, 7, days) > 0 '
                          'FOR EACH users.USER_ID')):
         monkeypatch.setenv(name, value)
-    for name in ('KUMO_REGISTRY', 'KUMO_PREDICTIONS_TABLE', 'KUMO_SNAPSHOT',
+    for name in ('KUMO_PREDICTIONS_TABLE', 'KUMO_SNAPSHOT',
                  'KUMO_MODEL_PATH',
                  'KUMO_SCHEDULER', 'KUMO_JOB_ID', 'KUMO_JOB_RUN_ID'):
         monkeypatch.delenv(name, raising=False)
@@ -114,7 +121,7 @@ def test_fit_then_score_locally(tmp_path, monkeypatch, capsys):
     assert fit['status'] == 'succeeded', fit
     assert fit['scheduler']['job_run_id'] == 'run-1'
     assert fit['outputs']['model']['uri']
-    assert fit['outputs']['model']['version'] is None
+    assert (fit['outputs']['model']['version'] is None) == (registry is None)
 
     monkeypatch.setenv('KUMO_MODEL_PATH', 'runs/run-1/model')
     _module('score_job').main(['--job-id', 'local', '--job-run-id', 'run-2'])
@@ -127,6 +134,15 @@ def test_fit_then_score_locally(tmp_path, monkeypatch, capsys):
     predictions = pd.read_parquet(score['outputs']['predictions'])
     assert len(predictions) == 50
     assert 'ANCHOR_TIMESTAMP' in predictions
+    for column, value in (('KUMO_RUN_ID', score['run_id']),
+                          ('KUMO_BUNDLE_ID', score['bundle_id']),
+                          ('KUMO_SNAPSHOT_ID', score['snapshot_id'])):
+        assert set(predictions[column]) == {value}
+    if registry:
+        runs = mlflow.search_runs(
+            search_all_experiments=True,
+            filter_string="tags.`kumo.kind` = 'prediction'")
+        assert list(runs['tags.kumo.run_id']) == [score['run_id']]
 
 
 def test_sagemaker_pipeline_needs_an_instance_type(capsys):
@@ -149,3 +165,46 @@ def test_scripts_import_without_dunder_file(name, monkeypatch):
     namespace = {'__name__': 'spark_python_task'}
     exec(compile(path.read_text(), str(path), 'exec'), namespace)
     assert callable(namespace['main'])
+
+
+def test_snowflake_registry_scores_with_a_snowflake_tracking(monkeypatch):
+    from types import SimpleNamespace
+
+    from _snowflake_experiment_fake import FakeSession, install
+
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+
+    install(monkeypatch)
+    monkeypatch.setenv('KUMO_REGISTRY', 'snowflake')
+    monkeypatch.setenv('KUMO_MODEL_NAME', 'churn')
+    monkeypatch.delenv('KUMO_SNAPSHOT', raising=False)
+    monkeypatch.syspath_prepend(str(_examples()))
+    monkeypatch.delitem(sys.modules, 'jobs', raising=False)
+    score_job = _module('score_job')
+    jobs = sys.modules['jobs']
+
+    session = FakeSession()
+    connector = object.__new__(jobs.SnowflakeConnector)
+    monkeypatch.setattr(jobs.SnowflakeConnector, 'session',
+                        lambda self: session, raising=False)
+    seen = {}
+
+    def predict_snapshot(snapshot, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(selection=SimpleNamespace(job_id='run-2'))
+
+    trainer = SimpleNamespace(
+        bundle_id='b', predict_snapshot=predict_snapshot,
+        scoring_defaults=SimpleNamespace(
+            binary_classification_threshold=None))
+    graph = SimpleNamespace(snapshot=lambda: SimpleNamespace(id='s'))
+    monkeypatch.setattr(jobs, 'source', lambda: connector)
+    monkeypatch.setattr(jobs, 'load_champion', lambda c: trainer)
+    monkeypatch.setattr(jobs, 'build_graph', lambda c: graph)
+    monkeypatch.setattr(jobs, 'prediction_output', lambda c: 'output')
+    monkeypatch.setattr(jobs, 'prediction_destinations', lambda o: {})
+
+    score_job.main(['--job-id', 'local', '--job-run-id', 'run-2'])
+
+    assert isinstance(seen['tracking'], SnowflakeTracking)
+    assert seen['output_config'] == 'output'

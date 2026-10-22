@@ -54,8 +54,3 @@ to a shorter window and `KUMO_NUM_EXPERIMENTS=1`.
   and training-table manifests and the bundle's `provenance.json`, and as
   `kumo.scheduler`/`kumo.job_id`/`kumo.job_run_id` on a tracked fit run.
   Without them the engine detects SageMaker and Snowflake ML Jobs itself.
-
-## Limitations
-
-`score_job.py` does not yet tag output rows with lineage columns or record a
-tracked prediction run; both arrive with the prediction-run PRs.

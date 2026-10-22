@@ -7,6 +7,8 @@ import os
 import socket
 import threading
 import time
+from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -308,3 +310,29 @@ def test_fit_inputs_come_from_the_manifests(tmp_path):
     with pytest.warns(UserWarning, match='unreadable manifest'):
         assert fit_inputs(snapshot, table) == {
             'training_table': {**entry, 'version': None}}
+
+
+def test_prediction_run_nests_under_the_active_run(tracking_uri):
+    from test_tracking_contract import PREDICTION_MANIFEST
+
+    from kumo.engine._tracking import log_prediction_run
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    client = mlflow.MlflowClient()
+    tracking = MlflowTracking(experiment_name='scores')
+    with mlflow.start_run() as outer:
+        log_prediction_run(SimpleNamespace(manifest=PREDICTION_MANIFEST),
+                           tracking)
+        assert mlflow.active_run().info.run_id == outer.info.run_id
+    log_prediction_run(
+        SimpleNamespace(manifest=replace(PREDICTION_MANIFEST,
+                                         id='trainer-predict-2')), tracking)
+
+    nested, top = sorted(
+        (run for run in _runs(client) if 'kumo.kind' in run.data.tags),
+        key=lambda run: 'mlflow.parentRunId' not in run.data.tags)
+    assert nested.data.tags['mlflow.parentRunId'] == outer.info.run_id
+    assert 'mlflow.parentRunId' not in top.data.tags
+    assert client.get_experiment(top.info.experiment_id).name == 'scores'
+    assert (top.info.run_name, top.info.status) == ('trainer-predict-2',
+                                                    'FINISHED')
