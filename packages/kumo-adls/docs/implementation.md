@@ -88,6 +88,9 @@ Streaming writes are not transactional: Arrow closes its wrapper without
 forwarding serialization exceptions to the fsspec context manager, so failed
 serialization can leave partial output. Direct fsspec contexts can discard
 on caller errors; upload failures also trigger best-effort cleanup.
+Streaming cleanup deletes only an object matching the original creation ETag.
+It leaves changed or uncertain objects in place. Appends are not fenced, so
+this cleanup guard does not provide isolation between concurrent writers.
 
 Downloaded files remain owner-private, matching the S3 staging path. Local
 engine ingestion uses the same OS user; sharing scratch files across users

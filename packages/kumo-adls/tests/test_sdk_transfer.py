@@ -359,6 +359,39 @@ def test_sdk_huge_serial_download_fails_without_scheduling_chunk_futures(
     assert not list(tmp_path.glob('.kumo-adls-*'))
 
 
+def test_sdk_streaming_cleanup_uses_creation_etag_not_unfenced_append_etag(
+        mocked_http):
+    path = re.compile(
+        r'https://companylake\.dfs\.core\.windows\.net/curated/streamed(?:\?|$)'
+    )
+    deleted = []
+
+    def reject_delete(request, context):
+        deleted.append(request.headers['If-Match'])
+        context.status_code = 412
+        return b''
+
+    mocked_http.register_uri('PUT', path, headers=HEADERS, status_code=201)
+    mocked_http.register_uri('PATCH', path, headers={
+        **HEADERS, 'ETag': '"replacement"'
+    }, status_code=202)
+    mocked_http.register_uri('DELETE', path, headers=HEADERS,
+                             content=reject_delete)
+    service = client(mocked_http)
+    try:
+        filesystem = ADLSFileSystem(service, 'companylake',
+                                    'dfs.core.windows.net')
+        with pytest.raises(RuntimeError, match='caller failed'):
+            with filesystem.open(AUTHORITY + '/streamed', 'wb',
+                                 block_size=4) as stream:
+                stream.write(b'abcd')
+                raise RuntimeError('caller failed')
+        assert stream.closed
+        assert deleted == ['"stable"']
+    finally:
+        service.close()
+
+
 def test_sdk_seekable_upload_overlaps_chunks_and_flushes_after_all_appends(
         mocked_http, tmp_path):
     source = tmp_path / 'upload'
