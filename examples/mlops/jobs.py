@@ -133,23 +133,33 @@ def build_graph(connector: Connector) -> Graph:
         ])
 
 
-def model_destination(
-        connector: Connector) -> Tuple[Any, Optional[ModelOutputConfig]]:
-    """The ``tracking`` and ``export_config`` that publish a fit."""
+def tracking(connector: Connector) -> Any:
     registry = os.environ.get('KUMO_REGISTRY')
     if registry == 'mlflow':
         from kumo.engine.integrations.mlflow import MlflowTracking
 
         return MlflowTracking(registered_model_name=_env('KUMO_MODEL_NAME'),
-                              aliases=[CHAMPION]), None
+                              aliases=[CHAMPION])
     if registry == 'snowflake':
         from kumo.engine.integrations.snowflake import SnowflakeTracking
 
         assert isinstance(connector, SnowflakeConnector)
-        name = _env('KUMO_MODEL_NAME')
-        return (SnowflakeTracking(connector.session(), experiment_name=name),
-                ModelOutputConfig(connector, location=ModelRegistryLocation(
-                    name, alias=CHAMPION)))
+        return SnowflakeTracking(connector.session(),
+                                 experiment_name=_env('KUMO_MODEL_NAME'))
+    return None
+
+
+def model_destination(
+        connector: Connector) -> Tuple[Any, Optional[ModelOutputConfig]]:
+    """The ``tracking`` and ``export_config`` that publish a fit."""
+    registry = os.environ.get('KUMO_REGISTRY')
+    if registry == 'snowflake':
+        location = ModelRegistryLocation(_env('KUMO_MODEL_NAME'),
+                                         alias=CHAMPION)
+        return tracking(connector), ModelOutputConfig(connector,
+                                                      location=location)
+    if registry == 'mlflow':
+        return tracking(connector), None
     return None, ModelOutputConfig(run_artifacts(), path='model')
 
 
@@ -173,10 +183,10 @@ def prediction_output(connector: Connector) -> PredictionOutputConfig:
     if table:
         return PredictionOutputConfig(
             connector, artifact_type=PredictionArtifactType.PREDICTIONS,
-            table_name=table, extra_fields=fields)
+            table_name=table, extra_fields=fields, lineage_columns=True)
     return PredictionOutputConfig(run_artifacts(),
                                   output_paths={'predictions': 'predictions/'},
-                                  extra_fields=fields)
+                                  extra_fields=fields, lineage_columns=True)
 
 
 def prediction_destinations(output: PredictionOutputConfig) -> dict:
