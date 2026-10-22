@@ -168,8 +168,9 @@ def test_scripts_import_without_dunder_file(name, monkeypatch):
 
 
 def test_snowflake_registry_scores_with_a_snowflake_tracking(monkeypatch):
-    from _snowflake_experiment_fake import FakeSession, install
     from types import SimpleNamespace
+
+    from _snowflake_experiment_fake import FakeSession, install
 
     from kumo.engine.integrations.snowflake import SnowflakeTracking
 
