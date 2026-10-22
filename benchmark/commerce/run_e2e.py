@@ -22,7 +22,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import threading
 import time
 import traceback
 from pathlib import Path
@@ -167,7 +166,7 @@ def monitor_main(pid, out, scratch, interval, heavy_interval):
 
 
 def summarize_monitor(path, mem_total):
-    rows = [json.loads(l) for l in open(path)] if path.exists() else []
+    rows = [json.loads(line) for line in open(path)] if path.exists() else []
     if not rows:
         return {}
 
@@ -372,7 +371,7 @@ class SubgraphStats:
                 rows[f"edges/{name}"] = np.bincount(h[et[2]].batch[ei[1]].cpu().numpy(), minlength=S)
         if per_seed and S:
             rows["nodes/_all"] = sum((v for k, v in rows.items() if k.startswith("nodes/") and k.count("/") == 1),
-                                      np.zeros(S, np.int64))
+                                     np.zeros(S, np.int64))
             rows["edges/_all"] = sum((v for k, v in rows.items() if k.startswith("edges/")), np.zeros(S, np.int64))
             for k, v in rows.items():
                 ph["cols"].setdefault(k, []).append((len(ph["seeds"]), v))
@@ -627,7 +626,7 @@ def main():
     man = read_manifest(args.data)
     if man:
         results["data_manifest"] = {k: man.get(k) for k in ("generator_version", "git_sha", "graph", "rung",
-                                                             "target_rows", "shards", "seed", "profile")}
+                                                            "target_rows", "shards", "seed", "profile")}
     try:
         import torch
         results["env"]["gpu"] = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
