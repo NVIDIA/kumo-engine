@@ -24,7 +24,7 @@ _ADLS_PATH_SAFE = "/-._~!$&'()*+,;=:@"
 def normalize_adls_storage_account(value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError('Required provider field must not be blank')
-    if not isinstance(value, str) or _ADLS_ACCOUNT_RE.fullmatch(value) is None:
+    if _ADLS_ACCOUNT_RE.fullmatch(value) is None:
         raise ValueError('Invalid canonical Azure Data Lake storage account')
     return value
 
@@ -32,8 +32,7 @@ def normalize_adls_storage_account(value: str) -> str:
 def normalize_adls_filesystem(value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError('Required provider field must not be blank')
-    if (not isinstance(value, str)
-            or _ADLS_FILESYSTEM_RE.fullmatch(value) is None or '--' in value):
+    if _ADLS_FILESYSTEM_RE.fullmatch(value) is None or '--' in value:
         raise ValueError('Invalid canonical Azure Data Lake filesystem')
     return value
 

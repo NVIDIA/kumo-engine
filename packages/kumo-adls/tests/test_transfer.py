@@ -329,6 +329,49 @@ def test_upload_reserves_and_releases_memory_on_failure(service, tmp_path,
     assert 'curated/failed' not in service.files
 
 
+@pytest.mark.parametrize('upload_fails', [False, True])
+def test_put_file_conditions_bind_upload_and_cleanup_to_creation(
+        tmp_path, upload_fails):
+    from azure.core import MatchConditions
+    from azure.core.exceptions import ResourceModifiedError
+    from azure.storage.filedatalake import DataLakeFileClient
+    from kumo_core.sources.errors import TransientSourceError
+
+    source = tmp_path / 'source'
+    source.write_bytes(b'prepared bytes')
+    client = Mock(spec=DataLakeFileClient)
+    client.create_file.return_value = {'etag': '"created"'}
+    service = Mock()
+    service.get_file_system_client.return_value.get_file_client.return_value = client
+
+    def upload(stream, **kwargs):
+        assert not stream.closed
+        assert stream.read() == b'prepared bytes'
+        assert kwargs == {
+            'length': source.stat().st_size,
+            'overwrite': False,
+            'etag': '"created"',
+            'match_condition': MatchConditions.IfNotModified,
+            'chunk_size': transfer.CHUNK_BYTES,
+            'max_concurrency': 1,
+        }
+        if upload_fails:
+            raise ResourceModifiedError('object replaced')
+
+    client.upload_data.side_effect = upload
+    filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
+    if upload_fails:
+        with pytest.raises(TransientSourceError):
+            filesystem.put_file(str(source), AUTHORITY + '/prepared')
+        client.delete_file.assert_called_once_with(
+            etag='"created"', match_condition=MatchConditions.IfNotModified)
+    else:
+        filesystem.put_file(str(source), AUTHORITY + '/prepared')
+        client.delete_file.assert_not_called()
+    client.create_file.assert_called_once_with()
+    client.upload_data.assert_called_once()
+
+
 def test_version_checks_overlap_and_remain_independent_of_listing_order():
     from kumo_adls.backend import ADLSSourceReader
 
