@@ -327,8 +327,9 @@ class Trainer:
             callbacks: called with each progress `Event`; a callback that
                 raises is logged and not called again.
             tracking: a `kumo.engine.tracking.Tracking`, e.g.
-                `kumo.engine.integrations.mlflow.MlflowTracking`; tracking
-                errors are logged, never raised.
+                `kumo.engine.integrations.mlflow.MlflowTracking` or
+                `kumo.engine.integrations.snowflake.SnowflakeTracking`;
+                tracking errors are logged, never raised.
         """
         if export_config is not None and not callable(
                 getattr(export_config.connector.sink_backend, 'publish_model',
