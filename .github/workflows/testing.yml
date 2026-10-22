@@ -543,7 +543,7 @@ jobs:
         run: |
           status=0
           for package in kumo-pql kumo-core kumo-snowflake kumo-bigquery \
-                         kumo-databricks kumo-s3 kumo-gcs; do
+                         kumo-databricks kumo-s3 kumo-gcs kumo-adls; do
             echo "::group::pytest packages/$package"
             if [ "$package" = kumo-core ]; then
               (cd "packages/$package" && python -m pytest -rs --cov=kumo_core --cov-report=term-missing --cov-report=xml) || status=1
@@ -574,6 +574,9 @@ jobs:
       # namespace package the root app owns. Exercise the wheel in isolation
       # before/after install so a stale or partial install can't leave
       # `kumo.engine` resolvable when it shouldn't be.
+      - name: Install ADLS provider for engine integration tests
+        run: uv pip install --no-deps -e packages/kumo-adls
+
       - name: Build and test the isolated kumo-engine wheel
         run: |
           python -c "import importlib.util; assert importlib.util.find_spec('kumo.engine') is None"

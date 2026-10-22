@@ -42,12 +42,13 @@ PACKAGES=(
   "packages/kumo-bigquery:src:kumo_bigquery::kumoapi|google"
   "packages/kumo-databricks:src:kumo_databricks::databricks|kumoapi|pydantic"
   "packages/kumo-gcs:src:kumo_gcs::kumoapi|google"
+  "packages/kumo-adls:src:kumo_adls::"
   "packages/kumo-s3:src:kumo_s3::botocore|kumoapi|pydantic"
 )
 
 # Module names deptry can't infer correctly from the distribution name.
 # pkg=a|b means the distribution provides multiple top-level modules.
-MODULE_MAP="kumo-api=kumoapi,kumo-pql=kumopql,pytorch-frame=torch_frame,faiss-cpu=faiss,faiss-gpu=faiss,pytorch-lightning=pytorch_lightning|lightning_fabric,antlr4-python3-runtime=antlr4,pyyaml=yaml,python-dateutil=dateutil"
+MODULE_MAP="azure-core=azure,azure-identity=azure,azure-storage-file-datalake=azure,kumo-api=kumoapi,kumo-pql=kumopql,pytorch-frame=torch_frame,faiss-cpu=faiss,faiss-gpu=faiss,pytorch-lightning=pytorch_lightning|lightning_fabric,antlr4-python3-runtime=antlr4,pyyaml=yaml,python-dateutil=dateutil"
 
 overall_status=0
 
