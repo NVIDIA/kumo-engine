@@ -5,6 +5,7 @@
 import hashlib
 import json
 import shutil
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -57,11 +58,10 @@ def test_derived_bundle_thresholds_unless_explicit(fitted):
     assert _digest(parent_dir) == original
     assert trainer.scoring_defaults == kumo.ScoringDefaults()
     assert child.bundle_id != trainer.bundle_id
-    assert child.provenance['id'] == child.bundle_id
-    assert trainer.provenance['id'] == trainer.bundle_id
-    assert child.provenance['parents'] == {
-        **trainer.provenance['parents'], 'derived_from': trainer.bundle_id
-    }
+    assert child.provenance.id == child.bundle_id
+    assert trainer.provenance.id == trainer.bundle_id
+    assert child.provenance.parents == replace(trainer.provenance.parents,
+                                               derived_from=trainer.bundle_id)
     cleared = child.with_scoring_defaults(kumo.ScoringDefaults())
     assert cleared.bundle_id == trainer.bundle_id
 
@@ -83,9 +83,15 @@ def test_derivation_from_old_or_newer_provenance(fitted, tmp_path):
     old = _copy(trainer, tmp_path / 'old')
     remove_bundle_file(old, 'provenance')
     child = kumo.Trainer.load(old).with_scoring_defaults(defaults)
-    assert child.provenance['reconstructed'] is True
-    assert child.provenance['id'] == child.bundle_id
-    assert child.provenance['parents'] == {'derived_from': trainer.bundle_id}
+    assert child.provenance.reconstructed is True
+    assert child.provenance.id == child.bundle_id
+    recorded = json.loads(
+        (child._training_result.bundle_dir / 'provenance.json').read_text())
+    assert recorded == {
+        'kind': 'model_bundle', 'schema_version': 1, 'id': child.bundle_id,
+        'parents': {'derived_from': trainer.bundle_id}, 'created_at': None,
+        'environment': None, 'scheduler': None, 'reconstructed': True
+    }
 
     newer = _copy(trainer, tmp_path / 'newer')
     record = json.dumps({'schema_version': 999, 'parents': {}})

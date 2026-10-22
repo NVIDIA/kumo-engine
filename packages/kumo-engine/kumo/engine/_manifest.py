@@ -180,8 +180,9 @@ class TrainingTableManifest(Manifest):
 
 @dataclass(frozen=True, kw_only=True)
 class BundleParents(Record):
-    training_table: str
-    warm_start: Optional[str]
+    training_table: Optional[str] = None
+    warm_start: Optional[str] = None
+    derived_from: Optional[str] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -220,16 +221,35 @@ class BundleTrainingTable(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class BundleProvenance(Manifest):
+    """A reconstructed record (a derived bundle whose parent had none) writes
+    only the fields it knows."""
+
     kind: str = 'model_bundle'
     parents: BundleParents
-    fit: FitTiming
-    training_table: BundleTrainingTable
-    source_tables: Optional[Dict[str, SourceTableEntry]]
-    fit_mode: Optional[str]
+    fit: Optional[FitTiming] = None
+    training_table: Optional[BundleTrainingTable] = None
+    source_tables: Optional[Dict[str, SourceTableEntry]] = None
+    fit_mode: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = super().to_dict()
+        if not self.reconstructed:
+            return data
+        envelope = {item.name for item in fields(Manifest)}
+        parents = {k: v for k, v in data['parents'].items() if v is not None}
+        return {
+            **{
+                k: v
+                for k, v in data.items() if v is not None or k in envelope
+            }, 'parents': parents
+        }
 
 
-def write_manifest(path: Path, manifest: Manifest) -> None:
-    payload = json.dumps(manifest.to_dict(), indent=2, sort_keys=True) + '\n'
+def write_manifest(path: Path,
+                   manifest: Union[Record, Mapping[str, Any]]) -> None:
+    if isinstance(manifest, Record):
+        manifest = manifest.to_dict()
+    payload = json.dumps(manifest, indent=2, sort_keys=True) + '\n'
     atomic_write_bytes(path, payload.encode('utf-8'))
 
 

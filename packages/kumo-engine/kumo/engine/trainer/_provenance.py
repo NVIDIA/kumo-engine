@@ -3,11 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fit record in ``provenance.json``; excluded from the bundle id."""
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
 from kumo.engine._manifest import (
+    RECONSTRUCTED,
     BundleParents,
     BundleProvenance,
     BundleTrainingTable,
@@ -84,14 +86,13 @@ def record_derivation(bundle_dir: Path, parent_bundle_id: Optional[str]) -> None
         if listed_file(bundle_dir, PROVENANCE_ROLE) is not None:
             raise ValueError('its provenance.json is unreadable or from a '
                              'newer kumo-engine, so it is left unchanged')
-        provenance = new_manifest('model_bundle', None, {},
-                                  created_at=None, environment=None,
-                                  scheduler=None, reconstructed=True)
-    provenance['id'] = bundle_id_from_manifest(bundle_dir)
-    provenance['parents'] = {
-        **(provenance.get('parents') or {}), 'derived_from': parent_bundle_id
-    }
-    write_manifest(bundle_dir / PROVENANCE_FILE, provenance)
+        provenance = BundleProvenance(id=None, parents=BundleParents(),
+                                      **RECONSTRUCTED)
+    write_manifest(
+        bundle_dir / PROVENANCE_FILE,
+        replace(provenance, id=bundle_id_from_manifest(bundle_dir),
+                parents=replace(provenance.parents,
+                                derived_from=parent_bundle_id)))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
 
 

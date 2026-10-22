@@ -257,7 +257,7 @@ tuned.export(ModelOutputConfig(registry, location=ModelRegistryLocation("CHURN_G
 ```
 
 `with_scoring_defaults` returns a trainer on a copy with its own `bundle_id`; the copy's
-`provenance["parents"]["derived_from"]` names the original. The threshold applies to
+`provenance.parents.derived_from` names the original. The threshold applies to
 binary and multilabel classification, `num_classes_to_return` to multiclass, multilabel
 and link prediction. Explicit `predict` arguments and a query's `TOP k` win;
 `ScoringDefaults()` removes the defaults. `Trainer.export(config)` publishes a fitted or
