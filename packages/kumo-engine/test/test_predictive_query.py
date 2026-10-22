@@ -309,7 +309,7 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.generate_train_table',
-        lambda request: generated)
+        lambda request, **kwargs: generated)
 
     table = query.generate_training_table(snapshot)
 
@@ -395,7 +395,7 @@ def test_forecast_generation_retains_effective_plan(graph_snapshot, tmp_path,
     )
     monkeypatch.setattr(
         'kumo.engine.pquery.predictive_query.generate_train_table',
-        lambda plan: generated)
+        lambda plan, **kwargs: generated)
 
     table = query.generate_training_table(
         snapshot,

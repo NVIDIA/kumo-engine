@@ -14,7 +14,17 @@ import warnings
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    cast,
+)
 
 import pandas as pd
 from kumo_core.embedding_models import EmbeddingModelStore
@@ -78,6 +88,9 @@ from kumo.engine.trainer.output_config import (
     PredictionOutputConfig,
 )
 
+if TYPE_CHECKING:
+    from kumo.engine._monitoring import DriftReport, EvaluationResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -140,19 +153,87 @@ class PredictionResult:
     ``manifest`` is the prediction-run record; None for results without one.
     """
 
-    selection: PredictionSelectionRef
+    selection: Optional[PredictionSelectionRef]
     artifact_type: PredictionArtifactType
     bundle_id: Optional[str] = field(default=None, compare=False)
     snapshot_id: Optional[str] = field(default=None, compare=False)
+    _exported: Optional['_Export'] = field(default=None, compare=False,
+                                           repr=False)
+
+    @classmethod
+    def load_from_connector(cls, connector: Connector,
+                            path: str) -> 'PredictionResult':
+        r"""Load a Parquet directory written by :meth:`export` for monitoring.
+
+        The export must be complete (its ``_SUCCESS`` marker present). Only
+        the run's manifest is fetched here; the Parquet parts are downloaded,
+        in parallel, when ``files`` is first read, into a local directory
+        removed when the result is garbage-collected.
+        """
+        import tempfile
+        import weakref
+
+        from kumo_core.object_store_sink import ObjectStoreSinkBackend
+        from pyarrow.fs import FileType
+
+        from kumo.engine._manifest import read_manifest
+        from kumo.engine._scratch import get_scratch_dir
+        from kumo.engine.pquery.training_table import EXPORT_MANIFEST_FILE
+        from kumo.engine.trainer._run_manifest import output_record
+
+        sink = getattr(connector, 'sink_backend', None)
+        if not isinstance(sink, ObjectStoreSinkBackend):
+            raise TypeError('Loading predictions needs a file or object-store '
+                            'connector')
+        filesystem, root = sink._destination(connector, path)
+        root = root.rstrip('/')
+        if filesystem.get_file_info(
+                f'{root}/_SUCCESS').type == FileType.NotFound:
+            raise FileNotFoundError(
+                f'{path} has no _SUCCESS marker: the export is incomplete or '
+                f'still running')
+        scratch = get_scratch_dir()
+        scratch.mkdir(parents=True, exist_ok=True)
+        local = Path(tempfile.mkdtemp(prefix='fetched-predictions-',
+                                      dir=scratch))
+        try:
+            with filesystem.open_input_stream(
+                    f'{root}/{EXPORT_MANIFEST_FILE}') as reader:
+                (local / EXPORT_MANIFEST_FILE).write_bytes(reader.read())
+        except (FileNotFoundError, OSError):
+            pass
+        manifest = read_manifest(local / EXPORT_MANIFEST_FILE,
+                                 PredictionManifest)
+        location = str(
+            output_record(connector, PredictionArtifactType.PREDICTIONS,
+                          path).destination.location).rstrip('/')
+        outputs = [] if manifest is None else manifest.outputs or []
+        kind = next((PredictionArtifactType(record.artifact.upper())
+                     for record in outputs if str(
+                         record.destination.location).rstrip('/') == location),
+                    PredictionArtifactType.PREDICTIONS)
+        exported = _Export(filesystem, root, local, kind)
+        weakref.finalize(exported, shutil.rmtree, str(local), True)
+        return cls(
+            None, kind,
+            bundle_id=None if manifest is None else manifest.parents.bundle,
+            snapshot_id=None if manifest is None else
+            manifest.parents.snapshot, _exported=exported)
 
     @property
-    def run_id(self) -> str:
-        return self.selection.job_id
+    def run_id(self) -> Optional[str]:
+        if self.selection is not None:
+            return self.selection.job_id
+        manifest = self.manifest
+        return None if manifest is None else manifest.id
 
     @property
     def _manifest_path(self) -> Path:
+        from kumo.engine.pquery.training_table import EXPORT_MANIFEST_FILE
         from kumo.engine.trainer._run_manifest import MANIFEST_FILE
 
+        if self._exported is not None:
+            return self._exported.local / EXPORT_MANIFEST_FILE
         return Path(self.selection.pointer_path).parent / MANIFEST_FILE
 
     @property
@@ -163,6 +244,11 @@ class PredictionResult:
 
     @property
     def num_rows(self) -> int:
+        if self._exported is not None:
+            from pyarrow import parquet
+            return sum(
+                parquet.ParquetFile(path).metadata.num_rows
+                for path in self.files)
         from kumo_core.train import artifact_manifest
         selected = artifact_manifest.load_prediction_selection(
             self.selection, validate_objects=False)
@@ -172,6 +258,11 @@ class PredictionResult:
     @property
     def files(self) -> tuple[str, ...]:
         from kumo_core.train import artifact_manifest
+        if self._exported is not None:
+            if self._exported.kind is not self.artifact_type:
+                raise ValueError(
+                    f'This export holds {self._exported.kind.value.lower()}')
+            return self._exported.files()
         resolved = artifact_manifest.resolve_prediction_selection_artifact(
             self.selection, self.artifact_type)
         if resolved is None:
@@ -241,6 +332,36 @@ class PredictionResult:
 
 
 LINEAGE_RUN_ID = 'KUMO_RUN_ID'
+
+
+@dataclass(frozen=True)
+class _Export:
+    filesystem: Any
+    root: str
+    local: Path
+    kind: PredictionArtifactType
+
+    def files(self) -> tuple[str, ...]:
+        parts = self.local / 'parts'
+        if not parts.is_dir():
+            from kumo_core.sources.transfer import StagedFile, fetch_all
+            from pyarrow.fs import FileSelector, FileType
+
+            def fetch(staged: StagedFile, target: str) -> None:
+                with self.filesystem.open_input_stream(staged.path) as reader, \
+                        open(target, 'wb') as writer:
+                    shutil.copyfileobj(reader, writer, 1 << 20)
+
+            partial = self.local / 'parts.partial'
+            shutil.rmtree(partial, ignore_errors=True)
+            listed = self.filesystem.get_file_info(FileSelector(self.root))
+            fetch_all([
+                StagedFile(info.path, info.size) for info in listed
+                if info.type == FileType.File and info.path.endswith(
+                    '.parquet')
+            ], str(partial), fetch=fetch)
+            partial.rename(parts)
+        return tuple(sorted(map(str, parts.glob('*.parquet'))))
 
 
 def _output_records(output_config: PredictionOutputConfig, outputs: list,
@@ -1150,6 +1271,34 @@ class Trainer:
                                     timezone.utc).isoformat(
                                         timespec='seconds'))))
         return result
+
+    def evaluate(self, run: PredictionResult, *,
+                 snapshot: GraphSnapshot) -> 'EvaluationResult':
+        """Score a run against labels regenerated on a newer snapshot."""
+        from kumo.engine._monitoring import evaluate
+
+        return evaluate(self, run, snapshot)
+
+    def score_drift(
+        self,
+        run: PredictionResult,
+        *,
+        previous: Optional[PredictionResult] = None,
+        snapshot: Optional[GraphSnapshot] = None,
+        training_snapshot: Optional[GraphSnapshot] = None,
+    ) -> 'DriftReport':
+        r"""Compare a run's scores with the holdout and a previous run.
+
+        Args:
+            previous: An earlier run, for run-over-run PSI.
+            snapshot: The snapshot the run scored, with
+                ``training_snapshot`` for input row-count changes.
+            training_snapshot: The snapshot this model trained on.
+        """
+        from kumo.engine._monitoring import score_drift
+
+        return score_drift(self, run, previous=previous, snapshot=snapshot,
+                           training_snapshot=training_snapshot)
 
     @classmethod
     def load(

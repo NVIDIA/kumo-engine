@@ -15,6 +15,7 @@ from kumo_core.pquery import (
     _column_stats,
     _default_split,
     _split_options,
+    _target_maximum,
     _temporal_timestamps,
     build_generated_training_task_dataset,
     build_native_pquery_task_plan,
@@ -751,7 +752,7 @@ def test_latest_temporal_timestamp_uses_source_maximum(tmp_path, monkeypatch):
     ("first", "second"),
     ("second", "first"),
 ])
-def test_latest_temporal_timestamp_is_order_independent(monkeypatch, order):
+def test_target_maxima_are_order_independent(monkeypatch, order):
     maxima = {
         "first": 1_700_000_000_000_000_000,
         "second": 1_800_000_000_000_000_000,
@@ -779,6 +780,7 @@ def test_latest_temporal_timestamp_is_order_independent(monkeypatch, order):
 
     assert latest_temporal_timestamp(query, "/index") == maxima["second"]
     assert calls == list(order)
+    assert _target_maximum(query, "/index", min) == maxima["first"]
 
 
 def test_generation_plan_keeps_earliest_anchor_needed_for_filter_history(

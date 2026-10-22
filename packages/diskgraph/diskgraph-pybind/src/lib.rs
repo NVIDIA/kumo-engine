@@ -184,6 +184,7 @@ use diskgraph_engine::state::{SamplingState, StatePool};
 
 mod artifact_helpers;
 mod bp_col_stats;
+mod bp_evaluate;
 mod col_stats_export;
 mod custom_tt_entry;
 mod index_metadata;
@@ -1556,6 +1557,41 @@ fn compute_col_stats_for_parquet(
     .map_err(map_anyhow_err)
 }
 
+/// Join batch-prediction Parquet outputs with generated label Parquet parts
+/// and compute realized metrics, streaming and hash-partitioning both sides.
+///
+/// Args:
+///     prediction_paths: the run's prediction Parquet files.
+///     label_paths: the label Parquet parts.
+///     spec_json: JSON object with ``task`` (``"binary"``, ``"regression"``,
+///         ``"multiclass"`` or ``"link"``), ``prediction_keys`` and
+///         ``label_keys`` (paired by position), ``label_target``,
+///         ``spill_dir``, and optional ``actuals_dir`` with
+///         ``actual_columns`` (``[label name, output name]`` pairs) to write
+///         the matched label rows, and ``partition_rows``.
+///
+/// Returns a JSON string ``{"rows", "labelled", "metrics"}``: distinct
+/// predictions, those with a label, and the metric values (``null`` when
+/// undefined).
+#[pyfunction]
+#[pyo3(signature = (prediction_paths, label_paths, spec_json))]
+fn evaluate_prediction_parquet(
+    py: Python<'_>,
+    prediction_paths: Vec<String>,
+    label_paths: Vec<String>,
+    spec_json: &str,
+) -> PyResult<String> {
+    let spec: bp_evaluate::EvaluateSpec = serde_json::from_str(spec_json)
+        .map_err(|e| DiskgraphConfigError::new_err(format!("invalid spec_json: {e}")))?;
+    py.detach(|| -> anyhow::Result<String> {
+        let predictions: Vec<&std::path::Path> =
+            prediction_paths.iter().map(std::path::Path::new).collect();
+        let labels: Vec<&std::path::Path> = label_paths.iter().map(std::path::Path::new).collect();
+        Ok(bp_evaluate::evaluate_prediction_parquet(&predictions, &labels, &spec)?.to_string())
+    })
+    .map_err(map_anyhow_err)
+}
+
 /// Verify a local snapshot directory matches its ``_MANIFEST.json``.
 ///
 /// Called by the Python ``DiskgraphService`` after a dataplane→local
@@ -1657,6 +1693,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(has_resumable_ingest, m)?)?;
     m.add_function(wrap_pyfunction!(validated_index_resume_progress, m)?)?;
     m.add_function(wrap_pyfunction!(compute_col_stats_for_parquet, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_prediction_parquet, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_edge_stats, m)?)?;
     m.add_class::<SamplerEngine>()?;
