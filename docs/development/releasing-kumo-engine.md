@@ -36,13 +36,15 @@ selection does not establish macOS wheel or runtime support.
 
 Releases are cut from `NVIDIA/kumo-engine`: its GitHub releases trigger the
 workflows below, which attach the wheels to the release. Their `kitmaker` job
-then has Kitmaker, NVIDIA's release service, fetch the attached wheel and
-publish it to PyPI and pypi.nvidia.com. No workflow here uploads to PyPI or
+then has Kitmaker, NVIDIA's release service, fetch the attached wheels and
+publish them to PyPI and pypi.nvidia.com. No workflow here uploads to PyPI or
 holds PyPI credentials.
 
-The wheel is `cp311-abi3-manylinux_2_34_x86_64`: Linux x86_64, glibc >= 2.34,
-CPython >= 3.11 (DiskGraph's stable-ABI floor). The merger reads every bundled
-wheel's `Requires-Python` and writes their intersection into the final wheel.
+The wheels are `cp311-abi3-manylinux_2_34_x86_64` for Linux x86_64 with glibc
+>= 2.34 and `cp311-abi3-macosx_14_0_arm64` for Apple Silicon with macOS >= 14.0.
+Both require CPython >= 3.11 (DiskGraph's stable-ABI floor). The merger reads
+every bundled wheel's `Requires-Python` and writes their intersection into the
+final wheel.
 Stricter minimums, upper bounds, and exclusions are retained; incompatible
 constraints fail the build. Constraints are also recorded in
 `kumo_bundle_manifest.json`. Native ABI tags are checked against the resulting
@@ -103,15 +105,15 @@ platform's `release-version`.
    - fails fast unless the tag is exactly `kumo-engine-v` plus the `VERSION`
      file and every stamped file agrees with it;
    - builds the wheels with `--release`, so the version is exactly the tag's;
-   - resolves the x86_64 wheel against PyPI, alone and with each extra, on
+   - resolves each platform's wheel against PyPI, alone and with each extra, on
      every Python version it claims, and stops if any fails;
-   - attaches the x86_64 and ARM64 wheels to the GitHub release.
+   - attaches the Linux x86_64 and macOS ARM64 wheels to the GitHub release.
 5. **Approve the publication.** The `kitmaker` job waits for approval on the
    `kumo-engine-release` environment. It then checks that the Portal project
    has the expected name and owner and that the attached wheel is the one this
    run built, has Kitmaker dry-run it, and only then publishes it to PyPI and
-   pypi.nvidia.com, where it confirms both serve exactly those bytes. Only the
-   x86_64 wheel goes to PyPI; the ARM64 wheel stays on the GitHub release. A publication cannot be recalled, and PyPI never
+   pypi.nvidia.com, where it confirms both serve exactly those bytes. Both
+   platform wheels are published. A publication cannot be recalled, and PyPI never
    accepts the same file name twice.
 6. **Smoke-test the published wheel** in a clean virtualenv:
 
@@ -162,8 +164,8 @@ On Apple Silicon, the same script builds a native macOS wheel with
 `MACOSX_DEPLOYMENT_TARGET=14.0` by default; overrides below 14.0 are rejected
 to match the Faiss dependency. It disables Zig and glibc checks
 and takes the final platform tag from the built DiskGraph wheel. Rust, Xcode
-Command Line Tools, and CMake are required. This local build path does not
-add macOS publication to the release workflow.
+Command Line Tools, and CMake are required. The release workflow builds this
+wheel on a macOS ARM64 runner with the same deployment target.
 
 ## PyPI projects
 
