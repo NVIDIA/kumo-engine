@@ -67,13 +67,25 @@ describe("EmptyEntities", () => {
     });
 
     it.each([
-        ["connector fallback", "", false, false],
-        ["tables", PageNames.Table, false, false],
-        ["graphs", PageNames.Jobs, true, false],
-        ["training", PageNames.Jobs, true, true]
+        [
+            "connector fallback",
+            "",
+            false,
+            false,
+            "connect-data/data-connectors"
+        ],
+        ["tables", PageNames.Table, false, false, "connect-data/select-tables"],
+        ["graphs", PageNames.Jobs, true, false, "connect-data/create-graph"],
+        [
+            "training",
+            PageNames.Jobs,
+            true,
+            true,
+            "train-model/model-training/training"
+        ]
     ])(
-        "opens the Studio installation guide from %s",
-        (_, currentPage, tables, graphs) => {
+        "opens the relevant Studio task guide from %s",
+        (_, currentPage, tables, graphs, guide) => {
             Object.assign(emptyState, { connectors: true, tables, graphs });
             const open = vi
                 .spyOn(window, "open")
@@ -85,7 +97,7 @@ describe("EmptyEntities", () => {
             );
             fireEvent.click(screen.getByRole("button", { name: "View docs" }));
             expect(open).toHaveBeenCalledWith(
-                "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/kumo-studio-code-guide/installation",
+                `https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/${guide}`,
                 "_blank"
             );
         }

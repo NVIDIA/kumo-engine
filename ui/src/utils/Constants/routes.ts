@@ -18,7 +18,10 @@ export enum navRoutes {
 }
 
 export enum docURLs {
-    QuickStart = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/kumo-studio-code-guide/installation",
+    ConnectData = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/data-connectors",
+    SelectTables = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/select-tables",
+    CreateGraph = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/create-graph",
+    TrainModel = "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/model-training/training",
     BatchPrediction = "batch-prediction",
     SnowflakeSite = "https://docs.snowflake.com/en/user-guide/gen-conn-config",
     BigQuerySite = "https://cloud.google.com/bigquery/docs",

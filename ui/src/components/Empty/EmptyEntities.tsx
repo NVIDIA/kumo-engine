@@ -83,7 +83,7 @@ const createEmptyEntities = ({
             docsId: "Data_source",
             docsText,
             onDocsClick: () => {
-                window.open(docURLs.QuickStart, "_blank");
+                window.open(docURLs.ConnectData, "_blank");
             }
         },
         Tables: {
@@ -104,7 +104,7 @@ const createEmptyEntities = ({
             docsId: "Tables_doc",
             docsText,
             onDocsClick: () => {
-                window.open(docURLs.QuickStart, "_blank");
+                window.open(docURLs.SelectTables, "_blank");
             }
         },
         Graphs: {
@@ -126,7 +126,7 @@ const createEmptyEntities = ({
             docsId: "Graph_doc",
             docsText,
             onDocsClick: () => {
-                window.open(docURLs.QuickStart, "_blank");
+                window.open(docURLs.CreateGraph, "_blank");
             }
         },
         Training: {
@@ -172,7 +172,7 @@ const createEmptyEntities = ({
                 if (isPredictionPage && jobsPresent) {
                     window.open(newDocsURL + docURLs.BatchPrediction, "_blank");
                 } else {
-                    window.open(docURLs.QuickStart, "_blank");
+                    window.open(docURLs.TrainModel, "_blank");
                 }
             }
         }
