@@ -14,6 +14,8 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 
+from kumo.engine._manifest import PredictionManifest
+
 
 @dataclass(frozen=True)
 class EvaluationResult:
@@ -199,12 +201,12 @@ def score_drift(trainer: Any, run: Any, *, previous: Any, snapshot: Any,
     if summary is None:
         reasons['psi'] = 'the run records no output score statistics'
     provenance = getattr(trainer._training_result, 'provenance', None)
-    holdout = (provenance or {}).get('holdout')
+    holdout = None if provenance is None else provenance.holdout
     psi = None
-    if not holdout:
+    if holdout is None:
         reasons['psi'] = 'the bundle records no holdout score statistics'
     elif summary is not None:
-        baseline = (holdout.get('columns') or {}).get(score)
+        baseline = holdout.columns.get(score)
         psi = _psi(summary, baseline)
         if psi is None:
             reasons['psi'] = f'the holdout records no percentiles for {score}'
@@ -234,7 +236,7 @@ def score_drift(trainer: Any, run: Any, *, previous: Any, snapshot: Any,
         bundle_id=run_bundle,
         score=score,
         psi=psi,
-        holdout_truncated=(holdout or {}).get('truncated'),
+        holdout_truncated=None if holdout is None else holdout.truncated,
         bundle_matches=_same(run_bundle, getattr(trainer, 'bundle_id', None)),
         previous_run_id=getattr(previous, 'run_id', None),
         previous_psi=previous_psi,
@@ -257,7 +259,7 @@ def _count_changes(before: Mapping[str, Mapping[str, int]],
 
 def _score_summary(run: Any) -> Tuple[Optional[str], Optional[Mapping]]:
     try:
-        columns = run.manifest['stats']['predictions']['columns']
+        columns = run.manifest.stats['predictions'].columns
         return next(iter(columns.items()))
     except Exception:
         return None, None
@@ -302,8 +304,8 @@ def _percentile_curve(summary: Optional[Mapping[str, Any]]) -> Optional[tuple]:
 
 
 def _anchors(files: list, columns: list,
-             manifest: Optional[Mapping[str, Any]]) -> Tuple[int, ...]:
-    values = ((manifest or {}).get('prediction_table') or {}).get('anchors')
+             manifest: Optional[PredictionManifest]) -> Tuple[int, ...]:
+    values = (None if manifest is None else manifest.prediction_table.anchors)
     if not values and 'ANCHOR_TIMESTAMP' in columns:
         import pyarrow.compute as pc
         from pyarrow import parquet

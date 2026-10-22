@@ -202,25 +202,30 @@ class PredictionResult:
                 (local / EXPORT_MANIFEST_FILE).write_bytes(reader.read())
         except (FileNotFoundError, OSError):
             pass
-        manifest = read_manifest(local / EXPORT_MANIFEST_FILE) or {}
-        location = output_record(connector, PredictionArtifactType.PREDICTIONS,
-                                 path)['destination']['location'].rstrip('/')
-        kind = next((PredictionArtifactType(record['artifact'].upper())
-                     for record in manifest.get('outputs') or []
-                     if str((record.get('destination') or {}).get(
-                         'location')).rstrip('/') == location),
+        manifest = read_manifest(local / EXPORT_MANIFEST_FILE,
+                                 PredictionManifest)
+        location = str(
+            output_record(connector, PredictionArtifactType.PREDICTIONS,
+                          path).destination.location).rstrip('/')
+        outputs = [] if manifest is None else manifest.outputs or []
+        kind = next((PredictionArtifactType(record.artifact.upper())
+                     for record in outputs if str(
+                         record.destination.location).rstrip('/') == location),
                     PredictionArtifactType.PREDICTIONS)
-        parents = manifest.get('parents') or {}
         exported = _Export(filesystem, root, local, kind)
         weakref.finalize(exported, shutil.rmtree, str(local), True)
-        return cls(None, kind, bundle_id=parents.get('bundle'),
-                   snapshot_id=parents.get('snapshot'), _exported=exported)
+        return cls(
+            None, kind,
+            bundle_id=None if manifest is None else manifest.parents.bundle,
+            snapshot_id=None if manifest is None else
+            manifest.parents.snapshot, _exported=exported)
 
     @property
     def run_id(self) -> Optional[str]:
         if self.selection is not None:
             return self.selection.job_id
-        return (self.manifest or {}).get('id')
+        manifest = self.manifest
+        return None if manifest is None else manifest.id
 
     @property
     def _manifest_path(self) -> Path:

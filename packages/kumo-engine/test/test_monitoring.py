@@ -18,6 +18,7 @@ from kumoapi.model_plan import ModelPlan
 from kumoapi.typing import Stype
 
 import kumo.engine as kumo
+from kumo.engine._manifest import ArtifactStats
 from kumo.engine._monitoring import _psi, evaluate
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.trainer.trainer import PredictionResult, TrainingResult
@@ -97,7 +98,7 @@ def classifier(snapshots):
 class _Run:
     frame: pd.DataFrame
     artifact_type: Any = None
-    manifest: Optional[dict] = None
+    manifest: Any = None
     run_id: str = 'run'
     bundle_id: Optional[str] = None
 
@@ -111,7 +112,8 @@ class _Run:
 def _evaluate(snapshots, query, frame, anchors=()):
     trainer = SimpleNamespace(training_query=query, bundle_id=None,
                               training_table_generation_plan=None)
-    manifest = {'prediction_table': {'anchors': [str(a) for a in anchors]}}
+    manifest = SimpleNamespace(prediction_table=SimpleNamespace(
+        anchors=[str(a) for a in anchors]))
     return evaluate(trainer, _Run(frame, manifest=manifest), snapshots.after)
 
 
@@ -289,9 +291,9 @@ def test_score_drift(snapshots, classifier, monkeypatch):
 
     shifted = _summary(np.full(500, 0.999))
     report = trainer.score_drift(
-        SimpleNamespace(run_id='r', bundle_id=None, manifest={
-            'stats': {'predictions': {'columns': {'True_PROB': shifted}}}
-        }))
+        SimpleNamespace(run_id='r', bundle_id=None, manifest=SimpleNamespace(
+            stats={'predictions': ArtifactStats(
+                rows=500, columns={'True_PROB': shifted})})))
     assert report.psi > 0.2 and report.bundle_matches is None
     assert 'input_changes' in report.reasons
 
@@ -314,7 +316,7 @@ def test_monitoring_a_run_loaded_from_its_export(snapshots, classifier,
 
     loaded = PredictionResult.load_from_connector(connector, 'p/')
     parts = loaded._exported.local / 'parts'
-    assert loaded.manifest['id'] == run.run_id and not parts.exists()
+    assert loaded.manifest.id == run.run_id and not parts.exists()
     assert trainer.score_drift(loaded).psi is not None
     assert not parts.exists()
 
