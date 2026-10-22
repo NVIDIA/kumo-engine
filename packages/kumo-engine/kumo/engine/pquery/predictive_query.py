@@ -6,15 +6,17 @@ of scope for this package.
 
 `PredictiveQuery(graph, query)` binds a `Graph` at construction, matching the
 cloud SDK's `kumo.PredictiveQuery(graph=graph, query=QUERY)` -- not a
-`GraphSnapshot`. Parsing (`kumo_core.pquery.parse_and_validate_query` against
-`self.graph.native_graph` -- `Graph`'s own `cached_property`, needing no
-materialized index) happens lazily, on first access to the `_parsed`
-`cached_property`, and only once: `validate()`/`get_task_type()` both read
-that same property rather than re-parsing on every call. Confirmed against
-the existing local backend's own `_LocalPQueryBackend.validate`
-(`kumoai/backend/local/pquery.py`), which parses against
-`to_portable(definition)` -- the schema-level conversion, not an ingested
-snapshot -- that this doesn't need a `GraphSnapshot` either.
+`GraphSnapshot`. `PredictiveQuery.from_snapshot(snapshot, query)` binds a
+snapshot instead and parses against `snapshot.graph_config`.
+
+Parsing (`kumo_core.pquery.parse_and_validate_query` against
+`self.graph.native_graph`, needing no materialized index) happens lazily, on first
+access to the `_parsed` `cached_property`, and only once:
+`validate()`/`get_task_type()` both read that same property rather than
+re-parsing on every call. Confirmed against the existing local backend's own
+`_LocalPQueryBackend.validate` (`kumoai/backend/local/pquery.py`), which parses
+against `to_portable(definition)` -- the schema-level conversion, not an
+ingested snapshot -- that this doesn't need a `GraphSnapshot` either.
 
 Construction itself stays I/O-free, consistent with `Table`/`Graph`: nothing
 parses until `_parsed` is actually touched (by `validate()`, `get_task_type()`,
@@ -25,8 +27,8 @@ neither wraps it into a non-raising result.
 
 `suggest_model_plan` uses resolved graph/query metadata. Methods that generate
 training or prediction tables also read the materialized index. These methods
-accept an explicit `GraphSnapshot` produced by `self.graph.snapshot()` and
-never trigger graph ingest themselves.
+accept an explicit `GraphSnapshot` of this query's graph and never trigger
+graph ingest themselves.
 
 Supported, matching `kumo.engine.pquery.predictive_query.PredictiveQuery` in the
 cloud SDK: `validate`, `get_task_type`, `suggest_model_plan`,
@@ -97,15 +99,27 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class PredictiveQuery:
-    r"""An immutable PQL query bound to a `Graph`."""
+    r"""An immutable PQL query bound to a `Graph` or a `GraphSnapshot`."""
 
-    graph: Graph
+    graph: Graph | GraphSnapshot
     query: str
+
+    @classmethod
+    def from_snapshot(cls, snapshot: GraphSnapshot,
+                      query: str) -> 'PredictiveQuery':
+        r"""Bind `query` to `snapshot`'s graph without its `Graph` object.
+
+        Snapshots passed to this query's methods must come from the same
+        graph (same `graph_key`). That only checks the snapshot belongs to
+        this query's graph; it says nothing about compatibility with a
+        trained model.
+        """
+        return cls(graph=snapshot, query=query)
 
     @cached_property
     def _parsed(self) -> ValidatedNativeQuery:
-        r"""Parses and validates `self.query` against `self.graph.
-        native_graph`, via `kumo_core.pquery.parse_and_validate_query` --
+        r"""Parses and validates `self.query` against `self.graph.native_graph`,
+        via `kumo_core.pquery.parse_and_validate_query` --
         the same parser `Trainer._predict` already calls directly, and what
         `kumo_core.training.workflow.TrainingWorkflowRequest.from_spec`
         uses internally for `fit`. No materialized `GraphSnapshot` needed
@@ -125,23 +139,21 @@ class PredictiveQuery:
         `task_type`/`task_family`/`query_type` on the returned
         `ValidatedNativeQuery` are all plain `str`; `get_task_type` below
         wraps `task_type` into the shared, public `kumoapi.task.TaskType`.
-
-        Reuses `self.graph.native_graph` (itself a `cached_property`)
-        rather than building its own `graph_config`/`NativeGraph` -- one
-        canonical conversion per `Graph`, shared by `Graph.validate()` and
-        every `PredictiveQuery` bound to it.
         """
         return parse_and_validate_query(self.query, self.graph.native_graph)
 
     def _require_matching_snapshot(self, snapshot: GraphSnapshot) -> None:
-        # snapshot.id is 'graph_key@data_version_prefix' (see
-        # Graph.snapshot()); self.graph.id is the graph_key alone, so
-        # membership is a prefix check, not equality.
-        if not snapshot.id.startswith(f'{self.graph.id}@'):
+        if isinstance(self.graph, GraphSnapshot):
+            if snapshot.id == self.graph.id:
+                return
+            graph_key = self.graph.graph_key
+        else:
+            graph_key = self.graph.id
+        if snapshot.graph_key != graph_key:
             raise ValueError(
                 f"snapshot {snapshot.id!r} was not materialized from "
-                f"self.graph (id {self.graph.id!r}) -- call "
-                "self.graph.snapshot() and pass its result.")
+                f"this query's graph (id {graph_key!r}) -- pass a "
+                "snapshot of that graph.")
 
     def validate(self, verbose: bool = True) -> ValidationResponse:
         r"""Return validation warnings and information for a valid query.
@@ -195,7 +207,7 @@ class PredictiveQuery:
         train_table_spec: Optional[TrainingTableSpec] = None,
     ) -> ModelPlan:
         r"""Suggests a modeling plan given this query and a materialized
-        `snapshot` of `self.graph`. Mirrors the cloud SDK's
+        `snapshot` of this query's graph. Mirrors the cloud SDK's
         `PredictiveQuery.suggest_model_plan`.
 
         Uses resolved graph/query metadata without generating a training table
@@ -221,7 +233,7 @@ class PredictiveQuery:
         plan: Optional[TrainingTableGenerationPlan] = None,
     ) -> TrainingTable:
         r"""Compiles this query into a `TrainingTable` against a materialized
-        `snapshot` of `self.graph`. Mirrors the cloud SDK's
+        `snapshot` of this query's graph. Mirrors the cloud SDK's
         `PredictiveQuery.generate_training_table`.
 
         `Trainer.fit` consumes the returned `TrainingTable` directly. Its
@@ -229,7 +241,7 @@ class PredictiveQuery:
         settings are retained without keeping a graph-bound task plan.
 
         Args:
-            snapshot: a snapshot of `self.graph` to compile against.
+            snapshot: a snapshot of this query's graph to compile against.
             plan: if not given, uses `kumo_core`'s generation defaults,
                 matching the local backend's existing
                 `suggest_training_table_plan` default.
@@ -327,7 +339,7 @@ class PredictiveQuery:
         plan: Optional[TrainingTableGenerationPlan] = None,
     ) -> PredictionTable:
         r"""Compiles this query into a `PredictionTable` against a
-        materialized `snapshot` of `self.graph`. Mirrors the cloud SDK's
+        materialized `snapshot` of this query's graph. Mirrors the cloud SDK's
         `PredictiveQuery.generate_prediction_table`, and parallels
         `generate_training_table` above.
 
@@ -339,7 +351,7 @@ class PredictiveQuery:
         docstring).
 
         Args:
-            snapshot: a snapshot of `self.graph` to compile against.
+            snapshot: a snapshot of this query's graph to compile against.
             prediction_time: the anchor timestamp for a temporal query;
                 when omitted, uses the latest source-time maximum across the
                 query's target aggregations in the snapshot.

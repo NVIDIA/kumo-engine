@@ -45,6 +45,7 @@ from kumo.engine._embeddings import (
 from kumo.engine._manifest import BundleProvenance
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine.connector.base import Connector
+from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
@@ -260,6 +261,11 @@ class Trainer:
             self) -> Optional[TrainingTableGenerationPlan]:
         """Effective table-generation settings saved by the last fit/load."""
         return self._training_table_generation_plan
+
+    @property
+    def training_query(self) -> Optional[str]:
+        """Predictive query of the last fit/load."""
+        return self._training_query
 
     @property
     def scratch_dir(self) -> Path:
@@ -570,6 +576,54 @@ class Trainer:
         self._training_table_generation_plan = training_table_generation
 
         return training_result
+
+    def predict_snapshot(
+        self,
+        snapshot: GraphSnapshot,
+        *,
+        entities: Optional[SourceTable] = None,
+        prediction_time: Optional[datetime] = None,
+        output_config: Optional[PredictionOutputConfig] = None,
+        num_classes_to_return: Optional[int] = None,
+        num_workers: int = 1,
+        binary_classification_threshold: Optional[float] = None,
+    ) -> PredictionResult:
+        r"""Score ``snapshot`` with the query and table-generation plan saved
+        by the last fit/load.
+
+        Without ``entities``, scores the query's population at
+        ``prediction_time`` (as :meth:`PredictiveQuery.generate_prediction_table`).
+        ``entities`` is a source table of ``ENTITY1`` (and ``TIMESTAMP`` where
+        the task needs one) rows to score instead. Other arguments are as in
+        :meth:`predict`. Warns when ``snapshot`` was taken of a different
+        graph than the one the model was trained on.
+        """
+        from kumo.engine.pquery.predictive_query import PredictiveQuery
+
+        if self._training_query is None:
+            raise RuntimeError(
+                "Trainer.predict_snapshot() requires a prior Trainer.fit() or "
+                "Trainer.load() call on this same Trainer instance.")
+        if entities is not None and prediction_time is not None:
+            raise ValueError("Pass prediction_time or entities, not both; "
+                             "put anchor times in the entities' TIMESTAMP.")
+        trained = (self._snapshot_id or '').partition('@')[0]
+        if trained and snapshot.graph_key != trained:
+            warnings.warn(
+                f"Snapshot {snapshot.id} was taken of graph "
+                f"{snapshot.graph_key}, but this model was trained on a "
+                f"snapshot of graph {trained}.", UserWarning, stacklevel=2)
+        query = PredictiveQuery.from_snapshot(snapshot, self._training_query)
+        plan = self._training_table_generation_plan
+        table = (query.generate_prediction_table(
+            snapshot, prediction_time=prediction_time, plan=plan)
+                 if entities is None else PredictionTable.from_source_table(
+                     entities, pq=query, snapshot=snapshot, plan=plan))
+        return self.predict(
+            table, snapshot=snapshot, output_config=output_config,
+            num_classes_to_return=num_classes_to_return,
+            num_workers=num_workers,
+            binary_classification_threshold=binary_classification_threshold)
 
     def predict(
         self,
