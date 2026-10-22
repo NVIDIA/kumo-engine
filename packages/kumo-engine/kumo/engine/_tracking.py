@@ -28,6 +28,7 @@ from typing import (
 )
 
 from kumo.engine._events import Event, _finite_floats
+from kumo.engine._manifest import PredictionManifest
 
 if TYPE_CHECKING:
     from kumo.engine.graph import GraphSnapshot
@@ -227,7 +228,7 @@ def trial_record(context: FitContext, events: Sequence[Event]) -> RunRecord:
     )
 
 
-def prediction_record(manifest: Mapping[str, Any],
+def prediction_record(manifest: PredictionManifest,
                       error: Optional[BaseException] = None) -> RunRecord:
     r"""A prediction run's record, from its `PredictionResult.manifest`:
     scoring options as params, row counts and score percentiles as metrics,
@@ -237,31 +238,29 @@ def prediction_record(manifest: Mapping[str, Any],
 
     from kumo.engine.trainer._run_manifest import MANIFEST_FILE
 
-    table = manifest.get('prediction_table') or {}
-    scheduler = manifest.get('scheduler') or {}
-    params = {
-        **(manifest.get('scoring') or {}), 'anchors': table.get('anchors')
-    }
-    metrics: Dict[str, Any] = {'prediction_table.rows': table.get('rows')}
-    for artifact, stats in (manifest.get('stats') or {}).items():
-        stats = {**stats, **(stats.get('columns') or {})}
-        stats.pop('columns', None)
-        for key, value in _flatten(stats, f'{artifact}.'):
+    table = manifest.prediction_table
+    scheduler = manifest.scheduler
+    params = {**manifest.scoring.to_dict(), 'anchors': table.anchors}
+    metrics: Dict[str, Any] = {'prediction_table.rows': table.rows}
+    for artifact, stats in manifest.stats.items():
+        flat = stats.to_dict()
+        flat.update(flat.pop('columns', None) or {})
+        for key, value in _flatten(flat, f'{artifact}.'):
             if key.endswith('.percentiles'):
                 metrics.update(_logged_percentiles(key, value))
             else:
                 metrics[key] = value
     tags = {
         'kumo.kind': 'prediction',
-        'kumo.run_id': manifest.get('id'),
-        'kumo.bundle_id': (manifest.get('parents') or {}).get('bundle'),
-        'kumo.scheduler': scheduler.get('platform'),
-        'kumo.job_id': scheduler.get('job_id'),
-        'kumo.job_run_id': scheduler.get('job_run_id'),
+        'kumo.run_id': manifest.id,
+        'kumo.bundle_id': manifest.parents.bundle,
+        'kumo.scheduler': None if scheduler is None else scheduler.platform,
+        'kumo.job_id': None if scheduler is None else scheduler.job_id,
+        'kumo.job_run_id': None if scheduler is None else scheduler.job_run_id,
         'kumo.error': None if error is None else format_error(error),
     }
     return RunRecord(
-        name=manifest.get('id'),
+        name=manifest.id,
         params={
             key: _param_value(value)
             for key, value in params.items() if value is not None
@@ -277,7 +276,8 @@ def prediction_record(manifest: Mapping[str, Any],
         },
         artifacts={
             MANIFEST_FILE:
-            json.dumps(dict(manifest), indent=2, sort_keys=True, default=str)
+            json.dumps(manifest.to_dict(), indent=2, sort_keys=True,
+                       default=str)
         },
     )
 
@@ -297,7 +297,10 @@ def log_prediction_run(result: 'PredictionResult',
     if not session.enabled:
         return
     try:
-        record = prediction_record(result.manifest, error)
+        manifest = result.manifest
+        if manifest is None:
+            raise ValueError('the run has no prediction manifest')
+        record = prediction_record(manifest, error)
     except Exception:
         logger.warning('Experiment tracking failed; the prediction run is '
                        'not tracked', exc_info=True)

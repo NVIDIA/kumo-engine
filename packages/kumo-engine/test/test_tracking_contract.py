@@ -7,7 +7,7 @@ and a recorded prediction run."""
 import json
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
@@ -15,6 +15,11 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 import pytest
 
 from kumo.engine import Event
+from kumo.engine._manifest import (
+    ArtifactStats,
+    PredictionManifest,
+    PredictionParents,
+)
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
@@ -83,25 +88,41 @@ RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
                          bundle_dir=Path('no-bundle'))
 
 PREDICTION_RUN = 'trainer-predict-1'
-PREDICTION_MANIFEST = {
+PREDICTION_MANIFEST = PredictionManifest.from_dict({
+    'kind': 'prediction_run',
+    'schema_version': 1,
     'id': PREDICTION_RUN,
-    'parents': {'bundle': '2e020d21', 'snapshot': 'snap@1'},
-    'environment': {'kumo_engine': '1.0.0', 'build_commit': '0e5d8523'},
+    'parents': {'bundle': '2e020d21', 'snapshot': 'snap@1',
+                'prediction_table': 'pt-1'},
+    'created_at': '2026-10-21T00:00:00+00:00',
+    'environment': {'kumo_engine': '1.0.0', 'build_commit': '0e5d8523',
+                    'kumo_core': None, 'diskgraph': None,
+                    'diskgraph_build_commit': None, 'torch': None,
+                    'python': '3.14.0'},
     'scheduler': {
         'platform': 'airflow',
         'job_id': 'daily_scores',
         'job_run_id': 'scheduled__2026-10-21',
     },
+    'source_tables': None,
     'prediction_table': {
         'query_sha256': '69dab700',
+        'source': 'pql',
         'anchors': ['2024-04-29T00:00:00+00:00'],
         'rows': 50,
     },
     'scoring': {
         'binary_classification_threshold': 0.4,
+        'threshold_source': 'argument',
         'num_classes_to_return': None,
+        'count_source': 'none',
+        'num_workers': None,
         'lineage_columns': False,
     },
+    'outputs': [],
+    'status': 'succeeded',
+    'timings': {'started_at': '2026-10-21T00:00:00+00:00',
+                'finished_at': '2026-10-21T00:01:00+00:00'},
     'stats': {
         'predictions': {
             'rows': 50,
@@ -114,7 +135,7 @@ PREDICTION_MANIFEST = {
             'predicted_positive_rate': 0.62,
         },
     },
-}
+})
 
 
 class _Recorder:
@@ -441,6 +462,8 @@ def test_prediction_record_of_the_recorded_run():
     assert record.params == {
         'anchors': '["2024-04-29T00:00:00+00:00"]',
         'binary_classification_threshold': '0.4',
+        'threshold_source': 'argument',
+        'count_source': 'none',
         'lineage_columns': 'false',
     }
     assert record.metrics == {
@@ -461,18 +484,20 @@ def test_prediction_record_of_the_recorded_run():
         'kumo.job_id': 'daily_scores',
         'kumo.job_run_id': 'scheduled__2026-10-21',
     }
-    assert json.loads(
-        record.artifacts['prediction-manifest.json']) == PREDICTION_MANIFEST
+    assert json.loads(record.artifacts['prediction-manifest.json']) == (
+        PREDICTION_MANIFEST.to_dict())
 
 
 def test_prediction_record_of_a_partial_manifest():
-    record = prediction_record({
-        **PREDICTION_MANIFEST, 'scheduler': None, 'parents': {},
-        'scoring': {'num_classes_to_return': 3},
-        'stats': {'predictions': {'rows': 150, 'columns': {
-            'top_score': {'count': 150, 'percentiles': []}}},
-            'embeddings': {'rows': 150}},
-    })
+    record = prediction_record(
+        replace(PREDICTION_MANIFEST, scheduler=None,
+                parents=PredictionParents(bundle=None, snapshot=None,
+                                          prediction_table=None),
+                scoring=replace(PREDICTION_MANIFEST.scoring,
+                                num_classes_to_return=3),
+                stats={'predictions': ArtifactStats(rows=150, columns={
+                    'top_score': {'count': 150, 'percentiles': []}}),
+                       'embeddings': ArtifactStats(rows=150)}))
 
     assert record.params['num_classes_to_return'] == '3'
     assert record.metrics == {'prediction_table.rows': 50.0,

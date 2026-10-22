@@ -7,6 +7,7 @@ import os
 import socket
 import threading
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -324,8 +325,8 @@ def test_prediction_run_nests_under_the_active_run(tracking_uri):
                            tracking)
         assert mlflow.active_run().info.run_id == outer.info.run_id
     log_prediction_run(
-        SimpleNamespace(manifest={**PREDICTION_MANIFEST,
-                                  'id': 'trainer-predict-2'}), tracking)
+        SimpleNamespace(manifest=replace(PREDICTION_MANIFEST,
+                                         id='trainer-predict-2')), tracking)
 
     nested, top = sorted(
         (run for run in _runs(client) if 'kumo.kind' in run.data.tags),
