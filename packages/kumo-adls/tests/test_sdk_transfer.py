@@ -400,12 +400,19 @@ def test_sdk_seekable_upload_overlaps_chunks_and_flushes_after_all_appends(
     lock = threading.Lock()
     appended = {}
     flushed = []
+    created = []
+
+    def create(request, context):
+        created.append(request)
+        return b''
+
     mocked_http.register_uri('PUT', re.compile(r'https://companylake\.'),
-                             status_code=201, headers=HEADERS)
+                             status_code=201, headers=HEADERS, content=create)
 
     def patch(request, context):
         query = parse_qs(urlsplit(request.url).query)
         action = query['action'][0]
+        assert 'If-None-Match' not in request.headers
         if action == 'append':
             offset = int(query['position'][0])
             data = request.body
@@ -416,6 +423,7 @@ def test_sdk_seekable_upload_overlaps_chunks_and_flushes_after_all_appends(
                 appended[offset] = data
         elif action == 'flush':
             assert len(appended) == 4
+            assert request.headers['If-Match'] == HEADERS['ETag']
             flushed.append(int(query['position'][0]))
         else:
             raise AssertionError(action)
@@ -432,6 +440,49 @@ def test_sdk_seekable_upload_overlaps_chunks_and_flushes_after_all_appends(
     assert b''.join(appended[offset]
                     for offset in sorted(appended)) == source.read_bytes()
     assert flushed == [source.stat().st_size]
+    # overwrite=False must not recreate the object made by put_file().
+    assert len(created) == 1
+
+
+def test_sdk_prepared_upload_conflict_keeps_cleanup_conditional(
+        mocked_http, tmp_path):
+    from kumo_core.sources.errors import TransientSourceError
+
+    source = tmp_path / 'upload'
+    source.write_bytes(b'prepared bytes')
+    actions = []
+    path = re.compile(r'https://companylake\.')
+    mocked_http.register_uri('PUT', path, status_code=201, headers=HEADERS)
+
+    def patch(request, context):
+        action = parse_qs(urlsplit(request.url).query)['action'][0]
+        actions.append(action)
+        assert 'If-None-Match' not in request.headers
+        context.headers.update(HEADERS)
+        if action == 'append':
+            context.status_code = 202
+            context.headers['ETag'] = '"append-response"'
+        else:
+            assert action == 'flush'
+            assert request.headers['If-Match'] == HEADERS['ETag']
+            context.status_code = 412
+        return b''
+
+    def delete(request, context):
+        actions.append('delete')
+        assert request.headers['If-Match'] == HEADERS['ETag']
+        # Another writer's replacement must not be removed by cleanup.
+        context.status_code = 412
+        return b''
+
+    mocked_http.register_uri('PATCH', path, content=patch)
+    mocked_http.register_uri('DELETE', path, content=delete, headers=HEADERS)
+    with client(mocked_http) as service:
+        filesystem = ADLSFileSystem(service, 'companylake',
+                                    'dfs.core.windows.net')
+        with pytest.raises(TransientSourceError):
+            filesystem.put_file(str(source), AUTHORITY + '/data')
+    assert actions == ['append', 'flush', 'delete']
 
 
 def test_sdk_empty_download_handles_azure_range_416(mocked_http, tmp_path):

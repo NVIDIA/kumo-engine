@@ -56,9 +56,11 @@ Probing checks Python token acquisition only; it does not attest native-write
 compatibility or storage permissions.
 
 Set a positive `KUMO_ADLS_TRANSFER_WORKERS` before the provider's first import
-to lower SDK read concurrency and HTTP pooling. Restart existing processes
-after changing it. `KUMO_SOURCE_COPY_WORKERS` lowers the shared file-copy
-ceiling. These controls do not bound native Arrow uploads or their background
+to lower SDK read concurrency and HTTP pooling. The connection pool and transfer
+slots are fixed at import; changing the variable afterward has no effect until
+the process restarts. `KUMO_SOURCE_COPY_WORKERS` lowers the shared file-copy
+ceiling and its contribution to the ADLS limit is also captured at import.
+These controls do not bound native Arrow uploads or their background
 buffers. Native writes use Arrow's C++ credentials and upload scheduling;
 ambient credential selection can differ from the Python SDK read chain.
 Directory exports use the shared eight-file scheduler, while model bundles
