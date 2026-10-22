@@ -41,7 +41,7 @@ python3.12 packages/kumo-engine/scripts/smoke_wheel.py /absolute/path/to/kumo_en
   --output-dir /absolute/path/to/new-evidence
 ```
 
-Exit code zero requires all of these results:
+The default smoke check passes only when:
 
 - The installed version and SHA-256 (file fingerprint) match the selected wheel. Dependencies pass `pip check`.
 - The graph has 50 entities, 3,000 events, and 6,000 directed edges.
@@ -136,6 +136,29 @@ Run the learning unit tests in the installed wheel environment:
 ```bash
 python3.12 -m unittest discover -s test/scripts -p test_engine_wheel_learning.py
 ```
+
+### Measure prediction variation
+
+On Linux x64 with a working CUDA GPU, run:
+
+```bash
+python3.12 packages/kumo-engine/scripts/smoke_wheel.py /path/to/selected.whl \
+  --measure-variation --device cuda --runs 10 --output-dir /path/to/new-evidence
+```
+
+The installer runs once. Each fresh process trains a new model with the same
+data, seed, and settings. `variation.json` separates repeat prediction, reload,
+and differences between fresh models. It records probability differences and
+label changes. Each `run-NNN` directory keeps predictions, metrics, device
+observations, and logs. The summary configuration records the requested device;
+`requirements.json` preserves the base CPU profile. The worker verifies the
+actual device at training and prediction. Missing CUDA or CPU fallback fails.
+
+This returns `MEASURED`. It approves no GPU tolerance and changes no publication
+gate. Functional checks remain required. Reload differences are measured without
+the CPU agreement limits. Ten runs are a sample, not a statistical guarantee.
+Use `--device cpu` for CPU measurements. Run learning and wheel comparisons
+separately; these options cannot be combined with variation measurements.
 
 ## Report evidence
 

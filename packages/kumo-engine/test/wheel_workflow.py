@@ -6,7 +6,9 @@
 import argparse
 import gc
 import importlib.metadata
+import inspect
 import json
+import os
 import random
 import shutil
 import sys
@@ -58,6 +60,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version', required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--device', choices=('cpu', 'cuda'), default='cpu')
+    parser.add_argument('--measure-variation', action='store_true')
     args = parser.parse_args()
     root = Path.cwd()
     evidence = args.output_dir
@@ -92,15 +96,41 @@ def main():
             'kumo-engine') == kumo.__version__ == args.version
         assert Path(kumo.__file__).resolve().is_relative_to(Path(
             sys.prefix)), kumo.__file__
-        assert not torch.cuda.is_available(
-        ), 'This test is specifically CPU-only'
+        if args.device == 'cuda':
+            assert torch.cuda.is_available(
+            ), 'CUDA was requested but is unavailable'
+            result['gpu'] = torch.cuda.get_device_name(0)
+            result['cuda_version'] = torch.version.cuda
+        placement = 'gpu' if args.device == 'cuda' else 'cpu'
+        # The approved 1.0.0 wheel uses the environment. Newer wheels accept
+        # an instance argument. Observe Lightning's actual device in both cases.
+        os.environ['KUMO_ACCELERATOR'] = placement
+        trainer_options = ({
+            'accelerator': placement
+        } if 'accelerator' in inspect.signature(kumo.Trainer).parameters else
+                           {})
+        from kumo_core.train.trainer import Trainer as CoreTrainer
+        original_create = CoreTrainer.create_pl_trainer
+        result['observed_devices'] = []
+
+        def observe_device(trainer):
+            original_create(trainer)
+            device = trainer.pl_trainer.strategy.root_device
+            result['observed_devices'].append({
+                'stage': result['stage'],
+                'device': str(device),
+            })
+            assert device.type == args.device, (
+                f'Requested {args.device}, observed {device}')
+
+        CoreTrainer.create_pl_trainer = observe_device
         torch.set_num_threads(requirements['configuration']['threads'])
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
         result['import_path'] = kumo.__file__
         result['torch_version'] = torch.__version__
-        result['device'] = 'cpu'
+        result['device'] = args.device
         result['checks']['wheel_import'] = 'PASS'
         result['python'] = sys.version
         kumo.configure(scratch_dir=root / 'scratch')
@@ -132,7 +162,7 @@ def main():
         plan.optimization.max_steps_per_epoch = fixture['steps_per_epoch']
         (evidence / 'model-plan.json').write_text(
             json.dumps(plan.as_json(), indent=2))
-        trainer = kumo.Trainer(model_plan=plan)
+        trainer = kumo.Trainer(model_plan=plan, **trainer_options)
 
         fitted = trainer.fit(training_table, snapshot=snapshot)
         result['training_metrics'] = fitted.metrics
@@ -160,11 +190,24 @@ def main():
         before = predicted.frame.sort_values('ENTITY').reset_index(drop=True)
         before.to_parquet(evidence / 'predictions-before.parquet', index=False)
         result['checks']['prediction_execution'] = 'PASS'
+        frames = {'before': before}
+        if args.measure_variation:
+            stage('repeat_prediction')
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+            repeated = trainer.predict(
+                prediction_table, snapshot=snapshot,
+                binary_classification_threshold=fixture['threshold']
+            ).frame.sort_values('ENTITY').reset_index(drop=True)
+            repeated.to_parquet(evidence / 'predictions-repeat.parquet',
+                                index=False)
+            frames['repeat'] = repeated
         del trainer
         gc.collect()
 
         stage('reload_and_predict')
-        restored = kumo.Trainer.load(saved)
+        restored = kumo.Trainer.load(saved, **trainer_options)
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -173,7 +216,8 @@ def main():
             binary_classification_threshold=fixture['threshold']
         ).frame.sort_values('ENTITY').reset_index(drop=True)
         after.to_parquet(evidence / 'predictions-after.parquet', index=False)
-        for frame in (before, after):
+        frames['after'] = after
+        for frame in frames.values():
             assert list(
                 frame.columns) == ['ENTITY', 'TARGET_PRED',
                                    *prob_columns], list(frame.columns)
@@ -189,24 +233,38 @@ def main():
         result['checks']['prediction_rows_and_values'] = 'PASS'
         before_probs = before[prob_columns].to_numpy()
         after_probs = after[prob_columns].to_numpy()
-        np.testing.assert_allclose(before_probs, after_probs, **tolerance)
-        np.testing.assert_array_equal(before['TARGET_PRED'],
-                                      after['TARGET_PRED'])
         result['max_reload_probability_difference'] = float(
             np.abs(before_probs - after_probs).max())
-        result['checks']['reload_predictions_match'] = 'PASS'
-        result['status'] = 'PASS'
+        if args.measure_variation:
+            result['predictions'] = {
+                name: {
+                    'entity_ids': frame['ENTITY'].tolist(),
+                    'probabilities': frame[prob_columns].to_numpy().tolist(),
+                    'labels': frame['TARGET_PRED'].tolist(),
+                }
+                for name, frame in frames.items()
+            }
+            result['checks']['reload_predictions_match'] = 'NOT_EVALUATED'
+            result['status'] = 'MEASURED'
+        else:
+            np.testing.assert_allclose(before_probs, after_probs, **tolerance)
+            np.testing.assert_array_equal(before['TARGET_PRED'],
+                                          after['TARGET_PRED'])
+            result['checks']['reload_predictions_match'] = 'PASS'
+            result['status'] = 'PASS'
         stage('complete')
     except Exception as exc:
         result['status'] = 'FAIL'
         result['error'] = type(exc).__name__ + ': ' + str(exc)
         traceback.print_exc()
     finally:
+        if 'original_create' in locals():
+            CoreTrainer.create_pl_trainer = original_create
         result['elapsed_seconds'] = round(time.monotonic() - started, 3)
         (evidence / 'workflow-result.json').write_text(
             json.dumps(result, indent=2, default=str))
         print(json.dumps(result, indent=2, default=str), flush=True)
-    return 0 if result['status'] == 'PASS' else 1
+    return 0 if result['status'] in ('PASS', 'MEASURED') else 1
 
 
 if __name__ == '__main__':

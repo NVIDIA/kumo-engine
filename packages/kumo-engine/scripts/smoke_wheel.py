@@ -6,6 +6,7 @@
 
 import argparse
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -98,6 +99,102 @@ def verify_workflow_result(result, required_checks, *, status='PASS'):
         raise ValueError('A required workflow check is missing or failed')
 
 
+def compare_predictions(left, right, threshold=0.5):
+    """Measure differences only after validating the same prediction rows."""
+    for prediction in (left, right):
+        ids = prediction['entity_ids']
+        probabilities = prediction['probabilities']
+        labels = prediction['labels']
+        if (not ids or len(set(ids)) != len(ids)
+                or len(probabilities) != len(ids) or len(labels) != len(ids)):
+            raise ValueError('Invalid prediction rows')
+        for values, label in zip(probabilities, labels):
+            if (len(values) != 2 or not all(
+                    math.isfinite(value) and 0 <= value <= 1
+                    for value in values) or
+                    not math.isclose(sum(values), 1, abs_tol=1e-6, rel_tol=1e-5)
+                    or label != (values[1] > threshold)):
+                raise ValueError('Invalid prediction probabilities or labels')
+    if left['entity_ids'] != right['entity_ids']:
+        raise ValueError('Prediction entity IDs differ')
+    differences = [
+        abs(a - b)
+        for row_a, row_b in zip(left['probabilities'], right['probabilities'])
+        for a, b in zip(row_a, row_b)
+    ]
+    return {
+        'max_abs_difference':
+        max(differences),
+        'mean_abs_difference':
+        sum(differences) / len(differences),
+        'probability_values':
+        len(differences),
+        'label_changes':
+        sum(a != b for a, b in zip(left['labels'], right['labels'])),
+    }
+
+
+def summarize_variation(runs, device, expected_runs):
+    """Keep reload variation separate from variation between fresh models."""
+    if len(runs) != expected_runs or expected_runs < 2:
+        raise ValueError('The measurement run count is incomplete')
+    phases = {
+        'training', 'prediction', 'repeat_prediction', 'reload_and_predict'
+    }
+    for run in runs:
+        observed = run.get('observed_devices', [])
+        if (run.get('status') != 'MEASURED' or run.get('device') != device
+                or not phases.issubset(item['stage'] for item in observed)
+                or any(item['device'].split(':')[0] != device
+                       for item in observed)):
+            raise ValueError('A measurement is missing the requested device')
+        if run.get('seed') != runs[0].get('seed'):
+            raise ValueError('Measurement seeds differ')
+        if run.get('threshold', 0.5) != runs[0].get('threshold', 0.5):
+            raise ValueError('Measurement label thresholds differ')
+
+    def aggregate(pairs):
+        measurements = [
+            compare_predictions(a, b, runs[0].get('threshold', 0.5))
+            for a, b in pairs
+        ]
+        count = sum(item['probability_values'] for item in measurements)
+        return {
+            'max_abs_difference':
+            max(item['max_abs_difference'] for item in measurements),
+            'mean_abs_difference':
+            sum(item['mean_abs_difference'] * item['probability_values']
+                for item in measurements) / count,
+            'label_changes':
+            sum(item['label_changes'] for item in measurements),
+        }
+
+    predictions = [run['predictions'] for run in runs]
+    between = aggregate((a['before'], b['before'])
+                        for a, b in itertools.combinations(predictions, 2))
+    between['model_pairs'] = len(runs) * (len(runs) - 1) // 2
+    return {
+        'status':
+        'MEASURED',
+        'device':
+        device,
+        'training_runs':
+        len(runs),
+        'seed':
+        runs[0]['seed'],
+        'entities_per_run':
+        len(predictions[0]['before']['entity_ids']),
+        'repeat_prediction':
+        aggregate((p['before'], p['repeat']) for p in predictions),
+        'reload':
+        aggregate((p['before'], p['after']) for p in predictions),
+        'between_training_runs':
+        between,
+        'approved_gpu_tolerance':
+        None,
+    }
+
+
 def wheel_identity(wheel):
     metadata = read_metadata(wheel)
     if metadata['Name'].lower().replace('_', '-') != 'kumo-engine':
@@ -140,7 +237,8 @@ def run_command(command, cwd, log, timeout=60):
 
 def check_wheel(wheel, output, *, reference=False, learning=False,
                 fixed_dependencies=False, measure_learning=False,
-                compare_with=None, report_learning=False):
+                compare_with=None, report_learning=False, device='cpu', runs=1,
+                measure_variation=False):
     wheel = wheel.resolve()
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -167,9 +265,12 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
         shutil.copyfile(REQUIREMENTS, output / 'requirements.json')
         summary['requirements_sha256'] = hashlib.sha256(
             REQUIREMENTS.read_bytes()).hexdigest()
-        summary['configuration'] = requirements['configuration']
+        summary['configuration'] = dict(requirements['configuration'],
+                                        device=device)
         summary['fixture'] = requirements['fixture']
         summary['reference_mode'] = reference
+        summary['requested_device'] = device
+        summary['training_runs'] = runs
         if reference:
             summary['stage'] = 'reference'
             if identity != requirements['reference']['wheel']:
@@ -213,16 +314,50 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                 [python, '-I', '-m', 'pip', '--isolated', 'freeze', '--all'],
                 root)
             source = REQUIREMENTS.with_suffix('.py')
+            summary['workflow_sha256'] = hashlib.sha256(
+                source.read_bytes()).hexdigest()
             exercise = root / source.name
             shutil.copyfile(source, exercise)
             shutil.copyfile(REQUIREMENTS, exercise.with_suffix('.json'))
-            run('workflow', [
-                python, '-I',
-                str(exercise), '--version', identity['version'], '--output-dir',
-                str(output)
-            ], root, timeout=300)
-            result = json.loads((output / 'workflow-result.json').read_text())
-            verify_workflow_result(result, requirements['required_checks'])
+            results = []
+            for index in range(runs):
+                run_root = root
+                evidence = output
+                stage = 'workflow'
+                if measure_variation:
+                    run_root = root / f'run-{index + 1:03d}'
+                    run_root.mkdir()
+                    evidence = output / run_root.name
+                    evidence.mkdir()
+                    stage = run_root.name
+                command = [
+                    python, '-I',
+                    str(exercise), '--version', identity['version'],
+                    '--output-dir',
+                    str(evidence), '--device', device
+                ]
+                if measure_variation:
+                    command.append('--measure-variation')
+                run(stage, command, run_root, timeout=300)
+                result = json.loads(
+                    (evidence / 'workflow-result.json').read_text())
+                if measure_variation:
+                    # All functional checks remain required. Numerical agreement
+                    # is measured until a device-specific limit is approved.
+                    checks = [
+                        check for check in requirements['required_checks']
+                        if check != 'reload_predictions_match'
+                    ]
+                    verify_workflow_result(result, checks, status='MEASURED')
+                    results.append(result)
+                else:
+                    verify_workflow_result(result,
+                                           requirements['required_checks'])
+            if measure_variation:
+                summary['variation'] = summarize_variation(
+                    results, device, runs)
+                (output / 'variation.json').write_text(
+                    json.dumps(summary['variation'], indent=2))
             if learning or measurement:
                 learning = root / 'wheel_learning.py'
                 shutil.copyfile(REQUIREMENTS.with_name('wheel_learning.py'),
@@ -284,8 +419,9 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                     verify_workflow_result(
                         summary['comparison'], [],
                         status='MEASURED' if report_learning else 'PASS')
-        summary.update(status='MEASURED' if measurement else 'PASS',
-                       stage='complete')
+        summary.update(
+            status='MEASURED' if measurement or measure_variation else 'PASS',
+            stage='complete')
     except Exception as exc:
         summary.update(status='FAIL', error=f'{type(exc).__name__}: {exc}')
         traceback.print_exc()
@@ -316,7 +452,22 @@ def main():
         help='Compare learning with this approved reference wheel')
     parser.add_argument('--output-dir', type=Path, required=True,
                         help='New directory for logs and JSON results')
+    parser.add_argument('--device', choices=('cpu', 'cuda'), default='cpu')
+    parser.add_argument('--runs', type=int, default=1)
+    parser.add_argument(
+        '--measure-variation', action='store_true',
+        help='Record variation without approving numerical limits')
     args = parser.parse_args()
+    if args.measure_variation and (args.learning or args.measure_learning
+                                   or args.report_learning
+                                   or args.compare_with is not None):
+        parser.error(
+            'Variation measurements are separate from learning comparisons')
+    if args.measure_variation and args.runs < 2:
+        parser.error(
+            'Variation measurements require at least two training runs')
+    if not args.measure_variation and (args.runs != 1 or args.device != 'cpu'):
+        parser.error('Repeated or CUDA runs require --measure-variation')
     if args.measure_learning and not args.reference:
         parser.error('--measure-learning requires --reference')
     if args.report_learning and args.compare_with is None:
@@ -324,7 +475,9 @@ def main():
     if args.compare_with is None:
         return check_wheel(args.wheel, args.output_dir,
                            reference=args.reference, learning=args.learning,
-                           measure_learning=args.measure_learning)
+                           measure_learning=args.measure_learning,
+                           device=args.device, runs=args.runs,
+                           measure_variation=args.measure_variation)
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
     summary = dict(status='RUNNING', stage='reference',

@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import io
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -209,6 +210,9 @@ class WheelSmokeTest(unittest.TestCase):
                         (output / 'install-report.json').write_text(
                             json.dumps(install))
                     elif log.stem == 'workflow':
+                        self.assertEqual(command[command.index('--device') + 1],
+                                         'cpu')
+                        self.assertNotIn('--measure-variation', command)
                         (output / 'workflow-result.json').write_text(
                             json.dumps(workflow))
                     elif log.stem == 'learning' and (
@@ -487,6 +491,219 @@ class WheelSmokeTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'missing or failed'):
                     self.runner.verify_workflow_result(
                         dict(status=status, checks=checks), ['training'])
+
+    def measured_run(self, probabilities, repeat=None, reload=None,
+                     threshold=0.5):
+        def predictions(values):
+            return {
+                'entity_ids': [0, 1],
+                'probabilities': [[1 - value, value] for value in values],
+                'labels': [value > threshold for value in values],
+            }
+
+        return {
+            'status':
+            'MEASURED',
+            'device':
+            'cuda',
+            'seed':
+            0,
+            'threshold':
+            threshold,
+            'observed_devices': [{
+                'stage': stage,
+                'device': 'cuda:0'
+            } for stage in ('training', 'prediction', 'repeat_prediction',
+                            'reload_and_predict')],
+            'predictions': {
+                'before': predictions(probabilities),
+                'repeat': predictions(repeat or probabilities),
+                'after': predictions(reload or probabilities),
+            },
+        }
+
+    def test_reload_and_retraining_differences_are_reported_separately(self):
+        runs = [
+            self.measured_run([0.25, 0.75], repeat=[0.25, 0.751],
+                              reload=[0.25, 0.752]),
+            self.measured_run([0.5, 0.5], reload=[0.501, 0.5]),
+        ]
+        report = self.runner.summarize_variation(runs, 'cuda', 2)
+        self.assertEqual(report['status'], 'MEASURED')
+        self.assertAlmostEqual(
+            report['repeat_prediction']['max_abs_difference'], 0.001)
+        self.assertAlmostEqual(report['reload']['max_abs_difference'], 0.002)
+        self.assertAlmostEqual(
+            report['between_training_runs']['max_abs_difference'], 0.25)
+        self.assertEqual(report['between_training_runs']['model_pairs'], 1)
+        self.assertEqual(report['reload']['label_changes'], 1)
+        self.assertIsNone(report['approved_gpu_tolerance'])
+
+    def test_measurements_reject_missing_runs_and_cpu_fallback(self):
+        runs = [self.measured_run([0.25, 0.75]) for _ in range(2)]
+        with self.assertRaisesRegex(ValueError, 'run count'):
+            self.runner.summarize_variation(runs[:1], 'cuda', 2)
+        runs[1]['observed_devices'][-1]['device'] = 'cpu'
+        with self.assertRaisesRegex(ValueError, 'device'):
+            self.runner.summarize_variation(runs, 'cuda', 2)
+        runs[1]['observed_devices'] = []
+        with self.assertRaisesRegex(ValueError, 'device'):
+            self.runner.summarize_variation(runs, 'cuda', 2)
+
+    def test_measurement_status_is_not_an_approved_smoke_result(self):
+        result = dict(status='MEASURED', checks=dict(training='PASS'))
+        with self.assertRaises(ValueError):
+            self.runner.verify_workflow_result(result, ['training'])
+        self.runner.verify_workflow_result(result, ['training'],
+                                           status='MEASURED')
+
+    def test_measurements_use_the_configured_label_threshold(self):
+        runs = [
+            self.measured_run([0.6, 0.8], threshold=0.7),
+            self.measured_run([0.65, 0.8], threshold=0.7),
+        ]
+        report = self.runner.summarize_variation(runs, 'cuda', 2)
+        self.assertAlmostEqual(
+            report['between_training_runs']['max_abs_difference'], 0.05)
+        self.assertEqual(report['between_training_runs']['label_changes'], 0)
+
+    def test_measurements_reject_different_training_controls(self):
+        for control, value in [('seed', 1), ('threshold', 0.6)]:
+            with self.subTest(control=control):
+                runs = [self.measured_run([0.25, 0.75]) for _ in range(2)]
+                runs[1][control] = value
+                with self.assertRaisesRegex(ValueError, 'differ'):
+                    self.runner.summarize_variation(runs, 'cuda', 2)
+
+    def test_measurements_reject_invalid_or_unmatched_predictions(self):
+        for mutation in ('ids', 'nan', 'normalization', 'labels'):
+            with self.subTest(mutation=mutation):
+                runs = [self.measured_run([0.25, 0.75]) for _ in range(2)]
+                prediction = runs[1]['predictions']['after']
+                if mutation == 'ids':
+                    prediction['entity_ids'] = [0, 2]
+                elif mutation == 'nan':
+                    prediction['probabilities'][0][0] = math.nan
+                elif mutation == 'normalization':
+                    prediction['probabilities'][0] = [0.9, 0.9]
+                else:
+                    prediction['labels'][0] = True
+                with self.assertRaises(ValueError):
+                    self.runner.summarize_variation(runs, 'cuda', 2)
+
+    def test_measurement_options_require_multiple_runs_before_installation(
+            self):
+        completed = subprocess.run([
+            sys.executable,
+            str(RUNNER),
+            str(self.wheel()),
+            '--measure-variation',
+            '--device',
+            'cuda',
+            '--runs',
+            '1',
+            '--output-dir',
+            str(self.root / 'evidence'),
+        ], capture_output=True, text=True)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn('at least two', completed.stderr)
+        self.assertFalse((self.root / 'evidence/install.log').exists())
+
+    def test_variation_cannot_silently_skip_learning_or_comparison(self):
+        for options in (['--learning'], ['--measure-learning', '--reference'], [
+                '--compare-with', 'reference.whl'
+        ], ['--report-learning', '--compare-with', 'reference.whl']):
+            with self.subTest(options=options):
+                output = self.root / 'incompatible'
+                completed = subprocess.run([
+                    sys.executable,
+                    str(RUNNER),
+                    str(self.wheel()), '--measure-variation', '--runs', '2',
+                    '--output-dir',
+                    str(output), *options
+                ], capture_output=True, text=True)
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn('separate from learning', completed.stderr)
+                self.assertFalse(output.exists())
+
+    def test_variation_records_effective_device_and_requires_functional_checks(
+            self):
+        wheel = self.wheel()
+        requirements = self.runner.load_requirements(self.runner.REQUIREMENTS)
+        requirements['configuration'].update(
+            os=sys.platform, machine=self.runner.platform.machine(),
+            python=f'{sys.version_info.major}.{sys.version_info.minor}')
+        identity = self.runner.wheel_identity(wheel)
+        requirements['reference']['wheel'] = identity
+        requirements['reference']['dependencies'] = {}
+        install = dict(install=[
+            dict(
+                metadata=dict(name='kumo-engine', version='1.2.3'),
+                download_info=dict(archive_info=dict(hashes=dict(
+                    sha256=identity['sha256']))))
+        ])
+        for device, failed_check in (('cpu', None), ('cuda', None),
+                                     ('cuda', 'training'),
+                                     ('cuda', 'prediction_rows_and_values')):
+            with self.subTest(device=device, failed_check=failed_check):
+                output = self.root / f'variation-{device}-{failed_check}'
+                stages = []
+
+                def commands(command, cwd, log, timeout=60):
+                    log.write_text('')
+                    stages.append(log.stem)
+                    if log.stem == 'install':
+                        (output / 'install-report.json').write_text(
+                            json.dumps(install))
+                    elif log.stem.startswith('run-'):
+                        self.assertEqual(command[command.index('--device') + 1],
+                                         device)
+                        self.assertIn('--measure-variation', command)
+                        evidence = Path(command[command.index('--output-dir') +
+                                                1])
+                        self.assertEqual(cwd.name, evidence.name)
+                        result = self.measured_run([0.25, 0.75])
+                        result['device'] = device
+                        for observed in result['observed_devices']:
+                            observed['device'] = device
+                        result['checks'] = {
+                            name: 'PASS'
+                            for name in requirements['required_checks']
+                        }
+                        result['checks'][
+                            'reload_predictions_match'] = 'NOT_EVALUATED'
+                        if failed_check:
+                            del result['checks'][failed_check]
+                        (evidence / 'workflow-result.json').write_text(
+                            json.dumps(result))
+
+                with (patch.object(self.runner, 'run_command', commands),
+                      patch.object(self.runner, 'load_requirements',
+                                   return_value=requirements),
+                      patch.object(sys, 'argv', [
+                          str(RUNNER),
+                          str(wheel), '--reference', '--measure-variation',
+                          '--device', device, '--runs', '2', '--output-dir',
+                          str(output)
+                      ]), patch('sys.stdout', new_callable=io.StringIO),
+                      patch('sys.stderr', new_callable=io.StringIO)):
+                    code = self.runner.main()
+                report = json.loads((output / 'summary.json').read_text())
+                self.assertEqual(code, 1 if failed_check else 0)
+                self.assertEqual(report['configuration']['device'], device)
+                self.assertEqual(requirements['configuration']['device'], 'cpu')
+                self.assertEqual(
+                    json.loads((output / 'requirements.json'
+                                ).read_text())['configuration']['device'],
+                    'cpu')
+                self.assertEqual(report['status'],
+                                 'FAIL' if failed_check else 'MEASURED')
+                self.assertEqual((output / 'variation.json').exists(),
+                                 failed_check is None)
+                self.assertEqual(stages, [
+                    'venv', 'install', 'pip-check', 'packages', 'run-001',
+                    *([] if failed_check else ['run-002'])
+                ])
 
 
 if __name__ == '__main__':
