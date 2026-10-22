@@ -9,7 +9,7 @@ process lifetime, without automatic eviction; identity cleanup or
 to prevent duplicate clients, so concurrent first use of different accounts can
 serialize. Arrow/fsspec wrappers are lightweight and created per access.
 
-Identity probing checks token acquisition only. It does not verify storage
+Identity probing checks Python token acquisition only, not native output compatibility. It does not verify storage
 existence, RBAC/ACL permissions, or connectivity; list or read the configured
 source to verify those.
 
@@ -19,7 +19,7 @@ concurrently; each file holds one transfer slot and uses no per-file executor
 or queued chunk futures. The SDK writes each response to the local temporary
 file before requesting the next chunk. The initial response remains buffered
 for the stream's lifetime; this is not zero-copy network-to-disk streaming.
-Prepared uploads retain up to four 4 MiB chunks. Large projected Arrow reads
+Large projected Arrow reads
 can use up to four SDK workers, bounded by the shared transfer slots. A 64 MiB
 range uses up to three workers; ranges above 64 MiB can use four. The initial
 response plus four 16 MiB chunks can account for about 80 MiB before transport
@@ -29,8 +29,8 @@ Projected reads are not covered by the 64 MiB bulk-copy reservation.
 Transfers across files and accounts share a CPU-derived concurrency ceiling
 (at most 128, lowered by `KUMO_SOURCE_COPY_WORKERS`). The HTTP connection pool
 matches that ceiling. Metadata bypasses transfer slots and shares the HTTP
-transport. Uploads reserve 64 MiB per active file through the shared memory
-ledger; source bulk copies use the core copy reservation. These reservations
+transport. Source bulk copies use the core copy reservation. These SDK
+limits and reservations do not apply to native Arrow uploads. These reservations
 are accounting estimates, not caps on total process RSS. Larger responses
 reduce requests and fragment assembly while increasing memory per active file.
 Plan roughly 48–64 MiB of payload buffers per active bulk download, with
@@ -40,7 +40,7 @@ fits a host's memory limit. Actual memory depends on allocation lifetimes.
 
 For memory-constrained hosts, set `KUMO_ADLS_TRANSFER_WORKERS=4` before
 importing the provider to limit ADLS transfer requests and its HTTP pool
-without lowering other providers' copy limits. The value must be a positive
+without lowering other providers' copy limits. This does not limit native writes. The value must be a positive
 integer and cannot raise the shared copy/CPU ceiling. The limit is process-wide
 across ADLS accounts and readers; it is read once at import. Even with one slot,
 files use the same serial SDK stream. Arrow buffers, cached bytes, SDK copies,
@@ -78,19 +78,44 @@ after discovery belong to a subsequent read. Identity checks may still perform
 listings or HEADs, so one discovery does not mean one metadata request.
 ETag quote and directory-path normalization can invalidate existing version
 hashes once, requiring restaging.
-Prepared export files and model files use seekable parallel uploads; Arrow
-writers keep the buffered streaming path. Failed prepared uploads delete only
-the object matching their creation ETag, preserving another writer's output.
-Prepared uploads create the destination before uploading; concurrent readers
-can observe an empty or incomplete object. Publishing an individual file is
-not atomic, so consumers must wait for export completion.
-Streaming writes are not transactional: Arrow closes its wrapper without
-forwarding serialization exceptions to the fsspec context manager, so failed
-serialization can leave partial output. Direct fsspec contexts can discard
-on caller errors; upload failures also trigger best-effort cleanup.
-Streaming cleanup deletes only an object matching the original creation ETag.
-It leaves changed or uncertain objects in place. Appends are not fenced, so
-this cleanup guard does not provide isolation between concurrent writers.
+Prepared exports, generated Parquet/CSV output, and model bundles use native
+Arrow output streams. The shared sink copies prepared bytes in 8 MiB blocks,
+with up to eight files per directory export; model bundles upload files
+sequentially. Arrow owns per-file buffering and background upload scheduling.
+The ADLS SDK transfer semaphore and 64 MiB copy reservation do not constrain
+these native buffers. Copy block size is not an upload-memory limit. Consumers
+must wait for export completion; streaming writes and export directories are
+not transactional. Arrow close after a caller failure may publish partial
+output, as with the shared S3/GCS sink. The SDK writer's conditional cleanup
+and final-flush guarantees do not apply to native output.
+
+Native output is bound lazily on first write, leaving SDK metadata, source
+reads, model downloads, and their account-qualified paths unchanged. Only
+output streams drop the virtual account qualifier to use Arrow's container/key
+path. Existing root containment checks run before filesystem access.
+A native filesystem is reused within one sink access, with thread-safe first
+construction; it is not cached across accesses or identities. The provider
+requires Arrow 24, the version whose native credential/URI APIs are validated.
+
+Without an explicit identity, writes use Arrow's C++ ambient credential chain;
+reads use Python Azure Identity. These chains can select different ambient
+credentials. Explicit workload writes require process `AZURE_TENANT_ID` and
+`AZURE_CLIENT_ID` to equal the selected identity, plus
+`AZURE_FEDERATED_TOKEN_FILE`. They select only Arrow's workload credential,
+without ambient fallback. Arrow captures these settings at construction and
+rereads projected token contents when obtaining a fresh assertion. A different
+per-connector identity remains supported for reads, but its native writes fail
+with a configuration error. The provider never changes process environment or
+mints delegation SAS to bridge credentials.
+
+Native writes validate `AZURE_AUTHORITY_HOST` against the selected cloud. Public
+Azure defaults to `https://login.microsoftonline.com`; US Government needs
+`https://login.microsoftonline.us`, and China needs
+`https://login.chinacloudapi.cn`. Both native Blob and DFS endpoints use the
+selected storage suffix. Offline tests construct real native filesystems for
+all three clouds and check identity/authority rejection and endpoint mapping.
+They do not establish live federation, token renewal, sovereign connectivity,
+or RBAC/ACL propagation; those require suitable live environments.
 
 Downloaded files remain owner-private, matching the S3 staging path. Local
 engine ingestion uses the same OS user; sharing scratch files across users

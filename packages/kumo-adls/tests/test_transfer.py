@@ -210,29 +210,29 @@ def test_fetch_closes_temporary_file_before_promotion_and_cleanup(
     assert not list(tmp_path.glob('.kumo-adls-*'))
 
 
-def test_file_export_uses_seekable_sdk_upload_and_keeps_prepared_columns(
+def test_file_export_uses_native_copy_and_keeps_prepared_columns(
         service, connector, tmp_path, monkeypatch):
     import pyarrow as pa
     import pyarrow.parquet as pq
     from fakes import FakeFile
     from kumo_adls.sink import ADLSSinkBackend
 
+    def unexpected_upload(*args, **kwargs):
+        pytest.fail('Prepared export must use native Arrow output')
+
+    monkeypatch.setattr(FakeFile, 'upload_data', unexpected_upload)
+    monkeypatch.setattr(ADLSFileSystem, 'put_file', unexpected_upload)
     source = tmp_path / 'source.parquet'
     pq.write_table(pa.table({'id': [1, 2]}), source)
-    original = FakeFile.upload_data
-    uploads = []
-
-    def upload(self, stream, **kwargs):
-        assert stream.seekable()
-        uploads.append(self.name)
-        return original(self, stream, **kwargs)
-
-    monkeypatch.setattr(FakeFile, 'upload_data', upload)
     ADLSSinkBackend().write_files(connector(), 'predictions/', [str(source)],
                                   extra_columns={'tag':
                                                  'test'}, export_id='run')
-    assert len(uploads) == 1
-    table = pq.read_table(pa.BufferReader(service.files[uploads[0]]))
+    outputs = [
+        name for name in service.files
+        if '/predictions/' in name and name.endswith('.parquet')
+    ]
+    assert len(outputs) == 1
+    table = pq.read_table(pa.BufferReader(service.files[outputs[0]]))
     assert table.to_pydict() == {'id': [1, 2], 'tag': ['test', 'test']}
 
 
