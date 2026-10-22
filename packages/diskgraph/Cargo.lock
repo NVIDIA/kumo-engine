@@ -1739,6 +1739,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "crc32fast",
  "crossterm",
  "dashmap",
  "dirs",

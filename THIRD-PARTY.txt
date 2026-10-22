@@ -5152,7 +5152,7 @@ cpufeatures 0.3.0
 crc32fast 1.5.0
 ------------------------------------------------------------------------------
   License       : MIT OR Apache-2.0
-  Distributed in: diskgraph._c.abi3.so
+  Distributed in: diskgraph._c.abi3.so, diskgraph/bin/ingest
   Copyright     : Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
 
   Legal text c6596eb7be85: LICENSE-APACHE

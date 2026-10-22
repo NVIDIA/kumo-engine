@@ -135,6 +135,40 @@ Snapshot indexes are reused by graph definition and source version; changed
 versions get separate directories. Builds for the same graph use a filesystem
 lock. See the [implementation](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/kumo/engine/graph.py).
 
+To build an index on one machine and train on another, export it through an
+S3, GCS or file connector and load it there:
+
+```python
+location = graph.snapshot().export(S3Connector(), "s3://bucket/snapshots")
+# On the training machine:
+snapshot = GraphSnapshot.load_from_connector(S3Connector(), path=location)
+```
+
+`export` writes `<path>/<graph id>/<data version>/` and returns it. It first
+removes `kumo_snapshot.json` and anything else at that location, uploads every
+file, and writes `kumo_snapshot.json` (with per-range CRC32s) last, so an
+interrupted export is never loadable and re-running starts over. A load either
+completes or leaves nothing; a load that overlaps a re-export of the same
+location can fail and should be retried. To keep several builds of one
+snapshot (for example from two engine versions), export them to different
+paths.
+Snowflake, Databricks and BigQuery connectors cannot hold an export: use a
+`FileConnector` on a mounted volume (e.g. `/Volumes/<catalog>/<schema>/<volume>`)
+or the S3/GCS connector on the bucket behind it. Load only from paths whose
+writers you trust: checksums detect corruption, not tampering.
+
+`snapshot.source_changes(graph)` reports, per table, whether the source moved
+on since the snapshot was built, from metadata only:
+
+```python
+{"users":  {"status": "unchanged", "recorded": "1792539971", "current": "1792539971"},
+ "events": {"status": "changed",   "recorded": "1792539971", "current": "1792539974"}}
+```
+
+The status is `unknown` when there is nothing reliable to compare: no recorded
+version, a different connector or location, Custom SQL, or a version whose
+`version_kind` is `hour_bucket` or `unknown` (views, undated sources). `load_from_connector(..., graph=graph)` warns when tables `changed`.
+
 The return values expose the retained files directly:
 
 ```python

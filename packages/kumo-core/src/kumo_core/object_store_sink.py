@@ -31,6 +31,12 @@ class ObjectStoreSinkBackend(ABC):
         """Return the authenticated filesystem and validated bucket/key path."""
         raise NotImplementedError
 
+    def filesystem(self, connector: SourceConnector,
+                   path: str) -> Tuple[FileSystem, str]:
+        """The authenticated filesystem and resolved ``path``."""
+        filesystem, resolved = self._destination(connector, path)
+        return filesystem, resolved.rstrip('/')
+
     def write_table(
         self,
         connector: SourceConnector,
