@@ -10,8 +10,8 @@
     "target_bytes": 1000000000,
     "max_bytes": 1073741824,
     "row_group_bytes": 134217728,
-    "compression": "zstd",
-    "compression_level": 3
+    "compression": "snappy",
+    "compression_level": null
   },
   "graphs": {
     "commerce": {

@@ -12,6 +12,8 @@ EVENT_STRIDE = 1 << 32  # event PK = shard * EVENT_STRIDE + counter within shard
 
 
 class GraphGen:
+    degree_drop_sub1 = False
+    tail_stretch_max = 1.25
     graph = None
     main = None
     families = {}  # family -> list of output tables (first one sizes the files)
@@ -53,15 +55,16 @@ class GraphGen:
         """Degree sampler. Degrees of the main entity are per-node properties, so its
         top anchor is the global max; in-degrees of other parents (hubs) keep their
         share of a market (profile.degree_sampler)."""
+        kw = {"drop_sub1": self.degree_drop_sub1, "stretch_max": self.tail_stretch_max}
         if "~" in edge:
             parent = self.main if side == "out_degree" else None
         else:
             parent = edge.split("->")[1]
         if parent is None:
-            return P.degree_sampler(self.edges[edge][side])
+            return P.degree_sampler(self.edges[edge][side], **kw)
         if parent == self.main:
-            return P.degree_sampler(self.edges[edge][side], nodes=self.shard_main)
-        return P.degree_sampler(self.edges[edge][side], self.tables[parent]["rows"], self.n(parent))
+            return P.degree_sampler(self.edges[edge][side], nodes=self.shard_main, **kw)
+        return P.degree_sampler(self.edges[edge][side], self.tables[parent]["rows"], self.n(parent), **kw)
 
     def columns(self, table, shard):
         return core.Columns(self.tables[table], shard, self.scale,

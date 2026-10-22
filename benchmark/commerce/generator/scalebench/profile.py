@@ -161,7 +161,7 @@ def tail_alpha(deg):
     return 1.0 + np.log(10) / np.log(b / a) if a > 0 and b > a else 3.0
 
 
-def degree_sampler(deg, real_parent_rows=None, shard_parent_rows=None, nodes=None):
+def degree_sampler(deg, real_parent_rows=None, shard_parent_rows=None, nodes=None, drop_sub1=False, stretch_max=1.25):
     """Per-node degree inverse CDF.
 
     u < frac_zero maps to 0; the remaining anchors are interpolated in log1p space.
@@ -174,7 +174,10 @@ def degree_sampler(deg, real_parent_rows=None, shard_parent_rows=None, nodes=Non
     """
     q = deg["quantiles"]
     fz = float(deg.get("frac_zero", 0.0))
-    a = [(p, max(v, 1.0)) for p, v in _anchors(q) if p > fz]  # above frac_zero, degrees are >= 1
+    if drop_sub1:
+        a = [(p, v) for p, v in _anchors(q) if p > fz and v >= 1]
+    else:
+        a = [(p, max(v, 1.0)) for p, v in _anchors(q) if p > fz]
     top = max(v for _, v in _anchors(q))
     if "max" in q:
         gmax = float(q["max"])
@@ -191,22 +194,20 @@ def degree_sampler(deg, real_parent_rows=None, shard_parent_rows=None, nodes=Non
         probs, vals = [0.0, fz - 1e-12] + probs, [0.0, 0.0] + vals
     q = Quantile(probs, vals, log=True)
     m = degree_mean(deg)
-    return TailCalibrated(q, m) if m else q
+    return TailCalibrated(q, m, stretch_max) if m else q
 
 
 class TailCalibrated:
     """Keeps the quantile function exact up to p90 and stretches the tail above it
     so the distribution mean equals the profile mean (keeps table row ratios).
-    The stretch factor is clamped to [0.25, 1.25]."""
+    The stretch factor is clamped to [0.25, stretch_max]."""
 
-    def __init__(self, q, mean):
+    def __init__(self, q, mean, stretch_max=1.25):
         self.q = q
         grid = q(np.linspace(0, 1, 200_001))
         self.q90 = float(q(np.array([0.9]))[0])
         excess = np.maximum(grid - self.q90, 0).mean()
-        # stretch capped at 1.25: a mean driven by outliers beyond one shard's max must not
-        # inflate p90..p99
-        self.c = 1.0 if excess <= 0 else float(np.clip(1 + (mean - grid.mean()) / excess, 0.25, 1.25))
+        self.c = 1.0 if excess <= 0 else float(np.clip(1 + (mean - grid.mean()) / excess, 0.25, stretch_max))
 
     def __call__(self, u):
         x = self.q(u)

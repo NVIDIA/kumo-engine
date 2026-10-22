@@ -12,7 +12,8 @@ The download preserves these scripts without requiring a repository checkout.
 `reference-results.json` records the measured configuration and rates, including the external DuckDB comparison.
 The runnable scripts execute Kumo only.
 They use Python's standard library, NumPy, PyArrow and the installed Kumo runtime; they do not install packages or require DuckDB, AWS CLI, or pytest.
-Install a compatible Kumo Engine runtime following the Engine setup guide before running them.
+Install Kumo Engine from commit `392c25ed2439e0eb2f8c3722192e6e1aff783ad6` using the Engine setup guide before running them.
+This is the reference revision, before the changes in PR #93; a newer revision measures a different runtime.
 The reference used Linux x86_64 and Python 3.12.3.
 
 ## Data and hardware
@@ -34,8 +35,9 @@ A 100M rung can exercise the workflow before a full run, but its results do not 
 The `generator/` directory contains the original commerce generation algorithm with an invented placeholder profile.
 It creates the same seven-table schema and workload family, but it does not recreate the original data distribution, row counts, bytes or benchmark timings.
 No real-derived aggregate profile or original dataset is included.
-NumPy, PyArrow and SciPy are already direct or transitive dependencies of Kumo Engine; no additional package install or version override is requested.
-Use the compatible versions installed with your Kumo runtime and retain the versions recorded in each manifest.
+Install the exact NumPy, SciPy and PyArrow versions in `generator/requirements.txt` in a separate generator environment.
+The generator writes Snappy Parquet directly, matching the codec used for the published 534.6 GB (497.93 GiB) source files and ingest/read timings.
+These version and codec settings are necessary for byte-identical regeneration with the original profile, configuration and file layout; the included placeholder profile still produces different data.
 
 Start with the tiny configuration, which reduces each market to 200 customers.
 Run from the extracted folder using a new data destination.
@@ -43,14 +45,18 @@ The generator is invoked from its own directory so its `scalebench` module impor
 
 ```bash
 cd generator
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 python -m scalebench.generate run --graph commerce --rung smoke --shards 4 --config smoke-config.json --root /path/to/generated-data --workers 1
 python verify.py --root /path/to/generated-data --rung smoke
+deactivate
 cd ..
 python scripts/make_eval_ids.py --root /path/to/generated-data/commerce/smoke --out /path/to/generated-data/commerce/smoke/_eval --test-seeds 100 --score-customers 100 --workers 1
 ```
 
 Use `/path/to/generated-data/commerce/smoke` as `DATA` for a smoke run.
-For a larger representative dataset, run from `generator/` with the standard `config.json`, omit `--shards`, and choose `--rung 100M`, `1B` or `50B`.
+For a larger representative dataset, reactivate the generator environment and run from `generator/` with the standard `config.json`, omit `--shards`, and choose `--rung 100M`, `1B` or `50B`.
 Those are target row counts, rounded to whole market blocks, and the full 50B setting is a large workload.
 Set `--workers` to fit your available memory; start with one.
 Generation, evaluation-ID preparation and data verification are outside the benchmark timers.
