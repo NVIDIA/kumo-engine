@@ -101,8 +101,7 @@ cannot establish complete connector ingestion, native deployment parity,
 object-store durability, TLS/authentication cost, cloud networking or service
 throttling. A smaller worker ceiling is not a fixed-RAM-quota benchmark.
 
-Use the [live bulk-reader harness](compare_live.py) and
-[production transfer methodology](../../../packages/kumo-adls/docs/performance.md)
+Use the [live bulk-reader harness](compare_live.py)
 for production bulk-reader measurements on the appropriate native cloud hosts. Keep results from
 these different scopes separate; historical raw traces/CSV remain provenance,
 not current ADLS native-host measurements.
