@@ -245,9 +245,14 @@ class TrainingTable:
             source_table=provenance.source_table(
                 source_table.connector, source_table.table_name,
                 source_table.sql, version,
-                record_sources=(snapshot.manifest
-                                or {}).get('record_sources', True)))
+                record_sources=_record_sources(snapshot)))
         return table
+
+
+def _record_sources(snapshot: GraphSnapshot) -> bool:
+    if snapshot.record_sources is not None:
+        return snapshot.record_sources
+    return (snapshot.manifest or {}).get('record_sources') is True
 
 
 def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
