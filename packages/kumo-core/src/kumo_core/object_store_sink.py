@@ -55,7 +55,8 @@ class ObjectStoreSinkBackend(ABC):
 
     def write_files(self, connector, table_name, files,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
-                    export_id=None, extra_columns=None):
+                    export_id=None, extra_columns=None,
+                    sidecars: Mapping[str, bytes] = {}):
         """Export selected Parquet without collecting their rows."""
         del project_id
         if write_mode is not WriteMode.OVERWRITE:
@@ -69,7 +70,8 @@ class ObjectStoreSinkBackend(ABC):
         _, output = export_selected_files(files, path, fs=storage,
                                           identity=export_id or str(files),
                                           file_type=kind,
-                                          convert_csv=storage.convert_csv)
+                                          convert_csv=storage.convert_csv,
+                                          sidecars=sidecars)
         return f'{self.scheme}://{output}'
 
     def publish_model(
@@ -282,8 +284,11 @@ class _ArrowExportFiles:
             return reader.readall().decode('utf-8')
 
     def write_text(self, path, value):
+        self.write_bytes(path, value.encode('utf-8'))
+
+    def write_bytes(self, path, value):
         with self.filesystem.open_output_stream(path) as writer:
-            writer.write(value.encode('utf-8'))
+            writer.write(value)
 
     def makedirs(self, path, exist_ok=True):
         _prepared(self.filesystem, path)

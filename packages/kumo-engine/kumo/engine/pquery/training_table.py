@@ -2,20 +2,35 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
+import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumoapi.model_plan import \
     TrainingTableGenerationPlan as PublicGenerationPlan
 from kumoapi.train import TrainingTableSpec
 
+from kumo.engine import _provenance as provenance
+from kumo.engine._manifest import (
+    SourceTableEntry,
+    TrainingTableManifest,
+    TrainingTableParents,
+    read_manifest,
+    stamp,
+    write_manifest,
+)
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
 
 if TYPE_CHECKING:
     from kumo.engine.trainer.output_config import TrainingTableOutputConfig
+
+STAGING_MANIFEST_FILE = 'training-table-manifest.json'
+EXPORT_MANIFEST_FILE = '_kumo_manifest.json'
+_RANDOM_SPLITS = ('RandomSplit', 'RandomLinkSplit')
 
 
 @dataclass(frozen=True)
@@ -37,6 +52,27 @@ class TrainingTable:
     required_stages: tuple[str, ...]
     #: Effective generation settings carried forward into ``Trainer.fit``.
     generation_plan: TrainingTableGenerationPlan
+
+    @property
+    def tt_id(self) -> str:
+        """The id DiskGraph assigned to this table at generation."""
+        from kumo_core.training.export import read_spec
+
+        return read_spec(str(self.staging_dir))['tt_id']
+
+    @property
+    def manifest(self) -> Optional[TrainingTableManifest]:
+        """Lineage recorded at generation; None for older tables."""
+        return read_manifest(self.staging_dir / STAGING_MANIFEST_FILE,
+                             TrainingTableManifest)
+
+    @property
+    def source_mode(self) -> Optional[str]:
+        """``pquery`` or ``custom_tt``, as DiskGraph recorded at generation."""
+        try:
+            return json.loads(self.manifest_path.read_text())['source_mode']
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
 
     def export(self, output_config: "TrainingTableOutputConfig") -> str:
         r"""Write the staged rows with a ``SPLIT`` column (``0`` train, ``1``
@@ -63,7 +99,27 @@ class TrainingTable:
         with tempfile.TemporaryDirectory(dir=root) as output:
             files = export_train_table(str(self.staging_dir), output)
             return write_files(connector, output_config.table_name, files,
-                               output_config.write_mode, export_id=export_id)
+                               output_config.write_mode, export_id=export_id,
+                               **self._export_sidecars(connector,
+                                                       output_config))
+
+    def _export_sidecars(self, connector, output_config) -> Dict[str, Any]:
+        from kumo_core.object_store_sink import ObjectStoreSinkBackend
+        from kumo_core.sources import layout
+
+        manifest = self.staging_dir / STAGING_MANIFEST_FILE
+        name = output_config.table_name.rstrip('/')
+        try:
+            if (not isinstance(connector.sink_backend, ObjectStoreSinkBackend)
+                    or layout.file_type(name) == layout.CSV
+                    or not manifest.is_file()):
+                return {}
+            return {'sidecars': {EXPORT_MANIFEST_FILE: manifest.read_bytes()}}
+        except Exception as error:
+            warnings.warn(
+                f"Exporting without {EXPORT_MANIFEST_FILE}: {error}",
+                UserWarning, stacklevel=3)
+            return {}
 
     @classmethod
     def from_source_table(
@@ -126,7 +182,8 @@ class TrainingTable:
             )
         run_id = new_run_id()
         run_dir = train_table_scratch_dir(run_id)
-        rows_path = stage_source_table(source_table, run_dir / "source-table")
+        rows_path, version = stage_source_table(source_table,
+                                                run_dir / "source-table")
         generation_plan = from_json_dict(
             to_json_dict(public_plan),
             TrainingTableGenerationPlan,
@@ -183,7 +240,7 @@ class TrainingTable:
                 year_over_year=("yoy_offsets_secs" in
                                 (task_plan.train_table.compiler_options or {})),
             )
-        return cls(
+        table = cls(
             query=pq.query,
             train_table_path=Path(generated.train_table_path),
             manifest_path=Path(generated.manifest_path),
@@ -191,3 +248,45 @@ class TrainingTable:
             required_stages=task_plan.task_dataset.required_stages,
             generation_plan=generation_plan,
         )
+        _record_manifest(
+            table, snapshot, task_plan.train_table,
+            source_table=provenance.source_table(
+                source_table.connector, source_table.table_name,
+                source_table.sql, version,
+                record_sources=_record_sources(snapshot)))
+        return table
+
+
+def _record_sources(snapshot: GraphSnapshot) -> bool:
+    if snapshot.record_sources is not None:
+        return snapshot.record_sources
+    manifest = snapshot.manifest
+    return manifest is not None and manifest.record_sources is True
+
+
+def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
+                     request: Any, *,
+                     source_table: Optional[SourceTableEntry] = None) -> None:
+    path = table.staging_dir / STAGING_MANIFEST_FILE
+    try:
+        from kumo_core.io.json import to_json_dict
+
+        seed = None
+        if request.split_family in _RANDOM_SPLITS:
+            seed = (request.split_config or {}).get('rnd_seed') or 0
+        write_manifest(
+            path,
+            TrainingTableManifest(
+                id=table.tt_id,
+                parents=TrainingTableParents(snapshot=snapshot.id,
+                                             source_table=source_table),
+                query=table.query,
+                generation_plan=to_json_dict(table.generation_plan),
+                task_type=request.task_type,
+                split_seed=seed,
+                **stamp(),
+            ))
+    except Exception as error:
+        warnings.warn(
+            f"Could not write the training-table manifest at {path}: "
+            f"{error}", UserWarning, stacklevel=3)

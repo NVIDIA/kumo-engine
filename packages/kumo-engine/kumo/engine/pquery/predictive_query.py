@@ -90,7 +90,7 @@ from kumo.engine.pquery.prediction_table import (
     PredictionTable,
     _compile_prediction_table,
 )
-from kumo.engine.pquery.training_table import TrainingTable
+from kumo.engine.pquery.training_table import TrainingTable, _record_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +308,7 @@ class PredictiveQuery:
                                     or {})),
             )
 
-        return TrainingTable(
+        table = TrainingTable(
             query=self.query,
             train_table_path=Path(generated.train_table_path),
             manifest_path=Path(generated.manifest_path),
@@ -316,6 +316,8 @@ class PredictiveQuery:
             required_stages=task_plan.task_dataset.required_stages,
             generation_plan=generation_plan,
         )
+        _record_manifest(table, snapshot, task_plan.train_table)
+        return table
 
     def generate_prediction_table(
         self,
