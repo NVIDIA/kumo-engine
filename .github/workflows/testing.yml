@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-24.04
     continue-on-error: true
     environment:
-      name: azure-adls-tests
+      name: ${{ github.repository == 'NVIDIA/kumo-engine' && (contains(matrix.test_dir, 'test/io_utils/') || contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'gha-kumo-workflow-tests' || 'azure-adls-tests' }}
       # This job uses environment-scoped credentials for tests; it does not
       # deploy an application. Avoid one deployment record per matrix shard.
       deployment: false
@@ -90,7 +90,7 @@ jobs:
       id-token: write
     env:
       KUMO_RUN_ADLS_TESTS: ${{ github.repository == 'kumo-ai/kumo' && contains(matrix.test_dir, 'test/io_utils/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
-      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'kumo-ai/kumo' && (contains(matrix.test_dir, 'test/io_utils/') || contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
+      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'NVIDIA/kumo-engine' && (contains(matrix.test_dir, 'test/io_utils/') || contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
       AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
       AZURE_CONTAINER_NAME: ${{ vars.AZURE_CONTAINER_NAME }}
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
