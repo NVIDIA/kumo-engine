@@ -237,6 +237,7 @@ def test_file_export_uses_native_copy_and_keeps_prepared_columns(
 
 
 def test_owned_http_pool_is_reused_and_closed(monkeypatch):
+    from kumo_adls import client as client_module
     from kumo_adls import session
 
     session.close()
@@ -244,10 +245,10 @@ def test_owned_http_pool_is_reused_and_closed(monkeypatch):
     monkeypatch.setattr(session, 'DefaultAzureCredential',
                         Mock(return_value=credential))
     transport_session = Mock()
-    monkeypatch.setattr(session, 'Session',
+    monkeypatch.setattr(client_module, 'Session',
                         Mock(return_value=transport_session))
     # Real SDK clients exercise ownership and child-client propagation.
-    original_transport = session.RequestsTransport
+    original_transport = client_module.RequestsTransport
     transports = []
 
     def transport(**kwargs):
@@ -255,7 +256,7 @@ def test_owned_http_pool_is_reused_and_closed(monkeypatch):
         transports.append(item)
         return item
 
-    monkeypatch.setattr(session, 'RequestsTransport', transport)
+    monkeypatch.setattr(client_module, 'RequestsTransport', transport)
     client = session.session_for(None, 'companylake', 'dfs.core.windows.net')
     assert session.session_for(None, 'companylake',
                                'dfs.core.windows.net') is client
@@ -341,7 +342,8 @@ def test_put_file_conditions_bind_upload_and_cleanup_to_creation(
     source.write_bytes(b'prepared bytes')
     client = Mock(spec=DataLakeFileClient)
     client.create_file.return_value = {'etag': '"created"'}
-    service = Mock()
+    service = Mock(account_name='companylake',
+                   url='https://companylake.dfs.core.windows.net/')
     service.get_file_system_client.return_value.get_file_client.return_value = client
 
     def upload(stream, **kwargs):

@@ -39,6 +39,7 @@ def storage(monkeypatch, tmp_path):
         with filesystem.open_input_file(path) as stream:
             return (hashlib.sha256(stream.read()).hexdigest(), )
 
+    monkeypatch.setattr('kumo_adls.backend.session_for', lambda *args: object())
     monkeypatch.setattr(
         'kumo_adls.backend.source_access',
         lambda *args: ObjectStoreAccess(filesystem, object_identity=identity))

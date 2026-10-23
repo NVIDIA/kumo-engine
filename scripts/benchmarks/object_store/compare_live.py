@@ -297,7 +297,8 @@ def make_reader(provider, manifest, args):
         raise ValueError(
             'ADLS transfer ceiling differs from the file-worker ceiling')
     suffix = manifest.get('endpoint_suffix', 'dfs.core.windows.net')
-    access = source_access(None, manifest['adls_account'], suffix)
+    client = session.session_for(None, manifest['adls_account'], suffix)
+    access = source_access(client, manifest['adls_account'], suffix)
     authority = f'{manifest["filesystem"]}@{manifest["adls_account"]}.{suffix}'
     reader = ADLSSourceReader(access.filesystem,
                               root=authority + '/' + manifest['adls_prefix'],

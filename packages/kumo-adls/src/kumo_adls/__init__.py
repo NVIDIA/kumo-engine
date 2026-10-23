@@ -7,6 +7,9 @@ from kumo_core.sources.lazy_exports import module_dir, module_getattr
 
 ADLS_NAMESPACE = 'azure-adls'
 _LAZY_EXPORTS = {
+    'ADLSSourceReader': 'reader',
+    'create_client': 'client',
+    'source_reader': 'reader',
     'ADLSSourceBackend': 'backend',
     'ADLSSinkBackend': 'sink',
     'probe': 'session',

@@ -40,6 +40,32 @@ unavailable. SQL, warehouse-style `ReadMode.STAGED`, and append output are
 unsupported. Prepared exports and generated output use native Arrow streams,
 matching S3/GCS; consumers must wait for export completion.
 
+## Shared SDK reads
+
+Callers with broker-selected credentials or an existing Azure service client
+can use the same reader without engine identities or Azure authentication
+environment variables:
+
+```python
+from kumo_adls import create_client, source_reader
+from kumo_core.sources.types import ReadMode
+
+# credential is supplied by the caller's authentication system.
+with create_client(credential, "companylake") as client:
+    reader = source_reader(client, "companylake", filesystem="curated",
+                           prefix="orders")
+    staged = reader.prepare("events.parquet", "/local/staging",
+                            columns=None, mode=ReadMode.STREAMED)
+```
+
+`source_reader` and `source_access` borrow clients and never close them.
+`create_client` creates a caller-owned client/transport and borrows its
+credential; the caller closes that credential separately. Existing clients
+must use the matching account's canonical HTTPS DFS service endpoint. Native
+Arrow output restrictions belong to the engine adapter, not this read API.
+See [implementation details](docs/implementation.md#shared-sdk-read-boundary)
+for validation, ownership, and Studio adoption follow-ups.
+
 ## Authentication and resources
 
 Without an identity, requests use Azure's ambient credential chain. An explicit

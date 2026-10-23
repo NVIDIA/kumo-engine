@@ -14,7 +14,7 @@ from kumoapi.adls import (
 from kumoapi.data_source import ADLSIdentityConfig
 from pyarrow.fs import AzureFileSystem, FileSystem, FSSpecHandler
 
-from .session import CLOUDS
+from .clouds import CLOUDS
 
 
 def validate_output_configuration(principal, account, suffix, container):

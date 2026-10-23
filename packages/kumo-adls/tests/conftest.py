@@ -20,8 +20,13 @@ from kumoapi.data_source import (
 @pytest.fixture
 def service(monkeypatch):
     service = FakeService()
-    monkeypatch.setattr('kumo_adls.source_access.session_for',
-                        lambda *args: service)
+
+    def client_for(principal, account, suffix):
+        return SimpleNamespace(
+            account_name=account, url=f'https://{account}.{suffix}/',
+            get_file_system_client=service.get_file_system_client)
+
+    monkeypatch.setattr('kumo_adls.backend.session_for', client_for)
     monkeypatch.setattr('kumo_adls.sink.filesystem_for',
                         lambda *args: FakeNativeFilesystem(service))
     sink = pa.BufferOutputStream()

@@ -9,6 +9,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -46,7 +47,7 @@ class HTTPAdapter(BaseAdapter):
         self.fragments = []
 
     def register_uri(self, method, url, *, headers=None, status_code=200,
-                     content=b''):
+                     content: bytes | Callable[[Any, Any], bytes] = b''):
         self.routes.append((method, url, headers or {}, status_code, content))
 
     def send(self, request, **kwargs):

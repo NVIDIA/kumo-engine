@@ -6,6 +6,7 @@ from unittest.mock import ANY, Mock
 
 import pytest
 from azure.identity import AzureAuthorityHosts
+from kumo_adls import client as client_module
 from kumo_adls import session
 from kumo_core.sources.principals import Principal
 from kumoapi.data_source import ADLSIdentityConfig, AzureCloud
@@ -53,7 +54,7 @@ def test_ambient_identity_session_reuse_and_cleanup(monkeypatch):
     credential_factory = Mock(return_value=credential)
     factory = Mock()
     monkeypatch.setattr(session, 'DefaultAzureCredential', credential_factory)
-    monkeypatch.setattr(session, 'DataLakeServiceClient', factory)
+    monkeypatch.setattr(client_module, 'DataLakeServiceClient', factory)
     first = session.session_for(None, 'companylake', 'dfs.core.windows.net')
     assert session.session_for(None, 'companylake',
                                'dfs.core.windows.net') is first
@@ -72,7 +73,7 @@ def test_close_one_identity_preserves_other_sessions(monkeypatch):
     factory = Mock(side_effect=lambda **kwargs: Mock())
     credentials = Mock(side_effect=lambda **kwargs: Mock())
     monkeypatch.setattr(session, 'WorkloadIdentityCredential', credentials)
-    monkeypatch.setattr(session, 'DataLakeServiceClient', factory)
+    monkeypatch.setattr(client_module, 'DataLakeServiceClient', factory)
     config = ADLSIdentityConfig(tenant_id='tenant', client_id='client',
                                 cloud=AzureCloud.PUBLIC)
     first = Principal('first', config, None)
@@ -108,7 +109,7 @@ def test_ambient_session_uses_common_storage_audience(monkeypatch, cloud,
     credential_factory = Mock(return_value=credential)
     client_factory = Mock()
     monkeypatch.setattr(session, 'DefaultAzureCredential', credential_factory)
-    monkeypatch.setattr(session, 'DataLakeServiceClient', client_factory)
+    monkeypatch.setattr(client_module, 'DataLakeServiceClient', client_factory)
 
     session.session_for(None, 'companylake', suffix)
 
@@ -128,7 +129,7 @@ def test_cleanup_failure_does_not_leave_other_sessions_open(
     factory = Mock(side_effect=clients)
     credential_factory = Mock(side_effect=credentials)
     monkeypatch.setattr(session, 'DefaultAzureCredential', credential_factory)
-    monkeypatch.setattr(session, 'DataLakeServiceClient', factory)
+    monkeypatch.setattr(client_module, 'DataLakeServiceClient', factory)
     session.session_for(None, 'firstlake', 'dfs.core.windows.net')
     session.session_for(None, 'otherlake', 'dfs.core.windows.net')
     resource = clients[0] if failing_resource == 'client' else credentials[0]
@@ -138,4 +139,17 @@ def test_cleanup_failure_does_not_leave_other_sessions_open(
 
     for item in clients + credentials:
         item.close.assert_called_once()
+    assert not session._SESSIONS
+
+
+def test_client_construction_failure_releases_engine_owned_credential(
+        monkeypatch):
+    credential = Mock()
+    monkeypatch.setattr(session, 'credential_for', lambda *args:
+                        (credential, 'https://storage.azure.com'))
+    monkeypatch.setattr(session, 'create_client',
+                        Mock(side_effect=RuntimeError('construction failed')))
+    with pytest.raises(RuntimeError, match='construction failed'):
+        session.session_for(None, 'companylake', 'dfs.core.windows.net')
+    credential.close.assert_called_once()
     assert not session._SESSIONS

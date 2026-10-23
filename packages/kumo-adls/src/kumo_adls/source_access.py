@@ -6,11 +6,11 @@ from kumo_core.sources.object_store_access import ObjectStoreAccess
 from pyarrow.fs import FSSpecHandler, PyFileSystem
 
 from .sdk_filesystem import ADLSFileSystem
-from .session import session_for
 
 
-def source_access(principal, account: str, suffix: str) -> ObjectStoreAccess:
-    client = session_for(principal, account, suffix)
+def source_access(client, account: str,
+                  suffix: str = 'dfs.core.windows.net') -> ObjectStoreAccess:
+    """Borrow a service client; wrappers never close it or its credential."""
     filesystem = ADLSFileSystem(client, account, suffix)
     return ObjectStoreAccess(PyFileSystem(FSSpecHandler(filesystem)),
                              filesystem.fetch, filesystem.object_identity)
