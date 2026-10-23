@@ -130,8 +130,11 @@ An exact decimal string can preserve a calculated limit that a JSON floating-poi
 
 Qualification requires at least six independent unchanged-wheel trials and six actual weaker-training trials.
 These calibration trials measure variation and sensitivity. They do not establish reliability by themselves.
-The proposed limit equals the largest absolute unchanged-wheel average difference for that task.
-Each task also needs a justified minimum loss that must block release, larger than its proposed limit.
+For each task, let `n` be the largest absolute unchanged-wheel average difference in calibration.
+Let `m` be its justified smallest blockworthy loss. Require `n < m`.
+The proposed limit is `(n + m) / 2`. This gives equal space from observed variation and the blockworthy loss.
+That midpoint maximizes the smaller of those two gaps. Actual weaker-training trials must show losses of at least `m`.
+The qualification report preserves both calibration counts, observed variation, actual training losses, and the exact calculation.
 The pending profile defines proposed minimum losses from complete group or label-pattern failures and natural target steps.
 Its formulas use fixed fixture counts and target structure, not candidate training scores.
 For example, losing one reserved link for one six-entity interest cohort gives `6/(60*3) = 1/30` recall loss.

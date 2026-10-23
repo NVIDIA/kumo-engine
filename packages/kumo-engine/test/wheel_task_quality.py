@@ -194,13 +194,20 @@ def validate_profile(profile, comparison):
     if any(len(group) < 6 for group in calibration.values()):
         raise ValueError(
             'Repeated normal and weaker calibration trials are required')
+    calculated = {}
     for name in TASKS:
         noise = max(abs(trial[name]) for trial in calibration['unchanged'])
         loss = min(trial[name] for trial in calibration['weakened'])
-        if limits[name] != noise or loss < minimums[name]:
+        proposed = (noise + minimums[name]) / 2
+        if limits[name] != proposed or loss < minimums[name]:
             raise ValueError(
-                'Limits must equal measured variation and separate the known loss'
+                'Limits must bisect normal variation and the justified learning loss'
             )
+        calculated[name] = dict(largest_normal_variation=float(noise),
+                                smallest_weakened_loss=float(loss),
+                                exact_normal_variation=str(noise),
+                                exact_proposed_limit=str(proposed),
+                                proposed_limit=profile['limits'][name])
     validation = measured['validation']
     count = RELIABILITY['reserved_trials']
     if any(len(group) != count for group in validation.values()):
@@ -219,9 +226,13 @@ def validate_profile(profile, comparison):
             or lower < RELIABILITY['task_detection_min']):
         raise ValueError(
             'Fresh trials do not establish the declared reliability')
-    return dict(status='PASS', unchanged_trials=count, weakened_trials=count,
-                false_failure_upper_bound=1 - lower,
-                detection_lower_bound=lower, simultaneous_confidence=.95)
+    return dict(
+        status='PASS', unchanged_trials=count, weakened_trials=count,
+        false_failure_upper_bound=1 - lower, detection_lower_bound=lower,
+        simultaneous_confidence=.95,
+        calibration=dict(unchanged_trials=len(calibration['unchanged']),
+                         weakened_trials=len(calibration['weakened']),
+                         tasks=calculated))
 
 
 def assess_quality(comparison, profile):

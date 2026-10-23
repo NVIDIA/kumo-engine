@@ -23,6 +23,12 @@ METRICS = dict(multiclass='accuracy', multilabel='ap_macro',
 TEST_LIMITS = dict(multiclass=.01, multilabel=.02, multilabel_ranking=.03,
                    regression=.04, forecasting=.05, static_link=.06,
                    temporal_link=.07)
+TEST_NOISE = dict(multiclass=.002, multilabel=.004, multilabel_ranking=.006,
+                  regression=.008, forecasting=.01, static_link=.012,
+                  temporal_link=.014)
+TEST_MINIMUMS = dict(multiclass=.018, multilabel=.036, multilabel_ranking=.054,
+                     regression=.072, forecasting=.09, static_link=.108,
+                     temporal_link=.126)
 
 
 def task_scores_for_tests(drops=None):
@@ -60,7 +66,7 @@ def profile_for_tests():
         reference_wheel=comparison['reference_wheel'], seeds=list(range(5)),
         frozen_at='2026-10-20T01:00:00Z', limits=TEST_LIMITS.copy(),
         frozen_fault=dict(kind='reduced_training_budget', budget=[1, 2]),
-        minimum_losses=dict.fromkeys(METRICS, .2), rationales={
+        minimum_losses=TEST_MINIMUMS.copy(), rationales={
             task: 'Synthetic fixture for gate tests only.'
             for task in METRICS
         }, reliability=dict(joint_false_failure_max=.05, task_detection_min=.95,
@@ -77,7 +83,7 @@ def profile_for_tests():
                                   ][index] if phase == 'calibration' else 0
                     drops = {
                         task: round(limit * multiplier, 12)
-                        for task, limit in TEST_LIMITS.items()
+                        for task, limit in TEST_NOISE.items()
                     }
                 profile[phase].append(
                     dict(
@@ -204,7 +210,7 @@ class WheelTaskQualityTest(unittest.TestCase):
             self):
         profile = profile_for_tests()
         # These scores average 0.30000000000000002 exactly, not 0.3.
-        profile['limits']['multiclass'] = '0.49999999999999998'
+        profile['limits']['multiclass'] = '0.54999999999999999'
         profile['minimum_losses']['multiclass'] = .6
         row = profile['calibration'][0]['tasks']['multiclass']['per_seed']
         for entry, value in zip(row, [.1, .2, .3, .4, .5000000000000001]):
@@ -267,7 +273,7 @@ class WheelTaskQualityTest(unittest.TestCase):
                 profile['limits']['multiclass'] = .02
             elif mutation in ('normal_loss', 'undetected', 'weak_loss'):
                 index = 0 if mutation == 'normal_loss' else 99
-                score = .7 if mutation == 'normal_loss' else .8 if mutation == 'undetected' else .65
+                score = .7 if mutation == 'normal_loss' else .8 if mutation == 'undetected' else .785
                 for row in profile['validation'][index]['tasks']['multiclass'][
                         'per_seed']:
                     row['candidate'] = score
@@ -313,10 +319,23 @@ class WheelTaskQualityTest(unittest.TestCase):
 
     def test_blockworthy_loss_policy_can_preserve_an_exact_fraction(self):
         profile = profile_for_tests()
-        profile['minimum_losses'] = dict.fromkeys(METRICS, '1/5')
+        profile['minimum_losses']['multiclass'] = '9/500'
         result = self.helpers()['assess_quality'](comparison_for_tests(),
                                                   profile)
         self.assertTrue(result['quality_gate_approved'])
+
+    def test_limit_calculation_leaves_equal_margin_to_noise_and_blockworthy_loss(
+            self):
+        result = self.helpers()['assess_quality'](comparison_for_tests(),
+                                                  profile_for_tests())
+        calibration = result['qualification']['calibration']
+        self.assertEqual(calibration['unchanged_trials'], 6)
+        self.assertEqual(calibration['weakened_trials'], 6)
+        self.assertEqual(
+            calibration['tasks']['multiclass'],
+            dict(largest_normal_variation=.002, smallest_weakened_loss=.3,
+                 exact_normal_variation='1/500', exact_proposed_limit='1/100',
+                 proposed_limit=.01))
 
 
 if __name__ == '__main__':
