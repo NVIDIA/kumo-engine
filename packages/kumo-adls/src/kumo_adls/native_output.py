@@ -92,10 +92,9 @@ class NativeOutputHandler(FSSpecHandler):
 
     def create_dir(self, path, recursive):
         self.fs._address(path)
-        # Shared sinks prepare parent directories before opening output.
-        # Reject unsupported credentials before that SDK mutation as well.
+        # Native Blob uploads handle parents; shared preparation only needs
+        # to validate the path and bind the selected output credentials.
         self._output()
-        super().create_dir(path, recursive)
 
     def open_output_stream(self, path, metadata):
         # Validate the virtual authority before dropping its account qualifier.
