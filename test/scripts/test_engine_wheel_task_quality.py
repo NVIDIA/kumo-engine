@@ -71,7 +71,11 @@ def profile_for_tests():
             for task in METRICS
         }, reliability=dict(joint_false_failure_max=.05, task_detection_min=.95,
                             simultaneous_confidence=.95, claims=8,
-                            reserved_trials=99), calibration=[], validation=[])
+                            reserved_trials=99), calibration=[], validation=[],
+        validation_plan={
+            kind: [f'validation-{kind}-{index}' for index in range(99)]
+            for kind in ('unchanged', 'weakened')
+        })
     for phase, count in [('calibration', 6), ('validation', 99)]:
         for kind in ('unchanged', 'weakened'):
             for index in range(count):
@@ -119,6 +123,30 @@ class WheelTaskQualityTest(unittest.TestCase):
         self.assertTrue(QUALITY.is_file(),
                         'The seven-task quality gate is missing')
         return runpy.run_path(str(QUALITY))
+
+    def test_validation_cannot_replace_a_planned_trial_with_a_new_success(self):
+        profile = profile_for_tests()
+        profile['validation'][0]['id'] = 'replacement-after-a-failed-trial'
+        with self.assertRaises(ValueError):
+            self.helpers()['assess_quality'](comparison_for_tests(), profile)
+
+    def test_validation_plan_requires_complete_unique_trial_ids(self):
+        assess = self.helpers()['assess_quality']
+        for mutation in ('missing', 'short', 'duplicate', 'empty', 'extra'):
+            profile = profile_for_tests()
+            plan = profile['validation_plan']
+            if mutation == 'missing':
+                del profile['validation_plan']
+            elif mutation == 'short':
+                plan['unchanged'].pop()
+            elif mutation == 'duplicate':
+                plan['unchanged'][0] = plan['weakened'][0]
+            elif mutation == 'empty':
+                plan['unchanged'][0] = ''
+            elif mutation == 'extra':
+                plan['unused'] = []
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                assess(comparison_for_tests(), profile)
 
     def test_reporter_blocks_unqualified_release_but_keeps_reporting_available(
             self):

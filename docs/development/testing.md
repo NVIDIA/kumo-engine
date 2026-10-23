@@ -148,6 +148,9 @@ The evidence must establish these eight claims together with 95% confidence.
 A fixed zero-error design needs 99 fresh unchanged-wheel comparisons and 99 fresh weaker-training comparisons.
 The count is `ceil(log(0.05 / 8) / log(0.95)) = 99` independent comparison trials, not individual seeds.
 All reserved trials must pass the frozen rules. Do not reuse calibration trials or widen limits after validation starts.
+Freeze the 99 trial IDs for each treatment in `validation_plan` before the first reserved trial.
+Every planned trial must have complete passing evidence. A missing or failed trial keeps qualification unapproved.
+Do not replace a failed planned trial with a new success.
 Saved trial records include dates, unique run identities, evidence fingerprints, audited results, and all seven metrics.
 Each trial lists 140 distinct model identities for the additional tasks and four measurement identities across both wheels.
 Those four identities cover binary and additional-task measurements. No model or measurement identity can repeat across study trials.

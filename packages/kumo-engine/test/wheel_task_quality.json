@@ -54,6 +54,7 @@
   },
   "calibration": [],
   "validation": [],
+  "validation_plan": null,
   "reliability": {
     "joint_false_failure_max": 0.05,
     "task_detection_min": 0.95,

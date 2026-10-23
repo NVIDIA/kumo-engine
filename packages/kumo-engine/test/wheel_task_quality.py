@@ -116,6 +116,16 @@ def validate_profile(profile, comparison):
             raise ValueError(
                 'Every limit needs a larger justified blockworthy loss')
     frozen = timestamp(profile.get('frozen_at'))
+    plan = profile.get('validation_plan')
+    count = RELIABILITY['reserved_trials']
+    if (not isinstance(plan, dict) or set(plan) != {'unchanged', 'weakened'}
+            or any(not isinstance(ids, list) or len(ids) != count or any(
+                not isinstance(value, str) or not value.strip()
+                for value in ids) for ids in plan.values())):
+        raise ValueError('Reserved validation needs a fixed trial list')
+    planned = [identity for ids in plan.values() for identity in ids]
+    if len(set(planned)) != count * 2:
+        raise ValueError('Reserved validation trial IDs must be unique')
     seen_ids, seen_runs, seen_hashes, seen_models = set(), set(), set(), set()
     measured = {}
     for phase in ('calibration', 'validation'):
@@ -128,6 +138,8 @@ def validate_profile(profile, comparison):
                     or trial.get('audit_passed') is not True):
                 raise ValueError('Incomplete or unaudited qualification trial')
             identity, digest = trial.get('id'), trial.get('evidence_sha256')
+            if phase == 'validation' and identity not in plan[kind]:
+                raise ValueError('Reserved validation trial was not planned')
             run_ids = [
                 trial.get('reference_run_id'),
                 trial.get('candidate_run_id')
@@ -209,7 +221,6 @@ def validate_profile(profile, comparison):
                                 exact_proposed_limit=str(proposed),
                                 proposed_limit=profile['limits'][name])
     validation = measured['validation']
-    count = RELIABILITY['reserved_trials']
     if any(len(group) != count for group in validation.values()):
         raise ValueError('The fixed reserved trial count is incomplete')
     if any(
