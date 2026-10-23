@@ -30,10 +30,10 @@ def make_fixture(task, independent, seed=0):
     if task not in TASK_TYPES:
         raise ValueError(f'Unknown temporal task: {task}')
     rng = random.Random(73 + seed)
-    ids = list(range(100 if task == 'temporal_link' else 60))
+    ids = list(range(60 if task == 'forecasting' else 100))
     catalog = list(range(100))
-    heldout_orders = ([rng.sample(range(10), 10) for _ in range(10)]
-                      if task == 'temporal_link' and not independent else None)
+    item_orders = ([rng.sample(range(10), 10) for _ in range(10)]
+                   if task != 'forecasting' and not independent else None)
     anchor = 96 if task == 'forecasting' else 48
     events, targets, known = [], [], {}
     last = []
@@ -53,7 +53,11 @@ def make_fixture(task, independent, seed=0):
         pool = catalog if independent else list(
             range((entity % 10) * 10, (entity % 10 + 1) * 10))
         if task == 'static_link':
-            chosen = rng.sample(pool, 9)
+            # Give each item equal observed history and reserved coverage.
+            chosen = (rng.sample(pool, 9) if item_orders is None else [
+                pool[item_orders[entity % 10][(entity // 10 + offset) % 10]]
+                for offset in range(9)
+            ])
             observed, reserved = chosen[:6], chosen[6:]
             known[str(entity)] = observed
             events.extend(
@@ -65,8 +69,8 @@ def make_fixture(task, independent, seed=0):
                     for item in rng.sample(pool, 3))
             # Equal item counts prevent arbitrary within-group rankings from
             # changing the cohort's score. Control answers stay random.
-            reserved = (rng.sample(pool, 3) if heldout_orders is None else [
-                pool[heldout_orders[entity % 10][(entity // 10 + offset) % 10]]
+            reserved = (rng.sample(pool, 3) if item_orders is None else [
+                pool[item_orders[entity % 10][(entity // 10 + offset) % 10]]
                 for offset in range(3)
             ])
         targets.append([int(item in reserved) for item in catalog])

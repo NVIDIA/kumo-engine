@@ -27,7 +27,7 @@ def test_reserved_answers_are_absent_from_observed_graph(task):
     for independent in (False, True):
         fixture = build(task, independent)
         assert fixture == build(task, independent)
-        entity_count = 100 if task == 'temporal_link' else 60
+        entity_count = 60 if task == 'forecasting' else 100
         assert fixture['entity_ids'] == list(range(entity_count))
         if task == 'static_link':
             observed = {(row['ENTITY_ID'], row['ITEM_ID'])
@@ -57,6 +57,17 @@ def test_static_control_breaks_group_signal_without_changing_task_shape():
     assert any(item // 10 != entity % 10
                for entity, targets in enumerate(control['targets'])
                for item, present in enumerate(targets) if present)
+
+
+@pytest.mark.parametrize('seed', range(5))
+def test_static_link_cohorts_cover_items_evenly(seed):
+    fixture = worker()['make_fixture']('static_link', False, seed)
+    observed = np.bincount(
+        [row['ITEM_ID'] for row in fixture['events']],
+        minlength=len(fixture['catalog']))
+    reserved = np.asarray(fixture['targets']).sum(axis=0)
+    assert observed.min() == observed.max() > 0
+    assert reserved.min() == reserved.max() > 0
 
 
 def test_temporal_recall_ignores_arbitrary_order_inside_a_learned_group():
@@ -96,7 +107,7 @@ def test_seeds_select_independent_matching_fixtures(task):
     if task == 'static_link':
         eligible = np.asarray(two['control_eligible'])
         assert eligible.dtype == np.bool_
-        assert eligible.sum(axis=1).tolist() == [94] * 60
+        assert eligible.sum(axis=1).tolist() == [94] * len(two['entity_ids'])
         assert not (np.asarray(two['targets'], dtype=bool) & ~eligible).any()
 
 

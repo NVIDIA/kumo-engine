@@ -136,10 +136,12 @@ The proposed limit is `(n + m) / 2`. This gives equal space from observed variat
 That midpoint maximizes the smaller of those two gaps. Actual weaker-training trials must show losses of at least `m`.
 The qualification report preserves both calibration counts, observed variation, actual training losses, and the exact calculation.
 
-Calibration on October 23, 2026 used six unchanged-wheel comparisons and six actual reduced-training comparisons.
+The failed study's calibration on October 23, 2026 used six unchanged-wheel comparisons and six actual reduced-training comparisons.
 Each comparison used five matching seeds per wheel. The independent audits checked 1,680 additional-task models and 240 binary fits.
 Every comparison has distinct model, measurement, and evidence identities.
-The following values are rounded for display. The profile preserves exact fractional limits and the audited per-seed scores.
+The following failed-study values are rounded for display. The profile preserves exact fractional limits and the audited per-seed scores.
+Fresh validation rejected unchanged static-link trial 005: its recall loss was `0.0377777777777778`, above the fixed `2/75` limit.
+That study cannot approve release. Its frozen profile and failed result remain preserved. New launches under that plan are stopped.
 
 | Task | Largest normal difference `n` | Meaningful loss `m` | Frozen limit `(n + m) / 2` | Smallest actual weakened loss |
 | --- | ---: | ---: | ---: | ---: |
@@ -159,8 +161,13 @@ Calibration alone does not approve release. The profile freezes all 198 trial ID
 
 The pending profile defines proposed minimum losses from complete group or label-pattern failures and natural target steps.
 Its formulas use fixed fixture counts and target structure, not candidate training scores.
-For example, losing one reserved link for one six-entity interest cohort gives `6/(60*3) = 1/30` recall loss.
+The revised static-link fixture keeps the `1/30` policy loss.
+Missing one link per entity in a ten-entity interest cohort gives `10/(100*3) = 1/30` recall loss.
 Counterfactual metric calculations check these policy units. They do not count as actual weaker-training or reliability evidence.
+The revised static-link fixture uses 100 entities and ten interest groups.
+Each item has six observed links and three reserved answers across its group. No entity observes its reserved links.
+This removes absent items and uneven observed coverage from the learnable fixture. Independent-label answers stay random.
+Native calibration must establish whether this change reduces variation. A new fixed validation study remains required.
 The temporal-link fixture uses 100 entities and 100 items, with ten-item interest groups and three hidden future links per entity.
 Each ten-entity cohort has equal hidden item counts. Every item in its interest group appears three times.
 A shared correct-group ranking then scores `0.5` Recall@5 under any ordering of those ten items.
