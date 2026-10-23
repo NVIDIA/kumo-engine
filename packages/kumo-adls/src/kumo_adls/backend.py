@@ -2,12 +2,9 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import hashlib
-import json
 from typing import Optional
 from urllib.parse import quote, unquote, urlsplit
 
-from kumo_core.sources.object_store import ObjectStoreSourceReader
 from kumo_core.sources.object_store_backend import ObjectStoreSourceBackend
 from kumo_core.sources.object_store_sessions import (
     ObjectStorePaths,
@@ -31,10 +28,10 @@ from kumoapi.source_table import (
     ADLSSourceTable,
     ADLSURISource,
 )
-from pyarrow.fs import FSSpecHandler, PyFileSystem
 
 from . import ADLS_NAMESPACE
-from .sdk_filesystem import ADLSFileSystem
+from .reader import ADLSSourceReader
+from .session import session_for
 from .source_access import source_access
 
 
@@ -42,36 +39,6 @@ def canonical_uri(path: str) -> str:
     authority, _, key = path.partition('/')
     return normalize_adls_source_uri(
         f'abfss://{authority}/{quote(key, safe="/-._~!$&()*+,;=:@")}')
-
-
-class ADLSSourceReader(ObjectStoreSourceReader):
-    source_type = ConnectorType.ADLS
-
-    def _identities(self, found, worker_ceiling):
-        if isinstance(self.filesystem, PyFileSystem):
-            handler = self.filesystem.handler
-            adapter = handler.fs if isinstance(handler, FSSpecHandler) else None
-            if (isinstance(adapter, ADLSFileSystem) and getattr(
-                    self.object_identity, '__self__', None) is adapter
-                    and getattr(self.object_identity, '__func__',
-                                None) is ADLSFileSystem.object_identity):
-                identities = adapter.object_identities(
-                    [entry.path for entry in found], root=self.root)
-                if identities is not None:
-                    return identities
-        return super()._identities(found, worker_ceiling)
-
-    def _data_version(self, path, entries):
-        # The shared single-file version is only an mtime. Include authority
-        # and ETags even for one object, so accounts and same-second rewrites
-        # cannot alias the same cached source.
-        ordered = sorted(entries, key=lambda entry: entry.path)
-        metadata = list(
-            zip((entry.path for entry in ordered),
-                self._identities(ordered, None)))
-        # Discovery and preparation spell the same directory with/without '/'.
-        return hashlib.sha256(
-            json.dumps((path.rstrip('/'), metadata)).encode()).hexdigest()
 
 
 class ADLSSessions(ObjectStoreSessions):
@@ -124,7 +91,8 @@ class ADLSSessions(ObjectStoreSessions):
         del region
         _, host = bucket.split('@', 1)
         account, suffix = host.split('.', 1)
-        return source_access(self._principal(connector), account, suffix)
+        client = session_for(self._principal(connector), account, suffix)
+        return source_access(client, account, suffix)
 
     def _over(self, connector, bucket, root, region):
         access = self._source_access(connector, bucket, region)

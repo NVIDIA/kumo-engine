@@ -5,37 +5,13 @@
 import atexit
 import threading
 
-from azure.core.pipeline.transport import RequestsTransport
-from azure.identity import (
-    AzureAuthorityHosts,
-    DefaultAzureCredential,
-    WorkloadIdentityCredential,
-)
-from azure.storage.filedatalake import DataLakeServiceClient
+from azure.identity import DefaultAzureCredential, WorkloadIdentityCredential
 from kumo_core.sources.principals import Principal
-from kumoapi.data_source import ADLSIdentityConfig, AzureCloud
-from requests import Session
-from requests.adapters import HTTPAdapter
+from kumoapi.data_source import ADLSIdentityConfig
 
+from .client import create_client
+from .clouds import CLOUDS
 from .errors import translated
-from .transfer import (
-    BULK_DOWNLOAD_CHUNK_BYTES,
-    CONNECTIONS,
-    INITIAL_GET_BYTES,
-    NETWORK_BLOCK_BYTES,
-)
-
-# Storage uses the same generic token audience in every cloud.
-# DFS endpoints and Entra authorities remain cloud-specific.
-CLOUDS = {
-    AzureCloud.PUBLIC: ('dfs.core.windows.net', 'https://storage.azure.com',
-                        AzureAuthorityHosts.AZURE_PUBLIC_CLOUD),
-    AzureCloud.US_GOVERNMENT:
-    ('dfs.core.usgovcloudapi.net', 'https://storage.azure.com',
-     AzureAuthorityHosts.AZURE_GOVERNMENT),
-    AzureCloud.CHINA: ('dfs.core.chinacloudapi.cn', 'https://storage.azure.com',
-                       AzureAuthorityHosts.AZURE_CHINA),
-}
 
 
 def credential_for(principal: Principal | None, endpoint_suffix: str):
@@ -72,25 +48,10 @@ def session_for(principal: Principal | None, account: str, suffix: str):
     with _LOCK:
         if key not in _SESSIONS:
             with translated():
-                credential, audience = credential_for(principal, suffix)
-                transport_session = Session()
-                adapter = HTTPAdapter(pool_connections=CONNECTIONS,
-                                      pool_maxsize=CONNECTIONS, pool_block=True)
-                transport_session.mount('https://', adapter)
-                transport_session.mount('http://', adapter)
-                transport = RequestsTransport(
-                    session=transport_session, session_owner=True,
-                    connection_data_block_size=NETWORK_BLOCK_BYTES)
+                credential, _ = credential_for(principal, suffix)
                 try:
-                    client = DataLakeServiceClient(
-                        account_url=f'https://{account}.{suffix}',
-                        credential=credential, audience=audience,
-                        max_single_get_size=INITIAL_GET_BYTES,
-                        max_chunk_get_size=BULK_DOWNLOAD_CHUNK_BYTES,
-                        connection_data_block_size=NETWORK_BLOCK_BYTES,
-                        transport=transport)
-                except Exception:
-                    transport.close()
+                    client = create_client(credential, account, suffix)
+                except BaseException:
                     credential.close()
                     raise
                 _SESSIONS[key] = client, credential

@@ -123,3 +123,62 @@ requires explicitly managed permissions. Temporary files are closed before
 promotion with `os.replace`, including on failure cleanup paths. This avoids
 requiring POSIX open-file replacement; it does not establish full Windows
 engine support.
+
+
+## Shared SDK read boundary
+
+`kumo_adls.client.create_client(credential, account, suffix)` constructs the
+same tuned Azure SDK transport used by engine sessions. It never selects an
+identity or acquires a token during construction. It owns the created transport
+and cleans it up on construction failure. The returned client is caller-owned;
+closing it does not close the supplied credential. Credential selection,
+refresh capability, and credential lifetime belong to the caller.
+
+`kumo_adls.source_access.source_access(client, account, suffix)` borrows a
+`DataLakeServiceClient` and supplies `ObjectStoreAccess` with conditional SDK
+fetches and identity callbacks. `kumo_adls.reader.source_reader` builds the
+same `ADLSSourceReader` used by the engine, with a canonical decoded filesystem
+prefix. These entry points import no engine identity registry, Azure Identity
+credential chain, or native-output adapter. They neither inspect process
+Azure authentication settings nor cache or close borrowed clients.
+
+Before I/O, the filesystem checks the SDK client's account name and service
+URL against the requested account and cloud. The URL must be HTTPS, use the
+canonical DFS authority without userinfo or an explicit port, and have no
+filesystem/path or fragment. SAS query credentials are accepted as opaque SDK
+configuration and are never echoed in validation errors. Custom authorities,
+emulator URLs, filesystem clients, and mismatched accounts/clouds are rejected.
+A caller providing its own client also owns its transport/retry configuration;
+use `create_client` for the provider's tuned defaults. Read transfer slots still
+apply, but caller-selected SDK buffer sizes can change actual memory use.
+
+The engine adapter resolves its principal, owns the resulting credential and
+cached client, then uses this same source-access/reader implementation. Engine
+session cleanup closes only those owned resources. Borrowed clients stay live
+until their own caller closes them. Account-qualified paths, ETag version
+hashes, conditional downloads, and listing-to-HEAD fallback remain shared.
+Moving the reader does not change versions or invalidate staged data by itself.
+Native Arrow writes continue to bind credentials separately in the engine sink;
+process-identity requirements do not apply to caller-supplied SDK readers.
+
+Offline contract tests cover real SDK requests over an in-memory HTTP transport,
+equivalent engine/shared rows and versions, unchanged conditional ETags,
+concurrent account/identity isolation, endpoint rejection before requests,
+borrowed-client lifetime, and owned-resource cleanup. A fresh-process import
+guard rejects identity-adapter imports and constructs the shared reader with
+Azure authentication variables removed. This is not live Azure federation or
+sovereign-cloud validation.
+
+Follow-ups:
+
+- Studio read adoption: use broker-selected credentials with this reader, retire
+  the old Arrow adapter and duplicated download machinery, and define path
+  compatibility and migration from modification-time versions to ETag versions.
+- Shared cloud configuration: consolidate hosted and package endpoint,
+  authority, and audience mappings. This package uses the generic storage
+  audience for all three clouds; existing hosted mappings differ and require
+  deliberate integration and live validation.
+- Write primitives: identify which hosted SDK operations should become shared
+  credential-bound functions and validate them individually. Existing SDK
+  writer helpers are not the Studio default. SAS generation, multipart upload,
+  and atomic promotion are separate work; native engine output is unchanged.

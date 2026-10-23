@@ -13,13 +13,19 @@ from azure.storage.filedatalake import FileProperties, PathProperties
 
 class FakeService:
     """Azure SDK-shaped storage using real public property models."""
-    def __init__(self):
+    def __init__(self, account='companylake', suffix='dfs.core.windows.net'):
+        self.account_name = account
+        self.url = f'https://{account}.{suffix}/'
+        self.closed = False
         self.files = {}
         self.uncommitted = {}
         self.directories = {'curated', 'curated/orders'}
         self.downloads = []
         self.created = []
         self.modified = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def close(self):
+        self.closed = True
 
     def get_file_system_client(self, filesystem):
         return FakeFilesystem(self, filesystem)

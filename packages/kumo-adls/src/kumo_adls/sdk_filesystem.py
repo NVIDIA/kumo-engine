@@ -21,6 +21,7 @@ from kumo_core.sources.errors import (
 from kumo_core.sources.layout import MAX_SCANNED_ENTRIES
 from kumoapi.adls import normalize_adls_filesystem
 
+from .client import validate_client
 from .errors import translated
 from .range_cache import MAX_ENTRY_BYTES, RANGE_BYTES
 from .transfer import CHUNK_BYTES, concurrency
@@ -141,6 +142,7 @@ class ADLSFileSystem(AbstractFileSystem):
     cachable = False
 
     def __init__(self, client, account: str, suffix: str):
+        account, suffix = validate_client(client, account, suffix)
         super().__init__()
         self._range_namespace = object()
         weakref.finalize(self, RANGE_BYTES.clear_namespace,
