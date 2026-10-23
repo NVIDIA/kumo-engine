@@ -115,7 +115,7 @@ The additional tasks report these metrics and simple baselines:
 | Temporal link prediction | Fraction of true links in the top five | Observed item frequency |
 
 These seven quality limits remain unvalidated. Strict release comparisons block until qualification passes.
-`packages/kumo-engine/test/wheel_task_quality.json` records `status: PENDING` without guessed limits.
+`packages/kumo-engine/test/wheel_task_quality.json` records calculated limits with `status: PENDING` until fresh validation passes.
 `comparison.additional_tasks` records each seed's reference, candidate, baseline, and signed drop, plus each task's average drop.
 A positive drop means worse quality, including increased error for regression and forecasting.
 No additional task uses the binary `0.001` limit.
@@ -135,6 +135,28 @@ Let `m` be its justified smallest blockworthy loss. Require `n < m`.
 The proposed limit is `(n + m) / 2`. This gives equal space from observed variation and the blockworthy loss.
 That midpoint maximizes the smaller of those two gaps. Actual weaker-training trials must show losses of at least `m`.
 The qualification report preserves both calibration counts, observed variation, actual training losses, and the exact calculation.
+
+Calibration on October 23, 2026 used six unchanged-wheel comparisons and six actual reduced-training comparisons.
+Each comparison used five matching seeds per wheel. The independent audits checked 1,680 additional-task models and 240 binary fits.
+Every comparison has distinct model, measurement, and evidence identities.
+The following values are rounded for display. The profile preserves exact fractional limits and the audited per-seed scores.
+
+| Task | Largest normal difference `n` | Meaningful loss `m` | Frozen limit `(n + m) / 2` | Smallest actual weakened loss |
+| --- | ---: | ---: | ---: | ---: |
+| Multiclass accuracy | 0.019000000000 | 0.044000000000 | 0.031500000000 | 0.560000000000 |
+| Multilabel average precision | 0.001477492163 | 0.022155904930 | 0.011816698547 | 0.496337257528 |
+| Multilabel Recall@5 | 0.000000000000 | 0.047500000000 | 0.023750000000 | 0.450166666667 |
+| Regression error | 0.009684770779 | 0.105263157895 | 0.057473964337 | 0.518527166954 |
+| Forecast error | 0.010078928818 | 0.250000000000 | 0.130039464409 | 5.538788019402 |
+| Static-link Recall@5 | 0.020000000000 | 0.033333333333 | 0.026666666667 | 0.586666666667 |
+| Temporal-link Recall@5 | 0.004666666667 | 0.010000000000 | 0.007333333333 | 0.442000000000 |
+
+All seven normal differences remain below their fixed meaningful losses. All six weakened comparisons meet those losses for every task.
+The frozen fault limits candidate training to one epoch and two steps per epoch. Reference and binary training remain unchanged.
+Detection claims cover that fixed fault and fixture. These results do not establish detection rates for every regression of the same size.
+The 198 planned validation comparisons require about 46.62 hours at four workers, before audits, archiving, delays, and failures.
+Calibration alone does not approve release. The profile freezes all 198 trial IDs before any reserved comparison starts.
+
 The pending profile defines proposed minimum losses from complete group or label-pattern failures and natural target steps.
 Its formulas use fixed fixture counts and target structure, not candidate training scores.
 For example, losing one reserved link for one six-entity interest cohort gives `6/(60*3) = 1/30` recall loss.
