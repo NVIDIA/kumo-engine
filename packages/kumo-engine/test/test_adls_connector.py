@@ -122,6 +122,7 @@ def test_rootless_graph_coordinate_contains_exact_source(storage):
     ('cloud', ValueError, 'selected identity cloud'),
     ('append', NotImplementedError, 'OVERWRITE'),
     ('outside', ValueError, 'outside the connector root'),
+    ('encoded_uri', ValueError, 'must not be a URI, query, or fragment'),
 ])
 def test_invalid_prediction_output_fails_before_scoring(monkeypatch, tmp_path,
                                                         snapshot, case, error,
@@ -147,10 +148,14 @@ def test_invalid_prediction_output_fails_before_scoring(monkeypatch, tmp_path,
         if case == 'cloud' else AzureCloud.PUBLIC)
     connector = ADLSConnector(root_dir=None if case == 'rootless' else ROOT,
                               identity=identity)
+    destination = 'predictions/'
+    if case == 'outside':
+        destination = ROOT.replace('orders/', 'outside/')
+    elif case == 'encoded_uri':
+        destination = ROOT + 'scores%23review.parquet'
     output = PredictionOutputConfig(
         connector, artifact_type=PredictionArtifactType.PREDICTIONS,
-        table_name=ROOT.replace('orders/', 'outside/')
-        if case == 'outside' else 'predictions/', write_mode=WriteMode.APPEND
+        table_name=destination, write_mode=WriteMode.APPEND
         if case == 'append' else WriteMode.OVERWRITE)
     trainer = Trainer(ModelPlan(), accelerator='cpu')
     monkeypatch.setattr(trainer, '_training_result',

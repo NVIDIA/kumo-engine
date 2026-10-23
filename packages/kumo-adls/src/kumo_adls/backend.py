@@ -105,15 +105,19 @@ class ADLSSessions(ObjectStoreSessions):
             raise ValueError(f'ADLS {purpose} is outside the connector root')
         return key
 
+    def _relative_coordinate(self, root, coordinate, *, purpose):
+        if '://' in coordinate:
+            key = self._contained_key(root, coordinate, purpose=purpose)
+            prefix = root.prefix.rstrip('/')
+            coordinate = key[len(prefix):].lstrip('/') if prefix else key
+        return normalize_adls_source_relative_path(coordinate)
+
     def _placement(self, connector, table_name):
         root = self._root_for(connector)
         if root is None:
             return super()._placement(connector, table_name)
-        if '://' in table_name:
-            key = self._contained_key(root, table_name, purpose='source')
-            prefix = root.prefix.rstrip('/')
-            table_name = key[len(prefix):].lstrip('/') if prefix else key
-        table_name = normalize_adls_source_relative_path(table_name)
+        table_name = self._relative_coordinate(root, table_name,
+                                               purpose='source')
         return root.bucket, root.path, table_name, None
 
     def _source_access(self, connector, bucket, region):
@@ -137,11 +141,9 @@ class ADLSSessions(ObjectStoreSessions):
         if root is None:
             raise NotImplementedError(
                 'Rootless ADLS connectors are source-only')
-        if '://' in coordinate:
-            key = self._contained_key(root, coordinate, purpose='destination')
-        else:
-            relative = normalize_adls_source_relative_path(coordinate)
-            key = '/'.join(part for part in (root.prefix, relative) if part)
+        relative = self._relative_coordinate(root, coordinate,
+                                             purpose='destination')
+        key = '/'.join(part for part in (root.prefix, relative) if part)
         return root.bucket, f'{root.bucket}/{key}', None
 
 
