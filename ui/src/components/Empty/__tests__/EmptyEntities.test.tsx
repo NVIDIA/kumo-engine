@@ -15,7 +15,8 @@ import EmptyEntities from "../EmptyEntities";
 const emptyState = vi.hoisted(() => ({
     connectors: false,
     tables: false,
-    graphs: false
+    graphs: false,
+    jobs: false
 }));
 
 vi.mock("hooks/project/projects", () => ({
@@ -40,17 +41,21 @@ vi.mock("hooks/tables/tables", () => ({
     })
 }));
 vi.mock("hooks/jobs/list/jobList", () => ({
-    useJobs: () => [[], 0, false, vi.fn(), false]
+    useJobs: () => [[], 0, false, vi.fn(), emptyState.jobs]
 }));
 describe("EmptyEntities", () => {
     beforeEach(() => {
         Object.assign(emptyState, {
             connectors: false,
             tables: false,
-            graphs: false
+            graphs: false,
+            jobs: false
         });
     });
-    afterEach(() => vi.restoreAllMocks());
+    afterEach(() => {
+        vi.restoreAllMocks();
+        window.history.replaceState({}, "", "/");
+    });
 
     it("creates the first connector inside the selected project", () => {
         mockNavigateCall();
@@ -82,11 +87,31 @@ describe("EmptyEntities", () => {
             true,
             true,
             "train-model/model-training/training"
+        ],
+        [
+            "batch prediction",
+            PageNames.Jobs,
+            true,
+            true,
+            "run-models/batch-prediction",
+            true
         ]
     ])(
         "opens the relevant Studio task guide from %s",
-        (_, currentPage, tables, graphs, guide) => {
-            Object.assign(emptyState, { connectors: true, tables, graphs });
+        (_, currentPage, tables, graphs, guide, jobs = false) => {
+            Object.assign(emptyState, {
+                connectors: true,
+                tables,
+                graphs,
+                jobs
+            });
+            if (jobs) {
+                window.history.replaceState(
+                    {},
+                    "",
+                    "/project/project-sales/predictions/"
+                );
+            }
             const open = vi
                 .spyOn(window, "open")
                 .mockImplementation(() => null);
