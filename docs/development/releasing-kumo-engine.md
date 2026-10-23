@@ -107,15 +107,20 @@ platform's `release-version`.
    - resolves the x86_64 wheel against PyPI, alone and with each extra, on
      every Python version it claims, and stops if any fails;
    - runs `wheel-smoke` on the finished x86_64 wheel with Python 3.12 and CPU
-     execution. Installation, training, prediction, and model reload must pass
-     before attachment or publication. See the [test criteria](testing.md#finished-kumo-engine-wheel);
-   - attaches the x86_64 and ARM64 wheels to the GitHub release.
+     execution. Installation, training, prediction, model reload, evidence,
+     and random-label controls must pass. The reference and candidate use five matching training seeds.
+     AUROC is the ranking-quality score. An average drop greater than `0.001` fails. A drop equal to `0.001` passes.
+     Seven additional learning tasks require validated quality limits and passing execution, evidence, and controls.
+     Their pending quality profile currently blocks release approval. Reporting runs cannot authorize publication.
+     Individual scores and historical limits remain diagnostics. A failed or missing result blocks
+     attachment and publication. See the [test criteria](testing.md#finished-kumo-engine-wheel);
+   - attaches the tested x86_64 wheel to the GitHub release.
 5. **Approve the publication.** The `kitmaker` job waits for approval on the
    `kumo-engine-release` environment. It then checks that the Portal project
    has the expected name and owner and that the attached wheel is the one this
    run built, has Kitmaker dry-run it, and only then publishes it to PyPI and
-   pypi.nvidia.com, where it confirms both serve exactly those bytes. Only the
-   x86_64 wheel goes to PyPI; the ARM64 wheel stays on the GitHub release. A publication cannot be recalled, and PyPI never
+   pypi.nvidia.com, where it confirms both serve exactly those bytes.
+   This workflow publishes the tested x86_64 wheel. A publication cannot be recalled, and PyPI never
    accepts the same file name twice.
 6. **Smoke-test the published wheel** in a clean virtualenv:
 
@@ -137,7 +142,7 @@ this workflow.
 | --- | --- |
 | Tag does not match `VERSION` | Delete the release and tag, fix the version (or the tag), publish again. Nothing was uploaded. |
 | `check-requirements` fails | A requirement is not on PyPI yet, usually `kumo-glove-6b-50d`. Publish it, then re-run the failed jobs. Nothing was attached or published. |
-| `wheel-smoke` fails | Read `summary.json` and the logs in the `kumo-engine-wheel-smoke-*` artifact. Fix the failure before release attachment or publication. See the [test procedure](testing.md#finished-kumo-engine-wheel). |
+| `wheel-smoke` fails or its result is missing | Read `summary.json` and the logs in the `kumo-engine-wheel-smoke-*` artifact. Fix the failure before release attachment or publication. See the [test procedure](testing.md#finished-kumo-engine-wheel). |
 | Build or glibc-floor check fails | Fix on the branch, delete the release and tag, then recreate the tag on the fixed commit. Nothing was uploaded. |
 | `kitmaker` fails before *publication* starts | Nothing was published. Fix the cause and re-run the failed job. |
 | `kitmaker` fails during *publication* | Check PyPI first: a file that reached it stays there. Re-run only if the file is missing. |
@@ -146,7 +151,7 @@ this workflow.
 ## Manual builds
 
 Running the workflow by hand (Actions, *Run workflow*) builds the wheel as
-`<version>+<commit>`, runs dependency and workflow checks, and keeps the wheel
+`<version>+<commit>`, runs dependency, workflow, and paired learning checks, and keeps the wheel
 as a workflow artifact for 30 days. It never
 attaches or publishes anything: attaching runs only for release events, and PyPI
 rejects local versions anyway.
