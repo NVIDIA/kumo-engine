@@ -22,7 +22,7 @@ Run the check from a checkout with the repository tools installed:
 ./scripts/check_dead_code.sh
 ```
 
-The [wrapper](./check_dead_code.sh) runs Vulture 2.14 once against the current Python source tree. The [Vulture configuration](../pyproject.toml) sets a minimum confidence of 80% and excludes generated grammar, tests, examples, third-party code, the imported DiskGraph package, agent files, and local environments. DiskGraph is maintained directly in `packages/diskgraph` with its own formatting and lint policy; its exclusion matches the other repository-wide Python linters. Imports are reported at 90%; unused arguments and unreachable code are reported at 100%. Most unused functions, classes, and local variables are below the current threshold.
+The [wrapper](./check_dead_code.sh) runs Vulture 2.14 once against the current Python source tree. The [Vulture configuration](../pyproject.toml) sets a minimum confidence of 80% and excludes generated grammar, tests, examples, third-party code, the DiskGraph package, agent files, and local environments. The DiskGraph exclusion matches the other repository-wide Python linters. Imports are reported at 90%; unused arguments and unreachable code are reported at 100%. Most unused functions, classes, and local variables are below the current threshold.
 
 Every finding in that configured scope fails the check, including findings in files a pull request did not edit. For example, deleting the last use of an import in one file can make an import in another, unchanged file unused. The whole tree is analyzed together so unchanged callers are also visible. There is no stored findings baseline and no `--diff` mode.
 

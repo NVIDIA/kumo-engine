@@ -88,6 +88,11 @@ COPY docker/build_diskgraph_wheel /tmp/build_diskgraph_wheel
 RUN chmod +x /tmp/build_diskgraph_wheel \
  && /tmp/build_diskgraph_wheel /tmp/diskgraph-wheel
 
+FROM diskgraph-builder AS temporalio-builder
+COPY docker/build_temporalio_wheel /tmp/build_temporalio_wheel
+COPY docker/temporalio-zip.patch /tmp/temporalio-zip.patch
+RUN bash /tmp/build_temporalio_wheel
+
 FROM base
 
 ARG TARGETARCH
@@ -232,6 +237,13 @@ RUN set -- \
         --torch-backend="${CUDA}" \
         -r /tmp/requirements.txt \
  && rm -rf /tmp/requirements.txt /root/.cache/uv
+
+COPY --from=temporalio-builder /tmp/temporalio-wheel /tmp/temporalio-wheel
+RUN python3 -c "import importlib.metadata as m; assert m.version('temporalio') == '1.33.0', 'Update the Temporal security backport with the locked SDK'" \
+ && UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps \
+        --reinstall-package temporalio /tmp/temporalio-wheel/temporalio-*.whl \
+ && python3 -c "import temporalio, importlib.metadata as m; import temporalio.bridge.temporal_sdk_bridge; assert temporalio.__version__ == m.version('temporalio') == '1.33.0+kumo.zip901'" \
+ && rm -rf /tmp/temporalio-wheel /root/.cache/uv
 
 # Register the local API, PQL, core and source-reader packages as regular
 # (non-editable) installs: the source overlay below `rm -rf`s /opt/app/src, so

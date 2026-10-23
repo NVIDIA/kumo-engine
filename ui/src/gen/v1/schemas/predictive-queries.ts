@@ -537,7 +537,7 @@ export const GetV1PredictiveQueriesModelPlanBody = zod
                 DEBUG: "debug"
             })
             .describe(
-                "Defines the run mode for AutoML. Please see the `Kumo documentation <https:<slash><slash>docs.kumo.ai<slash>docs<slash>whats-the-recommended-way-to-cut-down-on-model-training-time>`_ for more information."
+                "Defines the run mode for AutoML. Please see the `Kumo documentation <https:<slash><slash>docs.nvidia.com<slash>sdgm<slash>kumo-engine<slash>1.0.0<slash>kumo-studio-guide-coming-soon<slash>preliminary-documentation<slash>legacy-ui-references<slash>training-time>`_ for more information."
             ),
         "train_table_spec": zod
             .union([

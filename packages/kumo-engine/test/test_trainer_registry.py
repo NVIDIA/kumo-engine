@@ -299,15 +299,17 @@ def test_finish_fit_failure_does_not_expose_state(tmp_path: Path, monkeypatch,
     assert trainer._training_query is None
 
 
+@pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
 def test_load_reconstructs_trainer_from_published_bundle(
-        tmp_path: Path) -> None:
+        tmp_path: Path, accelerator: str) -> None:
     bundle = _fake_published_bundle(tmp_path)
     model_plan = ModelPlan()
     write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
                         model_plan=model_plan, snapshot_id='snap-123',
                         training_table_generation=_generation_plan())
 
-    loaded = Trainer.load(bundle)
+    loaded = Trainer.load(bundle, accelerator=accelerator)
+    assert loaded._accelerator == accelerator
 
     assert loaded._snapshot_id == 'snap-123'
     assert loaded._training_result is not None
@@ -320,8 +322,9 @@ def test_load_reconstructs_trainer_from_published_bundle(
     assert loaded.training_table_generation_plan == _generation_plan()
 
 
+@pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
 def test_load_from_connector_fetches_then_uses_local_loader(
-        tmp_path: Path) -> None:
+        tmp_path: Path, accelerator: str) -> None:
     bundle = _fake_published_bundle(tmp_path / 'source')
     write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
                         model_plan=ModelPlan(), snapshot_id='snap-123',
@@ -331,7 +334,9 @@ def test_load_from_connector_fetches_then_uses_local_loader(
     sink.publish_model(None, str(bundle), location=location)
 
     loaded = Trainer.load_from_connector(_FakeConnector(sink),
-                                         location=location)
+                                         location=location,
+                                         accelerator=accelerator)
+    assert loaded._accelerator == accelerator
 
     assert loaded._snapshot_id == 'snap-123'
     assert loaded._training_result is not None

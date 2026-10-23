@@ -13,7 +13,7 @@ import warnings
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, Optional, TypeVar, cast
+from typing import Any, Callable, Dict, Literal, Mapping, Optional, TypeVar, cast
 
 import pandas as pd
 from kumo_core.embedding_models import EmbeddingModelStore
@@ -235,12 +235,20 @@ class Trainer:
             between hosted and local training.
         embedding_models: the word-embedding models for text columns, by
             name. Defaults to the installed ones (``kumo-engine[text]``).
+        accelerator: Lightning device selection: ``auto`` (default), ``cpu``,
+            ``gpu``, or ``mps``. Applies to training and prediction.
     """
     def __init__(
         self,
         model_plan: ModelPlan,
         embedding_models: Optional[EmbeddingModelStore] = None,
+        *,
+        accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
     ):
+        if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
+            raise ValueError(
+                "accelerator must be one of 'cpu', 'gpu', 'mps', or 'auto'")
+        self._accelerator = accelerator
         self._model_plan = model_plan
         self._embedding_models = (embedding_models if embedding_models
                                   is not None else EmbeddingModelStore())
@@ -302,7 +310,10 @@ class Trainer:
                 ``load_from_connector``. Reuses its selected weights, optimizer
                 state, fitted encoders, architecture and neighbor sampling;
                 this trainer's training controls still apply. Task types must
-                match. Forecasting warm starts are unsupported.
+                match. Forecasting warm starts are unsupported. Older bundles
+                may contain an AutoML search space instead of the fitted
+                architecture; they support prediction but are unreliable
+                warm-start sources.
         """
         from kumo_core.automl.runtime import (
             inherit_warm_start_model_plan,
@@ -447,7 +458,8 @@ class Trainer:
             training_input,
             bindings=local_training_bindings(
                 training_input, run_name=run_id,
-                embedding_models=self._embedding_models),
+                embedding_models=self._embedding_models,
+                accelerator=self._accelerator),
             options=CallableTrainingOptions(),
         )
 
@@ -733,6 +745,7 @@ class Trainer:
             forecast_options=forecast_options,
             embedding_models=self._embedding_models,
             encoders=encoders,
+            accelerator=self._accelerator,
         )
 
         del encoders
@@ -747,13 +760,18 @@ class Trainer:
         cls,
         bundle_path: str | Path,
         embedding_models: Optional[EmbeddingModelStore] = None,
+        *,
+        accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
     ) -> Self:
         r"""Restore a trainer from an existing local model bundle.
 
         Its text columns need the same word-embedding models it was trained
         with, registered in ``embedding_models`` under any name or installed.
+        ``accelerator`` selects the device for this instance, defaulting to
+        ``auto`` independently of the device used to train the model.
         """
-        return cls._load_bundle(Path(bundle_path), embedding_models)
+        return cls._load_bundle(Path(bundle_path), embedding_models,
+                                accelerator=accelerator)
 
     @classmethod
     def load_from_connector(
@@ -763,6 +781,7 @@ class Trainer:
         path: Optional[str] = None,
         location: Optional[ModelRegistryLocation] = None,
         embedding_models: Optional[EmbeddingModelStore] = None,
+        accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
     ) -> Self:
         r"""Fetch a trusted publication, then restore its training state.
 
@@ -774,6 +793,7 @@ class Trainer:
         the bundle does not restore graph storage or source data.
         Hashes detect corruption, not publisher authentication. Load only models
         from trusted publishers; checkpoint deserialization happens at predict.
+        ``accelerator`` selects the device for this instance (default: ``auto``).
         """
         address = ModelOutputConfig(model_registry, path=path,
                                     location=location)
@@ -784,13 +804,16 @@ class Trainer:
                 'model_registry.sink_backend must implement ModelFetchingSink')
         sink.fetch_model(cast(SourceConnector, model_registry), str(bundle_dir),
                          path=address.path, location=address.location)
-        return cls._load_bundle(bundle_dir, embedding_models)
+        return cls._load_bundle(bundle_dir, embedding_models,
+                                accelerator=accelerator)
 
     @classmethod
     def _load_bundle(
         cls,
         bundle_dir: Path,
         embedding_models: Optional[EmbeddingModelStore] = None,
+        *,
+        accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
     ) -> Self:
         bundle_dir = bundle_dir.resolve()
         paths = read_bundle_artifact_paths(bundle_dir)
@@ -800,7 +823,7 @@ class Trainer:
         metrics_path = bundle_dir / 'metrics.json'
         metrics = (json.loads(metrics_path.read_text(
             encoding='utf-8')) if metrics_path.is_file() else {})
-        trainer = cls(plan, embedding_models)
+        trainer = cls(plan, embedding_models, accelerator=accelerator)
         trainer._snapshot_id = spec.snapshot_id
         trainer._training_query = spec.predictive_query
         trainer._training_table_generation_plan = from_json_dict(

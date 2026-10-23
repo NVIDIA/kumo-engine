@@ -8,7 +8,6 @@ r"""`Graph` (metadata) and `GraphSnapshot` (materialized).
 `Graph` -- reading each `Table`'s connector, running the result through
 `kumo-core` to build column stats and the on-disk index -- is the explicit,
 separate `snapshot()` step, mirroring the cloud pipeline's DG-ingest stage.
-See "Object model" and "Local storage and results" in the package README.
 
 `snapshot()` ports the real `kumo_core` DiskGraph ingest call
 (`kumo_core.diskgraph.ingest.execute_diskgraph_ingest`) used today by the
