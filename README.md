@@ -16,13 +16,20 @@
 
 **An open accelerator for context generation over structured data.**
 
-Kumo Engine prepares connected records and their history for predictive modeling at scale. Its Rust-based DiskGraph engine indexes data on local SSDs and retrieves time-correct neighborhoods for training and batch prediction, including graphs larger than available RAM.
+NVIDIA Kumo Engine prepares connected records and their history for predictive modeling at scale. Its Rust-based DiskGraph engine indexes data on local SSDs and retrieves time-correct neighborhoods for training and batch prediction, so teams can run structured data models over enterprise-scale datasets at lower cost by feeding the GPU from NVMe instead of RAM.
 
-Define your tables, relationships, and prediction task in Python. Kumo Engine handles graph ingestion, context sampling, training, evaluation, and prediction. Build classifiers, regressors, forecasts, recommendations, and embeddings from your own data.
+Define your tables, relationships, and prediction task in Python. Kumo Engine handles ingestion from the data lake, graph construction, context sampling, training, evaluation, and prediction for a wide range of predictive use cases. Examples include recommendations, fraud detection, churn prediction, propensity modeling, and risk scoring, among many others.
 
-**Benchmark highlight:** [One million three-hop neighborhoods in 19 seconds, warm cache](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/resources/benchmarks).
+**Benchmark highlight:** [One million three-hop neighborhoods in 19 seconds](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/resources/benchmarks).
 
 [Documentation](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-started-with-kumo-engine/overview) · [Installation](#installation) · [Quick Tour](#quick-tour) · [Benchmarks](#benchmarks)
+
+## Part of NVIDIA Kumo
+
+NVIDIA Kumo is a family of open models, libraries, and tools for predictive AI across tabular, relational, and time-series data, and a core part of the NVIDIA Agent Knowledge Foundation.
+
+- **NVIDIA Kumo Structured:** pretrained foundation models (Kumo Tabular, Kumo Relational, Kumo Forecast, and Kumo Anomaly) that make predictions without training a model per task. Refer to [NVIDIA/structured-data-models](https://github.com/NVIDIA/structured-data-models).
+- **NVIDIA Kumo Engine (this repository):** an open accelerator for preparing connected structured data and training predictive models at production scale.
 
 ## Installation
 
@@ -32,7 +39,7 @@ The published **1.0.0 wheel** targets Linux x86-64 with glibc 2.34 or later and 
 pip install kumo-engine
 ```
 
-The base package reads local CSV and Parquet files. Install the extra for your remote data source:
+The base package reads local CSV and Parquet files. To read from a remote data source, install the matching optional dependency:
 
 | Data Source | Installation |
 | --- | --- |
@@ -47,10 +54,10 @@ Refer to [prerequisites](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-star
 ## Key Capabilities
 
 - **Context at scale:** Retrieve connected records from an NVMe-backed graph index without keeping the full index in RAM.
-- **Time-correct modeling:** Define outcomes and historical context with Predictive Query Language (PQL).
-- **Reusable data foundation:** Reuse graph snapshots across prediction tasks and configure sampling, encoders, and training through model plans.
 - **End-to-end workflows:** Train and evaluate models, run batch predictions, generate embeddings, and save reloadable model bundles.
-- **Your data and infrastructure:** Read files or connect to cloud storage and warehouses using your own compute and credentials.
+- **Production ready:** Ingest in parallel from S3, Snowflake, Databricks, BigQuery, and GCS.
+- **Existing data and infrastructure:** Read files or connect to cloud storage and warehouses using existing compute and credentials.
+- **Compatible with agentic workflows:** Agent skills let AI agents set up and run Kumo Engine workflows.
 
 ## Quick Tour
 
@@ -136,15 +143,16 @@ plan.optimization.max_epochs = 3
 trainer = Trainer(plan)
 trained = trainer.fit(training_table, snapshot=snapshot)
 predictions = trainer.predict(
-    query.generate_prediction_table(snapshot), snapshot=snapshot
+    query.generate_prediction_table(snapshot), snapshot=snapshot,
+    binary_classification_threshold=0.5,
 )
 print(predictions.frame.head())
 print("Saved model bundle:", trained.bundle_dir)
 ```
 
-The prediction frame contains entity identifiers and model outputs. These scores cover a future 30-day window from the snapshot's latest event time; the synthetic data does not provide observed outcomes for that future window. Keep the saved bundle and any results you need on durable storage.
+The prediction frame contains entity identifiers and model outputs. These scores cover a future 30-day window from the snapshot's latest event time. Keep the saved bundle and any results you need on durable storage.
 
-For a complete walkthrough with data preparation, diagnostics, and retained outputs, follow the [Google Colab notebook](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/code-examples/google-colab-notebook). Explore more tasks in [Predictive Query Examples](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-started-with-kumo-engine/workflows-and-solutions/predictive-query-examples).
+For a complete walkthrough with data preparation, diagnostics, and retained outputs, follow the [Google Colab](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/code-examples/google-colab-notebook), [Snowflake](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/code-examples/snowflake-notebook), or [Databricks](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/user-code-guide/code-examples/databricks-notebook) notebook. Explore more tasks in [Predictive Query Examples](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-started-with-kumo-engine/workflows-and-solutions/predictive-query-examples).
 
 ## Benchmarks
 
