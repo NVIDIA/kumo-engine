@@ -42,7 +42,7 @@ preds in the scores table", after a turn that named the model and the table, sup
 | Field | How it is obtained | Shown as |
 |---|---|---|
 | **task** — entity, outcome, window, task type | Reused from the model unchanged. Never reopened. | restated at 1d |
-| **`source_scope`** | In order: a source the user named → the connector the user named for this request (one connector reads the source and writes the scores unless the user separates them) → the source scope recorded with the model at publication. Ask only if none of the three exists. | `[supplied]` / `[inferred]` at 1c |
+| **`source_scope`** | In order: a source the user named → the connector the user named for this request, on a host whose *Source scope* accepts a connector name (one connector reads the source and writes the scores unless the user separates them) → the source scope recorded with the model at publication. Ask only if none of the three exists. On a host that does not accept a connector name, a connector named alone is not a source: ask for the system and location as that host's adapter says. | `[supplied]` / `[inferred]` at 1c |
 | **graph** | Rebuilt from the model's recorded graph definition inside `source_scope`, then confirmed | `[inferred]` at 1c |
 | **`scoring_population`** | Default: every entity of the trained entity table, anchored at the latest timestamp in the rebuilt snapshot ("current predictions"). A static task has no anchor. If the user names a subset or an anchor date, use theirs. | `[default]` / `[supplied]` at 1d |
 | **model version** | The version the user named. If the address resolves to more than one version and none was named, ask which one. Never pick the latest yourself. | `[supplied]` at 1d |
@@ -102,6 +102,7 @@ For `batch_inference`, restate in this shape and stop for confirmation:
 - Source: <source_scope> [supplied | inferred]
 - Population: <all <entity> as of latest snapshot timestamp [default] | the user's subset/date [supplied]>
 - Output: predictions written to <destination, verbatim>
+- Threshold (binary classification): <the user's value [supplied] | recorded with the model [inferred] | 0.5 [default]>
 - Embeddings: <included, if explicitly requested>
 ```
 

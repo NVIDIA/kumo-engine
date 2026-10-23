@@ -73,8 +73,10 @@ connector reaches no tables. Take the Snowpark session once, before any connecto
 Never emit `kumo.init(...)` — hosted editions only, out of scope. Never construct
 `SnowflakeConnector` with `name=`, `account=` or `credentials=`; none is a parameter.
 
-Everything after this step — tables, graph, query, training, prediction — is the same for every
-connector.
+Everything after this step — tables, graph, query, training, prediction — follows the same
+workflow for every connector. Two things still differ by connector: how a table is named
+(an identifier, or a path below a file connector's root without its suffix) and `connector.sql()`,
+which only Snowflake, Databricks and BigQuery run (`kumo_finetuning_sdk.md` §3.4).
 
 ### Accessing source tables
 
@@ -147,8 +149,11 @@ Inspect resolved types via the table definition:
    `.with_column('<fk>', stype=Stype.ID)` for every FK column in every table.
 2. **A time column must be a real date.** If the column is stored as text in the source (a
    Snowflake `TEXT`, a CSV string) the catalog reports a string, and the table will not have a usable timeline. Declaring
-   `.with_column('<time_col>', dtype=Dtype.date)` is what makes staging cast it. Check the
-   catalog dtype (section above) before assuming a `time_column=` argument is sufficient.
+   `.with_column('<time_col>', dtype=Dtype.date)` is what makes staging cast it. When the strings
+   are not ISO-8601 (`03/15/2024`), also pass their format:
+   `.with_column('<time_col>', dtype=Dtype.date, timestamp_format='%m/%d/%Y')`. `Dtype.date` is
+   Kumo's date-and-time type; `Dtype.time` is a time of day and is wrong here. Check the catalog
+   dtype (section above) before assuming a `time_column=` argument is sufficient.
 
 ---
 

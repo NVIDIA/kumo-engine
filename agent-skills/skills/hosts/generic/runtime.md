@@ -126,10 +126,15 @@ Rooting the connector at the destination itself and passing a `table_name` write
 below it, to a path the user never confirmed. A directory destination must be empty or absent;
 the sink creates it.
 
+`OUTPUT_LEAF` ends in `/`, `.parquet` or `.csv` (`adapter.md` §4). File, S3 and GCS sinks alike
+add `.parquet` to any other leaf, and the read-back would then miss the file. The suffix also
+sets the format the sink writes, so read back in that format.
+
 ```python
 # Local files, S3, GCS — directory or single-file output
 import pyarrow.dataset as ds
-written = ds.dataset(OUTPUT_LOCATION, format='parquet').count_rows()  # full path or URI
+OUTPUT_FORMAT = 'csv' if OUTPUT_LOCATION.rstrip('/').lower().endswith('.csv') else 'parquet'
+written = ds.dataset(OUTPUT_LOCATION, format=OUTPUT_FORMAT).count_rows()  # full path or URI
 
 # BigQuery
 from google.cloud import bigquery
@@ -183,7 +188,7 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
   import pyarrow.parquet as papq
 
   keep = {ENTITY_KEY: 'ENTITY1', ENTITY_TIME: 'TIMESTAMP'}   # ENTITY_TIME: the entity Table's time_column
-  population = ds.dataset(ENTITY_SOURCE, format='parquet').to_table(columns=list(keep))
+  population = ds.dataset(ENTITY_SOURCE, format=ENTITY_FORMAT).to_table(columns=list(keep))
   population = population.rename_columns([keep[c] for c in population.column_names])
   if 'TIMESTAMP' in population.column_names:                  # a DATE anchor reads as null
       i = population.column_names.index('TIMESTAMP')
@@ -197,8 +202,9 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
       population_connector['population'], pq=pquery, snapshot=snapshot)
   ```
 
-  `ENTITY_SOURCE` is the entity table's file or directory as preflight listed it;
-  `POPULATION_PATH` is the confirmed path, ending in `/`.
+  `ENTITY_SOURCE` is the entity table's file or directory as preflight listed it, and
+  `ENTITY_FORMAT` its format as preflight found it, `'csv'` or `'parquet'`. The population is
+  written as Parquet either way. `POPULATION_PATH` is the confirmed path, ending in `/`.
 - **Snowflake:** the §7.1 SQL, run through the read-back connection above.
 - **Databricks:** create the table through the confirmed SQL warehouse with the statement API,
   wait for it, and build the `PredictionTable` from a `DatabricksConnector` scoped to the
