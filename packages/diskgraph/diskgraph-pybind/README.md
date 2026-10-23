@@ -80,6 +80,22 @@ uv pip install .
 within the supplied Arrow batch. Neither retains a second batch of parsed keys;
 only the returned IDs or booleans accumulate.
 
+`temporal_most_recent` keeps descending timestamp order, then any configured
+weight order. If equal sort keys cross the fanout limit and the destination
+table declares a primary key, the sampler selects the greatest logical keys:
+exact numeric order for numeric keys and lexical byte order for string/binary
+keys. Reordering source rows or files does not change this selection. This is
+native typed-key ordering; an adapter's separate string-rendered key ordering
+is not implied. Repeated edges retain their multiplicity.
+
+The sampler reads the entire boundary tie group, retaining at most the remaining
+fanout. It does not read primary keys from older groups. Groups retained in
+full require no extra primary-key reads. Existing indexes work without
+reingestion. A missing or unreadable declared key raises an error when tie
+resolution needs it.
+Low-level graphs without a declared primary key keep their existing adjacency
+order for ties.
+
 ```python
 import json
 import diskgraph_pybind
