@@ -27,7 +27,8 @@ def test_reserved_answers_are_absent_from_observed_graph(task):
     for independent in (False, True):
         fixture = build(task, independent)
         assert fixture == build(task, independent)
-        assert fixture['entity_ids'] == list(range(60))
+        entity_count = 100 if task == 'temporal_link' else 60
+        assert fixture['entity_ids'] == list(range(entity_count))
         if task == 'static_link':
             observed = {(row['ENTITY_ID'], row['ITEM_ID'])
                         for row in fixture['events']}
@@ -38,7 +39,7 @@ def test_reserved_answers_are_absent_from_observed_graph(task):
             assert max(row['DAY']
                        for row in fixture['events']) < fixture['anchor']
         assert np.asarray(
-            fixture['targets']).shape == (60,
+            fixture['targets']).shape == (entity_count,
                                           12 if task == 'forecasting' else 100)
 
 
@@ -56,6 +57,32 @@ def test_static_control_breaks_group_signal_without_changing_task_shape():
     assert any(item // 10 != entity % 10
                for entity, targets in enumerate(control['targets'])
                for item, present in enumerate(targets) if present)
+
+
+def test_temporal_recall_ignores_arbitrary_order_inside_a_learned_group():
+    score = runpy.run_path(str(
+        WORKER.with_name('wheel_task_checks.py')))['score']
+    for seed in range(5):
+        fixture = worker()['make_fixture']('temporal_link', False, seed)
+        for group in range(10):
+            counts = np.asarray(fixture['targets'])[group::10].sum(axis=0)
+            assert counts.tolist() == [
+                3 if item // 10 == group else 0 for item in range(100)
+            ]
+        for reverse in (False, True):
+            predictions = np.zeros((len(fixture['entity_ids']), 100))
+            for entity in fixture['entity_ids']:
+                items = list(range(entity % 10 * 10, (entity % 10 + 1) * 10))
+                if reverse:
+                    items.reverse()
+                predictions[entity, items] = range(10, 0, -1)
+            assert score('recall@5', fixture['targets'],
+                         predictions) == pytest.approx(.5)
+            # One wrong recommendation in one complete interest cohort loses
+            # three hits among 100 entities with three hidden answers each.
+            predictions[::10, 10] = 20
+            assert score('recall@5', fixture['targets'],
+                         predictions) == pytest.approx(.49)
 
 
 @pytest.mark.parametrize('task',

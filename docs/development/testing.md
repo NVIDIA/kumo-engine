@@ -139,6 +139,12 @@ The pending profile defines proposed minimum losses from complete group or label
 Its formulas use fixed fixture counts and target structure, not candidate training scores.
 For example, losing one reserved link for one six-entity interest cohort gives `6/(60*3) = 1/30` recall loss.
 Counterfactual metric calculations check these policy units. They do not count as actual weaker-training or reliability evidence.
+The temporal-link fixture uses 100 entities and 100 items, with ten-item interest groups and three hidden future links per entity.
+Each ten-entity cohort has equal hidden item counts. Every item in its interest group appears three times.
+A shared correct-group ranking then scores `0.5` Recall@5 under any ordering of those ten items.
+One outside-group replacement for that cohort loses three hits, or `3/(100*3) = 1/100` recall.
+The independent-label control stays random. The metric, chronological splits, and training recipe stay unchanged.
+This balances measurement noise. Fresh native trials must still establish actual variation, learning sensitivity, and reliability.
 If normal variation hides that loss, improve the test instead of accepting a larger loss.
 Freeze the limits, minimum losses, weaker-training recipe, source, and dependencies before reserved validation.
 

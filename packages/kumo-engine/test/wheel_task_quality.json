@@ -8,7 +8,7 @@
     "regression": "2/19",
     "forecasting": "1/4",
     "static_link": "1/30",
-    "temporal_link": "1/30"
+    "temporal_link": "1/100"
   },
   "frozen_fault": null,
   "rationales": {
@@ -18,11 +18,11 @@
     "regression": "A systematic error of one level in the known 20-level risk-to-target signal must block release. The signal spans two target units, so one level is 2/19 target units.",
     "forecasting": "A forecast that is one time step late must block release. The generated series changes by 1/4 target unit per step, giving 1/4 mean absolute error across all 12 horizons.",
     "static_link": "Missing one reserved true link in the top five for every entity in one complete interest cohort must block release. A cohort has six of 60 entities and three reserved links each, giving 6/(60*3) = 1/30 recall loss.",
-    "temporal_link": "Missing one reserved true link in the top five for every entity in one complete interest cohort must block release. A cohort has six of 60 entities and three reserved links each, giving 6/(60*3) = 1/30 recall loss."
+    "temporal_link": "Replacing one correct-group top-five recommendation with an outside-group item for one complete interest cohort must block release. Each ten-entity cohort has three hidden answers per entity. Each of its ten items appears exactly three times, so the replacement loses 3/(100*3) = 1/100 recall."
   },
   "minimum_loss_calculation": {
     "status": "PROPOSED_FIXTURE_POLICY_NOT_QUALIFIED",
-    "source_sha256": "05d801d7fedf640779372e745d7799d5d070d21ca3545198ab198500dc2562b7",
+    "source_sha256": "9630223eafce26ee3c2f5c476ac8c1315571e6097cd2198f4057b7eff1432d26",
     "seeds": [0, 1, 2, 3, 4],
     "meaning": "These counterfactual fixture calculations define blockworthy losses. They are not actual weaker-training trials or evidence of detection reliability. Release limits remain unselected.",
     "multiclass": {
@@ -50,7 +50,7 @@
     "regression": {"formula": "signal_span/(risk_levels-1) = 2/(20-1) = 2/19", "units": "target_units"},
     "forecasting": {"formula": "MAE(truth, one_step_late_truth) = 1/4", "units": "target_units", "checked_seeds": 5, "horizons": 12},
     "static_link": {"formula": "cohort_size/(entities*reserved_links) = 6/(60*3) = 1/30", "checked_seeds": 5},
-    "temporal_link": {"formula": "cohort_size/(entities*reserved_links) = 6/(60*3) = 1/30", "checked_seeds": 5}
+    "temporal_link": {"formula": "item_occurrences_per_cohort/(entities*reserved_links) = 3/(100*3) = 1/100", "entities": 100, "cohort_size": 10, "item_occurrences_per_cohort": 3, "checked_seeds": 5}
   },
   "calibration": [],
   "validation": [],

@@ -30,7 +30,10 @@ def make_fixture(task, independent, seed=0):
     if task not in TASK_TYPES:
         raise ValueError(f'Unknown temporal task: {task}')
     rng = random.Random(73 + seed)
-    ids, catalog = list(range(60)), list(range(100))
+    ids = list(range(100 if task == 'temporal_link' else 60))
+    catalog = list(range(100))
+    heldout_orders = ([rng.sample(range(10), 10) for _ in range(10)]
+                      if task == 'temporal_link' and not independent else None)
     anchor = 96 if task == 'forecasting' else 48
     events, targets, known = [], [], {}
     last = []
@@ -60,7 +63,12 @@ def make_fixture(task, independent, seed=0):
                 events.extend(
                     dict(ENTITY_ID=entity, DAY=day, ITEM_ID=item)
                     for item in rng.sample(pool, 3))
-            reserved = rng.sample(pool, 3)
+            # Equal item counts prevent arbitrary within-group rankings from
+            # changing the cohort's score. Control answers stay random.
+            reserved = (rng.sample(pool, 3) if heldout_orders is None else [
+                pool[heldout_orders[entity % 10][(entity // 10 + offset) % 10]]
+                for offset in range(3)
+            ])
         targets.append([int(item in reserved) for item in catalog])
     fixture = dict(entity_ids=ids, catalog=catalog, anchor=anchor,
                    events=events, targets=targets, known=known)
