@@ -13,7 +13,16 @@ import warnings
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Literal, Mapping, Optional, TypeVar, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Literal,
+    Mapping,
+    Optional,
+    TypeVar,
+    cast,
+)
 
 import pandas as pd
 from kumo_core.embedding_models import EmbeddingModelStore
