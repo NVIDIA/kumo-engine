@@ -110,6 +110,8 @@ platform's `release-version`.
      execution. Installation, training, prediction, model reload, evidence,
      and random-label controls must pass. The reference and candidate use five matching training seeds.
      AUROC is the ranking-quality score. An average drop greater than `0.001` fails. A drop equal to `0.001` passes.
+     Seven additional learning tasks require passing execution, evidence, and controls.
+     Their quality metrics remain reports until separate limits are validated.
      Individual scores and historical limits remain diagnostics. A failed or missing result blocks
      attachment and publication. See the [test criteria](testing.md#finished-kumo-engine-wheel);
    - attaches the tested x86_64 wheel to the GitHub release.

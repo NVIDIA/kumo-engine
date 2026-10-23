@@ -23,6 +23,55 @@ RUNNER = SCRIPTS / 'smoke_wheel.py'
 
 
 class WheelSmokeTest(unittest.TestCase):
+    def task_comparison(self):
+        metrics = dict(multiclass='accuracy', multilabel='ap_macro',
+                       multilabel_ranking='recall@5', regression='mae',
+                       forecasting='mae', static_link='recall@5',
+                       temporal_link='recall@5')
+        return dict(
+            status='MEASURED', execution_passed=True, tasks={
+                name:
+                dict(
+                    metric=metric, per_seed=[
+                        dict(seed=i, reference=.5, candidate=.5, baseline=.5,
+                             quality_drop=0.) for i in range(5)
+                    ])
+                for name, metric in metrics.items()
+            }, independent_controls={
+                name:
+                dict(
+                    method='joint_monte_carlo_label_permutation', draws=999,
+                    seed=0, alpha=.01 / 7, statistic=0., p_value=1.,
+                    null_method=('uniform_eligible_items' if name
+                                 == 'static_link' else 'shared_label_rows'))
+                for name in metrics
+            })
+
+    def test_task_comparison_requires_complete_passing_control_results(self):
+        self.runner.verify_task_comparison(self.task_comparison())
+        for mutation in ('missing', 'missing_task', 'missing_value', 'nan',
+                         'equal_alpha', 'failed', 'widened_alpha', 'range'):
+            result = self.task_comparison()
+            control = result['independent_controls']['forecasting']
+            if mutation == 'missing':
+                del result['independent_controls']
+            elif mutation == 'missing_task':
+                del result['independent_controls']['forecasting']
+            elif mutation == 'missing_value':
+                del control['p_value']
+            elif mutation == 'nan':
+                control['p_value'] = float('nan')
+            elif mutation == 'equal_alpha':
+                control['p_value'] = .01 / 7
+            elif mutation == 'failed':
+                control['p_value'] = .001
+            elif mutation == 'widened_alpha':
+                control['alpha'] = .5
+            else:
+                control['p_value'] = 1.1
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.runner.verify_task_comparison(result)
+
     def setUp(self):
         self.assertTrue(RUNNER.is_file(), 'The wheel smoke runner is missing')
         sys.path.insert(0, str(SCRIPTS))
@@ -201,6 +250,11 @@ class WheelSmokeTest(unittest.TestCase):
         cases += [('PASS', mode, 1)
                   for mode in ('comparison-nonzero', 'comparison-timeout',
                                'comparison-malformed', 'comparison-unapproved')]
+        cases += [('MEASURED', mode, code)
+                  for mode, code in (('task-pass', 0), ('task-missing',
+                                                        1), ('task-failed', 1),
+                                     ('task-process-failed',
+                                      1), ('task-source-mismatch', 1))]
         for status, mode, expected in cases:
             with self.subTest(status=status, mode=mode):
                 output = self.root / f'{mode}-{status}'
@@ -257,6 +311,19 @@ class WheelSmokeTest(unittest.TestCase):
                             raise subprocess.CalledProcessError(7, command)
                         if mode == 'comparison-timeout':
                             raise subprocess.TimeoutExpired(command, timeout)
+                    elif log.stem == 'task_learning' and mode != 'task-missing':
+                        result = dict(
+                            status='MEASURED', seeds=list(range(5)),
+                            source_sha256=self.runner.task_source_identity())
+                        if mode == 'task-failed':
+                            result['status'] = 'FAIL'
+                        if mode == 'task-source-mismatch':
+                            result['source_sha256'] = 'a' * 64
+                        result_path = output / 'tasks/task-result.json'
+                        result_path.parent.mkdir()
+                        result_path.write_text(json.dumps(result))
+                        if mode == 'task-process-failed':
+                            raise subprocess.CalledProcessError(7, command)
 
                 with (patch.object(self.runner, 'run_command', commands),
                       patch.object(self.runner, 'load_requirements',
@@ -266,19 +333,22 @@ class WheelSmokeTest(unittest.TestCase):
                     code = self.runner.check_wheel(
                         wheel, output, learning=True,
                         reference=mode == 'measure',
-                        measure_learning=mode == 'measure',
+                        measure_learning=mode == 'measure'
+                        or mode.startswith('task-'),
+                        task_coverage=mode.startswith('task-'),
                         report_learning=mode == 'report-comparison',
                         compare_with={'status': 'MEASURED'}
                         if compares else None)
                     self.assertEqual(code, expected)
                 report = json.loads((output / 'summary.json').read_text())
+                self.assertEqual(report['status'],
+                                 ('MEASURED' if mode == 'measure' or compares
+                                  or mode.startswith('task-') else 'PASS')
+                                 if expected == 0 else 'FAIL')
                 self.assertEqual(
-                    report['status'],
-                    ('MEASURED' if mode == 'measure' or compares else 'PASS')
-                    if expected == 0 else 'FAIL')
-                self.assertEqual(
-                    report['stage'], 'complete' if expected == 0 else
-                    'comparison' if compares else 'learning')
+                    report['stage'], 'complete'
+                    if expected == 0 else 'comparison' if compares else
+                    'task_learning' if mode.startswith('task-') else 'learning')
                 if mode == 'failed-process':
                     self.assertIn('learnable AUROC is too low', report['error'])
                     self.assertEqual(report['learning']['status'], 'FAIL')
@@ -292,6 +362,11 @@ class WheelSmokeTest(unittest.TestCase):
                                      interpreters['install'])
                     self.assertEqual(interpreters['comparison'],
                                      interpreters['learning'])
+                if mode == 'task-pass':
+                    self.assertEqual(interpreters['task_learning'],
+                                     interpreters['install'])
+                    self.assertEqual(report['task_learning']['status'],
+                                     'MEASURED')
 
     def test_comparison_preserves_each_result(self):
         wheel = self.wheel()
@@ -322,9 +397,10 @@ class WheelSmokeTest(unittest.TestCase):
                               stage=stage,
                               wheel=self.runner.wheel_identity(wheel))
                 if previous:
-                    report['comparison'] = dict(status='PASS',
-                                                release_approved=True,
-                                                mean_auroc_drop=0)
+                    report['comparison'] = dict(
+                        status='PASS', release_approved=True,
+                        additional_tasks=self.task_comparison(),
+                        mean_auroc_drop=0)
                 if failed:
                     report[
                         'error'] = 'AUROC drop' if stage == 'comparison' else 'learning failed'
@@ -361,6 +437,7 @@ class WheelSmokeTest(unittest.TestCase):
         requirements['reference']['wheel'] = self.runner.wheel_identity(
             reference)
         passed = dict(status='PASS', release_approved=True,
+                      additional_tasks=self.task_comparison(),
                       quality_status='FAIL',
                       failed_limits=[dict(check='max_seed_drop')],
                       mean_auroc_drop=.001)
@@ -372,6 +449,11 @@ class WheelSmokeTest(unittest.TestCase):
             ('measured', dict(passed, status='MEASURED'), 0, 1),
             ('failed', dict(passed, status='FAIL'), 0, 1),
             ('execution-failed', passed, 7, 1),
+            ('tasks-missing', dict(passed, additional_tasks={}), 0, 1),
+            ('tasks-failed',
+             dict(
+                 passed, additional_tasks=dict(self.task_comparison(),
+                                               execution_passed=False)), 0, 1),
         ]
         for name, comparison, execution_code, expected in cases:
             with self.subTest(case=name):
@@ -412,6 +494,7 @@ class WheelSmokeTest(unittest.TestCase):
                 self.assertEqual(len(observed), 2)
                 for options in observed:
                     self.assertTrue(options.get('measure_learning'))
+                    self.assertTrue(options.get('task_coverage'))
                     self.assertFalse(options['report_learning'])
 
     def test_reference_mode_rejects_a_different_wheel_before_installation(self):
@@ -461,6 +544,7 @@ class WheelSmokeTest(unittest.TestCase):
                 if options.get('compare_with'):
                     report['comparison'] = dict(
                         status='MEASURED', quality_status='FAIL',
+                        additional_tasks=self.task_comparison(),
                         failed_limits=[dict(check='learnable_min')],
                         mean_auroc_drop=.2, release_approved=False)
                 if failed:
@@ -802,7 +886,10 @@ class WheelSmokeTest(unittest.TestCase):
         passed = dict(
             status='PASS', stage='complete', report_only=False,
             comparison=dict(status='PASS', release_approved=True,
-                            quality_status='FAIL'))
+                            quality_status='FAIL',
+                            additional_tasks=self.task_comparison()))
+        missing_tasks = dict(passed, comparison=dict(passed['comparison']))
+        del missing_tasks['comparison']['additional_tasks']
         cases = [
             None, {},
             dict(passed, report_only=True),
@@ -813,7 +900,15 @@ class WheelSmokeTest(unittest.TestCase):
             dict(passed, comparison={}),
             dict(passed, comparison=dict(status='FAIL', release_approved=True)),
             dict(passed, comparison=dict(status='PASS',
-                                         release_approved=False)), passed
+                                         release_approved=False)),
+            missing_tasks,
+            dict(passed, comparison=dict(passed['comparison'],
+                                         additional_tasks={})),
+            dict(
+                passed, comparison=dict(
+                    passed['comparison'],
+                    additional_tasks=dict(self.task_comparison(),
+                                          independent_controls={}))), passed
         ]
         for index, report in enumerate(cases):
             with self.subTest(report=report):

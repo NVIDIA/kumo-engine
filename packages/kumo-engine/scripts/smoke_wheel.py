@@ -12,6 +12,7 @@ import math
 import os
 import platform
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,47 @@ from pathlib import Path
 from check_pypi_requirements import read_metadata
 
 REQUIREMENTS = Path(__file__).resolve().parents[1] / 'test/wheel_workflow.json'
+
+
+def task_source_identity():
+    worker = runpy.run_path(
+        str(REQUIREMENTS.with_name('wheel_task_learning.py')))
+    return worker['source_identity']()
+
+
+def verify_task_comparison(result):
+    tasks = runpy.run_path(str(
+        REQUIREMENTS.with_name('wheel_task_learning.py')))['TASKS']
+    if (result.get('status') != 'MEASURED'
+            or result.get('execution_passed') is not True
+            or set(result.get('tasks', {})) != set(tasks)):
+        raise ValueError('All seven additional task results are required')
+    controls = result.get('independent_controls')
+    if not isinstance(controls, dict) or set(controls) != set(tasks):
+        raise ValueError('All seven independent-label controls are required')
+    for name, task in result['tasks'].items():
+        control = controls[name]
+        if (not isinstance(control, dict) or control.get('method')
+                != 'joint_monte_carlo_label_permutation'
+                or control.get('draws') != 999 or control.get('seed') != 0
+                or control.get('alpha') != .01 / 7 or control.get('null_method')
+                != ('uniform_eligible_items'
+                    if name == 'static_link' else 'shared_label_rows') or any(
+                        type(control.get(key)) not in
+                        (int, float) or not math.isfinite(control[key])
+                        for key in ('statistic', 'p_value'))
+                or not control['alpha'] < control['p_value'] <= 1):
+            raise ValueError('Independent-label control evidence did not pass')
+        rows = task.get('per_seed', [])
+        if (task.get('metric') != tasks[name][0] or len(rows) != 5
+                or {row['seed']
+                    for row in rows} != set(range(5)) or any(
+                        type(row['seed']) is not int or any(
+                            not math.isfinite(row[key])
+                            for key in ('reference', 'candidate', 'baseline',
+                                        'quality_drop')) for row in rows)):
+            raise ValueError(
+                'Additional task comparison evidence is incomplete')
 
 
 def load_requirements(path):
@@ -238,7 +280,7 @@ def run_command(command, cwd, log, timeout=60):
 def check_wheel(wheel, output, *, reference=False, learning=False,
                 fixed_dependencies=False, measure_learning=False,
                 compare_with=None, report_learning=False, device='cpu', runs=1,
-                measure_variation=False):
+                measure_variation=False, task_coverage=False):
     wheel = wheel.resolve()
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -385,6 +427,31 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                     learning_result, [],
                     status='MEASURED' if measurement else 'PASS')
                 summary['learning'] = learning_result
+                if task_coverage:
+                    task_worker = runpy.run_path(
+                        str(REQUIREMENTS.with_name('wheel_task_learning.py')))
+                    for name in task_worker['SOURCES']:
+                        shutil.copyfile(REQUIREMENTS.with_name(name),
+                                        root / name)
+                    task_result = output / 'tasks/task-result.json'
+                    try:
+                        run('task_learning', [
+                            python, '-I',
+                            str(root / 'wheel_task_learning.py'), '--version',
+                            identity['version'], '--output-dir',
+                            str(output / 'tasks')
+                        ], root, timeout=2400)
+                    finally:
+                        if task_result.is_file():
+                            summary['task_learning'] = json.loads(
+                                task_result.read_text())
+                    task_report = summary['task_learning']
+                    verify_workflow_result(task_report, [], status='MEASURED')
+                    if (task_report.get('source_sha256')
+                            != task_source_identity()
+                            or task_report.get('seeds') != list(range(5))):
+                        raise ValueError(
+                            'Additional task evidence differs from the harness')
                 if compare_with is not None:
                     inputs = root / 'comparison-input.json'
                     inputs.write_text(
@@ -403,8 +470,9 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                             str(reporter),
                             str(inputs),
                             str(comparison),
+                            *(['--tasks'] if task_coverage else []),
                             *([] if report_learning else ['--release'])
-                        ], root)
+                        ], root, timeout=180 if task_coverage else 60)
                     finally:
                         if comparison.is_file():
                             summary['comparison'] = json.loads(
@@ -412,6 +480,9 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                     verify_workflow_result(
                         summary['comparison'], [],
                         status='MEASURED' if report_learning else 'PASS')
+                    if task_coverage:
+                        verify_task_comparison(summary['comparison'].get(
+                            'additional_tasks', {}))
                     if (not report_learning
                             and summary['comparison'].get('release_approved')
                             is not True):
@@ -492,6 +563,7 @@ def main():
             code = check_wheel(wheel, output / name,
                                reference=name == 'reference', learning=True,
                                fixed_dependencies=True, measure_learning=True,
+                               task_coverage=True,
                                report_learning=args.report_learning,
                                compare_with=summary.get('reference'))
             summary[name] = json.loads(
@@ -509,6 +581,8 @@ def main():
         verify_workflow_result(
             summary['comparison'], [],
             status='MEASURED' if args.report_learning else 'PASS')
+        verify_task_comparison(summary['comparison'].get(
+            'additional_tasks', {}))
         if (not args.report_learning
                 and summary['comparison'].get('release_approved') is not True):
             raise ValueError('Release comparison did not approve release')

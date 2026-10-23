@@ -124,9 +124,26 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--release', action='store_true',
                         help='Enforce the approved five-seed mean-drop limit')
+    parser.add_argument('--tasks', action='store_true',
+                        help='Require evidence for all seven additional tasks')
     args = parser.parse_args()
     compare = compare_release if args.release else report_comparison
-    result = compare(*json.loads(args.input.read_text()))
+    reference, candidate, baseline = json.loads(args.input.read_text())
+    result = compare(reference, candidate, baseline)
+    if args.tasks:
+        if any('task_learning' not in arm for arm in (reference, candidate)):
+            raise ValueError('Additional learning results are required')
+        tasks = runpy.run_path(
+            str(Path(__file__).with_name('wheel_task_learning.py')))
+        for arm in (reference, candidate):
+            if (arm['task_learning'].get('source_sha256')
+                    != tasks['source_identity']()
+                    or arm['task_learning'].get('dependencies_sha256')
+                    != arm['learning']['dependencies_sha256']):
+                raise ValueError(
+                    'Additional task source or dependencies differ')
+        result['additional_tasks'] = tasks['compare_tasks'](
+            reference['task_learning'], candidate['task_learning'])
     args.output.write_text(json.dumps(result, indent=2))
     return 1 if result['status'] == 'FAIL' else 0
 

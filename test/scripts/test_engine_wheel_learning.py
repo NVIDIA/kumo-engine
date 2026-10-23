@@ -217,6 +217,22 @@ class WheelLearningTest(unittest.TestCase):
                 self.assertEqual(len(result['per_seed_auroc_drop']), 5)
                 self.assertTrue(result['failed_limits'])
 
+    def test_extended_release_requires_additional_task_evidence(self):
+        reference, candidate, baseline = self.release_pair()
+        with tempfile.TemporaryDirectory() as tmp:
+            source, output = Path(tmp) / 'input.json', Path(tmp) / 'result.json'
+            source.write_text(json.dumps([reference, candidate, baseline]))
+            completed = subprocess.run([
+                sys.executable,
+                str(WORKER.with_name('wheel_learning_report.py')),
+                str(source),
+                str(output), '--release', '--tasks'
+            ], capture_output=True, text=True)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn('Additional learning results are required',
+                          completed.stderr)
+            self.assertFalse(output.exists())
+
     def test_reporting_lists_all_missed_limits_without_approving_release(self):
         reference, candidate, baseline = self.comparison()
         baseline = copy.deepcopy(baseline)

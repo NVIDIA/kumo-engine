@@ -78,13 +78,14 @@ python3.12 packages/kumo-engine/scripts/smoke_wheel.py /path/to/candidate.whl \
   --output-dir /path/to/new-comparison
 ```
 
-Each wheel gets a fresh environment with the same fixed dependencies.
-Each trains a fresh graph neural network for the same five seeds, `0–4`, on each of two cases.
-One case has a known relationship. The other uses independent random labels on the same graph.
-Each case has 1,200 training rows, 400 validation rows, and 400 evaluation rows.
-Evaluation rows stay out of training. Labels stay out of model features.
+Each wheel installs once in its own fresh environment with the same fixed dependencies.
+The comparison runs the basic workflow, frozen binary checks, and seven additional tasks in that environment.
+Both wheels use the same five seeds, `0–4`, with fresh models for each task and case.
+Every task has data with a known pattern and a matching case without that pattern.
+Evaluation answers stay out of training and model features.
 
-The fixed recipe uses 16 channels, batch size 64, Adam, learning rate `0.01`,
+The binary cases each have 1,200 training rows, 400 validation rows, and 400 evaluation rows.
+The fixed binary recipe uses 16 channels, batch size 64, Adam, learning rate `0.01`,
 and at most ten epochs of twenty steps. Early stopping can shorten training.
 The test rejects changes to requested settings in the selected training plan.
 
@@ -99,24 +100,56 @@ Historical `limits`, `failed_limits`, and `quality_status` remain diagnostics, e
 The old score floor, per-seed limits, and measured mean-drop limit cannot override the release rule.
 Frozen calibration evidence stays unchanged, including its historical `learning.release_approved: false` field.
 The current release decision is `comparison.release_approved`.
-Strict runs return `status: PASS` with `comparison.release_approved: true` only after all required checks pass.
+Strict comparisons return `status: PASS` with `comparison.release_approved: true` only after all required checks pass.
+
+The additional tasks report these metrics and simple baselines:
+
+| Task | Metric | Baseline |
+| --- | --- | --- |
+| Multiclass classification | Fraction of correct classes | Most frequent training class |
+| Multilabel classification | Average precision, averaged across labels | Training frequency of each label |
+| Multilabel ranking | Fraction of true labels in the top five | Training frequency of each label |
+| Regression | Mean absolute error | Median training answer |
+| Forecasting | Mean absolute error across 12 future steps | Last observed value |
+| Static link prediction | Fraction of true links in the top five | Observed item frequency, excluding known links |
+| Temporal link prediction | Fraction of true links in the top five | Observed item frequency |
+
+These seven quality limits are unvalidated and remain reporting-only.
+`comparison.additional_tasks` records each seed's reference, candidate, baseline, and signed drop, plus each task's average drop.
+A positive drop means worse quality, including increased error for regression and forecasting.
+No additional task uses the binary `0.001` limit.
+Its result has `quality_limits: null` and `quality_gate_approved: false`.
+Fresh fits of the same wheel can produce different scores. New limits need separate repeat measurements and reserved validation.
+
+Each additional task reuses its fitted model for full and partial prediction batches, then reloads for another prediction.
+The test requires matching IDs, complete finite scores, and agreement within `abs(full-other) <= 1e-6 + 1e-6 * abs(other)`.
+Forecasting generates prediction tables with 12 observed historical values and predicts 12 future steps.
+Training, validation, and test target windows cannot cross stage boundaries.
+Temporal sampling uses each row's timestamp as its cutoff.
+Future evaluation rows and reserved static links stay outside the observed graph.
+This suite covers generated forecast tables.
+The `1.0.0` wheel fails when custom forecast inputs contain Float32 sequences. That path lacks passing coverage.
 
 Add `--report-learning` to report the same decision without blocking on its average drop.
 Reporting returns zero with `status: MEASURED` and `comparison.release_approved: false` when execution and evidence checks pass.
 Installation, training, prediction, reload, and evidence failures return nonzero in both modes.
-Missing or unfinished results cannot pass. Data, plan, dependency, and seed mismatches fail.
+Missing tasks, seeds, controls, or unfinished results cannot pass.
+Data, plan, dependency, source, and seed mismatches fail.
+Additional task scores must match the saved predictions and answers.
 Shuffled-label tests reject suspicious associations in the independent cases.
 These checks remain strict in reporting mode.
-The control uses 999 shuffles and seed `0`. It fails when `p <= 0.01`.
-Calibration shares each label shuffle across arms that repeat the same fixture.
+Controls use 999 shuffles and seed `0`, shared across matching wheel runs.
+The binary control fails when `p <= 0.01`. Each additional task fails when `p <= 0.01 / 7`.
+Static link controls shuffle only among eligible items, excluding known links.
 This policy is separate from measured repeat limits.
-Evidence includes saved probabilities, splits, plans, dependency versions, and source fingerprints.
-Mismatched data, plans, dependencies, or worker source fail the comparison.
+Evidence includes saved scores, answers, inputs, splits, plans, dependency versions, and source fingerprints.
 
-The build workflow requires the strict comparison before release attachment or publication.
-The manual `Kumo Engine - Wheel smoke` workflow exposes `learning_comparison` in reporting mode.
-The rule covers five fixtures of one generated graph pattern. It does not establish a false-alarm rate or broader model quality.
-An unchanged reference previously missed the historical score floor. That floor remains a diagnostic.
+Every manual or release build runs the strict comparison, including all seven additional tasks.
+Release attachment and publication require the binary quality gate and complete passing execution and controls for every task.
+The manual `Kumo Engine - Wheel smoke` workflow exposes the same coverage through `learning_comparison` in reporting mode.
+PR runs test the basic harness against a released wheel. They do not build the PR's package or run the full learning comparison.
+No nightly or weekly learning schedule is added.
+The binary limit covers five fixtures of one generated graph pattern. It does not establish broader quality or a false-alarm rate.
 The runner preserves failed learning evidence and its specific error in the summary.
 
 Run calibration in the wheel environment with NumPy and SciPy installed.
@@ -134,10 +167,10 @@ These calibration commands preserve the historical repeat limits. They do not se
 Only replace the recorded baseline after reserved runs pass and the reference update is approved.
 Keep failed evidence. Do not widen limits using reserved results.
 
-Run the learning unit tests in the installed wheel environment:
+Run the learning and runner tests in the installed wheel environment with pytest:
 
 ```bash
-python3.12 -m unittest discover -s test/scripts -p test_engine_wheel_learning.py
+python3.12 -m pytest --noconftest test/scripts/test_engine_wheel_*.py
 ```
 
 ### Measure prediction variation

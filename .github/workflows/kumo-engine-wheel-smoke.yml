@@ -30,13 +30,10 @@ on:  # yamllint disable-line rule:truthy
       - .github/workflows/kumo-engine-wheel*.yml
       - packages/kumo-engine/scripts/smoke_wheel.py
       - packages/kumo-engine/scripts/check_pypi_requirements.py
-      - packages/kumo-engine/test/wheel_workflow.py
-      - packages/kumo-engine/test/wheel_learning.py
-      - packages/kumo-engine/test/wheel_learning_report.py
+      - packages/kumo-engine/test/wheel_*.py
       - packages/kumo-engine/test/conftest.py
       - packages/kumo-engine/test/wheel_workflow.json
-      - test/scripts/test_engine_wheel_smoke.py
-      - test/scripts/test_engine_wheel_learning.py
+      - test/scripts/test_engine_wheel*.py
       - docs/development/testing.md
 
 permissions:
@@ -45,7 +42,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ (inputs.wheel_artifact != '' || inputs.learning_comparison) && 35 || 20 }}
+    timeout-minutes: ${{ (inputs.wheel_artifact != '' || inputs.learning_comparison) && 75 || 20 }}
     outputs:
       release_ready: ${{ steps.release_gate.outputs.release_ready }}
     env:
@@ -123,7 +120,7 @@ jobs:
 
       - name: Report reference and candidate learning
         if: ${{ inputs.wheel_artifact == '' && inputs.learning_comparison }}
-        timeout-minutes: 30
+        timeout-minutes: 70
         run: >-
           python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
           --compare-with dist/reference/kumo_engine-*.whl
@@ -132,7 +129,7 @@ jobs:
 
       - name: Require reference and candidate learning before release
         if: ${{ inputs.wheel_artifact != '' }}
-        timeout-minutes: 30
+        timeout-minutes: 70
         run: >-
           python packages/kumo-engine/scripts/smoke_wheel.py dist/kumo_engine-*.whl
           --compare-with dist/reference/kumo_engine-*.whl
@@ -145,9 +142,13 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import sys
           from pathlib import Path
+          sys.path.insert(0, 'packages/kumo-engine/scripts')
+          from smoke_wheel import verify_task_comparison
           result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'wheel-learning-comparison/summary.json').read_text())
           comparison = result.get('comparison', {})
+          verify_task_comparison(comparison.get('additional_tasks', {}))
           if (result.get('status') != 'PASS' or result.get('stage') != 'complete'
                   or result.get('report_only') is not False
                   or comparison.get('status') != 'PASS'
