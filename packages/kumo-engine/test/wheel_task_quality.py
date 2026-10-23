@@ -231,6 +231,14 @@ def validate_profile(profile, comparison):
             any(trial[name] < minimums[name] or trial[name] <= limits[name]
                 for name in TASKS) for trial in validation['weakened']):
         raise ValueError('Reserved known-regression validation failed')
+    frozen_profile = dict(profile, status='PENDING', validation=[])
+    frozen_hash = hashlib.sha256(
+        json.dumps(frozen_profile, sort_keys=True,
+                   allow_nan=False).encode()).hexdigest()
+    if any(
+            trial.get('quality_profile_sha256') != frozen_hash
+            for trial in profile['validation']):
+        raise ValueError('Reserved validation did not use the frozen profile')
     alpha = (1 - RELIABILITY['simultaneous_confidence']) / RELIABILITY['claims']
     lower = alpha**(1 / count)
     if (1 - lower > RELIABILITY['joint_false_failure_max']

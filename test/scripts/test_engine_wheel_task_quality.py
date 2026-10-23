@@ -57,6 +57,16 @@ def comparison_for_tests(drops=None):
                 seeds=list(range(5)))
 
 
+def bind_validation_for_tests(profile):
+    frozen = dict(profile, status='PENDING', validation=[])
+    digest = hashlib.sha256(
+        json.dumps(frozen, sort_keys=True,
+                   allow_nan=False).encode()).hexdigest()
+    for trial in profile['validation']:
+        trial['quality_profile_sha256'] = digest
+    return profile
+
+
 def profile_for_tests():
     """These arbitrary test limits must never become a release profile."""
     comparison = comparison_for_tests()
@@ -115,7 +125,7 @@ def profile_for_tests():
                             kind='reduced_training_budget',
                             budget=[1, 2]) if kind == 'weakened' else None),
                         tasks=task_scores_for_tests(drops)))
-    return profile
+    return bind_validation_for_tests(profile)
 
 
 class WheelTaskQualityTest(unittest.TestCase):
@@ -123,6 +133,26 @@ class WheelTaskQualityTest(unittest.TestCase):
         self.assertTrue(QUALITY.is_file(),
                         'The seven-task quality gate is missing')
         return runpy.run_path(str(QUALITY))
+
+    def test_validation_records_must_use_the_original_frozen_profile(self):
+        assess = self.helpers()['assess_quality']
+        for mutation in ('missing', 'plan', 'widened_limit'):
+            profile = profile_for_tests()
+            self.assertTrue(
+                assess(comparison_for_tests(),
+                       profile)['quality_gate_approved'])
+            if mutation == 'missing':
+                del profile['validation'][0]['quality_profile_sha256']
+            elif mutation == 'plan':
+                replacement = 'replacement-after-validation'
+                profile['validation_plan']['unchanged'][0] = replacement
+                profile['validation'][0]['id'] = replacement
+            else:
+                profile['minimum_losses']['multiclass'] = .038
+                profile['limits']['multiclass'] = .02
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(
+                    ValueError, 'frozen profile'):
+                assess(comparison_for_tests(), profile)
 
     def test_validation_cannot_replace_a_planned_trial_with_a_new_success(self):
         profile = profile_for_tests()
@@ -247,6 +277,7 @@ class WheelTaskQualityTest(unittest.TestCase):
             if trial['kind'] == 'weakened':
                 for entry in trial['tasks']['multiclass']['per_seed']:
                     entry['candidate'] = .1
+        bind_validation_for_tests(profile)
         result = self.helpers()['assess_quality'](comparison_for_tests(),
                                                   profile)
         self.assertTrue(result['quality_gate_approved'])
@@ -348,6 +379,7 @@ class WheelTaskQualityTest(unittest.TestCase):
     def test_blockworthy_loss_policy_can_preserve_an_exact_fraction(self):
         profile = profile_for_tests()
         profile['minimum_losses']['multiclass'] = '9/500'
+        bind_validation_for_tests(profile)
         result = self.helpers()['assess_quality'](comparison_for_tests(),
                                                   profile)
         self.assertTrue(result['quality_gate_approved'])

@@ -162,6 +162,16 @@ Each trial lists 140 distinct model identities for the additional tasks and four
 Those four identities cover binary and additional-task measurements. No model or measurement identity can repeat across study trials.
 The release guard repeats the calculation from the saved scores. Claimed approval alone cannot authorize publication.
 
+Before validation, freeze the profile with `status: PENDING` and an empty `validation` list.
+Keep every other field unchanged after that freeze.
+Each audit record must carry `quality_profile_sha256` from the executed comparison.
+The auditor must match that fingerprint against the profile saved with the source for that run.
+
+After all planned trials pass, append their records to `validation`.
+Change `status` to `VALIDATED`.
+The release guard reconstructs the frozen pending profile and requires every validation fingerprint to match.
+This blocks rewritten trial plans and wider limits that reuse earlier validation results.
+
 To measure a real training weakness, use the reporting-only calibration mode:
 
 ```bash
