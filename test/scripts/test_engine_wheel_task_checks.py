@@ -16,6 +16,54 @@ class WheelTaskChecksTest(unittest.TestCase):
         self.assertTrue(CHECKS.is_file(), 'Shared task checks are missing')
         return runpy.run_path(str(CHECKS))
 
+    def test_calibration_reduces_only_the_real_training_budget(self):
+        helpers = self.helpers()
+        self.assertIn('apply_training_budget', helpers,
+                      'Calibration must change the actual training plan')
+        apply_budget = helpers['apply_training_budget']
+        for filename, tasks in [
+            ('wheel_node_tasks.py',
+             ['multiclass', 'multilabel', 'multilabel_ranking', 'regression']),
+            ('wheel_temporal_tasks.py',
+             ['forecasting', 'static_link', 'temporal_link']),
+        ]:
+            make_plan = runpy.run_path(str(
+                CHECKS.with_name(filename)))['make_plan']
+            for task in tasks:
+                with self.subTest(task=task):
+                    plan = make_plan(task, 3)
+                    original = plan.as_json()
+                    self.assertIsNone(apply_budget(plan, None))
+                    self.assertEqual(plan.as_json(), original)
+                    fault = apply_budget(plan, [1, 2])
+                    expected = copy.deepcopy(original)
+                    expected['optimization'].update(max_epochs=1,
+                                                    min_steps_per_epoch=2,
+                                                    max_steps_per_epoch=2)
+                    self.assertEqual(plan.as_json(), expected)
+                    self.assertEqual(
+                        fault,
+                        dict(kind='reduced_training_budget', budget=[1, 2],
+                             original_plan=original))
+
+    def test_invalid_or_unchanged_calibration_budget_cannot_mutate_the_plan(
+            self):
+        helpers = self.helpers()
+        self.assertIn('apply_training_budget', helpers,
+                      'Calibration must validate its training budget')
+        make_plan = runpy.run_path(str(
+            CHECKS.with_name('wheel_node_tasks.py')))['make_plan']
+        for budget in ([], [1], [1, 2, 3], [True, 2], [1, False], [1.0, 2],
+                       [0, 2], [1, -1], [11, 2], [1, 21], [10, 20], '1,2', {
+                           'epochs': 1,
+                           'steps': 2
+                       }):
+            plan = make_plan('regression', 0)
+            original = plan.as_json()
+            with self.subTest(budget=budget), self.assertRaises(ValueError):
+                helpers['apply_training_budget'](plan, budget)
+            self.assertEqual(plan.as_json(), original)
+
     def test_metrics_score_full_outputs_against_known_answers(self):
         score = self.helpers()['score']
         self.assertEqual(

@@ -32,9 +32,32 @@ def task_source_identity():
     return worker['source_identity']()
 
 
-def verify_task_comparison(result):
+def verify_task_comparison(result, *, calibration_budget=None):
     tasks = runpy.run_path(str(
         REQUIREMENTS.with_name('wheel_task_learning.py')))['TASKS']
+    if calibration_budget is None:
+        if ('calibration_fault' in result
+                or 'calibration_plan_checks' in result):
+            raise ValueError('A calibration comparison cannot approve release')
+    else:
+        expected = {(task, seed, case)
+                    for task in tasks
+                    for seed in range(5)
+                    for case in ('learnable', 'independent')}
+        proofs = result.get('calibration_plan_checks', [])
+        if (result.get('calibration_fault') != dict(
+                kind='reduced_training_budget', budget=calibration_budget)
+                or result.get('quality_gate_approved') is not False
+                or len(proofs) != len(expected)
+                or {(row['task'], row['seed'], row['case'])
+                    for row in proofs} != expected
+                or any(not re.fullmatch('[0-9a-f]{64}', row.get(key, ''))
+                       for row in proofs
+                       for key in ('reference_plan_sha256',
+                                   'candidate_plan_sha256')) or
+                any(row['reference_plan_sha256'] == row['candidate_plan_sha256']
+                    for row in proofs)):
+            raise ValueError('Complete audited calibration plans are required')
     if (result.get('status') != 'MEASURED'
             or result.get('execution_passed') is not True
             or set(result.get('tasks', {})) != set(tasks)):
@@ -280,7 +303,8 @@ def run_command(command, cwd, log, timeout=60):
 def check_wheel(wheel, output, *, reference=False, learning=False,
                 fixed_dependencies=False, measure_learning=False,
                 compare_with=None, report_learning=False, device='cpu', runs=1,
-                measure_variation=False, task_coverage=False):
+                measure_variation=False, task_coverage=False,
+                calibration_budget=None):
     wheel = wheel.resolve()
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -301,6 +325,9 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
         run_command(command, cwd, output / f'{stage}.log', timeout)
 
     try:
+        if calibration_budget is not None and (not report_learning
+                                               or compare_with is None):
+            raise ValueError('Calibration requires a reporting-only wheel pair')
         identity = wheel_identity(wheel)
         summary['wheel'] = identity
         summary['stage'] = 'requirements'
@@ -428,6 +455,7 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                     status='MEASURED' if measurement else 'PASS')
                 summary['learning'] = learning_result
                 if task_coverage:
+                    summary['task_evidence_dir'] = str(output / 'tasks')
                     task_worker = runpy.run_path(
                         str(REQUIREMENTS.with_name('wheel_task_learning.py')))
                     for name in task_worker['SOURCES']:
@@ -439,7 +467,10 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                             python, '-I',
                             str(root / 'wheel_task_learning.py'), '--version',
                             identity['version'], '--output-dir',
-                            str(output / 'tasks')
+                            str(output / 'tasks'), *([
+                                '--calibration-budget',
+                                *map(str, calibration_budget)
+                            ] if calibration_budget is not None else [])
                         ], root, timeout=2400)
                     finally:
                         if task_result.is_file():
@@ -470,7 +501,11 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                             str(reporter),
                             str(inputs),
                             str(comparison),
-                            *(['--tasks'] if task_coverage else []),
+                            *(['--tasks'] if task_coverage else []), *([
+                                '--calibration-task-dirs',
+                                compare_with['task_evidence_dir'],
+                                summary['task_evidence_dir']
+                            ] if calibration_budget is not None else []),
                             *([] if report_learning else ['--release'])
                         ], root, timeout=180 if task_coverage else 60)
                     finally:
@@ -481,8 +516,9 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                         summary['comparison'], [],
                         status='MEASURED' if report_learning else 'PASS')
                     if task_coverage:
-                        verify_task_comparison(summary['comparison'].get(
-                            'additional_tasks', {}))
+                        verify_task_comparison(
+                            summary['comparison'].get('additional_tasks', {}),
+                            calibration_budget=calibration_budget)
                     if (not report_learning
                             and summary['comparison'].get('release_approved')
                             is not True):
@@ -521,12 +557,26 @@ def main():
         help='Compare learning with this approved reference wheel')
     parser.add_argument('--output-dir', type=Path, required=True,
                         help='New directory for logs and JSON results')
+    parser.add_argument(
+        '--calibration-budget', type=int, nargs=2, metavar=('EPOCHS', 'STEPS'),
+        help='Measure weaker candidate training in reporting mode')
     parser.add_argument('--device', choices=('cpu', 'cuda'), default='cpu')
     parser.add_argument('--runs', type=int, default=1)
     parser.add_argument(
         '--measure-variation', action='store_true',
         help='Record variation without approving numerical limits')
     args = parser.parse_args()
+    if args.calibration_budget is not None:
+        if not args.report_learning or args.compare_with is None:
+            parser.error(
+                'Calibration requires --report-learning and --compare-with')
+        settings = runpy.run_path(
+            str(REQUIREMENTS.with_name('wheel_learning.py')))['SETTINGS']
+        ceiling = [settings['epochs'], settings['steps_per_epoch']]
+        if (any(not 1 <= new <= old
+                for new, old in zip(args.calibration_budget, ceiling))
+                or args.calibration_budget == ceiling):
+            parser.error('Calibration must reduce the normal training budget')
     if args.measure_variation and (args.learning or args.measure_learning
                                    or args.report_learning
                                    or args.compare_with is not None):
@@ -551,6 +601,9 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     summary = dict(status='RUNNING', stage='reference',
                    report_only=args.report_learning)
+    if args.calibration_budget is not None:
+        summary['calibration_fault'] = dict(kind='reduced_training_budget',
+                                            budget=args.calibration_budget)
     try:
         requirements = load_requirements(REQUIREMENTS)
         if wheel_identity(
@@ -560,12 +613,14 @@ def main():
         for name, wheel in [('reference', args.compare_with),
                             ('candidate', args.wheel)]:
             summary['stage'] = name
-            code = check_wheel(wheel, output / name,
-                               reference=name == 'reference', learning=True,
-                               fixed_dependencies=True, measure_learning=True,
-                               task_coverage=True,
-                               report_learning=args.report_learning,
-                               compare_with=summary.get('reference'))
+            code = check_wheel(
+                wheel, output / name, reference=name == 'reference',
+                learning=True, fixed_dependencies=True, measure_learning=True,
+                task_coverage=True,
+                calibration_budget=(args.calibration_budget
+                                    if name == 'candidate' else None),
+                report_learning=args.report_learning,
+                compare_with=summary.get('reference'))
             summary[name] = json.loads(
                 (output / name / 'summary.json').read_text())
             if 'comparison' in summary[name]:
@@ -581,8 +636,9 @@ def main():
         verify_workflow_result(
             summary['comparison'], [],
             status='MEASURED' if args.report_learning else 'PASS')
-        verify_task_comparison(summary['comparison'].get(
-            'additional_tasks', {}))
+        verify_task_comparison(
+            summary['comparison'].get('additional_tasks', {}),
+            calibration_budget=args.calibration_budget)
         if (not args.report_learning
                 and summary['comparison'].get('release_approved') is not True):
             raise ValueError('Release comparison did not approve release')

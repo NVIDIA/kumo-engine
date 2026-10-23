@@ -121,6 +121,26 @@ No additional task uses the binary `0.001` limit.
 Its result has `quality_limits: null` and `quality_gate_approved: false`.
 Fresh fits of the same wheel can produce different scores. New limits need separate repeat measurements and reserved validation.
 
+To measure a real training weakness, use the reporting-only calibration mode:
+
+```bash
+python3.12 packages/kumo-engine/scripts/smoke_wheel.py /path/to/candidate.whl \
+  --compare-with /path/to/reference.whl --report-learning \
+  --calibration-budget 1 2 --output-dir /path/to/new-sensitivity-evidence
+```
+
+This example limits each candidate fit for the seven additional tasks to one epoch and two steps per epoch.
+It does not change binary training or the reference fits. Both wheels still use five matching seeds and fresh installations.
+This is an initial strong sensitivity check, not a release limit or the smallest acceptable learning loss.
+Try less severe training reductions during calibration to measure smaller losses.
+
+Fault reports retain the normal requested plan and the actual reduced plan, selected plan, and plan hashes.
+The comparison reads the saved plans and permits only the declared budget changes.
+Other input, execution, prediction, reload, and independent-label checks remain strict.
+A plan mismatch alone does not demonstrate quality detection. Compare the actual scores.
+Calibration requires both reporting mode and a reference wheel. It never approves release.
+The release guard rejects fault-marked results even if an outer summary claims success.
+
 Each additional task reuses its fitted model for full and partial prediction batches, then reloads for another prediction.
 The test requires matching IDs, complete finite scores, and agreement within `abs(full-other) <= 1e-6 + 1e-6 * abs(other)`.
 Forecasting generates prediction tables with 12 observed historical values and predicts 12 future steps.

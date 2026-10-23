@@ -50,7 +50,15 @@ def source_identity():
                                      sort_keys=True).encode()).hexdigest()
 
 
-def validate_report(report, seeds):
+def validate_report(report, seeds, *, calibration=False):
+    fault = report.get('calibration_fault')
+    if calibration:
+        if (not isinstance(fault, dict) or set(fault) != {'kind', 'budget'}
+                or fault['kind'] != 'reduced_training_budget'):
+            raise ValueError('Missing or invalid calibration fault')
+    elif ('calibration_fault' in report
+          or any('calibration_fault' in row for row in report.get('runs', []))):
+        raise ValueError('A calibration run cannot approve release')
     if (seeds != SEEDS or report.get('seeds') != seeds
             or any(type(seed) is not int for seed in report.get('seeds', []))
             or report.get('status') != 'MEASURED' or not report.get('run_id')):
@@ -75,6 +83,18 @@ def validate_report(report, seeds):
                                      for r in rows}) != len(rows)):
         raise ValueError('Additional tasks must use fresh models')
     for row in rows:
+        if calibration:
+            detail = row.get('calibration_fault')
+            if (not isinstance(detail, dict)
+                    or set(detail) != {'kind', 'budget', 'original_plan'}
+                    or any(detail[key] != fault[key]
+                           for key in ('kind', 'budget'))):
+                raise ValueError('Missing or inconsistent calibration fault')
+            try:
+                checks()['weakened_training_plan'](detail['original_plan'],
+                                                   fault['budget'])
+            except ValueError as error:
+                raise ValueError('Invalid calibration training plan') from error
         if (row.get('status') != 'MEASURED' or type(row['seed']) is not int
                 or type(row['training_seed']) is not int
                 or row['training_seed'] != row['seed']
@@ -115,9 +135,12 @@ def validate_report(report, seeds):
                     'Saved task score differs from prediction evidence')
 
 
-def compare_tasks(reference, candidate):
-    for arm in (reference, candidate):
-        validate_report(arm, SEEDS)
+def compare_tasks(reference, candidate, *, calibration_dirs=None):
+    validate_report(reference, SEEDS)
+    validate_report(candidate, SEEDS, calibration=calibration_dirs is not None)
+    if calibration_dirs is not None and len(calibration_dirs) != 2:
+        raise ValueError(
+            'Both actual calibration evidence directories are required')
     for key in ('source_sha256', 'python', 'platform', 'dependencies_sha256'):
         if reference.get(key) != candidate.get(key):
             raise ValueError(f'Additional task environments differ: {key}')
@@ -133,11 +156,18 @@ def compare_tasks(reference, candidate):
         task: dict(metric=metric, per_seed=[])
         for task, (metric, _) in TASKS.items()
     }
+    plan_checks = []
     for row in sorted(candidate['runs'], key=lambda r:
                       (r['task'], r['seed'], r['case'])):
         old = before[row['task'], row['seed'], row['case']]
         for key in ('training_seed', 'data_sha256', 'plan_sha256', 'targets',
                     'entity_ids', 'baseline_predictions'):
+            if key == 'plan_sha256' and calibration_dirs is not None:
+                name = f'{row["task"]}-{row["seed"]}-{row["case"]}'
+                plan_checks.append(checks()['verify_calibration_plans'](
+                    old, row, Path(calibration_dirs[0]) / name,
+                    Path(calibration_dirs[1]) / name))
+                continue
             if old[key] != row[key]:
                 raise ValueError(f'Additional task inputs differ: {key}')
         for key in ('control_eligible', 'stage_sha256'):
@@ -154,21 +184,31 @@ def compare_tasks(reference, candidate):
             row['quality_drop'] for row in result['per_seed'])
     controls = checks()['independent_controls'](
         [reference['runs'], candidate['runs']])
-    return dict(status='MEASURED', execution_passed=True, tasks=tasks,
-                independent_controls=controls, quality_limits=None,
-                quality_gate_approved=False)
+    result = dict(status='MEASURED', execution_passed=True, tasks=tasks,
+                  independent_controls=controls, quality_limits=None,
+                  quality_gate_approved=False)
+    if calibration_dirs is not None:
+        result.update(calibration_fault=candidate['calibration_fault'],
+                      calibration_plan_checks=plan_checks)
+    return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version', required=True)
     parser.add_argument('--output-dir', required=True, type=Path)
+    parser.add_argument('--calibration-budget', type=int, nargs=2,
+                        metavar=('EPOCHS', 'STEPS'),
+                        help='Measure weaker training; never approve release')
     args = parser.parse_args()
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
     report = dict(status='RUNNING', run_id=uuid.uuid4().hex, seeds=SEEDS,
                   source_sha256=source_identity(), python=sys.version,
                   platform=platform.platform(), runs=[])
+    if args.calibration_budget is not None:
+        report['calibration_fault'] = dict(kind='reduced_training_budget',
+                                           budget=args.calibration_budget)
     try:
         import torch
 
@@ -201,8 +241,9 @@ def main():
                     name = f'{task}-{seed}-{case}'
                     print(name, flush=True)
                     report['stage'] = name
-                    row = runner['run_case'](task, seed, independent,
-                                             output / name)
+                    row = runner['run_case'](
+                        task, seed, independent, output / name,
+                        calibration_budget=args.calibration_budget)
                     row.update(task=task, seed=seed, case=case,
                                status='MEASURED')
                     row['score'] = checks()['score'](row['metric'],
@@ -216,7 +257,8 @@ def main():
                         json.dumps(report, indent=2))
                     gc.collect()
         report['status'] = 'MEASURED'
-        validate_report(report, SEEDS)
+        validate_report(report, SEEDS, calibration=args.calibration_budget
+                        is not None)
     except Exception as exc:
         report.update(status='FAIL', error=f'{type(exc).__name__}: {exc}')
         traceback.print_exc()

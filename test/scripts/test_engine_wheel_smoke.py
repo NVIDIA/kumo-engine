@@ -50,7 +50,8 @@ class WheelSmokeTest(unittest.TestCase):
     def test_task_comparison_requires_complete_passing_control_results(self):
         self.runner.verify_task_comparison(self.task_comparison())
         for mutation in ('missing', 'missing_task', 'missing_value', 'nan',
-                         'equal_alpha', 'failed', 'widened_alpha', 'range'):
+                         'equal_alpha', 'failed', 'widened_alpha', 'range',
+                         'calibration'):
             result = self.task_comparison()
             control = result['independent_controls']['forecasting']
             if mutation == 'missing':
@@ -67,10 +68,87 @@ class WheelSmokeTest(unittest.TestCase):
                 control['p_value'] = .001
             elif mutation == 'widened_alpha':
                 control['alpha'] = .5
+            elif mutation == 'calibration':
+                result['calibration_fault'] = dict(
+                    kind='reduced_training_budget', budget=[1, 2])
             else:
                 control['p_value'] = 1.1
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 self.runner.verify_task_comparison(result)
+
+    def calibration_comparison(self):
+        result = self.task_comparison()
+        result.update(
+            quality_gate_approved=False,
+            calibration_fault=dict(kind='reduced_training_budget',
+                                   budget=[1, 2]), calibration_plan_checks=[
+                                       dict(task=task, seed=seed, case=case,
+                                            reference_plan_sha256='a' * 64,
+                                            candidate_plan_sha256='b' * 64)
+                                       for task in result['tasks']
+                                       for seed in range(5)
+                                       for case in ('learnable', 'independent')
+                                   ])
+        return result
+
+    def test_calibration_reports_loss_but_never_approves_release(self):
+        wheel, reference = self.wheel(), self.wheel(version='1.0.0')
+        requirements = self.runner.load_requirements(self.runner.REQUIREMENTS)
+        requirements['reference']['wheel'] = self.runner.wheel_identity(
+            reference)
+        output = self.root / 'calibration'
+        observed = []
+
+        def check_wheel(selected, evidence, **options):
+            evidence.mkdir()
+            observed.append(options.get('calibration_budget'))
+            result = dict(status='MEASURED', stage='complete',
+                          wheel=self.runner.wheel_identity(selected))
+            if options.get('compare_with') is not None:
+                result['comparison'] = dict(
+                    status='MEASURED', release_approved=False,
+                    additional_tasks=self.calibration_comparison())
+            (evidence / 'summary.json').write_text(json.dumps(result))
+            return 0
+
+        with (patch.object(self.runner, 'check_wheel', check_wheel),
+              patch.object(self.runner, 'load_requirements',
+                           return_value=requirements),
+              patch.object(sys, 'argv', [
+                  str(RUNNER),
+                  str(wheel), '--compare-with',
+                  str(reference), '--report-learning', '--calibration-budget',
+                  '1', '2', '--output-dir',
+                  str(output)
+              ]), patch('sys.stdout', new_callable=io.StringIO),
+              patch('sys.stderr', new_callable=io.StringIO)):
+            try:
+                code = self.runner.main()
+            except SystemExit as error:
+                code = error.code
+        self.assertEqual(code, 0)
+        self.assertEqual(observed, [None, [1, 2]])
+        result = json.loads((output / 'summary.json').read_text())
+        self.assertEqual(result['status'], 'MEASURED')
+        self.assertTrue(result['report_only'])
+        self.assertFalse(result['comparison']['release_approved'])
+        self.assertEqual(result['calibration_fault'],
+                         dict(kind='reduced_training_budget', budget=[1, 2]))
+
+    def test_calibration_options_cannot_enter_a_release_run(self):
+        for extra in ([], ['--report-learning'],
+                      ['--compare-with', 'unused.whl']):
+            with self.subTest(extra=extra):
+                output = self.root / ('invalid-calibration-' + str(len(extra)))
+                completed = subprocess.run([
+                    sys.executable,
+                    str(RUNNER),
+                    str(self.wheel()), '--calibration-budget', '1', '2',
+                    '--output-dir',
+                    str(output), *extra
+                ], capture_output=True, text=True)
+                self.assertEqual(completed.returncode, 2)
+                self.assertFalse(output.exists())
 
     def setUp(self):
         self.assertTrue(RUNNER.is_file(), 'The wheel smoke runner is missing')
@@ -904,6 +982,10 @@ class WheelSmokeTest(unittest.TestCase):
             missing_tasks,
             dict(passed, comparison=dict(passed['comparison'],
                                          additional_tasks={})),
+            dict(
+                passed, comparison=dict(
+                    passed['comparison'],
+                    additional_tasks=self.calibration_comparison())),
             dict(
                 passed, comparison=dict(
                     passed['comparison'],

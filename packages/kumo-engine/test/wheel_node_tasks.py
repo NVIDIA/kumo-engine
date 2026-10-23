@@ -169,14 +169,19 @@ def make_plan(task, seed):
     return plan
 
 
-def run_case(task, seed, independent, directory):
+def run_case(task, seed, independent, directory, *, calibration_budget=None):
     import numpy as np
     import pandas as pd
     import torch
     from kumoapi.graph import Edge
     from kumoapi.train import TrainingTableSpec
     from kumoapi.typing import Stype
-    from wheel_task_checks import fingerprint, score, verify_reload
+    from wheel_task_checks import (
+        apply_training_budget,
+        fingerprint,
+        score,
+        verify_reload,
+    )
 
     import kumo.engine as kumo
 
@@ -241,6 +246,7 @@ def run_case(task, seed, independent, directory):
         connector['seeds'], TrainingTableSpec(split_col='SPLIT'), pq=query,
         snapshot=snapshot)
     plan = make_plan(task, seed)
+    fault = apply_training_budget(plan, calibration_budget)
     (directory / 'requested-plan.json').write_text(
         json.dumps(plan.as_json(), indent=2))
     trainer = kumo.Trainer(plan)
@@ -307,6 +313,8 @@ def run_case(task, seed, independent, directory):
                                          reload='PASS', hidden_answers='PASS'),
         partial_max_abs_difference=partial_difference,
         reload_max_abs_difference=reload_difference)
+    if fault is not None:
+        row['calibration_fault'] = fault
     (directory / 'result.json').write_text(
         json.dumps(row, indent=2, allow_nan=False))
     del trainer, result, loaded

@@ -269,7 +269,7 @@ def make_plan(task, seed):
     return plan
 
 
-def run_case(task, seed, independent, directory):
+def run_case(task, seed, independent, directory, *, calibration_budget=None):
     import numpy as np
     import pandas as pd
     import pyarrow.parquet as pq
@@ -383,6 +383,7 @@ def run_case(task, seed, independent, directory):
                         training_values.extend(expected)
         chronology = validate_chronology(stages, horizon, fixture['anchor'])
     plan = make_plan(task, seed)
+    fault = checks['apply_training_budget'](plan, calibration_budget)
     (directory / 'requested-plan.json').write_text(
         json.dumps(plan.as_json(), indent=2))
     (directory / 'generation-plan.json').write_text(
@@ -490,4 +491,6 @@ def run_case(task, seed, independent, directory):
                                                         fixture['targets'])
         (directory / 'diagnostics.json').write_text(
             json.dumps(row['diagnostics'], indent=2))
+    if fault is not None:
+        row['calibration_fault'] = fault
     return row

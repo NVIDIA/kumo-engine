@@ -3,8 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validate heldout task scores, reloads, and independent-label controls."""
 
+import copy
 import hashlib
 import json
+import runpy
+from pathlib import Path
 
 import numpy as np
 from sklearn.metrics import average_precision_score
@@ -14,6 +17,70 @@ def fingerprint(value):
     return hashlib.sha256(
         json.dumps(value, sort_keys=True,
                    allow_nan=False).encode()).hexdigest()
+
+
+def apply_training_budget(plan, budget):
+    """Record and reduce the actual plan only for sensitivity measurements."""
+    if budget is None:
+        return None
+    original_plan = plan.as_json()
+    reduced = weakened_training_plan(original_plan, budget)['optimization']
+    optimization = plan.optimization
+    optimization.max_epochs = reduced['max_epochs']
+    optimization.min_steps_per_epoch = reduced['min_steps_per_epoch']
+    optimization.max_steps_per_epoch = reduced['max_steps_per_epoch']
+    return dict(kind='reduced_training_budget', budget=budget[:],
+                original_plan=original_plan)
+
+
+def weakened_training_plan(original, budget):
+    if (not isinstance(budget, list) or len(budget) != 2
+            or any(type(value) is not int or value < 1 for value in budget)):
+        raise ValueError('Calibration needs positive integer epochs and steps')
+    fields = ('max_epochs', 'min_steps_per_epoch', 'max_steps_per_epoch')
+    try:
+        before = [original['optimization'][key] for key in fields]
+    except (KeyError, TypeError) as error:
+        raise ValueError(
+            'Missing original calibration training plan') from error
+    reduced = [budget[0], budget[1], budget[1]]
+    if (any(type(value) is not int or value < 1 for value in before)
+            or any(new > old for new, old in zip(reduced, before))
+            or reduced == before):
+        raise ValueError('Calibration must reduce the normal training budget')
+    result = copy.deepcopy(original)
+    result['optimization'].update(zip(fields, reduced))
+    return result
+
+
+def verify_calibration_plans(reference, candidate, reference_dir,
+                             candidate_dir):
+    filename = ('selected-plan.json' if candidate['task']
+                in ('forecasting', 'static_link',
+                    'temporal_link') else 'selected-model-plan.json')
+    plans = []
+    verify = runpy.run_path(str(
+        Path(__file__).with_name('wheel_learning.py')))['verify_plan']
+    for row, directory in ((reference, reference_dir), (candidate,
+                                                        candidate_dir)):
+        requested = json.loads(
+            (Path(directory) / 'requested-plan.json').read_text())
+        selected = json.loads((Path(directory) / filename).read_text())
+        if fingerprint(selected) != row['plan_sha256']:
+            raise ValueError('Actual calibration plan differs from its hash')
+        verify(requested, selected)
+        plans.append((requested, selected))
+    fault = candidate['calibration_fault']
+    if (fault['original_plan'] != plans[0][0] or plans[1][0]
+            != weakened_training_plan(plans[0][0], fault['budget'])
+            or plans[1][1] != weakened_training_plan(plans[0][1],
+                                                     fault['budget'])):
+        raise ValueError(
+            'A calibration change is not the declared training budget')
+    return dict(task=candidate['task'], seed=candidate['seed'],
+                case=candidate['case'],
+                reference_plan_sha256=reference['plan_sha256'],
+                candidate_plan_sha256=candidate['plan_sha256'])
 
 
 def _matrix(values):

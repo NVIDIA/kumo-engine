@@ -126,7 +126,15 @@ def main():
                         help='Enforce the approved five-seed mean-drop limit')
     parser.add_argument('--tasks', action='store_true',
                         help='Require evidence for all seven additional tasks')
+    parser.add_argument(
+        '--calibration-task-dirs', nargs=2, type=Path,
+        metavar=('REFERENCE', 'CANDIDATE'),
+        help='Audit actual weaker-training plans; never release')
     args = parser.parse_args()
+    if args.calibration_task_dirs is not None and (args.release
+                                                   or not args.tasks):
+        parser.error(
+            'Task calibration cannot approve release and requires --tasks')
     compare = compare_release if args.release else report_comparison
     reference, candidate, baseline = json.loads(args.input.read_text())
     result = compare(reference, candidate, baseline)
@@ -143,7 +151,8 @@ def main():
                 raise ValueError(
                     'Additional task source or dependencies differ')
         result['additional_tasks'] = tasks['compare_tasks'](
-            reference['task_learning'], candidate['task_learning'])
+            reference['task_learning'], candidate['task_learning'],
+            calibration_dirs=args.calibration_task_dirs)
     args.output.write_text(json.dumps(result, indent=2))
     return 1 if result['status'] == 'FAIL' else 0
 

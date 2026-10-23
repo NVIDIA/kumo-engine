@@ -3,7 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
+import json
 import runpy
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -127,6 +131,157 @@ class WheelTasksTest(unittest.TestCase):
             report['runs'][0]['fit_id'] = identity
             with self.subTest(identity=identity), self.assertRaises(ValueError):
                 worker['validate_report'](report, list(range(5)))
+
+    def test_release_comparison_rejects_calibration_headers_and_rows(self):
+        worker = self.worker()
+        for marker in ('header', 'row'):
+            reference = self.report(worker)
+            candidate = copy.deepcopy(reference)
+            candidate['run_id'] = 'candidate'
+            for row in candidate['runs']:
+                row['fit_id'] = 'candidate-' + row['fit_id']
+            target = candidate if marker == 'header' else candidate['runs'][0]
+            target['calibration_fault'] = dict(kind='reduced_training_budget',
+                                               budget=[1, 2])
+            with self.subTest(marker=marker), self.assertRaisesRegex(
+                    ValueError, 'calibration'):
+                worker['compare_tasks'](reference, candidate)
+
+    def test_calibration_requires_complete_matching_fault_descriptions(self):
+        worker = self.worker()
+        report = self.report(worker)
+        report['calibration_fault'] = dict(kind='reduced_training_budget',
+                                           budget=[1, 2])
+        for row in report['runs']:
+            row['calibration_fault'] = dict(
+                report['calibration_fault'], original_plan={
+                    'optimization':
+                    dict(max_epochs=10, min_steps_per_epoch=20,
+                         max_steps_per_epoch=20)
+                })
+        try:
+            worker['validate_report'](report, list(range(5)), calibration=True)
+        except TypeError as error:
+            self.fail(f'Fault measurements need explicit validation: {error}')
+        for mutation in ('header', 'row', 'budget', 'original', 'kind'):
+            changed = copy.deepcopy(report)
+            if mutation == 'header':
+                del changed['calibration_fault']
+            elif mutation == 'row':
+                del changed['runs'][0]['calibration_fault']
+            elif mutation == 'budget':
+                changed['runs'][0]['calibration_fault']['budget'] = [2, 2]
+            elif mutation == 'original':
+                del changed['runs'][0]['calibration_fault']['original_plan']
+            else:
+                changed['calibration_fault']['kind'] = 'edited_predictions'
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(
+                    ValueError, 'calibration'):
+                worker['validate_report'](changed, list(range(5)),
+                                          calibration=True)
+
+    def test_calibration_execution_failure_keeps_fault_and_failed_evidence(
+            self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / 'fault'
+            completed = subprocess.run([
+                sys.executable,
+                str(WORKER), '--version', '0.invalid-calibration-test',
+                '--output-dir',
+                str(output), '--calibration-budget', '1', '2'
+            ], capture_output=True, text=True)
+            self.assertNotEqual(completed.returncode, 0)
+            result = output / 'task-result.json'
+            self.assertTrue(result.is_file(), completed.stderr)
+            report = json.loads(result.read_text())
+            self.assertEqual(report['status'], 'FAIL')
+            self.assertEqual(
+                report['calibration_fault'],
+                dict(kind='reduced_training_budget', budget=[1, 2]))
+
+    def calibration_pair(self, worker, root):
+        reference = self.report(worker)
+        candidate = copy.deepcopy(reference)
+        candidate['run_id'] = 'candidate'
+        candidate['calibration_fault'] = dict(kind='reduced_training_budget',
+                                              budget=[1, 2])
+        for old, new in zip(reference['runs'], candidate['runs']):
+            new['fit_id'] = 'candidate-' + new['fit_id']
+            original = dict(
+                training_job={'manual_seed': old['seed']},
+                optimization=dict(max_epochs=10, min_steps_per_epoch=20,
+                                  max_steps_per_epoch=20))
+            weakened = copy.deepcopy(original)
+            weakened['optimization'].update(max_epochs=1, min_steps_per_epoch=2,
+                                            max_steps_per_epoch=2)
+            new['calibration_fault'] = dict(candidate['calibration_fault'],
+                                            original_plan=original)
+            if new['metric'] == 'mae' and new['case'] == 'learnable':
+                new['predictions'] = [[value + .25 for value in target]
+                                      for target in new['targets']]
+                new['score'] = .25
+            for arm, row, requested in [('reference', old, original),
+                                        ('candidate', new, weakened)]:
+                path = root / arm / (
+                    f'{row["task"]}-{row["seed"]}-{row["case"]}')
+                path.mkdir(parents=True)
+                selected = dict(requested, resolved_task=row['task_type'])
+                row['plan_sha256'] = worker['checks']()['fingerprint'](selected)
+                filename = ('selected-plan.json' if row['task'] in (
+                    'forecasting', 'static_link',
+                    'temporal_link') else 'selected-model-plan.json')
+                (path / 'requested-plan.json').write_text(json.dumps(requested))
+                (path / filename).write_text(json.dumps(selected))
+        return reference, candidate
+
+    def test_sensitivity_compares_scores_after_verifying_actual_training_plans(
+            self):
+        worker = self.worker()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference, candidate = self.calibration_pair(worker, root)
+            preserved = copy.deepcopy([reference, candidate])
+            try:
+                result = worker['compare_tasks'](
+                    reference, candidate,
+                    calibration_dirs=(root / 'reference', root / 'candidate'))
+            except TypeError as error:
+                self.fail(f'Missing audited sensitivity comparison: {error}')
+            self.assertEqual([reference, candidate], preserved)
+            self.assertEqual(result['status'], 'MEASURED')
+            self.assertFalse(result['quality_gate_approved'])
+            self.assertEqual(result['calibration_fault'],
+                             candidate['calibration_fault'])
+            self.assertEqual(len(result['calibration_plan_checks']), 70)
+            for task in ('regression', 'forecasting'):
+                self.assertEqual(result['tasks'][task]['mean_quality_drop'],
+                                 .25)
+            for proof in result['calibration_plan_checks']:
+                self.assertNotEqual(proof['reference_plan_sha256'],
+                                    proof['candidate_plan_sha256'])
+
+    def test_sensitivity_rejects_nonbudget_plan_changes_even_with_new_hashes(
+            self):
+        worker = self.worker()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference, candidate = self.calibration_pair(worker, root)
+            row = candidate['runs'][0]
+            path = root / 'candidate' / (
+                f'{row["task"]}-{row["seed"]}-{row["case"]}')
+            selected = path / 'selected-model-plan.json'
+            changed = json.loads(selected.read_text())
+            changed['optimization']['batch_size'] = [32]
+            selected.write_text(json.dumps(changed))
+            row['plan_sha256'] = worker['checks']()['fingerprint'](changed)
+            try:
+                with self.assertRaisesRegex(ValueError, 'calibration'):
+                    worker['compare_tasks'](
+                        reference, candidate,
+                        calibration_dirs=(root / 'reference',
+                                          root / 'candidate'))
+            except TypeError as error:
+                self.fail(f'Missing audited sensitivity comparison: {error}')
 
     def test_temporal_and_link_runs_require_all_actual_stage_hashes(self):
         worker = self.worker()
