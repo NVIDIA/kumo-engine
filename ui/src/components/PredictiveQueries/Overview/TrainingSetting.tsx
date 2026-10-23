@@ -205,7 +205,7 @@ const TrainingSetting: React.FC<TrainingSettingProps> = ({
                                         process your raw data (see{" "}
                                         <DocumentationLink
                                             id="query_suggestion_doc"
-                                            pageLink={docURLs.EncoderOverrides}
+                                            url={docURLs.EncoderOverrides}
                                             linkText="docs"
                                             isNewDocs={true}
                                         />{" "}

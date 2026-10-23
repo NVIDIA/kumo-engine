@@ -572,7 +572,7 @@ const ConnectTables: React.FC<ConnectTablesProps> = ({
                             {`Learn more `}
                             <DocumentationLink
                                 id="pkey_selection"
-                                pageLink={docURLs.PkeySelection}
+                                url={docURLs.PkeySelection}
                                 linkText="here."
                             />
                         </>,
@@ -621,7 +621,7 @@ const ConnectTables: React.FC<ConnectTablesProps> = ({
                             {`Learn more `}
                             <DocumentationLink
                                 id="create_date_selection"
-                                pageLink={docURLs.CreateDateSelection}
+                                url={docURLs.CreateDateSelection}
                                 linkText="here."
                             />
                         </>,

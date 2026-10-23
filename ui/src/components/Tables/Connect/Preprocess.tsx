@@ -22,7 +22,7 @@ import { DropdownOption } from "types/inputs";
 import { FlowType } from "types/tables";
 import { HandleErrorFunc } from "types/validation";
 
-import { warehouseSource } from "utils/Constants";
+import { docURLs, warehouseSource } from "utils/Constants";
 import { isValid } from "utils/Helpers/typeGuards";
 
 import { ColumnSelectionTable } from "./ColumnSelectionTable";
@@ -139,7 +139,7 @@ const Preprocessing = ({
                 {" See "}
                 <DocumentationLink
                     id="column_preprocessing_doc"
-                    pageLink={"column-preprocessing"}
+                    url={docURLs.ColumnPreprocessing}
                     linkText="docs"
                     isNewDocs={true}
                 />

@@ -215,7 +215,7 @@ describe("PredictionAnchorTime", () => {
         expect(docLink).toHaveTextContent("docs");
         expect(docLink).toHaveAttribute(
             "href",
-            "https://kumo.ai/docs/troubleshooting/what-is-anchor-time-and-why-is-it-important/"
+            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/train-model/predictive-query/what-is-anchor-time-and-why-is-it-important"
         );
 
         const linkWrapper = docLink!.closest("span");
