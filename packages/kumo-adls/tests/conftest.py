@@ -53,6 +53,10 @@ class FakeNativeFilesystem:
 
     def open_output_stream(self, path, metadata=None):
         service = self.service
+        # Blob uploads materialize missing HNS parents without DFS mkdir calls.
+        parts = path.split('/')
+        service.directories.update('/'.join(parts[:i])
+                                   for i in range(1, len(parts)))
 
         class Output(io.BytesIO):
             def close(self):

@@ -90,8 +90,9 @@ def test_shared_sink_copies_prepared_file_through_native_stream(
         assert reader.read() == payload
 
 
-def test_wrong_account_is_rejected_before_native_output_opens(
-        storage, monkeypatch):
+@pytest.mark.parametrize('operation', ['open_output_stream', 'create_dir'])
+def test_wrong_account_is_rejected_before_native_output_binding(
+        storage, monkeypatch, operation):
     arrow, _, _ = storage
     opened = []
 
@@ -102,8 +103,8 @@ def test_wrong_account_is_rejected_before_native_output_opens(
 
     arrow.handler.output_filesystem = UnopenedOutput()
     with pytest.raises(ValueError, match='bound storage account'):
-        arrow.open_output_stream(
-            'curated@otherlake.dfs.core.windows.net/orders/x')
+        getattr(arrow,
+                operation)('curated@otherlake.dfs.core.windows.net/orders/x')
     assert opened == []
 
 
@@ -273,3 +274,76 @@ def test_unsupported_native_config_fails_before_sdk_mutation(
     assert service.directories == initial_directories
     assert service.files == initial_files
     assert service.created == initial_created
+
+
+@pytest.mark.parametrize('operation',
+                         ['write_table', 'write_files', 'publish_model'])
+def test_native_exports_skip_sdk_directory_preparation(service, connector,
+                                                       monkeypatch, tmp_path,
+                                                       operation):
+    import pandas as pd
+    from fakes import FakeFile
+    from kumo_adls.sink import ADLSSinkBackend
+
+    def forbidden(*args, **kwargs):
+        pytest.fail(
+            'Native exports must not create directories through the SDK')
+
+    monkeypatch.setattr(FakeFile, 'create_directory', forbidden)
+    # Preparing this root must not attempt to create its ancestor "orders".
+    target = connector(prefix='orders/team')
+    prefix = 'curated/orders/team/'
+    backend = ADLSSinkBackend()
+    if operation == 'write_table':
+        backend.write_table(target, 'new/results.parquet',
+                            pd.DataFrame({'id': [1]}))
+        contents = service.files[prefix + 'new/results.parquet']
+        assert pq.read_table(pa.BufferReader(contents)).to_pydict() == {
+            'id': [1]
+        }
+    elif operation == 'write_files':
+        source = tmp_path / 'source.parquet'
+        pq.write_table(pa.table({'id': [1]}), source)
+        backend.write_files(target, 'new/predictions/', [str(source)],
+                            export_id='test')
+        outputs = [
+            data for name, data in service.files.items()
+            if name.startswith(prefix + 'new/predictions/')
+        ]
+        assert source.read_bytes() in outputs
+        assert prefix + 'new/predictions/_SUCCESS' in service.files
+    else:
+        bundle = tmp_path / 'bundle'
+        (bundle / 'nested').mkdir(parents=True)
+        (bundle / 'model.bin').write_bytes(b'model')
+        (bundle / 'nested/weights.bin').write_bytes(b'weights')
+        backend.publish_model(target, str(bundle), path='new/model')
+        assert service.files[prefix + 'new/model/model.bin'] == b'model'
+        assert service.files[prefix +
+                             'new/model/nested/weights.bin'] == b'weights'
+
+
+def test_directory_preparation_validates_without_creating_output(
+        service, connector, monkeypatch):
+    from conftest import FakeNativeFilesystem
+    from kumo_adls.sink import ADLSSinkBackend
+
+    calls = []
+
+    def factory(*args):
+        calls.append(args)
+        return FakeNativeFilesystem(service)
+
+    monkeypatch.setattr('kumo_adls.sink.filesystem_for', factory)
+    filesystem, path = ADLSSinkBackend()._destination(connector(),
+                                                      'new/nested/')
+    initial_directories = set(service.directories)
+    initial_files = dict(service.files)
+
+    filesystem.create_dir(path)
+    filesystem.create_dir(path, recursive=False)
+
+    assert len(calls) == 1
+    assert service.directories == initial_directories
+    assert service.files == initial_files
+    assert service.created == []
