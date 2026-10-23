@@ -104,7 +104,10 @@ def validate_profile(profile, comparison):
         name: number(profile['limits'][name], limit=True)
         for name in TASKS
     }
-    minimums = {name: number(profile['minimum_losses'][name]) for name in TASKS}
+    minimums = {
+        name: number(profile['minimum_losses'][name], limit=True)
+        for name in TASKS
+    }
     for name, (metric, _) in TASKS.items():
         if (not 0 <= limits[name] < minimums[name]
                 or (metric != 'mae' and minimums[name] > 1)
@@ -113,7 +116,7 @@ def validate_profile(profile, comparison):
             raise ValueError(
                 'Every limit needs a larger justified blockworthy loss')
     frozen = timestamp(profile.get('frozen_at'))
-    seen_ids, seen_runs, seen_hashes = set(), set(), set()
+    seen_ids, seen_runs, seen_hashes, seen_models = set(), set(), set(), set()
     measured = {}
     for phase in ('calibration', 'validation'):
         groups = dict(unchanged=[], weakened=[])
@@ -139,7 +142,20 @@ def validate_profile(profile, comparison):
                     'Qualification trials and models must be fresh')
             seen_ids.add(identity)
             seen_hashes.add(digest)
-            seen_runs.update(run_ids)
+            actual_runs, models = trial.get('run_ids'), trial.get('fit_ids')
+            if (not isinstance(actual_runs, list) or len(actual_runs) != 4
+                    or len(set(actual_runs)) != 4
+                    or not set(run_ids) <= set(actual_runs)
+                    or any(not isinstance(run, str) or not run.strip()
+                           or run in seen_runs for run in actual_runs)
+                    or not isinstance(models, list) or len(models) != 140
+                    or len(set(models)) != 140
+                    or any(not isinstance(model, str) or not model.strip()
+                           or model in seen_models for model in models)):
+                raise ValueError(
+                    'All task models and binary measurements must be fresh')
+            seen_runs.update(actual_runs)
+            seen_models.update(models)
             for key in ('source_sha256', 'dependencies_sha256',
                         'reference_wheel', 'seeds'):
                 if trial.get(key) != profile[key]:

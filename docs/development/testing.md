@@ -132,6 +132,10 @@ Qualification requires at least six independent unchanged-wheel trials and six a
 These calibration trials measure variation and sensitivity. They do not establish reliability by themselves.
 The proposed limit equals the largest absolute unchanged-wheel average difference for that task.
 Each task also needs a justified minimum loss that must block release, larger than its proposed limit.
+The pending profile defines proposed minimum losses from complete group or label-pattern failures and natural target steps.
+Its formulas use fixed fixture counts and target structure, not candidate training scores.
+For example, losing one reserved link for one six-entity interest cohort gives `6/(60*3) = 1/30` recall loss.
+Counterfactual metric calculations check these policy units. They do not count as actual weaker-training or reliability evidence.
 If normal variation hides that loss, improve the test instead of accepting a larger loss.
 Freeze the limits, minimum losses, weaker-training recipe, source, and dependencies before reserved validation.
 
@@ -142,6 +146,8 @@ A fixed zero-error design needs 99 fresh unchanged-wheel comparisons and 99 fres
 The count is `ceil(log(0.05 / 8) / log(0.95)) = 99` independent comparison trials, not individual seeds.
 All reserved trials must pass the frozen rules. Do not reuse calibration trials or widen limits after validation starts.
 Saved trial records include dates, unique run identities, evidence fingerprints, audited results, and all seven metrics.
+Each trial lists 140 distinct model identities for the additional tasks and four measurement identities across both wheels.
+Those four identities cover binary and additional-task measurements. No model or measurement identity can repeat across study trials.
 The release guard repeats the calculation from the saved scores. Claimed approval alone cannot authorize publication.
 
 To measure a real training weakness, use the reporting-only calibration mode:

@@ -1,9 +1,57 @@
 {
   "status": "PENDING",
   "limits": null,
-  "minimum_losses": null,
+  "minimum_losses": {
+    "multiclass": "11/250",
+    "multilabel": "31400298689/1417242888000",
+    "multilabel_ranking": "19/400",
+    "regression": "2/19",
+    "forecasting": "1/4",
+    "static_link": "1/30",
+    "temporal_link": "1/30"
+  },
   "frozen_fault": null,
-  "rationales": null,
+  "rationales": {
+    "multiclass": "Losing the correct category for one fixed risk-group cluster must block release. The smallest five-seed cluster contains 88 of 2000 evaluation entities, giving 11/250 accuracy loss.",
+    "multilabel": "Losing one true label's ranking advantage for one complete target pattern must block release. For pattern size B, positive-label count P, population N, and 12 labels, macro-AP loss is (B/P - B/N)/12. The smallest five-seed pattern-label loss is 31400298689/1417242888000.",
+    "multilabel_ranking": "Missing one of three true labels in the top five for one complete target pattern must block release. The smallest five-seed pattern contains 285 of 2000 entities, giving 285/(3*2000) = 19/400 recall loss.",
+    "regression": "A systematic error of one level in the known 20-level risk-to-target signal must block release. The signal spans two target units, so one level is 2/19 target units.",
+    "forecasting": "A forecast that is one time step late must block release. The generated series changes by 1/4 target unit per step, giving 1/4 mean absolute error across all 12 horizons.",
+    "static_link": "Missing one reserved true link in the top five for every entity in one complete interest cohort must block release. A cohort has six of 60 entities and three reserved links each, giving 6/(60*3) = 1/30 recall loss.",
+    "temporal_link": "Missing one reserved true link in the top five for every entity in one complete interest cohort must block release. A cohort has six of 60 entities and three reserved links each, giving 6/(60*3) = 1/30 recall loss."
+  },
+  "minimum_loss_calculation": {
+    "status": "PROPOSED_FIXTURE_POLICY_NOT_QUALIFIED",
+    "source_sha256": "05d801d7fedf640779372e745d7799d5d070d21ca3545198ab198500dc2562b7",
+    "seeds": [0, 1, 2, 3, 4],
+    "meaning": "These counterfactual fixture calculations define blockworthy losses. They are not actual weaker-training trials or evidence of detection reliability. Release limits remain unselected.",
+    "multiclass": {
+      "limiting_group": 18,
+      "evaluation_entities_per_seed": 400,
+      "group_counts_per_seed": [13, 24, 13, 20, 18],
+      "formula": "(13+24+13+20+18)/(5*400) = 11/250"
+    },
+    "multilabel": {
+      "limiting_pattern": ["label_05", "label_00", "label_11"],
+      "missing_label": "label_00",
+      "N_per_seed": [400, 400, 400, 400, 400],
+      "B_per_seed": [52, 62, 52, 58, 61],
+      "P_per_seed": [141, 150, 138, 139, 131],
+      "per_seed_exact_losses": ["3367/169200", "31/1440", "1703/82800", "2523/111200", "16409/628800"],
+      "formula": "mean((B/P - B/N)/12) = 31400298689/1417242888000",
+      "scorer_check": "Each exact calculation matched the existing macro-AP scorer within 1e-12."
+    },
+    "multilabel_ranking": {
+      "limiting_pattern": ["label_05", "label_00", "label_11"],
+      "evaluation_entities_per_seed": 400,
+      "pattern_counts_per_seed": [52, 62, 52, 58, 61],
+      "formula": "(52+62+52+58+61)/(5*400*3) = 19/400"
+    },
+    "regression": {"formula": "signal_span/(risk_levels-1) = 2/(20-1) = 2/19", "units": "target_units"},
+    "forecasting": {"formula": "MAE(truth, one_step_late_truth) = 1/4", "units": "target_units", "checked_seeds": 5, "horizons": 12},
+    "static_link": {"formula": "cohort_size/(entities*reserved_links) = 6/(60*3) = 1/30", "checked_seeds": 5},
+    "temporal_link": {"formula": "cohort_size/(entities*reserved_links) = 6/(60*3) = 1/30", "checked_seeds": 5}
+  },
   "calibration": [],
   "validation": [],
   "reliability": {

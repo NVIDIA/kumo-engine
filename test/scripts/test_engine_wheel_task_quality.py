@@ -87,9 +87,14 @@ def profile_for_tests():
                         reference_wheel=comparison['reference_wheel'],
                         candidate_wheel=comparison['reference_wheel'],
                         reference_run_id=name + '-reference',
-                        candidate_run_id=name + '-candidate',
-                        evidence_sha256=hashlib.sha256(
-                            name.encode()).hexdigest(),
+                        candidate_run_id=name + '-candidate', run_ids=[
+                            name + suffix
+                            for suffix in ('-reference', '-candidate',
+                                           '-binary-reference',
+                                           '-binary-candidate')
+                        ], fit_ids=[f'{name}-fit-{fit}' for fit in range(140)
+                                    ], evidence_sha256=hashlib.sha256(
+                                        name.encode()).hexdigest(),
                         started_at=('2026-10-20T00:00:00Z'
                                     if phase == 'calibration' else
                                     '2026-10-20T02:00:00Z'),
@@ -283,6 +288,35 @@ class WheelTaskQualityTest(unittest.TestCase):
         profile['validation'][99]['fault']['budget'] = [1, 1]
         with self.assertRaises(ValueError):
             self.helpers()['assess_quality'](comparison_for_tests(), profile)
+
+    def test_qualification_requires_fresh_models_not_only_fresh_trial_names(
+            self):
+        assess = self.helpers()['assess_quality']
+        for mutation in ('missing', 'short', 'duplicate', 'reused',
+                         'binary_reused', 'wrong_run'):
+            profile = profile_for_tests()
+            first, second = profile['validation'][:2]
+            if mutation == 'missing':
+                del first['fit_ids']
+            elif mutation == 'short':
+                first['fit_ids'].pop()
+            elif mutation == 'duplicate':
+                first['fit_ids'][1] = first['fit_ids'][0]
+            elif mutation == 'reused':
+                second['fit_ids'][0] = first['fit_ids'][0]
+            elif mutation == 'binary_reused':
+                second['run_ids'][2] = first['run_ids'][2]
+            else:
+                first['run_ids'][0] = 'an-unrelated-run'
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                assess(comparison_for_tests(), profile)
+
+    def test_blockworthy_loss_policy_can_preserve_an_exact_fraction(self):
+        profile = profile_for_tests()
+        profile['minimum_losses'] = dict.fromkeys(METRICS, '1/5')
+        result = self.helpers()['assess_quality'](comparison_for_tests(),
+                                                  profile)
+        self.assertTrue(result['quality_gate_approved'])
 
 
 if __name__ == '__main__':
