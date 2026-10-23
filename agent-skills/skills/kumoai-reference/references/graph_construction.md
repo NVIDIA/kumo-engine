@@ -95,7 +95,7 @@ for col in orders_src.columns:
 ```python
 import kumo.engine as kumo
 from kumoapi.typing import Dtype, Stype     # NOT kumo.Stype / kumo.Dtype
-from kumo.engine import Edge
+from kumoapi.graph import Edge
 ```
 
 ### Defining tables
@@ -346,7 +346,7 @@ Tables and graph only. Connection, training and prediction are in `kumoai-refere
 
 ```python
 import kumo.engine as kumo
-from kumo.engine import Edge
+from kumoapi.graph import Edge
 from kumoapi.typing import Dtype, Stype
 
 # `connector` is the SnowflakeConnector built per Step 1; the table names below are placeholders

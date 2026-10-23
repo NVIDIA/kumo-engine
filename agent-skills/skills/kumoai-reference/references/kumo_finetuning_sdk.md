@@ -84,7 +84,8 @@ Graph-building types `Column` and `Edge` are available from `kumo.engine`.
 Other supporting imports come from `kumoapi`:
 
 ```python
-from kumo.engine import Column, Edge
+from kumoapi.table import Column
+from kumoapi.graph import Edge
 from kumoapi.jobs import PredictionArtifactType, WriteMode
 from kumoapi.model_plan import RunMode
 from kumoapi.typing import Dtype, Stype
@@ -294,7 +295,7 @@ Source: shipped package (`kumo.engine.table`)
 ## 5. Graph
 
 ```python
-from kumo.engine import Edge
+from kumoapi.graph import Edge
 
 graph = kumo.Graph(
     tables=[account_profile, transaction_events, device_profile],
@@ -560,7 +561,7 @@ from datetime import datetime
 from pathlib import Path
 
 import kumo.engine as kumo
-from kumo.engine import Edge
+from kumoapi.graph import Edge
 from kumoapi.jobs import PredictionArtifactType, WriteMode
 from kumoapi.model_plan import RunMode
 from kumoapi.typing import Stype
@@ -723,7 +724,7 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
       (§11.3).
 - [ ] `kumo.init(...)` appears nowhere; no API keys; no `tracking_url`.
 - [ ] No call from §11.1 appears anywhere.
-- [ ] `Stype` / `Dtype` imported from `kumoapi.typing`; `Column` / `Edge` from `kumo.engine`;
+- [ ] `Stype` / `Dtype` imported from `kumoapi.typing`; `Column` from `kumoapi.table` and `Edge` from `kumoapi.graph` (the bundle the skill targets does not re-export either from `kumo.engine`);
       `PredictionArtifactType` / `WriteMode` from `kumoapi.jobs`; `RunMode` from
       `kumoapi.model_plan`.
 - [ ] Connection tries `from_spcs_env`, then `from_connection_toml`, then `SnowflakeIdentity` from
