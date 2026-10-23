@@ -20,7 +20,7 @@ NVIDIA Kumo Engine prepares connected records and their history for predictive m
 
 Define your tables, relationships, and prediction task in Python. Kumo Engine handles ingestion from the data lake, graph construction, context sampling, training, evaluation, and prediction for a wide range of predictive use cases. Examples include recommendations, fraud detection, churn prediction, propensity modeling, and risk scoring, among many others.
 
-**Benchmark highlight:** [One million three-hop neighborhoods in 19 seconds, warm cache](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/resources/benchmarks).
+**Benchmark highlight:** [One million three-hop neighborhoods in 19 seconds](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/resources/benchmarks).
 
 ## Part of NVIDIA Kumo
 
