@@ -117,11 +117,12 @@ def test_macos_deployment_target_rejected_before_build(tmp_path, target):
 
 
 def _wheel(directory, name, requires=(), extras=(), tag='py3-none-any',
-           python='>=3.11', files=None):
+           python='>=3.11', files=None, headers=''):
     """Write a component wheel with just enough metadata to merge."""
     stem = name.replace('-', '_')
     path = directory / f'{stem}-1.0-{tag}.whl'
     metadata = f'Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n'
+    metadata += headers
     if python is not None:
         metadata += f'Requires-Python: {python}\n'
     metadata += ''.join(f'Provides-Extra: {e}\n' for e in extras)
@@ -348,6 +349,25 @@ def test_core_packages_and_shared_license_are_bundled(tmp_path):
     for name in ['kumo-api', 'kumo-pql', 'kumo-core']:
         assert not any(requirement.startswith(name)
                        for requirement in requirements)
+
+
+def test_engine_project_metadata_passes_through(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    headers = ('Author: NVIDIA Corporation\n'
+               'Classifier: Development Status :: 5 - Production/Stable\n'
+               'Project-URL: issues, https://example.com/issues\n')
+    component = cast(dict[str, object], COMPONENTS['kumo-engine'])
+    monkeypatch.setitem(COMPONENTS, 'kumo-engine',
+                        dict(component, headers=headers))
+
+    result = _merge(tmp_path, CORE_COMPONENTS)
+
+    assert result.returncode == 0, result.stderr
+    metadata, _, _ = _read_wheel(tmp_path)
+    assert metadata['Author'] == 'NVIDIA Corporation'
+    assert metadata['Classifier'] == (
+        'Development Status :: 5 - Production/Stable')
+    assert metadata['Project-URL'] == 'issues, https://example.com/issues'
 
 
 def test_glove_stays_a_pypi_dependency_of_the_text_extra(tmp_path):
