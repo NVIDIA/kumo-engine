@@ -22,14 +22,14 @@ Define your tables, relationships, and prediction task in Python. Kumo Engine ha
 
 **Benchmark highlight:** [One million three-hop neighborhoods in 19 seconds](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/resources/benchmarks).
 
+[Documentation](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-started-with-kumo-engine/overview) · [Installation](#installation) · [Quick Tour](#quick-tour) · [Benchmarks](#benchmarks)
+
 ## Part of NVIDIA Kumo
 
 NVIDIA Kumo is a family of open models, libraries, and tools for predictive AI across tabular, relational, and time-series data, and a core part of the NVIDIA Agent Knowledge Foundation.
 
 - **NVIDIA Kumo Structured:** pretrained foundation models (Kumo Tabular, Kumo Relational, Kumo Forecast, and Kumo Anomaly) that make predictions without training a model per task. Refer to [NVIDIA/structured-data-models](https://github.com/NVIDIA/structured-data-models).
 - **NVIDIA Kumo Engine (this repository):** an open accelerator for preparing connected structured data and training predictive models at production scale.
-
-[Documentation](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-started-with-kumo-engine/overview) · [Installation](#installation) · [Quick Tour](#quick-tour) · [Benchmarks](#benchmarks)
 
 ## Installation
 
