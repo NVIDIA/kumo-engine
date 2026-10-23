@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/wsl-release"
-          python -m venv .venv
+          "$(uv python find 3.12)" -m venv .venv
           .venv/bin/python -m pip --isolated install --index-url https://pypi.org/simple \
             --report results/install-report.json 'kumo-engine==1.0.0' 2>&1 | tee results/install.log
           .venv/bin/python -m pip check | tee results/pip-check.txt
