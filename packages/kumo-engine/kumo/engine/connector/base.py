@@ -4,7 +4,7 @@
 r"""The `Connector` base class.
 
 A `Connector` is a plain, directly-referenced object -- never a string id
-looked up in a registry (see "Object model" in the package README).
+looked up in a registry.
 The provider connectors
 (`SnowflakeConnector`, `S3Connector`, `GCSConnector`, `BigQueryConnector`,
 `DatabricksConnector`) wrap an implementation of
@@ -23,8 +23,6 @@ construction here never calls anything resembling the cloud SDK's
 create_if_not_exist(...)` -- there is no `Backend`, so there is nothing to
 round-trip through. Construction is pure Python: build the
 `kumoapi.data_source.*ConnectorResourceConfig` and hold it.
-
-For the filesystem connector, see the package README's "Local files" section.
 """
 
 from abc import ABC, abstractmethod

@@ -282,7 +282,10 @@ class Trainer:
                 ``load_from_connector``. Reuses its selected weights, optimizer
                 state, fitted encoders, architecture and neighbor sampling;
                 this trainer's training controls still apply. Task types must
-                match. Forecasting warm starts are unsupported.
+                match. Forecasting warm starts are unsupported. Older bundles
+                may contain an AutoML search space instead of the fitted
+                architecture; they support prediction but are unreliable
+                warm-start sources.
         """
         from kumo_core.automl.runtime import (
             inherit_warm_start_model_plan,
