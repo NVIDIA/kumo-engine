@@ -24,6 +24,7 @@ from pathlib import Path
 from check_pypi_requirements import read_metadata
 
 REQUIREMENTS = Path(__file__).resolve().parents[1] / 'test/wheel_workflow.json'
+QUALITY_PROFILE = REQUIREMENTS.with_name('wheel_task_quality.json')
 
 
 def task_source_identity():
@@ -32,7 +33,8 @@ def task_source_identity():
     return worker['source_identity']()
 
 
-def verify_task_comparison(result, *, calibration_budget=None):
+def verify_task_comparison(result, *, calibration_budget=None,
+                           require_quality=True):
     tasks = runpy.run_path(str(
         REQUIREMENTS.with_name('wheel_task_learning.py')))['TASKS']
     if calibration_budget is None:
@@ -88,6 +90,19 @@ def verify_task_comparison(result, *, calibration_budget=None):
                                         'quality_drop')) for row in rows)):
             raise ValueError(
                 'Additional task comparison evidence is incomplete')
+    if require_quality:
+        quality = runpy.run_path(
+            str(REQUIREMENTS.with_name('wheel_task_quality.py')))
+        expected = quality['assess_quality'](result,
+                                             json.loads(
+                                                 QUALITY_PROFILE.read_text()))
+        if (expected['quality_gate_approved'] is not True or any(
+                result.get(key) != expected[key]
+                for key in ('quality_gate_approved', 'quality_status',
+                            'quality_limits', 'quality_profile_sha256',
+                            'qualification', 'tasks'))):
+            raise ValueError(
+                'All seven quality limits need validated passing evidence')
 
 
 def load_requirements(path):
@@ -495,6 +510,11 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                     reporter = root / 'wheel_learning_report.py'
                     shutil.copyfile(REQUIREMENTS.with_name(reporter.name),
                                     reporter)
+                    if task_coverage:
+                        for name in ('wheel_task_quality.py',
+                                     'wheel_task_quality.json'):
+                            shutil.copyfile(REQUIREMENTS.with_name(name),
+                                            root / name)
                     try:
                         run('comparison', [
                             python, '-I',
@@ -518,7 +538,8 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                     if task_coverage:
                         verify_task_comparison(
                             summary['comparison'].get('additional_tasks', {}),
-                            calibration_budget=calibration_budget)
+                            calibration_budget=calibration_budget,
+                            require_quality=not report_learning)
                     if (not report_learning
                             and summary['comparison'].get('release_approved')
                             is not True):
@@ -638,7 +659,8 @@ def main():
             status='MEASURED' if args.report_learning else 'PASS')
         verify_task_comparison(
             summary['comparison'].get('additional_tasks', {}),
-            calibration_budget=args.calibration_budget)
+            calibration_budget=args.calibration_budget,
+            require_quality=not args.report_learning)
         if (not args.report_learning
                 and summary['comparison'].get('release_approved') is not True):
             raise ValueError('Release comparison did not approve release')

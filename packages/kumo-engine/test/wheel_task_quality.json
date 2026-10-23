@@ -1,0 +1,16 @@
+{
+  "status": "PENDING",
+  "limits": null,
+  "minimum_losses": null,
+  "frozen_fault": null,
+  "rationales": null,
+  "calibration": [],
+  "validation": [],
+  "reliability": {
+    "joint_false_failure_max": 0.05,
+    "task_detection_min": 0.95,
+    "simultaneous_confidence": 0.95,
+    "claims": 8,
+    "reserved_trials": 99
+  }
+}

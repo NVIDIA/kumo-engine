@@ -8,6 +8,7 @@ import io
 import json
 import math
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,8 @@ from zipfile import ZipFile
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'packages/kumo-engine/scripts'
 RUNNER = SCRIPTS / 'smoke_wheel.py'
+QUALITY_FIXTURES = runpy.run_path(
+    str(Path(__file__).with_name('test_engine_wheel_task_quality.py')))
 
 
 class WheelSmokeTest(unittest.TestCase):
@@ -28,24 +31,19 @@ class WheelSmokeTest(unittest.TestCase):
                        multilabel_ranking='recall@5', regression='mae',
                        forecasting='mae', static_link='recall@5',
                        temporal_link='recall@5')
-        return dict(
-            status='MEASURED', execution_passed=True, tasks={
-                name:
-                dict(
-                    metric=metric, per_seed=[
-                        dict(seed=i, reference=.5, candidate=.5, baseline=.5,
-                             quality_drop=0.) for i in range(5)
-                    ])
-                for name, metric in metrics.items()
-            }, independent_controls={
-                name:
-                dict(
-                    method='joint_monte_carlo_label_permutation', draws=999,
-                    seed=0, alpha=.01 / 7, statistic=0., p_value=1.,
-                    null_method=('uniform_eligible_items' if name
-                                 == 'static_link' else 'shared_label_rows'))
-                for name in metrics
-            })
+        result = QUALITY_FIXTURES['comparison_for_tests']()
+        result['independent_controls'] = {
+            name:
+            dict(
+                method='joint_monte_carlo_label_permutation', draws=999, seed=0,
+                alpha=.01 / 7, statistic=0., p_value=1.,
+                null_method=('uniform_eligible_items'
+                             if name == 'static_link' else 'shared_label_rows'))
+            for name in metrics
+        }
+        quality = runpy.run_path(
+            str(self.runner.REQUIREMENTS.with_name('wheel_task_quality.py')))
+        return quality['assess_quality'](result, self.quality_profile)
 
     def test_task_comparison_requires_complete_passing_control_results(self):
         self.runner.verify_task_comparison(self.task_comparison())
@@ -75,6 +73,17 @@ class WheelSmokeTest(unittest.TestCase):
                 control['p_value'] = 1.1
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 self.runner.verify_task_comparison(result)
+
+    def test_release_rejects_unvalidated_task_limits_even_when_claimed_passed(
+            self):
+        result = self.task_comparison()
+        result.update(quality_gate_approved=True, quality_status='PASS',
+                      quality_limits=dict.fromkeys(result['tasks'], 1.))
+        with patch.object(
+                self.runner, 'QUALITY_PROFILE',
+                self.runner.REQUIREMENTS.with_name(
+                    'wheel_task_quality.json')), self.assertRaises(ValueError):
+            self.runner.verify_task_comparison(result)
 
     def calibration_comparison(self):
         result = self.task_comparison()
@@ -158,6 +167,13 @@ class WheelSmokeTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        self.quality_profile = QUALITY_FIXTURES['profile_for_tests']()
+        profile_path = self.root / 'synthetic-quality-profile.json'
+        profile_path.write_text(json.dumps(self.quality_profile))
+        quality_patch = patch.object(self.runner, 'QUALITY_PROFILE',
+                                     profile_path)
+        quality_patch.start()
+        self.addCleanup(quality_patch.stop)
 
     def wheel(self, name='kumo-engine', version='1.2.3', requires=''):
         distribution = f'{name.replace("-", "_")}-{version}'
@@ -990,8 +1006,18 @@ class WheelSmokeTest(unittest.TestCase):
                 passed, comparison=dict(
                     passed['comparison'],
                     additional_tasks=dict(self.task_comparison(),
-                                          independent_controls={}))), passed
+                                          independent_controls={})))
         ]
+        for task in self.task_comparison()['tasks']:
+            stale = self.task_comparison()
+            for row in stale['tasks'][task]['per_seed']:
+                row['candidate'] = 3. if stale['tasks'][task][
+                    'metric'] == 'mae' else 0.
+            cases.append(
+                dict(
+                    passed, comparison=dict(passed['comparison'],
+                                            additional_tasks=stale)))
+        cases.append(passed)
         for index, report in enumerate(cases):
             with self.subTest(report=report):
                 folder = self.root / f'release-result-{index}'
@@ -1001,8 +1027,25 @@ class WheelSmokeTest(unittest.TestCase):
                     (evidence / 'summary.json').write_text(json.dumps(report))
                 output = folder / 'github-output'
                 output.write_text('')
+                # Run the real guard with a qualified synthetic study, not a bypass.
+                harness = folder / 'packages/kumo-engine'
+                (harness / 'scripts').mkdir(parents=True)
+                (harness / 'test').mkdir()
+                for name in ('smoke_wheel.py', 'check_pypi_requirements.py'):
+                    shutil.copyfile(SCRIPTS / name, harness / 'scripts' / name)
+                worker = runpy.run_path(
+                    str(
+                        self.runner.REQUIREMENTS.with_name(
+                            'wheel_task_learning.py')))
+                for name in (*worker['SOURCES'], 'wheel_task_quality.py',
+                             'wheel_workflow.json'):
+                    shutil.copyfile(self.runner.REQUIREMENTS.with_name(name),
+                                    harness / 'test' / name)
+                (harness / 'test/wheel_task_quality.json').write_text(
+                    json.dumps(self.quality_profile))
                 completed = subprocess.run(
-                    ['bash', '-e', '-o', 'pipefail', '-c', script], env={
+                    ['bash', '-e', '-o', 'pipefail', '-c', script], cwd=folder,
+                    env={
                         **os.environ, 'RUNNER_TEMP':
                         str(folder),
                         'GITHUB_OUTPUT':

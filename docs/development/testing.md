@@ -114,12 +114,35 @@ The additional tasks report these metrics and simple baselines:
 | Static link prediction | Fraction of true links in the top five | Observed item frequency, excluding known links |
 | Temporal link prediction | Fraction of true links in the top five | Observed item frequency |
 
-These seven quality limits are unvalidated and remain reporting-only.
+These seven quality limits remain unvalidated. Strict release comparisons block until qualification passes.
+`packages/kumo-engine/test/wheel_task_quality.json` records `status: PENDING` without guessed limits.
 `comparison.additional_tasks` records each seed's reference, candidate, baseline, and signed drop, plus each task's average drop.
 A positive drop means worse quality, including increased error for regression and forecasting.
 No additional task uses the binary `0.001` limit.
-Its result has `quality_limits: null` and `quality_gate_approved: false`.
+An unvalidated result has `quality_limits: null` and `quality_gate_approved: false`.
 Fresh fits of the same wheel can produce different scores. New limits need separate repeat measurements and reserved validation.
+
+Each task compares the reference average with the candidate average across five matching seeds.
+Improved seeds offset weaker seeds. Individual drops remain diagnostics.
+Accuracy, average precision, and recall use fractions. Error uses the generated target's units.
+A drop equal to its validated limit passes. Any greater drop blocks release, without a rounding allowance.
+An exact decimal string can preserve a calculated limit that a JSON floating-point number cannot represent.
+
+Qualification requires at least six independent unchanged-wheel trials and six actual weaker-training trials.
+These calibration trials measure variation and sensitivity. They do not establish reliability by themselves.
+The proposed limit equals the largest absolute unchanged-wheel average difference for that task.
+Each task also needs a justified minimum loss that must block release, larger than its proposed limit.
+If normal variation hides that loss, improve the test instead of accepting a larger loss.
+Freeze the limits, minimum losses, weaker-training recipe, source, and dependencies before reserved validation.
+
+The reliability policy permits at most 5% false rejection across all seven tasks.
+Each task must detect its defined learning loss at least 95% of the time.
+The evidence must establish these eight claims together with 95% confidence.
+A fixed zero-error design needs 99 fresh unchanged-wheel comparisons and 99 fresh weaker-training comparisons.
+The count is `ceil(log(0.05 / 8) / log(0.95)) = 99` independent comparison trials, not individual seeds.
+All reserved trials must pass the frozen rules. Do not reuse calibration trials or widen limits after validation starts.
+Saved trial records include dates, unique run identities, evidence fingerprints, audited results, and all seven metrics.
+The release guard repeats the calculation from the saved scores. Claimed approval alone cannot authorize publication.
 
 To measure a real training weakness, use the reporting-only calibration mode:
 
@@ -165,7 +188,8 @@ This policy is separate from measured repeat limits.
 Evidence includes saved scores, answers, inputs, splits, plans, dependency versions, and source fingerprints.
 
 Every manual or release build runs the strict comparison, including all seven additional tasks.
-Release attachment and publication require the binary quality gate and complete passing execution and controls for every task.
+Release attachment and publication require the binary gate and seven validated quality gates, plus complete passing execution and controls.
+The pending seven-task profile currently prevents release approval.
 The manual `Kumo Engine - Wheel smoke` workflow exposes the same coverage through `learning_comparison` in reporting mode.
 PR runs test the basic harness against a released wheel. They do not build the PR's package or run the full learning comparison.
 No nightly or weekly learning schedule is added.

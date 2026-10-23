@@ -150,9 +150,23 @@ def main():
                     != arm['learning']['dependencies_sha256']):
                 raise ValueError(
                     'Additional task source or dependencies differ')
-        result['additional_tasks'] = tasks['compare_tasks'](
+        comparison = tasks['compare_tasks'](
             reference['task_learning'], candidate['task_learning'],
             calibration_dirs=args.calibration_task_dirs)
+        comparison.update(
+            source_sha256=reference['task_learning']['source_sha256'],
+            dependencies_sha256=reference['task_learning']
+            ['dependencies_sha256'], reference_wheel=reference['wheel'],
+            seeds=reference['task_learning']['seeds'])
+        quality = runpy.run_path(
+            str(Path(__file__).with_name('wheel_task_quality.py')))
+        profile = json.loads(
+            Path(__file__).with_name('wheel_task_quality.json').read_text())
+        result['additional_tasks'] = quality['assess_quality'](comparison,
+                                                               profile)
+        if args.release and not result['additional_tasks'][
+                'quality_gate_approved']:
+            result.update(status='FAIL', release_approved=False)
     args.output.write_text(json.dumps(result, indent=2))
     return 1 if result['status'] == 'FAIL' else 0
 
