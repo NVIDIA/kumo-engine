@@ -182,7 +182,6 @@ exclude = [
   ".venv/",
   "3rdparty/",
   "kumo/pquery/grammar/",
-  # Imported DiskGraph files must remain identical to their source.
   "packages/diskgraph/",
   "*/conftest.py",
   "*/examples/*",

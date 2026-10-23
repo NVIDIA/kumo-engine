@@ -13,7 +13,6 @@ ignore: |
   helm/kumo-stack/renderer/templates/
   helm/kumo-temporal/charts/temporal/
   helm/kumo-temporal/templates/
-  packages/diskgraph/
 
 rules:
   line-length: disable

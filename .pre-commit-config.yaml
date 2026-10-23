@@ -21,14 +21,14 @@ repos:
       - id: trailing-whitespace
         exclude: ^(packages/(diskgraph|kumo-ui-catalog)/|THIRD-PARTY\.txt)
       - id: check-yaml
-        exclude: ^(helm/kumo-helm/(templates/|examples/)|packages/diskgraph/)
+        exclude: ^helm/kumo-helm/(templates/|examples/)
 
   - repo: https://github.com/adrienverge/yamllint.git
     rev: v1.26.3
     hooks:
       - id: yamllint
         args: [-c=.yamllint.yml]
-        exclude: ^(packages/(diskgraph|kumo-ui-catalog)/)
+        exclude: ^packages/kumo-ui-catalog/
 
   - repo: https://github.com/regebro/pyroma
     rev: '5.0'
