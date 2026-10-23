@@ -7,15 +7,31 @@ from functools import partial
 from kumo_core.object_store_sink import ObjectStoreSinkBackend
 from kumo_core.sources.cpu import COPY_WORKER_BYTES, memory_share
 from kumoapi.data_source import DataSourceType
+from kumoapi.jobs import WriteMode
 from pyarrow.fs import FSSpecHandler, PyFileSystem
 
 from .backend import ADLSSessions, canonical_uri
-from .native_output import NativeOutputHandler, filesystem_for
+from .native_output import (
+    NativeOutputHandler,
+    filesystem_for,
+    validate_output_configuration,
+)
 from .sdk_filesystem import ADLSFileSystem
 
 
 class ADLSSinkBackend(ADLSSessions, ObjectStoreSinkBackend):
     source_type = DataSourceType.ADLS
+
+    def preflight_write_files(self, connector, table_name,
+                              write_mode=WriteMode.OVERWRITE):
+        """Reject unsupported output before prediction work or Azure access."""
+        if write_mode is not WriteMode.OVERWRITE:
+            raise NotImplementedError('ADLS output only supports OVERWRITE')
+        bucket, _, _ = self._resolved(connector, table_name)
+        container, host = bucket.split('@', 1)
+        account, suffix = host.split('.', 1)
+        validate_output_configuration(self._principal(connector), account,
+                                      suffix, container)
 
     def _uri(self, path: str) -> str:
         return canonical_uri(path)

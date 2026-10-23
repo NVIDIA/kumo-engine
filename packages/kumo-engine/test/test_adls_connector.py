@@ -3,6 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import hashlib
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import Mock
 
 import pandas as pd
 import pyarrow as pa
@@ -10,6 +13,8 @@ import pyarrow.parquet as pq
 import pytest
 from kumo_core.sources.object_store_access import ObjectStoreAccess
 from kumoapi.data_source import AzureCloud, DataSourceType
+from kumoapi.jobs import PredictionArtifactType, WriteMode
+from kumoapi.model_plan import ModelPlan
 from kumoapi.source_table import ADLSRelativeSource, ADLSSourceTable
 from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 
@@ -106,3 +111,75 @@ def test_rootless_graph_coordinate_contains_exact_source(storage):
     coordinate = _source_table_name(source)
     assert 'companylake' in coordinate
     assert len(coordinate.split('.')) == 3
+
+
+@pytest.mark.parametrize('case,error,match', [
+    ('rootless', NotImplementedError, 'source-only'),
+    ('client', NotImplementedError, 'match the selected workload identity'),
+    ('tenant', NotImplementedError, 'match the selected workload identity'),
+    ('token', NotImplementedError, 'projected token'),
+    ('authority', ValueError, 'AZURE_AUTHORITY_HOST'),
+    ('cloud', ValueError, 'selected identity cloud'),
+    ('append', NotImplementedError, 'OVERWRITE'),
+    ('outside', ValueError, 'outside the connector root'),
+])
+def test_invalid_prediction_output_fails_before_scoring(monkeypatch, tmp_path,
+                                                        snapshot, case, error,
+                                                        match):
+    from kumo_core.types import TaskType
+
+    from kumo.engine import PredictionOutputConfig, PredictionTable, Trainer
+
+    monkeypatch.setenv('AZURE_TENANT_ID', 'tenant')
+    monkeypatch.setenv('AZURE_CLIENT_ID', 'client')
+    monkeypatch.setenv('AZURE_FEDERATED_TOKEN_FILE', '/projected/token')
+    monkeypatch.setenv('AZURE_AUTHORITY_HOST',
+                       'https://login.microsoftonline.com')
+    if case in ('client', 'tenant'):
+        monkeypatch.setenv('AZURE_' + case.upper() + '_ID', 'different')
+    elif case == 'token':
+        monkeypatch.delenv('AZURE_FEDERATED_TOKEN_FILE')
+    elif case == 'authority':
+        monkeypatch.setenv('AZURE_AUTHORITY_HOST',
+                           'https://login.microsoftonline.us')
+    identity = ADLSIdentity(
+        tenant_id='tenant', client_id='client', cloud=AzureCloud.US_GOVERNMENT
+        if case == 'cloud' else AzureCloud.PUBLIC)
+    connector = ADLSConnector(root_dir=None if case == 'rootless' else ROOT,
+                              identity=identity)
+    output = PredictionOutputConfig(
+        connector, artifact_type=PredictionArtifactType.PREDICTIONS,
+        table_name=ROOT.replace('orders/', 'outside/')
+        if case == 'outside' else 'predictions/', write_mode=WriteMode.APPEND
+        if case == 'append' else WriteMode.OVERWRITE)
+    trainer = Trainer(ModelPlan(), accelerator='cpu')
+    monkeypatch.setattr(trainer, '_training_result',
+                        SimpleNamespace(artifact_paths={}))
+    trainer._training_query = 'trained query'
+    monkeypatch.setattr(Trainer, 'scratch_dir', property(lambda _: tmp_path))
+    # Isolate output validation from query parsing and model execution.
+    monkeypatch.setattr(
+        'kumo_core.prediction_options.prediction_query_contract', lambda *args:
+        (None, TaskType.REGRESSION.value))
+    monkeypatch.setattr('kumo_core.pquery.normalize_graph', lambda _: None)
+    monkeypatch.setattr(
+        'kumo_core.pquery.parse_and_validate_query',
+        lambda *args: SimpleNamespace(query=SimpleNamespace(top_k=None)))
+    work = Mock(side_effect=AssertionError('prediction work started'))
+    monkeypatch.setattr(
+        'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
+        work)
+    monkeypatch.setattr('kumo_core.prediction.materialize_prediction_task',
+                        work)
+    monkeypatch.setattr('kumo_core.prediction.score_prediction', work)
+    azure = Mock(side_effect=AssertionError('Azure access started'))
+    monkeypatch.setattr('kumo_adls.backend.source_access', azure)
+    monkeypatch.setattr('kumo_adls.sink.filesystem_for', azure)
+    table = cast(PredictionTable, SimpleNamespace(query='prediction query'))
+
+    with pytest.raises(error, match=match):
+        trainer.predict(table, snapshot=snapshot, output_config=output)
+
+    work.assert_not_called()
+    azure.assert_not_called()
+    assert not (tmp_path / 'runs').exists()

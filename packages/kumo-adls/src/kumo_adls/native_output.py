@@ -17,8 +17,8 @@ from pyarrow.fs import AzureFileSystem, FileSystem, FSSpecHandler
 from .session import CLOUDS
 
 
-def filesystem_for(principal, account, suffix, container):
-    """Bind native output without changing or substituting an identity."""
+def validate_output_configuration(principal, account, suffix, container):
+    """Validate native output locally, without constructing storage clients."""
     account = normalize_adls_storage_account(account)
     suffix = normalize_adls_endpoint_suffix(suffix)
     container = normalize_adls_filesystem(container)
@@ -51,6 +51,13 @@ def filesystem_for(principal, account, suffix, container):
         raise ValueError(
             'Native Arrow ADLS writes require AZURE_AUTHORITY_HOST=' +
             f'https://{authority} for the selected cloud')
+    return account, suffix, container
+
+
+def filesystem_for(principal, account, suffix, container):
+    """Bind native output without changing or substituting an identity."""
+    account, suffix, container = validate_output_configuration(
+        principal, account, suffix, container)
     options = dict(
         blob_storage_authority='.' + suffix.replace('dfs.', 'blob.', 1),
         dfs_storage_authority='.' + suffix)
