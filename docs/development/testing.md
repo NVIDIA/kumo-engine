@@ -136,28 +136,33 @@ The proposed limit is `(n + m) / 2`. This gives equal space from observed variat
 That midpoint maximizes the smaller of those two gaps. Actual weaker-training trials must show losses of at least `m`.
 The qualification report preserves both calibration counts, observed variation, actual training losses, and the exact calculation.
 
-The failed study's calibration on October 23, 2026 used six unchanged-wheel comparisons and six actual reduced-training comparisons.
+Calibration of the revised fixture on October 23, 2026 used six unchanged-wheel comparisons and six actual reduced-training comparisons.
 Each comparison used five matching seeds per wheel. The independent audits checked 1,680 additional-task models and 240 binary fits.
 Every comparison has distinct model, measurement, and evidence identities.
-The following failed-study values are rounded for display. The profile preserves exact fractional limits and the audited per-seed scores.
-Fresh validation rejected unchanged static-link trial 005: its recall loss was `0.0377777777777778`, above the fixed `2/75` limit.
-That study cannot approve release. Its frozen profile and failed result remain preserved. New launches under that plan are stopped.
+The following values are rounded for display. The pending profile preserves exact fractional limits and all twelve audited calibration records.
+The profile was frozen at `2026-10-23T14:22:53.799324Z`, before any new reserved trial.
+Its canonical fingerprint is `b4ce4c903aba0dc0c24338759cde0504c8c01fa6602622ecb3099815388076c8`.
+All 198 planned validation IDs were unused at the native preflight. Strict release approval remains blocked.
 
 | Task | Largest normal difference `n` | Meaningful loss `m` | Frozen limit `(n + m) / 2` | Smallest actual weakened loss |
 | --- | ---: | ---: | ---: | ---: |
-| Multiclass accuracy | 0.019000000000 | 0.044000000000 | 0.031500000000 | 0.560000000000 |
-| Multilabel average precision | 0.001477492163 | 0.022155904930 | 0.011816698547 | 0.496337257528 |
-| Multilabel Recall@5 | 0.000000000000 | 0.047500000000 | 0.023750000000 | 0.450166666667 |
-| Regression error | 0.009684770779 | 0.105263157895 | 0.057473964337 | 0.518527166954 |
-| Forecast error | 0.010078928818 | 0.250000000000 | 0.130039464409 | 5.538788019402 |
-| Static-link Recall@5 | 0.020000000000 | 0.033333333333 | 0.026666666667 | 0.586666666667 |
-| Temporal-link Recall@5 | 0.004666666667 | 0.010000000000 | 0.007333333333 | 0.442000000000 |
+| Multiclass accuracy | 0.022500000000 | 0.044000000000 | 0.033250000000 | 0.526000000000 |
+| Multilabel average precision | 0.001933584626 | 0.022155904930 | 0.012044744778 | 0.497832908903 |
+| Multilabel Recall@5 | 0.000000000000 | 0.047500000000 | 0.023750000000 | 0.445666666667 |
+| Regression error | 0.005271614463 | 0.105263157895 | 0.055267386179 | 0.517396029036 |
+| Forecast error | 0.032155811522 | 0.250000000000 | 0.141077905761 | 5.556548266212 |
+| Static-link Recall@5 | 0.019333333333 | 0.033333333333 | 0.026333333333 | 0.780000000000 |
+| Temporal-link Recall@5 | 0.006000000000 | 0.010000000000 | 0.008000000000 | 0.444000000000 |
 
 All seven normal differences remain below their fixed meaningful losses. All six weakened comparisons meet those losses for every task.
 The frozen fault limits candidate training to one epoch and two steps per epoch. Reference and binary training remain unchanged.
 Detection claims cover that fixed fault and fixture. These results do not establish detection rates for every regression of the same size.
-The 198 planned validation comparisons require about 46.62 hours at four workers, before audits, archiving, delays, and failures.
+The twelve measured durations estimate 46.08 hours for 198 comparisons at four workers, before audits, archiving, delays, failures, and contention.
+Compressed evidence samples estimate 30.58 GB. Verify each complete archive before removing task-owned original comparison files when space requires it.
 Calibration alone does not approve release. The profile freezes all 198 trial IDs before any reserved comparison starts.
+
+The previous study failed unchanged static-link trial 005: its recall loss was `0.0377777777777778`, above its fixed `2/75` limit.
+That study cannot approve release. Its frozen profile and all fourteen claimed results remain preserved. Its remaining IDs are retired.
 
 The pending profile defines proposed minimum losses from complete group or label-pattern failures and natural target steps.
 Its formulas use fixed fixture counts and target structure, not candidate training scores.
@@ -167,7 +172,8 @@ Counterfactual metric calculations check these policy units. They do not count a
 The revised static-link fixture uses 100 entities and ten interest groups.
 Each item has six observed links and three reserved answers across its group. No entity observes its reserved links.
 This removes absent items and uneven observed coverage from the learnable fixture. Independent-label answers stay random.
-Native calibration must establish whether this change reduces variation. A new fixed validation study remains required.
+Six unchanged comparisons measured static-link variation of `0.01933333333333336`, below the fixed `1/30` meaningful loss.
+Fresh validation must still establish reliability.
 The temporal-link fixture uses 100 entities and 100 items, with ten-item interest groups and three hidden future links per entity.
 Each ten-entity cohort has equal hidden item counts. Every item in its interest group appears three times.
 A shared correct-group ranking then scores `0.5` Recall@5 under any ordering of those ten items.
@@ -178,7 +184,7 @@ If normal variation hides that loss, improve the test instead of accepting a lar
 Freeze the limits, minimum losses, weaker-training recipe, source, and dependencies before reserved validation.
 
 The reliability policy permits at most 5% false rejection across all seven tasks.
-Each task must detect its defined learning loss at least 95% of the time.
+Each task must detect the frozen reduced-training fault at least 95% of the time.
 The evidence must establish these eight claims together with 95% confidence.
 A fixed zero-error design needs 99 fresh unchanged-wheel comparisons and 99 fresh weaker-training comparisons.
 The count is `ceil(log(0.05 / 8) / log(0.95)) = 99` independent comparison trials, not individual seeds.
