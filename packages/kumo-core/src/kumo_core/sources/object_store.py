@@ -159,7 +159,10 @@ class ObjectStoreSourceReader:
                 exact=self.file_format is not None or not table)
             entries = ([info] if info.type is FileType.File else
                        self._objects(table, info.path, include_hidden=True))
-        return _source_version(info.path, entries)
+        return self._data_version(info.path, entries)
+
+    def _data_version(self, path: str, entries: Sequence[Any]) -> str:
+        return _source_version(path, entries)
 
     def resolve(self, table: str) -> tuple[str, str]:
         """An explicit format addresses an exact path; discovery infers both."""
@@ -325,7 +328,7 @@ class ObjectStoreSourceReader:
                               include_hidden=not transform)
         # Stamp the same metadata listing the read consumes, before fetching
         # any files; later additions must not be stamped onto this output.
-        stamped = version or _source_version(path, found)
+        stamped = version or self._data_version(path, found)
         source_bytes = (sum(entry.size for entry in found) if all(
             entry.size is not None and entry.size >= 0
             for entry in found) else None)

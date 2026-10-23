@@ -29,7 +29,7 @@ def test_wheel_builds_all_first_party_packages_from_monorepo(
     for name in [
             'kumo-api', 'kumo-core', 'kumo-pql', 'kumo-engine', 'kumo-sdk',
             'kumo-databricks', 'kumo-snowflake', 'kumo-s3', 'kumo-gcs',
-            'kumo-bigquery', 'diskgraph'
+            'kumo-bigquery', 'kumo-adls', 'diskgraph'
     ]:
         package = repo / 'packages' / name
         package.mkdir(parents=True)
@@ -74,7 +74,7 @@ wheel_dir = Path(args[args.index('-w') + 1])
     sources = [call[-1] for call in recorded]
     expected = ['kumo-api', 'kumo-core', 'kumo-engine', 'kumo-pql']
     expected += [
-        'kumo-bigquery', 'kumo-databricks', 'kumo-gcs', 'kumo-s3',
+        'kumo-adls', 'kumo-bigquery', 'kumo-databricks', 'kumo-gcs', 'kumo-s3',
         'kumo-snowflake'
     ]
     assert [Path(source) for source in sources] == [
@@ -138,11 +138,12 @@ def _wheel(directory, name, requires=(), extras=(), tag='py3-none-any',
 
 CORE_COMPONENTS = ['kumo-engine', 'kumo-api', 'kumo-pql', 'kumo-core',
                    'diskgraph']
-ENGINE_EXTRAS = ['snowflake', 'databricks', 's3', 'text', 'test']
+ENGINE_EXTRAS = ['adls', 'snowflake', 'databricks', 's3', 'text', 'test']
 COMPONENTS = {
     'kumo-engine': {
         'requires': [
             'pandas', 'kumo-core[gpu]>=1.0', 'pytest; extra == "test"',
+            'kumo-adls; extra == "adls"',
             'kumo-snowflake[sdk]>=1.0; extra == "snowflake"',
             'kumo-databricks; extra == "databricks"', 'kumo-s3; extra == "s3"',
             'kumo-glove-6b-50d==1.0.0; extra == "text"'
@@ -180,6 +181,10 @@ COMPONENTS = {
     },
     'kumo-databricks': {
         'requires': ['kumo-core==1.0', 'databricks-sdk'],
+    },
+    'kumo-adls': {
+        'requires': ['kumo-core==1.0', 'azure-identity',
+                     'azure-storage-file-datalake'],
     },
     'kumo-s3': {
         'requires': ['kumo-core==1.0', 'boto3'],
@@ -286,7 +291,7 @@ def test_engine_faiss_platform_selection_survives_merge(
 
 
 @pytest.mark.parametrize('providers', [
-    ['kumo-databricks', 'kumo-s3', 'kumo-snowflake'],
+    ['kumo-adls', 'kumo-databricks', 'kumo-s3', 'kumo-snowflake'],
     ['kumo-databricks'],
 ])
 def test_provider_dependencies_only_come_with_their_extra(tmp_path, providers):
@@ -308,6 +313,10 @@ def test_provider_dependencies_only_come_with_their_extra(tmp_path, providers):
         assert provider.replace('-', '_') + '/__init__.py' in names
     # ...but its dependencies are conditional on the extra.
     expected_extras = {
+        'kumo-adls': {
+            'azure-identity; extra == "adls"',
+            'azure-storage-file-datalake; extra == "adls"'
+        },
         'kumo-databricks': {'databricks-sdk; extra == "databricks"'},
         'kumo-s3': {'boto3; extra == "s3"'},
         'kumo-snowflake': {
