@@ -1,0 +1,121 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo Engine - WSL released package
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [dm-wsl-release-test]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: wsl-amd64-gpu-t4-latest-1
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONUNBUFFERED: '1'
+      KUMO_SMOKE_DEVICE: cuda
+      PYTHONPATH: ''
+      PYTHONNOUSERSITE: '1'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify WSL2 and record environment
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/wsl-release/results"
+          {
+            uname -a
+            cat /etc/os-release
+            test "$(uname -s)" = Linux
+            test "$(uname -m)" = x86_64
+            grep -qi 'microsoft.*WSL2\|WSL2.*microsoft' /proc/sys/kernel/osrelease
+            nvidia-smi
+            mkdir -p "$RUNNER_TEMP/wsl-release/scratch"
+            findmnt --target "$RUNNER_TEMP/wsl-release/scratch"
+            df -h "$RUNNER_TEMP/wsl-release/scratch"
+          } | tee "$RUNNER_TEMP/wsl-release/results/environment.txt"
+
+      - name: Set up Python 3.12
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          python-version: '3.12'
+          enable-cache: false
+
+      - name: Install released package in clean environment
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/wsl-release"
+          python -m venv .venv
+          .venv/bin/python -m pip --isolated install --index-url https://pypi.org/simple \
+            --report results/install-report.json 'kumo-engine==1.0.0' 2>&1 | tee results/install.log
+          .venv/bin/python -m pip check | tee results/pip-check.txt
+          .venv/bin/python -m pip freeze --all > results/freeze.txt
+
+      - name: Verify documented imports CUDA and storage
+        env:
+          KUMO_SCRATCH: ${{ runner.temp }}/wsl-release/scratch
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/wsl-release"
+          .venv/bin/python - <<'PY' 2>&1 | tee results/setup-check.log
+          import importlib.metadata
+          import os
+          import sys
+          from pathlib import Path
+          from tempfile import TemporaryFile
+
+          import kumo.engine
+          import torch
+          import torch_geometric
+
+          assert importlib.metadata.version('kumo-engine') == '1.0.0'
+          assert str(Path(kumo.engine.__file__).resolve()).startswith(sys.prefix + os.sep)
+          assert torch.cuda.is_available(), 'CUDA unavailable'
+          values = torch.tensor([1.0, 2.0], device='cuda')
+          groups = torch.tensor([0, 0], device='cuda')
+          total = torch.zeros(1, device='cuda').scatter_add_(0, groups, values)
+          assert total.item() == 3.0
+          scratch = Path(os.environ['KUMO_SCRATCH']).resolve()
+          with TemporaryFile(dir=scratch) as probe:
+              probe.write(b'kumo storage check')
+              probe.flush()
+          kumo.engine.configure(scratch_dir=scratch)
+          print('Python:', sys.version)
+          print('Kumo:', kumo.engine.__version__, kumo.engine.__file__)
+          print('PyTorch:', torch.__version__, 'CUDA:', torch.version.cuda)
+          print('PyG:', torch_geometric.__version__)
+          print('GPU:', torch.cuda.get_device_name(0))
+          print('Kumo working directory:', scratch)
+          PY
+
+      - name: Run released ingest CUDA training and prediction
+        run: |
+          set -euo pipefail
+          cp packages/kumo-engine/test/smoke_release_wsl.py "$RUNNER_TEMP/wsl-release/"
+          cd "$RUNNER_TEMP/wsl-release"
+          .venv/bin/python -m pip --isolated install --index-url https://pypi.org/simple 'pytest==9.0.3'
+          .venv/bin/python -m pip check
+          .venv/bin/python -m pip freeze --all > results/freeze-with-pytest.txt
+          comm -23 <(sort results/freeze.txt) <(sort results/freeze-with-pytest.txt) > results/changed-release-dependencies.txt
+          test ! -s results/changed-release-dependencies.txt
+          .venv/bin/python -m pytest -c /dev/null --confcutdir=. -q -s smoke_release_wsl.py \
+            --junitxml=results/smoke.xml 2>&1 | tee results/smoke.log
+
+      - name: Save release qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: wsl-release-1.0.0-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wsl-release/results/
+          if-no-files-found: warn
+          retention-days: 14
