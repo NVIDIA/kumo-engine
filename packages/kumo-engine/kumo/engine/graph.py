@@ -66,6 +66,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
+from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
 
@@ -87,7 +88,7 @@ from kumo.engine._scratch import (
 from kumo.engine._storage import network_storage
 from kumo.engine.table import Table
 
-SNAPSHOT_MANIFEST_FILE = 'snapshot-manifest.json'
+SNAPSHOT_MANIFEST_FILE = PROVENANCE_FILE
 
 _warned_scratch: set[Path] = set()
 _warned_backfill: set[Path] = set()
@@ -244,7 +245,7 @@ class GraphSnapshot:
                              SnapshotManifest)
 
     @property
-    def counts(self) -> Dict[str, Dict[str, int]]:
+    def _counts(self) -> Dict[str, Dict[str, int]]:
         """Source rows per table and edges per edge type in this index."""
         from kumo_core.diskgraph.snapshot import DiskgraphIngestResult
 
@@ -268,8 +269,7 @@ def _write_snapshot_manifest(result: Any, snapshot_id: str,
                 return
             manifest = replace(
                 existing, record_sources=record_sources,
-                parents=replace(existing.parents,
-                                source_tables=source_tables))
+                parents=SnapshotParents(source_tables=source_tables))
         else:
             manifest = SnapshotManifest(
                 id=snapshot_id,

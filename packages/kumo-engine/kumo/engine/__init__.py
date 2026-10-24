@@ -25,6 +25,8 @@ from kumoapi.graph import Edge
 from kumoapi.plugin import ModelRegistryLocation
 from kumoapi.table import Column
 
+from kumo.engine._manifest import SnapshotManifest
+from kumo.engine._mlops import MLOps, mlops
 from kumo.engine._version import __version__
 from kumo.engine.config import configure
 from kumo.engine.connector import (
@@ -83,6 +85,9 @@ __all__ = [
     "Edge",
     "Graph",
     "GraphSnapshot",
+    "MLOps",
+    "mlops",
+    "SnapshotManifest",
     "PredictiveQuery",
     "TrainingTable",
     "PredictionTable",

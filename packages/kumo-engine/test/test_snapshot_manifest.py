@@ -30,7 +30,6 @@ from kumo.engine import (
     Table,
 )
 from kumo.engine._manifest import (
-    SchedulerContext,
     SnapshotManifest,
     SourceTableEntry,
     read_manifest,
@@ -42,23 +41,10 @@ from kumo.engine.connector.identity import (
 )
 from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE, GraphSnapshot
 
-_SCHEDULER_ENV = ('KUMO_SCHEDULER', 'KUMO_JOB_ID', 'KUMO_JOB_RUN_ID',
-                  'TRAINING_JOB_NAME', 'TRAINING_JOB_ARN',
-                  'SNOWFLAKE_SERVICE_NAME', 'DATABRICKS_RUNTIME_VERSION')
-
 
 @pytest.fixture
-def no_scheduler(tmp_path, monkeypatch):
-    for name in _SCHEDULER_ENV:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(provenance, 'PROCESSING_JOB_CONFIG',
-                        tmp_path / 'processingjobconfig.json')
-    return monkeypatch
-
-
-@pytest.fixture
-def make_snapshot(tmp_path, no_scheduler):
-    no_scheduler.setattr('kumo.engine._scratch._root', tmp_path / 'scratch')
+def make_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr('kumo.engine._scratch._root', tmp_path / 'scratch')
     data = tmp_path / 'data'
     data.mkdir()
     pd.DataFrame({'ID': np.arange(5)}).to_parquet(data / 'ents.parquet')
@@ -93,7 +79,8 @@ def test_snapshot_manifest_records_sources_and_diffs(make_snapshot,
     before = make_snapshot(30)
     manifest = before.manifest
 
-    assert manifest.kind == 'graph_snapshot'
+    assert manifest.kind == 'snapshot'
+    assert SNAPSHOT_MANIFEST_FILE == '_provenance.json'
     assert manifest.id == before.id
     data = (tmp_path / 'data').resolve()
     assert {a: e.location
@@ -105,16 +92,16 @@ def test_snapshot_manifest_records_sources_and_diffs(make_snapshot,
             for e in manifest.parents.source_tables.values()
             } == {'timestamp'}
     assert manifest.extra == {}
-    assert before.counts['rows'] == {'ents': 5, 'events': 30}
-    assert before.counts['edges']['events_ENT_ID_to_ents_ID'] == 30
+    assert before._counts['rows'] == {'ents': 5, 'events': 30}
+    assert before._counts['edges']['events_ENT_ID_to_ents_ID'] == 30
     assert manifest.environment.kumo_engine == get_kumo_version()
     assert manifest.environment.diskgraph
-    assert manifest.scheduler is None
+    assert 'scheduler' not in manifest.to_dict()
     assert datetime.fromisoformat(manifest.created_at).tzinfo is not None
     assert str(tmp_path / 'scratch') not in json.dumps(manifest.to_dict())
 
     after = make_snapshot(40)
-    assert after.counts['rows']['events'] == 40
+    assert after._counts['rows']['events'] == 40
     sources = manifest.parents.source_tables
     new_sources = after.manifest.parents.source_tables
     assert new_sources['ents'] == sources['ents']
@@ -135,7 +122,7 @@ def test_index_without_manifest_is_reused_and_backfilled(
 
     assert reused == snapshot
     assert reused.manifest == replace(original, created_at=None,
-                                      environment=None, scheduler=None,
+                                      environment=None,
                                       reconstructed=True)
 
 
@@ -150,29 +137,6 @@ def test_manifest_write_failure_leaves_snapshot_unchanged(
 
     assert snapshot.manifest is None
     assert (snapshot.index_path / '_SUCCESS').is_file()
-
-
-@pytest.mark.parametrize('env, processing, expected', [
-    ({}, None, None),
-    ({'KUMO_SCHEDULER': 'databricks', 'KUMO_JOB_ID': '11',
-      'KUMO_JOB_RUN_ID': '22', 'TRAINING_JOB_NAME': 'ignored'}, None,
-     ('databricks', '11', '22')),
-    ({'KUMO_JOB_RUN_ID': 'run-9', 'TRAINING_JOB_NAME': 'train-1'}, None,
-     ('sagemaker', 'train-1', 'run-9')),
-    ({}, {'ProcessingJobName': 'proc-1', 'ProcessingJobArn': 'arn:proc-1'},
-     ('sagemaker', 'proc-1', 'arn:proc-1')),
-    ({'SNOWFLAKE_SERVICE_NAME': 'JOB_A1'}, None, ('snowflake', None, 'JOB_A1')),
-])
-def test_scheduler_context(no_scheduler, env, processing, expected):
-    for name, value in env.items():
-        no_scheduler.setenv(name, value)
-    if processing is not None:
-        provenance.PROCESSING_JOB_CONFIG.write_text(json.dumps(processing))
-
-    context = provenance.scheduler_context()
-
-    assert context == (expected and SchedulerContext(
-        **dict(zip(('platform', 'job_id', 'job_run_id'), expected))))
 
 
 @pytest.mark.parametrize('content', [

@@ -7,7 +7,7 @@ import json
 import types
 import warnings
 from collections.abc import Mapping as AbcMapping
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -84,6 +84,8 @@ def _typed(hint: Any, value: Any) -> Any:
         return None
     if origin in (Union, types.UnionType):
         return _typed(next(arg for arg in args if arg is not type(None)), value)
+    if isinstance(hint, type) and issubclass(hint, Manifest):
+        return _parent(hint, value)
     if isinstance(hint, type) and issubclass(hint, Record):
         return hint.from_dict(value)
     if origin in (dict, AbcMapping) and args:
@@ -105,13 +107,6 @@ class Environment(Record):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SchedulerContext(Record):
-    platform: str
-    job_id: Optional[str]
-    job_run_id: Optional[str]
-
-
-@dataclass(frozen=True, kw_only=True)
 class SourceTableEntry(Record):
     connector: Optional[str]
     location: Optional[str]
@@ -124,29 +119,75 @@ class SourceTableEntry(Record):
     namespace: Optional[List[Any]] = omit_none()
 
 
+#: The artifact kinds, as manifests and the artifact root name them.
+KINDS = ('snapshot', 'training_table', 'model', 'prediction')
+
+
 @dataclass(frozen=True, kw_only=True)
 class Manifest(Record):
-    kind: str
+    """An artifact's record. A stub (a parent with no record of its own)
+    sets only ``kind``, ``id`` and ``reconstructed``."""
+
+    kind: str = ''
     schema_version: int = SCHEMA_VERSION
     id: str
-    created_at: Optional[str]
-    environment: Optional[Environment]
-    scheduler: Optional[SchedulerContext]
+    created_at: Optional[str] = None
+    environment: Optional[Environment] = None
     reconstructed: Optional[bool] = omit_none()
+
+    #: Fields left out where this manifest is embedded in a child's.
+    EMBED_OMITS = ()
 
 
 def stamp() -> Dict[str, Any]:
     """Envelope fields for a manifest written now."""
-    from kumo.engine._provenance import environment, scheduler_context
+    from kumo.engine._provenance import environment
 
     return dict(
         created_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
-        environment=environment(), scheduler=scheduler_context())
+        environment=environment())
 
 
 #: Envelope fields for a manifest rebuilt after the fact.
 RECONSTRUCTED: Dict[str, Any] = dict(created_at=None, environment=None,
-                                     scheduler=None, reconstructed=True)
+                                     reconstructed=True)
+
+
+def _kinds() -> Dict[str, Type['Manifest']]:
+    found: Dict[str, Type[Manifest]] = {}
+    pending = list(Manifest.__subclasses__())
+    while pending:
+        cls = pending.pop()
+        found[next(str(item.default) for item in fields(cls)
+                   if item.name == 'kind')] = cls
+        pending.extend(cls.__subclasses__())
+    return found
+
+
+def stub(kind: str, id: str) -> 'Manifest':
+    """The manifest of a ``kind`` artifact known only by its ``id``."""
+    return _kinds()[kind](id=id, reconstructed=True)
+
+
+def embedded(manifest: M) -> M:
+    """``manifest`` as a child embeds it: without its statistics and the
+    fields that change after it is written."""
+    return replace(manifest, **{
+        name: None
+        for name in manifest.EMBED_OMITS
+    })
+
+
+def _parent(hint: Type[M], value: Any) -> M:
+    if isinstance(value, str):
+        return hint(id=value, reconstructed=True)
+    try:
+        return hint.from_dict(value)
+    except (AttributeError, TypeError, ValueError, KeyError) as error:
+        identifier = value.get('id') if isinstance(value, AbcMapping) else None
+        warnings.warn(f"Reading an unreadable parent manifest as a stub: "
+                      f"{error}", UserWarning, stacklevel=2)
+        return hint(id=str(identifier), reconstructed=True)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -156,8 +197,11 @@ class SnapshotParents(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class SnapshotManifest(Manifest):
-    kind: str = 'graph_snapshot'
-    parents: SnapshotParents
+    """What a graph snapshot was built from: each source table's connector,
+    location and version, and the engine build that wrote it."""
+
+    kind: str = 'snapshot'
+    parents: Optional[SnapshotParents] = None
     record_sources: Optional[bool] = omit_none()
 
 

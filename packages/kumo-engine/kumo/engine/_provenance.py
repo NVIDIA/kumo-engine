@@ -1,11 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Runtime versions and scheduler job identity recorded in manifests."""
+"""Runtime versions and source tables recorded in manifests."""
 
 import hashlib
-import json
-import os
 import platform
 import subprocess
 import warnings
@@ -13,13 +11,8 @@ from functools import cache
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from kumo.engine._manifest import (
-    Environment,
-    SchedulerContext,
-    SourceTableEntry,
-)
+from kumo.engine._manifest import Environment, SourceTableEntry
 
-PROCESSING_JOB_CONFIG = Path('/opt/ml/config/processingjobconfig.json')
 _LOCATED_CONNECTORS = frozenset(
     {'LOCAL_FILE', 'S3', 'GCS', 'SNOWFLAKE', 'DATABRICKS', 'BIGQUERY'})
 
@@ -69,48 +62,6 @@ def environment() -> Environment:
         torch=installed_distribution_version('torch'),
         python=platform.python_version(),
     )
-
-
-def _context(platform_name: str, job_id: Optional[str],
-             job_run_id: Optional[str]) -> SchedulerContext:
-    return SchedulerContext(platform=platform_name, job_id=job_id,
-                            job_run_id=job_run_id)
-
-
-def _detect() -> Optional[SchedulerContext]:
-    env = os.environ
-    if env.get('TRAINING_JOB_NAME'):
-        return _context('sagemaker', env['TRAINING_JOB_NAME'],
-                        env.get('TRAINING_JOB_ARN'))
-    try:
-        processing = json.loads(PROCESSING_JOB_CONFIG.read_text())
-    except (OSError, ValueError):
-        processing = None
-    if isinstance(processing, dict) and processing.get('ProcessingJobName'):
-        return _context('sagemaker', processing['ProcessingJobName'],
-                        processing.get('ProcessingJobArn'))
-    service = env.get('SNOWFLAKE_SERVICE_NAME')
-    if service:
-        return _context('snowflake', None, service)
-    if env.get('DATABRICKS_RUNTIME_VERSION'):
-        return _context('databricks', None, None)
-    return None
-
-
-def scheduler_context() -> Optional[SchedulerContext]:
-    env = os.environ
-    scheduler = env.get('KUMO_SCHEDULER')
-    job_id = env.get('KUMO_JOB_ID')
-    job_run_id = env.get('KUMO_JOB_RUN_ID')
-    detected = _detect()
-    if scheduler or job_id or job_run_id:
-        if detected is not None and scheduler in (None, '',
-                                                  detected.platform):
-            scheduler = detected.platform
-            job_id = job_id or detected.job_id
-            job_run_id = job_run_id or detected.job_run_id
-        return _context(scheduler or 'other', job_id, job_run_id)
-    return detected
 
 
 def source_location(connector: Any, table_name: str,
