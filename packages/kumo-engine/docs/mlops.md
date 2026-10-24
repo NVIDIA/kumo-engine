@@ -104,7 +104,8 @@ trainer.fit(training_table, snapshot=snapshot,
 ## Experiment tracking
 
 `kumo.MLOps(tracking=...)` records each fit in an experiment tracker: one run
-per fit, one run per hyperparameter-search trial attempt. Tracking is on only
+per fit, with each hyperparameter-search trial attempt as a child run (MLflow)
+or inside the fit run (Snowflake). Tracking is on only
 inside a `kumo.mlops(cfg)` block or for a `fit` given `mlops=cfg`.
 
 ```python
@@ -122,6 +123,25 @@ with kumo.mlops(cfg):
 - MLflow runs go to `MLFLOW_TRACKING_URI`: on Databricks this is automatic; for SageMaker managed MLflow set it to the tracking server ARN with the `sagemaker-mlflow` plugin installed. With nothing configured MLflow writes a local store in the working directory.
 - Per-epoch metrics use step = epoch. After the fit, `tracking.run_id` is the fit run's MLflow run id.
 - The fit's source tables are logged as MLflow run inputs, read from the training table's embedded snapshot manifest (plus a custom training table's source). Databricks tables are logged as Delta tables at the snapshot's Delta version, so Unity Catalog links each table to a model registered from the run; file and object-store sources by URI. Other warehouse tables and Custom SQL sources are not logged as inputs; they stay in the model's `_provenance.json`.
+
+Snowflake records the fit in Snowflake Experiment Tracking (Snowsight: AI & ML
+» Experiments), using a Snowpark session:
+
+```python
+from kumo.engine.integrations.snowflake import SnowflakeTracking  # kumo-engine[snowflake]
+
+cfg = kumo.MLOps(artifact_root="s3://bucket/kumo",
+                 tracking=SnowflakeTracking(session, experiment_name="users_spend"))
+with kumo.mlops(cfg):
+    result = trainer.fit(training_table, snapshot=snapshot)
+```
+
+- Snowflake has no child runs or tags, so trial attempts are logged in the fit run as `trial-1-attempt-1/<name>` params and metrics, and tags are params of the same name.
+- `native_model_lineage=True` links a model the fit publishes through Snowflake lineage.
+- Names beyond Snowflake's 200 metrics and 1000 params per run are counted in `kumo.dropped_metrics` / `kumo.dropped_params`.
+- If a Snowflake run is already active in the process, the fit is not tracked there; an existing run is never resumed (a taken `run_name` gets a suffix).
+- Snowflake Experiment Tracking has no dataset inputs, so source tables are not recorded there.
+- The Snowpark session's parameters are left as they are. After the fit, `tracking.run_id` is the fit run's name.
 
 Runs carry pointers, not lineage:
 

@@ -123,6 +123,14 @@ _BARE_INSTALL = textwrap.dedent('''
         assert "kumo-engine[mlflow]" in str(e), e
     else:
         raise AssertionError("MlflowTracking() needs mlflow")
+
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
+    try:
+        SnowflakeTracking(None, experiment_name="ents")
+    except ImportError as e:
+        assert "kumo-engine[snowflake]" in str(e), e
+    else:
+        raise AssertionError("SnowflakeTracking() needs snowflake-ml-python")
     print("ok")
 ''')
 

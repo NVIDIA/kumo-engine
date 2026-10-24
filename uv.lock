@@ -3687,7 +3687,7 @@ requires-dist = [
     { name = "pyyaml", marker = "extra == 'sdk'" },
     { name = "requests", specifier = ">=2.31" },
     { name = "snowflake-connector-python", specifier = ">=4.3" },
-    { name = "snowflake-ml-python", marker = "extra == 'sdk'" },
+    { name = "snowflake-ml-python", marker = "extra == 'sdk'", specifier = ">=2.0,<3" },
     { name = "snowflake-snowpark-python", marker = "extra == 'sdk'" },
 ]
 provides-extras = ["sdk", "test"]
