@@ -1,6 +1,6 @@
 ---
 name: kumo-training-diagnostics
-description: Evaluate an existing Kumo training run in a Snowflake Python notebook using aggregate metrics, trial results, learning curves, refit evidence, and training progress. Use for model-quality questions or training diagnostics; inspect existing results without automatically tuning, rerunning, or deploying a model.
+description: Evaluate an existing Kumo training run in a Python notebook using aggregate metrics, trial results, learning curves, refit evidence, and training progress. Use for model-quality questions or training diagnostics; inspect existing results without automatically tuning, rerunning, or deploying a model.
 ---
 
 # Kumo evaluation and training diagnostics
