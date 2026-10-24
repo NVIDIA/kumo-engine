@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 import boto3
+import pyarrow
 from pyarrow import fs
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,10 @@ def arrow_connection_options(endpoint_url: str | None, addressing_style: str,
         options['endpoint_override'] = endpoint_url
         options['scheme'] = urlparse(endpoint_url).scheme
     if ca_path:
+        if int(pyarrow.__version__.split('.')[0]) < 21:
+            raise RuntimeError(
+                'A custom CA bundle for S3 needs pyarrow>=21 '
+                f'(installed {pyarrow.__version__})')
         options['tls_ca_file_path'] = ca_path
     return options
 
