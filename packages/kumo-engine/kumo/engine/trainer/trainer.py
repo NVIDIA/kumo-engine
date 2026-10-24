@@ -692,6 +692,7 @@ class Trainer:
 
         return training_result
 
+    @_without_torch_scatter_hint
     def predict(
         self,
         source: Union[GraphSnapshot, PredictionTable, None] = None,
@@ -782,7 +783,6 @@ class Trainer:
                 if entities is None else PredictionTable.from_source_table(
                     entities, pq=query, snapshot=snapshot, plan=plan))
 
-    @_without_torch_scatter_hint
     def _predict(
         self,
         prediction_table: PredictionTable,
