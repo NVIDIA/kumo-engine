@@ -100,3 +100,51 @@ import json
 trainer.fit(training_table, snapshot=snapshot,
             callbacks=[lambda e: print(json.dumps(e.to_dict()))])
 ```
+
+## Experiment tracking
+
+`kumo.MLOps(tracking=...)` records each fit in an experiment tracker: one run
+per fit, one run per hyperparameter-search trial attempt. Tracking is on only
+inside a `kumo.mlops(cfg)` block or for a `fit` given `mlops=cfg`.
+
+```python
+from kumo.engine.integrations.mlflow import MlflowTracking  # kumo-engine[mlflow]
+
+cfg = kumo.MLOps(artifact_root="s3://bucket/kumo",
+                 tracking=MlflowTracking(experiment_name="users-spend"))
+with kumo.mlops(cfg):
+    result = trainer.fit(training_table, snapshot=snapshot)
+```
+
+- Tracking errors are logged as warnings and never fail the fit. Only global rank 0 tracks.
+- Tracker calls run on a background thread, so a slow or unreachable tracking server does not hold up training. At the end of the fit, `fit` waits at most 30 s for tracking to finish; the rest continues in the background.
+- During the fit, MLflow HTTP calls use 2 retries and a 30 s timeout unless `MLFLOW_HTTP_REQUEST_MAX_RETRIES` / `MLFLOW_HTTP_REQUEST_TIMEOUT` are set.
+- MLflow runs go to `MLFLOW_TRACKING_URI`: on Databricks this is automatic; for SageMaker managed MLflow set it to the tracking server ARN with the `sagemaker-mlflow` plugin installed. With nothing configured MLflow writes a local store in the working directory.
+- Per-epoch metrics use step = epoch. After the fit, `tracking.run_id` is the fit run's MLflow run id.
+- The fit's source tables are logged as MLflow run inputs, read from the training table's embedded snapshot manifest (plus a custom training table's source). Databricks tables are logged as Delta tables at the snapshot's Delta version, so Unity Catalog links each table to a model registered from the run; file and object-store sources by URI. Other warehouse tables and Custom SQL sources are not logged as inputs; they stay in the model's `_provenance.json`.
+
+Runs carry pointers, not lineage:
+
+| tag | on | value |
+|---|---|---|
+| `kumo.kind` | every run | `fit` or `trial` |
+| `kumo.run_id` | every run | the kumo fit run id (trials: `<fit run id>-trial-<n>-attempt-<m>`) |
+| `kumo.bundle_id` | a finished fit run | the model's bundle id (`models/<bundle id>/` under the artifact root) |
+| `kumo.parent_run`, `kumo.status`, `kumo.error` | trial runs; `kumo.error` also on a failed fit | outcome |
+
+The model's `_provenance.json` records the tracked fit as `tracking.run_id`
+(the `kumo.run_id` tag) and is logged on the fit run with `query.pql` and
+`model_plan.json`.
+
+Other systems plug in through the `kumo.engine.tracking.Tracking` protocol,
+which receives ready-built `RunRecord`s so every tracker records the same
+names: `start(record)` with the fit run, `on_trial(record, event)` with a trial
+attempt's run after each of its events, and `finish(record, error)` with the
+fit run's final record (`None` when tracking stopped early). A tracker that
+raises is not called again for that fit and its run is ended as failed.
+Optional members: `prepare()`, `tags`, and the best-effort hooks `log_model`,
+`log_prediction_run` and `log_monitoring`. Params are the resolved model plan
+(fit) or searched hyperparameters and `attempt` (trial). `RunRecord.inputs`
+maps each source table to its `connector`, `location`, `version` and
+`version_kind`. A tracker's `tags=` are added as given, except `kumo.*` names
+and param names.

@@ -58,6 +58,7 @@ from kumo.engine._embeddings import (
 from kumo.engine._events import Event, EventEmitter, query_sha256
 from kumo.engine._manifest import ModelManifest
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
+from kumo.engine._tracking import FitContext, TrackingSession, fit_inputs
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
@@ -417,7 +418,8 @@ class Trainer:
                 architecture; they support prediction but are unreliable
                 warm-start sources.
             mlops: a `kumo.MLOps`; with MLOps on (this or a `kumo.mlops`
-                block), the bundle is also stored under the artifact root.
+                block), the bundle is also stored under the artifact root and
+                the fit is recorded by its ``tracking``.
             callbacks: called with each progress
                 `kumo.engine.tracking.Event`; a callback that raises is logged
                 and not called again.
@@ -435,7 +437,11 @@ class Trainer:
 
         settings = resolve(mlops)
         run_id = f'{self._id}-fit-{new_run_id()}'
-        events = EventEmitter(run_id, callbacks)
+        session = TrackingSession(
+            None if settings is None else settings.tracking)
+        events = EventEmitter(
+            run_id,
+            [*callbacks, session.on_event] if session.enabled else callbacks)
         fit_start = time.monotonic()
         try:
             started = {
@@ -449,16 +455,19 @@ class Trainer:
             result = self._fit(train_table, snapshot=snapshot,
                                export_config=export_config,
                                warm_start=warm_start, run_id=run_id,
-                               events=events, settings=settings)
+                               events=events, settings=settings,
+                               tracking=session)
         except BaseException as error:
             events.emit('fit_ended', params={
                 'status': 'failed',
                 'error': format_error(error),
             })
+            session.finish(None, error)
             raise
         events.emit('fit_ended', metrics={
             **result.metrics, 'seconds': time.monotonic() - fit_start
         }, params={'status': 'succeeded'})
+        session.finish(result, None)
         return result
 
     def _fit(
@@ -471,12 +480,13 @@ class Trainer:
         run_id: str,
         events: EventEmitter,
         settings: Optional[Any],
+        tracking: TrackingSession,
     ) -> TrainingResult:
         from kumo_core.automl.runtime import (
             inherit_warm_start_model_plan,
             validate_warm_start_task_type,
         )
-        from kumo_core.io.json import load_json
+        from kumo_core.io.json import load_json, to_json_dict
         from kumo_core.training.orchestration import (
             CallableTrainingOptions,
             ResolvedTrainingInput,
@@ -601,6 +611,12 @@ class Trainer:
             tt_id=ingest_tt_id,
         )
         del task_dataset
+        tracking.start(lambda: FitContext(
+            run_id=run_id,
+            query=train_table.query,
+            model_plan=to_json_dict(materialized.model_plan),
+            inputs=fit_inputs(train_table.manifest),
+        ))
         training_input = ResolvedTrainingInput(
             task=materialized.task,
             model_plan=materialized.model_plan,
@@ -664,7 +680,8 @@ class Trainer:
                 warm_start=None if warm_start is None else parent_model(
                     warm_start._training_result.bundle_dir,
                     warm_start_bundle_id),
-                started_at=started_at, fit_mode=fit_mode),
+                started_at=started_at, fit_mode=fit_mode,
+                tracked_run_id=run_id if tracking.enabled else None),
             settings=settings,
         )
 

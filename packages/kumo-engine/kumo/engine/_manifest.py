@@ -239,6 +239,11 @@ class FitTiming(Record):
 
 
 @dataclass(frozen=True, kw_only=True)
+class TrackingRef(Record):
+    run_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class ModelManifest(Manifest):
     """How a model bundle was fitted: from which training table (embedded,
     with its snapshot) and warm-start model, when, and with which fit
@@ -248,6 +253,9 @@ class ModelManifest(Manifest):
     parents: Optional[ModelParents] = None
     fit: Optional[FitTiming] = None
     fit_mode: Optional[str] = None
+    tracking: Optional[TrackingRef] = omit_none()
+
+    EMBED_OMITS = ('tracking', )
 
 
 def write_manifest(path: Path, manifest: Manifest) -> None:

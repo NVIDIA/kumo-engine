@@ -26,6 +26,7 @@ OPTIONAL_THIRD_PARTY = (
     's3fs',
     'google',
     'gcsfs',
+    'mlflow',
 )
 PROVIDER_PACKAGES = (
     'kumo_snowflake',
@@ -114,6 +115,14 @@ _BARE_INSTALL = textwrap.dedent('''
                 # and only the stand-in `self` is missing. Fine: nothing
                 # broke at import time.
                 pass
+
+    from kumo.engine.integrations.mlflow import MlflowTracking
+    try:
+        MlflowTracking()
+    except ImportError as e:
+        assert "kumo-engine[mlflow]" in str(e), e
+    else:
+        raise AssertionError("MlflowTracking() needs mlflow")
     print("ok")
 ''')
 
