@@ -3224,11 +3224,16 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "faiss-gpu" },
+    { name = "faiss-cpu", marker = "sys_platform != 'linux' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests')" },
+    { name = "faiss-gpu", marker = "sys_platform == 'linux' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests')" },
     { name = "packaging" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ty" },
+]
+faiss = [
+    { name = "faiss-cpu", marker = "sys_platform != 'linux' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests')" },
+    { name = "faiss-gpu", marker = "sys_platform == 'linux' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests')" },
 ]
 faiss-cpu = [
     { name = "faiss-cpu" },
@@ -3237,7 +3242,8 @@ faiss-gpu = [
     { name = "faiss-gpu" },
 ]
 test = [
-    { name = "faiss-gpu" },
+    { name = "faiss-cpu", marker = "sys_platform != 'linux' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests')" },
+    { name = "faiss-gpu", marker = "sys_platform == 'linux' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests')" },
     { name = "packaging" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -3249,10 +3255,14 @@ text = [
 [package.metadata]
 requires-dist = [
     { name = "diskgraph", editable = "packages/diskgraph" },
+    { name = "faiss-cpu", marker = "sys_platform != 'linux' and extra == 'dev'", specifier = "==1.14.3" },
+    { name = "faiss-cpu", marker = "sys_platform != 'linux' and extra == 'faiss'", specifier = "==1.14.3" },
+    { name = "faiss-cpu", marker = "sys_platform != 'linux' and extra == 'test'", specifier = "==1.14.3" },
     { name = "faiss-cpu", marker = "extra == 'faiss-cpu'", specifier = "==1.14.3" },
-    { name = "faiss-gpu", marker = "extra == 'dev'", specifier = "==1.14.3" },
+    { name = "faiss-gpu", marker = "sys_platform == 'linux' and extra == 'dev'", specifier = "==1.14.3" },
+    { name = "faiss-gpu", marker = "sys_platform == 'linux' and extra == 'faiss'", specifier = "==1.14.3" },
+    { name = "faiss-gpu", marker = "sys_platform == 'linux' and extra == 'test'", specifier = "==1.14.3" },
     { name = "faiss-gpu", marker = "extra == 'faiss-gpu'", specifier = "==1.14.3" },
-    { name = "faiss-gpu", marker = "extra == 'test'", specifier = "==1.14.3" },
     { name = "filelock", specifier = ">=3.13.1" },
     { name = "fsspec", specifier = ">=2023.5.0" },
     { name = "kumo-api", editable = "packages/kumo-api" },
@@ -3284,7 +3294,7 @@ requires-dist = [
     { name = "ty", marker = "extra == 'dev'", specifier = "==0.0.23" },
     { name = "typing-extensions", specifier = ">=4.12.2" },
 ]
-provides-extras = ["faiss-cpu", "faiss-gpu", "text", "test", "dev"]
+provides-extras = ["faiss", "faiss-cpu", "faiss-gpu", "text", "test", "dev"]
 
 [[package]]
 name = "kumo-databricks"
@@ -3322,8 +3332,8 @@ provides-extras = ["test"]
 name = "kumo-engine"
 source = { editable = "packages/kumo-engine" }
 dependencies = [
-    { name = "faiss-cpu", marker = "sys_platform == 'darwin' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests')" },
-    { name = "faiss-gpu", marker = "sys_platform == 'linux' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests')" },
+    { name = "faiss-cpu", marker = "sys_platform != 'linux' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests')" },
+    { name = "faiss-gpu", marker = "sys_platform == 'linux' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests')" },
     { name = "filelock" },
     { name = "kumo-api" },
     { name = "kumo-core" },
@@ -3371,7 +3381,7 @@ requires-dist = [
     { name = "boto3", marker = "extra == 'test'", specifier = ">=1.34,<2" },
     { name = "botocore", marker = "extra == 'test'", specifier = ">=1.34,<2" },
     { name = "diskgraph", marker = "extra == 'test'", editable = "packages/diskgraph" },
-    { name = "faiss-cpu", marker = "sys_platform == 'darwin'", specifier = "==1.14.3" },
+    { name = "faiss-cpu", marker = "sys_platform != 'linux'", specifier = "==1.14.3" },
     { name = "faiss-gpu", marker = "sys_platform == 'linux'", specifier = "==1.14.3" },
     { name = "filelock", specifier = ">=3.0.0" },
     { name = "kumo-api", editable = "packages/kumo-api" },

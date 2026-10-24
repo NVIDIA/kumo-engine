@@ -808,14 +808,34 @@ fn validate_committed_shard_files(output_dir: &Path, commit: &IndexShardCommit) 
 }
 
 fn sync_file_len(path: &Path) -> Result<u64> {
-    let file = fs::File::open(path).with_context(|| format!("open {} for sync", path.display()))?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    // Windows FlushFileBuffers requires GENERIC_WRITE on the file handle.
+    #[cfg(windows)]
+    options.write(true);
+    let file = options
+        .open(path)
+        .with_context(|| format!("open {} for sync", path.display()))?;
     file.sync_all()
         .with_context(|| format!("sync completed shard file {}", path.display()))?;
     Ok(file.metadata()?.len())
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
-    fs::File::open(path)
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        // CreateFile requires this flag to open a directory, and
+        // FlushFileBuffers requires write access. Keep flush failures fatal:
+        // unsupported filesystems must not silently weaken shard durability.
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        options.write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    options
+        .open(path)
         .and_then(|dir| dir.sync_all())
         .with_context(|| format!("sync directory {}", path.display()))
 }
@@ -1914,6 +1934,38 @@ fn load_pk_hash_table(
 #[cfg(test)]
 mod scratch_cleanup_tests {
     use super::*;
+
+    #[test]
+    fn sync_completed_file_preserves_contents() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("offsets.bin");
+        let contents = b"completed shard offsets";
+        fs::write(&path, contents).unwrap();
+
+        assert_eq!(sync_file_len(&path).unwrap(), contents.len() as u64);
+        assert_eq!(fs::read(&path).unwrap(), contents);
+    }
+
+    #[test]
+    fn sync_missing_file_does_not_create_it() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("missing.bin");
+
+        assert!(sync_file_len(&path).is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn sync_directory_flushes_completed_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("completed.bin");
+        fs::write(&path, b"completed").unwrap();
+        sync_file_len(&path).unwrap();
+
+        sync_directory(root.path()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"completed");
+        assert!(sync_directory(&root.path().join("missing")).is_err());
+    }
 
     #[test]
     fn committed_shard_requires_durable_marker_and_matching_files() {

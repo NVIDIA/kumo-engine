@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ntpath
 import os.path as osp
+import posixpath
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -93,12 +95,32 @@ def hash_prediction_config(path: str, *, _storage=_LOCAL_STORAGE) -> str:
     return digest.hexdigest()
 
 
+def _join_path(root: str, *parts: str) -> str:
+    # URI object keys retain POSIX separators and literal backslashes on every
+    # host. Drive-qualified filesystem paths are not URI schemes.
+    if not ntpath.splitdrive(root)[0] and urlsplit(root).scheme:
+        return posixpath.join(root, *parts)
+    return osp.join(root, *parts)
+
+
 def _canonical_coordinate(path: str) -> tuple[str, str, str]:
+    # A drive-qualified local path is not a URI with scheme "c".
+    if len(ntpath.splitdrive(path)[0]) == 2 and ntpath.isabs(path):
+        normalized = ntpath.normpath(path).replace('\\', '/')
+        return "local", "", normalized[0].casefold() + normalized[1:]
     split = urlsplit(path)
     if split.scheme:
-        normalized = osp.normpath('/' + split.path.lstrip('/'))
+        uri_path = split.path
+        if split.scheme.casefold() == 'file':
+            uri_path = uri_path.replace(osp.sep, '/')
+            # Drive letters are insensitive; directory names may be sensitive.
+            if len(uri_path) >= 4 and uri_path[0] == '/' and uri_path[2:4] == ':/':
+                uri_path = '/' + uri_path[1].casefold() + uri_path[2:]
+        # Remote object keys use POSIX separators even on Windows. A literal
+        # backslash must never turn an adjacent object into an owned child.
+        normalized = posixpath.normpath('/' + uri_path.lstrip('/'))
         return split.scheme.casefold(), split.netloc.casefold(), normalized
-    return "local", "", osp.abspath(path)
+    return "local", "", osp.abspath(path).replace(osp.sep, '/')
 
 
 def require_owned_path(path: str, root: str) -> None:
@@ -165,8 +187,8 @@ class PredictionArtifactInventory:
         )
 
     def validate(self, generation_root: str) -> None:
-        expected_root = osp.join(generation_root,
-                                 self.artifact_type.output_file_name)
+        expected_root = _join_path(generation_root,
+                                   self.artifact_type.output_file_name)
         if self.root != expected_root:
             raise ValueError("Prediction artifact root is misbound")
         if self.file_count < 0:
@@ -279,9 +301,9 @@ class PredictionShardManifest:
             raise ValueError("Prediction runtime shard identity is invalid")
         if not 0 <= self.output_partition_start < self.output_partition_stop:
             raise ValueError("Prediction output partition range is invalid")
-        expected_generation = osp.join(self.canonical_output_root, "_attempts",
-                                       f"runtime-{self.runtime_shard_id:05d}",
-                                       self.attempt_id)
+        expected_generation = _join_path(self.canonical_output_root, "_attempts",
+                                         f"runtime-{self.runtime_shard_id:05d}",
+                                         self.attempt_id)
         if self.generation_root != expected_generation:
             raise ValueError("Prediction generation root is misbound")
         expected = tuple(
@@ -416,9 +438,9 @@ class PredictionSelectionManifest:
                 not _DIGEST.fullmatch(item)
                 for item in self.shard_manifest_sha256s):
             raise ValueError("Prediction shard digest set is invalid")
-        expected_control_root = osp.join(self.canonical_output_root,
-                                         "_selections", self.selection_id,
-                                         "attempts", self.selection_attempt_id)
+        expected_control_root = _join_path(self.canonical_output_root,
+                                           "_selections", self.selection_id,
+                                           "attempts", self.selection_attempt_id)
         if self.selection_root != expected_control_root:
             raise ValueError("Prediction selection control root is misbound")
         types = [item.artifact_type for item in self.artifacts]
@@ -435,7 +457,7 @@ class PredictionSelectionManifest:
                 raise ValueError("Selected prediction aggregate is invalid")
             for root in artifact.roots:
                 require_owned_path(
-                    root, osp.join(self.canonical_output_root, "_attempts"))
+                    root, _join_path(self.canonical_output_root, "_attempts"))
                 if root in all_roots:
                     raise ValueError("Selected prediction root is duplicated")
                 all_roots.add(root)
@@ -473,7 +495,7 @@ def _write_manifest(path: str, value: Mapping[str, Any], limit: int, *,
 def publish_shard_manifest(manifest: PredictionShardManifest, *,
                            _storage=_LOCAL_STORAGE) -> PredictionManifestRef:
     manifest.validate()
-    path = osp.join(manifest.generation_root, "_artifact_manifest.json")
+    path = _join_path(manifest.generation_root, "_artifact_manifest.json")
     encoded = _write_manifest(path, manifest.to_dict(),
                               PREDICTION_SHARD_MANIFEST_MAX_BYTES,
                               _storage=_storage)
@@ -616,10 +638,10 @@ def publish_prediction_selection(
         raise ValueError("Prediction runtime shard reference set is invalid")
     digests = tuple(refs_by_runtime[index].sha256
                     for index in range(expected_shards))
-    selection_root = osp.join(canonical_output_root, "_selections",
-                              selection_id, "attempts", selection_attempt_id)
-    manifest_path = osp.join(selection_root, "_selection_manifest.json")
-    pointer_path = osp.join(canonical_output_root, "_selected_artifacts.json")
+    selection_root = _join_path(canonical_output_root, "_selections",
+                                selection_id, "attempts", selection_attempt_id)
+    manifest_path = _join_path(selection_root, "_selection_manifest.json")
+    pointer_path = _join_path(canonical_output_root, "_selected_artifacts.json")
 
     if _storage.fs.exists(pointer_path):
         current = load_current_prediction_selection_metadata(
@@ -774,10 +796,10 @@ def load_prediction_selection(
         raise ValueError("Prediction selection manifest changed")
     manifest = PredictionSelectionManifest.from_dict(value)
     manifest.validate()
-    expected_path = osp.join(manifest.canonical_output_root, "_selections",
-                             manifest.selection_id, "attempts",
-                             manifest.selection_attempt_id,
-                             "_selection_manifest.json")
+    expected_path = _join_path(manifest.canonical_output_root, "_selections",
+                               manifest.selection_id, "attempts",
+                               manifest.selection_attempt_id,
+                               "_selection_manifest.json")
     if (manifest.job_id != ref.job_id
             or manifest.selection_id != ref.selection_id
             or manifest.selection_attempt_id != ref.selection_attempt_id
@@ -792,7 +814,7 @@ def load_prediction_selection(
 def _load_current_prediction_selection(
         canonical_output_root: str, *, validate_objects: bool,
         _storage=_LOCAL_STORAGE) -> PredictionSelectionManifest:
-    pointer_path = osp.join(canonical_output_root, "_selected_artifacts.json")
+    pointer_path = _join_path(canonical_output_root, "_selected_artifacts.json")
     pointer = _read_selection_pointer(pointer_path, _storage=_storage)
     if int(pointer.get("schema_version",
                        -1)) != PREDICTION_ARTIFACT_MANIFEST_VERSION:
@@ -810,10 +832,10 @@ def _load_current_prediction_selection(
         raise ValueError("Prediction selection pointer is stale")
     manifest = PredictionSelectionManifest.from_dict(value)
     manifest.validate()
-    expected_path = osp.join(canonical_output_root, "_selections",
-                             manifest.selection_id, "attempts",
-                             manifest.selection_attempt_id,
-                             "_selection_manifest.json")
+    expected_path = _join_path(canonical_output_root, "_selections",
+                               manifest.selection_id, "attempts",
+                               manifest.selection_attempt_id,
+                               "_selection_manifest.json")
     if (manifest.canonical_output_root != canonical_output_root
             or manifest.job_id != str(pointer["job_id"])
             or manifest.selection_id != str(pointer["selection_id"])
@@ -848,7 +870,7 @@ def current_prediction_selection_ref(
         _storage=_LOCAL_STORAGE) -> PredictionSelectionRef:
     manifest = load_current_prediction_selection_metadata(
         canonical_output_root, _storage=_storage)
-    pointer_path = osp.join(canonical_output_root, "_selected_artifacts.json")
+    pointer_path = _join_path(canonical_output_root, "_selected_artifacts.json")
     return _selection_ref_from_pointer(
         pointer_path, _read_selection_pointer(pointer_path, _storage=_storage),
         manifest)
@@ -874,7 +896,7 @@ def inventory_generation(
         raise ValueError("Empty prediction shard has artifact stats")
     result = []
     for artifact_type in expected:
-        root = osp.join(generation_root, artifact_type.output_file_name)
+        root = _join_path(generation_root, artifact_type.output_file_name)
         stats = stats_by_type.get(artifact_type)
         if stats is None:
             result.append(

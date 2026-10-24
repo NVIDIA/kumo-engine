@@ -7,6 +7,7 @@ use crate::layout::{
 };
 use anyhow::Result;
 use diskgraph_core::errors::DiskgraphError;
+#[cfg(unix)]
 use libc::madvise;
 use memmap2::Mmap;
 use std::fs::File;
@@ -126,6 +127,7 @@ impl ShardReader {
     }
 }
 
+#[cfg(unix)]
 fn advise_random(map: &Mmap) {
     let ret = unsafe {
         madvise(
@@ -138,6 +140,9 @@ fn advise_random(map: &Mmap) {
         let _ = std::io::Error::last_os_error();
     }
 }
+
+#[cfg(windows)]
+fn advise_random(_map: &Mmap) {}
 
 pub(crate) fn decode_offset(
     offsets: &[u8],
