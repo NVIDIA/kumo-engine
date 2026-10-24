@@ -154,7 +154,7 @@ def test_an_existing_run_is_never_resumed(fake, taken, caplog):
     assert set(user.runs) == {taken, new}
     assert user.runs[taken]['params'] == {}
     assert user.runs[new]['status'] == 'FINISHED'
-    assert 'recording this fit as' in caplog.text
+    assert 'recording this run as' in caplog.text
 
 
 def test_metric_and_param_limits(fake, monkeypatch):

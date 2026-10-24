@@ -411,6 +411,35 @@ class TrackingSession:
             _abandon(tracker)
 
 
+def log_run(tracking: Any, hook: str, record: RunRecord) -> None:
+    r"""Log a standalone run with ``tracking.<hook>(record)`` on a tracking
+    thread, waiting up to `FINISH_SECONDS`; never raises."""
+    method = getattr(tracking, hook, None)
+    if method is None or _rank() != 0:
+        return
+
+    def log() -> None:
+        try:
+            method(record)
+        except Exception:
+            logger.warning('Experiment tracking failed; the %s run is not '
+                           'tracked', record.tags.get('kumo.kind'),
+                           exc_info=True)
+
+    try:
+        getattr(tracking, 'prepare', _none)()
+    except Exception:
+        logger.warning('Experiment tracking failed', exc_info=True)
+        return
+    worker = threading.Thread(target=log, name='kumo-tracking', daemon=True)
+    worker.start()
+    worker.join(FINISH_SECONDS)
+    if worker.is_alive():
+        logger.warning(
+            'Experiment tracking did not finish within %ss; it goes on in '
+            'the background', FINISH_SECONDS)
+
+
 def _none(*args: Any) -> None:
     return None
 

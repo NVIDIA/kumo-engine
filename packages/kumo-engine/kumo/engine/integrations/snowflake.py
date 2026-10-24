@@ -95,7 +95,8 @@ class SnowflakeTracking:
         elif (not hasattr(tracking, '_run') or tracking._run is not None
               or getattr(tracking, '_session', None) is not self.session):
             logger.warning('Snowflake ExperimentTracking is in use in this '
-                           'process; this fit is not tracked in Snowflake')
+                           'process; this %s run is not tracked in Snowflake',
+                           record.tags.get('kumo.kind'))
             return
         self._tracking = tracking
         database = self.database or self.session.get_current_database()
@@ -105,14 +106,19 @@ class SnowflakeTracking:
                                              database_name=database,
                                              schema_name=schema or 'PUBLIC')
         self._run = tracking.start_run(
-            self._new_run_name(tracking, experiment.name,
-                               record.tags['kumo.run_id']))
+            self._new_run_name(
+                tracking, experiment.name, record.tags['kumo.run_id'],
+                f'"{record.name}"' if record.name else self.run_name))
         self.run_id = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)
         self._log_params({**record.params, **record.tags})
         self._log_artifacts(record.artifacts)
+
+    def log_monitoring(self, record: RunRecord) -> None:
+        self.start(record)
+        self.finish(record, None)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         if self._run is None:
@@ -161,9 +167,9 @@ class SnowflakeTracking:
                 self._run_context.close()
                 self._reset()
 
-    def _new_run_name(self, tracking: Any, experiment: Any,
-                      run_id: str) -> Optional[str]:
-        if self.run_name is None:
+    def _new_run_name(self, tracking: Any, experiment: Any, run_id: str,
+                      run_name: Optional[str]) -> Optional[str]:
+        if run_name is None:
             return None
         # start_run(name) resumes, or raises on, any run matching name as a
         # SQL LIKE pattern and cannot create an existing run, so pick a name
@@ -174,16 +180,16 @@ class SnowflakeTracking:
                 experiment_name=experiment)
         ]
         short = run_id.rsplit('-', 1)[-1]
-        for name in (self.run_name, _suffixed(self.run_name, short[:8]),
-                     _suffixed(self.run_name, short)):
+        for name in (run_name, _suffixed(run_name, short[:8]),
+                     _suffixed(run_name, short)):
             if not _taken(name, existing):
                 break
         else:
             name = None
-        if name != self.run_name:
+        if name != run_name:
             logger.warning(
                 'Snowflake run %s already exists in experiment %s; recording '
-                'this fit as %s', self.run_name, self.experiment_name,
+                'this run as %s', run_name, self.experiment_name,
                 name or 'a generated run name')
         return name
 

@@ -1018,7 +1018,7 @@ fn accumulate_by_class(
 type RowGroupStats = (FileColStats, ByClassStats, Vec<IntegerRange>);
 
 /// The row group's batches of the projected columns and `keys`.
-fn row_group_batches(
+pub(crate) fn row_group_batches(
     path: &Path,
     row_group: usize,
     parquet_indices: &[usize],

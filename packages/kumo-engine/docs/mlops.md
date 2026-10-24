@@ -265,3 +265,94 @@ Pick one per registered model, since the two store different formats. Both recor
 | SageMaker | not available | SageMaker managed MLflow (`MLFLOW_TRACKING_URI` = tracking server ARN) |
 | Snowflake | `SnowflakeConnector` (Snowflake Model Registry) | not available |
 | Plain VM | not available (store under the artifact root instead) | any MLflow tracking server |
+
+## Monitoring prediction runs
+
+### Realized performance
+
+`trainer.evaluate(result, snapshot=newer_snapshot)` regenerates the query's labels at the run's anchors on a newer snapshot, joins them with the run's predictions on `ENTITY` (and `ANCHOR_TIMESTAMP`), and returns an `EvaluationResult`:
+- `metrics`, with the fit-time `test_*` definitions: binary `auroc`/`ap` (exact, scores compared at float32 precision); regression `mae`/`rmse`; multiclass `acc` of the top-scored `CLASS`; link prediction `map@k`/`precision@k`, with `k` the classes returned per entity and anchor;
+- `rows`, `labelled` and `labelled_fraction` (for link prediction, the share of entities with any future link);
+- `matured`: `False` while the label window ends after the latest event of the query's target tables; `None` for static queries, which read labels at the snapshot;
+- `bundle_matches`, comparing the run's model with the trainer's;
+- `actuals`, a Parquet directory of the evaluated rows next to the run: `ENTITY`, `ANCHOR_TIMESTAMP` (the run's prediction time for static queries), the prediction (`True_PROB` and the predicted label `TARGET_PRED`; `TARGET_PRED`; or the top `CLASS` and its `SCORE`) and the label `TARGET`.
+
+`evaluation.export(PredictionOutputConfig(...))` copies the evaluated rows to a table or directory. The join runs in DiskGraph: both sides stream from Parquet and are hash-partitioned, so memory follows the partition size rather than the run size. `evaluate` never refuses; a failed step leaves `metrics` empty with a `reasons` entry.
+
+### Score drift
+
+`trainer.score_drift(result, previous=None, snapshot=None, training_snapshot=None)` returns a `DriftReport` comparing the run's scores with the model's holdout (`psi`, `ks`, `wasserstein`) and with a previous run (`previous_*`), plus per-table row and per-edge count changes between the training and scoring snapshots. The statistics are read off the recorded percentile curves (min, q01..q99, max; linear in between), with no pass over the data:
+
+| statistic | definition | error from the curves |
+|---|---|---|
+| `psi` | population stability over the baseline's deciles | — |
+| `ks` | largest gap between the two CDFs | ≤ 0.02 + 2× the sketch's rank error |
+| `wasserstein` | mean absolute gap between the two quantile functions, in score units | ≤ 0.01 × (sum of both score ranges) + sketch error |
+
+`wasserstein` is comparable over time for probabilities and scale-dependent for regression. Missing records leave a field `None` with a `reasons` entry.
+
+### Tracking
+
+With MLOps tracking on (`kumo.MLOps(tracking=...)`), each `evaluate` and `score_drift` call logs a new run in the tracker's experiment, tagged `kumo.kind=monitoring`, `kumo.prediction_run=<prediction id>` and `kumo.bundle_id`, with the metrics, the drift statistics and the input count changes. MLflow also tags the prediction run with `kumo.monitored=<monitoring run id>`.
+
+### Monitoring in a later job
+
+Export the run to a Parquet directory and load it back:
+
+```python
+from kumo.engine import PredictionResult, Trainer
+
+trainer = Trainer.load_from_connector(store, path="models/<bundle id>")
+run = PredictionResult.load_from_connector(store, path="predictions/2024-06-01/")
+report = trainer.evaluate(run, snapshot=newer_snapshot)
+drift = trainer.score_drift(run)
+```
+
+`load_from_connector` requires the export's `_SUCCESS` marker and fetches only its `_provenance.json`; `score_drift` needs nothing else. The Parquet parts are downloaded in parallel when `evaluate` (or `files`) first reads them, into a scratch directory removed with the result.
+
+### Warehouse model monitors
+
+Both recipes monitor the evaluated rows, exported to a warehouse table. Neither platform monitors link prediction or ranking outputs.
+
+**Databricks (Data Quality Monitoring, inference log; databricks-sdk ≥ 0.68).** Export to a Unity Catalog Delta table (change data feed recommended), add the model id, and create the monitor:
+
+```python
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.dataquality import (
+    AggregationGranularity, DataProfilingConfig, InferenceLogConfig,
+    InferenceProblemType, Monitor, Refresh)
+
+evaluation.export(PredictionOutputConfig(dbx, PredictionArtifactType.PREDICTIONS, "c.s.churn_evaluated"))
+spark.sql("ALTER TABLE c.s.churn_evaluated ADD COLUMN model_id STRING")
+spark.sql(f"UPDATE c.s.churn_evaluated SET model_id = '{evaluation.bundle_id}'")
+
+w = WorkspaceClient()
+table_id = w.tables.get("c.s.churn_evaluated").table_id
+w.data_quality.create_monitor(monitor=Monitor(
+    object_type="table", object_id=table_id,
+    data_profiling_config=DataProfilingConfig(
+        output_schema_id=w.schemas.get("c.s").schema_id,
+        assets_dir="/Workspace/Users/<you>/monitoring",
+        inference_log=InferenceLogConfig(
+            problem_type=InferenceProblemType.INFERENCE_PROBLEM_TYPE_CLASSIFICATION,
+            prediction_column="TARGET_PRED", label_column="TARGET",
+            model_id_column="model_id", timestamp_column="ANCHOR_TIMESTAMP",
+            granularities=[AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY]))))
+w.data_quality.create_refresh(object_type="table", object_id=table_id, refresh=Refresh())
+```
+
+For regression use `INFERENCE_PROBLEM_TYPE_REGRESSION`; for multiclass, `prediction_column="CLASS"`. The inference log has no probability column, so `True_PROB` is profiled as an ordinary column.
+
+**Snowflake (Model Monitor).** The model must be a Snowflake Model Registry version, so fit with `kumo.MLOps(registry=ModelOutputConfig(sf, location=...))`. The baseline is the holdout's evaluated rows, `training_result.holdout_df()` (written with `session.write_pandas`); the source is each run's evaluated rows:
+
+```sql
+CREATE MODEL MONITOR churn_monitor WITH
+  MODEL=churn VERSION=v3 FUNCTION=predict
+  SOURCE=churn_evaluated BASELINE=churn_holdout_evaluated
+  WAREHOUSE=wh REFRESH_INTERVAL='1 day' AGGREGATION_WINDOW='1 day'
+  TIMESTAMP_COLUMN=ANCHOR_TIMESTAMP ID_COLUMNS=(ENTITY)
+  PREDICTION_SCORE_COLUMNS=(True_PROB) ACTUAL_CLASS_COLUMNS=(TARGET);
+```
+
+- Binary classification: `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; multiclass: `PREDICTION_CLASS_COLUMNS=(CLASS)` with `ACTUAL_CLASS_COLUMNS`; regression: `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`.
+- The timestamp must be `TIMESTAMP_NTZ`, the columns free of nulls, NaN and infinities, and each column used once. Without `BASELINE` there is no drift.

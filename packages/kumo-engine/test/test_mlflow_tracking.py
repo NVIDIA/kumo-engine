@@ -314,3 +314,32 @@ def test_fit_inputs_come_from_the_embedded_parents():
             'training_table': {**entry, 'version': None}}
     assert fit_inputs(stub('model', 'm')) == {}
     assert fit_inputs(None) == {}
+
+
+def test_a_monitoring_run_is_new_and_tags_its_prediction_run(tracking_uri):
+    from kumo.engine._tracking import RunRecord, log_run
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    client = mlflow.MlflowClient()
+    experiment = client.create_experiment('scores')
+    predicted = client.create_run(experiment, tags={
+        'kumo.kind': 'prediction', 'kumo.run_id': 'pred-1'
+    }).info.run_id
+    client.set_terminated(predicted)
+
+    log_run(
+        MlflowTracking(experiment_name='scores', log_system_metrics=False),
+        'log_monitoring',
+        RunRecord(name='monitor-pred-1', metrics={'psi': 0.1, 'ks': 0.2},
+                  tags={'kumo.kind': 'monitoring', 'kumo.run_id': 'm-1',
+                        'kumo.prediction_run': 'pred-1',
+                        'kumo.bundle_id': 'b'}))
+
+    monitor, = [run for run in _runs(client)
+                if run.data.tags['kumo.kind'] == 'monitoring']
+    assert monitor.info.run_name == 'monitor-pred-1'
+    assert monitor.info.status == 'FINISHED'
+    assert monitor.data.metrics == {'psi': 0.1, 'ks': 0.2}
+    assert monitor.data.tags['kumo.prediction_run'] == 'pred-1'
+    assert client.get_run(predicted).data.tags['kumo.monitored'] == (
+        monitor.info.run_id)

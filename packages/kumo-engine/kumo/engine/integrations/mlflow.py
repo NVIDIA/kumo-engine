@@ -142,7 +142,7 @@ class MlflowTracking:
                                  self.experiment_name))
         run = mlflow.start_run(
             experiment_id=experiment_id,
-            run_name=self.run_name,
+            run_name=record.name or self.run_name,
             parent_run_id=self._outer,
             tags=record.tags,
             log_system_metrics=self.log_system_metrics,
@@ -152,6 +152,18 @@ class MlflowTracking:
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
         _log_inputs(mlflow, self._client, self._parent, record.inputs)
+
+    def log_monitoring(self, record: RunRecord) -> None:
+        self.start(record)
+        experiment_id, run_id = self._experiment_id, self.run_id
+        self.finish(record, None)
+        client = self._mlflow.MlflowClient()
+        for run in client.search_runs(
+                [experiment_id], filter_string=(
+                    "tags.`kumo.kind` = 'prediction' AND tags.`kumo.run_id` "
+                    f"= '{record.tags['kumo.prediction_run']}'"),
+                max_results=1):
+            client.set_tag(run.info.run_id, 'kumo.monitored', run_id)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         key = (event.trial or 0, int(event.params['attempt']))

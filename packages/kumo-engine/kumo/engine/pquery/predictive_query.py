@@ -42,12 +42,13 @@ Not supported (yet): `suggest_prediction_table_plan` (explicitly deferred).
 """
 
 import logging
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
 from kumo_core.model_plan import ModelPlanValueError
@@ -290,25 +291,10 @@ class PredictiveQuery:
         if errors:
             raise ModelPlanValueError(errors)
 
-        run_id = new_run_id()
-        run_dir = train_table_scratch_dir(run_id)
+        run_dir = train_table_scratch_dir(new_run_id())
         run_dir.mkdir(parents=True, exist_ok=True)
-
-        workflow = TrainingWorkflowRequest.from_spec(
-            graph=snapshot.graph_config,
-            predictive_query=self.query,
-            prepared_graph=PreparedGraph(
-                index_id=snapshot.id,
-                index_path=str(snapshot.index_path),
-            ),
-            run_id=run_id,
-            scratch_dir=str(run_dir),
-            artifact_dir=str(run_dir),
-            training_table_generation_plan=options,
-        )
-        with no_encoder_inference_warnings():
-            task_plan = build_training_task_plan(workflow)
-        generated = generate_train_table(task_plan.train_table)
+        workflow, task_plan, generated = self._generate(
+            snapshot, options, run_dir)
 
         generation_plan = options
         if workflow.query.query_type == 'temporal':
@@ -340,6 +326,62 @@ class PredictiveQuery:
             generation_plan=generation_plan,
         )
         return _finish(table, snapshot, task_plan.train_table, mlops)
+
+    def _generate(self, snapshot: GraphSnapshot, options: CoreGenerationPlan,
+                  run_dir: Path, *, timestamps: tuple[int, ...] = (),
+                  validate_targets: bool = True) -> tuple:
+        workflow = TrainingWorkflowRequest.from_spec(
+            graph=snapshot.graph_config,
+            predictive_query=self.query,
+            prepared_graph=PreparedGraph(
+                index_id=snapshot.id,
+                index_path=str(snapshot.index_path),
+            ),
+            run_id=run_dir.name,
+            scratch_dir=str(run_dir),
+            artifact_dir=str(run_dir),
+            training_table_generation_plan=options,
+            timestamps=timestamps,
+        )
+        with no_encoder_inference_warnings():
+            task_plan = build_training_task_plan(workflow)
+        return workflow, task_plan, generate_train_table(
+            task_plan.train_table, validate_targets=validate_targets)
+
+    @contextmanager
+    def _label_parts(
+            self, snapshot: GraphSnapshot, timestamps: tuple[int, ...],
+            plan: Optional[TrainingTableGenerationPlan]) -> Iterator[list]:
+        r"""Generate this query's labels at ``timestamps`` on ``snapshot``
+        and yield their Parquet parts, removed on exit."""
+        import shutil
+
+        from kumo_core.io.json import from_json_dict
+        from kumo_core.training.export import read_spec, stage_parts
+
+        # The fit's split ranges would not cover later anchors.
+        options = CoreGenerationPlan()
+        if plan is not None:
+            options = replace(from_json_dict(to_json_dict(plan),
+                                             CoreGenerationPlan),
+                              split=options.split)
+        run_dir = train_table_scratch_dir(new_run_id())
+        run_dir.mkdir(parents=True, exist_ok=True)
+        staging = None
+        try:
+            _, _, generated = self._generate(snapshot, options, run_dir,
+                                             timestamps=timestamps,
+                                             validate_targets=False)
+            staging = Path(generated.staging_dir)
+            yield [
+                str(staging / part)
+                for parts in stage_parts(read_spec(str(staging))).values()
+                for part in parts
+            ]
+        finally:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
+            shutil.rmtree(run_dir, ignore_errors=True)
 
     def generate_prediction_table(
         self,
