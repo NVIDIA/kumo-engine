@@ -268,8 +268,9 @@ def _build_mapper_bank_from_encoders(
     encoders: Any,
     feature_schema: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
-    """Build the mapper bank for ``DiskgraphLightningDataModule`` from
-    fitted encoders. Keyed by ``mapper_key`` (the bare table name)."""
+    """Build mappers for selected features, excluding zero-width Null encoders."""
+    from kumoapi.encoder import Null
+
     from kumo_core.encoders.tensor_mapper import TensorMapper
 
     bank: dict[str, dict[str, TensorMapper]] = {}
@@ -278,11 +279,15 @@ def _build_mapper_bank_from_encoders(
         mapper_key = meta.get("mapper_key")
         if mapper_key is None or mapper_key in bank:
             continue
-        encoder_dict = encoders[mapper_key] if mapper_key in encoders else {}
+        # `encoders` is `load_encoders(...)`, which returns None when the model
+        # directory has no encoders.json -- do not let that raise here.
+        has_encoders = encoders is not None and mapper_key in encoders
+        encoder_dict = encoders[mapper_key] if has_encoders else {}
         bank[mapper_key] = {
             col: TensorMapper.from_encoder(encoder)
             for col, encoder in encoder_dict.items()
             if col in meta.get("feature_columns", encoder_dict)
+            and not isinstance(encoder, Null)
         }
     return bank
 
