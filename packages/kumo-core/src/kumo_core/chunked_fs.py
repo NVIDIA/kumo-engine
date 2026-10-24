@@ -6,7 +6,12 @@ r"""A pyarrow filesystem over stores that only put, list, read and remove.
 A file larger than :attr:`ChunkedFileHandler.part_bytes` is stored as
 ``<name>.chunks/00000 ... NNNNN`` followed by an empty ``_SUCCESS``; anything
 smaller is one plain object. Readers see one logical file either way. A write
-removes the other form; if a crash leaves both, the plain object wins.
+removes the other form; if a crash leaves both, the plain object wins. A writer
+spools one part at a time on local disk, under :func:`spool_root`. A handler
+that can stream an upload implements ``_stream``: a writer told the size
+(:data:`SIZE_KEY` in the stream metadata) streams a file of up to
+``part_bytes`` as one plain object and a larger one as parts, without local
+disk; without a size, up to ``plain_bytes`` is spooled and stays plain.
 """
 
 import io
@@ -14,7 +19,16 @@ import os
 import posixpath
 import shutil
 import tempfile
-from typing import Dict, List, Optional, Protocol, Tuple
+from typing import (
+    BinaryIO,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Tuple,
+    Union,
+)
 
 import pyarrow as pa
 from pyarrow.fs import FileInfo, FileSystemHandler, FileType
@@ -22,6 +36,16 @@ from pyarrow.fs import FileInfo, FileSystemHandler, FileType
 PART_BYTES = 256 << 20
 CHUNKS = '.chunks'
 DONE = '_SUCCESS'
+#: Stream metadata key carrying the size a written file will have.
+SIZE_KEY = 'kumo-size'
+_spool_dir: Union[None, str, Callable[[], str]] = None
+
+
+def set_spool_dir(path: Union[None, str, Callable[[], str]]) -> None:
+    r"""Where writers spool parts unless a handler sets ``spool_dir``: a
+    path, a callable read at each write, or ``None`` (tempfile's)."""
+    global _spool_dir
+    _spool_dir = path
 
 
 class Part(Protocol):
@@ -32,9 +56,28 @@ class Part(Protocol):
         ...
 
 
+def spool_root(handler: 'ChunkedFileHandler') -> Optional[str]:
+    r"""Where ``handler`` stages local copies: its ``spool_dir``, else the
+    :func:`set_spool_dir` directory (created), else None (tempfile's)."""
+    root = handler.spool_dir or (_spool_dir()
+                                 if callable(_spool_dir) else _spool_dir)
+    if root is not None:
+        os.makedirs(root, exist_ok=True)
+    return root
+
+
 class ChunkedFileHandler(FileSystemHandler):
-    r"""Subclasses supply the five store primitives below."""
+    r"""Subclasses supply the five store primitives below, and optionally
+    ``_stream``."""
     part_bytes = PART_BYTES
+    spool_dir: Optional[str] = None
+    #: Largest plain file when ``_stream`` is implemented (<= part_bytes).
+    plain_bytes = PART_BYTES
+
+    def _stream(self, path: str) -> BinaryIO:
+        r"""Override to stream parts: a writable whose ``close`` commits the
+        object at ``path``."""
+        raise NotImplementedError
 
     def _size(self, path: str) -> Optional[int]:
         r"""Size of exactly the object at ``path``, or ``None``."""
@@ -59,10 +102,25 @@ class ChunkedFileHandler(FileSystemHandler):
         return path.rstrip('/')
 
     def _layout(self, path: str) -> Optional[List[Tuple[str, int]]]:
+        cache = self.__dict__.setdefault('_layouts', {})
+        layout = cache.get(path)
+        if layout is not None:
+            return layout
         size = self._size(path)
-        if size is not None:
-            return [(path, size)]
-        return _logical_parts(self._list(path + CHUNKS), path + CHUNKS)
+        layout = ([(path, size)] if size is not None else _logical_parts(
+            self._list(path + CHUNKS), path + CHUNKS))
+        if layout is not None:
+            cache[path] = layout
+        return layout
+
+    def _forget(self, path: str) -> None:
+        r"""Drops cached layouts at or below ``path``; writes and deletes
+        through this handler call it."""
+        cache = self.__dict__.get('_layouts', {})
+        path = path.rstrip('/')
+        for name in list(cache):
+            if name == path or name.startswith(path + '/'):
+                cache.pop(name, None)
 
     def get_file_info(self, paths):
         infos = []
@@ -98,9 +156,13 @@ class ChunkedFileHandler(FileSystemHandler):
         pass
 
     def delete_dir(self, path):
+        path = path.rstrip('/')
+        self._forget(path)
         self._remove(path, tree=True)
 
     def delete_dir_contents(self, path, missing_dir_ok=False):
+        path = path.rstrip('/')
+        self._forget(path)
         if not missing_dir_ok and not self._list(path):
             raise FileNotFoundError(f'{path} does not exist.')
         self._remove(path, tree=True)
@@ -109,6 +171,7 @@ class ChunkedFileHandler(FileSystemHandler):
         raise NotImplementedError('Refusing to delete the whole store.')
 
     def delete_file(self, path):
+        self._forget(path)
         plain = self._size(path) is not None
         chunked = bool(self._list(path + CHUNKS))
         if not plain and not chunked:
@@ -137,7 +200,11 @@ class ChunkedFileHandler(FileSystemHandler):
         return pa.PythonFile(_Reader(self, layout), mode='r')
 
     def open_output_stream(self, path, metadata):
-        return pa.PythonFile(_Writer(self, path), mode='w')
+        self._forget(path)
+        size = (metadata or {}).get(SIZE_KEY)
+        return pa.PythonFile(
+            _Writer(self, path, None if size is None else int(size)),
+            mode='w')
 
 
 def _logical_parts(objects: Dict[str, int],
@@ -197,10 +264,7 @@ class _Reader(io.RawIOBase):
         self._position = max(base + offset, 0)
         return self._position
 
-    def read(self, size=-1):
-        end = self._size if size is None or size < 0 else min(
-            self._position + size, self._size)
-        out = bytearray()
+    def _pieces(self, end: int):
         for path, start, length in self._layout:
             if start + length <= self._position or start >= end:
                 continue
@@ -212,17 +276,39 @@ class _Reader(io.RawIOBase):
             chunk = part.read_at(offset, want)
             if len(chunk) != want:
                 raise OSError(f'{path} returned {len(chunk)} of {want} bytes')
-            out += chunk
-        self._position += len(out)
-        return bytes(out)
+            yield chunk
+
+    def read(self, size=-1):
+        end = self._size if size is None or size < 0 else min(
+            self._position + size, self._size)
+        if end <= self._position:
+            return b''
+        pieces = self._pieces(end)
+        first = next(pieces)
+        if len(first) == end - self._position:
+            self._position = end
+            return first
+        out = bytearray(end - self._position)
+        out[:len(first)] = first
+        filled = len(first)
+        for chunk in pieces:
+            out[filled:filled + len(chunk)] = chunk
+            filled += len(chunk)
+        self._position = end
+        return out
 
     def readall(self):
         return self.read()
 
     def readinto(self, buffer):
-        data = self.read(len(buffer))
-        buffer[:len(data)] = data
-        return len(data)
+        view = memoryview(buffer).cast('B')
+        end = min(self._position + len(view), self._size)
+        filled = 0
+        for chunk in self._pieces(end):
+            view[filled:filled + len(chunk)] = chunk
+            filled += len(chunk)
+        self._position += filled
+        return filled
 
     def close(self):
         if not self.closed:
@@ -232,14 +318,27 @@ class _Reader(io.RawIOBase):
 
 
 class _Writer(io.RawIOBase):
-    def __init__(self, handler: ChunkedFileHandler, path: str) -> None:
+    def __init__(self, handler: ChunkedFileHandler, path: str,
+                 size: Optional[int] = None) -> None:
         self._handler = handler
         self._path = path
-        self._dir = tempfile.mkdtemp(prefix='kumo-chunked-')
+        self._dir = tempfile.mkdtemp(prefix='kumo-chunked-',
+                                     dir=spool_root(handler))
         self._spool = open(os.path.join(self._dir, 'spool'), 'wb')
         self._filled = 0
         self._parts = 0
         self._written = 0
+        self._part: Optional[BinaryIO] = None
+        self._streams = type(handler)._stream is not ChunkedFileHandler._stream
+        self._limit = (min(handler.plain_bytes, handler.part_bytes)
+                       if self._streams else handler.part_bytes)
+        self._plain: Optional[BinaryIO] = None
+        if self._streams and size is not None:
+            if size <= handler.part_bytes:
+                self._plain = handler._stream(path)
+            else:
+                self._clear()
+                self._part = self._open_part()
 
     def writable(self):
         return True
@@ -250,11 +349,24 @@ class _Writer(io.RawIOBase):
     def write(self, data):
         view = memoryview(data).cast('B')
         total = len(view)
+        if self._plain is not None:
+            self._plain.write(view)
+            self._written += total
+            return total
         while view:
-            if self._filled == self._handler.part_bytes:
-                self._flush_part()
-            take = min(len(view), self._handler.part_bytes - self._filled)
-            self._spool.write(view[:take])
+            if self._part is not None:
+                if self._filled == self._handler.part_bytes:
+                    self._next_stream()
+                take = min(len(view), self._handler.part_bytes - self._filled)
+                self._part.write(view[:take])
+            else:
+                if self._filled == self._limit:
+                    if self._streams:
+                        self._start_stream()
+                        continue
+                    self._flush_part()
+                take = min(len(view), self._limit - self._filled)
+                self._spool.write(view[:take])
             self._filled += take
             view = view[take:]
         self._written += total
@@ -271,20 +383,51 @@ class _Writer(io.RawIOBase):
         self._spool = open(os.path.join(self._dir, 'spool'), 'wb')
         self._filled = 0
 
+    def _clear(self) -> None:
+        self._handler._remove(self._path + CHUNKS, tree=True)
+        if self._handler._size(self._path) is not None:
+            self._handler._remove(self._path, tree=False)
+
     def _flush_part(self) -> None:
-        chunks = self._path + CHUNKS
         if not self._parts:
-            self._handler._remove(chunks, tree=True)
-            if self._handler._size(self._path) is not None:
-                self._handler._remove(self._path, tree=False)
-        self._upload(f'{chunks}/{self._parts:05d}')
+            self._clear()
+        self._upload(f'{self._path}{CHUNKS}/{self._parts:05d}')
         self._parts += 1
+
+    def _open_part(self) -> BinaryIO:
+        return self._handler._stream(
+            f'{self._path}{CHUNKS}/{self._parts:05d}')
+
+    def _start_stream(self) -> None:
+        self._clear()
+        self._spool.close()
+        spooled = os.path.join(self._dir, 'spool')
+        self._part = self._open_part()
+        with open(spooled, 'rb') as reader:
+            shutil.copyfileobj(reader, self._part, 8 << 20)
+        self._spool = open(spooled, 'wb')
+
+    def _next_stream(self) -> None:
+        assert self._part is not None
+        self._part.close()
+        self._parts += 1
+        self._part = self._open_part()
+        self._filled = 0
 
     def close(self):
         if self.closed:
             return
         try:
-            if self._parts:
+            if self._plain is not None:
+                self._plain.close()
+                self._plain = None
+                if self._handler._list(self._path + CHUNKS):
+                    self._handler._remove(self._path + CHUNKS, tree=True)
+            elif self._part is not None:
+                self._part.close()
+                self._part = None
+                self._upload(f'{self._path}{CHUNKS}/{DONE}')
+            elif self._parts:
                 self._flush_part()
                 self._upload(f'{self._path}{CHUNKS}/{DONE}')
             else:
@@ -292,6 +435,7 @@ class _Writer(io.RawIOBase):
                 if self._handler._list(self._path + CHUNKS):
                     self._handler._remove(self._path + CHUNKS, tree=True)
         finally:
+            self._handler._forget(self._path)
             self._spool.close()
             shutil.rmtree(self._dir, ignore_errors=True)
             super().close()
