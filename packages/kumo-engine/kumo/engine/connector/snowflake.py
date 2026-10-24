@@ -11,7 +11,7 @@ that machinery is dropped rather than ported.
 import os
 from functools import cached_property
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from kumoapi.data_source import (
     DataSourceType,
@@ -99,6 +99,12 @@ class SnowflakeConnector(Connector):
         SnowflakeSinkBackend = import_provider("kumo_snowflake.sink",
                                                "snowflake").SnowflakeSinkBackend
         return SnowflakeSinkBackend(identity=self.identity)
+
+    def session(self) -> Any:
+        r"""The Snowpark session this connector reads through: its identity,
+        pointed at its warehouse, database and schema, kept alive."""
+        with self.source_backend._session(self) as session:
+            return session
 
     def source_table_for(self, table_name: str) -> SnowflakeSourceTable:
         return SnowflakeSourceTable(
