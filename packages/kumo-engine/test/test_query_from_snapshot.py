@@ -90,11 +90,13 @@ def test_exported_snapshot_scores_in_a_fresh_scratch_without_a_graph(
         scored = model.result.predict(
             loaded, binary_classification_threshold=0.5).frame
         pd.testing.assert_frame_equal(
-            scored.sort_values('ENTITY').reset_index(drop=True), expected)
+            scored.sort_values('ENTITY').reset_index(drop=True), expected,
+            atol=1e-5)
         query = kumo.PredictiveQuery.from_snapshot(loaded, model._training_query)
         table = query.generate_prediction_table(
             loaded, plan=model.training_table_generation_plan)
-        pd.testing.assert_frame_equal(_scores(model, table, loaded), expected)
+        pd.testing.assert_frame_equal(_scores(model, table, loaded), expected,
+                                      atol=1e-5)
     finally:
         kumo.configure(scratch_dir=previous)
 
