@@ -13,7 +13,7 @@ import re
 import sys
 import warnings
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from functools import wraps
 from typing import IO, Any, Literal, Optional
@@ -1722,8 +1722,10 @@ class Trainer(PortableConfigMixin):
         with timing("trainer.fit.lightning_fit"):
             from kumo_core.diskgraph.lightning_data import (
                 suppress_iterable_len_warning,
+                suppress_lightning_leafspec_warning,
             )
-            with suppress_iterable_len_warning():
+            with suppress_iterable_len_warning(), \
+                    suppress_lightning_leafspec_warning():
                 self.pl_trainer.fit(self.pl_model, self.datamodule)
 
         with timing("trainer.fit.save_train_result"):
@@ -1940,7 +1942,11 @@ class Trainer(PortableConfigMixin):
             eval_top_k = min(self.num_targets, _MAX_EVAL_TOP_K)
         self.pl_model.eval_top_k = eval_top_k
 
-        with timing("trainer.eval.lightning_eval", stage=stage.value):
+        from kumo_core.diskgraph.lightning_data import (
+            suppress_lightning_leafspec_warning,
+        )
+        with timing("trainer.eval.lightning_eval", stage=stage.value), \
+                suppress_lightning_leafspec_warning():
             if stage == TrainingStage.VAL:
                 metrics = self.pl_trainer.validate(
                     model=self.pl_model,
@@ -2282,10 +2288,16 @@ class Trainer(PortableConfigMixin):
         if valid_rhs_node_idx is not None:
             self.pl_model.valid_rhs_node_idx = valid_rhs_node_idx
         from kumo_core.diskgraph.lightning_data import (
+            suppress_explain_workers_warning,
             suppress_iterable_len_warning,
+            suppress_lightning_leafspec_warning,
         )
+        capture_workers_warning = (suppress_explain_workers_warning()
+                                   if explain_capture_datamodule is not None
+                                   else nullcontext())
         try:
-            with suppress_iterable_len_warning():
+            with suppress_iterable_len_warning(), capture_workers_warning, \
+                    suppress_lightning_leafspec_warning():
                 step_outputs = eval_fn(
                     model=self.pl_model,
                     datamodule=self.datamodule,
@@ -2399,7 +2411,12 @@ class Trainer(PortableConfigMixin):
 
         if valid_rhs_node_idx is not None:
             self.pl_model.valid_rhs_node_idx = valid_rhs_node_idx
-        with suppress_iterable_len_warning():
+        # Only the selected-seed loader built above runs without workers.
+        replay_workers_warning = (suppress_explain_workers_warning()
+                                  if stage != TrainingStage.PRED else
+                                  nullcontext())
+        with suppress_iterable_len_warning(), replay_workers_warning, \
+                suppress_lightning_leafspec_warning():
             eval_fn(
                 model=self.pl_model,
                 dataloaders=loader,
@@ -2798,13 +2815,18 @@ class Trainer(PortableConfigMixin):
             index_map[NODE_INDEX_COLUMN] = range(len(index_map))
             self.pl_model.set_index_map(index_map)
 
-        with temporary_callbacks(self.pl_trainer, callbacks):
-            step_outputs = self.pl_trainer.predict(
-                model=self.pl_model, datamodule=datamodule,
-                ckpt_path=(fsspec_mangle(self.best_ckpt) if
-                           not self._prediction_model_weight_loaded else None))
-            self._prediction_model_weight_loaded = True
-        self.pl_trainer.predict_loop.setup_data()
+        from kumo_core.diskgraph.lightning_data import (
+            suppress_lightning_leafspec_warning,
+        )
+        with suppress_lightning_leafspec_warning():
+            with temporary_callbacks(self.pl_trainer, callbacks):
+                step_outputs = self.pl_trainer.predict(
+                    model=self.pl_model, datamodule=datamodule,
+                    ckpt_path=(fsspec_mangle(self.best_ckpt)
+                               if not self._prediction_model_weight_loaded
+                               else None))
+                self._prediction_model_weight_loaded = True
+            self.pl_trainer.predict_loop.setup_data()
 
         # Post-processing =====================================================
 
