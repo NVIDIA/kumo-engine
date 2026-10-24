@@ -203,9 +203,50 @@ names: `start(record)` with the fit run, `on_trial(record, event)` with a trial
 attempt's run after each of its events, and `finish(record, error)` with the
 fit run's final record (`None` when tracking stopped early). A tracker that
 raises is not called again for that fit and its run is ended as failed.
-Optional members: `prepare()`, `tags`, and the best-effort hooks `log_model`,
+Optional members: `prepare()`, `tags`, `log_model(result, snapshot, registry)` (see MLflow models below), and the best-effort hooks
 `log_prediction_run` and `log_monitoring`. Params are the resolved model plan
 (fit) or searched hyperparameters and `attempt` (trial). `RunRecord.inputs`
 maps each source table to its `connector`, `location`, `version` and
 `version_kind`. A tracker's `tags=` are added as given, except `kumo.*` names
 and param names.
+
+### MLflow models
+
+With `registry=ModelRegistryLocation(name, alias=...)` and an `MlflowTracking` tracker, every fit in the block logs its model on the fit run as an MLflow pyfunc model and registers it as a new version of `name` (Unity Catalog with `MLFLOW_REGISTRY_URI=databricks-uc`, SageMaker managed MLflow, or any MLflow registry). One alias is set on the new version. A bare `ModelRegistryLocation` without such a tracker, a fixed `version`, or an invalid alias raises when `kumo.MLOps` is built.
+
+```python
+from kumo.engine import ModelRegistryLocation
+from kumo.engine.integrations.mlflow import MlflowTracking, load_model
+
+cfg = kumo.MLOps("s3://bucket/kumo",
+                 tracking=MlflowTracking(experiment_name="/Shared/users_spend"),
+                 registry=ModelRegistryLocation("main.ml.users_spend", alias="champion"))
+with kumo.mlops(cfg):
+    result = trainer.fit(training_table, snapshot=snapshot)
+result.registered_model   # PublishedModel(name='main.ml.users_spend', version='4', uri='models:/main.ml.users_spend/4')
+
+trainer = load_model("models:/main.ml.users_spend@champion")   # the Trainer back
+model = mlflow.pyfunc.load_model("models:/main.ml.users_spend@champion")
+scores = model.predict(entities, params={"snapshot": "s3://bucket/kumo/snapshots/<graph key>/<version>"})
+```
+
+- `fit` waits for the upload and registration before it returns, for up to an hour, with a 600 s MLflow HTTP timeout during the upload (unless `MLFLOW_HTTP_REQUEST_TIMEOUT` is set). If they fail, the tracking thread stops or the hour passes, `fit` warns and still returns its result with `registered_model=None`, the run ends `FAILED`, and a model that finishes uploading later is not registered.
+- `MlflowTracking(log_model=True)` logs the model without registering it. `log_model(trainer, snapshot=...)` logs a fitted or loaded model in any run, with the bundle's source tables as run inputs.
+- The model's metadata is `kumo_bundle_id`; its `provenance` artifact is the bundle's `_provenance.json`. Its pip requirement is `kumo-engine[s3,gcs]` of the same version.
+- The pyfunc model loads a snapshot on its first `predict` with that URI and keeps it for the life of the process: each serving replica, and each Spark executor of `mlflow.pyfunc.spark_udf`, downloads the snapshot once and keeps every snapshot it has loaded (no eviction), so its disk must hold them. With `serving_snapshot=<snapshot URI>` (on `log_model` or `MlflowTracking`), each replica downloads that snapshot when it starts, and `predict` uses it when no `snapshot` param is given. `params={"population": True}` scores every entity and returns the whole frame in memory; for large populations use `Trainer.predict` with a `PredictionOutputConfig`. Each `predict` call works in its own scratch directory and removes it before returning.
+- The `mlflow` extra needs an MLflow 3.13 or later client: DiskGraph pins pyarrow 24, which older MLflow releases exclude. SageMaker managed MLflow servers run MLflow 3.0; a 3.17 client against a 3.0 server handles logging, registration, aliases and `load_model`.
+- On Databricks, the parent folder of an MLflow experiment path must exist. Registering to Unity Catalog from outside Databricks also needs `boto3`, which the `mlflow` extra does not install.
+
+#### Which registry
+
+Pick one per registered model, since the two store different formats. Both record only the `kumo_bundle_id` pointer; lineage stays in the bundle's `_provenance.json`. Both accept the same aliases (`kumoapi.plugin.check_model_alias`).
+
+| | Connector registry | MLflow model |
+|---|---|---|
+| Register | `kumo.MLOps(registry=ModelOutputConfig(connector, location=ModelRegistryLocation(name, alias=...)))` | `kumo.MLOps(tracking=MlflowTracking(), registry=ModelRegistryLocation(name, alias=...))` |
+| Load | `Trainer.load_from_connector(connector, location=...)` | `mlflow.pyfunc.load_model(uri)` or `load_model(uri)` |
+| Promote | `set_model_alias(connector, location, alias)` | MLflow's `set_registered_model_alias` |
+| Databricks | `DatabricksConnector` (Unity Catalog) | Unity Catalog through MLflow |
+| SageMaker | not available | SageMaker managed MLflow (`MLFLOW_TRACKING_URI` = tracking server ARN) |
+| Snowflake | `SnowflakeConnector` (Snowflake Model Registry) | not available |
+| Plain VM | not available (store under the artifact root instead) | any MLflow tracking server |

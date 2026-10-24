@@ -8,6 +8,8 @@ import contextvars
 from dataclasses import dataclass, field
 from typing import Any, FrozenSet, Iterable, Iterator, Optional, Tuple, Union
 
+from kumoapi.plugin import ModelRegistryLocation, check_model_alias
+
 from kumo.engine._manifest import KINDS
 
 
@@ -79,6 +81,17 @@ class MLOps:
         if unknown:
             raise ValueError(f'Unknown export kinds {unknown}; choose from '
                              f'{list(KINDS)}.')
+        if isinstance(self.registry, ModelRegistryLocation):
+            if not callable(getattr(self.tracking, 'log_model', None)):
+                raise ValueError(
+                    'registry=ModelRegistryLocation(...) registers through '
+                    'the MLflow tracker: pass tracking=MlflowTracking(...), '
+                    'or registry=ModelOutputConfig(connector, location=...).')
+            if self.registry.version is not None:
+                raise ValueError('MLflow assigns registered model versions; '
+                                 'leave ModelRegistryLocation.version unset.')
+            if self.registry.alias is not None:
+                check_model_alias(self.registry.alias)
         object.__setattr__(self, 'root', root)
         object.__setattr__(self, 'exports', kinds)
 

@@ -32,6 +32,9 @@ from kumo_core.artifacts import PROVENANCE_FILE
 from kumo.engine._events import Event, _finite_floats
 
 if TYPE_CHECKING:
+    from kumoapi.plugin import ModelRegistryLocation, PublishedModel
+
+    from kumo.engine.graph import GraphSnapshot
     from kumo.engine.trainer.trainer import TrainingResult
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,7 @@ DROPPED_METRICS = 'kumo.dropped_metrics'
 # never stalls training; these bound how long the fit waits for it.
 QUEUE_SIZE = 1000
 FINISH_SECONDS = 30.0
+MODEL_SECONDS = 3600.0
 
 
 @dataclass(frozen=True)
@@ -219,8 +223,12 @@ class Tracking(Protocol):
     the event that updated it, and `finish` the fit run's final record
     (`None` if tracking stopped early, which should end the run as failed).
     Optional members: ``prepare()``, called first on the fit's own thread;
-    ``tags`` (extra fit-run tags); and the best-effort hooks
-    ``log_model(result, snapshot)``, ``log_prediction_run(record)`` and
+    ``tags`` (extra fit-run tags); ``log_model(result, snapshot, registry)``,
+    called after a fit that succeeded and before `finish`, which the fit waits
+    for while the tracking thread is alive, up to an hour (an error, a stopped
+    thread or the time limit ends the run as failed), and which returns the
+    version it registered at ``registry``, a ``ModelRegistryLocation``; and the
+    best-effort hooks ``log_prediction_run(record)`` and
     ``log_monitoring(record)``.
     """
     def start(self, record: RunRecord) -> None:
@@ -285,6 +293,56 @@ class TrackingSession:
         record = trial_record(self._context, events)
         self._submit(lambda: self._call(
             lambda tracker: tracker.on_trial(record, event)))
+
+    def log_model(
+        self,
+        result: 'TrainingResult',
+        snapshot: 'GraphSnapshot',
+        registry: Optional['ModelRegistryLocation'] = None,
+    ) -> Tuple[Optional['PublishedModel'], Optional[BaseException]]:
+        r"""Runs the tracker's ``log_model`` on the tracking thread and waits
+        for it; returns the registered version and the error it raised."""
+        if (self._worker is None
+                or not hasattr(self._tracker, 'log_model')):
+            return None, None
+        done = threading.Event()
+        failed: List[BaseException] = []
+        registered: List[Any] = []
+
+        def log() -> None:
+            try:
+                tracker = self._tracker
+                if tracker is not None:
+                    registered.append(
+                        getattr(tracker, 'log_model')(result, snapshot,
+                                                      registry))
+            except BaseException as error:
+                failed.append(error)
+            finally:
+                done.set()
+
+        worker = self._worker
+        deadline = time.monotonic() + MODEL_SECONDS
+        try:
+            self._jobs.put(log, timeout=MODEL_SECONDS)
+        except queue.Full:
+            pass
+        while not done.wait(1.0):
+            if worker.is_alive() and time.monotonic() < deadline:
+                continue
+            failed.append(
+                TimeoutError(f'it did not finish within {MODEL_SECONDS:.0f}s')
+                if worker.is_alive() else
+                RuntimeError('the tracking thread stopped'))
+            tracker, self._tracker = self._tracker, None
+            if tracker is not None:
+                _abandon(tracker)
+            break
+        if failed:
+            warnings.warn(f'Could not log the model: {failed[0]}',
+                          UserWarning, stacklevel=3)
+            return None, failed[0]
+        return (registered or [None])[0], None
 
     def finish(self, result: Optional['TrainingResult'],
                error: Optional[BaseException]) -> None:
