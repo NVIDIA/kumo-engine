@@ -38,8 +38,8 @@
 //! timestamp cardinality grows.
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::Write;
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -166,7 +166,7 @@ fn merge_stage_with_limit(
         let path = &shards[chunk.file].spill_path;
         let mut bytes = vec![0u8; chunk.len as usize * 8];
         std::fs::File::open(path)
-            .and_then(|spill| spill.read_exact_at(&mut bytes, chunk.start * 8))
+            .and_then(|spill| read_exact_at(&spill, &mut bytes, chunk.start * 8))
             .with_context(|| format!("read ts-group spill {}", path.display()))?;
         Ok(bytes)
     };
@@ -271,7 +271,7 @@ fn merge_stage_with_limit(
         }
         for ((_, count), (end, start)) in loaded.counts.iter().zip(ends.iter().zip(starts)) {
             let begin = end - *count as usize;
-            out.write_all_at(&bytes[begin * 8..end * 8], start * 8)
+            write_all_at(&out, &bytes[begin * 8..end * 8], start * 8)
                 .with_context(|| format!("write {}", bucket_index_path.display()))?;
         }
         Ok(())
@@ -303,6 +303,52 @@ fn merge_stage_with_limit(
         bucket_index_rel_path,
         buckets,
     })
+}
+
+#[cfg(unix)]
+fn read_exact_at(file: &File, bytes: &mut [u8], offset: u64) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(bytes, offset)
+}
+
+#[cfg(windows)]
+fn read_exact_at(file: &File, mut bytes: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !bytes.is_empty() {
+        match file.seek_read(bytes, offset) {
+            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            Ok(read) => {
+                offset += read as u64;
+                bytes = &mut bytes[read..];
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_all_at(file: &File, bytes: &[u8], offset: u64) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.write_all_at(bytes, offset)
+}
+
+#[cfg(windows)]
+fn write_all_at(file: &File, mut bytes: &[u8], mut offset: u64) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !bytes.is_empty() {
+        match file.seek_write(bytes, offset) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(written) => {
+                offset += written as u64;
+                bytes = &bytes[written..];
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 fn records(bytes: &[u8]) -> impl Iterator<Item = i64> + '_ {
@@ -350,6 +396,31 @@ pub(crate) fn append_spill(file: &mut std::fs::File, timestamps: &[i64]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn positioned_io_preserves_other_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("positioned.bin");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        write_all_at(&file, b"ABCD", 3).unwrap();
+        write_all_at(&file, b"Z", 0).unwrap();
+        write_all_at(&file, b"", 100).unwrap();
+        let mut bytes = [0; 4];
+        read_exact_at(&file, &mut bytes, 3).unwrap();
+        assert_eq!(&bytes, b"ABCD");
+        assert_eq!(
+            read_exact_at(&file, &mut bytes, 8).unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+        read_exact_at(&file, &mut [], 100).unwrap();
+        drop(file);
+        assert_eq!(std::fs::read(path).unwrap(), b"Z12ABCD789");
+    }
 
     /// Helper: write a shard spill from a list of timestamps (node order).
     fn write_spill(dir: &Path, shard: usize, tss: &[i64]) -> PathBuf {
@@ -650,6 +721,7 @@ mod tests {
         assert_eq!(grouping.buckets.len(), 3);
     }
 
+    #[cfg(unix)]
     #[test]
     fn merge_open_files_do_not_scale_with_shards() {
         let Some(dir) = std::env::var_os("TS_GROUPING_NOFILE_CHILD") else {
