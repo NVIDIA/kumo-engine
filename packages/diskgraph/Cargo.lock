@@ -1824,6 +1824,7 @@ dependencies = [
  "diskgraph-ingest",
  "diskgraph-rowpack",
  "diskgraph-train-table",
+ "gxhash",
  "memmap2",
  "parquet",
  "pyo3",
