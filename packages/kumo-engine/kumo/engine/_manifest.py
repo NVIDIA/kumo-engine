@@ -34,7 +34,8 @@ M = TypeVar('M', bound='Manifest')
 
 
 def omit_none() -> Any:
-    """A field written only when it is not None."""
+    """A field written only when it is not None, or read as an explicit
+    null (kept in ``extra``)."""
     return field(default=None, metadata={_OMIT_NONE: True})
 
 
@@ -58,13 +59,18 @@ class Record:
     def from_dict(cls: Type[R], data: Mapping[str, Any]) -> R:
         hints = get_type_hints(cls)
         names = {item.name for item in fields(cls)} - {'extra'}
+        nullable = {
+            item.name
+            for item in fields(cls) if item.metadata.get(_OMIT_NONE)
+        }
         return cls(
             **{
                 name: _typed(hints[name], data[name])
                 for name in names if name in data
             }, extra={
                 key: value
-                for key, value in data.items() if key not in names
+                for key, value in data.items()
+                if key not in names or (key in nullable and value is None)
             })
 
 
@@ -244,6 +250,14 @@ class TrackingRef(Record):
 
 
 @dataclass(frozen=True, kw_only=True)
+class HoldoutStats(Record):
+    truncated: Optional[bool]
+    rows: int
+    columns: Dict[str, Dict[str, Any]]
+    label_positive_rate: Optional[float] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
 class ModelManifest(Manifest):
     """How a model bundle was fitted: from which training table (embedded,
     with its snapshot) and warm-start model, when, and with which fit
@@ -254,8 +268,9 @@ class ModelManifest(Manifest):
     fit: Optional[FitTiming] = None
     fit_mode: Optional[str] = None
     tracking: Optional[TrackingRef] = omit_none()
+    holdout: Optional[HoldoutStats] = omit_none()
 
-    EMBED_OMITS = ('tracking', )
+    EMBED_OMITS = ('tracking', 'holdout')
 
 
 def write_manifest(path: Path, manifest: Manifest) -> None:

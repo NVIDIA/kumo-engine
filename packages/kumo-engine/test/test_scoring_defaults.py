@@ -59,6 +59,7 @@ def test_derived_model_thresholds_unless_explicit(fitted):
     assert child.id != parent.id
     assert child.manifest.id == child.id
     assert child.manifest.parents.training_table is None
+    assert child.manifest.holdout == parent.manifest.holdout is not None
     derived_from = child.manifest.parents.derived_from
     assert derived_from.id == parent.id
     assert derived_from.parents.training_table == (

@@ -814,7 +814,10 @@ class Trainer:
                     warm_start._training_result.bundle_dir,
                     warm_start_bundle_id),
                 started_at=started_at, fit_mode=fit_mode,
-                tracked_run_id=run_id if tracking.enabled else None),
+                tracked_run_id=run_id if tracking.enabled else None,
+                task_type=TaskType(workflow.query.task_type),
+                holdout_path=holdout_path,
+                holdout_truncated=holdout_truncated),
             settings=settings,
         )
 

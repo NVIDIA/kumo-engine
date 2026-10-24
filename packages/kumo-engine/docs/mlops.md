@@ -42,6 +42,7 @@ Every fitted bundle carries `_provenance.json` (`ModelManifest`):
 - its `id`, the bundle id (a content hash that leaves the manifest file out);
 - when it was fitted and with which fit mode;
 - its parents: the training table's manifest, embedded with that table's snapshot, and the warm-start model's manifest, if any.
+- `holdout`: statistics of the scores the published model gave its holdout rows (row count, truncation, and per score column the count, mean, min, max and percentiles q01..q99; the label's positive rate for binary tasks). Ranked outputs are summarised by each prediction's top score. These are the baseline `score_drift` compares prediction runs against; they are left out where the model is embedded in another manifest.
 
 An embedded model keeps only the ids of its own model parents, so a long chain of warm-start retrains does not grow each manifest. `fit` returns a new `TrainingResult` per call (`.id`, `.manifest`); `Trainer.result` and `Trainer.manifest` describe the latest fit or the loaded bundle.
 
