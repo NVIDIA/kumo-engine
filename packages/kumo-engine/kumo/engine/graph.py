@@ -65,7 +65,7 @@ import warnings
 from dataclasses import dataclass, field, replace
 from functools import cached_property, partial
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Sequence
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.pquery import NativeGraph, normalize_graph
@@ -88,6 +88,9 @@ from kumo.engine._scratch import (
 )
 from kumo.engine._storage import network_storage
 from kumo.engine.connector.base import Connector
+
+if TYPE_CHECKING:
+    from kumo.engine.trainer.output_config import SnapshotOutputConfig
 from kumo.engine.table import Table
 
 SNAPSHOT_MANIFEST_FILE = PROVENANCE_FILE
@@ -313,28 +316,26 @@ class GraphSnapshot:
     record_sources: bool | None = field(default=None, compare=False)
 
     @property
-    def graph_key(self) -> str:
+    def _graph_key(self) -> str:
         """The `Graph.id` this snapshot was built from."""
         return self.id.partition('@')[0]
 
     @property
-    def data_version(self) -> str:
+    def _data_version(self) -> str:
         """The full fingerprint of the source versions the index was built
         from; `id` carries its first 16 characters."""
         return Path(self.index_path).name
 
-    def export(self, connector: Connector, path: str) -> str:
+    def export(self, output_config: 'SnapshotOutputConfig') -> str:
         r"""Copy the index to `<path>/<graph id>/<data version[:16]>` and
         return that location. Any earlier export there is replaced; it is not
-        loadable until the new one completes.
-
-        Args:
-            connector: an S3, GCS or file connector (on Databricks or
-                Snowflake, a `FileConnector` on a mounted volume).
+        loadable until the new one completes. The connector must hold files
+        at the path: an S3, GCS or file connector, or a volume or stage
+        whose sink offers a filesystem.
         """
         from kumo.engine._snapshot_io import export
 
-        return export(self, connector, path)
+        return export(self, output_config.connector, output_config.path)
 
     @classmethod
     def load_from_connector(cls, connector: Connector, *, path: str,
@@ -581,7 +582,8 @@ class Graph:
         """
         self.native_graph
 
-    def snapshot(self, *, record_sources: bool = True) -> GraphSnapshot:
+    def snapshot(self, *, record_sources: bool = True,
+                 mlops: Optional[Any] = None) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
         result through `kumo-core` to build column stats and the on-disk
         index. The index is stored under a directory keyed by both `self.id`
@@ -592,6 +594,9 @@ class Graph:
         it's reused as is.
 
         Args:
+            mlops: a `kumo.MLOps`; with MLOps on (this or a `kumo.mlops`
+                block), the snapshot is also exported under the artifact
+                root's `snapshots/`, unless it is there already.
             record_sources: if False, the snapshot manifest records each
                 source as connector and table name only (no bucket, path or
                 account) and Custom SQL as a hash only (no SQL text).
@@ -620,9 +625,17 @@ class Graph:
         # mid-build -- a plain in-memory lock wouldn't coordinate across
         # processes, and a lock-file-existence mutex would leave a stale
         # lock behind after a crash.
+        from kumo.engine._mlops import resolve
+
+        settings = resolve(mlops)
         with _lock(graph_key):
-            return self._snapshot_no_lock(graph_key, persist_dir,
-                                          record_sources)
+            snapshot = self._snapshot_no_lock(graph_key, persist_dir,
+                                              record_sources)
+        if settings is not None and settings.wants('snapshot'):
+            from kumo.engine._snapshot_io import store
+
+            store(snapshot, settings)
+        return snapshot
 
     def _snapshot_no_lock(self, graph_key: str, persist_dir: Path,
                           record_sources: bool = True) -> GraphSnapshot:

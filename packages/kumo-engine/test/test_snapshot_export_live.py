@@ -9,6 +9,7 @@ import uuid
 import pytest
 
 import kumo.engine as kumo
+from kumo.engine import SnapshotOutputConfig
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._snapshot_io import _location
 
@@ -29,7 +30,7 @@ def test_snapshot_round_trip_through_object_store(tmp_path, graph, scheme):
     try:
         kumo.configure(scratch_dir=tmp_path / 'cpu')
         snapshot = graph.snapshot()
-        location = snapshot.export(connector, path)
+        location = snapshot.export(SnapshotOutputConfig(connector, path))
         kumo.configure(scratch_dir=tmp_path / 'gpu')
         loaded = kumo.GraphSnapshot.load_from_connector(
             connector, path=location, graph=graph)

@@ -46,3 +46,24 @@ Every fitted bundle carries `_provenance.json` (`ModelManifest`):
 An embedded model keeps only the ids of its own model parents, so a long chain of warm-start retrains does not grow each manifest. `fit` returns a new `TrainingResult` per call (`.id`, `.manifest`); `Trainer.result` and `Trainer.manifest` describe the latest fit or the loaded bundle.
 
 With MLOps on, each bundle is stored under `<root>/models/<bundle id>/`. A complete copy that is already there is kept; a partial one is replaced.
+
+### Moving snapshots between machines
+
+To build an index on one machine and train or score on another, export it to a file destination and load it there:
+
+```python
+from kumo.engine import GraphSnapshot, S3Connector, SnapshotOutputConfig
+
+location = graph.snapshot().export(SnapshotOutputConfig(S3Connector(), "s3://bucket/snapshots"))
+# On the training machine:
+snapshot = GraphSnapshot.load_from_connector(S3Connector(), path=location)
+```
+
+- **Layout:** `export` writes `<path>/<graph id>/<data version>/`, the two halves of `snapshot.id`, and returns that location.
+- **Transfer:** files move in parallel with a CRC32 per range. An interrupted export resumes, and a load either completes or leaves nothing.
+- **Reuse:** loading again reuses the local copy, unless that copy fails DiskGraph's integrity check; then it is downloaded again.
+- **Manifest:** the snapshot's `_provenance.json` travels with the export.
+- **Trust:** load only from paths whose writers you trust. Checksums detect corruption, not tampering.
+- **Destinations:** any destination whose sink holds files at the path works: S3, GCS, local files, or a volume or stage once those sinks are installed. A warehouse connector raises.
+
+With MLOps on (`graph.snapshot(mlops=...)` or a `kumo.mlops` block), each snapshot is exported under `<root>/snapshots/`, unless a complete export of it is already there.

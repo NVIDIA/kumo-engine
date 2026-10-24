@@ -28,22 +28,20 @@ _PROGRESS_SECONDS = 30
 logger = logging.getLogger(__name__)
 
 
-class ConcurrentExportError(TimeoutError):
-    pass
+class ConcurrentExportError(RuntimeError):
+    r"""Another export to the same location kept replacing this one."""
 
 
 def _location(connector: Any, path: str) -> Tuple[FileSystem, str]:
-    from kumo_core.object_store_sink import ObjectStoreSinkBackend
+    from kumo.engine.connector import file_store
 
-    try:
-        sink = connector.sink_backend
-    except Exception:
-        sink = None
-    if not isinstance(sink, ObjectStoreSinkBackend):
+    store = file_store(connector, path)
+    if store is None:
         raise NotImplementedError(
-            f'{type(connector).__name__} cannot hold a snapshot export; use '
-            'an S3Connector, GCSConnector or a FileConnector on a volume.')
-    return sink.filesystem(connector, path)
+            f'{type(connector).__name__} cannot hold a snapshot export: export '
+            'needs a file destination (artifact root), such as an S3Connector, '
+            'GCSConnector or a FileConnector on a volume.')
+    return store
 
 
 def _files(filesystem: FileSystem) -> Any:
@@ -153,13 +151,15 @@ def _read_json(filesystem: FileSystem, path: str) -> Optional[Any]:
         return None
 
 
-def _open_output(filesystem: FileSystem, path: str) -> Any:
+def _open_output(filesystem: FileSystem, path: str, size: int) -> Any:
+    from kumo_core.object_store_sink import open_sized
+
     _files(filesystem).makedirs(path.rsplit('/', 1)[0])
-    return filesystem.open_output_stream(path)
+    return open_sized(filesystem, path, size)
 
 
 def _write(filesystem: FileSystem, path: str, payload: bytes) -> None:
-    with _open_output(filesystem, path) as writer:
+    with _open_output(filesystem, path, len(payload)) as writer:
         writer.write(payload)
 
 
@@ -185,6 +185,32 @@ def _snapshot_manifest(snapshot: Any) -> bytes:
                 '\n').encode()
 
 
+def export_location(snapshot: Any, path: str) -> str:
+    graph_key, data_version = snapshot._graph_key, snapshot._data_version
+    _check_key(graph_key, data_version, snapshot.id)
+    return f"{path.rstrip('/')}/{graph_key}/{data_version[:16]}"
+
+
+def store(snapshot: Any, settings: Any) -> None:
+    r"""Export ``snapshot`` under ``<root>/snapshots/`` unless a complete
+    export of it is there; failures warn."""
+    import warnings
+
+    try:
+        connector = settings.root.connector
+        path = settings.root.location('snapshots')
+        filesystem, root = _location(connector,
+                                     export_location(snapshot, path))
+        marker = _read_json(filesystem, f'{root}/{_MANIFEST}')
+        if not (isinstance(marker, dict) and marker.get('format') == _FORMAT
+                and marker.get('snapshot_id') == snapshot.id):
+            export(snapshot, connector, path)
+    except Exception as error:
+        warnings.warn(
+            f"Could not store snapshot {snapshot.id} under the artifact "
+            f"root: {error}", UserWarning, stacklevel=3)
+
+
 def export(snapshot: Any, connector: Any, path: str) -> str:
     from diskgraph import snapshot_range_checksums
 
@@ -192,9 +218,8 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
     from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
 
     source = Path(snapshot.index_path)
-    graph_key, data_version = snapshot.graph_key, snapshot.data_version
-    _check_key(graph_key, data_version, snapshot.id)
-    location = f"{path.rstrip('/')}/{graph_key}/{data_version[:16]}"
+    graph_key, data_version = snapshot._graph_key, snapshot._data_version
+    location = export_location(snapshot, path)
     index_manifest = (source / _INDEX_MANIFEST).read_bytes()
     sizes = {
         entry['rel_path']: int(entry['size_bytes'])
@@ -210,7 +235,7 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
     def upload(client: FileSystem, name: str, stop: threading.Event) -> None:
         size = sizes[name]
         with open(source / name, 'rb', buffering=0) as reader, _open_output(
-                client, f'{root}/index/{name}') as writer:
+                client, f'{root}/index/{name}', size) as writer:
             for offset in range(0, size, _CHUNK):
                 _stopped(stop)
                 chunk = reader.read(min(_CHUNK, size - offset))
