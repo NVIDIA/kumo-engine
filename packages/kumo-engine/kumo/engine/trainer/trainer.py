@@ -20,6 +20,7 @@ from typing import (
     Literal,
     Mapping,
     Optional,
+    Sequence,
     TypeVar,
     Union,
     cast,
@@ -27,6 +28,7 @@ from typing import (
 
 import pandas as pd
 from kumo_core.embedding_models import EmbeddingModelStore
+from kumo_core.instrumentation import format_error
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
 from kumo_core.model_plan import inferred_or_missing_type_to_none
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
@@ -53,6 +55,7 @@ from kumo.engine._embeddings import (
     require_embedding_models,
     require_trained_embedding_models,
 )
+from kumo.engine._events import Event, EventEmitter, query_sha256
 from kumo.engine._manifest import ModelManifest
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine.connector.base import Connector
@@ -384,6 +387,7 @@ class Trainer:
         export_config: Optional[ModelOutputConfig] = None,
         warm_start: Optional[Self] = None,
         mlops: Optional[Any] = None,
+        callbacks: Sequence[Callable[[Event], None]] = (),
     ) -> TrainingResult:
         r"""Train a model against `train_table`.
 
@@ -414,10 +418,60 @@ class Trainer:
                 warm-start sources.
             mlops: a `kumo.MLOps`; with MLOps on (this or a `kumo.mlops`
                 block), the bundle is also stored under the artifact root.
+            callbacks: called with each progress
+                `kumo.engine.tracking.Event`; a callback that raises is logged
+                and not called again.
 
         Each call returns a new `TrainingResult`; `Trainer.result` holds the
         latest.
         """
+        if export_config is not None and not callable(
+                getattr(export_config.connector.sink_backend, 'publish_model',
+                        None)):
+            raise NotImplementedError(
+                f'{type(export_config.connector).__name__} cannot publish '
+                f'models')
+        from kumo.engine._mlops import resolve
+
+        settings = resolve(mlops)
+        run_id = f'{self._id}-fit-{new_run_id()}'
+        events = EventEmitter(run_id, callbacks)
+        fit_start = time.monotonic()
+        try:
+            started = {
+                'snapshot_id': snapshot.id,
+                'query_sha256': query_sha256(train_table.query),
+            }
+        except Exception:
+            started = {}
+        events.emit('fit_started', params=started)
+        try:
+            result = self._fit(train_table, snapshot=snapshot,
+                               export_config=export_config,
+                               warm_start=warm_start, run_id=run_id,
+                               events=events, settings=settings)
+        except BaseException as error:
+            events.emit('fit_ended', params={
+                'status': 'failed',
+                'error': format_error(error),
+            })
+            raise
+        events.emit('fit_ended', metrics={
+            **result.metrics, 'seconds': time.monotonic() - fit_start
+        }, params={'status': 'succeeded'})
+        return result
+
+    def _fit(
+        self,
+        train_table: TrainingTable,
+        *,
+        snapshot: GraphSnapshot,
+        export_config: Optional[ModelOutputConfig],
+        warm_start: Optional[Self],
+        run_id: str,
+        events: EventEmitter,
+        settings: Optional[Any],
+    ) -> TrainingResult:
         from kumo_core.automl.runtime import (
             inherit_warm_start_model_plan,
             validate_warm_start_task_type,
@@ -437,20 +491,10 @@ class Trainer:
         )
         from kumo_core.types import TaskType
 
+        from kumo.engine.trainer._provenance import parent_model
         from kumo.engine.trainer._runtime import local_training_bindings
 
-        if export_config is not None and not callable(
-                getattr(export_config.connector.sink_backend, 'publish_model',
-                        None)):
-            raise NotImplementedError(
-                f'{type(export_config.connector).__name__} cannot publish '
-                f'models')
-        from kumo.engine._mlops import resolve
-        from kumo.engine.trainer._provenance import parent_model
-
-        settings = resolve(mlops)
         started_at = datetime.now(timezone.utc)
-        run_id = f'{self._id}-fit-{new_run_id()}'
         run_dir = self.scratch_dir / 'runs' / run_id
 
         model_plan = _to_core_model_plan(self._model_plan)
@@ -569,7 +613,7 @@ class Trainer:
             bindings=local_training_bindings(
                 training_input, run_name=run_id,
                 embedding_models=self._embedding_models,
-                accelerator=self._accelerator),
+                accelerator=self._accelerator, instrumentation=events),
             options=CallableTrainingOptions(),
         )
 

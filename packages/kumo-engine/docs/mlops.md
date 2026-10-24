@@ -84,3 +84,19 @@ result = trainer.predict(snapshot, binary_classification_threshold=0.5)
 - `predict(prediction_table, snapshot=...)` keeps working as before.
 - `fit` results score too: `result.predict(snapshot, ...)`.
 - `PredictiveQuery.from_snapshot(snapshot, query)` binds a query to a snapshot without its `Graph`. Its graph check only means the snapshot belongs to the query's graph, not that it is compatible with a trained model.
+
+## Progress events
+
+`fit(callbacks=[...])` calls each callback with every progress
+`kumo.engine.tracking.Event`: `fit_started`, then per search trial
+`trial_started`, `epoch_ended` and `trial_ended`, then `fit_ended`. Ended events
+carry `params["status"]` and, on failure, a short `params["error"]`. A callback
+that raises is logged and not called again; it never fails the fit. For JSON
+lines on stdout:
+
+```python
+import json
+
+trainer.fit(training_table, snapshot=snapshot,
+            callbacks=[lambda e: print(json.dumps(e.to_dict()))])
+```
