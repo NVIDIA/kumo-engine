@@ -89,6 +89,20 @@ trainer = kumo.Trainer.load_from_connector(registry, location=ModelRegistryLocat
 - An alias is a letter or underscore followed by letters, digits or underscores; `DEFAULT`, `FIRST`, `LAST`, `LATEST` and `v<digits>` are reserved. The alias is set after publishing; if that fails, the publish still stands, with a warning. Snowflake allows one alias per version; if moving an alias fails, it is put back on the version that held it. Snowflake's `DEFAULT`, `FIRST` and `LAST` can be loaded but not set. File, S3 and GCS connectors have no aliases.
 - Each registered version records only pointers: the `kumo_engine` marker and `kumo_bundle_id` (Snowflake version metrics, Databricks version tags). The bundle's own `_provenance.json` holds its lineage. `list_models` and `fetch_model` return `kumo_bundle_id` in `PublishedModel.metadata`; `load_from_connector` warns if the fetched bundle differs from it.
 
+### Prediction runs
+
+Every `predict` call records the run in `_provenance.json` (`PredictionManifest`, `result.manifest`) next to its outputs:
+- its `id` (`result.id`);
+- its parents: the model's manifest (without its holdout statistics) and the scoring snapshot's manifest, both embedded; `result.bundle_id` and `result.snapshot_id` read their ids;
+- the prediction table: a hash of the query, whether it was generated or supplied, its anchor times and row count;
+- the scoring options and where each came from (`argument`, `bundle`, the query or a default);
+- `outputs`: the destinations of `predict(output_config=...)`, recorded even when that export fails part-way;
+- `status`, timings, and per output the row count and score statistics (min, q01..q99, max), which `score_drift` reads.
+
+A parent without a manifest, such as a bundle saved before this release, is recorded by its id alone. Exports to files carry the manifest next to the Parquet parts (not CSV). A later `result.export(...)` copies the files and the manifest as they are and records nothing new.
+
+With MLOps on, each run is stored after its `output_config` export, under `<root>/predictions/<id>/predictions/` (and `embeddings/`), with the manifest, including those `outputs`.
+
 ### Moving snapshots between machines
 
 To build an index on one machine and train or score on another, export it to a file destination and load it there:

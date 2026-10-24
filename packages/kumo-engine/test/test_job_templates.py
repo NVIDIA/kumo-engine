@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+import json
 import py_compile
 import sys
 from pathlib import Path
@@ -148,6 +149,10 @@ def test_fit_then_score_locally(tmp_path, monkeypatch, capsys):
     score = _module('score_job').main(
         [*flags, '--model-path', f'models/{fit.id}'])
     assert score.num_rows == 50
+    stored = root / 'predictions' / score.id / 'predictions'
+    assert any(stored.glob('*.parquet'))
+    assert json.loads((stored / '_provenance.json').read_text())[
+        'parents']['model']['id'] == fit.id
 
 
 def test_sagemaker_pipeline_needs_an_instance_type(capsys):

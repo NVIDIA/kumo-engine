@@ -273,9 +273,78 @@ class ModelManifest(Manifest):
     EMBED_OMITS = ('tracking', 'holdout')
 
 
+@dataclass(frozen=True, kw_only=True)
+class PredictionParents(Record):
+    model: ModelManifest
+    snapshot: SnapshotManifest
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionTableRecord(Record):
+    query_sha256: str
+    source: Optional[str]
+    anchors: List[str]
+    rows: Optional[int]
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunScoring(Record):
+    binary_classification_threshold: Optional[float]
+    threshold_source: str
+    num_classes_to_return: Optional[int]
+    count_source: str
+    num_workers: Optional[int]
+
+
+@dataclass(frozen=True, kw_only=True)
+class OutputDestination(Record):
+    connector: str
+    location: Optional[str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionOutput(Record):
+    artifact: str
+    destination: OutputDestination
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunTimings(Record):
+    started_at: str
+    finished_at: Optional[str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ArtifactStats(Record):
+    rows: Optional[int]
+    columns: Optional[Dict[str, Dict[str, Any]]] = omit_none()
+    predicted_positive_rate: Optional[float] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionManifest(Manifest):
+    """A prediction run: its model and scoring snapshot (embedded), the
+    prediction table, scoring options, outputs and score statistics."""
+
+    kind: str = 'prediction'
+    parents: PredictionParents
+    prediction_table: PredictionTableRecord
+    scoring: RunScoring
+    outputs: Optional[List[PredictionOutput]]
+    status: Optional[str]
+    timings: Optional[RunTimings]
+    stats: Optional[Dict[str, ArtifactStats]]
+
+    EMBED_OMITS = ('outputs', 'stats', 'status', 'timings')
+
+
+def manifest_bytes(manifest: Manifest) -> bytes:
+    return (json.dumps(manifest.to_dict(), indent=2, sort_keys=True) +
+            '\n').encode('utf-8')
+
+
 def write_manifest(path: Path, manifest: Manifest) -> None:
-    payload = json.dumps(manifest.to_dict(), indent=2, sort_keys=True) + '\n'
-    atomic_write_bytes(path, payload.encode('utf-8'))
+    atomic_write_bytes(path, manifest_bytes(manifest))
 
 
 def read_manifest(path: Path, kind: Type[M]) -> Optional[M]:

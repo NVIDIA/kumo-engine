@@ -27,6 +27,7 @@ from kumoapi.table import Column
 
 from kumo.engine._manifest import (
     ModelManifest,
+    PredictionManifest,
     SnapshotManifest,
     TrainingTableManifest,
 )
@@ -97,6 +98,7 @@ __all__ = [
     "SnapshotManifest",
     "TrainingTableManifest",
     "ModelManifest",
+    "PredictionManifest",
     "PredictiveQuery",
     "TrainingTable",
     "PredictionTable",

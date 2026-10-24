@@ -19,6 +19,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    List,
     Literal,
     Mapping,
     Optional,
@@ -29,6 +30,7 @@ from typing import (
 )
 
 import pandas as pd
+from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.embedding_models import EmbeddingModelStore
 from kumo_core.instrumentation import format_error
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
@@ -61,7 +63,12 @@ from kumo.engine._embeddings import (
     require_trained_embedding_models,
 )
 from kumo.engine._events import Event, EventEmitter, query_sha256
-from kumo.engine._manifest import ModelManifest
+from kumo.engine._manifest import (
+    ModelManifest,
+    PredictionManifest,
+    PredictionOutput,
+    RunScoring,
+)
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine._tracking import FitContext, TrackingSession, fit_inputs
 from kumo.engine.connector.base import Connector
@@ -69,6 +76,7 @@ from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
+from kumo.engine.trainer import _run_manifest
 from kumo.engine.trainer._scoring import ScoringDefaults, read_scoring_defaults
 from kumo.engine.trainer._spec import (
     read_bundle_artifact_paths,
@@ -188,10 +196,36 @@ class PredictionResult:
     ``num_rows`` reads bounded producer metadata; ``files`` resolves selected
     Parquet files. Accessing ``frame`` explicitly collects the whole result
     into memory and is intended only for outputs that fit in memory.
+    ``id`` names the run; ``manifest`` is its record (None if it could not
+    be written), from which ``bundle_id`` and ``snapshot_id`` are read.
     """
 
     selection: PredictionSelectionRef
     artifact_type: PredictionArtifactType
+
+    @property
+    def id(self) -> str:
+        return self.selection.job_id
+
+    @property
+    def _manifest_path(self) -> Path:
+        return Path(self.selection.pointer_path).parent / PROVENANCE_FILE
+
+    @property
+    def manifest(self) -> Optional[PredictionManifest]:
+        from kumo.engine._manifest import read_manifest
+
+        return read_manifest(self._manifest_path, PredictionManifest)
+
+    @property
+    def bundle_id(self) -> Optional[str]:
+        manifest = self.manifest
+        return None if manifest is None else manifest.parents.model.id
+
+    @property
+    def snapshot_id(self) -> Optional[str]:
+        manifest = self.manifest
+        return None if manifest is None else manifest.parents.snapshot.id
 
     @property
     def num_rows(self) -> int:
@@ -224,9 +258,12 @@ class PredictionResult:
                 'extra_fields are chosen at prediction time and cannot be '
                 'applied to an existing result; pass them to '
                 'Trainer.predict(output_config=...)')
-        self._export(output_config)
+        self._export(output_config, self.manifest)
 
-    def _export(self, output_config: PredictionOutputConfig) -> None:
+    def _export(self, output_config: PredictionOutputConfig,
+                sidecar: Optional[PredictionManifest] = None,
+                records: Optional[List[PredictionOutput]] = None,
+                written: Optional[List[PredictionOutput]] = None) -> None:
         write_files = getattr(output_config.connector.sink_backend,
                               'write_files', None)
         if not callable(write_files):
@@ -235,12 +272,38 @@ class PredictionResult:
         outputs = []
         for name, destination in output_config.destinations().items():
             kind = PredictionArtifactType(name.upper())
-            files = PredictionResult(self.selection, kind).files
+            files = replace(self, artifact_type=kind).files
             outputs.append((kind, destination, files))
-        for kind, destination, files in outputs:
+        payload = _sidecar_bytes(sidecar)
+        for index, (kind, destination, files) in enumerate(outputs):
+            extra = ({'sidecars': {PROVENANCE_FILE: payload}}
+                     if payload is not None and _holds_parquet(
+                         output_config.connector, destination) else {})
             write_files(output_config.connector, destination, list(files),
                         output_config.write_mode,
-                        export_id=f'{self.selection.job_id}-{kind.value}')
+                        export_id=f'{self.id}-{kind.value}', **extra)
+            if records is not None and written is not None:
+                written.append(records[index])
+
+
+def _sidecar_bytes(manifest: Optional[PredictionManifest]) -> Optional[bytes]:
+    from kumo.engine._manifest import manifest_bytes
+
+    try:
+        return None if manifest is None else manifest_bytes(manifest)
+    except Exception as error:
+        warnings.warn(f"Exporting without {PROVENANCE_FILE}: {error}",
+                      UserWarning, stacklevel=4)
+        return None
+
+
+def _holds_parquet(connector: Connector, destination: str) -> bool:
+    from kumo_core.sources import layout
+
+    from kumo.engine.connector import is_file_destination
+
+    return (is_file_destination(connector, destination)
+            and layout.file_type(destination.rstrip('/')) != layout.CSV)
 
 
 def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
@@ -303,6 +366,15 @@ def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
                     'the test split, so it has no holdout predictions.')
         return None, False
     return _find_holdout(trainer.get_log_dir(fit_mode=published))
+
+
+def _option_source(argument: Any, requested: Any, value: Any,
+                   fallback: str) -> str:
+    if value is None:
+        return 'none'
+    if argument is not None:
+        return 'argument'
+    return 'bundle' if requested is not None else fallback
 
 
 def _collect_garbage(stage: str) -> None:
@@ -892,6 +964,7 @@ class Trainer:
         num_workers: int = 1,
         binary_classification_threshold: Optional[float] = None,
         prediction_table: Optional[PredictionTable] = None,
+        mlops: Optional[Any] = None,
     ) -> PredictionResult:
         r"""Score a snapshot and return durable file-backed results.
 
@@ -921,12 +994,20 @@ class Trainer:
         thresholds change predicted labels without changing class scores.
 
         Omitted arguments fall back to the bundle's :attr:`scoring_defaults`.
+
+        ``result.manifest`` records the run (``outputs`` lists
+        ``output_config``'s destinations). With MLOps on (``mlops`` or a
+        `kumo.mlops` block), the outputs and manifest are also stored under
+        ``<artifact root>/predictions/<id>/``.
         """
         from kumo_core.prediction_options import (
             validate_num_classes_to_return,
             validate_prediction_workers,
         )
 
+        from kumo.engine._mlops import resolve
+
+        settings = resolve(mlops)
         validate_prediction_workers(num_workers)
         validate_num_classes_to_return(num_classes_to_return)
         if source is not None and not isinstance(source, GraphSnapshot):
@@ -942,7 +1023,8 @@ class Trainer:
             table, snapshot=snapshot, output_config=output_config,
             num_classes_to_return=num_classes_to_return,
             num_workers=num_workers,
-            binary_classification_threshold=binary_classification_threshold)
+            binary_classification_threshold=binary_classification_threshold,
+            settings=settings)
 
     def _prediction_table(self, snapshot: GraphSnapshot,
                           entities: Optional[SourceTable],
@@ -979,8 +1061,10 @@ class Trainer:
         num_classes_to_return: Optional[int] = None,
         num_workers: int = 1,
         binary_classification_threshold: Optional[float] = None,
+        settings: Optional[Any] = None,
     ) -> PredictionResult:
         training_result = self._fitted('predict')
+        arguments = binary_classification_threshold, num_classes_to_return
         if binary_classification_threshold is None:
             binary_classification_threshold = (
                 training_result.scoring_defaults.binary_classification_threshold)
@@ -1019,6 +1103,7 @@ class Trainer:
         parsed = parse_and_validate_query(prediction_table.query, native_graph)
         if num_classes_to_return is None and parsed.query.top_k is None:
             num_classes_to_return = training_result.scoring_defaults.num_classes_to_return
+        requested_classes = num_classes_to_return
         num_classes_to_return = resolve_num_classes_to_return(
             task_type,
             num_classes_to_return,
@@ -1058,6 +1143,7 @@ class Trainer:
             score_prediction,
         )
 
+        started_at = datetime.now(timezone.utc)
         run_id = f'{self._id}-predict-{new_run_id()}'
         run_dir = self.scratch_dir / 'runs' / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1147,8 +1233,20 @@ class Trainer:
         del encoders
         _collect_garbage('predict')
         result = PredictionResult(selection, artifact_type)
-        if output_config is not None:
-            result._export(output_config)
+        manifest = _run_manifest.start(
+            result=result, trainer=self, snapshot=snapshot,
+            prediction_table=prediction_table,
+            task_type=task_type, scoring=RunScoring(
+                binary_classification_threshold=threshold,
+                threshold_source=_option_source(
+                    arguments[0], binary_classification_threshold, threshold,
+                    'default'),
+                num_classes_to_return=num_classes_to_return,
+                count_source=_option_source(arguments[1], requested_classes,
+                                            num_classes_to_return, 'query'),
+                num_workers=num_workers,
+            ), started_at=started_at.isoformat(timespec='seconds'))
+        _run_manifest.finish(result, manifest, output_config, settings)
         return result
 
     @classmethod
