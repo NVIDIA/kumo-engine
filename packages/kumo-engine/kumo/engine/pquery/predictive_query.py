@@ -59,6 +59,7 @@ from kumo_core.model_plan import (
 )
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
+    NativeGraph,
     ValidatedNativeQuery,
     parse_and_validate_query,
     query_is_temporal,
@@ -140,16 +141,22 @@ class PredictiveQuery:
         `ValidatedNativeQuery` are all plain `str`; `get_task_type` below
         wraps `task_type` into the shared, public `kumoapi.task.TaskType`.
         """
-        return parse_and_validate_query(self.query, self.graph.native_graph)
+        return parse_and_validate_query(self.query, self._native_graph)
+
+    @property
+    def _native_graph(self) -> NativeGraph:
+        if isinstance(self.graph, GraphSnapshot):
+            return self.graph._native_graph
+        return self.graph.native_graph
 
     def _require_matching_snapshot(self, snapshot: GraphSnapshot) -> None:
         if isinstance(self.graph, GraphSnapshot):
             if snapshot.id == self.graph.id:
                 return
-            graph_key = self.graph.graph_key
+            graph_key = self.graph._graph_key
         else:
             graph_key = self.graph.id
-        if snapshot.graph_key != graph_key:
+        if snapshot._graph_key != graph_key:
             raise ValueError(
                 f"snapshot {snapshot.id!r} was not materialized from "
                 f"this query's graph (id {graph_key!r}) -- pass a "
@@ -185,7 +192,7 @@ class PredictiveQuery:
 
     def _model_plan_validation_facts(self, run_mode: RunMode) -> dict[str, Any]:
         parsed = self._parsed
-        graph = self.graph.native_graph
+        graph = self._native_graph
         entity_tables = [parsed.entity_table]
         if parsed.rhs_node_type is not None:
             entity_tables.append(parsed.rhs_node_type)

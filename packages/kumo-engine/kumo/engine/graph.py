@@ -327,7 +327,7 @@ class GraphSnapshot:
         return Path(self.index_path).name
 
     @cached_property
-    def native_graph(self) -> NativeGraph:
+    def _native_graph(self) -> NativeGraph:
         """`graph_config` in `kumo_core`'s normalized form, as
         `Graph.native_graph`."""
         return normalize_graph(self.graph_config)

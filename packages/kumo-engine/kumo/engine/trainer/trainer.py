@@ -10,7 +10,7 @@ import json
 import logging
 import time
 import warnings
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -21,6 +21,7 @@ from typing import (
     Mapping,
     Optional,
     TypeVar,
+    Union,
     cast,
 )
 
@@ -94,6 +95,8 @@ class TrainingResult:
     holdout_path: Optional[Path] = None
     holdout_truncated: Optional[bool] = False
     bundle_id: Optional[str] = None
+    _trainer: Optional['Trainer'] = field(default=None, repr=False,
+                                          compare=False)
 
     @property
     def id(self) -> Optional[str]:
@@ -106,6 +109,13 @@ class TrainingResult:
         from kumo.engine.trainer._provenance import read_provenance
 
         return read_provenance(self.bundle_dir)
+
+    def predict(self, *args: Any, **kwargs: Any) -> 'PredictionResult':
+        """Score with this model, as :meth:`Trainer.predict`."""
+        if self._trainer is None:
+            raise RuntimeError('This result has no model to predict with; '
+                               'use Trainer.load on its bundle_dir.')
+        return self._trainer.predict(*args, **kwargs)
 
     def holdout_df(self) -> pd.DataFrame:
         r"""Read the holdout predictions as a pandas DataFrame.
@@ -344,11 +354,6 @@ class Trainer:
             self) -> Optional[TrainingTableGenerationPlan]:
         """Effective table-generation settings saved by the last fit/load."""
         return self._training_table_generation_plan
-
-    @property
-    def training_query(self) -> Optional[str]:
-        """Predictive query of the last fit/load."""
-        return self._training_query
 
     @property
     def scratch_dir(self) -> Path:
@@ -679,6 +684,7 @@ class Trainer:
         if settings is not None and settings.wants('model'):
             _store_model(training_result, settings)
 
+        training_result = replace(training_result, _trainer=self)
         self._training_result = training_result
         self._snapshot_id = snapshot_id
         self._training_query = predictive_query
@@ -686,71 +692,34 @@ class Trainer:
 
         return training_result
 
-    def predict_snapshot(
+    def predict(
         self,
-        snapshot: GraphSnapshot,
+        source: Union[GraphSnapshot, PredictionTable, None] = None,
+        /,
         *,
+        snapshot: Optional[GraphSnapshot] = None,
+        table: Optional[PredictionTable] = None,
         entities: Optional[SourceTable] = None,
         prediction_time: Optional[datetime] = None,
         output_config: Optional[PredictionOutputConfig] = None,
         num_classes_to_return: Optional[int] = None,
         num_workers: int = 1,
         binary_classification_threshold: Optional[float] = None,
+        prediction_table: Optional[PredictionTable] = None,
     ) -> PredictionResult:
-        r"""Score ``snapshot`` with the query and table-generation plan saved
-        by the last fit/load.
+        r"""Score a snapshot and return durable file-backed results.
 
-        Without ``entities``, scores the query's population at
-        ``prediction_time`` (as :meth:`PredictiveQuery.generate_prediction_table`).
-        ``entities`` is a source table of ``ENTITY1`` (and ``TIMESTAMP`` where
-        the task needs one) rows to score instead. Other arguments are as in
-        :meth:`predict`. Warns when ``snapshot`` was taken of a different
-        graph than the one the model was trained on.
-        """
-        from kumo.engine.pquery.predictive_query import PredictiveQuery
-
-        if self._training_query is None:
-            raise RuntimeError(
-                "Trainer.predict_snapshot() requires a prior Trainer.fit() or "
-                "Trainer.load() call on this same Trainer instance.")
-        if entities is not None and prediction_time is not None:
-            raise ValueError("Pass prediction_time or entities, not both; "
-                             "put anchor times in the entities' TIMESTAMP.")
-        trained = (self._snapshot_id or '').partition('@')[0]
-        if trained and snapshot.graph_key != trained:
-            warnings.warn(
-                f"Snapshot {snapshot.id} was taken of graph "
-                f"{snapshot.graph_key}, but this model was trained on a "
-                f"snapshot of graph {trained}.", UserWarning, stacklevel=2)
-        query = PredictiveQuery.from_snapshot(snapshot, self._training_query)
-        plan = self._training_table_generation_plan
-        table = (query.generate_prediction_table(
-            snapshot, prediction_time=prediction_time, plan=plan)
-                 if entities is None else PredictionTable.from_source_table(
-                     entities, pq=query, snapshot=snapshot, plan=plan))
-        return self.predict(
-            table, snapshot=snapshot, output_config=output_config,
-            num_classes_to_return=num_classes_to_return,
-            num_workers=num_workers,
-            binary_classification_threshold=binary_classification_threshold)
-
-    @_without_torch_scatter_hint
-    def predict(
-        self,
-        prediction_table: PredictionTable,
-        *,
-        snapshot: GraphSnapshot,
-        output_config: Optional[PredictionOutputConfig] = None,
-        num_classes_to_return: Optional[int] = None,
-        num_workers: int = 1,
-        binary_classification_threshold: Optional[float] = None,
-    ) -> PredictionResult:
-        r"""Run batch prediction and return durable file-backed results.
+        ``predict(snapshot)`` scores the trained query's population at
+        ``prediction_time`` (as :meth:`PredictiveQuery.generate_prediction_table`);
+        ``entities`` is a source table of ``ENTITY1`` (and ``TIMESTAMP``
+        where the task needs one) rows to score instead, and ``table`` a
+        prediction table generated beforehand. It warns when the snapshot
+        was taken of another graph than the one the model was trained on.
+        ``predict(prediction_table, snapshot=...)`` is accepted as before.
 
         The trainer must contain fitted state from :meth:`fit`, :meth:`load`,
-        or :meth:`load_from_connector`. ``snapshot`` selects graph data and
-        features independently of the table's retained population and anchor
-        times. Without ``output_config``, predictions remain on local disk.
+        or :meth:`load_from_connector`. Without ``output_config``,
+        predictions remain on local disk.
 
         ``num_workers`` controls scorer processes, not DataLoader workers.
         The default stays in-process; values above one spawn independent
@@ -772,6 +741,58 @@ class Trainer:
 
         validate_prediction_workers(num_workers)
         validate_num_classes_to_return(num_classes_to_return)
+        if source is not None and not isinstance(source, GraphSnapshot):
+            source, prediction_table = None, source
+        snapshot = snapshot if snapshot is not None else source
+        if snapshot is None:
+            raise TypeError('predict() needs a snapshot')
+        table = table if table is not None else prediction_table
+        if table is None:
+            table = self._prediction_table(snapshot, entities,
+                                           prediction_time)
+        return self._predict(
+            table, snapshot=snapshot, output_config=output_config,
+            num_classes_to_return=num_classes_to_return,
+            num_workers=num_workers,
+            binary_classification_threshold=binary_classification_threshold)
+
+    def _prediction_table(self, snapshot: GraphSnapshot,
+                          entities: Optional[SourceTable],
+                          prediction_time: Optional[datetime]
+                          ) -> PredictionTable:
+        from kumo.engine.pquery.predictive_query import PredictiveQuery
+
+        if self._training_query is None:
+            raise RuntimeError(
+                "Trainer.predict() requires a prior Trainer.fit() or "
+                "Trainer.load() call on this same Trainer instance.")
+        if entities is not None and prediction_time is not None:
+            raise ValueError("Pass prediction_time or entities, not both; "
+                             "put anchor times in the entities' TIMESTAMP.")
+        trained = (self._snapshot_id or '').partition('@')[0]
+        if trained and snapshot._graph_key != trained:
+            warnings.warn(
+                f"Snapshot {snapshot.id} was taken of graph "
+                f"{snapshot._graph_key}, but this model was trained on a "
+                f"snapshot of graph {trained}.", UserWarning, stacklevel=3)
+        query = PredictiveQuery.from_snapshot(snapshot, self._training_query)
+        plan = self._training_table_generation_plan
+        return (query.generate_prediction_table(
+            snapshot, prediction_time=prediction_time, plan=plan)
+                if entities is None else PredictionTable.from_source_table(
+                    entities, pq=query, snapshot=snapshot, plan=plan))
+
+    @_without_torch_scatter_hint
+    def _predict(
+        self,
+        prediction_table: PredictionTable,
+        *,
+        snapshot: GraphSnapshot,
+        output_config: Optional[PredictionOutputConfig] = None,
+        num_classes_to_return: Optional[int] = None,
+        num_workers: int = 1,
+        binary_classification_threshold: Optional[float] = None,
+    ) -> PredictionResult:
         if self._training_result is None:
             raise RuntimeError(
                 "Trainer.predict() requires a prior Trainer.fit() call on "
@@ -1015,5 +1036,6 @@ class Trainer:
         trainer._training_table_generation_plan = from_json_dict(
             spec.training_table_generation, TrainingTableGenerationPlan)
         trainer._training_result = TrainingResult(metrics, paths, bundle_dir,
-                                                  bundle_id=bundle_id)
+                                                  bundle_id=bundle_id,
+                                                  _trainer=trainer)
         return trainer

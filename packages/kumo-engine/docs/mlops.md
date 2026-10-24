@@ -67,3 +67,20 @@ snapshot = GraphSnapshot.load_from_connector(S3Connector(), path=location)
 - **Destinations:** any destination whose sink holds files at the path works: S3, GCS, local files, or a volume or stage once those sinks are installed. A warehouse connector raises.
 
 With MLOps on (`graph.snapshot(mlops=...)` or a `kumo.mlops` block), each snapshot is exported under `<root>/snapshots/`, unless a complete export of it is already there.
+
+### Scoring without the graph
+
+A scoring job does not need the training job's `Graph` code. It loads the snapshot the training job exported and the model, then scores:
+
+```python
+snapshot = GraphSnapshot.load_from_connector(store, path=location)
+trainer = Trainer.load_from_connector(store, path="models/<bundle id>")
+result = trainer.predict(snapshot, binary_classification_threshold=0.5)
+```
+
+- `predict(snapshot)` reuses the trained query and table-generation plan, and scores its population at `prediction_time`.
+- `entities=` scores given rows instead; `table=` scores a prediction table generated beforehand.
+- It warns when the snapshot was taken of a different graph than the one the model was trained on.
+- `predict(prediction_table, snapshot=...)` keeps working as before.
+- `fit` results score too: `result.predict(snapshot, ...)`.
+- `PredictiveQuery.from_snapshot(snapshot, query)` binds a query to a snapshot without its `Graph`. Its graph check only means the snapshot belongs to the query's graph, not that it is compatible with a trained model.
