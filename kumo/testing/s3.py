@@ -48,9 +48,12 @@ def _s3_credentials_configured() -> bool:
 def withS3Credentials(func: Callable | None = None):
     credentials_missing = not _s3_credentials_configured()
     reason = "No AWS credentials found for S3"
-    marker = pytest.mark.skipif(credentials_missing, reason=reason)
+    marker = pytest.mark.skipif(credentials_missing, reason=reason,
+                                kumo_resource='aws')
+    from kumo.testing._skip import requires_resource
     if func is None:
         return marker
+    func = requires_resource('aws', func)
     if inspect.isgeneratorfunction(func):
         from kumo.testing._skip import skip_if
         return skip_if(credentials_missing, reason, func)

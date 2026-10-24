@@ -31,6 +31,7 @@ from statedb.config.typing import PANDAS_TO_SQL
 _HOST = os.environ.get('DATABRICKS_HOST', 'workspace.cloud.databricks.com')
 
 
+# TODO: Use a Databricks volume for seed staging to remove the AWS dependency.
 _TEST_SEED_STAGING_PATH = os.environ.get(
     'VOLUME_MOUNT_PATH',
     's3://kumo-preprod-dataplane-bucket/databricks-integ-test-staging/')
@@ -301,6 +302,7 @@ def test_databricks_table_info(databricks_hm_connector: DatabricksConnector):
     assert connector._get_table_source_size('transactions') == 776368084
 
 
+@pytest.mark.private_resource('aws')
 @withDatabricksOauthCredentials
 def test_databricks_write_df_and_write_artifacts_to_table(
         writable_databricks_table: DatabricksTableConnector):

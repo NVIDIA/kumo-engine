@@ -53,12 +53,6 @@ from statedb.config.common import JobStatus
 
 log = logging.getLogger(__name__)
 
-# Default DEPLOY_ENV_CONFIG_FILE so _diskgraph_deploy_config picks up the
-# diskgraph config even when the env var isn't set by CI.
-if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
-    _default_deploy_config = (Path(__file__).resolve().parents[3] / 'rest' /
-                              'devserver' / 'configs' / 'diskgraph-test.json')
-    os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(_default_deploy_config)
 
 FIXTURE_PATH = Path(
     __file__).parent / "test_cases" / "test_snowflake_e2e_fixtures.json"
@@ -69,8 +63,11 @@ PQL_TEST_CASE = "snowflake_regression_base"
 # storage_backend is pinned to s3 to exercise Kumo-owned remote persistence
 # before the pool-local diskgraph download.
 pytestmark = [
+    pytest.mark.ci_gate('snowflake-e2e'),
     pytest.mark.usefixtures("_pool_subprocesses"),
-    pytest.mark.parametrize("storage_backend", ["s3"], indirect=True),
+    pytest.mark.parametrize("storage_backend", [
+        pytest.param("s3", marks=pytest.mark.private_resource('aws')),
+    ], indirect=True),
 ]
 
 

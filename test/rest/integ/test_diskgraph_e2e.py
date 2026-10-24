@@ -23,7 +23,6 @@ Usage:
 """
 import logging
 import math
-import os
 import os.path as osp
 import time
 from pathlib import Path
@@ -72,20 +71,6 @@ from statedb.config.common import (
 
 log = logging.getLogger(__name__)
 
-# Diskgraph deploy config is loaded from DEPLOY_ENV_CONFIG_FILE (set by
-# .github/workflows/testing.yml). The autouse fixture below overrides
-# ``data_plane_storage_root`` with either a local temp dir or an S3 prefix,
-# controlled by the ``storage_backend`` parametrize fixture.
-#
-# Default DEPLOY_ENV_CONFIG_FILE at module import time so the
-# ``deploy_env_config`` fixture (created by test/rest/conftest.py via
-# ``DeployEnvConfig.for_test``) reads the diskgraph-test config — not
-# the default in-memory test config. Doing this in an autouse fixture is too
-# late: deploy_env_config has already cached its DeployEnvConfig by then.
-if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
-    _default_deploy_config = (Path(__file__).resolve().parents[3] / 'rest' /
-                              'devserver' / 'configs' / 'diskgraph-test.json')
-    os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(_default_deploy_config)
 
 FIXTURE_PATH = Path(__file__).parent / "test_cases" / "test_e2e_fixtures.json"
 

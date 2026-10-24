@@ -211,7 +211,7 @@ def test_zip_files_passes_exact_keys_without_prefix_listing(monkeypatch):
     )
 
 
-def test_s3_credentials_decorator_does_not_probe_provider(monkeypatch):
+def test_s3_credentials_decorator_does_not_probe_provider(monkeypatch, tmp_path):
     credential_env = (
         'AWS_ACCESS_KEY_ID',
         'AWS_ACCESS_KEY',
@@ -229,6 +229,8 @@ def test_s3_credentials_decorator_does_not_probe_provider(monkeypatch):
     def test_target():
         pass
 
+    # An existing developer credential file must not affect this no-credentials case.
+    monkeypatch.setenv('AWS_SHARED_CREDENTIALS_FILE', str(tmp_path / 'missing'))
     with patch.object(s3_filesystem.threadsafe_boto, 's3_client') as client:
         list_objects = client.return_value.list_objects_v2
         decorated = withS3Credentials(test_target)

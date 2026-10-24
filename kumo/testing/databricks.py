@@ -24,7 +24,8 @@ class DatabricksTableConnector:
 
 def withDatabricksCredentials(func: Callable):
     """Skip unless DATABRICKS_HOST and DATABRICKS_TOKEN are set."""
-    from kumo.testing._skip import skip_if
+    from kumo.testing._skip import requires_resource, skip_if
+    func = requires_resource('databricks', func, profile='databricks-pat')
     has_no_credentials = not (DATABRICKS_HOST.parse_value()
                               and DATABRICKS_TOKEN.parse_value())
     return skip_if(has_no_credentials, "No Databricks credentials found", func)
@@ -32,7 +33,8 @@ def withDatabricksCredentials(func: Callable):
 
 def withDatabricksOauthCredentials(func: Callable):
     """Skip unless the host, client ID, and client secret variables are set."""
-    from kumo.testing._skip import skip_if
+    from kumo.testing._skip import requires_resource, skip_if
+    func = requires_resource('databricks', func, profile='databricks-oauth')
     has_no_credentials = not (DATABRICKS_HOST.parse_value()
                               and DATABRICKS_CLIENT_ID.parse_value()
                               and DATABRICKS_CLIENT_SECRET.parse_value())
