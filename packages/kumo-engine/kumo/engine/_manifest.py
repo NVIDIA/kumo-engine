@@ -16,7 +16,6 @@ from typing import (
     List,
     Mapping,
     Optional,
-    Self,
     Type,
     TypeVar,
     Union,
@@ -226,9 +225,10 @@ class TrainingTableManifest(Manifest):
 
 
 @dataclass(frozen=True, kw_only=True)
-class BundleParents(Record):
-    training_table: str
-    warm_start: Optional[str]
+class ModelParents(Record):
+    training_table: Optional[TrainingTableManifest] = None
+    warm_start: Optional['ModelManifest'] = None
+    derived_from: Optional['ModelManifest'] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -239,40 +239,15 @@ class FitTiming(Record):
 
 
 @dataclass(frozen=True, kw_only=True)
-class BundleTrainingTable(Record):
-    """Written with ``source_table``'s keys inline."""
+class ModelManifest(Manifest):
+    """How a model bundle was fitted: from which training table (embedded,
+    with its snapshot) and warm-start model, when, and with which fit
+    mode. Its ``id`` is the bundle id."""
 
-    source: Optional[str]
-    snapshot: Optional[str]
-    source_table: Optional[SourceTableEntry] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        data = {**self.extra, 'source': self.source, 'snapshot': self.snapshot}
-        if self.source_table is not None:
-            data.update(self.source_table.to_dict())
-        return data
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> Self:
-        rest = {
-            key: value
-            for key, value in data.items() if key not in ('source', 'snapshot')
-        }
-        if 'version_kind' not in rest:
-            return cls(source=data.get('source'), snapshot=data.get('snapshot'),
-                       extra=rest)
-        return cls(source=data.get('source'), snapshot=data.get('snapshot'),
-                   source_table=SourceTableEntry.from_dict(rest))
-
-
-@dataclass(frozen=True, kw_only=True)
-class BundleProvenance(Manifest):
-    kind: str = 'model_bundle'
-    parents: BundleParents
-    fit: FitTiming
-    training_table: BundleTrainingTable
-    source_tables: Optional[Dict[str, SourceTableEntry]]
-    fit_mode: Optional[str]
+    kind: str = 'model'
+    parents: Optional[ModelParents] = None
+    fit: Optional[FitTiming] = None
+    fit_mode: Optional[str] = None
 
 
 def write_manifest(path: Path, manifest: Manifest) -> None:

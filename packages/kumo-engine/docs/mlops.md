@@ -35,3 +35,14 @@ A generated or caller-supplied training table carries `_provenance.json` in its 
 `TrainingTable.id` is deterministic: the same snapshot, query, plan, split seed and engine build give the same id. A caller-supplied source without a version gets a random id. An export to files (`TrainingTable.export`) writes the manifest next to the Parquet parts. `TrainingTable.load_from_connector(connector, path=..., pq=..., snapshot=...)` materializes an export again.
 
 With MLOps on, each table is stored once under `<root>/training_tables/<id>/`.
+
+### Models
+
+Every fitted bundle carries `_provenance.json` (`ModelManifest`):
+- its `id`, the bundle id (a content hash that leaves the manifest file out);
+- when it was fitted and with which fit mode;
+- its parents: the training table's manifest, embedded with that table's snapshot, and the warm-start model's manifest, if any.
+
+An embedded model keeps only the ids of its own model parents, so a long chain of warm-start retrains does not grow each manifest. `fit` returns a new `TrainingResult` per call (`.id`, `.manifest`); `Trainer.result` and `Trainer.manifest` describe the latest fit or the loaded bundle.
+
+With MLOps on, each bundle is stored under `<root>/models/<bundle id>/`. A complete copy that is already there is kept; a partial one is replaced.

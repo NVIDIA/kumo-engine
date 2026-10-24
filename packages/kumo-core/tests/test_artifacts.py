@@ -242,16 +242,17 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path, refit) -> None:
     assert json.loads(sources.metrics.read_text()) == {"test_accuracy": 0.8}
 
 
-
 def test_bundle_id_ignores_provenance_only(tmp_path: Path) -> None:
     sources, _ = _vital_sources(tmp_path)
     bundle = tmp_path / "bundle"
     VitalArtifactPublicationPolicy().publish(sources, bundle)
     bundle_id = verify_model_bundle(bundle)
 
-    for payload in ('{"a": 1}', '{"a": 2}'):
-        (bundle / "provenance.json").write_text(payload)
-        add_bundle_file(bundle, "provenance", "provenance.json")
+    for name, payload in (("_provenance.json", '{"a": 1}'),
+                          ("_provenance.json", '{"a": 2}'),
+                          ("provenance.json", '{"a": 3}')):
+        (bundle / name).write_text(payload)
+        add_bundle_file(bundle, "provenance", name)
         assert verify_model_bundle(bundle) == bundle_id
         assert bundle_id_from_manifest(bundle) == bundle_id
     roles = [

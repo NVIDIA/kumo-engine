@@ -52,7 +52,7 @@ from kumo.engine._embeddings import (
     require_embedding_models,
     require_trained_embedding_models,
 )
-from kumo.engine._manifest import BundleProvenance
+from kumo.engine._manifest import ModelManifest
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine.connector.base import Connector
 from kumo.engine.graph import GraphSnapshot
@@ -95,8 +95,13 @@ class TrainingResult:
     bundle_id: Optional[str] = None
 
     @property
-    def provenance(self) -> Optional[BundleProvenance]:
-        """The bundle's recorded fit provenance; None for older bundles."""
+    def id(self) -> Optional[str]:
+        """The model's id: its bundle id."""
+        return self.bundle_id
+
+    @property
+    def manifest(self) -> Optional[ModelManifest]:
+        """The bundle's ``_provenance.json``; None for older bundles."""
         from kumo.engine.trainer._provenance import read_provenance
 
         return read_provenance(self.bundle_dir)
@@ -195,6 +200,41 @@ def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
             'truncation is unknown.', meta)
         truncated = None
     return path, truncated
+
+
+def _store_model(result: TrainingResult, settings: Any) -> None:
+    r"""Copy the bundle to ``<root>/models/<bundle id>/`` unless a complete
+    copy is there; failures warn."""
+    from kumo_core.object_store_sink import upload_bundle
+    from pyarrow.fs import FileSelector, FileType
+
+    from kumo.engine.connector import file_store
+
+    if result.bundle_id is None:
+        return
+    try:
+        filesystem, root = file_store(
+            settings.root.connector,
+            settings.root.location(f'models/{result.bundle_id}'))
+        local = {
+            path.relative_to(result.bundle_dir).as_posix(): path.stat().st_size
+            for path in Path(result.bundle_dir).rglob('*') if path.is_file()
+        }
+        remote = {
+            info.path[len(root) + 1:]: info.size
+            for info in filesystem.get_file_info(
+                FileSelector(root, recursive=True, allow_not_found=True))
+            if info.type is FileType.File
+        }
+        if remote == local:
+            return
+        if remote:
+            filesystem.delete_dir_contents(root, missing_dir_ok=True)
+        upload_bundle(filesystem, root, str(result.bundle_dir))
+    except Exception as error:
+        warnings.warn(
+            f"Could not store model {result.bundle_id} under the artifact "
+            f"root: {error}", UserWarning, stacklevel=4)
 
 
 def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
@@ -314,10 +354,15 @@ class Trainer:
         return getattr(self._training_result, 'bundle_id', None)
 
     @property
-    def provenance(self) -> Optional[BundleProvenance]:
-        """Fit provenance of the fitted or loaded bundle, if recorded."""
+    def result(self) -> Optional[TrainingResult]:
+        """The last fit's result, or the loaded bundle's."""
+        return self._training_result
+
+    @property
+    def manifest(self) -> Optional[ModelManifest]:
+        """The fitted or loaded bundle's ``_provenance.json``, if any."""
         result = self._training_result
-        return None if result is None else result.provenance
+        return None if result is None else result.manifest
 
     @_without_torch_scatter_hint
     def fit(
@@ -327,6 +372,7 @@ class Trainer:
         snapshot: GraphSnapshot,
         export_config: Optional[ModelOutputConfig] = None,
         warm_start: Optional[Self] = None,
+        mlops: Optional[Any] = None,
     ) -> TrainingResult:
         r"""Train a model against `train_table`.
 
@@ -355,6 +401,11 @@ class Trainer:
                 may contain an AutoML search space instead of the fitted
                 architecture; they support prediction but are unreliable
                 warm-start sources.
+            mlops: a `kumo.MLOps`; with MLOps on (this or a `kumo.mlops`
+                block), the bundle is also stored under the artifact root.
+
+        Each call returns a new `TrainingResult`; `Trainer.result` holds the
+        latest.
         """
         from kumo_core.automl.runtime import (
             inherit_warm_start_model_plan,
@@ -383,6 +434,10 @@ class Trainer:
             raise NotImplementedError(
                 f'{type(export_config.connector).__name__} cannot publish '
                 f'models')
+        from kumo.engine._mlops import resolve
+        from kumo.engine.trainer._provenance import parent_model
+
+        settings = resolve(mlops)
         started_at = datetime.now(timezone.utc)
         run_id = f'{self._id}-fit-{new_run_id()}'
         run_dir = self.scratch_dir / 'runs' / run_id
@@ -549,10 +604,13 @@ class Trainer:
             training_table_generation=train_table.generation_plan,
             export_config=export_config,
             model_plan=effective_plan,
-            provenance=dict(train_table=train_table,
-                            warm_start_bundle_id=warm_start_bundle_id,
-                            started_at=started_at, fit_mode=fit_mode,
-                            snapshot=snapshot),
+            provenance=dict(
+                train_table=train_table,
+                warm_start=None if warm_start is None else parent_model(
+                    warm_start._training_result.bundle_dir,
+                    warm_start_bundle_id),
+                started_at=started_at, fit_mode=fit_mode),
+            settings=settings,
         )
 
     def _finish_fit(
@@ -565,6 +623,7 @@ class Trainer:
         export_config: Optional[ModelOutputConfig],
         model_plan: Optional[ModelPlan] = None,
         provenance: Optional[Mapping[str, Any]] = None,
+        settings: Optional[Any] = None,
     ) -> TrainingResult:
         """Commit durable fit outputs before making this trainer usable."""
         from kumo_core.artifacts import bundle_id_from_manifest
@@ -586,15 +645,17 @@ class Trainer:
         except Exception as error:
             warnings.warn(f"Could not compute the bundle id: {error}",
                           UserWarning, stacklevel=3)
-        if provenance is not None:
+        if provenance is not None and training_result.bundle_id is not None:
             try:
                 write_provenance(training_result.bundle_dir,
                                  bundle_id=training_result.bundle_id,
                                  **provenance)
             except Exception as error:
                 warnings.warn(
-                    f"Publishing the model bundle without provenance.json: "
+                    f"Publishing the model bundle without _provenance.json: "
                     f"{error}", UserWarning, stacklevel=3)
+        if settings is not None and settings.wants('model'):
+            _store_model(training_result, settings)
         if export_config is not None:
             spec = read_training_spec(training_result.bundle_dir)
             published = export_config.connector.sink_backend.publish_model(

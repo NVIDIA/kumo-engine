@@ -255,7 +255,8 @@ class VitalArtifactPublicationPolicy:
         return digest.hexdigest()
 
 
-PROVENANCE_FILE = 'provenance.json'
+#: Earlier name of the bundle manifest; also kept out of the bundle id.
+_OLD_PROVENANCE_FILE = 'provenance.json'
 
 
 def verify_model_bundle(bundle: Path) -> str:
@@ -359,7 +360,8 @@ def bundle_id_from_manifest(bundle: Path) -> str:
 
 def _bundle_id(pairs: Iterable[tuple[str, str]]) -> str:
     payload = json.dumps(
-        sorted(pair for pair in pairs if pair[0] != PROVENANCE_FILE),
+        sorted(pair for pair in pairs
+               if pair[0] not in (PROVENANCE_FILE, _OLD_PROVENANCE_FILE)),
         separators=(',', ':'))
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 

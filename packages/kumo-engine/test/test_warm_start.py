@@ -182,7 +182,8 @@ def test_bundle_warm_start_fit_reload_and_predict(tmp_path, monkeypatch, refit,
         patch.setattr(BaseLightningModule, 'configure_optimizers', configure)
         second = destination.fit(table, snapshot=snapshot, warm_start=source)
     assert restored_states and configured_states
-    assert second.provenance.parents.warm_start == source.bundle_id
+    assert second.manifest.parents.warm_start.id == source.bundle_id
+    assert second.manifest.parents.warm_start.parents.warm_start is None
     assert destination.model_plan == configured_plan
     assert _hash_bundle(durable) == original_hashes
     assert _hash_bundle(source_bundle) == original_hashes
