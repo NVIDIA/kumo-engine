@@ -23,3 +23,15 @@ with kumo.mlops(cfg):
 Every artifact carries a `_provenance.json` manifest, metadata only. The leading underscore keeps Spark and Hive Parquet readers from treating it as data.
 
 A graph snapshot's manifest, next to its index, records each source table's connector, location and version, plus the engine build that wrote it. `graph.snapshot(record_sources=False)` keeps only connector and table names, and keeps Custom SQL only as a hash.
+
+### Training tables
+
+A generated or caller-supplied training table carries `_provenance.json` in its staging directory:
+- the query, the effective generation plan and the task type;
+- the split seed;
+- the snapshot it was generated from (that snapshot's manifest, embedded);
+- for `TrainingTable.from_source_table`, the source table's connector, location and version.
+
+`TrainingTable.id` is deterministic: the same snapshot, query, plan, split seed and engine build give the same id. A caller-supplied source without a version gets a random id. An export to files (`TrainingTable.export`) writes the manifest next to the Parquet parts. `TrainingTable.load_from_connector(connector, path=..., pq=..., snapshot=...)` materializes an export again.
+
+With MLOps on, each table is stored once under `<root>/training_tables/<id>/`.

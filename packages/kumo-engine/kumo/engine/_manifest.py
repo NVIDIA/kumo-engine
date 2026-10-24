@@ -207,18 +207,21 @@ class SnapshotManifest(Manifest):
 
 @dataclass(frozen=True, kw_only=True)
 class TrainingTableParents(Record):
-    snapshot: str
+    snapshot: SnapshotManifest
     source_table: Optional[SourceTableEntry] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
 class TrainingTableManifest(Manifest):
+    """How a training table was generated: from which snapshot (embedded)
+    and, for caller-supplied rows, which source table."""
+
     kind: str = 'training_table'
-    parents: TrainingTableParents
-    query: str
-    generation_plan: Dict[str, Any]
-    task_type: str
-    split_seed: Optional[int]
+    parents: Optional[TrainingTableParents] = None
+    query: Optional[str] = None
+    generation_plan: Optional[Dict[str, Any]] = None
+    task_type: Optional[str] = None
+    split_seed: Optional[int] = None
 
 
 def write_manifest(path: Path, manifest: Manifest) -> None:

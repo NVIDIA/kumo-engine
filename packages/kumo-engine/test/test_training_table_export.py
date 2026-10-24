@@ -310,12 +310,17 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
     query = 'PREDICT ents.LABEL FOR EACH ents.ID'
     pquery, table, _ = _export(graph, query, 'lineage')
     manifest = table.manifest
-    assert manifest.id == table.tt_id == _spec(table)['tt_id']
-    assert manifest.parents == TrainingTableParents(snapshot=snapshot.id)
+    assert manifest.id == table.id and table.id.startswith('tt-')
+    assert table.id != _spec(table)['tt_id']
+    assert manifest.parents == TrainingTableParents(
+        snapshot=snapshot.manifest)
     assert manifest.query == query
     assert manifest.extra == {}
-    assert table.source_mode == 'pquery'
+    assert table._source_mode == 'pquery'
     assert manifest.split_seed == 0
+    again = pquery.generate_training_table(snapshot)
+    assert again.id == table.id
+    assert again.tt_id != table.tt_id
 
     directory = out / 'lineage'
     baseline = tmp_path / 'baseline'
@@ -323,13 +328,13 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
     for part in baseline.glob('*.parquet'):
         assert (directory / part.name).read_bytes() == part.read_bytes()
     assert json.loads(
-        (directory / '_kumo_manifest.json').read_bytes()) == manifest.to_dict()
+        (directory / '_provenance.json').read_bytes()) == manifest.to_dict()
 
-    reloaded = kumo.TrainingTable.from_source_table(
-        connector['lineage'], TrainingTableSpec(split_col='SPLIT'), pq=pquery,
-        snapshot=snapshot)
+    reloaded = kumo.TrainingTable.load_from_connector(
+        connector, path='lineage', pq=pquery, snapshot=snapshot)
     manifest = reloaded.manifest
-    assert reloaded.source_mode == 'custom_tt'
+    assert reloaded._source_mode == 'custom_tt'
+    assert reloaded.id != table.id
     assert manifest.parents.source_table == SourceTableEntry(
         connector='LOCAL_FILE',
         location=str(directory.resolve()),
@@ -344,7 +349,7 @@ def test_training_table_manifest_round_trips_unchanged(graph, tmp_path):
     _, table, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
                           'round_trip')
     newer = json.loads(
-        (table.staging_dir / 'training-table-manifest.json').read_text())
+        (table.staging_dir / '_provenance.json').read_text())
     newer['future'] = 1
     newer['parents']['label_source'] = 'x'
     source = tmp_path / 'newer.json'
@@ -393,7 +398,7 @@ def test_manifest_write_failure_keeps_generation_and_export(
         _, table, exported = _export(
             graph, 'PREDICT ents.LABEL FOR EACH ents.ID', 'no_manifest')
     assert table.manifest is None
-    assert not (out / 'no_manifest' / '_kumo_manifest.json').exists()
+    assert not (out / 'no_manifest' / '_provenance.json').exists()
     assert exported.num_rows == sum(_seeds(table)[1].values())
 
 
@@ -402,15 +407,15 @@ def test_unreadable_manifest_still_exports(graph):
     table = kumo.PredictiveQuery(
         graph=graph_, query='PREDICT ents.LABEL FOR EACH ents.ID'
     ).generate_training_table(snapshot)
-    manifest = table.staging_dir / 'training-table-manifest.json'
+    manifest = table.staging_dir / '_provenance.json'
     manifest.chmod(0)
     try:
-        with pytest.warns(UserWarning, match='_kumo_manifest.json'):
+        with pytest.warns(UserWarning, match='_provenance.json'):
             table.export(TrainingTableOutputConfig(connector, 'unreadable'))
     finally:
         manifest.chmod(0o644)
     assert list((out / 'unreadable').glob('*.parquet'))
-    assert not (out / 'unreadable' / '_kumo_manifest.json').exists()
+    assert not (out / 'unreadable' / '_provenance.json').exists()
 
 
 def test_no_sidecar_for_warehouse_or_csv_exports(graph):
@@ -429,4 +434,34 @@ def test_no_sidecar_for_warehouse_or_csv_exports(graph):
     table.export(TrainingTableOutputConfig(warehouse, 'DB.SCHEMA.TT'))
     assert calls == [{'export_id': f'{table.tt_id}:tt-export-v1'}]
     table.export(TrainingTableOutputConfig(connector, 'rows.csv/'))
-    assert not (out / 'rows.csv' / '_kumo_manifest.json').exists()
+    assert not (out / 'rows.csv' / '_provenance.json').exists()
+
+
+def test_a_mlops_block_stores_each_table_once_under_the_root(graph, tmp_path):
+    graph_, snapshot, _, _ = graph
+    pquery = kumo.PredictiveQuery(graph=graph_,
+                                  query='PREDICT ents.LABEL FOR EACH ents.ID')
+    root = tmp_path / 'artifacts'
+    with kumo.mlops(kumo.MLOps(artifact_root=str(root))):
+        table = pquery.generate_training_table(snapshot)
+        stored = root / 'training_tables' / table.id
+        parts = {p.name: p.stat().st_mtime_ns for p in stored.iterdir()}
+        pquery.generate_training_table(snapshot)
+    assert '_provenance.json' in parts and '_SUCCESS' in parts
+    assert {p.name: p.stat().st_mtime_ns for p in stored.iterdir()} == parts
+    assert json.loads((stored / '_provenance.json').read_text())['id'] == (
+        table.id)
+    off = pquery.generate_training_table(
+        snapshot, mlops=kumo.MLOps(artifact_root=str(tmp_path / 'other'),
+                                   export={'model'}))
+    assert off.id == table.id and not (tmp_path / 'other').exists()
+
+
+def test_a_bare_snapshot_id_parent_reads_as_a_stub(tmp_path):
+    path = tmp_path / '_provenance.json'
+    path.write_text(json.dumps({
+        'kind': 'training_table', 'schema_version': 1, 'id': 'tt-1',
+        'parents': {'snapshot': 'abc@0123'}}))
+    manifest = read_manifest(path, TrainingTableManifest)
+    assert manifest.parents.snapshot.id == 'abc@0123'
+    assert manifest.parents.snapshot.reconstructed

@@ -90,7 +90,7 @@ from kumo.engine.pquery.prediction_table import (
     PredictionTable,
     _compile_prediction_table,
 )
-from kumo.engine.pquery.training_table import TrainingTable, _record_manifest
+from kumo.engine.pquery.training_table import TrainingTable, _finish
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +219,8 @@ class PredictiveQuery:
         self,
         snapshot: GraphSnapshot,
         plan: Optional[TrainingTableGenerationPlan] = None,
+        *,
+        mlops: Optional[Any] = None,
     ) -> TrainingTable:
         r"""Compiles this query into a `TrainingTable` against a materialized
         `snapshot` of `self.graph`. Mirrors the cloud SDK's
@@ -233,6 +235,8 @@ class PredictiveQuery:
             plan: if not given, uses `kumo_core`'s generation defaults,
                 matching the local backend's existing
                 `suggest_training_table_plan` default.
+            mlops: a `kumo.MLOps`; with MLOps on (this or a `kumo.mlops`
+                block), the table is also stored under the artifact root.
         """
         self._require_matching_snapshot(snapshot)
         for name in ('train_table_path_override', 'task_path_override'):
@@ -316,8 +320,7 @@ class PredictiveQuery:
             required_stages=task_plan.task_dataset.required_stages,
             generation_plan=generation_plan,
         )
-        _record_manifest(table, snapshot, task_plan.train_table)
-        return table
+        return _finish(table, snapshot, task_plan.train_table, mlops)
 
     def generate_prediction_table(
         self,
