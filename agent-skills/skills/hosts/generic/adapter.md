@@ -47,7 +47,9 @@ ADLS has no Kumo connector. Data there is outside this host's reach: say so.
 ## 2. Access
 
 Implements `kumo-data-science/accept/preflight.md` §0. Check, in this order, and stop at the
-first that reads `source_scope`:
+first that reads the **columns and types** inside `source_scope`. A listing of object names
+(`aws s3 ls`, `gcloud storage ls`) proves access, not structure: keep going down the list for a
+reader, and if none is found, send the ask-back below with **Details** as the way forward.
 
 1. **A tool in this session** that reads the system — a server or connector tool for that
    warehouse or storage. Use only its read operations.
@@ -62,7 +64,7 @@ first that reads `source_scope`:
 | Source | Tool | Check, inside `source_scope` | Columns and types | Declared keys | §3 probe |
 |---|---|---|---|---|---|
 | Local files | your file tools; `duckdb`, or Python with `pyarrow` | list the directory | CSV header line; Parquet schema (`duckdb -c "DESCRIBE SELECT * FROM '<file>'"`) | none | `duckdb`, or `pyarrow` |
-| S3 | `aws` | `aws s3 ls s3://<bucket>/<prefix>/` | file names only; for columns, a reader of `s3://` with the same credentials (`duckdb`), else §2 details | none | the same reader, else skip |
+| S3 | `aws` | `aws s3 ls s3://<bucket>/<prefix>/` | file names only — not enough on its own; for columns, a reader of `s3://` with the same credentials (`duckdb`, or check 3), else the ask-back | none | the same reader, else skip |
 | GCS | `gcloud` | `gcloud storage ls gs://<bucket>/<prefix>/` | as S3, with `gs://` | none | as S3 |
 | BigQuery | `bq` | `bq ls <project>:<dataset>` | `bq show --schema --format=prettyjson <project>:<dataset>.<table>` | `INFORMATION_SCHEMA.TABLE_CONSTRAINTS` and `KEY_COLUMN_USAGE` of the dataset | `bq query --nouse_legacy_sql` |
 | Databricks | `databricks` | `databricks tables list <catalog> <schema>` | `databricks tables get <catalog>.<schema>.<table>` | the same output's table constraints | only through a SQL warehouse the user named; else skip |
@@ -77,7 +79,7 @@ profile or account, or edit a tool's configuration; never add or update software
 reader. Tool permission prompts are the user's to answer; a refused prompt means that path is
 unavailable.
 
-**When nothing reads the source**, send the preflight §0 ask-back. State what you checked and
+**When nothing reads the source's columns**, send the preflight §0 ask-back. State what you checked and
 what happened — "no BigQuery tool in this session; `bq ls my-proj:sales` returned `Access
 Denied`" — then offer:
 
@@ -111,6 +113,10 @@ Any destination a Kumo connector writes
 Databricks, or a path in a local directory, S3 or GCS. The destination may be in a different
 system from the source; it gets its own connector. Not destinations here: ADLS, and BigQuery for
 anything but predictions and embeddings.
+
+A path destination ends in `/` (a directory) or in `.parquet` / `.csv` (one file). The sink adds
+`.parquet` to any other path, so the file would not be where the user said. When the user gives
+a path with neither, restate it with a trailing `/` at Node 1d and let them confirm or correct it.
 
 ---
 

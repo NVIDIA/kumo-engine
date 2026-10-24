@@ -582,7 +582,12 @@ PredictionResult.export(output_config)
   (`kumo_core.prediction_options.MAX_LINKS_TO_PREDICT`); for more than 500 per entity, export
   embeddings instead. Multiclass and multilabel accept it optionally and fall back to the
   query's `RANK TOP K` when it has one. Regression and binary classification reject it.
-- Binary classification requires an explicit `binary_classification_threshold`.
+- Binary classification requires an explicit `binary_classification_threshold`; there is no SDK
+  default. Use the one confirmed at Node 1d (§12).
+- `binary_classification_threshold` and `num_classes_to_return` are arguments of `predict`, and
+  only of `predict`. `PredictionOutputConfig` describes where to write, not how to predict: it
+  takes neither, and passing one is a `TypeError`. Whatever the destination, the config carries
+  only the fields in its signature above.
 - `PredictionResult` exposes `.num_rows`, `.files`, `.frame`, `.selection`, `.artifact_type`.
   Prefer `.num_rows` and `.files` — `.frame` collects every row into pandas.
 - `prediction_result.export(output_config)` writes an existing result to a destination. Passing
@@ -608,12 +613,13 @@ Source: shipped package (`kumo.engine.trainer`)
 ### 9.2 Destinations by connector
 
 The output connector may differ from the source connector. Source: shipped package
-(`kumo.engine.trainer.output_config`, `kumo.engine.connector.file`, `kumo_databricks.sink`):
+(`kumo.engine.trainer.output_config`, `kumo.engine.connector.file`, `kumo_core.object_store_sink`,
+`kumo_databricks.sink`):
 
 | Connector | `PredictionOutputConfig` form | Rules |
 |---|---|---|
 | `SnowflakeConnector` | `artifact_type=` + `table_name=` (bare name) | connector scoped to the destination database and schema; §9.1 |
-| `FileConnector`, `S3Connector`, `GCSConnector` | `output_paths={'predictions': ..., 'embeddings': ...}` — the keys select the artifacts — or `artifact_type=` + `table_name=` | do not combine the two forms; a path ending in `/` is a directory and must be empty; otherwise one file, and `.parquet` is added when there is no suffix; paths are relative to a rooted connector, full URIs for a rootless one; `FileConnector` does not append |
+| `FileConnector`, `S3Connector`, `GCSConnector` | `output_paths={'predictions': ..., 'embeddings': ...}` — the keys select the artifacts — or `artifact_type=` + `table_name=` | do not combine the two forms; a path ending in `/` is a directory and must be empty; otherwise one file, written in the format its `.parquet` or `.csv` suffix names, and `.parquet` is added when it has neither — by all three connectors; paths are relative to a rooted connector, full URIs for a rootless one |
 | `BigQueryConnector` | `artifact_type=` + `table_name=` (unqualified table ID in its dataset) | predictions and embeddings only — not a model `export_config` and not a `Trainer.load_from_connector` source |
 | `DatabricksConnector` | `artifact_type=` + `table_name='<schema>__kumo__<table>'` | the schema must be the connector's own; a bare table name fails; writes stage through the volume `<catalog>.<schema>._kumo_staging`, created on first use |
 
@@ -786,8 +792,8 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 | `Edge(src_table=, fkey=, dst_table=)` | Relationships from the intake contract |
 | PQL `query=` | Generated per `kumoai-reference/references/pql_writing.md` |
 | `prediction_time=` | A known in-range **naive** `datetime`; **cannot be computed** |
-| `num_classes_to_return=N` | Results per entity the user asked for, 1–500; defaults to `RANK TOP K` but may differ. Required for link prediction (§9) |
-| `binary_classification_threshold=` | Required for binary classification |
+| `predict(num_classes_to_return=N)` | Results per entity the user asked for, 1–500; defaults to `RANK TOP K` but may differ. Required for link prediction (§9) |
+| `predict(binary_classification_threshold=)` | Required for binary classification; never on `PredictionOutputConfig`. The threshold restated at Node 1d: the user's, else `0.5 [default]` (`kumo-data-science/accept/intake_contract.md`) |
 | Population table (static task, rows that already have a target) | Confirmed at Node 1d (§7.1) |
 | `PredictionOutputConfig(...)` + output connector | Output destination in its connector's form (§9.2); report it back unchanged — `DB.SCHEMA.TABLE`, or the path |
 
@@ -819,6 +825,8 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 - [ ] `graph.snapshot()` before generating any table.
 - [ ] **`trainer.fit(training_table, snapshot=snapshot)`** — `snapshot=` present.
 - [ ] **`trainer.predict(prediction_table, snapshot=snapshot, ...)`** — `snapshot=` present.
+- [ ] `binary_classification_threshold` / `num_classes_to_return` on `predict`, never on
+      `PredictionOutputConfig` (§9).
 - [ ] `prediction_time` hardcoded and **naive** — no `tzinfo`, no `timezone.utc` — with the reason stated.
 - [ ] Static query: generated population only for rows whose target is NULL; otherwise the
       population table confirmed at Node 1d (§7.1).

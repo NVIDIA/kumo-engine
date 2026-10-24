@@ -99,14 +99,15 @@ confirmed **before** any PQL is written.
 | **`output_location`** | none — training yields a notebook; when given, the same notebook also predicts into it (SKILL.md Step 2) |
 | **artifact format** | one notebook (user may ask for a script) |
 | **embeddings** | not included; add only when the user explicitly asks (see below) |
+| **binary classification threshold** | `0.5`, shown `[default]` at Node 1d whenever a binary classification writes predictions. `predict` requires one and has no default of its own (`kumoai-reference/references/kumo_finetuning_sdk.md` §9) |
 | **metrics** | by task type, see `SKILL.md` |
 
 If the user supplies an `output_location`, carry it verbatim into the task interpretation gate
 and the generated artifact — the notebook's predict call writes there. If none is supplied,
 predictions stay local and the notebook shows how to add a destination. The destination must be
-one the host can write (`hosts/<host>/adapter.md`, *Destinations*). **It is written with exactly
-the name passed** — no suffix, no case change (the host's `runtime.md`,
-`kumoai-reference/references/kumo_finetuning_sdk.md` §9.1). Older SDK builds appended
+one the host can write (`hosts/<host>/adapter.md`, *Destinations*). **A table is written with
+exactly the name passed** — no suffix, no case change (the host's `runtime.md`,
+`kumoai-reference/references/kumo_finetuning_sdk.md` §9.1). A file path follows §9.2. Older SDK builds appended
 `_predictions`; the current one does not.
 
 ---

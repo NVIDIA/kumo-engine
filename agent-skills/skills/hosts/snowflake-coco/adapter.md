@@ -94,7 +94,8 @@ Database identifiers written with a hyphen in chat (`synthetic-datasets`) are th
 their underscore form (`SYNTHETIC_DATASETS`) — resolve, do not ask.
 
 The `source_scope` the user confirmed at intake is also the `database` / `schema_name` passed to
-the connector in `runtime.md` §3. Snowflake's `INFORMATION_SCHEMA` needs only `USAGE` on the database and
+the connector in `runtime.md` §3. For a semantic view, pass the database and schema its base
+tables share (`kumo-data-science/accept/semantic_view.md`), never the view's own `DB.SCHEMA.VIEW`. Snowflake's `INFORMATION_SCHEMA` needs only `USAGE` on the database and
 schema plus `SELECT` (or `REFERENCES`) on the tables to be listed.
 
 

@@ -43,7 +43,7 @@ preds in the scores table", after a turn that named the model and the table, sup
 | Field | How it is obtained | Shown as |
 |---|---|---|
 | **task** — entity, outcome, window, task type | Reused from the model unchanged. Never reopened. | restated at 1d |
-| **`source_scope`** | In order: a source the user named → the connector the user named for this request (one connector reads the source and writes the scores unless the user separates them) → the source scope recorded with the model at publication. When neither of the first two applies, restate `Source: recorded with <model> [inferred]` and do not ask: the record is read at 1c. Ask only if 1c then finds no recorded source. | `[supplied]` / `[inferred]` at 1c |
+| **`source_scope`** | In order: a source the user named → the connector the user named for this request, on a host whose *Source scope* accepts a connector name (one connector reads the source and writes the scores unless the user separates them) → the source scope recorded with the model at publication. When neither of the first two applies, restate `Source: recorded with <model> [inferred]` and do not ask: the record is read at 1c. Ask only if 1c then finds no recorded source. On a host that does not accept a connector name, a connector named alone is not a source: ask for the system and location as that host's adapter says. | `[supplied]` / `[inferred]` at 1c |
 | **graph** | Rebuilt from the model's recorded graph definition inside `source_scope`, then confirmed | `[inferred]` at 1c |
 | **`scoring_population`** | Default: every entity of the trained entity table, anchored at the latest timestamp in the rebuilt snapshot ("current predictions"). A static task has no anchor. If the user names a subset or an anchor date, use theirs. | `[default]` / `[supplied]` at 1d |
 | **model version** | The version the user named. If the address resolves to more than one version and none was named, ask which one. Never pick the latest yourself. | `[supplied]` at 1d |
@@ -57,7 +57,7 @@ query is never changed to get them (`kumoai-reference/references/kumo_finetuning
 
 | Task type | Options |
 |---|---|
-| Binary classification | A threshold in [0, 1] (`binary_classification_threshold`), the user's value or the one recorded with the model. The output already carries both class probabilities and the thresholded label, so there is no result count: a request for two classes needs no option. A threshold outside [0, 1] is invalid: ask for one in range. |
+| Binary classification | A threshold in [0, 1] (`binary_classification_threshold`): the user's value, else the one recorded with the model, else 0.5 `[default]`; `predict` has no default. The output already carries both class probabilities and the thresholded label, so there is no result count: a request for two classes needs no option. A threshold outside [0, 1] is invalid: ask for one in range. |
 | Link prediction, ranking | The number of results per entity (`num_classes_to_return`), 1 to 500. It is **independent of the query's `RANK TOP K`**: a `RANK TOP 10` model can return 50. Unstated, it is K from `RANK TOP K` `[default]`, shown for the user to change. Above 500, say so and offer up to 500 per entity, or the entity and item embeddings for a nearest-neighbour search over longer lists; ask which. |
 | Multiclass, multilabel | Optionally a number of classes to return; unstated, every class. |
 | Regression | None: one predicted value per entity. A "top N" request does not apply; say so and ask whether one value per entity is what the user wants. |
@@ -119,7 +119,7 @@ For `batch_inference`, restate in this shape and stop for confirmation:
 - Source: <source_scope> [supplied | inferred]
 - Population: <all <entity> as of latest snapshot timestamp [default] | the user's subset/date [supplied]>
 - Output: predictions written to <destination, verbatim>
-- Scoring options: <threshold <t> | <N> results per entity [default: RANK TOP K | supplied] | none (regression)>
+- Scoring options: <binary: threshold — the user's value [supplied] | recorded with the model [inferred] | 0.5 [default]; link prediction, ranking: <N> results per entity [supplied | default: RANK TOP K]; regression: none>
 - Embeddings: <included, if explicitly requested>
 ```
 

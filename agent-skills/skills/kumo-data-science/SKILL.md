@@ -212,6 +212,7 @@ generated before the task is confirmed:
 - Task type: <temporal binary classification | link prediction | ...>
 - Output: predictions written to <destination, verbatim> in the same notebook | notebook only, no predictions written
 - Scoring population (static tasks): rows whose <target> is NULL | all <entity> rows, staged at <DB.SCHEMA.TABLE>
+- Threshold (binary classification, predictions written): <the user's value [supplied] | 0.5 [default]>
 - Embeddings: <included, if explicitly requested>
 ```
 
