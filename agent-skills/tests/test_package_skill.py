@@ -65,6 +65,116 @@ def test_generic_ships_only_its_own_host(tmp_path: Path) -> None:
     assert leaks == []
 
 
+def test_genie_ships_only_its_own_host(tmp_path: Path) -> None:
+    pkg = package_skill.build('genie', tmp_path)
+    assert pkg == tmp_path / 'genie' / 'skills' / 'kumo-data-science'
+    assert [p.name for p in (pkg / 'hosts').iterdir()] == ['databricks-genie']
+    assert sorted(p.name for p in (pkg / 'hosts' / 'databricks-genie').iterdir()) == [
+        'adapter.md', 'job.md', 'runtime.md']
+    for name in package_skill.CAPABILITY:
+        assert (pkg / name / 'SKILL.md').is_file()
+    leaks = [str(p.relative_to(pkg)) for p in pkg.rglob('*.md')
+             if re.search(r'snowflake-coco|hosts/generic|ml_job\.md', p.read_text())]
+    assert leaks == []
+
+
+def test_genie_names_no_secret_by_default() -> None:
+    """The notebook runs as its user; a service principal appears only as the opt-in form."""
+    runtime = (package_skill.SKILLS / 'hosts' / 'databricks-genie' / 'runtime.md').read_text()
+    code = '\n'.join(re.findall(r'```python\n(.*?)```', runtime, re.DOTALL))
+    assert 'kumo.DatabricksIdentity()' in code
+    assert not re.search(r'dbutils|client_secret|token', code)
+    assert "__kumo__" in code
+    assert "wait_timeout='50s'" in code and 'get_statement' in code
+
+
+def test_genie_maps_every_snowflake_mechanism() -> None:
+    """The capability skills and batch inference name Snowflake mechanisms; the Genie adapter
+    maps each to its Databricks counterpart, so the Snowflake case groups are covered."""
+    host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
+    adapter, runtime, job = ((host / n).read_text() for n in ('adapter.md', 'runtime.md', 'job.md'))
+    section = adapter[adapter.index('## 6. Capability skills'):adapter.index('## 7.')]
+    for snowflake, here in [('model registry', 'registered model'), ('stage', 'volume'),
+                            ('SHOW VERSIONS', 'version listing'), ('Snowpark', 'run_sql'),
+                            ('ML Job', 'job.md'), ('ARRAY', 'not verified')]:
+        row = next((line for line in section.splitlines() if snowflake in line), '')
+        assert here in row, f'adapter §6 does not map {snowflake!r} to {here!r}'
+    assert 'metric view' in adapter and 'semantic_view.md' in adapter
+    assert 'ModelRegistryLocation(model_name=MODEL_NAME)' in runtime   # UC assigns the version
+    assert 'model_versions.list' in runtime
+    assert 'existing_cluster_id' in job and 'PauseStatus.PAUSED' in job
+    assert not re.search(r'clusters\.create|new_cluster', job)
+
+
+class FakeWorkspace:
+    """Records imports and serves them back, as the Workspace API would."""
+
+    def __init__(self, existing: dict[str, bytes] | None = None, corrupt: str = '') -> None:
+        self.files = dict(existing or {})
+        self.corrupt = corrupt
+        self.deleted: list[str] = []
+
+    def me(self) -> str:
+        return 'someone@example.com'
+
+    def api(self, method: str, path: str, body: dict | None = None,
+            query: dict | None = None) -> dict:
+        if path.endswith('/import'):
+            assert body and body['overwrite'] is True
+            data = package_skill.base64.b64decode(body['content'])
+            self.files[body['path']] = b'x' if self.corrupt in body['path'] and self.corrupt else data
+        if path.endswith('/export'):
+            assert query
+            return dict(content=package_skill.base64.b64encode(self.files[query['path']]).decode())
+        return {}
+
+    def listing(self, path: str, dirs: bool = False) -> list[str]:
+        files = [p for p in self.files if p.startswith(path + '/')]
+        if not dirs:
+            return files
+        found = {f.rsplit('/', i)[0] for f in files for i in range(1, f[len(path):].count('/'))}
+        return sorted(found - {path}, key=len, reverse=True)
+
+    def delete(self, path: str) -> None:
+        assert path in self.files or not self.listing(path), f'non-empty directory {path}'
+        self.files.pop(path, None)
+        self.deleted.append(path)
+
+
+def test_deploy_reads_every_file_back(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    pkg = package_skill.build('genie', tmp_path)
+    target = '/Users/someone@example.com/.assistant/skills/kumo-data-science'
+    ws = FakeWorkspace({f'{target}/old-notes.md': b'stale'})
+    assert package_skill.deploy_genie(pkg, ws) == target  # type: ignore[arg-type]
+    shipped = {f'{target}/{p.relative_to(pkg).as_posix()}': p.read_bytes()
+               for p in pkg.rglob('*') if p.is_file()}
+    assert {k: ws.files[k] for k in shipped} == shipped
+    out = capsys.readouterr().out
+    assert 'read back byte for byte' in out
+    assert f'left in place: {target}/old-notes.md' in out
+
+
+def test_prune_deletes_only_what_the_package_does_not_ship(tmp_path: Path) -> None:
+    pkg = package_skill.build('genie', tmp_path)
+    skills = '/Users/someone@example.com/.assistant/skills'
+    target = f'{skills}/kumo-data-science'
+    old = {f'{target}/hosts/databricks/adapter.md': b'old', f'{target}/future/a.md': b'old',
+           f'{skills}/tabular/SKILL.md': b'another skill'}
+    ws = FakeWorkspace(old)
+    package_skill.deploy_genie(pkg, ws, prune=True)  # type: ignore[arg-type]
+    assert f'{target}/hosts/databricks/adapter.md' not in ws.files
+    assert f'{target}/future/a.md' not in ws.files
+    assert ws.files[f'{skills}/tabular/SKILL.md'] == b'another skill'
+    assert f'{target}/hosts/databricks-genie/adapter.md' in ws.files
+    assert all(d.startswith(target + '/') for d in ws.deleted)
+
+
+def test_deploy_fails_on_a_mismatch(tmp_path: Path) -> None:
+    pkg = package_skill.build('genie', tmp_path)
+    with pytest.raises(SystemExit, match='deploy check failed'):
+        package_skill.deploy_genie(pkg, FakeWorkspace(corrupt='runtime.md'))  # type: ignore[arg-type]
+
+
 def test_core_names_no_host() -> None:
     """The portable core reaches its host as `hosts/<host>/`, never by a host's own name."""
     hosts = sorted(p.name for p in (package_skill.SKILLS / 'hosts').iterdir() if p.is_dir())
@@ -81,5 +191,12 @@ def test_adapter_covers_what_the_core_defers(host: str) -> None:
     """Preflight §0, the intake contract and batch inference defer these to the adapter."""
     adapter = next(rel for rel in package_skill.HOSTS[host]['hosts'] if rel.endswith('adapter.md'))
     text = (package_skill.SKILLS / 'hosts' / adapter).read_text()
-    for section in ['Source scope', 'Access', 'Destinations']:
+    for section in ['Source scope', 'Access', 'Destinations', 'reflight',
+                    'untime column constraints' if host != 'coco' else 'Runtime-dependent']:
         assert section in text, f'{adapter} does not cover {section}'
+
+
+@pytest.mark.parametrize('host', sorted(package_skill.HOSTS))
+def test_every_host_ships_a_runtime(host: str) -> None:
+    """The router reads `hosts/<host>/runtime.md` at Step 2."""
+    assert any(rel.endswith('/runtime.md') for rel in package_skill.HOSTS[host]['hosts'])
