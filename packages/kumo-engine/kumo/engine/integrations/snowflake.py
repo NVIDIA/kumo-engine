@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Snowflake Experiment Tracking for `Trainer.fit`
-(``pip install 'kumo-engine[snowflake]'``)."""
+r"""Snowflake Experiment Tracking for `Trainer.fit`, `Trainer.predict` and
+monitoring (``pip install 'kumo-engine[snowflake]'``)."""
 
 import logging
 import re
@@ -14,7 +14,12 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from kumo_core.sources.sql import resolve_snowflake_identifier
 
 from kumo.engine._events import Event
-from kumo.engine._tracking import DROPPED_METRICS, DROPPED_PARAMS, RunRecord
+from kumo.engine._tracking import (
+    DROPPED_METRICS,
+    DROPPED_PARAMS,
+    RunRecord,
+    record_failure,
+)
 from kumo.engine.connector._extras import import_provider
 
 logger = logging.getLogger(__name__)
@@ -32,7 +37,9 @@ class SnowflakeTracking:
     trial attempts are logged in it under ``trial-<n>-attempt-<m>/`` names and
     tags are logged as params. Snowflake has no dataset inputs, so a fit's
     source tables are not recorded as inputs. The Snowpark session's
-    parameters are not changed.
+    parameters are not changed. As ``kumo.MLOps(tracking=...)``, it also
+    records each prediction run and each monitoring call as one run named
+    after it; ``run_name`` and ``tags`` apply to fit runs only.
 
     Args:
         session: Snowpark session; needs CREATE EXPERIMENT on the schema, or
@@ -47,8 +54,8 @@ class SnowflakeTracking:
         native_model_lineage: keep the run open as a context for the whole
             fit, so models registered meanwhile are linked to it.
 
-    ``run_id`` is the latest fit run's name (Snowflake runs are identified
-    by name), once it has started.
+    ``run_id`` is the most recent tracked run's name (Snowflake runs are
+    identified by name), once it has started.
     """
 
     def __init__(
@@ -115,6 +122,10 @@ class SnowflakeTracking:
         self._start_tags = set(record.tags)
         self._log_params({**record.params, **record.tags})
         self._log_artifacts(record.artifacts)
+
+    def log_prediction_run(self, record: RunRecord) -> None:
+        self.start(record)
+        self.finish(record, record_failure(record))
 
     def log_monitoring(self, record: RunRecord) -> None:
         self.start(record)

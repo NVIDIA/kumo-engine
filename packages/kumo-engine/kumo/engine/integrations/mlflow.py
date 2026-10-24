@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""MLflow tracking and models for `Trainer.fit`
-(``pip install 'kumo-engine[mlflow]'``)."""
+r"""MLflow tracking and models for `Trainer.fit`, `Trainer.predict` and
+monitoring (``pip install 'kumo-engine[mlflow]'``)."""
 
 import hashlib
 import json
@@ -30,7 +30,7 @@ from typing import (
 from kumoapi.plugin import ModelRegistryLocation, PublishedModel
 
 from kumo.engine._events import Event
-from kumo.engine._tracking import DROPPED_PARAMS, RunRecord
+from kumo.engine._tracking import DROPPED_PARAMS, RunRecord, record_failure
 from kumo.engine._version import __version__
 from kumo.engine.connector._extras import import_provider
 
@@ -63,6 +63,9 @@ class MlflowTracking:
     Catalog then links them to a model registered from the run), file and
     object-store sources by URI. Params MLflow rejects are counted in
     ``kumo.dropped_params``. Concurrent fits in one process are not supported.
+    As ``kumo.MLOps(tracking=...)``, it also records each prediction run and
+    each monitoring call as one run named after it, placed like a fit run;
+    ``run_name`` and ``tags`` apply to fit runs only.
 
     Args:
         experiment_name: experiment for the fit run, created if missing.
@@ -78,7 +81,8 @@ class MlflowTracking:
         serving_snapshot: exported snapshot URI the served model loads at
             startup (see `log_model`).
 
-    ``run_id`` is the MLflow id of the latest fit run, once it has started.
+    ``run_id`` is the MLflow id of the most recent tracked run, once it has
+    started.
     """
 
     def __init__(
@@ -152,6 +156,10 @@ class MlflowTracking:
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
         _log_inputs(mlflow, self._client, self._parent, record.inputs)
+
+    def log_prediction_run(self, record: RunRecord) -> None:
+        self.start(record)
+        self.finish(record, record_failure(record))
 
     def log_monitoring(self, record: RunRecord) -> None:
         self.start(record)

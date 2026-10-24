@@ -311,8 +311,27 @@ def test_manifest_failures_warn_and_keep_outputs(graph, classifier, tmp_path,
             bare_exported)
 
 
-def test_failed_export_still_writes_manifest(graph, classifier, tmp_path,
-                                             monkeypatch):
+class _Recorder:
+    def __init__(self, raises=False):
+        self.records, self.raises = [], raises
+
+    def start(self, record):
+        pass
+
+    def on_trial(self, record, event):
+        pass
+
+    def finish(self, record, error):
+        pass
+
+    def log_prediction_run(self, record):
+        if self.raises:
+            raise RuntimeError('tracker down')
+        self.records.append(record)
+
+
+def test_failed_export_still_writes_and_tracks_the_run(graph, classifier,
+                                                       tmp_path, monkeypatch):
     _, snapshot = graph
     trainer, table = classifier
     connector = kumo.FileConnector(root_dir=str(tmp_path))
@@ -328,9 +347,11 @@ def test_failed_export_still_writes_manifest(graph, classifier, tmp_path,
     output = PredictionOutputConfig(
         connector=connector,
         output_paths={'predictions': 'preds/', 'embeddings': 'embs/'})
+    recorder = _Recorder()
+    cfg = kumo.MLOps(artifact_root=str(tmp_path / 'root'), tracking=recorder)
     with pytest.raises(OSError, match='disk full'):
         trainer.predict(table, snapshot=snapshot, output_config=output,
-                        binary_classification_threshold=0.5)
+                        binary_classification_threshold=0.5, mlops=cfg)
 
     manifest, = [
         json.loads(path.read_text()) for path in trainer.scratch_dir.glob(
@@ -343,3 +364,32 @@ def test_failed_export_still_writes_manifest(graph, classifier, tmp_path,
                         'location': str(tmp_path / 'preds')},
     }]
     assert manifest['timings']['finished_at'] is not None
+    assert not (tmp_path / 'root' / 'predictions').exists()
+    record, = recorder.records
+    assert record.tags['kumo.error'] == 'OSError: disk full'
+    assert record.tags['kumo.run_id'] == manifest['id']
+
+
+def test_tracking_records_the_run_and_never_changes_it(graph, classifier,
+                                                       tmp_path, caplog):
+    from kumo.engine._tracking import prediction_record
+
+    _, snapshot = graph
+    trainer, table = classifier
+    recorder = _Recorder()
+
+    def predict(tracking):
+        cfg = kumo.MLOps(artifact_root=str(tmp_path / 'root'),
+                         tracking=tracking, export=set())
+        return trainer.predict(table, snapshot=snapshot, mlops=cfg,
+                               binary_classification_threshold=0.4)
+
+    untracked = trainer.predict(table, snapshot=snapshot,
+                                binary_classification_threshold=0.4)
+    tracked = predict(recorder)
+    failed = predict(_Recorder(raises=True))
+
+    for result in (tracked, failed):
+        pd.testing.assert_frame_equal(result.frame, untracked.frame)
+    assert recorder.records == [prediction_record(tracked.manifest)]
+    assert 'tracker down' in caplog.text

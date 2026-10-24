@@ -51,26 +51,32 @@ def start(*, result: Any, trainer: Any, snapshot: Any, prediction_table: Any,
 def finish(result: Any, manifest: Optional[PredictionManifest],
            output_config: Any, settings: Any) -> None:
     r"""Export to ``output_config``, record the run (with the outputs
-    written, even if the export fails), then store it in the artifact
-    root."""
+    written, even if the export fails), store it in the artifact root and
+    track it."""
+    from kumo.engine._tracking import track_prediction
+
     records = [] if output_config is None else output_records(output_config)
     written: List[PredictionOutput] = []
-    status = 'failed'
+    error: Optional[BaseException] = None
     try:
         if output_config is not None:
             result._export(
                 output_config, None if manifest is None else replace(
                     manifest, outputs=records), records, written)
-        status = 'succeeded'
+    except BaseException as raised:
+        error = raised
+        raise
     finally:
         if manifest is not None:
             manifest = replace(
-                manifest, status=status,
+                manifest, status='failed' if error else 'succeeded',
                 outputs=None if records is None else written,
                 timings=replace(manifest.timings, finished_at=_now()))
             write(result, manifest)
-    if settings is not None and settings.wants('prediction'):
-        store(result, manifest, settings)
+        if settings is not None:
+            if error is None and settings.wants('prediction'):
+                store(result, manifest, settings)
+            track_prediction(manifest, settings.tracking, error)
 
 
 def store(result: Any, manifest: Optional[PredictionManifest],

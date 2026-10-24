@@ -203,14 +203,24 @@ Runs carry pointers, not lineage:
 
 | tag | on | value |
 |---|---|---|
-| `kumo.kind` | every run | `fit` or `trial` |
-| `kumo.run_id` | every run | the kumo fit run id (trials: `<fit run id>-trial-<n>-attempt-<m>`) |
-| `kumo.bundle_id` | a finished fit run | the model's bundle id (`models/<bundle id>/` under the artifact root) |
-| `kumo.parent_run`, `kumo.status`, `kumo.error` | trial runs; `kumo.error` also on a failed fit | outcome |
+| `kumo.kind` | every run | `fit`, `trial`, `prediction` or `monitoring` |
+| `kumo.run_id` | every run | the kumo run id (trials: `<fit run id>-trial-<n>-attempt-<m>`; predictions: the prediction id) |
+| `kumo.bundle_id` | a finished fit run, prediction and monitoring runs | the model's bundle id (`models/<bundle id>/` under the artifact root) |
+| `kumo.prediction_run` | monitoring runs | the prediction id it monitors |
+| `kumo.parent_run`, `kumo.status`, `kumo.error` | trial runs; `kumo.error` also on a failed fit or prediction | outcome |
 
 The model's `_provenance.json` records the tracked fit as `tracking.run_id`
 (the `kumo.run_id` tag) and is logged on the fit run with `query.pql` and
 `model_plan.json`.
+
+With tracking on, `predict` also records each prediction run as one run named
+by its prediction id, after its `output_config` export and its artifact-root
+copy: scoring options as params; row counts and score statistics (for example
+`predictions.True_PROB.q50`) as metrics; the scoring snapshot's source tables as
+inputs; and its `_provenance.json` as an artifact. If the export raises, the run
+is still recorded, ended as failed with `kumo.error`, and `predict` raises the
+export's error. It runs on a tracking thread for up to 30 s; tracking errors
+never change the prediction. MLflow nests it under an active run, like a fit.
 
 Other systems plug in through the `kumo.engine.tracking.Tracking` protocol,
 which receives ready-built `RunRecord`s so every tracker records the same
@@ -219,7 +229,8 @@ attempt's run after each of its events, and `finish(record, error)` with the
 fit run's final record (`None` when tracking stopped early). A tracker that
 raises is not called again for that fit and its run is ended as failed.
 Optional members: `prepare()`, `tags`, `log_model(result, snapshot, registry)` (see MLflow models below), and the best-effort hooks
-`log_prediction_run` and `log_monitoring`. Params are the resolved model plan
+`log_prediction_run(record)` and `log_monitoring(record)` (a record tagged
+`kumo.error` is a failed run). Params are the resolved model plan
 (fit) or searched hyperparameters and `attempt` (trial). `RunRecord.inputs`
 maps each source table to its `connector`, `location`, `version` and
 `version_kind`. A tracker's `tags=` are added as given, except `kumo.*` names

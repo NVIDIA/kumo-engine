@@ -13,11 +13,13 @@ from _snowflake_experiment_fake import FakeExperimentTracking, FakeSession
 from test_tracking_contract import (
     CONTEXT,
     EVENTS,
+    PREDICTION_MANIFEST,
+    PREDICTION_RUN,
     RESULT,
     join_tracking_threads,
 )
 
-from kumo.engine._tracking import TrackingSession
+from kumo.engine._tracking import TrackingSession, prediction_record
 
 FAKED = ('__init__', 'set_experiment', 'start_run', 'end_run', 'log_params',
          'log_metrics', 'log_artifact')
@@ -117,10 +119,12 @@ def test_an_instance_in_use_is_left_alone(fake, busy, caplog):
     calls = len(user.calls)
 
     _replay(_tracking(session))
+    _tracking(session).log_prediction_run(
+        prediction_record(PREDICTION_MANIFEST))
 
     assert user.calls[calls:] == []
     assert user.warnings_as_errors is True
-    assert caplog.text.count('not tracked in Snowflake') == 1
+    assert caplog.text.count('not tracked in Snowflake') == 2
 
 
 def test_location_defaults_to_the_session_not_the_last_fit(fake):
@@ -214,3 +218,17 @@ def test_a_hung_snowflake_call_does_not_stall_the_fit(fake, monkeypatch,
     assert 'did not finish within' in caplog.text
     run, = fake._instance.runs.values()
     assert run['status'] == 'FINISHED'
+
+
+def test_prediction_runs_are_never_resumed(fake, caplog):
+    tracking = _tracking()
+    record = prediction_record(PREDICTION_MANIFEST)
+    tracking.log_prediction_run(record)
+    tracking.log_prediction_run(record)
+
+    assert {name: run['status']
+            for name, run in fake._instance.runs.items()} == {
+                PREDICTION_RUN: 'FINISHED',
+                f'{PREDICTION_RUN}_1': 'FINISHED',
+            }
+    assert 'already exists' in caplog.text
