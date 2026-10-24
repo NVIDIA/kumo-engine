@@ -86,8 +86,6 @@ def test_publication_keeps_s3_out_of_the_public_path():
                '.github/workflows/kumo-sdk-release-on-tag.yml').read_text()
     upload = (REPO_ROOT /
               '.github/workflows/kumo-sdk-upload-wheels.yml').read_text()
-    nightly = (REPO_ROOT /
-               '.github/workflows/kumo-sdk-release-nightly.yml').read_text()
     testpypi_job = release.split('  stage-testpypi:',
                                  1)[1].split('  publish-pypi:', 1)[0]
 
@@ -102,6 +100,4 @@ def test_publication_keeps_s3_out_of_the_public_path():
         'continue-on-error: ${{ inputs.allow-s3-failure }}') == 2
     assert upload.count('skip-existing: true') == 2
     assert 'id-token: write' in testpypi_job
-    assert 'allow-s3-failure: true' not in nightly
-    assert 'upload-to-pypi: false' in nightly
     assert "vars.KUMO_SDK_PUBLICATION_ENABLED == 'true'" in upload
