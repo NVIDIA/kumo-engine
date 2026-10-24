@@ -13,6 +13,7 @@ from kumo.engine.trainer.trainer import (
     PredictionResult,
     Trainer,
     TrainingResult,
+    set_model_alias,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "PredictionOutputConfig",
     "SnapshotOutputConfig",
     "TrainingTableOutputConfig",
+    "set_model_alias",
 ]

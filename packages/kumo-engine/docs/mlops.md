@@ -62,6 +62,32 @@ tuned.scoring_defaults   # ScoringDefaults(binary_classification_threshold=0.37,
 
 `with_scoring_defaults` returns a `TrainingResult` for a copy of the bundle with its own id. The copy's manifest embeds the original's in `parents.derived_from`. The threshold applies to binary and multilabel classification, `num_classes_to_return` to multiclass, multilabel and link prediction. Explicit `predict` arguments and a query's `TOP k` win; `ScoringDefaults()` removes the defaults. `Trainer.export(config)` publishes a fitted or loaded bundle like `fit(export_config=...)`.
 
+### Registering models
+
+With `registry=ModelOutputConfig(connector, location=...)`, every fit in the block registers its model in the connector's registry (Snowflake Model Registry, or Unity Catalog through a `DatabricksConnector`) after it is stored and tracked:
+
+```python
+from kumo.engine import ModelOutputConfig, ModelRegistryLocation
+
+cfg = kumo.MLOps("s3://bucket/kumo", registry=ModelOutputConfig(
+    registry, location=ModelRegistryLocation("CHURN_GNN", alias="challenger")))
+with kumo.mlops(cfg):
+    result = trainer.fit(training_table, snapshot=snapshot)
+result.registered_model   # PublishedModel(name='CHURN_GNN', version='V3', uri=...)
+
+# Promote: the alias moves from any version that held it.
+kumo.set_model_alias(registry, ModelRegistryLocation("CHURN_GNN", version="V3"), "prod")
+
+# Scoring jobs load whichever version "prod" points at.
+trainer = kumo.Trainer.load_from_connector(registry, location=ModelRegistryLocation(
+    "CHURN_GNN", alias="prod"))
+```
+
+- Registration is independent of `export`. If it fails, `fit` warns and returns the result with `registered_model=None`; an invalid alias or a connector that cannot publish models raises before training.
+- A plain `fit(export_config=ModelOutputConfig(connector, location=...))` or `Trainer.export(...)` publishes as before, with or without a block, and also accepts an `alias`; its version is `result.published_model`.
+- An alias is a letter or underscore followed by letters, digits or underscores; `DEFAULT`, `FIRST`, `LAST`, `LATEST` and `v<digits>` are reserved. The alias is set after publishing; if that fails, the publish still stands, with a warning. Snowflake allows one alias per version; if moving an alias fails, it is put back on the version that held it. Snowflake's `DEFAULT`, `FIRST` and `LAST` can be loaded but not set. File, S3 and GCS connectors have no aliases.
+- Each registered version records only pointers: the `kumo_engine` marker and `kumo_bundle_id` (Snowflake version metrics, Databricks version tags). The bundle's own `_provenance.json` holds its lineage. `list_models` and `fetch_model` return `kumo_bundle_id` in `PublishedModel.metadata`; `load_from_connector` warns if the fetched bundle differs from it.
+
 ### Moving snapshots between machines
 
 To build an index on one machine and train or score on another, export it to a file destination and load it there:

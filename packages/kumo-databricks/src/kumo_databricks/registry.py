@@ -10,7 +10,6 @@ import logging
 import os
 import shutil
 import tempfile
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional, cast
 from urllib.parse import quote
@@ -20,12 +19,15 @@ from databricks.sdk.errors import NotFound, ResourceAlreadyExists
 from kumo_databricks.session import _DatabricksSessions, _target_config
 from kumo_databricks.sql import normalize_table_coordinate
 from kumoapi.plugin import (
+    BUNDLE_ID_KEY,
+    ENGINE_MARKER,
     ModelRegistryLocation,
     PublishedModel,
     SourceConnector,
+    check_model_alias,
+    registry_lineage,
 )
 
-_ENGINE_MARKER = 'kumo_engine'
 _MODELS = '/api/2.1/unity-catalog/models'
 _LOG = logging.getLogger(__name__)
 
@@ -54,6 +56,17 @@ def _files_path(name: str, number: int | str) -> str:
 
 def _tags(version: Mapping[str, Any]) -> dict[str, str]:
     return {tag['key']: tag['value'] for tag in version.get('tags', [])}
+
+
+def _alias_path(name: str, alias: str) -> str:
+    return f'{_MODELS}/{quote(name, safe="")}/aliases/{quote(alias, safe="")}'
+
+
+def _version_number(location: ModelRegistryLocation) -> Optional[int]:
+    version = location.version
+    if version is not None and (not version.isdecimal() or int(version) < 1):
+        raise ValueError('Databricks model versions are positive integers.')
+    return None if version is None else int(version)
 
 
 def _published(
@@ -133,7 +146,9 @@ def publish_bundle(
     verify_model_bundle(root)
     _validate_catalog(dict(metadata=dict(metadata), metrics=dict(metrics)))
     catalog_name, schema, model = name.split('.')
-    tags = {_ENGINE_MARKER: '1'}
+    tags = {ENGINE_MARKER: '1'}
+    if metadata.get(BUNDLE_ID_KEY):
+        tags[BUNDLE_ID_KEY] = str(metadata[BUNDLE_ID_KEY])
     try:
         client.registered_models.create(catalog_name=catalog_name,
                                         schema_name=schema, name=model)
@@ -200,7 +215,7 @@ def _bundle_metadata(bundle: Path) -> tuple[dict[str, str], dict[str, float]]:
 def _download(client: WorkspaceClient, remote: str, destination: Path) -> None:
     for entry in client.files.list_directory_contents(remote):
         # A server-provided path must stay an immediate child of this directory.
-        path = entry.path or ''
+        path = (entry.path or '').rstrip('/')
         prefix = remote + '/'
         child = path[len(prefix):] if path.startswith(prefix) else ''
         if not child or '/' in child or child in ('.', '..') or '\\' in child:
@@ -219,13 +234,18 @@ def _download(client: WorkspaceClient, remote: str, destination: Path) -> None:
 
 
 def fetch_bundle(client: WorkspaceClient, name: str, local_dir: Path, *,
-                 version: Optional[str] = None) -> PublishedModel:
+                 version: Optional[str] = None,
+                 alias: Optional[str] = None) -> PublishedModel:
     from kumo_core.artifacts import verify_model_bundle
 
-    if version is None:
+    if alias is not None:
+        aliased = cast(dict[str, Any],
+                       client.api_client.do('GET', _alias_path(name, alias)))
+        model_version = _get_version(client, name, aliased['version'])
+    elif version is None:
         versions = [
             v for v in _versions(client, name) if v.get('status') == 'READY'
-            and _tags(v).get(_ENGINE_MARKER) == '1'
+            and _tags(v).get(ENGINE_MARKER) == '1'
         ]
         if not versions:
             raise ValueError('No ready Kumo model version in this registry.')
@@ -233,7 +253,7 @@ def fetch_bundle(client: WorkspaceClient, name: str, local_dir: Path, *,
     else:
         model_version = _get_version(client, name, version)
     if model_version.get('status') != 'READY' or _tags(model_version).get(
-            _ENGINE_MARKER) != '1':
+            ENGINE_MARKER) != '1':
         raise ValueError('This version is not a ready Kumo model bundle.')
     destination = local_dir
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -251,9 +271,12 @@ def fetch_bundle(client: WorkspaceClient, name: str, local_dir: Path, *,
                 'The registered model must contain one Kumo bundle.')
         bundle = bundles[0]
         verify_model_bundle(bundle)
-        published = _published(name, model_version)
         metadata, metrics = _bundle_metadata(bundle)
-        published = replace(published, metadata=metadata, metrics=metrics)
+        published = _published(
+            name, model_version, metadata={
+                **metadata,
+                **registry_lineage(_tags(model_version))
+            }, metrics=metrics)
         backup = Path(tmp) / 'previous'
         if destination.exists():
             os.replace(destination, backup)
@@ -277,8 +300,10 @@ def list_models(client: WorkspaceClient, catalog: str,
             continue
         for version in _versions(client, name):
             if version.get('status') == 'READY' and _tags(version).get(
-                    _ENGINE_MARKER) == '1':
-                found.append(_published(name, version))
+                    ENGINE_MARKER) == '1':
+                found.append(
+                    _published(name, version,
+                               metadata=registry_lineage(_tags(version))))
     return sorted(found, key=lambda item: (item.name, int(item.version)))
 
 
@@ -321,15 +346,26 @@ class DatabricksModelRegistryMixin(_DatabricksSessions):
         location: Optional[ModelRegistryLocation] = None,
         project_id: Optional[str] = None,
     ) -> PublishedModel:
-        """Download the named version, or the latest ready Kumo version."""
+        """Download the named or aliased version, else the latest Kumo one."""
         del project_id
         name = _address(connector, path, location)
         assert location is not None
-        if location.version is not None and (not location.version.isdecimal()
-                                             or int(location.version) < 1):
-            raise ValueError('Databricks model versions are positive integers.')
+        _version_number(location)
         return fetch_bundle(self._client(connector), name,
-                            Path(local_dir).resolve(), version=location.version)
+                            Path(local_dir).resolve(), version=location.version,
+                            alias=getattr(location, 'alias', None))
+
+    def set_model_alias(self, connector: SourceConnector,
+                        location: ModelRegistryLocation, alias: str) -> None:
+        """Point an alias at a version; UC moves it from any other."""
+        name = _address(connector, None, location)
+        number = _version_number(location)
+        if number is None:
+            raise ValueError('Setting an alias needs a ModelRegistryLocation '
+                             'naming a version.')
+        check_model_alias(alias)
+        self._client(connector).api_client.do('PUT', _alias_path(name, alias),
+                                              body=dict(version_num=number))
 
     def list_models(self, connector: SourceConnector, *,
                     project_id: Optional[str] = None) -> list[PublishedModel]:

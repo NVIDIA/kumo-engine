@@ -62,6 +62,7 @@ from kumo.engine.trainer import (
     Trainer,
     TrainingResult,
     TrainingTableOutputConfig,
+    set_model_alias,
 )
 
 __all__ = [
@@ -107,6 +108,7 @@ __all__ = [
     "PredictionOutputConfig",
     "TrainingTableOutputConfig",
     "SnapshotOutputConfig",
+    "set_model_alias",
 ]
 
 ensure_nofile()
