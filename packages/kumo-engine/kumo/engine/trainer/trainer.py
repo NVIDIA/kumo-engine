@@ -654,8 +654,6 @@ class Trainer:
                 warnings.warn(
                     f"Publishing the model bundle without _provenance.json: "
                     f"{error}", UserWarning, stacklevel=3)
-        if settings is not None and settings.wants('model'):
-            _store_model(training_result, settings)
         if export_config is not None:
             spec = read_training_spec(training_result.bundle_dir)
             published = export_config.connector.sink_backend.publish_model(
@@ -672,6 +670,8 @@ class Trainer:
             )
             training_result = replace(training_result,
                                       published_model=published)
+        if settings is not None and settings.wants('model'):
+            _store_model(training_result, settings)
 
         self._training_result = training_result
         self._snapshot_id = snapshot_id
