@@ -8,6 +8,8 @@ import gc
 import hashlib
 import json
 import logging
+import os
+import shutil
 import time
 import warnings
 from dataclasses import dataclass, field, replace
@@ -64,6 +66,7 @@ from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
+from kumo.engine.trainer._scoring import ScoringDefaults, read_scoring_defaults
 from kumo.engine.trainer._spec import (
     read_bundle_artifact_paths,
     read_training_spec,
@@ -99,6 +102,7 @@ class TrainingResult:
     holdout_path: Optional[Path] = None
     holdout_truncated: Optional[bool] = False
     bundle_id: Optional[str] = None
+    scoring_defaults: ScoringDefaults = field(default_factory=ScoringDefaults)
     _trainer: Optional['Trainer'] = field(default=None, repr=False,
                                           compare=False)
 
@@ -120,6 +124,39 @@ class TrainingResult:
             raise RuntimeError('This result has no model to predict with; '
                                'use Trainer.load on its bundle_dir.')
         return self._trainer.predict(*args, **kwargs)
+
+    def with_scoring_defaults(self,
+                              defaults: ScoringDefaults) -> 'TrainingResult':
+        """A copy of this model whose ``predict`` applies ``defaults`` when a
+        call omits them; a new bundle, whose manifest names this one in
+        ``parents.derived_from``."""
+        from kumo_core.artifacts import bundle_task_type
+
+        from kumo.engine.trainer._provenance import record_derivation
+        from kumo.engine.trainer._scoring import (
+            normalized_scoring_defaults,
+            write_scoring_defaults,
+        )
+
+        if self._trainer is None:
+            raise RuntimeError('This result has no model; use Trainer.load on '
+                               'its bundle_dir.')
+        defaults = normalized_scoring_defaults(
+            defaults, bundle_task_type(self.artifact_paths))
+        bundle_dir = trainer_scratch_dir(new_run_id()) / 'derived-model'
+        shutil.copytree(self.bundle_dir, bundle_dir,
+                        copy_function=_link_or_copy)
+        write_scoring_defaults(bundle_dir, defaults)
+        try:
+            record_derivation(bundle_dir, self.bundle_dir, self.bundle_id)
+        except Exception as error:
+            warnings.warn(
+                f"Could not record the parent model in _provenance.json: "
+                f"{error}", UserWarning, stacklevel=2)
+        result = Trainer._load_bundle(bundle_dir,
+                                      self._trainer._embedding_models).result
+        assert result is not None
+        return result
 
     def holdout_df(self) -> pd.DataFrame:
         r"""Read the holdout predictions as a pandas DataFrame.
@@ -280,6 +317,38 @@ def _to_core_model_plan(model_plan: ModelPlan) -> CoreModelPlan:
     return internal_model_plan_from_public(model_plan)
 
 
+def _link_or_copy(source: str, destination: str) -> None:
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
+
+
+def _require_publisher(export_config: ModelOutputConfig) -> None:
+    if not callable(
+            getattr(export_config.connector.sink_backend, 'publish_model',
+                    None)):
+        raise NotImplementedError(
+            f'{type(export_config.connector).__name__} cannot publish '
+            f'models')
+
+
+def _publish(training_result: TrainingResult,
+             export_config: ModelOutputConfig) -> PublishedModel:
+    spec = read_training_spec(training_result.bundle_dir)
+    return export_config.connector.sink_backend.publish_model(
+        export_config.connector,
+        str(training_result.bundle_dir),
+        path=export_config.path,
+        location=export_config.location,
+        metadata={
+            name: str(getattr(spec, name))
+            for name in ('spec_version', 'predictive_query', 'snapshot_id')
+        },
+        metrics=training_result.metrics,
+    )
+
+
 def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
     from kumo_core.artifacts import stage_model_bundle
     return stage_model_bundle(artifacts, dest)
@@ -379,6 +448,19 @@ class Trainer:
         result = self._training_result
         return None if result is None else result.manifest
 
+    def _fitted(self, method: str) -> TrainingResult:
+        if self._training_result is None:
+            raise RuntimeError(
+                f"Trainer.{method}() requires a prior Trainer.fit() call on "
+                "this same Trainer instance.")
+        return self._training_result
+
+    def export(self, config: ModelOutputConfig) -> PublishedModel:
+        """Publish the fitted or loaded model bundle."""
+        training_result = self._fitted('export')
+        _require_publisher(config)
+        return _publish(training_result, config)
+
     @_without_torch_scatter_hint
     def fit(
         self,
@@ -427,12 +509,8 @@ class Trainer:
         Each call returns a new `TrainingResult`; `Trainer.result` holds the
         latest.
         """
-        if export_config is not None and not callable(
-                getattr(export_config.connector.sink_backend, 'publish_model',
-                        None)):
-            raise NotImplementedError(
-                f'{type(export_config.connector).__name__} cannot publish '
-                f'models')
+        if export_config is not None:
+            _require_publisher(export_config)
         from kumo.engine._mlops import resolve
 
         settings = resolve(mlops)
@@ -539,11 +617,11 @@ class Trainer:
             search=AutoMLSearchOptions(),
         )
         if warm_start_artifacts is not None:
-            source_schema = json.loads(
-                Path(warm_start_artifacts['prediction_schema']).read_text())
+            from kumo_core.artifacts import bundle_task_type
+
             validate_warm_start_task_type(
                 TaskType(workflow.query.task_type),
-                TaskType(source_schema['task_type']),
+                bundle_task_type(warm_start_artifacts),
             )
         from kumo_core.pquery import (
             query_is_temporal,
@@ -727,21 +805,9 @@ class Trainer:
                     f"Publishing the model bundle without _provenance.json: "
                     f"{error}", UserWarning, stacklevel=3)
         if export_config is not None:
-            spec = read_training_spec(training_result.bundle_dir)
-            published = export_config.connector.sink_backend.publish_model(
-                export_config.connector,
-                str(training_result.bundle_dir),
-                path=export_config.path,
-                location=export_config.location,
-                metadata={
-                    name: str(getattr(spec, name))
-                    for name in ('spec_version', 'predictive_query',
-                                 'snapshot_id')
-                },
-                metrics=training_result.metrics,
-            )
-            training_result = replace(training_result,
-                                      published_model=published)
+            training_result = replace(
+                training_result,
+                published_model=_publish(training_result, export_config))
         if settings is not None and settings.wants('model'):
             _store_model(training_result, settings)
 
@@ -795,6 +861,8 @@ class Trainer:
         Binary classification requires an explicit threshold. Multilabel
         classification defaults to 0.5. Both accept thresholds from 0 to 1;
         thresholds change predicted labels without changing class scores.
+
+        Omitted arguments fall back to the bundle's :attr:`scoring_defaults`.
         """
         from kumo_core.prediction_options import (
             validate_num_classes_to_return,
@@ -854,10 +922,10 @@ class Trainer:
         num_workers: int = 1,
         binary_classification_threshold: Optional[float] = None,
     ) -> PredictionResult:
-        if self._training_result is None:
-            raise RuntimeError(
-                "Trainer.predict() requires a prior Trainer.fit() call on "
-                "this same Trainer instance.")
+        training_result = self._fitted('predict')
+        if binary_classification_threshold is None:
+            binary_classification_threshold = (
+                training_result.scoring_defaults.binary_classification_threshold)
         from kumo_core.pquery import normalize_graph, parse_and_validate_query
         from kumo_core.prediction_options import (
             prediction_query_contract,
@@ -891,6 +959,8 @@ class Trainer:
         # population and anchors still come from the immutable PredictionTable.
         native_graph = normalize_graph(graph_config)
         parsed = parse_and_validate_query(prediction_table.query, native_graph)
+        if num_classes_to_return is None and parsed.query.top_k is None:
+            num_classes_to_return = training_result.scoring_defaults.num_classes_to_return
         num_classes_to_return = resolve_num_classes_to_return(
             task_type,
             num_classes_to_return,
@@ -917,7 +987,7 @@ class Trainer:
         from kumo_core.io.json import load_json
 
         # Loaded once: the embedding check and the in-process scorer share it.
-        encoders_path = self._training_result.artifact_paths.get('encoders')
+        encoders_path = training_result.artifact_paths.get('encoders')
         encoders = (load_json(encoders_path, EncodersConfig) if encoders_path
                     and Path(encoders_path).is_file() else None)
         require_trained_embedding_models(self._embedding_models, encoders)
@@ -981,7 +1051,7 @@ class Trainer:
 
         model_dir = str(
             _stage_model_bundle(
-                self._training_result.artifact_paths,
+                training_result.artifact_paths,
                 run_dir / 'model_bundle',
             ))
 
@@ -1098,5 +1168,7 @@ class Trainer:
             spec.training_table_generation, TrainingTableGenerationPlan)
         trainer._training_result = TrainingResult(metrics, paths, bundle_dir,
                                                   bundle_id=bundle_id,
+                                                  scoring_defaults=read_scoring_defaults(
+                                                      bundle_dir, paths),
                                                   _trainer=trainer)
         return trainer

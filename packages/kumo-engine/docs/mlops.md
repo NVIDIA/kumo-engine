@@ -47,6 +47,21 @@ An embedded model keeps only the ids of its own model parents, so a long chain o
 
 With MLOps on, each bundle is stored under `<root>/models/<bundle id>/`. A complete copy that is already there is kept; a partial one is replaced.
 
+### Scoring defaults
+
+A model can carry the prediction arguments `predict` uses when a call omits them:
+
+```python
+from kumo.engine import ModelOutputConfig, ScoringDefaults
+
+tuned = result.with_scoring_defaults(
+    ScoringDefaults(binary_classification_threshold=0.37))
+tuned.predict(snapshot)  # thresholds at 0.37
+tuned.scoring_defaults   # ScoringDefaults(binary_classification_threshold=0.37, ...)
+```
+
+`with_scoring_defaults` returns a `TrainingResult` for a copy of the bundle with its own id. The copy's manifest embeds the original's in `parents.derived_from`. The threshold applies to binary and multilabel classification, `num_classes_to_return` to multiclass, multilabel and link prediction. Explicit `predict` arguments and a query's `TOP k` win; `ScoringDefaults()` removes the defaults. `Trainer.export(config)` publishes a fitted or loaded bundle like `fit(export_config=...)`.
+
 ### Moving snapshots between machines
 
 To build an index on one machine and train or score on another, export it to a file destination and load it there:
