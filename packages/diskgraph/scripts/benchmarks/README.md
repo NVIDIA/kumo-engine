@@ -70,3 +70,8 @@ python3 scripts/benchmarks/rewrite_config.py path/to/config.json \
   - Start the service or run the ingest once so logs are created.
 - Git fetch/merge failures in logs:
   - The loop continues on failure; inspect `benchmark_ingest.sh` output.
+
+## Commerce context benchmark
+
+The [commerce context harness](commerce/README.md) measures temporal sampling and raw feature retrieval.
+Its [commerce workflow companion](../../../../benchmark/commerce/README.md) measures graph preparation, training and prediction.
