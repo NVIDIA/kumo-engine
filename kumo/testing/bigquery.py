@@ -9,13 +9,14 @@ import os
 from collections.abc import Callable
 from typing import Optional
 
-from io_utils import logging
+from io_utils import fsutil, logging
 from io_utils.secrets import get_secrets
 from kumo.connector.bigquery_connector import (
     ENV_GCS_KUMO_BUCKET,
     ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH,
     ENV_GOOGLE_CREDENTIALS_JSON,
 )
+from service_framework.env_var import EnvVar
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +50,26 @@ def _configure_application_default_credentials(
     tests select a restricted service account through IAM impersonation rather
     than loading a second private key.
     """
+    # GCP test jobs enable workload exchange explicitly, independently of the
+    # runner. Reuse that configuration to require federated test credentials.
+    require_wif = EnvVar('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', bool,
+                         default_value=False).parse_value()
     credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-    if not credentials_path or not os.path.exists(credentials_path):
+    if not credentials_path or not fsutil.exists(credentials_path):
+        if require_wif:
+            raise RuntimeError(
+                'Workload exchange BigQuery tests require Workload Identity '
+                'Federation ADC configured through '
+                'GOOGLE_APPLICATION_CREDENTIALS')
         return False
+
+    if require_wif:
+        credentials = json.loads(fsutil.read_text(credentials_path))
+        if credentials.get('type') != 'external_account':
+            raise RuntimeError(
+                'Workload exchange BigQuery tests require external_account ADC; '
+                'stored service-account keys and user credentials are not '
+                'supported with workload exchange enabled')
 
     impersonation_env = _IMPERSONATION_ENV_BY_KEY.get(service_account_key)
     if impersonation_env is None:
@@ -79,14 +97,14 @@ def setup_bigquery_credentials(service_account_key: Optional[str] = None):
     service_account_key = service_account_key or DEFAULT_BIGQUERY_KEY
 
     # Prefer short-lived ADC supplied by Workload Identity Federation.  This
-    # keeps GitHub Actions from reading any stored GCP service-account key.
+    # keeps workload exchange tests from reading stored service-account keys.
     if _configure_application_default_credentials(service_account_key):
         return
 
     try:
         # Get the GCloud secrets from AWS secrets manager and store it in the
-        # default file. This remains a local/deployment fallback; CI supplies
-        # ADC above and never reaches this path.
+        # default file. Workload exchange requires federated ADC above and
+        # never reaches this existing fallback.
         secrets = get_secrets(service_account_key)
         file_path = os.path.join(os.getcwd(), ".google_credential.json")
         with open(file_path, 'w') as f:
