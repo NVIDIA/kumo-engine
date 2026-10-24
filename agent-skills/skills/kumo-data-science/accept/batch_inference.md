@@ -13,8 +13,9 @@ wants it to score data. A training request never needs it. It adds to `SKILL.md`
   *Destinations*); a connector plus a table name is complete
 
 **`batch_inference` — resolved, never asked** (`accept/intake_contract.md`):
-- `source_scope`: a source the user named, else the connector named for this request, else the
-  source recorded with the model. The bundle restores trainer state, **not** the graph, so the
+- `source_scope`: a source the user named, else the connector named for this request (only on a
+  host whose *Source scope* accepts a connector name), else the source recorded with the model.
+  The bundle restores trainer state, **not** the graph, so the
   graph is rebuilt from source at 1c.
 - `scoring_population`: defaults to every entity of the trained entity table, anchored at the
   latest timestamp in the rebuilt snapshot, tagged `[default]`. A subset or date the user names

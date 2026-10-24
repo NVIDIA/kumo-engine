@@ -187,7 +187,9 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
   import pyarrow.dataset as ds
   import pyarrow.parquet as papq
 
-  keep = {ENTITY_KEY: 'ENTITY1', ENTITY_TIME: 'TIMESTAMP'}   # ENTITY_TIME: the entity Table's time_column
+  keep = {ENTITY_KEY: 'ENTITY1'}
+  if ENTITY_TIME:                                             # the entity Table's time_column, else None
+      keep[ENTITY_TIME] = 'TIMESTAMP'
   population = ds.dataset(ENTITY_SOURCE, format=ENTITY_FORMAT).to_table(columns=list(keep))
   population = population.rename_columns([keep[c] for c in population.column_names])
   if 'TIMESTAMP' in population.column_names:                  # a DATE anchor reads as null
@@ -208,8 +210,9 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
 - **Snowflake:** the §7.1 SQL, run through the read-back connection above.
 - **Databricks:** create the table through the confirmed SQL warehouse with the statement API,
   wait for it, and build the `PredictionTable` from a `DatabricksConnector` scoped to the
-  population's schema. The same `TIMESTAMP` rule applies. `wait_timeout` is at most `'50s'`
-  (Databricks rejects more), so poll until the statement finishes:
+  population's schema. The same `TIMESTAMP` rule applies: project `CAST(<time> AS TIMESTAMP) AS
+  TIMESTAMP` only when the entity table has a time column, and drop it otherwise. `wait_timeout`
+  is at most `'50s'` (Databricks rejects more), so poll until the statement finishes:
 
   ```python
   import time
@@ -217,10 +220,11 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
   from databricks.sdk.service.sql import StatementState
 
   ws = WorkspaceClient()
+  time_col = f', CAST({ENTITY_TIME} AS TIMESTAMP) AS TIMESTAMP' if ENTITY_TIME else ''
   r = ws.statement_execution.execute_statement(
       warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='50s',
       statement=(f'CREATE OR REPLACE TABLE {CATALOG}.{POP_SCHEMA}.{POP_TABLE} AS '
-                 f'SELECT {ENTITY_KEY} AS ENTITY1, CAST({ENTITY_TIME} AS TIMESTAMP) AS TIMESTAMP '
+                 f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
                  f'FROM {CATALOG}.{SCHEMA}.{ENTITY_TABLE}'))
   while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
       time.sleep(5)
