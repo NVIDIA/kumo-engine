@@ -5,7 +5,9 @@
 use crate::edge_unpacker::EdgeUnpacker;
 use crate::errors::{EngineError, Result};
 use crate::output::OutputHandler;
-use crate::state::{LookupKey, NodeRecord, RawEdge, SamplingState};
+use crate::state::{CommitPart, LookupKey, NodeRecord, RawEdge, SamplingState, TypeState};
+use gxhash::HashMap as GxHashMap;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_core::tt_builder::{Value, WEIGHT_COL};
@@ -467,7 +469,33 @@ pub struct DiskGraphEngine {
 }
 
 const NEW_NODE: u32 = u32::MAX;
+const PARALLEL_COMMIT_MIN_EDGES: usize = 1 << 15;
 const PENDING: u32 = 1 << 31;
+
+fn dedup_seeds(
+    maps: &mut [GxHashMap<u64, u32>],
+    order: &[(u64, u32)],
+    bounds: &[u32],
+    res: &[AtomicU32],
+    part: &mut CommitPart,
+) {
+    part.new_edges.clear();
+    part.new_bounds.clear();
+    for (s, map) in maps.iter_mut().enumerate() {
+        for &(key, i) in &order[bounds[s] as usize..bounds[s + 1] as usize] {
+            let r = match map.entry(key) {
+                std::collections::hash_map::Entry::Occupied(o) => *o.get(),
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(PENDING | i);
+                    part.new_edges.push((key, i));
+                    NEW_NODE
+                }
+            };
+            res[i as usize].store(r, Relaxed);
+        }
+        part.new_bounds.push(part.new_edges.len() as u32);
+    }
+}
 
 #[inline]
 fn node_key(type_id: usize, global_id: u64) -> u64 {
@@ -1961,6 +1989,11 @@ impl DiskGraphEngine {
 
         // 3. Process Layers (BFS)
         let compiled_plan = self.compile_plan(&request.plan)?;
+        let anchors: Vec<Option<&[i64]>> = self
+            .id_to_node_type
+            .iter()
+            .map(|t| request.seed_timestamps.as_ref().and_then(|m| m.get(t)).map(Vec::as_slice))
+            .collect();
         for layer_idx in 0..request.plan.layers.len() {
             let hop_start = Instant::now();
             let edges_before = state.stats.total_edges;
@@ -1970,6 +2003,7 @@ impl DiskGraphEngine {
                 layer_idx,
                 &compiled_plan.layers[layer_idx],
                 request,
+                &anchors,
                 state,
                 output,
                 cutoff,
@@ -2321,7 +2355,7 @@ impl DiskGraphEngine {
         rel_id: usize,
         segment: &RelationSegment<'_>,
         fanout_spec: &diskgraph_core::sampling::FanoutSpec,
-        request: &BatchSamplingRequest,
+        anchors: &[Option<&[i64]>],
         dst_scratch: &mut Vec<u64>,
         key_scratch: &mut Vec<u64>,
         cutoff: Option<&NodeCutoff<'_>>,
@@ -2356,16 +2390,11 @@ impl DiskGraphEngine {
                 // root seed type — not an arbitrary `keys().next()` type, which
                 // is wrong (and out-of-bounds) once seed arrays differ in length
                 // across types (e.g. LP lhs vs rhs + negatives).
-                let anchor = self
-                    .id_to_node_type
+                let anchor = anchors
                     .get(node.seed_type_id as usize)
-                    .and_then(|seed_type| {
-                        request
-                            .seed_timestamps
-                            .as_ref()
-                            .and_then(|m| m.get(seed_type))
-                            .and_then(|v| v.get(node.seed_index as usize).copied())
-                    });
+                    .copied()
+                    .flatten()
+                    .and_then(|v| v.get(node.seed_index as usize).copied());
                 if let (Some(dec), Some(anch)) = (decoder, anchor) {
                     let newer = unpacker
                         .partition_point(|key| dec.decode(key).0.is_some_and(|ts| ts > anch));
@@ -2601,6 +2630,7 @@ impl DiskGraphEngine {
         layer_idx: usize,
         layer_spec: &CompiledLayerSpec,
         request: &BatchSamplingRequest,
+        anchors: &[Option<&[i64]>],
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
         cutoff: Option<&NodeCutoff<'_>>,
@@ -2652,7 +2682,7 @@ impl DiskGraphEngine {
                     let segments = edges_view.relation_segments().unwrap_or_default();
 
                     self.process_node_relations(
-                        layer_idx, src_type_id, &segments, node, layer_spec, request, state, output,
+                        layer_idx, src_type_id, &segments, node, layer_spec, request, anchors, state, output,
                         cutoff,
                     )?;
                 }
@@ -2745,7 +2775,7 @@ impl DiskGraphEngine {
                                         rel_id,
                                         segment,
                                         fanout_spec,
-                                        request,
+                                        anchors,
                                         &mut dst_scratch,
                                         &mut key_scratch,
                                         cutoff,
@@ -2809,6 +2839,7 @@ impl DiskGraphEngine {
         node: &NodeRecord,
         layer_spec: &CompiledLayerSpec,
         request: &BatchSamplingRequest,
+        anchors: &[Option<&[i64]>],
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
         cutoff: Option<&NodeCutoff<'_>>,
@@ -2845,7 +2876,7 @@ impl DiskGraphEngine {
                         rel_id,
                         segment,
                         fanout_spec,
-                        request,
+                        anchors,
                         &mut dst_scratch,
                         &mut key_scratch,
                         cutoff,
@@ -2898,28 +2929,33 @@ impl DiskGraphEngine {
             *cur += 1;
         }
 
-        cs.res.resize(n, 0);
-        cs.new_edges.clear();
-        cs.new_bounds.clear();
-        for s in 0..slots {
-            let map = &mut state.seed_maps[s];
-            for &(key, i) in &cs.order[cs.bounds[s] as usize..cs.bounds[s + 1] as usize] {
-                match map.entry(key) {
-                    std::collections::hash_map::Entry::Occupied(o) => cs.res[i as usize] = *o.get(),
-                    std::collections::hash_map::Entry::Vacant(v) => {
-                        v.insert(PENDING | i);
-                        cs.res[i as usize] = NEW_NODE;
-                        cs.new_edges.push((key, i));
-                    }
-                }
-            }
-            cs.new_bounds.push(cs.new_edges.len() as u32);
+        if cs.res.len() < n {
+            cs.res.resize_with(n, Default::default);
         }
+        let threads = self.thread_pool.current_num_threads();
+        let parts = if threads > 1 && n >= PARALLEL_COMMIT_MIN_EDGES { threads * 4 } else { 1 };
+        let mut cuts = vec![0];
+        for k in 1..parts {
+            let cut = cs.bounds.partition_point(|&b| (b as usize) < n * k / parts).min(slots);
+            if cut > *cuts.last().unwrap() {
+                cuts.push(cut);
+            }
+        }
+        if *cuts.last().unwrap() < slots {
+            cuts.push(slots);
+        }
+        cs.parts.resize_with(cuts.len() - 1, Default::default);
+        self.for_each_part(&mut state.seed_maps, &cuts, &mut cs.parts, |maps, part, range| {
+            dedup_seeds(maps, &cs.order, &cs.bounds[range], &cs.res, part)
+        });
 
+        let mut dst_states: Vec<Option<TypeState>> = Vec::new();
+        dst_states.resize_with(self.readers.len(), || None);
         for (i, e) in chunks.iter().flatten().enumerate() {
-            let r = cs.res[i];
+            let r = cs.res[i].load(Relaxed);
             let dst_local_id = if r == NEW_NODE {
-                let ts = state.type_states.entry(e.dst_type_id).or_default();
+                let ts = dst_states[e.dst_type_id]
+                    .get_or_insert_with(|| state.type_states.remove(&e.dst_type_id).unwrap_or_default());
                 let id = ts.nodes.len() as u32;
                 let node = NodeRecord {
                     global_id: e.dst_global_id,
@@ -2930,26 +2966,56 @@ impl DiskGraphEngine {
                 ts.nodes.push(node);
                 ts.next_frontier.push(node);
                 state.stats.record_node(layer_idx + 1, e.dst_type_id);
-                cs.res[i] = id;
+                cs.res[i].store(id, Relaxed);
                 id
             } else if r & PENDING != 0 {
-                cs.res[(r & !PENDING) as usize]
+                cs.res[(r & !PENDING) as usize].load(Relaxed)
             } else {
                 r
             };
             self.emit_edge(layer_idx, e.src_local_id, dst_local_id, e.rel_id, e.swap_edge_direction, state, output)?;
         }
-
-        let mut lo = 0;
-        for (s, &hi) in cs.new_bounds.iter().enumerate() {
-            let map = &mut state.seed_maps[s];
-            for &(key, i) in &cs.new_edges[lo..hi as usize] {
-                map.insert(key, cs.res[i as usize]);
+        for (t, ts) in dst_states.into_iter().enumerate() {
+            if let Some(ts) = ts {
+                state.type_states.insert(t, ts);
             }
-            lo = hi as usize;
         }
+
+        self.for_each_part(&mut state.seed_maps, &cuts, &mut cs.parts, |maps, part, _| {
+            let mut lo = 0;
+            for (map, &hi) in maps.iter_mut().zip(&part.new_bounds) {
+                for &(key, i) in &part.new_edges[lo..hi as usize] {
+                    map.insert(key, cs.res[i as usize].load(Relaxed));
+                }
+                lo = hi as usize;
+            }
+        });
         state.commit_scratch = cs;
         Ok(())
+    }
+
+    fn for_each_part<F>(
+        &self,
+        maps: &mut [GxHashMap<u64, u32>],
+        cuts: &[usize],
+        parts: &mut [CommitPart],
+        f: F,
+    ) where
+        F: Fn(&mut [GxHashMap<u64, u32>], &mut CommitPart, std::ops::RangeInclusive<usize>) + Sync,
+    {
+        let mut rest = maps;
+        let mut jobs = Vec::with_capacity(parts.len());
+        for (w, part) in cuts.windows(2).zip(parts.iter_mut()) {
+            let (head, tail) = std::mem::take(&mut rest).split_at_mut(w[1] - w[0]);
+            rest = tail;
+            jobs.push((head, part, w[0]..=w[1]));
+        }
+        if jobs.len() == 1 {
+            let (m, p, r) = jobs.pop().unwrap();
+            f(m, p, r);
+        } else {
+            self.thread_pool.install(|| jobs.into_par_iter().for_each(|(m, p, r)| f(m, p, r)));
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
