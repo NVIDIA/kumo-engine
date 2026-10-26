@@ -169,9 +169,11 @@ assert written == prediction_result.num_rows, (written, prediction_result.num_ro
 ### 3.1 Static scoring population
 
 When Node 1d confirmed a population table (`kumoai-reference/references/kumo_finetuning_sdk.md`
-§7.1), stage it in the destination's system:
+§7.1), stage it in the **source's** system — where the entity table is read from — whatever the
+destination. Each recipe below reads the entity table and writes the population inside that one
+system; the destination may be in another system (`adapter.md` §4) and plays no part here.
 
-- **Files, S3, GCS:** read the entity key — and, when the entity table has a time column, that
+- **Files, S3, GCS source:** read the entity key — and, when the entity table has a time column, that
   column too — from the source with `pyarrow.dataset`; name them `ENTITY1` and `TIMESTAMP`; write
   one Parquet file inside the confirmed population path, creating the directory first for local
   files; and build the `PredictionTable` from a connector rooted there. Decide from the entity's
@@ -199,18 +201,23 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
   if '://' not in POPULATION_PATH:
       os.makedirs(POPULATION_PATH, exist_ok=True)              # object stores need no directory
   papq.write_table(population, POPULATION_PATH + 'population.parquet')
-  population_connector = kumo.FileConnector(root_dir=POPULATION_PATH)   # or S3Connector / GCSConnector
+  population_connector = kumo.FileConnector(root_dir=POPULATION_PATH)   # the source's kind: or S3 / GCS
   prediction_table = kumo.PredictionTable.from_source_table(
       population_connector['population'], pq=pquery, snapshot=snapshot)
   ```
 
   `ENTITY_SOURCE` is the entity table's file or directory as preflight listed it, and
   `ENTITY_FORMAT` its format as preflight found it, `'csv'` or `'parquet'`. The population is
-  written as Parquet either way. `POPULATION_PATH` is the confirmed path, ending in `/`.
-- **Snowflake:** the §7.1 SQL, run through the read-back connection above.
-- **Databricks:** create the table through the confirmed SQL warehouse with the statement API,
-  wait for it, and build the `PredictionTable` from a `DatabricksConnector` scoped to the
-  population's schema. The same `TIMESTAMP` rule applies: project `CAST(<time> AS TIMESTAMP) AS
+  written as Parquet either way. `POPULATION_PATH` is the confirmed path, ending in `/`, in the
+  source's file system or bucket.
+- **Snowflake source:** the §7.1 SQL, run through
+  `snowflake.connector.connect(connection_name=SNOWFLAKE_CONNECTION)` as in the read-back above,
+  and the `PredictionTable` built from a `SnowflakeConnector` made as in §2 but scoped to the
+  population's database and schema.
+- **Databricks source:** create the table through the source's SQL warehouse with the statement
+  API, wait for it, and build the `PredictionTable` from a `DatabricksConnector` scoped to the
+  population's schema. A source reached through a cluster has no SQL warehouse: say at Node 1d
+  that staging is not covered there, and offer the rows whose target is NULL instead. The same `TIMESTAMP` rule applies: project `CAST(<time> AS TIMESTAMP) AS
   TIMESTAMP` only when the entity table has a time column, and drop it otherwise. `wait_timeout`
   is at most `'50s'` (Databricks rejects more), so poll until the statement finishes:
 
@@ -231,7 +238,7 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
       r = ws.statement_execution.get_statement(r.statement_id)
   assert r.status.state == StatementState.SUCCEEDED, r.status
   ```
-- **BigQuery:** not covered on this host. Say so at Node 1d and offer the rows whose target is
+- **BigQuery source:** not covered on this host. Say so at Node 1d and offer the rows whose target is
   NULL instead.
 
 ---
