@@ -5,6 +5,7 @@
 //! projections/reductions it needs.  Each distinct row frame is traversed and
 //! decoded once, then shared by sequence and aggregate consumers.
 
+use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -66,7 +67,7 @@ struct FramePlan {
     columns: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PathStep {
     relation: String,
@@ -860,6 +861,61 @@ fn materialize_frame(
     })
 }
 
+// Filtering a broader materialized history preserves its chronological/key order
+// and each window's original sequential numeric accumulation order.
+fn window_frame(
+    frame: &MaterializedFrame,
+    plan: &FramePlan,
+    cutoffs: &[i64],
+) -> Result<MaterializedFrame, String> {
+    let mut indices = Vec::new();
+    let mut offsets = vec![0];
+    for (anchor, cutoff) in cutoffs.iter().enumerate() {
+        let lower = plan.start_seconds.map(|value| cutoff.saturating_add(value));
+        let upper = plan.stop_seconds.map(|value| cutoff.saturating_add(value));
+        for row in frame.offsets[anchor]..frame.offsets[anchor + 1] {
+            if frame.timestamps[row].is_some_and(|value| {
+                lower.is_some_and(|bound| value < bound)
+                    || upper.is_some_and(|bound| value >= bound)
+            }) {
+                continue;
+            }
+            indices.push(row as u64);
+        }
+        offsets.push(indices.len());
+    }
+    let columns = (0..frame.batch.num_columns()).collect::<Vec<_>>();
+    Ok(MaterializedFrame {
+        name: plan.name.clone(),
+        destination: frame.destination.clone(),
+        deferred_columns: HashMap::new(),
+        positions: frame.positions.clone(),
+        batch: take_batch(&frame.batch, &indices, &columns)?,
+        node_ids: indices
+            .iter()
+            .map(|i| frame.node_ids[*i as usize])
+            .collect(),
+        timestamps: indices
+            .iter()
+            .map(|i| frame.timestamps[*i as usize])
+            .collect(),
+        offsets,
+    })
+}
+
+fn covers_window(broad: &FramePlan, narrow: &FramePlan) -> bool {
+    broad.root_type == narrow.root_type
+        && broad.path == narrow.path
+        && broad.time_column == narrow.time_column
+        && broad.distinct == narrow.distinct
+        && broad.start_seconds.unwrap_or(i64::MIN) <= narrow.start_seconds.unwrap_or(i64::MIN)
+        && broad.stop_seconds.unwrap_or(i64::MAX) >= narrow.stop_seconds.unwrap_or(i64::MAX)
+        && narrow
+            .columns
+            .iter()
+            .all(|column| broad.columns.contains(column))
+}
+
 fn sequence_result(
     reader: &GraphIndexReader,
     frame: &MaterializedFrame,
@@ -1020,31 +1076,81 @@ fn reduce(
     column: Option<&str>,
     cutoff: i64,
 ) -> Result<ScalarValue, String> {
-    validate_reduction(operation, column)?;
-    if operation == "count" {
-        return Ok(ScalarValue::F64(rows.len() as f64));
+    Ok(reduce_many(rows, &[operation], column, cutoff)?.remove(0))
+}
+
+// A column is decoded once; numeric moments and categorical hashing are each
+// accumulated once. Numeric additions retain the original row/operation order.
+fn reduce_many(
+    rows: RowsView<'_>,
+    operations: &[&str],
+    column: Option<&str>,
+    cutoff: i64,
+) -> Result<Vec<ScalarValue>, String> {
+    for operation in operations {
+        validate_reduction(operation, column)?;
     }
-    let values = rows
-        .values(column.expect("validated reduction column"))?
-        .into_iter()
-        .filter(|value| !matches!(value, ScalarValue::Null))
-        .collect::<Vec<_>>();
-    if operation == "count_distinct" {
-        return Ok(ScalarValue::F64(
-            values
-                .iter()
-                .map(ScalarValue::equality_key)
-                .collect::<HashSet<_>>()
-                .len() as f64,
-        ));
+    let row_count = rows.len();
+    let values = if operations.iter().all(|op| *op == "count") {
+        Vec::new()
+    } else {
+        rows.values(column.expect("validated reduction column"))?
+            .into_iter()
+            .filter(|value| !matches!(value, ScalarValue::Null))
+            .collect::<Vec<_>>()
+    };
+    let has = |op: &str| operations.contains(&op);
+    let mut counts = HashMap::<String, (usize, ScalarValue)>::new();
+    let mut distinct = HashSet::new();
+    if has("mode") {
+        for value in &values {
+            let entry = counts
+                .entry(value.equality_key())
+                .or_insert_with(|| (0, value.clone()));
+            entry.0 += 1;
+        }
+    } else if has("count_distinct") {
+        distinct.extend(values.iter().map(ScalarValue::equality_key));
     }
-    if operation == "sum" && rows.len() == 0 {
-        return Ok(ScalarValue::F64(0.0));
+    let distinct_count = if has("mode") {
+        counts.len()
+    } else {
+        distinct.len()
+    };
+    let numeric = operations.iter().any(|op| {
+        matches!(
+            *op,
+            "sum" | "mean" | "var_population" | "std_population" | "var_sample" | "std_sample"
+        )
+    });
+    let mut count = 0u64;
+    let mut mean = 0.0f64;
+    let mut m2 = 0.0f64;
+    let mut sum = 0.0f64;
+    if numeric {
+        for value in &values {
+            if let Some(value) = value.numeric()? {
+                count += 1;
+                sum += value;
+                let delta = value - mean;
+                mean += delta / count as f64;
+                m2 += delta * (value - mean);
+            }
+        }
     }
-    if values.is_empty() {
-        return Ok(ScalarValue::Null);
+    let mut minimum = values.first().cloned().unwrap_or(ScalarValue::Null);
+    let mut maximum = minimum.clone();
+    if has("min") || has("max") {
+        for value in values.iter().skip(1) {
+            if has("min") && value.compare(&minimum)? == Ordering::Less {
+                minimum = value.clone();
+            }
+            if has("max") && value.compare(&maximum)? == Ordering::Greater {
+                maximum = value.clone();
+            }
+        }
     }
-    if operation == "recency" {
+    let recency = if has("recency") && !values.is_empty() {
         let latest = values
             .iter()
             .map(ScalarValue::epoch_seconds)
@@ -1053,67 +1159,46 @@ fn reduce(
             .flatten()
             .max()
             .expect("non-null timestamp values");
-        return Ok(ScalarValue::F64(cutoff.saturating_sub(latest) as f64));
-    }
-    if operation == "mode" {
-        let mut counts = HashMap::<String, (usize, ScalarValue)>::new();
-        for value in values {
-            let entry = counts
-                .entry(value.equality_key())
-                .or_insert_with(|| (0, value.clone()));
-            entry.0 += 1;
-        }
-        return Ok(counts
-            .into_values()
+        ScalarValue::F64(cutoff.saturating_sub(latest) as f64)
+    } else {
+        ScalarValue::Null
+    };
+    let mode = if has("mode") {
+        counts
+            .values()
             .max_by(|left, right| {
                 left.0
                     .cmp(&right.0)
                     .then_with(|| right.1.stable_sort_key().cmp(&left.1.stable_sort_key()))
             })
-            .expect("non-empty mode")
-            .1);
-    }
-    if operation == "min" || operation == "max" {
-        let mut best = values[0].clone();
-        for value in &values[1..] {
-            let ordering = value.compare(&best)?;
-            if (operation == "min" && ordering == Ordering::Less)
-                || (operation == "max" && ordering == Ordering::Greater)
-            {
-                best = value.clone();
-            }
-        }
-        return Ok(best);
-    }
-
-    let numbers = values
+            .map(|(_, value)| value.clone())
+            .unwrap_or(ScalarValue::Null)
+    } else {
+        ScalarValue::Null
+    };
+    operations
         .iter()
-        .map(ScalarValue::numeric)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    let mut count = 0u64;
-    let mut mean = 0.0f64;
-    let mut m2 = 0.0f64;
-    let mut sum = 0.0f64;
-    for value in numbers {
-        count += 1;
-        sum += value;
-        let delta = value - mean;
-        mean += delta / count as f64;
-        m2 += delta * (value - mean);
-    }
-    Ok(match operation {
-        "sum" => ScalarValue::F64(sum),
-        "mean" => ScalarValue::F64(mean),
-        "var_population" => ScalarValue::F64(m2 / count as f64),
-        "std_population" => ScalarValue::F64((m2 / count as f64).sqrt()),
-        "var_sample" if count >= 2 => ScalarValue::F64(m2 / (count - 1) as f64),
-        "std_sample" if count >= 2 => ScalarValue::F64((m2 / (count - 1) as f64).sqrt()),
-        "var_sample" | "std_sample" => ScalarValue::Null,
-        _ => return Err(format!("unsupported numeric reduction {operation:?}")),
-    })
+        .map(|operation| {
+            Ok(match *operation {
+                "count" => ScalarValue::F64(row_count as f64),
+                "count_distinct" => ScalarValue::F64(distinct_count as f64),
+                "sum" if row_count == 0 => ScalarValue::F64(0.0),
+                _ if values.is_empty() => ScalarValue::Null,
+                "sum" => ScalarValue::F64(sum),
+                "mean" => ScalarValue::F64(mean),
+                "var_population" => ScalarValue::F64(m2 / count as f64),
+                "std_population" => ScalarValue::F64((m2 / count as f64).sqrt()),
+                "var_sample" if count >= 2 => ScalarValue::F64(m2 / (count - 1) as f64),
+                "std_sample" if count >= 2 => ScalarValue::F64((m2 / (count - 1) as f64).sqrt()),
+                "var_sample" | "std_sample" => ScalarValue::Null,
+                "mode" => mode.clone(),
+                "min" => minimum.clone(),
+                "max" => maximum.clone(),
+                "recency" => recency.clone(),
+                _ => return Err(format!("unsupported numeric reduction {operation:?}")),
+            })
+        })
+        .collect()
 }
 
 fn group_rows(rows: RowsView<'_>, plan: &GroupPlan, cutoff: i64) -> Result<Vec<OwnedRow>, String> {
@@ -1457,10 +1542,37 @@ pub(crate) fn execute(
         .map_err(|error| format!("invalid temporal query JSON: {error}"))?;
     let mut timings = QueryTimings::default();
     let mut stats = QueryStats::default();
-    let mut frames = HashMap::new();
-    for frame_plan in &plan.frames {
+    let mut frames: HashMap<String, MaterializedFrame> = HashMap::new();
+    let mut frame_order = plan.frames.iter().collect::<Vec<_>>();
+    // Wider windows first; no reassociation/prefix subtraction of float sums.
+    frame_order.sort_by_key(|frame| {
+        (
+            frame.start_seconds.unwrap_or(i64::MIN),
+            std::cmp::Reverse(frame.stop_seconds.unwrap_or(i64::MAX)),
+        )
+    });
+    for frame_plan in frame_order {
+        validate_frame_plan(frame_plan, root_type)?;
         if frames.contains_key(&frame_plan.name) {
             return Err(format!("duplicate temporal frame {:?}", frame_plan.name));
+        }
+        let aggregate_only = |name: &str| !plan.sequences.iter().any(|s| s.frame == name);
+        if aggregate_only(&frame_plan.name) {
+            if let Some(broad) = plan.frames.iter().find(|broad| {
+                aggregate_only(&broad.name)
+                    && frames.contains_key(&broad.name)
+                    && covers_window(broad, frame_plan)
+            }) {
+                let started = Instant::now();
+                let frame = window_frame(&frames[&broad.name], frame_plan, cutoffs)?;
+                stats.frames_materialized += 1;
+                stats.rows_materialized += frame.batch.num_rows();
+                timings.decode_and_select = timings
+                    .decode_and_select
+                    .saturating_add(elapsed_ns(started));
+                frames.insert(frame_plan.name.clone(), frame);
+                continue;
+            }
         }
         let consumers = plan
             .sequences
@@ -1532,19 +1644,63 @@ pub(crate) fn execute(
     timings.sequence_assembly = elapsed_ns(sequence_started);
 
     let aggregate_started = Instant::now();
+    // Preserve plan order while sharing each ungrouped frame/column scan.
+    let mut aggregate_values = vec![Vec::new(); plan.aggregates.len()];
+    let mut groups = BTreeMap::<(&str, Option<&str>), Vec<usize>>::new();
+    for (index, aggregate) in plan.aggregates.iter().enumerate() {
+        validate_reduction(&aggregate.operation, aggregate.column.as_deref())?;
+        let frame = frames.get(&aggregate.frame).ok_or_else(|| {
+            format!(
+                "aggregate {:?} has unknown frame {:?}",
+                aggregate.name, aggregate.frame
+            )
+        })?;
+        if aggregate.groups.is_empty() {
+            groups
+                .entry((&aggregate.frame, aggregate.column.as_deref()))
+                .or_default()
+                .push(index);
+        } else {
+            aggregate_values[index] = aggregate_result(frame, aggregate, cutoffs)?.values;
+        }
+    }
+    for ((frame_name, column), indices) in groups {
+        let frame = &frames[frame_name];
+        let operations = indices
+            .iter()
+            .map(|i| plan.aggregates[*i].operation.as_str())
+            .collect::<Vec<_>>();
+        let by_anchor = cutoffs
+            .par_iter()
+            .enumerate()
+            .map(|(anchor, cutoff)| {
+                reduce_many(
+                    RowsView::Frame {
+                        frame,
+                        start: frame.offsets[anchor],
+                        stop: frame.offsets[anchor + 1],
+                    },
+                    &operations,
+                    column,
+                    *cutoff,
+                )
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        for values in by_anchor {
+            for (index, value) in indices.iter().zip(values) {
+                aggregate_values[*index].push(value);
+            }
+        }
+    }
     let aggregates = plan
         .aggregates
         .iter()
-        .map(|aggregate| {
-            let frame = frames.get(&aggregate.frame).ok_or_else(|| {
-                format!(
-                    "aggregate {:?} has unknown frame {:?}",
-                    aggregate.name, aggregate.frame
-                )
-            })?;
-            aggregate_result(frame, aggregate, cutoffs)
+        .zip(aggregate_values)
+        .map(|(plan, values)| AggregateResult {
+            name: plan.name.clone(),
+            values,
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect();
     timings.aggregation = elapsed_ns(aggregate_started);
     timings.total = elapsed_ns(total_started);
     Ok(QueryResult {
@@ -1674,6 +1830,141 @@ pub(crate) fn config_error(error: String) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fused_reductions_keep_empty_null_tie_and_numeric_answers() {
+        let operations = [
+            "sum",
+            "mean",
+            "std_sample",
+            "mode",
+            "count_distinct",
+            "count",
+        ];
+        for (rows, expected) in [
+            (
+                vec![],
+                vec![
+                    ScalarValue::F64(0.0),
+                    ScalarValue::Null,
+                    ScalarValue::Null,
+                    ScalarValue::Null,
+                    ScalarValue::F64(0.0),
+                    ScalarValue::F64(0.0),
+                ],
+            ),
+            (
+                vec![row(None)],
+                vec![
+                    ScalarValue::Null,
+                    ScalarValue::Null,
+                    ScalarValue::Null,
+                    ScalarValue::Null,
+                    ScalarValue::F64(0.0),
+                    ScalarValue::F64(1.0),
+                ],
+            ),
+            (
+                vec![
+                    row(Some(ScalarValue::F64(1.0))),
+                    row(Some(ScalarValue::F64(3.0))),
+                    row(None),
+                ],
+                vec![
+                    ScalarValue::F64(4.0),
+                    ScalarValue::F64(2.0),
+                    ScalarValue::F64(2.0f64.sqrt()),
+                    ScalarValue::F64(1.0),
+                    ScalarValue::F64(2.0),
+                    ScalarValue::F64(3.0),
+                ],
+            ),
+        ] {
+            let actual =
+                reduce_many(RowsView::Owned(&rows), &operations, Some("value"), 0).unwrap();
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert_eq!(actual.equality_key(), expected.equality_key());
+            }
+        }
+        let strings = vec![
+            row(Some(ScalarValue::String("z".into()))),
+            row(None),
+            row(Some(ScalarValue::String("é".into()))),
+            row(Some(ScalarValue::String("z".into()))),
+        ];
+        let actual = reduce_many(
+            RowsView::Owned(&strings),
+            &["mode", "count_distinct"],
+            Some("value"),
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            actual[0].equality_key(),
+            ScalarValue::String("z".into()).equality_key()
+        );
+        assert_eq!(
+            actual[1].equality_key(),
+            ScalarValue::F64(2.0).equality_key()
+        );
+    }
+
+    #[test]
+    fn nested_windows_select_half_open_boundaries_per_anchor() {
+        let broad = FramePlan {
+            name: "full".into(),
+            root_type: "users".into(),
+            path: vec![],
+            time_column: Some("at".into()),
+            start_seconds: None,
+            stop_seconds: Some(0),
+            distinct: true,
+            columns: vec!["value".into()],
+        };
+        let narrow = FramePlan {
+            name: "short".into(),
+            start_seconds: Some(-30),
+            ..serde_json::from_str::<FramePlan>(
+                &serde_json::json!({
+                    "name":"short", "root_type":"users", "path":[], "time_column":"at",
+                    "start_seconds":null, "stop_seconds":0, "distinct":true, "columns":["value"]
+                })
+                .to_string(),
+            )
+            .unwrap()
+        };
+        assert!(covers_window(&broad, &narrow));
+        assert!(!covers_window(&narrow, &broad));
+        let batch = RecordBatch::try_from_iter(vec![(
+            "value",
+            Arc::new(Int64Array::from(vec![0, 1, 2, 3, 4, 5])) as ArrayRef,
+        )])
+        .unwrap();
+        let frame = MaterializedFrame {
+            name: "full".into(),
+            destination: "users".into(),
+            deferred_columns: HashMap::new(),
+            positions: HashMap::from([("value".into(), 0)]),
+            batch,
+            node_ids: vec![0, 1, 2, 3, 4, 5],
+            timestamps: vec![
+                Some(69),
+                Some(70),
+                Some(99),
+                Some(100),
+                Some(170),
+                Some(199),
+            ],
+            offsets: vec![0, 4, 6],
+        };
+        let selected = window_frame(&frame, &narrow, &[100, 200]).unwrap();
+        assert_eq!(selected.offsets, vec![0, 2, 4]);
+        assert_eq!(selected.node_ids, vec![1, 2, 4, 5]);
+        assert_eq!(
+            selected.timestamps,
+            vec![Some(70), Some(99), Some(170), Some(199)]
+        );
+    }
 
     #[test]
     fn frame_sort_keeps_existing_tie_order_for_every_scalar_kind() {

@@ -764,15 +764,16 @@ impl SamplerEngine {
         })?;
         let cutoffs: Vec<i64> = cutoff_values.extract()?;
         let reader = Arc::clone(&self.reader);
+        let engine = Arc::clone(&self.engine);
         let result = py
             .detach(move || {
-                temporal_query::execute(
+                engine.thread_pool.install(|| temporal_query::execute(
                     reader.as_ref(),
                     &root_type,
                     &roots,
                     &cutoffs,
                     &plan_json,
-                )
+                ))
             })
             .map_err(temporal_query::config_error)?;
         result.into_python(py, model_format)
