@@ -57,11 +57,10 @@ class DatabricksSourceBackend(_DatabricksSessions):
 
     Args:
         identity: A fallback identity, used only for connectors that name none
-            themselves. Accepts an :class:`~kumoai_studio.identity.Identity`, an
+            themselves. Accepts an identity object, an
             identity ID, or the name it was created under. Leaving it unset is the
-            common case: a bound
-            :class:`~kumoai_studio.connector.DatabricksConnector` records the
-            identity it was created with.
+            common case: a connector records the identity it was created
+            with.
         mode: A :class:`~kumo_core.sources.types.ReadMode` to force, when a
             run needs to know which path it took rather than only that the
             table was read. ``None`` takes the cheapest the reader offers.
@@ -72,27 +71,14 @@ class DatabricksSourceBackend(_DatabricksSessions):
             ``SELECT`` the table already required.
 
     Example:
-        >>> import kumoai_studio as kumo  # doctest: +SKIP
-        >>> from kumoapi.data_source import (  # doctest: +SKIP
-        ...     CreateIdentityArgs, DatabricksIdentityConfig,
-        ...     DatabricksOAuthCredentials)
-        >>> from pydantic import SecretStr  # doctest: +SKIP
-        >>> identity = kumo.create_identity(  # doctest: +SKIP
-        ...     CreateIdentityArgs(
-        ...         display_name='prod-dbx',
-        ...         config=DatabricksIdentityConfig(
-        ...             host='https://workspace.cloud.databricks.com',
-        ...             client_id='service-principal-id'),
-        ...         credentials=DatabricksOAuthCredentials(
-        ...             client_secret=SecretStr('...'))))
-        >>> kumo.set_backend(kumo.LocalBackend(  # doctest: +SKIP
-        ...     sources={kumo.DataSourceType.DATABRICKS:
-        ...              DatabricksSourceBackend(
-        ...                  staging_volume_path='/Volumes/main/kumo/staging')}
-        ... ))
+        >>> import kumo.engine as kumo  # doctest: +SKIP
+        >>> identity = kumo.DatabricksIdentity(  # doctest: +SKIP
+        ...     host='https://my-workspace.example.com',
+        ...     client_id='service-principal-id', client_secret='...')
         >>> bricks = kumo.DatabricksConnector(  # doctest: +SKIP
-        ...     name='analytics', catalog='main', schema_name='features',
-        ...     warehouse_id='warehouse-id', identity=identity)
+        ...     catalog='main', schema_name='features',
+        ...     warehouse_id='warehouse-id', identity=identity,
+        ...     staging_volume_path='/Volumes/main/kumo/staging')
     """
 
     source_type = DataSourceType.DATABRICKS

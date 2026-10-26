@@ -152,14 +152,14 @@ class S3Sessions(ObjectStoreSessions):
 class S3SourceBackend(S3Sessions, ObjectStoreSourceBackend):
     r"""Resolves source tables by reading Amazon S3 in this process.
 
-    Installed as ``pip install 'kumoai-studio[s3]'``. With no identity named
+    Installed as ``pip install kumo-s3``. With no identity named
     the reader signs with the ambient AWS credential chain, which is what
     makes an instance profile or ``aws configure`` work with no further
     setup.
 
     Args:
         identity: A fallback identity, used only for connectors that name none
-            themselves. Accepts an :class:`~kumoai_studio.identity.Identity`, an
+            themselves. Accepts an identity object, an
             identity ID, or the name it was created under.
         storage_namespace: The storage system this process reaches, recorded
             in every graph coordinate an S3 table contributes. Defaults to
@@ -169,12 +169,9 @@ class S3SourceBackend(S3Sessions, ObjectStoreSourceBackend):
             store offers only ``streamed``, so this exists to assert that.
 
     Example:
-        >>> import kumoai_studio as kumo  # doctest: +SKIP
-        >>> from kumo_s3 import S3SourceBackend  # doctest: +SKIP
-        >>> kumo.set_backend(kumo.LocalBackend(  # doctest: +SKIP
-        ...     sources={kumo.DataSourceType.S3: S3SourceBackend()}))
+        >>> import kumo.engine as kumo  # doctest: +SKIP
         >>> events = kumo.S3Connector(  # doctest: +SKIP
-        ...     name='events', root_dir='s3://company-data/events/')
+        ...     root_dir='s3://company-data/events/')
     """
 
     source_type = DataSourceType.S3

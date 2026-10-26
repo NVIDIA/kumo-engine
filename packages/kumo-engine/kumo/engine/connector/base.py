@@ -13,16 +13,10 @@ The provider connectors
 directly from the existing first-party plugin packages (`kumo-snowflake`,
 `kumo-s3`, `kumo-gcs`, `kumo-bigquery`, `kumo-databricks`).
 
-Those mirror the *argument lists* of the equivalent cloud SDK classes
-(`kumoai/connector/{snowflake,s3,gcs,bigquery,databricks}_connector.py`), but
-drop everything that exists only to round-trip a server-side connector
-registry: `name` (a project-scoped display name for `get_by_name` lookups),
-`description`, `project_id`/`kumo_project_id`, and `_response`. In particular,
-construction here never calls anything resembling the cloud SDK's
-`IdentityBackedConnector._bind_connector` -> `get_backend().connector.
-create_if_not_exist(...)` -- there is no `Backend`, so there is nothing to
-round-trip through. Construction is pure Python: build the
-`kumoapi.data_source.*ConnectorResourceConfig` and hold it.
+Connectors carry no server-side registry state: no display name, no
+description, no project. Construction never registers anything anywhere.
+It is pure Python: build the `kumoapi.data_source.*ConnectorResourceConfig`
+and hold it.
 """
 
 from abc import ABC, abstractmethod
@@ -136,25 +130,23 @@ class Connector(ABC):
 
     def sql(self, query: str):
         r"""A `SQLSourceTable` whose rows come from the read-only `SELECT`
-        `query`, run in this connector's warehouse. Mirrors the cloud SDK's
-        `Connector.sql`. Only Snowflake, Databricks and BigQuery run SQL.
+        `query`, run in this connector's warehouse. Only Snowflake, Databricks
+        and BigQuery run SQL.
         """
         from kumo.engine.connector.source_table import SQLSourceTable
 
         return SQLSourceTable(query, self)
 
     def table_names(self) -> List[str]:
-        r"""Source table names available through this connector. Mirrors
-        the cloud SDK's `Connector.table_names()` -- convenience over
-        `self.source_backend.list_tables(self).table_names`, which is what
-        this calls.
+        r"""Source table names available through this connector.
+        Convenience over `self.source_backend.list_tables(self).table_names`,
+        which is what this calls.
         """
         return self.source_backend.list_tables(self).table_names
 
     def has_table(self, table_name: str) -> bool:
-        r"""Whether `table_name` is visible through this connector. Mirrors
-        the cloud SDK's `Connector.has_table(name)` -- convenience over
-        `table_name in self.table_names()`.
+        r"""Whether `table_name` is visible through this connector.
+        Convenience over `table_name in self.table_names()`.
         """
         return table_name in self.table_names()
 

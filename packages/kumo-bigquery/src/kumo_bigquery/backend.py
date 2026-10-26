@@ -58,11 +58,10 @@ class BigQuerySourceBackend(_BigQuerySessions):
 
     Args:
         identity: A fallback identity, used only for connectors that name none
-            themselves. Accepts an :class:`~kumoai_studio.identity.Identity`, an
+            themselves. Accepts an identity object, an
             identity ID, or the name it was created under. Leaving it unset is
-            the common case: a bound
-            :class:`~kumoai_studio.connector.BigQueryConnector` records the identity
-            it was created with.
+            the common case: a connector records the identity it was created
+            with.
         mode: The read mode every table is read under, or ``None`` to take
             whichever the reader offers first.
         staging_uri: A ``gs://`` prefix this run may export Parquet to. Without
@@ -71,23 +70,13 @@ class BigQuerySourceBackend(_BigQuerySessions):
             an error: no bucket is a complete configuration.
 
     Example:
-        >>> import kumoai_studio as kumo  # doctest: +SKIP
-        >>> from kumoapi.data_source import (  # doctest: +SKIP
-        ...     BigQueryIdentityConfig, CreateIdentityArgs,
-        ...     GoogleWorkloadIdentityAuthentication)
-        >>> identity = kumo.create_identity(  # doctest: +SKIP
-        ...     CreateIdentityArgs(
-        ...         display_name='prod-bq',
-        ...         config=BigQueryIdentityConfig(
-        ...             authentication=GoogleWorkloadIdentityAuthentication(
-        ...                 service_account_email='kumo@data-project'
-        ...                 '.iam.gserviceaccount.com'))))
-        >>> kumo.set_backend(kumo.LocalBackend(  # doctest: +SKIP
-        ...     sources={kumo.DataSourceType.BIGQUERY: BigQuerySourceBackend(
-        ...         staging_uri='gs://bucket/kumo')}))
+        >>> import kumo.engine as kumo  # doctest: +SKIP
+        >>> identity = kumo.BigQueryIdentity(  # doctest: +SKIP
+        ...     workload_service_account_email='kumo@data-project'
+        ...     '.iam.gserviceaccount.com')
         >>> events = kumo.BigQueryConnector(  # doctest: +SKIP
-        ...     name='events', project_id='data-project',
-        ...     dataset_id='analytics', identity=identity)
+        ...     project_id='data-project', dataset_id='analytics',
+        ...     identity=identity, staging_uri='gs://bucket/kumo')
     """
 
     source_type = DataSourceType.BIGQUERY

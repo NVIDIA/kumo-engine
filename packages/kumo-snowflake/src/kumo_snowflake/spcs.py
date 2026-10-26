@@ -8,14 +8,14 @@ it belongs to in its environment. An identity that authenticates this way
 therefore stores no secret at all -- only where to read the token, which is why
 it pairs with no credentials.
 
-The arguments are *built* here rather than the identity itself: constructing
-one means calling ``kumoai_studio.create_identity``, and this package does not import
-the SDK. The caller passes what comes back:
+The arguments are *built* here rather than the identity itself, because this
+package does not create identities. The caller passes what comes back to
+whatever registers identities in its process. With kumo-engine, the connector
+builds the identity from the same environment:
 
-    import kumoai_studio
-    from kumo_snowflake import spcs_identity_create_args
+    import kumo.engine as kumo
 
-    identity = kumoai_studio.create_identity(spcs_identity_create_args('prod-sf'))
+    connector = kumo.SnowflakeConnector.from_spcs_env()
 """
 
 import os

@@ -57,30 +57,18 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
 
     Args:
         identity: A fallback identity, used only for connectors that name none
-            themselves. Accepts an :class:`~kumoai_studio.identity.Identity`, an
+            themselves. Accepts an identity object, an
             identity ID, or the name it was created under. Leaving it unset is the
-            common case: a bound
-            :class:`~kumoai_studio.connector.SnowflakeConnector` records the identity
-            it was created with, which is what makes this reader stateless
-            enough for :class:`~kumoai_studio.backend.LocalBackend` to register by
-            default.
+            common case: a connector records the identity it was created
+            with, which is what makes this reader stateless enough to register
+            by default.
 
     Example:
-        >>> import kumoai_studio as kumo  # doctest: +SKIP
-        >>> from kumoapi.data_source import (  # doctest: +SKIP
-        ...     CreateIdentityArgs, SnowflakeAuthenticationKind,
-        ...     SnowflakeIdentityConfig)
-        >>> identity = kumo.create_identity(  # doctest: +SKIP
-        ...     CreateIdentityArgs(
-        ...         display_name='prod-sf',
-        ...         config=SnowflakeIdentityConfig(
-        ...             account='xy12345',
-        ...             authentication=(
-        ...                 SnowflakeAuthenticationKind.OAUTH_TOKEN_FILE))))
-        >>> kumo.set_backend(kumo.LocalBackend())  # doctest: +SKIP
+        >>> import kumo.engine as kumo  # doctest: +SKIP
+        >>> identity = kumo.SnowflakeIdentity(account='xy12345')  # doctest: +SKIP
         >>> snow = kumo.SnowflakeConnector(  # doctest: +SKIP
-        ...     name='analytics', warehouse='WH', database='ANALYTICS',
-        ...     schema_name='PUBLIC', identity=identity)
+        ...     warehouse='WH', database='ANALYTICS', schema_name='PUBLIC',
+        ...     identity=identity)
     """
 
     source_type = DataSourceType.SNOWFLAKE

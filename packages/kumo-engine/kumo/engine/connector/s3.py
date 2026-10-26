@@ -1,17 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""`S3Connector`, mirroring the argument list of the cloud SDK's
-`kumoai.connector.s3_connector.S3Connector`, minus everything that exists
-only to round-trip a server-side connector registry. See
+r"""`S3Connector`: a connector with no server-side registry state. See
 `kumo.engine.connector.base`.
 
-TODO(local-sdk): the cloud SDK's `root_dir` parsing goes through `S3URI`
-(`kumoai/connector/s3_connector.py`, `kumoai/connector/file_connector.py`),
-which additionally rejects ambiguous/percent-encoded path separators. That
-class lives in the cloud SDK package, which this package does not depend on;
-port the stricter validation here (or factor it out into `kumoapi`) rather
-than relying on the bare `urlsplit` below long-term.
+TODO(local-sdk): `root_dir` is parsed with a bare `urlsplit` and does not yet
+reject ambiguous/percent-encoded path separators.
 """
 
 from functools import cached_property
@@ -48,7 +42,7 @@ class S3Connector(Connector):
     Reads and writes through `kumo_s3.S3SourceBackend`/`S3SinkBackend` --
     install the `s3` extra of this package to use it.
 
-    Two target modes are available, exactly as in the cloud SDK:
+    Two target modes are available:
 
     * Set `root_dir` to constrain the connector to one bucket and optional
       prefix. Table names are relative paths below the root.
@@ -63,7 +57,7 @@ class S3Connector(Connector):
             `aws configure`, environment) -- there is no server-side
             workload identity in this package.
         region: Optional bucket region for rooted mode. Invalid in any-URI
-            mode, matching the cloud SDK's validation.
+            mode.
     """
     def __init__(
         self,

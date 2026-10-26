@@ -117,13 +117,13 @@ class GCSSourceBackend(GCSSessions, ObjectStoreSourceBackend):
     r"""Resolves source tables by reading Google Cloud Storage in this
     process.
 
-    Install with ``pip install 'kumoai-studio[gcs]'``. Without a named identity,
+    Install with ``pip install kumo-gcs``. Without a named identity,
     reads use Application Default Credentials. Arrow serves metadata and
     the shared downloader handles native and SDK transfers.
 
     Args:
         identity: A fallback identity, used only for connectors that name none
-            themselves. Accepts an :class:`~kumoai_studio.identity.Identity`, an
+            themselves. Accepts an identity object, an
             identity ID, or the name it was created under.
         storage_namespace: The storage system this process reaches, recorded
             in every graph coordinate a GCS table contributes. Defaults to
@@ -132,12 +132,9 @@ class GCSSourceBackend(GCSSessions, ObjectStoreSourceBackend):
             store offers only ``streamed``, so this exists to assert that.
 
     Example:
-        >>> import kumoai_studio as kumo  # doctest: +SKIP
-        >>> from kumo_gcs import GCSSourceBackend  # doctest: +SKIP
-        >>> kumo.set_backend(kumo.LocalBackend(  # doctest: +SKIP
-        ...     sources={kumo.DataSourceType.GCS: GCSSourceBackend()}))
+        >>> import kumo.engine as kumo  # doctest: +SKIP
         >>> events = kumo.GCSConnector(  # doctest: +SKIP
-        ...     name='events', root_dir='gs://company-data/events/')
+        ...     root_dir='gs://company-data/events/')
     """
 
     source_type = DataSourceType.GCS

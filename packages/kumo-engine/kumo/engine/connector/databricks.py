@@ -1,9 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""`DatabricksConnector`, mirroring the argument list of the cloud SDK's
-`kumoai.connector.databricks_connector.DatabricksConnector`, minus everything
-that exists only to round-trip a server-side connector registry. See
+r"""`DatabricksConnector`: a connector with no server-side registry state. See
 `kumo.engine.connector.base`.
 """
 

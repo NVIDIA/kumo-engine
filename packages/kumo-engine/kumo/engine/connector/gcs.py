@@ -1,13 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""`GCSConnector`, mirroring the argument list of the cloud SDK's
-`kumoai.connector.gcs_connector.GCSConnector`, minus everything that exists
-only to round-trip a server-side connector registry. See
+r"""`GCSConnector`: a connector with no server-side registry state. See
 `kumo.engine.connector.base`.
 
-TODO(local-sdk): same caveat as `kumo.engine.connector.s3` -- the cloud SDK's
-`GCSURI`-based `root_dir` validation isn't ported yet.
+TODO(local-sdk): same caveat as `kumo.engine.connector.s3` -- `root_dir`
+does not yet reject ambiguous/percent-encoded path separators.
 """
 
 from functools import cached_property
@@ -42,7 +40,7 @@ class GCSConnector(Connector):
     Reads and writes through `kumo_gcs.GCSSourceBackend`/`GCSSinkBackend` --
     install the `gcs` extra of this package to use it.
 
-    Two target modes are available, exactly as in the cloud SDK:
+    Two target modes are available:
 
     * Set `root_dir` to constrain the connector to one bucket and optional
       prefix. Table names are relative paths below the root.

@@ -5,8 +5,8 @@ for HTTP-compatible clients to interact with Kumo AI's cloud services. Resource
 schemas are defined as Pydantic dataclasses.
 
 While it is possible to interface with Kumo directly using these datamodels,
-users are recommended to install the Python SDK (via `pip install kumoai-studio`)
-for a smoother experience.
+most users will want a higher-level Python library built on them, such as
+`kumo-engine` (`pip install kumo-engine`).
 
 ## Development
 

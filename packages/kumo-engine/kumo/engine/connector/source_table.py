@@ -3,9 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""`SourceTable`: a reference to a table living behind a `Connector`.
 
-Mirrors the cloud SDK's `kumoai.connector.SourceTable` (`connector[name]` ->
-`SourceTable`), minus what only exists to round-trip a server-side project:
-construction here only stores the connector and table name.
+`connector[name]` returns one. Construction only stores the connector and
+table name.
 `SQLSourceTable` (`connector.sql(query)`) is the Custom SQL variant.
 
 `column_dict`/`columns` use the source-schema pass described in `kumo.engine._infer`.
@@ -14,11 +13,10 @@ numeric/string columns) comes back with
 `stype=None`; resolving that via a sampled read is `Table.
 from_source_table`'s job, not this class's -- see `kumo.engine._infer`'s module
 docstring for why the split lands there rather than in a later no-arg
-`infer_metadata()` call the way it does in the cloud SDK.
+`infer_metadata()` call.
 
 Cached (`functools.cached_property`) per `SourceTable` instance, computed
-once on first access -- unlike the cloud SDK, which round-trips to the
-backend on every access.
+once on first access.
 """
 
 from functools import cached_property
@@ -105,8 +103,7 @@ def checked_sql(connector: Connector, sql: str) -> CustomSQLSourceTable:
 
 class SQLSourceTable(SourceTable):
     r"""A source table whose rows come from a read-only `SELECT` run in the
-    connector's warehouse. Mirrors the cloud SDK's `kumoai_studio.connector.
-    SQLSourceTable`; constructed via `connector.sql(query)`.
+    connector's warehouse; constructed via `connector.sql(query)`.
 
     The query is checked up front with the same `kumo_core.custom_sql`
     gates hosted applies, and `table_name` is hosted's synthetic name for

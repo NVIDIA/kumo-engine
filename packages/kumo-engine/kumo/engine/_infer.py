@@ -4,19 +4,15 @@
 r"""Table schema inference: dtype/stype per column, from source metadata and,
 where the dtype alone doesn't settle it, a sample of the actual data.
 
-Ported from `kumoai/backend/local/table.py`'s `_LocalTableBackend.
-infer_metadata`/`_stype_for_column`/`_sample`/`_statistics`/
-`_column_statistics` in the cloud SDK. Sample decoding and statistics now
-have one implementation in `kumo_core`; this adapter calls
+Sample decoding and statistics have one implementation in `kumo_core`;
+this adapter calls
 `connector.source_backend` directly (no `Backend`/connector-id-lookup
 indirection -- `Table.connector` already *is* the live connector) and threads a
 Custom SQL table's query to the reader as `sql=` (the reader applies the
 sample gating).
 
-Two entry points, split the same way the cloud SDK splits `SourceTable.
-column_dict` (source dtype + a pure dtype->stype rule)
-from `Table.infer_metadata()` (samples the source to resolve whatever the
-cheap pass left ambiguous):
+Two entry points: a cheap pass (source dtype + a pure dtype->stype rule)
+and a sampled pass that resolves whatever the cheap pass left ambiguous:
 
 * `infer_source_columns` -- source-schema lookup. Filesystem CSV sources
   read rows to infer dtypes; this is not necessarily a catalog-only call.
@@ -26,14 +22,12 @@ cheap pass left ambiguous):
   allows `stype=None`, exactly the "not yet resolved" state a cheap catalog
   read can leave a numeric/string column in.
 * `resolve_table_columns` -- takes that cheap mapping and finishes the job:
-  primary-key/time-column stype override, then a sampled read
-  (`kumoai/backend/local/table.py`'s `_sample`) for anything still
-  ambiguous. Backs `Table.from_source_table`, which is where this package's
+  primary-key/time-column stype override, then a sampled read for
+  anything still ambiguous. Backs `Table.from_source_table`, which is where this package's
   cheap/expensive split necessarily ends -- `kumoapi.table.TableDefinition.
-  cols` is a `List[Column]`, and `kumoapi.table.Column` (unlike the cloud
-  SDK's own mutable wrapper) requires `stype`/`dtype` set, so a `Table`
-  cannot hold a partially-resolved schema the way a cloud-SDK `Table` can
-  between `from_source_table` and a later `infer_metadata()` call. All the
+  cols` is a `List[Column]`, and `kumoapi.table.Column` requires
+  `stype`/`dtype` set, so a `Table` cannot hold a partially-resolved
+  schema. All the
   sampling this package ever needs, for a given `Table`, therefore has to
   happen inside `from_source_table` itself, not deferred to a later no-arg
   call.
@@ -50,16 +44,14 @@ from kumoapi.typing import Dtype, Stype
 
 from kumo.engine.connector.base import Connector
 
-#: Rows sampled for stats-based stype inference, matching the cloud SDK's
-#: `kumoai/backend/local/_common.py`'s `_SAMPLE_ROWS`.
+#: Rows sampled for stats-based stype inference.
 _SAMPLE_ROWS = 10_000
 
 
 def _stype_from_dtype(dtype: Dtype) -> Optional[Stype]:
     r"""Returns the stype a data type settles on its own, if any -- `None`
     for the numeric and string families, which need column statistics to
-    separate (`_stype_from_stats`). Ported from
-    `kumoai/backend/local/table.py`'s `_stype_from_dtype`.
+    separate (`_stype_from_stats`).
     """
     from kumo_core.stype_inference import infer_stype_from_dtype
 
@@ -69,8 +61,7 @@ def _stype_from_dtype(dtype: Dtype) -> Optional[Stype]:
 def _stype_from_stats(dtype: Dtype, num_unique: int, unique_fraction: float,
                       num_unique_multi: Optional[int] = None,
                       multicategorical_proven: bool = False) -> Optional[Stype]:
-    r"""Returns the stype a column's statistics imply. Ported from
-    `kumoai/backend/local/table.py`'s `_stype_from_stats`.
+    r"""Returns the stype a column's statistics imply.
     """
     from kumo_core.stype_inference import infer_stype_from_stats
 
@@ -90,7 +81,6 @@ def _stype_for_column(
     sampled statistics. Identifier and numerical names use the shared rules;
     explicit primary-key/time-column roles are applied in
     `resolve_table_columns`.
-    Ported from `kumoai/backend/local/table.py`'s `_stype_for_column`.
     """
     if dtype is None:
         return None
@@ -127,8 +117,7 @@ def _sample(
     statistics are an enhancement: a column whose stype follows from its
     dtype must still resolve with no read at all, and only a column that
     genuinely needed the data should fail (the caller's own error then names
-    it). Ported from `kumoai/backend/local/table.py`'s `_sample`/
-    `_statistics`.
+    it).
     """
     try:
         response = source_backend.get_sample(connector, table_name,

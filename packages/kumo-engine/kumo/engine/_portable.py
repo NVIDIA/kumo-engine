@@ -4,12 +4,8 @@
 r"""Portable graph conversion: `kumo.engine.graph.Graph` -> the dict `kumo_core`
 training/prediction consume as `graph_config`.
 
-Ported from `kumoai/backend/local/portable.py` in the cloud SDK, adapted to
-this package's `Graph` shape: `Graph.edges` are already resolved
-`kumoapi.graph.Edge` objects (built directly by the caller), not the
-column-group form the cloud SDK's `GraphDefinition.col_groups` holds -- so
-the `graph_api.resolve_foreign_keys` step `_to_portable_graph` does isn't
-needed here. `kumoapi.graph.Edge`'s fields (`src_table`, `fkey`, `dst_table`)
+`Graph.edges` are already resolved `kumoapi.graph.Edge` objects (built
+directly by the caller), so no foreign-key resolution step is needed here. `kumoapi.graph.Edge`'s fields (`src_table`, `fkey`, `dst_table`)
 already exactly match what `kumo_core.portable_graph._project_portable_graph`
 expects an edge to look like, confirmed by reading both directly.
 
@@ -38,10 +34,8 @@ used purely as a stable identity/versioning key. The real data read already
 happens earlier and separately, via `SourceBackend.prepare_ingest(...)` ->
 local Parquet -> `DiskgraphIngestSpec.source_paths` (`Graph.snapshot()`).
 So `_source_table_name` below only needs to produce a well-formed, stable
-identifier from fields the `Connector` already holds directly -- not to
-replicate the cloud SDK's `_source_coordinate`/`_object_store_coordinate`/
-`_custom_sql_coordinate` (`portable.py:107-258`), which exist there to drive
-an actual `locate`-based connector lookup this package has no equivalent of.
+identifier from fields the `Connector` already holds directly; nothing
+looks a connector up from it.
 """
 
 import warnings

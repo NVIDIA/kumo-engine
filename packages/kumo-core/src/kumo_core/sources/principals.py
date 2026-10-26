@@ -158,8 +158,8 @@ class PrincipalStore:
             if name in self._by_name:
                 raise ValueError(
                     f"Identity {name!r} already exists in this process. "
-                    f"Delete it with kumoai_studio.delete_identity, or rotate its "
-                    f"credentials with kumoai_studio.rotate_identity_credentials.")
+                    f"Use a different name, or delete the existing identity or "
+                    f"rotate its credentials.")
             registration = Registration(
                 principal=Principal(name=name, config=args.config,
                                     credentials=args.credentials),
@@ -306,10 +306,9 @@ def resolve(
         return None
     wanted = ", ".join(repr(reference) for reference in named) or "no"
     known = ", ".join(repr(name) for name in store.names()) or "none"
-    bind = f"; {connector_example}" if connector_example else ""
+    bind = f", as in {connector_example}" if connector_example else ""
     raise ValueError(
         f"Connector {getattr(connector, 'id', connector)!r} names {wanted} "
-        f"identity, and none exists in this process. Create one and name it "
-        f"on the connector: identity = kumoai_studio.create_identity("
-        f"CreateIdentityArgs(display_name='<name>', "
-        f"config={config_example})){bind}. {fallback} Existing: {known}.")
+        f"identity, and none exists in this process. Create the identity "
+        f"first (config={config_example}), or pass an Identity object on the "
+        f"connector{bind}. {fallback} Existing: {known}.")
