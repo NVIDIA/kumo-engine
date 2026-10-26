@@ -37,7 +37,12 @@ A rooted connector discovers CSV/Parquet tables and writes predictions,
 embeddings, and model bundles beneath its filesystem/prefix. A rootless
 connector reads exact canonical `abfss://` URIs; discovery and output are
 unavailable. SQL, warehouse-style `ReadMode.STAGED`, and append output are
-unsupported. Prepared exports and generated output use native Arrow streams,
+unsupported. Model bundles can be published and reloaded at the connector's
+full root URI, with or without a trailing slash. Table sources and prediction
+exports require a nonempty child path. Use a dedicated bundle directory:
+model reload reads all files below its selected directory.
+
+Prepared exports and generated output use native Arrow streams,
 matching S3/GCS; consumers must wait for export completion.
 
 ## Shared SDK reads

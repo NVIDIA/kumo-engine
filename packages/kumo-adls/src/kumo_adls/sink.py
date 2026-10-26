@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from functools import partial
+from urllib.parse import unquote, urlsplit
 
 from kumo_core.object_store_sink import ObjectStoreSinkBackend
 from kumo_core.sources.cpu import COPY_WORKER_BYTES, memory_share
+from kumoapi.adls import normalize_adls_root_uri
 from kumoapi.data_source import DataSourceType
 from kumoapi.jobs import WriteMode
 from pyarrow.fs import FSSpecHandler, PyFileSystem
@@ -21,6 +23,17 @@ from .sdk_filesystem import ADLSFileSystem
 
 class ADLSSinkBackend(ADLSSessions, ObjectStoreSinkBackend):
     source_type = DataSourceType.ADLS
+
+    def _model_destination(self, connector, coordinate):
+        """Model bundles may name the root directory; tables must name a child."""
+        root = self._root_for(connector)
+        if root is not None and '://' in coordinate:
+            parsed = urlsplit(normalize_adls_root_uri(coordinate))
+            key = unquote(parsed.path).strip('/')
+            if parsed.netloc == root.bucket and key == root.prefix:
+                return self._filesystem(connector, root.bucket,
+                                        root.region), root.path
+        return self._destination(connector, coordinate)
 
     def preflight_write_files(self, connector, table_name,
                               write_mode=WriteMode.OVERWRITE):

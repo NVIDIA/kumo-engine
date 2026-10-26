@@ -14,6 +14,7 @@ from kumo_core.sources.object_store_sessions import (
 from kumo_core.sources.principals import IdentityRef
 from kumo_core.sources.types import ReadMode
 from kumoapi.adls import (
+    normalize_adls_root_uri,
     normalize_adls_source_relative_path,
     normalize_adls_source_uri,
 )
@@ -36,8 +37,9 @@ from .source_access import source_access
 
 
 def canonical_uri(path: str) -> str:
+    """Serialize an account-qualified file or directory path."""
     authority, _, key = path.partition('/')
-    return normalize_adls_source_uri(
+    return normalize_adls_root_uri(
         f'abfss://{authority}/{quote(key, safe="/-._~!$&()*+,;=:@")}')
 
 

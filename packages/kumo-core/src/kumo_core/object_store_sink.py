@@ -32,6 +32,11 @@ class ObjectStoreSinkBackend(ABC):
         """Return the authenticated filesystem and validated bucket/key path."""
         raise NotImplementedError
 
+    def _model_destination(self, connector: SourceConnector,
+                           coordinate: str) -> Tuple[FileSystem, str]:
+        """Resolve a model directory, which may have provider-specific roots."""
+        return self._destination(connector, coordinate)
+
     def _uri(self, path: str) -> str:
         return f'{self.scheme}://{path}'
 
@@ -106,7 +111,7 @@ class ObjectStoreSinkBackend(ABC):
                 f"Publishing a model to {self.provider} needs a destination "
                 f"path. Set output_path on the ModelExportConfig.")
 
-        filesystem, destination = self._destination(connector, path)
+        filesystem, destination = self._model_destination(connector, path)
         destination = destination.rstrip('/')
         root = Path(bundle_dir)
         for source in sorted(item for item in root.rglob('*')
@@ -159,7 +164,7 @@ class ObjectStoreSinkBackend(ABC):
                 f"was published to. Reuse the output_path from the export "
                 f"config.")
 
-        filesystem, source = self._destination(connector, path)
+        filesystem, source = self._model_destination(connector, path)
         source = source.rstrip('/')
         destination = Path(local_dir)
         if destination.exists():

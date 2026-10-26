@@ -93,6 +93,13 @@ Native output is bound lazily on first write, leaving SDK metadata, source
 reads, model downloads, and their account-qualified paths unchanged. Only
 output streams drop the virtual account qualifier to use Arrow's container/key
 path. Existing root containment checks run before filesystem access.
+Model publish/reload use a directory-specific destination hook. A full URI
+matching the rooted connector's exact filesystem/prefix is accepted, including
+a filesystem root and either trailing-slash spelling. Table and prediction
+coordinates still require a nonempty child path; the model exception does not
+enable filename completion outside a prefix. Other model coordinates retain
+the same account/root fencing and relative-path validation. Model reload reads
+all files under that directory, so use a dedicated bundle location.
 A native filesystem is reused within one sink access, with thread-safe first
 construction; it is not cached across accesses or identities. The provider
 requires Arrow 24, the version whose native credential/URI APIs are validated.
