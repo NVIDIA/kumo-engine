@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'darwin' and extra != 'extra-4-kumo-cpu' and extra != 'extra-4-kumo-cu130' and extra != 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests'",
@@ -3133,7 +3133,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "azure-core", specifier = ">=1.31,<2" },
+    { name = "azure-core", specifier = ">=1.38,<2" },
     { name = "azure-identity", specifier = ">=1.25,<2" },
     { name = "azure-storage-file-datalake", specifier = ">=12.22,<13" },
     { name = "fsspec" },
@@ -3141,7 +3141,7 @@ requires-dist = [
     { name = "kumo-core", editable = "packages/kumo-core" },
     { name = "pyarrow", specifier = ">=24,<25" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" },
-    { name = "requests", specifier = ">=2.31,<3" },
+    { name = "requests", specifier = ">=2.33,<3" },
 ]
 provides-extras = ["test"]
 
@@ -3357,8 +3357,8 @@ provides-extras = ["test"]
 name = "kumo-engine"
 source = { editable = "packages/kumo-engine" }
 dependencies = [
-    { name = "faiss-cpu", marker = "sys_platform == 'darwin' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests')" },
-    { name = "faiss-gpu", marker = "sys_platform == 'linux' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests')" },
+    { name = "faiss-cpu", marker = "sys_platform == 'darwin' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests')" },
+    { name = "faiss-gpu", marker = "sys_platform == 'linux' or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cpu' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu130' and extra == 'extra-4-kumo-cu132') or (extra == 'extra-4-kumo-cu130' and extra == 'group-4-kumo-public-tests') or (extra == 'extra-4-kumo-cu132' and extra == 'group-4-kumo-public-tests')" },
     { name = "filelock" },
     { name = "kumo-api" },
     { name = "kumo-core" },
