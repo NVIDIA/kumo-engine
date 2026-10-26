@@ -238,8 +238,24 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
       r = ws.statement_execution.get_statement(r.statement_id)
   assert r.status.state == StatementState.SUCCEEDED, r.status
   ```
-- **BigQuery source:** not covered on this host. Say so at Node 1d and offer the rows whose target is
-  NULL instead.
+- **BigQuery source:** create the table through the BigQuery client with `CREATE OR REPLACE TABLE
+  ... AS SELECT`, wait for the job, and build the `PredictionTable` from a `BigQueryConnector`
+  scoped to the population's dataset. The same `TIMESTAMP` rule applies: project
+  `CAST(<time> AS TIMESTAMP) AS TIMESTAMP` only when the entity table has a time column, and drop
+  it otherwise. The population's dataset must already exist; `CREATE TABLE` does not create it.
+
+  ```python
+  from google.cloud import bigquery
+
+  time_col = f', CAST({ENTITY_TIME} AS TIMESTAMP) AS `TIMESTAMP`' if ENTITY_TIME else ''
+  bigquery.Client(project=PROJECT_ID).query(
+      f'CREATE OR REPLACE TABLE `{PROJECT_ID}.{POP_DATASET}.{POP_TABLE}` AS '
+      f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
+      f'FROM `{PROJECT_ID}.{DATASET_ID}.{ENTITY_TABLE}`').result()   # waits; raises on failure
+  population_connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=POP_DATASET)
+  prediction_table = kumo.PredictionTable.from_source_table(
+      population_connector[POP_TABLE], pq=pquery, snapshot=snapshot)
+  ```
 
 ---
 
