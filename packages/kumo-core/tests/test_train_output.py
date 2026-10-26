@@ -80,7 +80,11 @@ def test_prediction_timestamp_round_trip(tmp_path, kind, timezone, unit):
         "2026-07-22 01:02:03.123456001",
         "2026-07-22 01:02:03.123456999",
         None,
-    ]).tz_localize(timezone).as_unit(unit)
+    ]).tz_localize(timezone)
+    if hasattr(times, "as_unit"):
+        times = times.as_unit(unit)
+    elif unit != "ns":
+        pytest.skip("pandas < 2 supports only nanosecond datetimes")
     expected = pd.DataFrame({
         "ENTITY": [1, 1, 2],
         "TIMESTAMP": times,
@@ -120,25 +124,29 @@ def test_prediction_timestamp_round_trip(tmp_path, kind, timezone, unit):
 def test_prediction_stream_rejects_lossy_timestamp_schema_change(
         tmp_path, kind, offset_ns):
     anchor = pd.Timestamp("2026-07-22 01:02:03.123456")
-    frames = [
-        pd.DataFrame({
-            "ANCHOR_TIMESTAMP": pd.Series([anchor], dtype="datetime64[us]")
+    tables = [
+        pa.table({
+            "ANCHOR_TIMESTAMP": pa.array(
+                [anchor.value // 1000], type=pa.timestamp("us"))
         }),
-        pd.DataFrame({
-            "ANCHOR_TIMESTAMP": pd.Series(
-                [anchor + pd.Timedelta(offset_ns, unit="ns")],
-                dtype="datetime64[ns]",
-            )
+        pa.table({
+            "ANCHOR_TIMESTAMP": pa.array(
+                [anchor.value + offset_ns], type=pa.timestamp("ns"))
         }),
     ]
+    if kind == "pandas":
+        frames = [table.to_pandas() for table in tables]
+        if frames[0].ANCHOR_TIMESTAMP.dtype != np.dtype("datetime64[us]"):
+            pytest.skip("pandas < 2 supports only nanosecond datetimes")
+    else:
+        frames = tables
     context = (pytest.raises(pa.ArrowInvalid, match="lose data")
                if offset_ns else nullcontext())
     with context:
         with StreamingPredOutputWriter(str(tmp_path), 0) as writer:
             for frame in frames:
                 output = (PredOutput(frame, None) if kind == "pandas" else
-                          ArrowPredOutput(pa.Table.from_pandas(
-                              frame, preserve_index=False)))
+                          ArrowPredOutput(frame))
                 writer.write(output)
 
     if offset_ns:
