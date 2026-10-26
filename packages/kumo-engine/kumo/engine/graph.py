@@ -348,7 +348,8 @@ class Graph:
         self.native_graph
 
     def visualize(self, path: str | Path | None = None, *,
-                  show_cols: bool = False) -> SVG:
+                  show_cols: bool = False, sample_rows: int = 0,
+                  layout: str = 'auto') -> SVG:
         """Display scrollable table relationships in notebooks and return SVG.
 
         Args:
@@ -356,14 +357,28 @@ class Graph:
             show_cols: Add columns up to 10 rows per table (5 above 10 tables).
                 Primary and foreign keys are always included, even above this
                 limit. False shows only keys.
+            sample_rows: Show 1 to 3 non-null examples per column in HTML
+                tooltips, selected from up to 30 preview rows per table.
+                Zero (default) reads no source data. Previews may
+                run warehouse queries and incur costs; returned row limits
+                do not bound bytes scanned. Unavailable previews are labeled.
+                Samples become part of saved notebook HTML, never SVG exports.
+            layout: Initial arrangement: auto, original, or compact.
+                Auto chooses from graph structure, independently of viewport
+                size. Original preserves the layered relationship view;
+                compact balances crowded groups.
+                HTML offers a selector to compare arrangements.
 
-        Uses declared schemas without reading source data. Self-relations
+        Uses declared schemas. More than 30 tables, self-relations,
         and missing schema/key definitions raise ValueError.
         Trusted HTML output offers full screen when the notebook host permits it.
+        Full screen, Fit, and zoom preserve the selected arrangement.
+        SVG exports use the initial layout and contain no interactive controls.
         """
         from kumo.engine._visualization import render
 
-        svg = render(self._named_tables, self.edges, show_cols=show_cols)
+        svg = render(self._named_tables, self.edges, show_cols=show_cols,
+                     sample_rows=sample_rows, layout=layout)
         if path is not None:
             Path(path).write_text(svg, encoding='utf-8')
         return svg

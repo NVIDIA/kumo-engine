@@ -147,15 +147,30 @@ Display a graph's declared tables and key relationships in a notebook, or save t
 ```python
 graph.visualize()                        # inline notebook display
 svg = graph.visualize("relationships.svg", show_cols=True)
+graph.visualize(layout="compact")        # balance crowded groups
 ```
 
 The return value is SVG text with notebook display support.
-Notebook HTML output keeps labels at their original size in a scrollable view, capped at 640 pixels high, with a Full screen button when the host permits it.
-Interactive controls require trusted HTML output; SVG export retains the complete graph at its original dimensions.
-Visualization uses declared metadata without reading source rows or requiring Graphviz or other rendering dependencies.
+Choose Original or Compact from the notebook's layout selector.
+The default `layout="auto"` chooses an initial arrangement from graph structure, independently of viewport size.
+Use `layout="original"` to retain the layered relationship view.
+Each arrangement is computed once; switching layouts does not read source data.
+Fullscreen fits the selected arrangement into the larger viewport without moving tables or rerouting relationships.
+Use the zoom controls or Ctrl/Cmd+wheel (including trackpad pinch) to zoom, and Fit to show the whole graph again.
+Ordinary scrolling moves within an overflowing graph and continues through the notebook when the graph cannot scroll further.
+Fit changes only the view, and toolbar controls keep their size during graph zoom.
+Interactive controls require trusted HTML output and fullscreen requires permission from the notebook host.
+SVG export retains the initial selected arrangement at its full dimensions.
+By default, visualization uses declared metadata without reading source rows or requiring Graphviz or other rendering dependencies.
+Hover or keyboard-focus a header or column for schema details; static SVG and restricted notebook output retain native tooltips.
+Optionally use `graph.visualize(sample_rows=3)` to fetch up to 30 preview rows per table once and show up to three non-null examples independently for each visible column.
+Samples have no guaranteed ordering, and previews can run warehouse queries and incur costs; the row limit does not bound bytes scanned.
+Unavailable previews and columns with no non-null values in the preview are labeled, and long values are abbreviated.
+Samples become part of saved notebook HTML; SVG text and exports always contain metadata only.
 The default view shows primary and relationship foreign keys.
 `show_cols=True` adds columns up to 10 rows per table, or 5 for graphs with more than 10 tables; keys always remain visible, even above that limit.
 A footer counts hidden columns.
+Visualization accepts at most 30 tables; larger graphs raise an error so no tables or relationships are silently omitted.
 Self-relations are rejected because graph snapshots do not support them.
 
 ## Local storage and results

@@ -3,11 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Dependency-free SVG rendering of graph schema metadata."""
 
+import json
 from html import escape
+from reprlib import Repr
 from typing import Mapping, Sequence
 from unicodedata import combining
+from uuid import uuid4
 
 from kumoapi.graph import Edge, validate_edge_endpoints
+from kumoapi.source_table import CustomSQLSourceTable
 from kumoapi.table import TableDefinition
 
 from kumo.engine.table import Table
@@ -17,48 +21,31 @@ _LARGE_GRAPH_COLUMN_LIMIT = 5
 
 
 class SVG(str):
-    """SVG text that displays inline in notebooks."""
+    """SVG text with optional notebook-only layout controls and previews."""
+
+    def __new__(cls, value: str, samples: dict[str, str] | None = None,
+                namespace: str = '', layouts: dict | None = None,
+                initial_layout: str = 'original'):
+        obj = super().__new__(cls, value)
+        obj._samples = samples or {}
+        obj._namespace = namespace
+        obj._layouts = layouts or {}
+        obj._initial_layout = initial_layout
+        return obj
+
     def _repr_svg_(self) -> str:
         return str(self)
 
-    def _repr_html_(self) -> str:
-        return (
-            '<div class="kumo-graph"><style>'
-            '.kumo-graph{display:flex;flex-direction:column;max-height:640px;'
-            'max-width:100%;padding:8px;box-sizing:border-box;background:white;'
-            'color:#202020;font:14px Arial,Helvetica,sans-serif}'
-            '.kumo-graph button{align-self:flex-start;padding:6px 12px;'
-            'margin-bottom:8px;background:#f4f8ec;color:#386000;'
-            'border:1px solid #c8d9ad;border-radius:4px;cursor:pointer}'
-            '.kumo-graph-view{overflow:auto;min-height:0}'
-            '.kumo-graph-view svg{max-width:none!important;'
-            'max-height:none!important}'
-            '.kumo-graph:fullscreen{height:100%;max-height:none}'
-            '.kumo-graph:fullscreen .kumo-graph-view{flex:1}'
-            '.kumo-graph .kumo-graph-exit,.kumo-graph:fullscreen '
-            '.kumo-graph-enter{display:none}'
-            '.kumo-graph:fullscreen .kumo-graph-exit{display:block}'
-            '</style><button type="button" class="kumo-graph-enter" '
-            'onclick="this.parentElement.querySelector(\'[role=status]\')'
-            '.hidden=true;Promise.resolve().then(() => '
-            'this.parentElement.requestFullscreen()).catch(() => '
-            'this.parentElement.querySelector(\'[role=status]\').hidden=false)">'
-            'Full screen</button><button type="button" class="kumo-graph-exit" '
-            'onclick="document.exitFullscreen()">Exit full screen</button>'
-            '<span role="status" hidden="">Full screen is unavailable in this '
-            'notebook. Scroll here or open the exported SVG.</span>'
-            '<div class="kumo-graph-view" tabindex="0" role="region" '
-            'aria-label="Scrollable graph visualization">'
-            '<div style="width:max-content">' + self + '</div></div>'
-            '<script>(()=>{const host=document.currentScript.parentElement;'
-            'requestAnimationFrame(()=>host.querySelectorAll('
-            '\'.kumo-graph-view:not([data-positioned])\').forEach(v=>{'
-            'const p=Array.from(v.querySelectorAll(\'g[transform]\'),'
-            'g=>g.transform.baseVal.getItem(0).matrix)'
-            '.sort((a,b)=>a.e-b.e||a.f-b.f)[0];'
-            'if(p){v.scrollLeft=Math.max(0,p.e-40);'
-            'v.scrollTop=Math.max(0,p.f-40)}v.dataset.positioned=true;'
-            '}))})()</script></div>')
+    def _repr_html_(self, *, _highlight_table: bool = False) -> str:
+        from kumo.engine._visualization_viewer import render_html
+
+        svg = str(self)
+        for metadata, sampled in self._samples.items():
+            svg = svg.replace(metadata, sampled)
+        if self._namespace:
+            svg = svg.replace(self._namespace, 'kumo-' + uuid4().hex)
+        return render_html(svg, 'table' if _highlight_table else 'row',
+                           self._layouts, self._initial_layout)
 
 
 def _wrap(text: str, width: int) -> list[str]:
@@ -87,8 +74,86 @@ def _wrap(text: str, width: int) -> list[str]:
     return lines + [line]
 
 
+def _squircle(width: float, height: float, radius: float = 18) -> str:
+    # Cubic corners flatten at the sides, unlike circular rounded rectangles.
+    r = min(radius, width / 2, height / 2)
+    return (f'M {r} 0 H {width - r} C {width} 0 {width} 0 {width} {r} '
+            f'V {height - r} C {width} {height} {width} {height} '
+            f'{width - r} {height} H {r} C 0 {height} 0 {height} '
+            f'0 {height - r} V {r} C 0 0 0 0 {r} 0 Z')
+
+
+def _tooltip(text: str, row: str = '', table: str = '',
+             column: str = '',
+             connected_tables: Sequence[str] = ()) -> str:
+    connections = escape(json.dumps(list(connected_tables)))
+    text = escape(text)
+    attr = text.replace('\n', '&#10;')
+    table = escape(table).replace('\n', '&#10;')
+    column = escape(column).replace('\n', '&#10;')
+    return (f'<g tabindex="0" role="group" data-kumo-row="{row}" '
+            f'data-kumo-table="{table}" data-kumo-column="{column}" '
+            f'data-kumo-connections="{connections}" '
+            f'aria-label="{attr}" '
+            f'data-kumo-tip="{attr}"><title>{text}</title>')
+
+
+def _preview(table: Table, count: int,
+             columns: Sequence[str]) -> dict[str, str]:
+    import pandas as pd
+    from kumo_core.sources.preview import sample_dataframe
+
+    fallback = dict.fromkeys(columns, '\nSample values: unavailable')
+    try:
+        assert table.definition is not None
+        source = table.definition.source_table
+        sql = source.sql if isinstance(source, CustomSQLSourceTable) else None
+        response = table.connector.source_backend.get_sample(
+            table.connector, table.table_name, 30, sql=sql, timeout=10)
+        frame = sample_dataframe(response.sample_rows)
+        if frame is None:
+            return fallback
+        short = Repr()
+        short.maxstring, short.maxlist, short.maxtuple = 120, 5, 5
+        for column in columns:
+            if column not in frame:
+                continue
+            values = frame[column].iloc[:30].tolist()
+            if not values:
+                fallback[column] = '\nSample values: no rows returned'
+                continue
+            labels = []
+            for value in values:
+                null = (value is None or value is pd.NA or value is pd.NaT
+                        or isinstance(value, float) and value != value)
+                if null:
+                    continue
+                label = short.repr(value)
+                labels.append(label if len(label) <= 160 else label[:157] +
+                              '...')
+                if len(labels) == count:
+                    break
+            fallback[column] = (
+                '\nSample values:\n' + '\n'.join(labels) if labels else
+                '\nSample values: No non-null values in preview')
+    except Exception:
+        # Preview failures must not hide the schema or expose source secrets.
+        pass
+    return fallback
+
+
 def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
-           show_cols: bool) -> SVG:
+           show_cols: bool, sample_rows: int = 0, layout: str = 'auto') -> SVG:
+    from kumo.engine._visualization_layout import build_layouts, choose_layout
+
+    if not isinstance(layout, str) or layout not in (
+            'auto', 'original', 'compact'):
+        raise ValueError('layout must be auto, original, or compact.')
+    if type(sample_rows) is not int or not 0 <= sample_rows <= 3:
+        raise ValueError('sample_rows must be an integer from 0 to 3.')
+    if len(tables) > 30:
+        raise ValueError('Graph visualization supports at most 30 tables; '
+                         'select a smaller graph to visualize.')
     validate_edge_endpoints(tables, edges)
     names = sorted(tables)
     edges = sorted(edges, key=lambda e: (e.src_table, e.fkey, e.dst_table))
@@ -138,13 +203,14 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                  if len(names) <= 10 else _LARGE_GRAPH_COLUMN_LIMIT)
         columns = columns[:max(len(keys[name]), limit if show_cols else 0)]
         title = _wrap(name, 27)
-        header = 24 + 22 * len(title)
+        header = 20 + 22 * len(title)
         rows = []
         ports = {}
         y = header + 8
         for column in columns:
-            lines = _wrap(column, 22)
-            height = max(36, 16 + 20 * len(lines))
+            # Leave room for the widest PK/FK badge and a 12px text gap.
+            lines = _wrap(column, 25)
+            height = 12 + 20 * len(lines)
             ports[column] = y + height / 2
             rows.append((column, lines, y, height))
             y += height
@@ -152,7 +218,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         footer = (f'+ {hidden} other column' +
                   ('s' if hidden != 1 else '') if hidden else
                   ('No columns' if not columns else ''))
-        height = y + (30 if footer else 8)
+        height = y + (26 if footer else 4)
         cards[name] = (title, header, rows, ports, footer, height)
 
     # Rank primary-key tables before their dependents, as in the UI's LR flow.
@@ -226,18 +292,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
     height = top + canvas_height + 40
     if not names:
         width, height = 304, 112
-    svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" '
-        f'width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
-        'role="img" aria-label="Table relationships" '
-        'font-family="Arial, Helvetica, sans-serif">',
-        '<title>Table relationships</title>',
-        '<desc>Lines connect foreign keys (FK) to primary keys (PK).'
-        '</desc>', f'<rect width="{width}" height="{height}" fill="white"/>'
-    ]
-    if not names:
-        svg.append('<text x="24" y="60" font-size="16" fill="#606060">'
-                   'No tables</text>')
+    original_paths = []
     lane = 0
     handles = set()
     for index, edge in enumerate(edges):
@@ -271,37 +326,118 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                      f'{sx} {overhead} C {sx - gap} {overhead} '
                      f'{dx + gap} {overhead} {dx} {overhead} '
                      f'C {dx - bow} {overhead} {dx - bow} {dy} {dx} {dy}')
+        original_paths.append(path)
+        handles.update(((sx, sy), (dx, dy)))
+
+    layout_cards = [dict(name=name, width=card_width,
+                         height=cards[name][-1], rank=ranks[name],
+                         x=xy[node_ids[name]][0], y=xy[node_ids[name]][1])
+                    for name in names]
+    layout_edges = [dict(source=edge.dst_table, target=edge.src_table,
+                         source_port=cards[edge.dst_table][3][
+                             definitions[edge.dst_table].pkey],
+                         target_port=cards[edge.src_table][3][edge.fkey])
+                    for edge in edges]
+    original = dict(width=width, height=height,
+                    positions={name: list(xy[node_ids[name]]) for name in names},
+                    paths=original_paths, handles=sorted(handles))
+    layouts = build_layouts(layout_cards, layout_edges, original)
+    selected = (choose_layout(layout_cards, layout_edges, layouts)
+                if layout == 'auto' else layout)
+    geometry = layouts[selected]
+    width, height = geometry['width'], geometry['height']
+    samples = {}
+    uid = 'kumo-' + uuid4().hex
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+        'role="group" aria-label="Table relationships" '
+        'font-family="Arial, Helvetica, sans-serif">',
+        '<title>Table relationships</title>',
+        '<desc>Lines connect foreign keys (FK) to primary keys (PK).'
+        '</desc>', f'<defs><pattern id="{uid}-grid" width="16" height="16" '
+        'patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.7" '
+        'fill="#d9ddd5"/></pattern></defs>',
+        f'<rect width="{width}" height="{height}" fill="white"/>',
+        f'<rect width="{width}" height="{height}" fill="url(#{uid}-grid)"/>'
+    ]
+    if not names:
+        svg.append('<text x="24" y="60" font-size="16" fill="#606060">'
+                   'No tables</text>')
+    for index, edge in enumerate(edges):
+        path = geometry['paths'][index]
         label = escape(f'{edge.src_table}.{edge.fkey} → '
                        f'{edge.dst_table}.{definitions[edge.dst_table].pkey}')
-        svg.append(f'<g><title>{label}</title><path d="{path}" fill="none" '
-                   'stroke="#a1a1a1" stroke-width="1"/></g>')
-        handles.update(((sx, sy), (dx, dy)))
+        endpoints = (f'data-src-port="{cards[edge.src_table][3][edge.fkey]}" '
+                     f'data-dst-port="{cards[edge.dst_table][3][definitions[edge.dst_table].pkey]}" ') + ' '.join(
+            f'data-{key}="{escape(value).replace(chr(10), "&#10;")}"'
+            for key, value in [('src-table',
+                                edge.src_table), (
+                                    'src-column',
+                                    edge.fkey), ('dst-table', edge.dst_table),
+                               ('dst-column',
+                                definitions[edge.dst_table].pkey)])
+        svg.append(
+            f'<g role="img" aria-label="{label}"><title>{label}</title>'
+            f'<path class="kumo-edge" {endpoints} d="{path}" fill="none" '
+            'stroke="#a1a1a1" stroke-width="1"/></g>')
     for name in names:
-        x, y = xy[node_ids[name]]
+        x, y = geometry['positions'][name]
         title, header, rows, ports, footer, card_height = cards[name]
-        svg.append(f'<g transform="translate({x} {y})">'
-                   f'<title>{escape(name)}</title>'
-                   f'<rect width="{card_width}" height="{card_height}" '
-                   'rx="4" fill="white" stroke="#94a3b8"/>')
-        svg.append(f'<path d="M 4 0 H {card_width - 4} Q {card_width} 0 '
-                   f'{card_width} 4 V {header} H 0 V 4 Q 0 0 4 0" '
-                   'fill="#f4f8ec"/>'
-                   f'<path d="M 0 {header} H {card_width}" '
+        definition = definitions[name]
+        preview = (_preview(tables[name], sample_rows, [row[0] for row in rows])
+                   if sample_rows and rows else {})
+        outgoing = [e for e in edges if e.src_table == name]
+        connected = sorted(neighbors[name])
+        summary = (f'{name}\n{len(definition.cols)} '
+                   f'column{"s" if len(definition.cols) != 1 else ""}')
+        if connected:
+            summary += '\nConnected tables:\n' + '\n'.join(connected)
+        else:
+            summary += '\nNo connected tables'
+        shape = _squircle(card_width, card_height)
+        clip = f'{uid}-card-{node_ids[name]}'
+        svg.append(f'<g data-kumo-card="{escape(name).replace(chr(10), "&#10;")}" '
+                   f'data-width="{card_width}" data-height="{card_height}" '
+                   f'data-rank="{ranks[name]}" '
+                   f'transform="translate({x} {y})">'
+                   f'<defs><clipPath id="{clip}"><path d="{shape}"/>'
+                   '</clipPath></defs>'
+                   f'<path d="{shape}" fill="white" stroke="#94a3b8"/>')
+        svg.append(_tooltip(summary, table=name, connected_tables=connected))
+        svg.append(f'<path class="kumo-surface" '
+                   f'd="{_squircle(card_width, header)}" '
+                   f'clip-path="url(#{clip})" fill="#f4f8ec" '
                    'stroke="#c8d9ad"/>')
         for i, line in enumerate(title):
             svg.append('<text xml:space="preserve" '
-                       f'x="16" y="{28 + 22 * i}" font-size="17" '
+                       f'x="16" y="{26 + 22 * i}" font-size="17" '
                        f'font-weight="700" fill="#386000">{escape(line)}'
                        '</text>')
-        for column, lines, ry, rh in rows:
+        svg.append('</g>')
+        for row_index, (column, lines, ry, rh) in enumerate(rows):
             role = keys[name].get(column, '')
-            if role:
-                svg.append(f'<rect x="10" y="{ry + 2}" '
-                           f'width="{card_width - 20}" height="{rh - 4}" '
-                           'rx="3" fill="#f7f7f7"/>')
+            col = next(c for c in definition.cols if c.name == column)
+            detail = (f'{name}.{column}\nType: {col.dtype.value}\n'
+                      f'Semantic type: {col.stype.value}\n'
+                      f'Role: {role or "Column"}')
+            detail += ''.join(f'\nReferences: {e.dst_table}.'
+                              f'{definitions[e.dst_table].pkey}'
+                              for e in outgoing if e.fkey == column)
+            row = f'{node_ids[name]}-{row_index}'
+            metadata = _tooltip(detail, row, name, column)
+            if column in preview:
+                samples[metadata] = _tooltip(detail + preview[column], row,
+                                             name, column)
+            svg.append(metadata)
+            fill = '#f7f7f7' if role else 'transparent'
+            svg.append(f'<path class="kumo-surface" '
+                       f'transform="translate(10 {ry + 2})" '
+                       f'd="{_squircle(card_width - 20, rh - 4, 7)}" '
+                       f'fill="{fill}"/>')
             for i, line in enumerate(lines):
                 svg.append('<text xml:space="preserve" '
-                           f'x="18" y="{ry + 23 + 20 * i}" '
+                           f'x="18" y="{ry + 21 + 20 * i}" '
                            f'font-size="16" fill="#202020">{escape(line)}'
                            '</text>')
             if role:
@@ -309,10 +445,12 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                            f'y="{ry + rh / 2 + 4}" text-anchor="end" '
                            f'font-size="10" font-weight="700" '
                            f'fill="#386000">{role}</text>')
+            svg.append('</g>')
         if footer:
             svg.append(f'<text x="18" y="{card_height - 14}" font-size="12" '
                        f'fill="#64748b">{footer}</text>')
         svg.append('</g>')
-    for x, y in sorted(handles):
+    for x, y in geometry['handles']:
         svg.append(f'<circle cx="{x}" cy="{y}" r="4" fill="#64748b"/>')
-    return SVG(''.join(svg) + '</svg>')
+    return SVG(''.join(svg) + '</svg>', samples, uid, layouts=layouts,
+               initial_layout=selected)
