@@ -19,8 +19,8 @@ dependencies = [
   "kumo-api>=3.0.0",
   "pyarrow>=24,<25",
   "fsspec",
-  "requests>=2.33,<3",
-  "azure-core>=1.38,<2",
+  "requests>=2.31,<3",
+  "azure-core>=1.31,<2",
   "azure-identity>=1.25,<2",
   "azure-storage-file-datalake>=12.22,<13",
 ]
