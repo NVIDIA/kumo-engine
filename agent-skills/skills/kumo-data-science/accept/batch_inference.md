@@ -54,15 +54,20 @@ preds in the scores table", after a turn that named the model and the table, sup
 ### `batch_inference` — scoring options by task type
 
 These are `predict` arguments, chosen at scoring time; none needs retraining, and the trained
-query is never changed to get them (`kumoai-reference/references/kumo_finetuning_sdk.md` §9).
+query is never changed to get them (`kumoai-reference/references/kumo_finetuning_sdk.md` §9;
+Source: shipped package (`kumo_core.prediction_options`)). The count is
+`num_classes_to_return`; it is **independent of the query's `RANK TOP K`** (a `RANK TOP 10`
+model can return 50), and when unstated it falls back to that K.
 
-| Task type | Options |
-|---|---|
-| Binary classification | A threshold in [0, 1] (`binary_classification_threshold`): the user's value, else the one recorded with the model, else 0.5 `[default]`; `predict` has no default. The output already carries both class probabilities and the thresholded label, so there is no result count: a request for two classes needs no option. A threshold outside [0, 1] is invalid: ask for one in range. |
-| Link prediction, ranking | The number of results per entity (`num_classes_to_return`), 1 to 500. It is **independent of the query's `RANK TOP K`**: a `RANK TOP 10` model can return 50. Unstated, it is K from `RANK TOP K` `[default]`, shown for the user to change. Above 500, say so and offer up to 500 per entity, or the entity and item embeddings for a nearest-neighbour search over longer lists; ask which. |
-| Multiclass, multilabel | Optionally a number of classes to return; unstated, every class. |
-| Regression | None: one predicted value per entity. A "top N" request does not apply; say so and ask whether one value per entity is what the user wants. |
+| Task type | Count of results per entity | Threshold |
+|---|---|---|
+| Binary classification | none: the output already carries both class probabilities and the thresholded label, so a request for "both classes" needs no option | required, in [0, 1]: the user's value, else the one recorded with the model, else 0.5 `[default]` (`predict` has no default) |
+| Temporal or static link prediction | **required** when predictions are written, 1 to 500; unstated, K from `RANK TOP K` `[default]`. Above 500, say so and offer up to 500 per entity, or the entity and item embeddings for a nearest-neighbour search over longer lists; ask which | none |
+| Multilabel ranking | optional; unstated, K from `RANK TOP K`. No 500 cap | none |
+| Multiclass, multilabel classification | optional; unstated, K from `RANK TOP K` when the query has one, else every class | multilabel only, in [0, 1]: the user's value, else 0.5 `[default]` |
+| Regression, forecasting | none: one predicted value (or forecast series) per entity. A "top N" request does not apply; say so and ask whether that is what the user wants | none |
 
+A threshold outside [0, 1], or a count where the task takes none, is invalid: say which and ask.
 A count or threshold the user asks for that fits these rules is carried as given, never turned
 into a question and never a reason to retrain.
 
@@ -120,7 +125,7 @@ For `batch_inference`, restate in this shape and stop for confirmation:
 - Source: <source_scope> [supplied | inferred]
 - Population: <all <entity> as of latest snapshot timestamp [default] | the user's subset/date [supplied]>
 - Output: predictions written to <destination, verbatim>
-- Scoring options: <binary: threshold — the user's value [supplied] | recorded with the model [inferred] | 0.5 [default]; link prediction, ranking: <N> results per entity [supplied | default: RANK TOP K]; regression: none>
+- Scoring options: <threshold — the user's value [supplied] | recorded with the model [inferred] | 0.5 [default] (binary, multilabel); <N> results per entity [supplied | default: RANK TOP K] (link prediction, ranking, multiclass, multilabel); none (regression, forecasting)>
 - Embeddings: <included, if explicitly requested>
 ```
 

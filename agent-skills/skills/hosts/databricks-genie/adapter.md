@@ -21,8 +21,10 @@ catalog named elsewhere in the conversation. Tables are `catalog.schema.table`.
 
 - A bare schema name with no catalog in any turn: look for it with the §2 scope query across the
   catalogs you can see. One match settles it; several, ask which catalog — that one question.
-- A name written with a hyphen in chat (`my-catalog`) is the same object as its underscore form
-  (`my_catalog`) — resolve, do not ask. Unity Catalog names are lower case.
+- Unity Catalog names are lower case, and may contain hyphens (`dev-ws`). A hyphenated name in
+  chat is not rewritten: look it up as written and, if absent, in its underscore form, and use
+  whichever `information_schema` returns. Backtick-quote every identifier you put in SQL
+  (`` `dev-ws`.`sales`.`orders` ``); the connector quotes its own.
 - A Unity Catalog **metric view** (`catalog.schema.view`) is this host's semantic view. It
   resolves through `kumo-data-science/accept/semantic_view.md`, read as §1.1 says.
 - A Snowflake database or semantic view, an `s3://` or `gs://` path, or a BigQuery dataset is not
@@ -128,8 +130,8 @@ WHERE tc.table_schema = lower('<schema>');
 
 - Row counts are not in `information_schema` and are not needed for the graph proposal.
 - Unity Catalog types: `STRING`, `BIGINT` (listed as `LONG`), `INT`, `DOUBLE`, `DECIMAL(p,s)`,
-  `BOOLEAN`, `DATE`, `TIMESTAMP`. Time columns are `DATE` or `TIMESTAMP`; preflight §4 applies
-  unchanged.
+  `BOOLEAN`, `DATE`, `TIMESTAMP`, `TIMESTAMP_NTZ`, `ARRAY<...>`. Time columns are `DATE`,
+  `TIMESTAMP` or `TIMESTAMP_NTZ`; preflight §4 applies unchanged.
 - The confirmed `source_scope` becomes the connector's `catalog` and `schema_name`, and the
   confirmed warehouse its `warehouse_id` (`runtime.md` §2).
 
@@ -137,10 +139,15 @@ WHERE tc.table_schema = lower('<schema>');
 
 ## 4. Destinations
 
-Predictions and embeddings go to a Unity Catalog table, `catalog.schema.table`, in any schema the
-user can create tables in. It is written through a `DatabricksConnector` on that catalog and schema
-(`kumoai-reference/references/kumo_finetuning_sdk.md` §9.2). Not destinations for predictions
-here: a path in a volume, S3, GCS or local files, and any table outside Unity Catalog.
+Predictions and embeddings go to a Unity Catalog table, `catalog.schema.table`. It is written
+through a `DatabricksConnector` on that catalog and schema
+(`kumoai-reference/references/kumo_finetuning_sdk.md` §9.2), which stages the rows through the
+volume `<catalog>.<schema>._kumo_staging` and creates that volume on first use. So writing needs,
+for the user who runs the notebook: `USE CATALOG`, `USE SCHEMA`, `CREATE TABLE`, and either
+`CREATE VOLUME` on the schema or `READ VOLUME` and `WRITE VOLUME` on an existing `_kumo_staging`.
+A new volume is a write the user confirms: name it on the restatement's output line
+(`runtime.md` §4). Not destinations for predictions here: a path in a volume, S3, GCS or local
+files, and any table outside Unity Catalog.
 
 A model is published to a Unity Catalog registered model (`runtime.md` §5), and retained run
 files go to a volume path (`runtime.md` §6). Neither is a prediction destination.
@@ -168,7 +175,7 @@ substitutions, which `runtime.md` §4.1, §5 and §6 spell out:
 | an internal stage for retained artifacts | a Unity Catalog volume path (`runtime.md` §6) |
 | the Snowpark `session`, Snowflake SQL | `run_sql` (`runtime.md` §3) |
 | a Snowflake connector scoped to a population table | a `DatabricksConnector` on the population's catalog and schema (`runtime.md` §4.1) |
-| Snowflake `ARRAY` / `VARIANT` columns arrive as strings | not verified that a Unity Catalog `ARRAY` arrives as a typed list: treat list-typed labels, link weights and forecast sequences as the same supplied-shape limitation |
+| Snowflake `ARRAY` / `VARIANT` columns arrive as strings | the connector types `ARRAY<FLOAT>`, `ARRAY<DOUBLE>`, `ARRAY<INT>`, `ARRAY<BIGINT>` and `ARRAY<STRING>` as lists (Source: shipped package (`kumo_databricks.types`)); other `ARRAY`s, `MAP`s and `STRUCT`s are not. Supplied list targets, link weights and forecast sequences have not been run on this host: say so at the gate rather than promise them |
 | a Snowflake ML Job | a Databricks job run on a GPU cluster (`job.md`) |
 | "the existing Snowflake notebook" | the existing Databricks notebook; run files are on the cluster's local disk |
 

@@ -77,7 +77,7 @@ constants the user confirmed. Never a literal, never a value asked for in chat, 
 Population staging and read-back run SQL on the confirmed warehouse with the statement API, which
 the cluster's Databricks SDK provides. Define the helper once, after the config cell.
 `wait_timeout` is at most `'50s'` — Databricks rejects more — so it polls until the statement
-finishes:
+finishes. Every identifier in a statement goes through `q`; never interpolate a bare name:
 
 ```python
 import time
@@ -85,6 +85,10 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementState
 
 ws = WorkspaceClient()
+
+def q(*parts):
+    """`catalog`.`schema`.`table`: Unity Catalog names may contain hyphens."""
+    return '.'.join('`' + p.replace('`', '``') + '`' for p in parts)
 
 def run_sql(statement):
     r = ws.statement_execution.execute_statement(
@@ -117,11 +121,16 @@ output_config = kumo.PredictionOutputConfig(
     write_mode=WriteMode.OVERWRITE)
 ```
 
+The connector stages the rows through the volume `<OUTPUT_CATALOG>.<OUTPUT_SCHEMA>._kumo_staging`
+and creates it on first use (`adapter.md` §4 has the grants). When it does not exist yet, the
+Node 1d output line says so — `Output: <catalog.schema.table>; creates the staging volume
+<catalog.schema>._kumo_staging` — so the user confirms that write too.
+
 `PredictionArtifactType` and `WriteMode` come from `kumoapi.jobs`. Then read the destination back
 and compare its row count to `prediction_result.num_rows` — the only proof the write worked:
 
 ```python
-written = int(run_sql(f'SELECT COUNT(*) FROM {OUTPUT_CATALOG}.{OUTPUT_SCHEMA}.{OUTPUT_TABLE}')[0][0])
+written = int(run_sql(f'SELECT COUNT(*) FROM {q(OUTPUT_CATALOG, OUTPUT_SCHEMA, OUTPUT_TABLE)}')[0][0])
 assert written == prediction_result.num_rows, (written, prediction_result.num_rows)
 ```
 
@@ -137,16 +146,17 @@ without it, even for a static query, whatever the §7.1 Snowflake example shows,
 anchor as null. Without a time column, select `ENTITY1` alone.
 
 ```python
-run_sql(f'CREATE OR REPLACE TABLE {CATALOG}.{POP_SCHEMA}.{POP_TABLE} AS '
-        f'SELECT {ENTITY_KEY} AS ENTITY1, CAST({ENTITY_TIME} AS TIMESTAMP) AS TIMESTAMP '
-        f'FROM {CATALOG}.{SCHEMA}.{ENTITY_TABLE}')
+run_sql(f'CREATE OR REPLACE TABLE {q(POP_CATALOG, POP_SCHEMA, POP_TABLE)} AS '
+        f'SELECT {q(ENTITY_KEY)} AS ENTITY1, CAST({q(ENTITY_TIME)} AS TIMESTAMP) AS TIMESTAMP '
+        f'FROM {q(CATALOG, SCHEMA, ENTITY_TABLE)}')
 population_connector = kumo.DatabricksConnector(
-    catalog=CATALOG, schema_name=POP_SCHEMA, identity=identity, warehouse_id=WAREHOUSE_ID)
+    catalog=POP_CATALOG, schema_name=POP_SCHEMA, identity=identity, warehouse_id=WAREHOUSE_ID)
 prediction_table = kumo.PredictionTable.from_source_table(
     population_connector[POP_TABLE], pq=pquery, snapshot=snapshot)
 ```
 
-`ENTITY_TIME` is the entity `Table`'s `time_column`.
+`ENTITY_TIME` is the entity `Table`'s `time_column`; `POP_CATALOG` and `POP_SCHEMA` are the
+population's confirmed location, which need not be the source's.
 
 **A population the user supplies** — a table of exact scoring rows, or curated labels, weights and
 splits (`kumo-custom-populations/SKILL.md`) — is read through a `DatabricksConnector` on that
@@ -197,18 +207,18 @@ Report the assigned version; it is the one every later load names.
 
 Versions are positive integers. A user's `v2` or `V2` is version `2`; pass it as the string `'2'`.
 `version=None` loads the newest *ready Kumo* version, not a registry default — still pass the
-version explicitly, chosen as `kumo-model-persistence/references/reuse.md` says. To list versions
-(the counterpart of `SHOW VERSIONS`):
+version explicitly, chosen as `kumo-model-persistence/references/reuse.md` says. To list the
+loadable versions (the counterpart of `SHOW VERSIONS`), ask the registry connector, which keeps
+only ready versions Kumo published — Unity Catalog's own version listing carries no such marker,
+and a version without it does not load (Source: shipped package (`kumo_databricks.registry`)):
 
 ```python
-from databricks.sdk import WorkspaceClient
-
-for v in WorkspaceClient().model_versions.list(
-        full_name=f'{REGISTRY_CATALOG}.{REGISTRY_SCHEMA}.{MODEL_NAME}'):
-    print(v.version, v.created_at, v.status)        # created_at: epoch milliseconds
+for m in registry_connector.sink_backend.list_models(registry_connector):
+    if m.name == MODEL_NAME:
+        print(m.name, m.version, m.uri)
 ```
 
-"Latest" is the highest version whose status is `READY`; say which one that is and pass it.
+"Latest" is the highest version listed; say which one that is and pass it.
 
 ```python
 loaded = kumo.Trainer.load_from_connector(

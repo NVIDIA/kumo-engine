@@ -228,11 +228,19 @@ def deploy_genie(pkg: Path, ws: Workspace, prune: bool = False) -> str:
 
     Files in the target that the package does not ship — an older build's host directory, say —
     are reported, and with `prune` deleted, along with directories they leave empty. Only the
-    `kumo-data-science/` folder is touched; other skills beside it never are.
+    `kumo-data-science/` folder is touched; other skills beside it never are. A stale file under
+    `hosts/` is refused without `prune` before anything is written: the router expects exactly one
+    host directory, so a second one left in place would let Genie read the wrong adapter.
     """
     target = f'{GENIE_SKILLS.format(user=ws.me())}/{ROUTER}'
     files = sorted(p for p in pkg.rglob('*') if p.is_file())
     remote = {f'{target}/{p.relative_to(pkg).as_posix()}': p for p in files}
+    stale = sorted(set(ws.listing(target)) - set(remote))
+    stale_hosts = [path for path in stale if path.startswith(f'{target}/hosts/')]
+    if stale_hosts and not prune:
+        raise SystemExit(f'{len(stale_hosts)} file(s) under {target}/hosts/ are not in this package '
+                         f'(e.g. {stale_hosts[0]}); a second host directory would be read. '
+                         f'Rerun with --prune to delete them. Nothing was written.')
     for path, p in remote.items():
         ws.api('POST', '/api/2.0/workspace/mkdirs', dict(path=path.rsplit('/', 1)[0]))
         ws.api('POST', '/api/2.0/workspace/import', dict(
@@ -245,7 +253,6 @@ def deploy_genie(pkg: Path, ws: Workspace, prune: bool = False) -> str:
     if bad:
         raise SystemExit(f'deploy check failed for {len(bad)} file(s): {bad[:5]}')
     print(f'genie: {len(files)} files deployed and read back byte for byte -> {target}')
-    stale = sorted(set(ws.listing(target)) - set(remote))
     for path in stale:
         if prune:
             ws.delete(path)
@@ -258,7 +265,7 @@ def deploy_genie(pkg: Path, ws: Workspace, prune: bool = False) -> str:
                     ws.delete(d)
                     print(f'  empty directory deleted: {d}')
     elif stale:
-        print('  --prune deletes these; the router expects exactly one directory under hosts/.')
+        print('  --prune deletes these.')
     print('Start a new Genie Code chat (agent mode) to load it; ask it to quote SKILL-BUILD.')
     return target
 

@@ -96,14 +96,40 @@ def test_genie_maps_every_snowflake_mechanism() -> None:
     section = adapter[adapter.index('## 6. Capability skills'):adapter.index('## 7.')]
     for snowflake, here in [('model registry', 'registered model'), ('stage', 'volume'),
                             ('SHOW VERSIONS', 'version listing'), ('Snowpark', 'run_sql'),
-                            ('ML Job', 'job.md'), ('ARRAY', 'not verified')]:
+                            ('ML Job', 'job.md'), ('ARRAY', 'kumo_databricks.types')]:
         row = next((line for line in section.splitlines() if snowflake in line), '')
         assert here in row, f'adapter §6 does not map {snowflake!r} to {here!r}'
     assert 'metric view' in adapter and 'semantic_view.md' in adapter
     assert 'ModelRegistryLocation(model_name=MODEL_NAME)' in runtime   # UC assigns the version
-    assert 'model_versions.list' in runtime
+    assert 'sink_backend.list_models(registry_connector)' in runtime
     assert 'existing_cluster_id' in job and 'PauseStatus.PAUSED' in job
     assert not re.search(r'clusters\.create|new_cluster', job)
+
+
+def test_genie_sql_quotes_identifiers_and_names_the_staging_volume() -> None:
+    """Unity Catalog names may contain hyphens, and a write creates `_kumo_staging`."""
+    host = package_skill.SKILLS / 'hosts' / 'databricks-genie'
+    adapter, runtime = ((host / n).read_text() for n in ('adapter.md', 'runtime.md'))
+    code = '\n'.join(re.findall(r'```python\n(.*?)```', runtime, re.DOTALL))
+    statements = re.findall(r"run_sql\(f'(.*?)'\)", code, re.DOTALL) + re.findall(
+        r"f'(?:CREATE|SELECT)[^']*'", code)
+    assert statements
+    for st in statements:
+        assert not re.search(r'\{(?!q\()[A-Z_]+\}\.', st), f'bare identifier in SQL: {st}'
+    assert 'resolve, do not ask' not in adapter
+    for text in (adapter, runtime):
+        assert '_kumo_staging' in text and 'CREATE VOLUME' in adapter
+
+
+def test_scoring_options_follow_the_sdk() -> None:
+    """Rows of batch_inference.md's table, checked against kumo_core.prediction_options."""
+    text = (package_skill.SKILLS / 'kumo-data-science' / 'accept' / 'batch_inference.md').read_text()
+    rows = {r.split('|')[1].strip(): r for r in text.splitlines() if r.startswith('| ')}
+    assert 'required' in rows['Temporal or static link prediction'] and '500' in rows['Temporal or static link prediction']
+    assert 'No 500 cap' in rows['Multilabel ranking']
+    assert 'RANK TOP K' in rows['Multiclass, multilabel classification']
+    assert '0.5' in rows['Multiclass, multilabel classification']
+    assert rows['Regression, forecasting'].split('|')[2].strip().startswith('none')
 
 
 class FakeWorkspace:
@@ -167,6 +193,16 @@ def test_prune_deletes_only_what_the_package_does_not_ship(tmp_path: Path) -> No
     assert ws.files[f'{skills}/tabular/SKILL.md'] == b'another skill'
     assert f'{target}/hosts/databricks-genie/adapter.md' in ws.files
     assert all(d.startswith(target + '/') for d in ws.deleted)
+
+
+def test_deploy_refuses_a_second_host_without_prune(tmp_path: Path) -> None:
+    pkg = package_skill.build('genie', tmp_path)
+    target = '/Users/someone@example.com/.assistant/skills/kumo-data-science'
+    legacy = f'{target}/hosts/databricks/adapter.md'
+    ws = FakeWorkspace({legacy: b'old adapter'})
+    with pytest.raises(SystemExit, match='--prune'):
+        package_skill.deploy_genie(pkg, ws)  # type: ignore[arg-type]
+    assert set(ws.files) == {legacy}      # refused before anything was written
 
 
 def test_deploy_fails_on_a_mismatch(tmp_path: Path) -> None:
