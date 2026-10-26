@@ -280,6 +280,41 @@ Run the learning and runner tests in the installed wheel environment with pytest
 python3.12 -m pytest --noconftest test/scripts/test_engine_wheel_*.py
 ```
 
+### Measure GPU learning
+
+Run the small workflow first on Linux x64 with Python 3.12 and one visible CUDA GPU:
+
+```bash
+python3.12 packages/kumo-engine/scripts/smoke_wheel.py /path/to/selected.whl \
+  --device cuda --output-dir /path/to/new-gpu-workflow
+```
+
+After the workflow completes, compare the candidate and reference:
+
+```bash
+python3.12 packages/kumo-engine/scripts/smoke_wheel.py /path/to/candidate.whl \
+  --compare-with /path/to/reference.whl --device cuda --report-learning \
+  --output-dir /path/to/new-gpu-comparison
+```
+
+Both wheels install separately with the approved dependency versions.
+The comparison reuses the existing eight task recipes without changing frozen CPU source or evidence.
+It performs 160 fresh task fits: eight tasks, five seeds, two cases, and two wheels.
+Its two basic workflow executions are additional.
+The GPU entry point records actual training devices for every fit.
+The seven additional tasks also require observed GPU prediction and prediction after reload.
+The basic workflow covers those prediction stages for binary classification.
+Missing GPU evidence or CPU fallback fails execution.
+
+GPU results return `MEASURED` and cannot approve release.
+The binary report retains the `0.001` mean-drop diagnostic.
+CPU qualification does not qualify GPU quality limits.
+GPU checks require complete IDs, matching shapes, finite values, and successful prediction and reload.
+Record partial-batch and reload differences without applying CPU agreement limits.
+The report includes maximum differences and counts that exceed the historical CPU tolerance.
+These measurements do not approve a GPU consistency limit.
+Existing CPU commands and release checks keep their current behavior.
+
 ### Measure prediction variation
 
 On Linux x64 with a working CUDA GPU, run:

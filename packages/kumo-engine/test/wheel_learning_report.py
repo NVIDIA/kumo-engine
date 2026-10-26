@@ -15,6 +15,12 @@ WORKER = runpy.run_path(str(Path(__file__).with_name('wheel_learning.py')))
 
 
 def report_comparison(reference, candidate, baseline):
+    gpu = reference['learning'].get('configuration', {}).get('device') == 'cuda'
+    if gpu:
+        gpu_worker = runpy.run_path(
+            str(Path(__file__).with_name('wheel_gpu_learning.py')))
+        for arm in (reference, candidate):
+            gpu_worker['verify_report'](arm['learning'], additional=False)
     limits = baseline['limits']
     alert_limit = baseline.get('release_max_mean_drop', limits['max_mean_drop'])
     if (type(alert_limit) not in (int, float) or not math.isfinite(alert_limit)
@@ -51,7 +57,9 @@ def report_comparison(reference, candidate, baseline):
             raise ValueError('Both wheels need completed learning measurements')
         for field in ('source_sha256', 'settings', 'configuration',
                       'dependencies_sha256', 'seeds'):
-            if report.get(field) != baseline[field]:
+            expected = (reference['learning'][field] if gpu
+                        and field == 'configuration' else baseline[field])
+            if report.get(field) != expected:
                 raise ValueError(
                     f'Learning evidence differs from baseline: {field}')
         means[name] = WORKER['summarize'](report['runs'], report['seeds'])
@@ -92,6 +100,10 @@ def report_comparison(reference, candidate, baseline):
 
 
 def compare_release(reference, candidate, baseline):
+    if any(arm['learning'].get('configuration', {}).get('device') == 'cuda'
+           for arm in (reference, candidate)):
+        raise ValueError(
+            'GPU limits require separate qualification before release')
     seeds = baseline['seeds']
     if (not isinstance(seeds, list) or len(seeds) != 5
             or any(type(seed) is not int or seed < 0 for seed in seeds)
@@ -143,13 +155,25 @@ def main():
             raise ValueError('Additional learning results are required')
         tasks = runpy.run_path(
             str(Path(__file__).with_name('wheel_task_learning.py')))
+        gpu = reference['learning'].get('configuration',
+                                        {}).get('device') == 'cuda'
+        gpu_worker = (runpy.run_path(
+            str(Path(__file__).with_name('wheel_gpu_learning.py')))
+                      if gpu else None)
         for arm in (reference, candidate):
             if (arm['task_learning'].get('source_sha256')
-                    != tasks['source_identity']()
+                    != (gpu_worker['source_identity']()
+                        if gpu else tasks['source_identity']())
                     or arm['task_learning'].get('dependencies_sha256')
                     != arm['learning']['dependencies_sha256']):
                 raise ValueError(
                     'Additional task source or dependencies differ')
+            if gpu:
+                gpu_worker['verify_report'](arm['task_learning'],
+                                            additional=True)
+                if arm['task_learning']['configuration'] != reference[
+                        'learning']['configuration']:
+                    raise ValueError('GPU learning task runtimes differ')
         comparison = tasks['compare_tasks'](
             reference['task_learning'], candidate['task_learning'],
             calibration_dirs=args.calibration_task_dirs)
@@ -162,8 +186,31 @@ def main():
             str(Path(__file__).with_name('wheel_task_quality.py')))
         profile = json.loads(
             Path(__file__).with_name('wheel_task_quality.json').read_text())
-        result['additional_tasks'] = quality['assess_quality'](comparison,
-                                                               profile)
+        if gpu:
+            consistency = {}
+            for stage in ('prediction', 'reload_and_predict'):
+                measured = [
+                    m for arm in (reference, candidate)
+                    for row in arm['task_learning']['runs']
+                    for m in row['consistency_measurements']
+                    if m['stage'] == stage
+                ]
+                consistency[stage] = dict(
+                    comparisons=len(measured),
+                    max_abs_difference=max(m['max_abs_difference']
+                                           for m in measured),
+                    cpu_tolerance_exceeded=sum(m['cpu_tolerance_exceeded']
+                                               for m in measured))
+            comparison.update(
+                quality_status='UNVALIDATED_GPU',
+                configuration=reference['learning']['configuration'],
+                numerical_consistency=dict(status='MEASURED', qualified=False,
+                                           gpu_tolerance=None,
+                                           stages=consistency))
+            result['additional_tasks'] = comparison
+        else:
+            result['additional_tasks'] = quality['assess_quality'](comparison,
+                                                                   profile)
         if args.release and not result['additional_tasks'][
                 'quality_gate_approved']:
             result.update(status='FAIL', release_approved=False)

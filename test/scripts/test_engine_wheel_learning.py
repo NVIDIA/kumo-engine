@@ -117,6 +117,25 @@ class WheelLearningTest(unittest.TestCase):
                       'The release gate must enforce the approved mean drop')
         return reporter['compare_release']
 
+    def test_gpu_measurements_do_not_reuse_cpu_release_approval(self):
+        reference, candidate, baseline = self.release_pair()
+        gpu = runpy.run_path(str(WORKER.with_name('wheel_gpu_learning.py')))
+        for arm in (reference, candidate):
+            arm['learning']['configuration'] = dict(device='cuda', gpu='T4')
+            arm['learning']['gpu_source_sha256'] = gpu['source_identity']()
+            for row in arm['learning']['runs']:
+                row.update(
+                    device='cuda',
+                    observed_devices=[dict(stage='training', device='cuda:0')])
+        result = self.reporting()(reference, candidate, baseline)
+        self.assertEqual(result['status'], 'MEASURED')
+        self.assertFalse(result['release_approved'])
+        with self.assertRaisesRegex(ValueError, 'GPU limits'):
+            self.release_gate()(reference, candidate, baseline)
+        candidate['learning']['configuration']['gpu'] = 'A10'
+        with self.assertRaisesRegex(ValueError, 'configuration'):
+            self.reporting()(reference, candidate, baseline)
+
     def test_release_gate_uses_the_signed_mean_and_exact_boundary(self):
         for scores, passed in [
             ([.8991] * 5, True),

@@ -27,9 +27,11 @@ REQUIREMENTS = Path(__file__).resolve().parents[1] / 'test/wheel_workflow.json'
 QUALITY_PROFILE = REQUIREMENTS.with_name('wheel_task_quality.json')
 
 
-def task_source_identity():
+def task_source_identity(device='cpu'):
     worker = runpy.run_path(
-        str(REQUIREMENTS.with_name('wheel_task_learning.py')))
+        str(
+            REQUIREMENTS.with_name('wheel_gpu_learning.py' if device ==
+                                   'cuda' else 'wheel_task_learning.py')))
     return worker['source_identity']()
 
 
@@ -340,6 +342,10 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
         run_command(command, cwd, output / f'{stage}.log', timeout)
 
     try:
+        if device == 'cuda' and (calibration_budget is not None or (
+            (learning or measure_learning) and not report_learning)):
+            raise ValueError(
+                'GPU learning requires a reporting-only comparison')
         if calibration_budget is not None and (not report_learning
                                                or compare_with is None):
             raise ValueError('Calibration requires a reporting-only wheel pair')
@@ -421,12 +427,12 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                     '--output-dir',
                     str(evidence), '--device', device
                 ]
-                if measure_variation:
+                if measure_variation or device == 'cuda':
                     command.append('--measure-variation')
                 run(stage, command, run_root, timeout=300)
                 result = json.loads(
                     (evidence / 'workflow-result.json').read_text())
-                if measure_variation:
+                if measure_variation or device == 'cuda':
                     # All functional checks remain required. Numerical agreement
                     # is measured until a device-specific limit is approved.
                     checks = [
@@ -435,6 +441,13 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                     ]
                     verify_workflow_result(result, checks, status='MEASURED')
                     results.append(result)
+                    if device == 'cuda':
+                        gpu = runpy.run_path(
+                            str(REQUIREMENTS.with_name(
+                                'wheel_gpu_learning.py')))
+                        gpu['verify_devices'](
+                            result,
+                            ('training', 'prediction', 'reload_and_predict'))
                 else:
                     verify_workflow_result(result,
                                            requirements['required_checks'])
@@ -447,13 +460,22 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                 learning = root / 'wheel_learning.py'
                 shutil.copyfile(REQUIREMENTS.with_name('wheel_learning.py'),
                                 learning)
+                if device == 'cuda':
+                    task_worker = runpy.run_path(
+                        str(REQUIREMENTS.with_name('wheel_task_learning.py')))
+                    for name in (*task_worker['SOURCES'],
+                                 'wheel_gpu_learning.py'):
+                        shutil.copyfile(REQUIREMENTS.with_name(name),
+                                        root / name)
                 try:
                     run('learning', [
                         python, '-I',
-                        str(learning), '--version', identity['version'],
-                        '--output-dir',
+                        str(root / 'wheel_gpu_learning.py' if device ==
+                            'cuda' else learning), '--version',
+                        identity['version'], '--output-dir',
                         str(output / 'learning'),
-                        *(['--measure'] if measurement else [])
+                        *(['--group', 'binary', '--device', 'cuda'] if device
+                          == 'cuda' else ['--measure'] if measurement else [])
                     ], root, timeout=1200)
                 except subprocess.CalledProcessError as exc:
                     failed_report = output / 'learning/learning-result.json'
@@ -469,6 +491,8 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                     learning_result, [],
                     status='MEASURED' if measurement else 'PASS')
                 summary['learning'] = learning_result
+                if device == 'cuda':
+                    gpu['verify_report'](learning_result, additional=False)
                 if task_coverage:
                     summary['task_evidence_dir'] = str(output / 'tasks')
                     task_worker = runpy.run_path(
@@ -480,12 +504,16 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                     try:
                         run('task_learning', [
                             python, '-I',
-                            str(root / 'wheel_task_learning.py'), '--version',
+                            str(root /
+                                ('wheel_gpu_learning.py' if device == 'cuda'
+                                 else 'wheel_task_learning.py')), '--version',
                             identity['version'], '--output-dir',
-                            str(output / 'tasks'), *([
-                                '--calibration-budget',
-                                *map(str, calibration_budget)
-                            ] if calibration_budget is not None else [])
+                            str(output / 'tasks'),
+                            *(['--group', 'additional', '--device', 'cuda']
+                              if device == 'cuda' else []), *([
+                                  '--calibration-budget',
+                                  *map(str, calibration_budget)
+                              ] if calibration_budget is not None else [])
                         ], root, timeout=2400)
                     finally:
                         if task_result.is_file():
@@ -494,10 +522,12 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                     task_report = summary['task_learning']
                     verify_workflow_result(task_report, [], status='MEASURED')
                     if (task_report.get('source_sha256')
-                            != task_source_identity()
+                            != task_source_identity(device)
                             or task_report.get('seeds') != list(range(5))):
                         raise ValueError(
                             'Additional task evidence differs from the harness')
+                    if device == 'cuda':
+                        gpu['verify_report'](task_report, additional=True)
                 if compare_with is not None:
                     inputs = root / 'comparison-input.json'
                     inputs.write_text(
@@ -546,8 +576,8 @@ def check_wheel(wheel, output, *, reference=False, learning=False,
                         raise ValueError(
                             'Release comparison did not approve release')
         summary.update(
-            status='MEASURED' if measurement or measure_variation else 'PASS',
-            stage='complete')
+            status='MEASURED' if measurement or measure_variation
+            or device == 'cuda' else 'PASS', stage='complete')
     except Exception as exc:
         summary.update(status='FAIL', error=f'{type(exc).__name__}: {exc}')
         traceback.print_exc()
@@ -606,8 +636,14 @@ def main():
     if args.measure_variation and args.runs < 2:
         parser.error(
             'Variation measurements require at least two training runs')
-    if not args.measure_variation and (args.runs != 1 or args.device != 'cpu'):
-        parser.error('Repeated or CUDA runs require --measure-variation')
+    if not args.measure_variation and args.runs != 1:
+        parser.error('Repeated runs require --measure-variation')
+    if args.device == 'cuda' and (args.calibration_budget is not None
+                                  or args.learning or args.measure_learning or
+                                  (args.compare_with is not None
+                                   and not args.report_learning)):
+        parser.error(
+            'GPU learning requires --report-learning and --compare-with')
     if args.measure_learning and not args.reference:
         parser.error('--measure-learning requires --reference')
     if args.report_learning and args.compare_with is None:
@@ -637,7 +673,7 @@ def main():
             code = check_wheel(
                 wheel, output / name, reference=name == 'reference',
                 learning=True, fixed_dependencies=True, measure_learning=True,
-                task_coverage=True,
+                task_coverage=True, device=args.device,
                 calibration_budget=(args.calibration_budget
                                     if name == 'candidate' else None),
                 report_learning=args.report_learning,

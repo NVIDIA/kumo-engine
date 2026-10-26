@@ -672,6 +672,48 @@ class WheelSmokeTest(unittest.TestCase):
                 self.assertEqual(result['comparison']['quality_status'], 'FAIL')
                 self.assertFalse(result['comparison']['release_approved'])
 
+    def test_gpu_comparison_selects_both_wheels_without_release_approval(self):
+        wheel, reference = self.wheel(), self.wheel(version='1.0.0')
+        requirements = self.runner.load_requirements(self.runner.REQUIREMENTS)
+        requirements['reference']['wheel'] = self.runner.wheel_identity(
+            reference)
+        output = self.root / 'gpu-comparison'
+        selected = []
+
+        def check_wheel(archive, evidence, **options):
+            selected.append((evidence.name, options.get('device')))
+            evidence.mkdir()
+            report = dict(status='MEASURED',
+                          wheel=self.runner.wheel_identity(archive))
+            if options.get('compare_with'):
+                report['comparison'] = dict(
+                    status='MEASURED', release_approved=False,
+                    additional_tasks=self.task_comparison())
+            (evidence / 'summary.json').write_text(json.dumps(report))
+            return 0
+
+        with (patch.object(self.runner, 'check_wheel', check_wheel),
+              patch.object(self.runner, 'load_requirements',
+                           return_value=requirements),
+              patch.object(sys, 'argv', [
+                  str(RUNNER),
+                  str(wheel), '--compare-with',
+                  str(reference), '--device', 'cuda', '--report-learning',
+                  '--output-dir',
+                  str(output)
+              ]), patch('sys.stdout', new_callable=io.StringIO),
+              patch('sys.stderr', new_callable=io.StringIO)):
+            try:
+                code = self.runner.main()
+            except SystemExit as error:
+                code = error.code
+        self.assertEqual(code, 0)
+        self.assertEqual(selected, [('reference', 'cuda'),
+                                    ('candidate', 'cuda')])
+        result = json.loads((output / 'summary.json').read_text())
+        self.assertEqual(result['status'], 'MEASURED')
+        self.assertFalse(result['comparison']['release_approved'])
+
     def test_reporting_requires_a_comparison_wheel(self):
         output = self.root / 'invalid-reporting'
         completed = subprocess.run([
