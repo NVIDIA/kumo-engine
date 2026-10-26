@@ -489,7 +489,8 @@ def _record_batch_to_tf(
         namespace: Node type included in missing-column diagnostics.
 
     Returns:
-        Encoded features, or an empty frame for a type without fitted encoders.
+        Encoded features preserving the batch row count, including types without
+        fitted encoders.
 
     Raises:
         RuntimeError: If a required encoder column is absent from the batch.
@@ -504,7 +505,7 @@ def _record_batch_to_tf(
             "column, or the graph snapshot lacks a fitted encoder column."
         )
     if not mapper_dict:
-        return TensorFrame({}, {}, num_rows=0)
+        return TensorFrame({}, {}, num_rows=record_batch.num_rows)
     return get_tf(record_batch, dict(mapper_dict))
 
 

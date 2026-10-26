@@ -890,18 +890,51 @@ def test_record_batch_to_tf_raises_when_a_mapper_column_is_missing() -> None:
         )
 
 
-def test_record_batch_to_tf_zero_mapper_type_is_not_an_error() -> None:
-    """A pure link table has NO fitted encoders, so an empty mapper is the
-    normal case, not a missing-column one. It must yield the same zero-row,
-    zero-stype TF the back-fill pass builds when the projection skips the type
-    outright -- that equivalence is what makes skipping safe."""
+@pytest.mark.parametrize("num_rows", [0, 2])
+def test_record_batch_to_tf_empty_mapper_preserves_row_count(num_rows: int) -> None:
+    """Featureless frames retain sampled rows, including empty batches."""
     record_batch = pa.RecordBatch.from_arrays(
-        [pa.array([7, 8], type=pa.int64())], names=["ownership_id"]
+        [pa.array(range(num_rows), type=pa.int64())], names=["ownership_id"]
     )
 
     tf = runtime_adapter._record_batch_to_tf(record_batch, {}, namespace="Ownership")
     assert len(tf.feat_dict) == 0
-    assert tf.num_rows == 0
+    assert tf.num_rows == num_rows
+
+
+def test_empty_mapper_preserves_relative_time_attribution() -> None:
+    """All-Null temporal tables retain time gradients for their sampled rows."""
+    import kumo_core.modeling.context as modeling_context
+    from kumo_core.encoders.tensor_frame_encoder import TensorFrameEncoder
+    from kumo_core.explain.base import Explainer
+    from kumoapi.encoder import Null
+
+    record_batch = pa.record_batch({"created_at": [86400, 172800, 259200]})
+    frame = runtime_adapter._record_batch_to_tf(record_batch, {}, namespace="Events")
+    encoder = TensorFrameEncoder(
+        name="Events",
+        col_encoder_dict={"unused": Null()},
+        time_col="created_at",
+        out_channels=8,
+    )
+    module = torch.nn.Module()
+    module.encoder = torch.nn.Module()
+    module.encoder.enc_dict = torch.nn.ModuleDict({"Events": encoder})
+    with modeling_context.explaining():
+        logits = encoder.forward_fixed_and_learnable(
+            frame,
+            batch=torch.zeros(record_batch.num_rows, dtype=torch.long),
+            seed_time=torch.tensor([345600 * 1_000_000_000]),
+            time=torch.tensor([86400, 172800, 259200]) * 1_000_000_000,
+        )
+    assert isinstance(logits, torch.Tensor)
+
+    gradients = Explainer.get_grad(
+        ApiTaskType.REGRESSION, {"Events": frame}, module, {"logits": logits}
+    )
+
+    assert "created_at" in gradients.get("Events", {})
+    assert gradients["Events"]["created_at"].numel() == record_batch.num_rows
 
 
 def test_backfilled_type_with_mapper_gets_empty_shaped_tf() -> None:
