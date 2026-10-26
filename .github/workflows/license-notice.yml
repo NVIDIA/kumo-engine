@@ -30,6 +30,14 @@ jobs:
           node-version: '22'
       - name: Populate the DiskGraph Cargo source cache
         run: cargo fetch --locked --manifest-path packages/diskgraph/Cargo.toml
+      - name: Check Cargo workspace license declarations
+        run: python scripts/check_cargo_license_metadata.py --manifest-path packages/diskgraph/Cargo.toml
+      - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3  # v2.87.16
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Check the full DiskGraph Cargo graph against deny.toml
+        working-directory: packages/diskgraph
+        run: cargo deny check licenses
       - name: Reproduce the in-tree DiskGraph artifact manifest
         run: python packages/diskgraph/scripts/generate_artifact_manifest.py --repo-root packages/diskgraph --check packages/diskgraph/third_party/artifact-manifest.json
       - name: Check the generated notice and deny-by-default policy
@@ -40,7 +48,7 @@ jobs:
           python scripts/gen_third_party.py --artifact kumo-sdk-bundled-source --check packages/kumo-sdk/THIRD-PARTY.txt
           python scripts/gen_third_party.py --artifact glove-6b-50d-bundled-data --check tools/glove-6b-50d/THIRD-PARTY.txt
       - name: Run focused generator tests
-        run: python -m unittest test.scripts.test_gen_third_party test.scripts.test_refresh_diskgraph_notice_inventory
+        run: python -m unittest test.scripts.test_gen_third_party test.scripts.test_refresh_diskgraph_notice_inventory test.scripts.test_cargo_license_metadata
       - name: Run focused npm notice tests
         run: |
           python -m pip install pytest==9.0.3

@@ -1,6 +1,5 @@
 results/
 test_results/
-datasets/
 lightning_logs/
 __pycache__/
 

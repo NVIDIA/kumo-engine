@@ -8,13 +8,12 @@ import gc
 import logging
 import logging as std_logging
 import math
-import os
 import os.path as osp
 import re
 import sys
 import warnings
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from functools import wraps
 from typing import IO, Any, Literal, Optional
@@ -400,6 +399,7 @@ class Trainer(PortableConfigMixin):
             since the global state doesn't get picked up correctly.
         raise_fake_trial_error_msg (str, optional): A fake error message to
             raise for test purpose.
+        accelerator (str): Lightning accelerator selection. Defaults to auto.
         enable_compile (bool, optional): If set, the model and head are
             compiled using torch.compile. (default: :obj:`False`)
         **kwargs (optional): Additional arguments of
@@ -472,6 +472,7 @@ class Trainer(PortableConfigMixin):
         artifact_runtime: TrainingArtifactRuntime | None = None,
         diskgraph_runtime: DiskgraphTrainingRuntime | None = None,
         embedding_models: EmbeddingModelStore | None = None,
+        accelerator: str = 'auto',
         **kwargs,
     ) -> None:
         self._embedding_models = embedding_models
@@ -651,6 +652,7 @@ class Trainer(PortableConfigMixin):
         # `torch.nn.functional`
         self.loss = loss
         self.binary_threshold = binary_threshold
+        self.accelerator = accelerator
         self.kwargs = kwargs
 
         # Allow Trainer instance to be created with deferred initialization via
@@ -1453,16 +1455,15 @@ class Trainer(PortableConfigMixin):
             plugins = [plugins]
         plugins.append(KumoCheckpointIO())
 
-        # Constructor kwargs override the placement defaults, e.g. a
-        # batch-prediction worker pinned with ``devices=[i]``:
+        # Prediction workers can pin a device with ``devices=[i]``.
         placement = {
-            'accelerator': os.environ.get('KUMO_ACCELERATOR', 'auto'),
             'strategy': 'auto',
             'devices': 1,
             **self.kwargs,
         }
 
         self.pl_trainer = pl.Trainer(
+            accelerator=self.accelerator,
             max_epochs=max_epochs,
             logger=pl_logger,
             callbacks=callbacks,
@@ -1727,8 +1728,10 @@ class Trainer(PortableConfigMixin):
         with timing("trainer.fit.lightning_fit"):
             from kumo_core.diskgraph.lightning_data import (
                 suppress_iterable_len_warning,
+                suppress_lightning_leafspec_warning,
             )
-            with suppress_iterable_len_warning():
+            with suppress_iterable_len_warning(), \
+                    suppress_lightning_leafspec_warning():
                 self.pl_trainer.fit(self.pl_model, self.datamodule)
 
         with timing("trainer.fit.save_train_result"):
@@ -1945,7 +1948,11 @@ class Trainer(PortableConfigMixin):
             eval_top_k = min(self.num_targets, _MAX_EVAL_TOP_K)
         self.pl_model.eval_top_k = eval_top_k
 
-        with timing("trainer.eval.lightning_eval", stage=stage.value):
+        from kumo_core.diskgraph.lightning_data import (
+            suppress_lightning_leafspec_warning,
+        )
+        with timing("trainer.eval.lightning_eval", stage=stage.value), \
+                suppress_lightning_leafspec_warning():
             if stage == TrainingStage.VAL:
                 metrics = self.pl_trainer.validate(
                     model=self.pl_model,
@@ -2287,10 +2294,16 @@ class Trainer(PortableConfigMixin):
         if valid_rhs_node_idx is not None:
             self.pl_model.valid_rhs_node_idx = valid_rhs_node_idx
         from kumo_core.diskgraph.lightning_data import (
+            suppress_explain_workers_warning,
             suppress_iterable_len_warning,
+            suppress_lightning_leafspec_warning,
         )
+        capture_workers_warning = (suppress_explain_workers_warning()
+                                   if explain_capture_datamodule is not None
+                                   else nullcontext())
         try:
-            with suppress_iterable_len_warning():
+            with suppress_iterable_len_warning(), capture_workers_warning, \
+                    suppress_lightning_leafspec_warning():
                 step_outputs = eval_fn(
                     model=self.pl_model,
                     datamodule=self.datamodule,
@@ -2404,7 +2417,12 @@ class Trainer(PortableConfigMixin):
 
         if valid_rhs_node_idx is not None:
             self.pl_model.valid_rhs_node_idx = valid_rhs_node_idx
-        with suppress_iterable_len_warning():
+        # Only the selected-seed loader built above runs without workers.
+        replay_workers_warning = (suppress_explain_workers_warning()
+                                  if stage != TrainingStage.PRED else
+                                  nullcontext())
+        with suppress_iterable_len_warning(), replay_workers_warning, \
+                suppress_lightning_leafspec_warning():
             eval_fn(
                 model=self.pl_model,
                 dataloaders=loader,
@@ -2803,13 +2821,18 @@ class Trainer(PortableConfigMixin):
             index_map[NODE_INDEX_COLUMN] = range(len(index_map))
             self.pl_model.set_index_map(index_map)
 
-        with temporary_callbacks(self.pl_trainer, callbacks):
-            step_outputs = self.pl_trainer.predict(
-                model=self.pl_model, datamodule=datamodule,
-                ckpt_path=(fsspec_mangle(self.best_ckpt) if
-                           not self._prediction_model_weight_loaded else None))
-            self._prediction_model_weight_loaded = True
-        self.pl_trainer.predict_loop.setup_data()
+        from kumo_core.diskgraph.lightning_data import (
+            suppress_lightning_leafspec_warning,
+        )
+        with suppress_lightning_leafspec_warning():
+            with temporary_callbacks(self.pl_trainer, callbacks):
+                step_outputs = self.pl_trainer.predict(
+                    model=self.pl_model, datamodule=datamodule,
+                    ckpt_path=(fsspec_mangle(self.best_ckpt)
+                               if not self._prediction_model_weight_loaded
+                               else None))
+                self._prediction_model_weight_loaded = True
+            self.pl_trainer.predict_loop.setup_data()
 
         # Post-processing =====================================================
 

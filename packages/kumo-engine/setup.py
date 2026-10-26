@@ -36,6 +36,15 @@ setup(
         # -- unlike its own SoftFileLock fallback, deliberately not used
         # here.
         "filelock>=3.0.0",
-        # The shared training runtime is required; retrieval opts into Faiss.
+        # Unlike kumo-sdk (where this is an optional extra behind
+        # CloudBackend), this package has no non-training use case, so
+        # kumo-core -- and the Torch/PyG/DiskGraph stack it pulls in -- is a
+        # plain, required dependency here.
         "kumo-core>=0.1.0.dev1",
+        # Select one Faiss distribution: both provide the `faiss` module.
+        # Keep platform markers on these external dependencies so wheel
+        # merging preserves them when the bundled core reference is removed.
+        'faiss-gpu==1.14.3; sys_platform == "linux" '
+        'and platform_machine == "x86_64"',
+        'faiss-cpu==1.14.3; sys_platform == "darwin"',
     ], )

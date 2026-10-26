@@ -29,30 +29,33 @@ an automatic repair.
 
 ## Choose the core Faiss dependency
 
-Faiss is optional for the local SDK and core runtime. Install one variant when
-using link-prediction retrieval; without it, those operations raise an
-actionable error. Other tasks do not need Faiss. The same extras are available
-on `kumo-engine`, `kumo-core`, and the assembled engine bundle:
+The local SDK and assembled engine wheel require GPU Faiss on Linux x86_64
+and CPU Faiss on macOS, preserving macOS Metal support. Faiss is optional on
+ARM64 Linux and native Windows: affected retrieval operations raise an
+actionable error without it, while other tasks remain available.
 
 | Package selection | When to use it | Faiss dependency |
 | --- | --- | --- |
-| `kumo-engine[faiss-cpu]` | Run retrieval on the CPU | Installs `faiss-cpu` |
-| `kumo-engine[faiss-gpu]` | Run retrieval with a compatible GPU, driver, and CUDA runtime | Installs `faiss-gpu` |
-| `kumo-engine` | Run without retrieval, or use an existing compatible Faiss installation | Installs neither variant |
+| `kumo-engine[faiss-cpu]` | Run CPU retrieval | Uses GPU Faiss on Linux x86_64; installs CPU Faiss elsewhere |
+| `kumo-engine[faiss-gpu]` | Use a compatible GPU backend | Installs GPU Faiss except on macOS, which retains CPU Faiss |
+| `kumo-engine` | Use platform defaults | GPU Faiss on Linux x86_64, CPU Faiss on macOS, neither elsewhere |
 
 The [core package metadata](../../packages/kumo-core/pyproject.toml) specifies
 the versions for each extra. These extras select the Faiss dependency; they do
 not select the PyTorch CPU/CUDA build or provision a complete GPU environment.
-A GPU node can still use CPU Faiss. Select one variant per environment rather
+Bare `kumo-core` remains optional so explicit service CPU/GPU selections stay
+independent of the SDK default. Its Faiss extras select their named build on
+every platform. Select one variant per environment rather
 than combining `[faiss-cpu,faiss-gpu]`. CPU Faiss cannot perform CUDA retrieval;
-select a CPU device for that workload. There is no automatic PyTorch fallback.
+select a CPU device for that workload. Existing macOS retrieval dispatch is
+preserved; no fallback is added for missing Faiss on ARM64 Linux or Windows.
 
 For ARM GPU execution, install your compatible source-built `faiss-gpu` wheel
 before installing `kumo-engine`, or supply its directory with `--find-links`
 when installing `kumo-engine[faiss-gpu]`. The extra requires the version pinned
 in core metadata. Service CPU/GPU extras and their source-build workflows keep
 their explicit Faiss selection. Core test/dev extras do not select Faiss;
-add the matching Faiss extra when running retrieval tests.
+add a compatible backend for retrieval tests.
 
 For an in-tree installation, use `'./packages/kumo-core[faiss-cpu]'`,
 `'./packages/kumo-core[faiss-gpu]'`, or `./packages/kumo-core` as the corresponding

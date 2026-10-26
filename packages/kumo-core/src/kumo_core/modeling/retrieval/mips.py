@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 import importlib
+import sys
 import warnings
 from abc import ABC, abstractmethod
 from types import ModuleType
@@ -160,16 +161,38 @@ class MIPSStructure(ABC):
 
 
 class MIPSFaiss(MIPSStructure):
-    r"""MIPS based on ``faiss``."""
+    r"""MIPS using PyTorch on macOS CPU and Faiss for other backends.
+
+    Metal's Python API accepts host arrays, so inputs and search results
+    pass through CPU memory. Keys are copied into the Metal index once.
+    """
     def __init__(self, key: Tensor) -> None:
         super().__init__(key=key)
 
         faiss = require_faiss(key.device)
+        self._cpu_index: MIPSBruteForce | None = None
         self._res = None
+        self._metal_index = None
+        if sys.platform == 'darwin' and self.device.type == 'cpu':
+            self._cpu_index = MIPSBruteForce(self._key)
+            return
+
         if self._key.is_cuda:
             self._res = faiss.StandardGpuResources()
             self._res.setDefaultNullStreamAllDevices()
             self._res.setTempMemory(0)
+        elif self.device.type == 'mps' and self.num_keys > 0:
+            if ('MAC_METAL' not in faiss.get_compile_options()
+                    or faiss.get_num_gpus() == 0):
+                raise RuntimeError(
+                    'MPS retrieval requires a Metal-enabled Faiss build and '
+                    'an available Metal device. Install faiss-cpu==1.14.3 '
+                    'on Apple Silicon or use CPU tensors.')
+            self._res = faiss.StandardGpuResources()
+            self._metal_index = faiss.index_cpu_to_gpu(
+                self._res, 0, faiss.IndexFlatIP(self.embedding_dim))
+            self._metal_index.add(
+                self._key.to(device='cpu', dtype=torch.float32).numpy())
 
     def _search(
         self,
@@ -177,6 +200,9 @@ class MIPSFaiss(MIPSStructure):
         k: int,
         exclude: tuple[Tensor, Tensor] | None,
     ) -> tuple[Tensor, Tensor]:
+
+        if self._cpu_index is not None:
+            return self._cpu_index.search(query, k, exclude)
 
         query_k = k
         if exclude is not None:
@@ -196,11 +222,17 @@ class MIPSFaiss(MIPSStructure):
                     f"retrieved.")
                 query_k = MAX_K
 
-        # Zero-copy MIPS over PyTorch tensors via `faiss`:
         faiss = require_faiss(query.device)
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore', message='TypedStorage')
-            if self._res is not None:
+            if self._metal_index is not None:
+                score, index = self._metal_index.search(
+                    query.to(device='cpu', dtype=torch.float32).numpy(),
+                    query_k)
+                score = torch.from_numpy(score).to(
+                    device=self.device, dtype=self.dtype)
+                index = torch.from_numpy(index).to(self.device)
+            elif self._res is not None:
                 score, index = faiss.knn_gpu(self._res, query, self._key,
                                              query_k,
                                              metric=faiss.METRIC_INNER_PRODUCT)
