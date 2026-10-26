@@ -201,7 +201,12 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   if '://' not in POPULATION_PATH:
       os.makedirs(POPULATION_PATH, exist_ok=True)              # object stores need no directory
   papq.write_table(population, POPULATION_PATH + 'population.parquet')
-  population_connector = kumo.FileConnector(root_dir=POPULATION_PATH)   # the source's kind: or S3 / GCS
+  if POPULATION_PATH.startswith('s3://'):                     # the source's kind, in the §2 forms
+      population_connector = kumo.S3Connector(root_dir=POPULATION_PATH)
+  elif POPULATION_PATH.startswith('gs://'):
+      population_connector = kumo.GCSConnector(root_dir=POPULATION_PATH)
+  else:
+      population_connector = kumo.FileConnector(root_dir=POPULATION_PATH)
   prediction_table = kumo.PredictionTable.from_source_table(
       population_connector['population'], pq=pquery, snapshot=snapshot)
   ```
