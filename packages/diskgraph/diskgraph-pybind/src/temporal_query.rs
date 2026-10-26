@@ -499,8 +499,8 @@ fn relation_columns(
                     .decode(key)
                     .0
                     .ok_or_else(|| format!("frame {frame:?} contains a null timestamp"))?;
-                if lower.is_none_or(|bound| timestamp >= bound)
-                    && upper.is_none_or(|bound| timestamp < bound)
+                if lower.is_none_or(|bound| timestamp > bound)
+                    && upper.is_none_or(|bound| timestamp <= bound)
                 {
                     destinations.push(destination);
                     if include_sort_keys {
@@ -825,8 +825,8 @@ fn materialize_frame(
                 None => None,
             };
             if timestamp.is_some_and(|value| {
-                lower.is_some_and(|bound| value < bound)
-                    || upper.is_some_and(|bound| value >= bound)
+                lower.is_some_and(|bound| value <= bound)
+                    || upper.is_some_and(|bound| value > bound)
             }) {
                 continue;
             }
@@ -1310,8 +1310,8 @@ fn count_frame(
                         format!("frame {:?} contains a null timestamp", plan.name)
                     })?;
                     stats.sort_key_timestamps += 1;
-                    if lower.is_none_or(|bound| timestamp >= bound)
-                        && upper.is_none_or(|bound| timestamp < bound)
+                    if lower.is_none_or(|bound| timestamp > bound)
+                        && upper.is_none_or(|bound| timestamp <= bound)
                     {
                         selected += 1;
                     }
@@ -1346,8 +1346,8 @@ fn count_frame(
                         })?;
                     row += 1;
                     stats.rowpack_timestamps += 1;
-                    if lower.is_none_or(|bound| timestamp >= bound)
-                        && upper.is_none_or(|bound| timestamp < bound)
+                    if lower.is_none_or(|bound| timestamp > bound)
+                        && upper.is_none_or(|bound| timestamp <= bound)
                     {
                         selected += 1;
                     }
