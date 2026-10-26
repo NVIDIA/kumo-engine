@@ -56,10 +56,14 @@ def client():
             blob.delete()
 
 
-@pytest.fixture(autouse=True)
-def cpu_scorers(monkeypatch):
+@pytest.fixture
+def cpu_fitted(fitted):
     # Two scorers without two GPUs.
-    monkeypatch.setenv('KUMO_ACCELERATOR', 'cpu')
+    trainer, table, snapshot = fitted
+    assert trainer._training_result is not None
+    cpu_trainer = kumo.Trainer.load(
+        trainer._training_result.bundle_dir, accelerator='cpu')
+    return cpu_trainer, table, snapshot
 
 
 def connector(staged, dataset=DATASET):
@@ -75,8 +79,8 @@ def rows(client, name):
 
 
 @pytest.mark.parametrize('staged', [True, False])
-def test_predict_and_export_to_bigquery(fitted, client, staged):
-    trainer, table, snapshot = fitted
+def test_predict_and_export_to_bigquery(cpu_fitted, client, staged):
+    trainer, table, snapshot = cpu_fitted
     name = f'preds_{uuid.uuid4().hex[:6]}'
     output = PredictionOutputConfig(
         connector(staged), artifact_type=PredictionArtifactType.PREDICTIONS,
@@ -104,8 +108,8 @@ def test_predict_and_export_to_bigquery(fitted, client, staged):
     assert not staged_objects()
 
 
-def test_embeddings_land_as_repeated_float(fitted, client):
-    trainer, table, snapshot = fitted
+def test_embeddings_land_as_repeated_float(cpu_fitted, client):
+    trainer, table, snapshot = cpu_fitted
     name = f'emb_{uuid.uuid4().hex[:6]}'
     result = trainer.predict(
         table, snapshot=snapshot, binary_classification_threshold=.5,
@@ -120,8 +124,8 @@ def test_embeddings_land_as_repeated_float(fitted, client):
             for f in embedding] == [('FLOAT', 'REPEATED')]
 
 
-def test_missing_dataset_fails_before_scoring(fitted, client):
-    trainer, table, snapshot = fitted
+def test_missing_dataset_fails_before_scoring(cpu_fitted, client):
+    trainer, table, snapshot = cpu_fitted
     runs = trainer.scratch_dir / 'runs'
     before = set(runs.glob('*-predict-*'))
     output = PredictionOutputConfig(

@@ -532,6 +532,12 @@ class TestSnowflakeAccessCheck:
             connector.open(self._credentials)
         assert exc.value.diagnostic_code == (
             ConnectorValidationDiagnosticCode.TARGET_ACCESS_DENIED)
+        assert (
+            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/"
+            "kumo-studio-guide-coming-soon/preliminary-documentation/"
+            "connect-data/data-connectors"
+            "#minimum-privileges-required-for-the-connecting-user"
+        ) in str(exc.value)
 
     @patch('kumo.connector.snowflake_connector.connect')
     def test_permission_denied_on_database(self, mock_connect):

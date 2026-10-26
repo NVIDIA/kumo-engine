@@ -68,7 +68,7 @@ Validated tables + statistics  → consumed by kumo/train and REST ML workflows
 
 `TrainingTableGeneratorV2` and `PredictionTableGeneratorV2` require a `diskgraph_index_path` and delegate to `kumo.data.generic.diskgraph_train_table` and `kumo.data.generic.diskgraph_batch_pred`. The production training adapter delegates to `kumo_core.training.table.generate_train_table()` in `packages/kumo-core/src/kumo_core/training/table.py`, which instantiates `DiskGraphPlanCompiler`. The prediction adapter instantiates the compiler directly. Both pass the validated query to the compiler from the `diskgraph` wheel.
 
-The retired Python planner and `DataProcessingBackend` execution model are not part of production paths. Compiler semantics and plan-node changes belong with the [upstream DiskGraph owner](../../docs/development/generated-artifacts.md#diskgraph-source-mirror), with compatible adapter changes in this repository when the wheel interface changes.
+The retired Python planner and `DataProcessingBackend` execution model are not part of production paths. Compiler semantics and plan-node changes belong with [DiskGraph in this repository](../../docs/development/generated-artifacts.md#diskgraph-source), with compatible adapter changes in this repository when the wheel interface changes.
 
 ## Key Components
 
@@ -104,7 +104,7 @@ The retired Python planner and `DataProcessingBackend` execution model are not p
 | Generate training table | `PredictiveQueryV2.generate_train_table()` in `predictive_query.py` |
 | Generate prediction table | `PredictiveQueryV2.generate_current_pred_table()` in `predictive_query.py` |
 | Parse a PQL string | `parse_query_string_v2()` in `parser.py` |
-| Modify compiler semantics | `DiskGraphPlanCompiler`; follow the upstream mirror ownership above |
+| Modify compiler semantics | `DiskGraphPlanCompiler`; edit `packages/diskgraph` directly |
 | Modify generated parquet behavior | `kumo.data.generic.diskgraph_*` and the `diskgraph` wheel |
 | Add a generation-time check | `pquery_validators/` |
 | Run tests | `.venv/bin/pytest test/pquery` and `.venv/bin/pytest test/data/generic` |

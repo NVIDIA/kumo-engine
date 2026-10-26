@@ -462,7 +462,10 @@ def _run_prediction_workers(
     return results
 
 
-def _prediction_worker_devices(num_workers: int) -> Tuple[Optional[int], ...]:
+def _prediction_worker_devices(
+    num_workers: int,
+    accelerator: str = 'auto',
+) -> Tuple[Optional[int], ...]:
     r"""Assign concurrent scorers to distinct visible CUDA devices.
 
     ``None`` leaves Lightning's automatic non-CUDA selection in charge. A
@@ -471,7 +474,7 @@ def _prediction_worker_devices(num_workers: int) -> Tuple[Optional[int], ...]:
     """
     if num_workers == 1:
         return (None, )
-    if os.environ.get('KUMO_ACCELERATOR', 'auto').lower() == 'cpu':
+    if accelerator in {'cpu', 'mps'}:
         return (None, ) * num_workers
 
     import torch
@@ -507,6 +510,7 @@ class _PredictionWorkerConfig(NamedTuple):
     forecast_options: Optional[Dict[str, int]]
     embedding_models: Optional[EmbeddingModelStore] = None
     ignore_time_col: bool = False
+    accelerator: str = 'auto'
 
 
 def _score_prediction_shard(
@@ -534,7 +538,7 @@ def _score_prediction_shard(
         name=config.run_id,
         **(config.forecast_options or {}),
     )
-    load_options = {}
+    load_options = {'accelerator': config.accelerator}
     device = config.devices[worker_id]
     if device is not None:
         load_options['devices'] = [device]
@@ -606,6 +610,7 @@ def score_prediction(
     forecast_options: Mapping[str, int] | None = None,
     embedding_models: EmbeddingModelStore | None = None,
     encoders: Any = None,
+    accelerator: str = 'auto',
 ) -> Any:
     """Score partitions and publish bounded metadata using the hosted protocol.
 
@@ -658,7 +663,7 @@ def score_prediction(
     attempt_id = uuid4().hex
     config = _PredictionWorkerConfig(
         worker_count=worker_count,
-        devices=_prediction_worker_devices(worker_count),
+        devices=_prediction_worker_devices(worker_count, accelerator),
         manifest_path=materialized.manifest_path,
         bundle_dir=materialized.bundle_dir,
         model_dir=model_dir,
@@ -678,6 +683,7 @@ def score_prediction(
         forecast_options=(dict(forecast_options)
                           if forecast_options is not None else None),
         embedding_models=embedding_models,
+        accelerator=accelerator,
     )
     if worker_count == 1:
         references = [
