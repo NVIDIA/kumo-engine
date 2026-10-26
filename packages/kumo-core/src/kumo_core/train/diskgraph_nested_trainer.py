@@ -109,10 +109,6 @@ def _seed_time_to_datetime64_ns(time: Any) -> "np.ndarray":
     return arr.astype('int64').astype('datetime64[ns]')
 
 
-def _arrow_timestamp_us(values: Any) -> pa.Array:
-    return pa.array(values).cast(pa.timestamp('us'), safe=False)
-
-
 def _arrow_string_array(values: Any) -> pa.Array:
     """Build the explicitly string-typed embedding ID representation."""
     array = np.asarray(values)
@@ -211,13 +207,13 @@ def _build_ttng_lp_chunk_output(
         if (time is not None and time.shape[0] == n_rows
                 and not ignore_time_col):
             arrays.append(
-                _arrow_timestamp_us(
+                pa.array(
                     np.repeat(_seed_time_to_datetime64_ns(time), k)))
             names.append(time_col)
         if job_start_time is not None:
             job_time = pd.Timestamp(job_start_time).tz_localize(
                 None).to_datetime64()
-            arrays.append(_arrow_timestamp_us(np.full(flat.shape[0], job_time)))
+            arrays.append(pa.array(np.full(flat.shape[0], job_time)))
             names.append('JOB_TIMESTAMP')
         table = pa.Table.from_arrays(arrays, names=names,
                                      metadata=class_metadata)

@@ -96,25 +96,6 @@ def _normalize_mixed_type_class_column(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _normalize_prediction_timestamps(df: pd.DataFrame) -> pd.DataFrame:
-    """Use Parquet's interoperable microsecond timestamp representation."""
-
-    datetime_columns = [
-        name for name in df.columns
-        if pd.api.types.is_datetime64_any_dtype(df[name].dtype)
-    ]
-    if not datetime_columns:
-        return df
-    df = df.copy(deep=False)
-    for name in datetime_columns:
-        df[name] = pd.Series(
-            df[name].array.to_pydatetime(),
-            index=df.index,
-            dtype=object,
-        )
-    return df
-
-
 @dataclass(repr=False)
 class TargetPredictionHeatMap:
     r"""A dataclass that represents the label value vs prediction value
@@ -845,8 +826,6 @@ class StreamingPredOutputWriter:
                 and self._job_start_time is not None):
             value = pd.Timestamp(self._job_start_time).tz_localize(None)
             column = pa.array(np.full(table.num_rows, value.to_datetime64()))
-            if artifact_type is PredictionArtifactType.PREDICTIONS:
-                column = column.cast(pa.timestamp('us'), safe=False)
             table = table.append_column('JOB_TIMESTAMP', column)
         missing = requested.difference(table.column_names)
         if missing:
@@ -855,26 +834,6 @@ class StreamingPredOutputWriter:
                 f'produced: {", ".join(sorted(missing))}')
         return table
 
-    @staticmethod
-    def _normalize_arrow_timestamps(table: pa.Table) -> pa.Table:
-        fields = []
-        columns = []
-        changed = False
-        for field, column in zip(table.schema, table.columns):
-            if pa.types.is_timestamp(field.type) and field.type.unit != 'us':
-                field = pa.field(field.name, pa.timestamp('us'), field.nullable,
-                                 field.metadata)
-                column = column.cast(pa.timestamp('us'), safe=False)
-                changed = True
-            fields.append(field)
-            columns.append(column)
-        if not changed:
-            return table
-        return pa.Table.from_arrays(
-            columns,
-            schema=pa.schema(fields, metadata=table.schema.metadata),
-        )
-
     def write(self, output: PredOutput | ArrowPredOutput) -> None:
         if isinstance(output, ArrowPredOutput):
             table = (pa.Table.from_batches([output.table]) if isinstance(
@@ -882,7 +841,6 @@ class StreamingPredOutputWriter:
             if self._prediction_writer is not None:
                 table = self._finalize_arrow_schema(
                     table, PredictionArtifactType.PREDICTIONS)
-                table = self._normalize_arrow_timestamps(table)
                 self._prediction_writer.write(table)
             elif table.num_rows:
                 raise ValueError(
@@ -895,7 +853,6 @@ class StreamingPredOutputWriter:
         df = _normalize_mixed_type_class_column(output.df)
         if self._prediction_writer is not None:
             df = self._finalize_schema(df, PredictionArtifactType.PREDICTIONS)
-            df = _normalize_prediction_timestamps(df)
             # A stream can have an all-numeric object batch followed by a string
             # batch. Canonicalize object-backed classes before fixing the first
             # Parquet schema; native numerical CLASS columns remain numerical.

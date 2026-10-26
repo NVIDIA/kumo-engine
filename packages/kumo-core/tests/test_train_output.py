@@ -27,7 +27,7 @@ from kumo_core.train.output import (
 )
 
 
-def test_streaming_prediction_uses_interoperable_timestamp_precision(tmp_path):
+def test_streaming_prediction_preserves_timestamp_precision(tmp_path):
     frame = pd.DataFrame({
         "ENTITY": [1],
         "TIMESTAMP": [pd.Timestamp("2026-07-22 01:02:03.123456789")],
@@ -40,7 +40,8 @@ def test_streaming_prediction_uses_interoperable_timestamp_precision(tmp_path):
     paths = [path for path in tmp_path.rglob("*.parquet") if path.is_file()]
     assert len(paths) == 1
     schema = pq.read_schema(paths[0])
-    assert schema.field("TIMESTAMP").type == pa.timestamp("us")
+    assert schema.field("TIMESTAMP").type == pa.timestamp("ns")
+    pd.testing.assert_frame_equal(pq.read_table(paths[0]).to_pandas(), frame)
 
 
 def _read_parts(tmp_path, pattern="part-*.parquet"):
@@ -66,10 +67,85 @@ def test_arrow_prediction_matches_pandas_schema_and_values(tmp_path):
         writer.write(ArrowPredOutput(table))
 
     actual = _read_parts(tmp_path).to_pandas()
-    expected["TIMESTAMP"] = expected["TIMESTAMP"].astype("datetime64[us]")
     pd.testing.assert_frame_equal(actual, expected)
     assert _read_parts(tmp_path).schema.field("TIMESTAMP").type == pa.timestamp(
-        "us")
+        "ns")
+
+
+@pytest.mark.parametrize("kind", ["pandas", "arrow", "record-batch"])
+@pytest.mark.parametrize("timezone", [None, "UTC", "America/Los_Angeles"])
+@pytest.mark.parametrize("unit", ["us", "ns"])
+def test_prediction_timestamp_round_trip(tmp_path, kind, timezone, unit):
+    times = pd.to_datetime([
+        "2026-07-22 01:02:03.123456001",
+        "2026-07-22 01:02:03.123456999",
+        None,
+    ]).tz_localize(timezone).as_unit(unit)
+    expected = pd.DataFrame({
+        "ENTITY": [1, 1, 2],
+        "TIMESTAMP": times,
+        "ANCHOR_TIMESTAMP": times,
+        "TARGET_PRED": np.array([0.1, 0.2, 0.3], dtype=np.float32),
+    })
+    job_time = pd.Timestamp("2026-07-22 02:03:04.000000777", tz="UTC")
+    with StreamingPredOutputWriter(
+            str(tmp_path),
+            0,
+            output_extra_fields={
+                "PREDICTIONS": ["ANCHOR_TIMESTAMP", "JOB_TIMESTAMP"]
+            },
+            job_start_time=job_time,
+    ) as writer:
+        for frame in (expected.iloc[:1], expected.iloc[1:]):
+            if kind == "pandas":
+                output = PredOutput(frame, None)
+            else:
+                table = pa.Table.from_pandas(frame, preserve_index=False)
+                output = ArrowPredOutput(
+                    table.to_batches()[0] if kind == "record-batch" else table)
+            writer.write(output)
+
+    expected["JOB_TIMESTAMP"] = job_time.tz_localize(None)
+    actual = _read_parts(tmp_path)
+    assert actual.schema.field("ANCHOR_TIMESTAMP").type == pa.timestamp(
+        unit, tz=timezone)
+    pd.testing.assert_frame_equal(actual.to_pandas(), expected)
+    if unit == "ns":
+        assert not actual.to_pandas().duplicated(
+            ["ENTITY", "ANCHOR_TIMESTAMP"]).any()
+
+
+@pytest.mark.parametrize("kind", ["pandas", "arrow"])
+@pytest.mark.parametrize("offset_ns", [0, 1])
+def test_prediction_stream_rejects_lossy_timestamp_schema_change(
+        tmp_path, kind, offset_ns):
+    anchor = pd.Timestamp("2026-07-22 01:02:03.123456")
+    frames = [
+        pd.DataFrame({
+            "ANCHOR_TIMESTAMP": pd.Series([anchor], dtype="datetime64[us]")
+        }),
+        pd.DataFrame({
+            "ANCHOR_TIMESTAMP": pd.Series(
+                [anchor + pd.Timedelta(offset_ns, unit="ns")],
+                dtype="datetime64[ns]",
+            )
+        }),
+    ]
+    context = (pytest.raises(pa.ArrowInvalid, match="lose data")
+               if offset_ns else nullcontext())
+    with context:
+        with StreamingPredOutputWriter(str(tmp_path), 0) as writer:
+            for frame in frames:
+                output = (PredOutput(frame, None) if kind == "pandas" else
+                          ArrowPredOutput(pa.Table.from_pandas(
+                              frame, preserve_index=False)))
+                writer.write(output)
+
+    if offset_ns:
+        assert not list(tmp_path.rglob("part-*.parquet"))
+    else:
+        assert _read_parts(tmp_path).column(
+            "ANCHOR_TIMESTAMP").to_pylist() == [anchor, anchor]
 
 
 def test_embeddings_only_writer_creates_no_prediction_artifact(tmp_path):
@@ -757,7 +833,7 @@ def test_ttng_lp_callback_builds_arrow_without_pandas_dataframe(
         np.repeat(
             np.array([1_700_000_000_000_000_000, 1_700_000_001_000_000_000],
                      dtype=np.int64).astype("datetime64[ns]"),
-            2).astype("datetime64[us]"),
+            2),
     })
 
     def reject_dataframe(*args, **kwargs):
@@ -808,7 +884,7 @@ def test_ttng_lp_callback_builds_arrow_without_pandas_dataframe(
     assert output.table.column("CLASS").to_pylist() == [
         None, str(first_key), "rhs-2", None
     ]
-    assert output.table.schema.field("EVENT_TIME").type == pa.timestamp("us")
+    assert output.table.schema.field("EVENT_TIME").type == pa.timestamp("ns")
     monkeypatch.setattr(trainer_module.pd, "DataFrame", dataframe_type)
     pd.testing.assert_frame_equal(output.table.to_pandas(), expected)
 

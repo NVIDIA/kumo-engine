@@ -293,6 +293,14 @@ class StreamingFrameWriter:
             raise ValueError("Streaming Parquet schema columns changed from "
                              f"{self._schema.names} to {table.schema.names}")
         if not table.schema.equals(self._schema, check_metadata=False):
+            for index, field in enumerate(self._schema):
+                column = table.column(index)
+                if (pa.types.is_timestamp(column.type)
+                        and pa.types.is_timestamp(field.type)
+                        and column.type != field.type):
+                    # A fixed stream schema must not truncate later anchors.
+                    table = table.set_column(
+                        index, field, column.cast(field.type, safe=True))
             table = table.cast(self._schema.remove_metadata(), safe=False)
         return table.replace_schema_metadata(self._schema.metadata)
 
