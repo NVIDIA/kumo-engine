@@ -61,8 +61,9 @@ connector = kumo.FileConnector(root_dir=SOURCE_DIR)
 # S3 / GCS — rooted at the confirmed prefix, so table_names() works
 connector = kumo.S3Connector(root_dir=SOURCE_URI)            # 's3://bucket/prefix/'; no region=
 connector = kumo.GCSConnector(root_dir=SOURCE_URI)           # 'gs://bucket/prefix/'
-# BigQuery
-connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=DATASET_ID)
+# BigQuery — the identity is required; with no arguments it is the ambient Google credential
+connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=DATASET_ID,
+                                   identity=kumo.BigQueryIdentity())
 # Databricks — exactly one of warehouse_id / cluster_id
 connector = kumo.DatabricksConnector(
     catalog=CATALOG, schema_name=SCHEMA, identity=kumo.DatabricksIdentity(),
@@ -257,7 +258,8 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
       f'CREATE OR REPLACE TABLE `{PROJECT_ID}.{POP_DATASET}.{POP_TABLE}` AS '
       f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
       f'FROM `{PROJECT_ID}.{DATASET_ID}.{ENTITY_TABLE}`').result()   # waits; raises on failure
-  population_connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=POP_DATASET)
+  population_connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=POP_DATASET,
+                                                 identity=kumo.BigQueryIdentity())
   prediction_table = kumo.PredictionTable.from_source_table(
       population_connector[POP_TABLE], pq=pquery, snapshot=snapshot)
   ```
