@@ -581,8 +581,6 @@ fn matching_time_decoder(
     metadata: Option<&EdgeSortKeyMetadata>,
     destination: &str,
     clock: &str,
-    plan: &FramePlan,
-    cutoffs: &[i64],
 ) -> Option<SortKeyDecoder> {
     metadata.and_then(|metadata| {
         metadata.timestamp.as_ref().and_then(|timestamp| {
@@ -590,18 +588,6 @@ fn matching_time_decoder(
                 && timestamp.column == clock
                 && timestamp.encoding.step == 1)
                 .then(|| SortKeyDecoder::new(metadata))
-        })
-    })
-    .filter(|decoder| {
-        // Later clocks can be clipped to the largest sort key. Bounds touching
-        // that value require the existing exact rowpack filtering path.
-        decoder.decode(u64::MAX).0.is_some_and(|ceiling| {
-            cutoffs.iter().all(|&cutoff| {
-                [plan.start_seconds, plan.stop_seconds]
-                    .into_iter()
-                    .flatten()
-                    .all(|offset| cutoff.saturating_add(offset) < ceiling)
-            })
         })
     })
 }
@@ -709,8 +695,6 @@ fn materialize_frame(
                         relation.dest_sort_key.as_ref(),
                         &step.destination_type,
                         clock,
-                        plan,
-                        std::slice::from_ref(&cutoffs[anchor]),
                     )
                 })
             } else {
@@ -1310,13 +1294,8 @@ fn count_frame(
             .time_column
             .as_ref()
             .expect("frame validation requires a time column for bounds");
-        let sort_decoder = matching_time_decoder(
-            final_sort_key.as_ref(),
-            &destination,
-            time_column,
-            plan,
-            cutoffs,
-        );
+        let sort_decoder =
+            matching_time_decoder(final_sort_key.as_ref(), &destination, time_column);
         if let Some(decoder) = sort_decoder {
             for (anchor, rows) in rows_by_anchor.iter().enumerate() {
                 let lower = plan
