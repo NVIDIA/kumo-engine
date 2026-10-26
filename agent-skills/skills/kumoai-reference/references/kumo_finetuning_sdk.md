@@ -287,7 +287,7 @@ no secret is passed, so the connect step names no secret at all:
   environment's secret store at run time — never a literal, never a value asked for in chat.
 - `FileConnector.root_dir` is a filesystem directory, not a URI, and must not overlap the
   scratch directory (§2.1). Absolute table paths, URIs, `..` and globs are rejected. A CSV time
-  column needs `.with_column(col, dtype=Dtype.time, timestamp_format=...)`.
+  column needs `.with_column(col, dtype=Dtype.date, timestamp_format=...)`.
 - `region` on `S3Connector` is optional and normally **omitted**: the ambient chain resolves the
   bucket's region where the code runs. Pass it only when the user named one, and only with
   `root_dir`. It is never a value to ask for, and never a placeholder.

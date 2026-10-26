@@ -169,9 +169,11 @@ assert written == prediction_result.num_rows, (written, prediction_result.num_ro
 ### 3.1 Static scoring population
 
 When Node 1d confirmed a population table (`kumoai-reference/references/kumo_finetuning_sdk.md`
-§7.1), stage it in the destination's system:
+§7.1), stage it in the **source's** system — where the entity table is read from — whatever the
+destination. Each recipe below reads the entity table and writes the population inside that one
+system; the destination may be in another system (`adapter.md` §4) and plays no part here.
 
-- **Files, S3, GCS:** read the entity key — and, when the entity table has a time column, that
+- **Files, S3, GCS source:** read the entity key — and, when the entity table has a time column, that
   column too — from the source with `pyarrow.dataset`; name them `ENTITY1` and `TIMESTAMP`; write
   one Parquet file inside the confirmed population path, creating the directory first for local
   files; and build the `PredictionTable` from a connector rooted there. Decide from the entity's
@@ -187,7 +189,9 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
   import pyarrow.dataset as ds
   import pyarrow.parquet as papq
 
-  keep = {ENTITY_KEY: 'ENTITY1', ENTITY_TIME: 'TIMESTAMP'}   # ENTITY_TIME: the entity Table's time_column
+  keep = {ENTITY_KEY: 'ENTITY1'}
+  if ENTITY_TIME:                                             # the entity Table's time_column, else None
+      keep[ENTITY_TIME] = 'TIMESTAMP'
   population = ds.dataset(ENTITY_SOURCE, format=ENTITY_FORMAT).to_table(columns=list(keep))
   population = population.rename_columns([keep[c] for c in population.column_names])
   if 'TIMESTAMP' in population.column_names:                  # a DATE anchor reads as null
@@ -197,19 +201,30 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
   if '://' not in POPULATION_PATH:
       os.makedirs(POPULATION_PATH, exist_ok=True)              # object stores need no directory
   papq.write_table(population, POPULATION_PATH + 'population.parquet')
-  population_connector = kumo.FileConnector(root_dir=POPULATION_PATH)   # or S3Connector / GCSConnector
+  if POPULATION_PATH.startswith('s3://'):                     # the source's kind, in the §2 forms
+      population_connector = kumo.S3Connector(root_dir=POPULATION_PATH)
+  elif POPULATION_PATH.startswith('gs://'):
+      population_connector = kumo.GCSConnector(root_dir=POPULATION_PATH)
+  else:
+      population_connector = kumo.FileConnector(root_dir=POPULATION_PATH)
   prediction_table = kumo.PredictionTable.from_source_table(
       population_connector['population'], pq=pquery, snapshot=snapshot)
   ```
 
   `ENTITY_SOURCE` is the entity table's file or directory as preflight listed it, and
   `ENTITY_FORMAT` its format as preflight found it, `'csv'` or `'parquet'`. The population is
-  written as Parquet either way. `POPULATION_PATH` is the confirmed path, ending in `/`.
-- **Snowflake:** the §7.1 SQL, run through the read-back connection above.
-- **Databricks:** create the table through the confirmed SQL warehouse with the statement API,
-  wait for it, and build the `PredictionTable` from a `DatabricksConnector` scoped to the
-  population's schema. The same `TIMESTAMP` rule applies. `wait_timeout` is at most `'50s'`
-  (Databricks rejects more), so poll until the statement finishes:
+  written as Parquet either way. `POPULATION_PATH` is the confirmed path, ending in `/`, in the
+  source's file system or bucket.
+- **Snowflake source:** the §7.1 SQL, run through
+  `snowflake.connector.connect(connection_name=SNOWFLAKE_CONNECTION)` as in the read-back above,
+  and the `PredictionTable` built from a `SnowflakeConnector` made as in §2 but scoped to the
+  population's database and schema.
+- **Databricks source:** create the table through the source's SQL warehouse with the statement
+  API, wait for it, and build the `PredictionTable` from a `DatabricksConnector` scoped to the
+  population's schema. A source reached through a cluster has no SQL warehouse: say at Node 1d
+  that staging is not covered there, and offer the rows whose target is NULL instead. The same `TIMESTAMP` rule applies: project `CAST(<time> AS TIMESTAMP) AS
+  TIMESTAMP` only when the entity table has a time column, and drop it otherwise. `wait_timeout`
+  is at most `'50s'` (Databricks rejects more), so poll until the statement finishes:
 
   ```python
   import time
@@ -217,18 +232,35 @@ When Node 1d confirmed a population table (`kumoai-reference/references/kumo_fin
   from databricks.sdk.service.sql import StatementState
 
   ws = WorkspaceClient()
+  time_col = f', CAST({ENTITY_TIME} AS TIMESTAMP) AS TIMESTAMP' if ENTITY_TIME else ''
   r = ws.statement_execution.execute_statement(
       warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='50s',
       statement=(f'CREATE OR REPLACE TABLE {CATALOG}.{POP_SCHEMA}.{POP_TABLE} AS '
-                 f'SELECT {ENTITY_KEY} AS ENTITY1, CAST({ENTITY_TIME} AS TIMESTAMP) AS TIMESTAMP '
+                 f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
                  f'FROM {CATALOG}.{SCHEMA}.{ENTITY_TABLE}'))
   while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
       time.sleep(5)
       r = ws.statement_execution.get_statement(r.statement_id)
   assert r.status.state == StatementState.SUCCEEDED, r.status
   ```
-- **BigQuery:** not covered on this host. Say so at Node 1d and offer the rows whose target is
-  NULL instead.
+- **BigQuery source:** create the table through the BigQuery client with `CREATE OR REPLACE TABLE
+  ... AS SELECT`, wait for the job, and build the `PredictionTable` from a `BigQueryConnector`
+  scoped to the population's dataset. The same `TIMESTAMP` rule applies: project
+  `CAST(<time> AS TIMESTAMP) AS TIMESTAMP` only when the entity table has a time column, and drop
+  it otherwise. The population's dataset must already exist; `CREATE TABLE` does not create it.
+
+  ```python
+  from google.cloud import bigquery
+
+  time_col = f', CAST({ENTITY_TIME} AS TIMESTAMP) AS `TIMESTAMP`' if ENTITY_TIME else ''
+  bigquery.Client(project=PROJECT_ID).query(
+      f'CREATE OR REPLACE TABLE `{PROJECT_ID}.{POP_DATASET}.{POP_TABLE}` AS '
+      f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
+      f'FROM `{PROJECT_ID}.{DATASET_ID}.{ENTITY_TABLE}`').result()   # waits; raises on failure
+  population_connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=POP_DATASET)
+  prediction_table = kumo.PredictionTable.from_source_table(
+      population_connector[POP_TABLE], pq=pquery, snapshot=snapshot)
+  ```
 
 ---
 
