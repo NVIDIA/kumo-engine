@@ -315,6 +315,57 @@ The report includes maximum differences and counts that exceed the historical CP
 These measurements do not approve a GPU consistency limit.
 Existing CPU commands and release checks keep their current behavior.
 
+### Measure customer learning and resources
+
+`wheel_customer_learning.py` reads external inputs for the existing customer recipes.
+No customer records, storage credentials, or replay payloads belong in this repository.
+Copy the wheel test workers into a private directory outside the checkout.
+Use the isolated environment that contains the selected wheel.
+For DoorDash, expose the existing `kumostress` package on `PYTHONPATH`.
+The worker reuses its graph builder with local files, without running its service or identity setup.
+
+Validate the prepared files against their manifest before measurement.
+Keep `copy-verification.json` beside the table directories.
+It records `status: PASS`, the manifest file's SHA-256 in `manifest_sha256`, and a `files` object.
+Each relative file entry contains its verified `sha256` and local `mtime_ns`.
+The worker requires matching file sizes, timestamps, and fingerprints.
+Mount the prepared inputs read-only for the run.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/path/to/kumo-stress-tests \
+  /path/to/wheel-env/bin/python /path/to/copied-workers/wheel_customer_learning.py \
+  --dataset doordash_small --data /path/to/SMALL \
+  --output /path/to/new-evidence --scratch /path/to/new-scratch \
+  --seed 0 --version 1.0.0 --frozen-plan /path/to/existing-model-plan.json \
+  --resource-helper /path/to/frozen-stress/scale-bench/kumo/run_e2e.py \
+  --graph-recipe /path/to/existing-graph-recipe.json \
+  --prepared-manifest /path/to/prepared-SMALL-manifest.json --loader-workers 8
+```
+
+The resource helper is the existing stress monitor, frozen for the study.
+Keep data, query, time ranges, model plan, batch size, workers, hardware, and cache state fixed within each comparison.
+Check the actual selected plan against every fixed requested field.
+DoorDash training requires equal minimum and maximum batch budgets.
+It times 200 batches after twenty warmup batches, then completes all declared training.
+It counts optimizer updates separately from batches.
+
+Use `--training-probe` to score the complete validation cohort before selecting a learning recipe.
+Freeze that recipe before comparing wheels on five matching seeds.
+The normal route predicts every reserved test entity and every requested operational entity.
+Capped SDK test metrics remain auxiliary. Independent complete test predictions supply the reported quality score.
+Prediction and reload share trained models and outputs where their inputs match.
+
+`measurements.json` separates SDK operation times from the synchronized training window.
+Prediction callback windows remain separate from full SDK prediction times.
+`memory.json` records sampled resources and the container's memory high-water mark when available.
+That mark includes charged file cache and shared memory.
+Summed process RSS can count shared pages repeatedly and is not physical RAM use.
+
+GPU measurement mode records both recommendation membership changes and differences on shared score coordinates.
+Exact requested entity IDs, result counts, valid class IDs, finite values, and observed GPU phases remain required.
+Numerical agreement, customer quality limits, and performance limits remain unqualified.
+These manual measurements cannot approve release. They are not scheduled CI jobs.
+
 ### Measure prediction variation
 
 On Linux x64 with a working CUDA GPU, run:
