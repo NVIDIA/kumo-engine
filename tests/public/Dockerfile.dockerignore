@@ -14,6 +14,10 @@
 !packages/kumo-core/src/kumo_core/artifact_staging.py
 # Model registries validate bundles through the portable artifact contract.
 !packages/kumo-core/src/kumo_core/artifacts.py
+# Volume and stage sinks hold files through the shared chunked filesystem.
+!packages/kumo-core/src/kumo_core/chunked_fs.py
+!packages/kumo-core/src/kumo_core/object_store_sink.py
+!packages/kumo-core/src/kumo_core/artifact_export.py
 !packages/kumo-core/src/kumo_core/config.py
 !packages/kumo-core/src/kumo_core/manifest.py
 !packages/kumo-core/src/kumo_core/io/__init__.py
