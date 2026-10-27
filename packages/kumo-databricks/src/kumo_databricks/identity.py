@@ -8,7 +8,11 @@ from typing import Mapping
 
 from databricks.sql.client import Cursor
 from kumo_core.sources.errors import SourceNotFoundError
-from kumo_core.sources.identity import epoch_second, hour_version
+from kumo_core.sources.identity import (
+    SourceVersion,
+    epoch_second,
+    hour_version,
+)
 from kumo_databricks.errors import is_not_found
 
 DESCRIBE = "DESCRIBE EXTENDED {source}"
@@ -65,5 +69,5 @@ def table_version(cursor: Cursor, source: str) -> str:
     rows = cursor.fetchall()
     if rows:
         commit = epoch_second(pd.Timestamp(rows[0][1]))
-        return f"{rows[0][0]}_{commit}"
+        return SourceVersion(f"{rows[0][0]}_{commit}", "exact")
     return hour_version()

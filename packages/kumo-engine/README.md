@@ -103,6 +103,7 @@ To use your own data, point `FileConnector` at a directory of CSV or Parquet fil
 ## Documentation
 
 - [Kumo Engine documentation](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview): prerequisites, GPU sizing, installation, and end-to-end workflows. Its User Code Guide covers connecting data, tables and graphs, training, and prediction.
+- [MLOps](docs/mlops.md): lineage manifests, the artifact root, tracking and registries.
 - [Predictive query examples](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/workflows-and-solutions/predictive-query-examples): common prediction tasks written as predictive queries.
 
 ## Support
