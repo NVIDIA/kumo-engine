@@ -53,6 +53,32 @@ uploads the `genie` package to `/Users/<you>/.assistant/skills/kumo-data-science
 workspace named by `DATABRICKS_HOST` and `DATABRICKS_TOKEN` and reads every file back; a new Genie
 Code chat loads it.
 
+## Shipping in the `kumo-engine` wheel
+
+Users install the skill from Kumo itself, so it always matches the installed SDK:
+
+```python
+import kumo.engine as kumo
+kumo.install_skills()                  # Genie on Databricks; else every local agent found
+kumo.install_skills('claude')          # ~/.claude/skills/        (scope='project': ./.claude/skills/)
+kumo.install_skills('codex')           # ~/.agents/skills/        (scope='project': ./.agents/skills/)
+kumo.install_skills('coco')            # ~/.snowflake/cortex/skills/ (scope='project': ./.cortex/skills/)
+kumo.install_skills('coco', scope='workspace', workspace='MY_WS')   # a Snowsight workspace
+kumo.install_skills('coco', scope='extension')                      # a Cortex Extension
+kumo.install_skills('genie')           # /Users/<you>/.assistant/skills/
+kumo.install_skills(path='...')        # any other agent's skills directory (generic package)
+```
+
+`python -m kumo.engine.skills [agent] [--scope ...]` does the same from a shell. Claude Code and
+Codex get the `generic` package, CoCo `coco`, Genie `genie`.
+
+`packages/kumo-engine/setup.py` calls `package_skill.bundle()` on every build from a checkout,
+writing all three packages to `kumo/engine/_skills/` (gitignored), which the wheel ships as package
+data. In a source checkout `install_skills` builds from `agent-skills/` directly instead, so an
+edit is installed without a rebuild. Each install replaces only its own `kumo-data-science/`
+directory. `tests/test_install_skills.py` covers every agent and scope; the Genie and Snowflake
+account paths run there against fakes.
+
 The build stamps the router's `SKILL-BUILD` marker with the source commit
 (`<commit date>-<short sha>`, `-dirty` for uncommitted edits); never edit it by hand. Every build
 fails if a markdown link or a backticked package path does not resolve inside the

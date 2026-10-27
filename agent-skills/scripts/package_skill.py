@@ -170,6 +170,25 @@ def unresolved(pkg: Path) -> list[str]:
     return errors
 
 
+def bundle(out: Path) -> None:
+    """Build every host's package into `out/<host>/kumo-data-science/`, the layout the
+    `kumo-engine` wheel ships under `kumo/engine/_skills/` for `kumo.engine.install_skills()`.
+
+    `packages/kumo-engine/setup.py` calls this on every build from a checkout, so a wheel always
+    carries the skill built from its own commit. A package with an unresolved reference fails the
+    build instead of shipping.
+    """
+    if out.exists():
+        shutil.rmtree(out)
+    with tempfile.TemporaryDirectory() as tmp:
+        for host in sorted(HOSTS):
+            pkg = build(host, Path(tmp))
+            errors = unresolved(pkg)
+            if errors:
+                raise SystemExit(f'{host}: {len(errors)} unresolved reference(s): {errors[:3]}')
+            shutil.copytree(pkg, out / host / ROUTER)
+
+
 class Workspace:
     """The few Databricks REST calls a deploy needs, with a personal access token."""
 

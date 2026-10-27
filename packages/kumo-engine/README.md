@@ -89,6 +89,19 @@ To use your own data, point `FileConnector` at a directory of CSV or Parquet fil
 
 `graph.snapshot()` ingests the tables into an on-disk graph index under the scratch directory, which also holds training runs, model bundles, and predictions. It defaults to `~/.cache/kumo-engine`; to put it on a large local disk, call `kumo.engine.configure(scratch_dir=...)` first.
 
+## Agent skills
+
+Kumo Engine ships an agent skill, `kumo-data-science`, that teaches a coding agent to build, train, and run Kumo models with this version of the SDK. Install it for your agent:
+
+```python
+import kumo.engine as kumo
+
+kumo.install_skills()          # every agent found locally, or Genie Code on Databricks
+kumo.install_skills("claude")  # or "codex", "coco" (Snowflake Cortex Code), "genie" (Databricks Genie Code)
+```
+
+`scope="project"` installs into the current project instead of your home directory. From a shell, run `python -m kumo.engine.skills`.
+
 ## Documentation
 
 - [Kumo Engine documentation](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview): prerequisites, GPU sizing, installation, and end-to-end workflows. Its User Code Guide covers connecting data, tables and graphs, training, and prediction.

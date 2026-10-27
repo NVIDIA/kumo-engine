@@ -99,10 +99,14 @@ py-modules=["kumo_engine_version"]
 [tool.setuptools.packages.find]
 where=["."]
 include=["kumo*"]
+# Skill files, not Python packages; shipped as package data below.
+exclude=["kumo.engine._skills*"]
 namespaces=true
 
 [tool.setuptools.package-data]
 "kumo.engine.datasets" = ["shop/*.parquet"]
+# The agent skills, built by setup.py; see kumo.engine.skills.
+"kumo.engine" = ["_skills/**/*"]
 
 # The version is the root VERSION file, stamped into this module by
 # scripts/stamp_version.py (shared with kumo-sdk, the platform and the charts).

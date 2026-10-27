@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import re
 from pathlib import Path
 
@@ -21,6 +22,20 @@ if api_pyproject.exists():
     api_ver = match.group(1)
 
 kumo_api = f'kumo-api=={api_ver}'
+
+# The agent skills ship inside this wheel, one package per host, so
+# `kumo.engine.install_skills()` installs the skill written for this exact
+# SDK. A build from a checkout regenerates them from agent-skills/; a build
+# from an sdist has no agent-skills/ and keeps the copy the sdist carries.
+package_skill_py = (Path(__file__).resolve().parents[2] / 'agent-skills' /
+                    'scripts' / 'package_skill.py')
+if package_skill_py.exists():
+    spec = importlib.util.spec_from_file_location('package_skill',
+                                                  package_skill_py)
+    assert spec and spec.loader
+    package_skill = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(package_skill)
+    package_skill.bundle(Path(__file__).parent / 'kumo' / 'engine' / '_skills')
 
 setup(
     install_requires=[
