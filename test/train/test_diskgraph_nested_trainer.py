@@ -321,6 +321,112 @@ class _StubTrainer:
 
 
 # ---------------------------------------------------------------------------
+# Mapper bank
+# ---------------------------------------------------------------------------
+
+
+def _bank_feature_schema() -> dict[str, Any]:
+    return {
+        "node_types": {
+            "User": {
+                "feature_columns": ["age", "country"],
+                "time_column": None,
+                "mapper_key": "users_v1",
+            },
+            "Ownership": {
+                "feature_columns": [],
+                "time_column": None,
+                "mapper_key": "links_v1",
+            },
+        },
+    }
+
+
+def test_mapper_bank_drops_null_encoded_columns() -> None:
+    """``Null`` maps to a ZERO-WIDTH ``UnsupportedTensorMapper``.
+
+    ``_build_mapper_bank_from_encoders`` filters out Null encoders and drops it from the bank -- consumers
+    (``DiskgraphLightningDataModule._feature_projection``, ``attach_tensor_frames``)
+    then read the bank at face value, since keeping it would put a column that
+    contributes no feature into the contract ``_record_batch_to_tf`` enforces
+    and into the projection derived from the bank.
+    """
+    from kumoapi.encoder import Null, Numerical
+
+    bank = dg_nested_mod._build_mapper_bank_from_encoders(
+        _StubEncoders(
+            {
+                "users_v1": {
+                    "age": Numerical(),
+                    "country": Null(),
+                }
+            }
+        ),
+        _bank_feature_schema(),
+    )
+
+    assert sorted(bank["users_v1"]) == ["age"]
+
+
+def test_mapper_bank_respects_selected_features() -> None:
+    """Persisted encoders for unselected columns stay out of the mapper bank."""
+    from kumoapi.encoder import Null, Numerical
+
+    schema = _bank_feature_schema()
+    schema["node_types"]["User"]["feature_columns"] = ["age", "unused"]
+    encoders = _StubEncoders(
+        {
+            "users_v1": {
+                "age": Numerical(),
+                "country": Numerical(),
+                "unused": Null(),
+            }
+        }
+    )
+
+    bank = dg_nested_mod._build_mapper_bank_from_encoders(encoders, schema)
+
+    assert list(bank["users_v1"]) == ["age"]
+
+
+def test_all_null_table_yields_an_empty_mapper() -> None:
+    """Every column ``Null`` => the pure-link-table state, which
+    ``_record_batch_to_tf``'s ``if not mapper_dict`` branch already handles."""
+    from kumoapi.encoder import Null
+
+    bank = dg_nested_mod._build_mapper_bank_from_encoders(
+        _StubEncoders(
+            {
+                "users_v1": {
+                    "age": Null(),
+                    "country": Null(),
+                }
+            }
+        ),
+        _bank_feature_schema(),
+    )
+
+    assert bank["users_v1"] == {}
+
+
+@pytest.mark.parametrize("encoders", [None, _StubEncoders({})])
+def test_missing_or_absent_encoders_yield_empty_bank_entries(encoders: Any) -> None:
+    """``encoders=None`` (``load_encoders`` returns it when the model
+    directory has no encoders.json) and an ``encoders`` with no entry for a
+    ``mapper_key`` both must not raise, and both yield an empty bank entry --
+    same as a table whose fitted encoders are all ``Null``. Downstream, that
+    empty entry means "skip"; see ``DiskgraphLightningDataModule.
+    _feature_projection``.
+    """
+    schema = _bank_feature_schema()
+
+    assert dg_nested_mod._build_mapper_bank_from_encoders(encoders, schema) == {
+        "users_v1": {},
+        "links_v1": {},
+    }
+
+
+# ---------------------------------------------------------------------------
 # Constructor contract
 # ---------------------------------------------------------------------------
 
