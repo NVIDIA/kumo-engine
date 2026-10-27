@@ -2543,7 +2543,7 @@ fn per_seed_request(
     i: usize,
 ) -> BatchSamplingRequest {
     use rand::Rng;
-    let mode = if i % 2 == 0 {
+    let mode = if i.is_multiple_of(2) {
         SamplingMode::TemporalMostRecent
     } else {
         SamplingMode::Uniform
@@ -2573,7 +2573,7 @@ fn per_seed_request(
             .collect(),
     );
     req.seed_timestamp_unit = diskgraph_core::time::TimeUnit::Seconds;
-    req.flags.swap_edge_direction = i % 3 == 0;
+    req.flags.swap_edge_direction = i.is_multiple_of(3);
     req
 }
 
