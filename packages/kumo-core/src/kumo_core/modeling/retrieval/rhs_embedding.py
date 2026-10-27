@@ -20,7 +20,7 @@ from typing_extensions import Self
 import kumo_core.modeling.context as modeling_context
 import logging
 from kumo_core.encoders.tensor_frame_encoder import TensorFrameEncoder
-from kumo_core.modeling.retrieval.mips import MIPSFaiss
+from kumo_core.modeling.retrieval.mips import MIPSFaiss, require_faiss
 from kumo_core.modeling.embedding import Embedding
 
 logger = logging.getLogger(__name__)
@@ -326,6 +326,7 @@ class RHSEmbedding(torch.nn.Module):
         table_name: str | None = None,
     ) -> MIPSFaiss:
         r"""Returns a MIPS index from RHS output embeddings."""
+        require_faiss(self.device)
         if self._out_cache is not None:
             raise RuntimeError("Creating a MIPS index while holding cached "
                                "RHS outputs in memory will lead to "
