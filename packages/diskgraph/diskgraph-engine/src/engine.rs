@@ -468,10 +468,11 @@ pub struct DiskGraphEngine {
     pub thread_pool: rayon::ThreadPool,
     /// Record edges through the global `index_map`; same output.
     pub legacy_recording: bool,
+    /// Smallest layer (in edges) whose per-seed dedup runs on the pool.
+    pub parallel_commit_min_edges: usize,
 }
 
 const NEW_NODE: u32 = u32::MAX;
-const PARALLEL_COMMIT_MIN_EDGES: usize = 1 << 15;
 const PENDING: u32 = 1 << 31;
 
 fn dedup_seeds(
@@ -890,6 +891,7 @@ impl DiskGraphEngine {
             random_seed,
             thread_pool,
             legacy_recording: false,
+            parallel_commit_min_edges: 1 << 15,
         }
     }
 
@@ -3168,7 +3170,7 @@ impl DiskGraphEngine {
             cs.res.resize_with(n, Default::default);
         }
         let threads = self.thread_pool.current_num_threads();
-        let parts = if threads > 1 && n >= PARALLEL_COMMIT_MIN_EDGES { threads * 4 } else { 1 };
+        let parts = if threads > 1 && n >= self.parallel_commit_min_edges { threads * 4 } else { 1 };
         let mut cuts = vec![0];
         for k in 1..parts {
             let cut = cs.bounds.partition_point(|&b| (b as usize) < n * k / parts).min(slots);

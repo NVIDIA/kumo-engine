@@ -2618,9 +2618,12 @@ fn assert_per_seed_matches_legacy(
     };
     sampler.legacy_recording = false;
     let per_seed = run(sampler);
+    sampler.parallel_commit_min_edges = 1;
+    let parallel = run(sampler);
     sampler.legacy_recording = true;
     let legacy = run(sampler);
     assert_eq!(per_seed, legacy);
+    assert_eq!(parallel, legacy);
     per_seed
 }
 
