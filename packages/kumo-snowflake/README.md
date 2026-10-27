@@ -7,6 +7,41 @@ The reader implements `kumo_core.sources.protocol.SourceReader` in
 resulting files over presigned URLs. A temporary stage needs no grant beyond
 the `USAGE` and `SELECT` a read-only analyst already holds.
 
+`SnowflakeSinkBackend` also holds files in a named internal stage
+(`@DB.SCHEMA.STAGE/prefix`). Output configs take stage paths, such as
+`ModelOutputConfig(snowflake_connector, path="@ML.ARTIFACTS.KUMO/models/m1")`
+or `PredictionOutputConfig(snowflake_connector,
+output_paths={"predictions": "@ML.ARTIFACTS.KUMO/scores/"})`, and
+`Trainer.load_from_connector` reads a model back from one. For an MLOps
+artifact root on a stage, see `packages/kumo-engine/docs/mlops.md`. File names may
+use only `A-Z a-z 0-9 _ $ = + . , / -`.
+
+A file of up to 4 GiB is one staged object. A larger one is stored as numbered
+parts under `<name>.chunks/`, which only kumo reads back. To load exported
+prediction Parquet into a table, skip the marker and manifest files:
+
+```sql
+COPY INTO SCORES FROM @ML.ARTIFACTS.KUMO/scores/
+  PATTERN = '.*[.]parquet' FILE_FORMAT = (TYPE = PARQUET)
+  MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;
+```
+
+The role needs `USAGE` on the database and schema and `READ` and `WRITE` on the
+stage. No warehouse runs: `PUT`, `LIST`, `GET`, `REMOVE` and
+`GET_PRESIGNED_URL` complete while the session's warehouse stays suspended.
+Create the stage with server-side encryption so that reads fetch byte ranges
+over presigned URLs:
+
+```sql
+CREATE STAGE ML.ARTIFACTS.KUMO ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
+```
+
+A stage with the default `SNOWFLAKE_FULL` (client-side) encryption is written
+to, but reading from it raises: its `LIST` reports encrypted sizes (padded to
+16 bytes), so files cannot be read back exactly. With a role that cannot write
+the probe file, each file is downloaded once with `GET` into the spool
+directory instead, and a warning says so.
+
 From the repository root, run the public tests without cloud credentials:
 
 ```sh
