@@ -2906,6 +2906,7 @@ impl DiskGraphEngine {
             // Map Phase: Parallel Shard Traversal
             // Each thread processes one shard to emit all sampled RawEdge
             let mut buffers = std::mem::take(&mut state.raw_edges);
+            let spare = buffers.split_off(shards.len().min(buffers.len()));
             buffers.resize_with(shards.len(), Vec::new);
             let raw_edges_results: Vec<Vec<RawEdge>> = self.thread_pool.install(|| shard_groups
                 .into_par_iter()
@@ -3000,6 +3001,7 @@ impl DiskGraphEngine {
             if self.per_seed_recording(fused) {
                 self.commit_edges(layer_idx, &raw_edges_results, state, output)?;
                 state.raw_edges = raw_edges_results;
+                state.raw_edges.extend(spare);
                 continue;
             }
 
@@ -3021,6 +3023,7 @@ impl DiskGraphEngine {
                 }
             }
             state.raw_edges = raw_edges_results;
+            state.raw_edges.extend(spare);
         }
 
         Ok(())
