@@ -25,6 +25,12 @@ from kumoapi.graph import Edge
 from kumoapi.plugin import ModelRegistryLocation
 from kumoapi.table import Column
 
+from kumo.engine._manifest import (
+    ModelManifest,
+    SnapshotManifest,
+    TrainingTableManifest,
+)
+from kumo.engine._mlops import MLOps, mlops
 from kumo.engine._version import __version__
 from kumo.engine.config import configure
 from kumo.engine.connector import (
@@ -51,6 +57,7 @@ from kumo.engine.trainer import (
     ModelOutputConfig,
     PredictionOutputConfig,
     PredictionResult,
+    SnapshotOutputConfig,
     Trainer,
     TrainingResult,
     TrainingTableOutputConfig,
@@ -83,6 +90,11 @@ __all__ = [
     "Edge",
     "Graph",
     "GraphSnapshot",
+    "MLOps",
+    "mlops",
+    "SnapshotManifest",
+    "TrainingTableManifest",
+    "ModelManifest",
     "PredictiveQuery",
     "TrainingTable",
     "PredictionTable",
@@ -92,6 +104,7 @@ __all__ = [
     "ModelOutputConfig",
     "PredictionOutputConfig",
     "TrainingTableOutputConfig",
+    "SnapshotOutputConfig",
 ]
 
 ensure_nofile()

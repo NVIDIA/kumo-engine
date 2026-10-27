@@ -49,6 +49,7 @@ def stamp(recorder=None, source=SOURCE, **overrides):
 def test_a_delta_table_is_stamped_with_its_version_and_commit_time():
     """The first two history columns are the stamp; a fraction is dropped."""
     assert stamp() == COMMIT_VERSION
+    assert stamp().kind == "exact"
     assert stamp(history=[(947, f"{COMMITTED}.9", "WRITE",
                            "extra")]) == (COMMIT_VERSION)
 
@@ -60,6 +61,7 @@ def test_the_stamp_changes_when_the_same_version_is_recommitted():
 
 def test_a_table_with_no_history_falls_back_to_the_hour_window():
     assert stamp(history=[]) == hour_version()
+    assert stamp(history=[]).kind == "hour_bucket"
 
 
 @pytest.mark.parametrize("refusal", [

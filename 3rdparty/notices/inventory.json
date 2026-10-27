@@ -515,6 +515,7 @@
         "rust:cpp-demangle@0.4.5",
         "rust:cpufeatures@0.2.17",
         "rust:cpufeatures@0.3.0",
+        "rust:crc32fast@1.5.0",
         "rust:crossbeam-deque@0.8.6",
         "rust:crossbeam-epoch@0.9.21",
         "rust:crossbeam-utils@0.8.21",
@@ -3642,7 +3643,8 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension"
+        "diskgraph-extension",
+        "diskgraph-ingest"
       ],
       "copyright": [
         "Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors"

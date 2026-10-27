@@ -131,7 +131,7 @@ def test_sql_table_snapshot_ingests_the_query_result(warehouse, tmp_path,
 
 
 def test_custom_training_rows_stage_the_query_result(warehouse, tmp_path):
-    staged = stage_source_table(warehouse.sql(SQL), tmp_path / 'staged')
+    staged, _ = stage_source_table(warehouse.sql(SQL), tmp_path / 'staged')
     assert pq.read_table(staged).to_pydict() == {
         'user_id': [1, 3],
         'age': [30, 50]

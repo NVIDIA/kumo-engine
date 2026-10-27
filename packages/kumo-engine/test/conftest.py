@@ -60,6 +60,34 @@ def local_s3_object_identity(monkeypatch):
 
 
 @pytest.fixture
+def graph(tmp_path):
+    rng = np.random.default_rng(0)
+    data = tmp_path / 'data'
+    data.mkdir()
+    pd.DataFrame({'ID': np.arange(50)}).to_parquet(data / 'users.parquet')
+    pd.DataFrame({
+        'EID':
+        np.arange(500),
+        'USER_ID':
+        rng.integers(0, 50, 500),
+        'TS':
+        pd.Timestamp('2024-01-01') +
+        pd.to_timedelta(rng.integers(0, 120, 500), unit='D'),
+    }).to_parquet(data / 'events.parquet')
+    connector = kumo.FileConnector(root_dir=str(data))
+    return kumo.Graph(
+        tables={
+            'users':
+            kumo.Table.from_source_table(connector['users.parquet'],
+                                         primary_key='ID'),
+            'events':
+            kumo.Table.from_source_table(
+                connector['events.parquet'], primary_key='EID',
+                time_column='TS').with_column('USER_ID', stype=Stype.ID),
+        }, edges=[Edge(src_table='events', fkey='USER_ID', dst_table='users')])
+
+
+@pytest.fixture
 def snapshot(tmp_path):
     config = {
         'tables': [{

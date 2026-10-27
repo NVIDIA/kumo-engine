@@ -36,6 +36,7 @@ use anyhow::{Context, Result};
 use object_store::path::Path as ObjectPath;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use diskgraph_fs::{CloudTransfer, CloudTransferTicket};
 
@@ -488,21 +489,9 @@ pub(crate) fn validate_manifest_rel_path(rel: &str) -> Result<(), &'static str> 
     Ok(())
 }
 
-/// Verify the snapshot rooted at `output_dir` against its `_MANIFEST.json`.
-/// Used by the consumer side after a Python-driven dataplane→local copy
-/// completes, to catch lifecycle-mid-delete races and partial copies
-/// before the snapshot is handed to a workload.
-///
-/// Pass on success; [`CorruptionError`] on any deviation from the
-/// manifest contract. Errors are precise about what failed so the
-/// caller's alerting carries actionable detail (which file is missing,
-/// expected vs actual size, etc.).
-pub fn verify_snapshot_integrity(output_dir: &std::path::Path) -> std::result::Result<(), CorruptionError> {
-    let success_path = output_dir.join(SUCCESS_MARKER_FILENAME);
-    if !success_path.exists() {
-        return Err(CorruptionError::MissingSuccess(success_path));
-    }
-
+/// Read and validate `_MANIFEST.json` at `output_dir`: schema version and
+/// every rel_path's confinement to the snapshot root.
+fn read_manifest(output_dir: &std::path::Path) -> std::result::Result<Manifest, CorruptionError> {
     let manifest_path = output_dir.join(MANIFEST_FILENAME);
     let manifest_bytes = match std::fs::read(&manifest_path) {
         Ok(b) => b,
@@ -548,6 +537,25 @@ pub fn verify_snapshot_integrity(output_dir: &std::path::Path) -> std::result::R
             });
         }
     }
+    Ok(manifest)
+}
+
+/// Verify the snapshot rooted at `output_dir` against its `_MANIFEST.json`.
+/// Used by the consumer side after a Python-driven dataplane→local copy
+/// completes, to catch lifecycle-mid-delete races and partial copies
+/// before the snapshot is handed to a workload.
+///
+/// Pass on success; [`CorruptionError`] on any deviation from the
+/// manifest contract. Errors are precise about what failed so the
+/// caller's alerting carries actionable detail (which file is missing,
+/// expected vs actual size, etc.).
+pub fn verify_snapshot_integrity(output_dir: &std::path::Path) -> std::result::Result<(), CorruptionError> {
+    let success_path = output_dir.join(SUCCESS_MARKER_FILENAME);
+    if !success_path.exists() {
+        return Err(CorruptionError::MissingSuccess(success_path));
+    }
+
+    let manifest = read_manifest(output_dir)?;
 
     let mut missing: Vec<String> = Vec::new();
     let mut size_mismatches: Vec<(String, u64, u64)> = Vec::new();
@@ -582,6 +590,71 @@ pub fn verify_snapshot_integrity(output_dir: &std::path::Path) -> std::result::R
     }
 
     Ok(())
+}
+
+/// CRC-32 of every `range_bytes` span of each file `_MANIFEST.json` lists,
+/// and of `_MANIFEST.json` itself, keyed by rel_path (an empty file has one
+/// zero entry). Lets a copy of the snapshot be checked for content as well
+/// as size; the manifest format is unchanged.
+pub fn snapshot_range_checksums(
+    output_dir: &std::path::Path,
+    range_bytes: u64,
+) -> std::result::Result<BTreeMap<String, Vec<u32>>, CorruptionError> {
+    use rayon::prelude::*;
+    use std::os::unix::fs::FileExt;
+
+    const CHUNK: u64 = 1 << 20;
+    if range_bytes == 0 {
+        return Err(CorruptionError::Io {
+            path: output_dir.to_path_buf(),
+            detail: "range_bytes must be positive".into(),
+        });
+    }
+    let mut files = read_manifest(output_dir)?.files;
+    let manifest_size = std::fs::metadata(output_dir.join(MANIFEST_FILENAME))
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    files.push(ManifestEntry {
+        rel_path: MANIFEST_FILENAME.into(),
+        size_bytes: manifest_size,
+    });
+    let ranges: Vec<(usize, u64)> = files
+        .iter()
+        .enumerate()
+        .flat_map(|(index, entry)| {
+            let count = entry.size_bytes.div_ceil(range_bytes).max(1);
+            (0..count).map(move |range| (index, range))
+        })
+        .collect();
+    let crcs = ranges
+        .par_iter()
+        .map(|&(index, range)| {
+            let entry = &files[index];
+            let path = output_dir.join(&entry.rel_path);
+            let io = |e: std::io::Error| CorruptionError::Io {
+                path: path.clone(),
+                detail: e.to_string(),
+            };
+            let file = std::fs::File::open(&path).map_err(io)?;
+            let start = range * range_bytes;
+            let end = entry.size_bytes.min(start + range_bytes);
+            let mut hasher = crc32fast::Hasher::new();
+            let mut buffer = vec![0u8; CHUNK.min(end - start) as usize];
+            let mut offset = start;
+            while offset < end {
+                let length = CHUNK.min(end - offset) as usize;
+                file.read_exact_at(&mut buffer[..length], offset).map_err(io)?;
+                hasher.update(&buffer[..length]);
+                offset += length as u64;
+            }
+            Ok(hasher.finalize())
+        })
+        .collect::<std::result::Result<Vec<u32>, CorruptionError>>()?;
+    let mut out: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    for (&(index, _), crc) in ranges.iter().zip(crcs) {
+        out.entry(files[index].rel_path.clone()).or_default().push(crc);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -932,5 +1005,36 @@ mod tests {
         assert!(local_root.path().join(SUCCESS_MARKER_FILENAME).exists());
         verify_snapshot_integrity(local_root.path())?;
         Ok(())
+    }
+
+    #[test]
+    fn range_checksums_cover_every_listed_file_and_the_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let big: Vec<u8> = (0..10u32).flat_map(|i| i.to_le_bytes()).collect();
+        write_marker_files(tmp.path(), &[("a.bin", &big), ("nested/empty", b"")]);
+        write_manifest(
+            tmp.path(),
+            vec![
+                ManifestEntry {
+                    rel_path: "a.bin".into(),
+                    size_bytes: 40,
+                },
+                ManifestEntry {
+                    rel_path: "nested/empty".into(),
+                    size_bytes: 0,
+                },
+            ],
+        );
+        let crcs = snapshot_range_checksums(tmp.path(), 16).unwrap();
+        let manifest = std::fs::read(tmp.path().join(MANIFEST_FILENAME)).unwrap();
+        assert_eq!(crcs["a.bin"], [&big[..16], &big[16..32], &big[32..]].map(crc32fast::hash));
+        assert_eq!(crcs["nested/empty"], vec![0]);
+        assert_eq!(crcs[MANIFEST_FILENAME], manifest.chunks(16).map(crc32fast::hash).collect::<Vec<_>>());
+
+        std::fs::write(tmp.path().join("a.bin"), &big[..20]).unwrap();
+        assert!(matches!(
+            snapshot_range_checksums(tmp.path(), 16).unwrap_err(),
+            CorruptionError::Io { .. }
+        ));
     }
 }

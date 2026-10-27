@@ -30,6 +30,7 @@ def stamp(recorder=None, table=TABLE, **overrides):
 def test_a_table_is_stamped_with_the_second_it_was_last_altered():
     """A version carrying `.0` is a different path segment and a different key."""
     assert stamp() == ALTERED_VERSION
+    assert stamp().kind == "timestamp"
     assert stamp(last_altered=ALTERED.replace(
         microsecond=900000)) == (ALTERED_VERSION)
 
@@ -46,6 +47,7 @@ def test_a_differently_cased_table_is_not_substituted():
 def test_a_view_of_either_kind_falls_back_to_the_hour_window(table_type):
     recorder = cursor(table_type=table_type)
     assert stamp(recorder) == hour_version()
+    assert stamp(cursor(table_type=table_type)).kind == "hour_bucket"
     assert recorder.matching("LAST_ALTERED") == []
 
 

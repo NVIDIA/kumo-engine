@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
 import posixpath
 import shutil
@@ -20,6 +21,7 @@ from kumoapi.plugin import (
 from pyarrow.fs import FileSystem
 
 _CHUNK = 8 * 1024 * 1024
+_LOG = logging.getLogger(__name__)
 _OBJECT_STORES = frozenset({'s3', 'gcs', 'abfs'})
 
 
@@ -57,6 +59,31 @@ def upload_bundle(filesystem: FileSystem, destination: str,
         with open(source, 'rb') as reader, open_sized(
                 filesystem, target, source.stat().st_size) as writer:
             shutil.copyfileobj(reader, writer, _CHUNK)
+
+
+def holds_bundle(filesystem: FileSystem, destination: str,
+                 bundle_dir: str) -> bool:
+    """Whether ``destination`` holds a complete copy of ``bundle_dir``: the
+    same files and sizes, and the same provenance file, written last."""
+    from kumo_core.artifacts import PROVENANCE_FILE
+    from pyarrow.fs import FileSelector, FileType
+
+    root = Path(bundle_dir)
+    local = {
+        path.relative_to(root).as_posix(): path.stat().st_size
+        for path in root.rglob('*') if path.is_file()
+    }
+    remote = {
+        info.path[len(destination) + 1:]: info.size
+        for info in filesystem.get_file_info(
+            FileSelector(destination, recursive=True, allow_not_found=True))
+        if info.type is FileType.File
+    }
+    if remote != local or PROVENANCE_FILE not in local:
+        return False
+    with filesystem.open_input_stream(
+            f'{destination}/{PROVENANCE_FILE}') as reader:
+        return reader.readall() == (root / PROVENANCE_FILE).read_bytes()
 
 
 def download_bundle(filesystem: FileSystem, source: str,
@@ -130,7 +157,8 @@ class ObjectStoreSinkBackend(ABC):
 
     def write_files(self, connector, table_name, files,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
-                    export_id=None, extra_columns=None):
+                    export_id=None, extra_columns=None,
+                    sidecars: Mapping[str, bytes] = {}):
         """Export selected Parquet without collecting their rows."""
         del project_id
         if write_mode is not WriteMode.OVERWRITE:
@@ -140,11 +168,16 @@ class ObjectStoreSinkBackend(ABC):
         from kumo_core.sources import layout
         filesystem, path = self._destination(connector, table_name)
         kind = layout.file_type(path.rstrip('/')) or layout.PARQUET
+        if export_id and holds_export(filesystem, path, export_id):
+            _LOG.info('%s already holds a complete copy of export %s; reused '
+                      'it', path, export_id)
+            return f'{self.scheme}://{path.rstrip("/")}/'
         storage = _ArrowExportFiles(filesystem, extra_columns)
         _, output = export_selected_files(files, path, fs=storage,
                                           identity=export_id or str(files),
                                           file_type=kind,
-                                          convert_csv=storage.convert_csv)
+                                          convert_csv=storage.convert_csv,
+                                          sidecars=sidecars)
         return f'{self.scheme}://{output}'
 
     def publish_model(
@@ -173,7 +206,11 @@ class ObjectStoreSinkBackend(ABC):
 
         filesystem, destination = self._destination(connector, path)
         destination = destination.rstrip('/')
-        upload_bundle(filesystem, destination, bundle_dir)
+        if holds_bundle(filesystem, destination, bundle_dir):
+            _LOG.info('%s already holds this model bundle; reused it',
+                      destination)
+        else:
+            upload_bundle(filesystem, destination, bundle_dir)
         return PublishedModel(
             name=posixpath.basename(destination),
             version=destination,
@@ -309,6 +346,23 @@ def _prepared(filesystem: FileSystem, directory: str) -> None:
         filesystem.create_dir(directory, recursive=True)
 
 
+def holds_export(filesystem: FileSystem, path: str, export_id: str) -> bool:
+    """Whether the directory ``path`` holds a complete export ``export_id``."""
+    from kumo_core.artifact_export import EXPORT_MARKER_NAME
+    from pyarrow.fs import FileType
+
+    directory = path.rstrip('/')
+    try:
+        if filesystem.get_file_info(
+                f'{directory}/_SUCCESS').type is not FileType.File:
+            return False
+        with filesystem.open_input_stream(
+                f'{directory}/{EXPORT_MARKER_NAME}') as reader:
+            return reader.readall().decode('utf-8') == _marker(export_id)
+    except (FileNotFoundError, OSError):
+        return False
+
+
 def _marker(export_id: Optional[str]) -> Optional[str]:
     from kumo_core.artifact_export import export_marker
 
@@ -342,8 +396,11 @@ class _ArrowExportFiles:
             return reader.readall().decode('utf-8')
 
     def write_text(self, path, value):
+        self.write_bytes(path, value.encode('utf-8'))
+
+    def write_bytes(self, path, value):
         with self.filesystem.open_output_stream(path) as writer:
-            writer.write(value.encode('utf-8'))
+            writer.write(value)
 
     def makedirs(self, path, exist_ok=True):
         _prepared(self.filesystem, path)
