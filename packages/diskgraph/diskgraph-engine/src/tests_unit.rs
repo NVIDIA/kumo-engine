@@ -289,7 +289,9 @@ fn make_sampling_request_with_mode(
         seed_nodes: [("User".to_string(), seed_nodes)].into(),
         seed_timestamps: None,
         seed_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
-        plan: SamplingPlan { layers },
+        plan: SamplingPlan {
+            layers,
+        },
         flags: SamplingFlags {
             replace: false,
             directed: true,
@@ -840,7 +842,9 @@ fn test_fetch_features_fused_excludes_weight() {
     let mut type_state = crate::state::TypeState::new();
     let mut scratch = diskgraph_rowpack::RowPackDecodeScratch::default();
 
-    // Drive the fused leaf-fetch path for node 0, then flush.
+    // Drive the fused leaf-fetch path for node 0, then flush. Fused mode
+    // always fetches every non-reserved column; it does not consult a
+    // `ResolvedProjection`.
     graph
         .sampler
         .accumulate_features_from_ids_builder(0, &[0], &mut type_state, &mut scratch, &mut output)
@@ -867,6 +871,77 @@ fn test_fetch_features_fused_excludes_weight() {
     // field count == array count is enforced by RecordBatch::try_new; assert
     // the surviving columns are exactly the real features.
     assert_eq!(names, vec!["feat_0", "feat_1", "TIMESTAMP", "TARGET_AUDIENCE"]);
+}
+
+/// `resolve_projection` is a TRI-STATE, and each state is reachable only
+/// through a distinct spelling of the caller-facing map. Collapsing any two of
+/// them is the bug class this whole parameter exists to prevent, so pin all
+/// three plus the skew fallback.
+#[test]
+fn test_resolve_projection_tri_state() {
+    let graph = TestGraph::new();
+    let type_name = graph.sampler.id_to_node_type[0].clone();
+    let stored = graph.rowpack_ctx.columns.len();
+    assert!(stored >= 2, "fixture must store >= 2 columns to prove narrowing");
+
+    // 1. Empty map => select all, everywhere.
+    let all = graph.sampler.resolve_projection(&Default::default());
+    assert_eq!(all.names_for(0), None, "empty map must mean select-all");
+    assert!(!all.skips(0));
+
+    // 2. Key absent => select all for that type, even when OTHER keys are set.
+    let other = HashMap::from([("not_a_node_type".to_string(), vec!["x".to_string()])]);
+    let other = graph.sampler.resolve_projection(&other);
+    assert_eq!(other.names_for(0), None, "absent key must mean select-all");
+    assert!(!other.skips(0));
+
+    // 3. Non-empty list => exactly those.
+    let narrow = HashMap::from([(type_name.clone(), vec!["feat_0".to_string()])]);
+    let narrow = graph.sampler.resolve_projection(&narrow);
+    assert_eq!(narrow.names_for(0), Some(&["feat_0".to_string()][..]));
+    assert!(!narrow.skips(0));
+
+    // 4. Empty list => select NOTHING. Distinct from 1 and 2 -- that
+    //    distinction is the entire point of the `projections` rename.
+    let skip = HashMap::from([(type_name.clone(), Vec::<String>::new())]);
+    let skip = graph.sampler.resolve_projection(&skip);
+    assert_eq!(skip.names_for(0), Some(&[][..]));
+    assert!(skip.skips(0), "an empty request must skip the type");
+
+    // 5. A NON-empty request that intersects nothing is schema skew, not a
+    //    skip: fall back to select-all rather than starving the encoders.
+    let skew = HashMap::from([(type_name.clone(), vec!["no_such_column".to_string()])]);
+    let skew = graph.sampler.resolve_projection(&skew);
+    assert_eq!(skew.names_for(0), None, "skew must degrade to select-all");
+    assert!(!skew.skips(0), "skew must NOT be mistaken for a skip request");
+
+    // 6. A PARTIAL miss (one requested name stored, one not) must still
+    //    intersect down to the surviving name(s) rather than degrading to
+    //    select-all -- that fallback is reserved for a TOTAL miss (case 5).
+    let stored_name = graph.rowpack_ctx.columns[0].name.clone();
+    let partial = HashMap::from([(
+        type_name.clone(),
+        vec![stored_name.clone(), "no_such_column".to_string()],
+    )]);
+    let partial = graph.sampler.resolve_projection(&partial);
+    assert_eq!(
+        partial.names_for(0),
+        Some(&[stored_name.clone()][..]),
+        "a partial miss keeps the surviving column(s), not select-all"
+    );
+    assert!(!partial.skips(0));
+
+    // 7. A DUPLICATE requested name must be deduped, not carried through
+    // twice: a duplicate field name in the resolved list becomes a duplicate
+    // field in the projected Arrow schema downstream, which corrupts any
+    // column lookup by name.
+    let duplicated = HashMap::from([(type_name, vec![stored_name.clone(), stored_name.clone()])]);
+    let duplicated = graph.sampler.resolve_projection(&duplicated);
+    assert_eq!(
+        duplicated.names_for(0),
+        Some(&[stored_name][..]),
+        "a duplicated requested column must appear exactly once in the resolved list"
+    );
 }
 
 /// `is_reserved_feature_column` matches the reserved set exactly (with
@@ -2420,4 +2495,53 @@ fn test_finalize_preserves_anchor_major_seed_prefix() {
         negatives.as_slice(),
         "next B*M node_ids must be the negatives, anchor-major, in order"
     );
+}
+
+#[test]
+fn repeated_runs_give_identical_output() {
+    let (dir_lhs, dir_rhs) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let (lhs, _, lhs_ctx) = build_temporal_shard(dir_lhs.path(), &[(1, 1), (2, 1)], 2);
+    let (rhs, _, rhs_ctx) = build_temporal_shard(dir_rhs.path(), &[(1, 1), (2, 1)], 2);
+    let shard = |reader| vec![ShardHandle { reader: Arc::new(reader), min_id: 0, max_id: 2 }];
+    let sampler = DiskGraphEngine::new(
+        [("lhs".to_string(), shard(lhs)), ("rhs".to_string(), shard(rhs))].into(),
+        [
+            (0, ("LhsToRhs".to_string(), "lhs".to_string(), "rhs".to_string())),
+            (1, ("RhsToRhs".to_string(), "rhs".to_string(), "rhs".to_string())),
+        ]
+        .into(),
+        [
+            (0usize, SortKeyDecoder::new(&temporal_sortkey_meta())),
+            (1usize, SortKeyDecoder::new(&temporal_sortkey_meta())),
+        ]
+        .into(),
+        [
+            ("lhs".to_string(), RowPackDecoder::new(lhs_ctx).unwrap()),
+            ("rhs".to_string(), RowPackDecoder::new(rhs_ctx).unwrap()),
+        ]
+        .into(),
+        None,
+        diskgraph_core::time::TimeUnit::Seconds,
+        Some(42),
+        Some(1),
+    );
+    for fused in [false, true] {
+        let mut req = make_sampling_request_with_mode(vec![], vec![10], SamplingMode::Uniform);
+        let layer = &mut req.plan.layers[0];
+        layer.default_fanout = layer.fanouts.drain().next().map(|(_, f)| f);
+        req.seed_nodes = [("lhs".to_string(), vec![0]), ("rhs".to_string(), vec![0])].into();
+        req.flags.fused_feature_fetching = fused;
+        let runs: Vec<_> = (0..16)
+            .map(|_| {
+                let mut state = crate::state::StatePool::new().acquire();
+                let mut output = MockOutput { edges: vec![], feature_batches: vec![], schema: None, fused_batches: vec![] };
+                sampler.sample(&req, &mut state, &mut output).unwrap();
+                let rhs: Vec<_> = state.type_states[&1].nodes.iter().map(|n| (n.global_id, n.seed_type_id)).collect();
+                (output.edges, rhs, output.fused_batches)
+            })
+            .collect();
+        assert_eq!(runs[0].0.len(), 4);
+        assert_eq!(runs[0].2.len(), if fused { 2 } else { 0 });
+        assert!(runs.iter().all(|r| *r == runs[0]), "fused={fused}");
+    }
 }

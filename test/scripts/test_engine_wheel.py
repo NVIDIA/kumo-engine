@@ -7,6 +7,7 @@ import os
 import runpy
 import subprocess
 import sys
+import tomllib
 import types
 import zipfile
 from email.parser import BytesParser
@@ -15,6 +16,8 @@ from typing import cast
 from zipfile import ZipFile
 
 import pytest
+
+from io_utils.fsutil.api import read_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / 'packages/kumo-engine/scripts'
@@ -247,13 +250,17 @@ def test_merged_module_reports_bundle_version(tmp_path, monkeypatch):
             b"__version__ = '1.0'\n")
 
 
-@pytest.mark.parametrize(('platform', 'expected'), [
-    ('linux', {'faiss-gpu'}),
-    ('darwin', {'faiss-cpu'}),
-    ('win32', set()),
+@pytest.mark.parametrize(('platform', 'machine', 'expected'), [
+    ('linux', 'x86_64', {'faiss-gpu'}),
+    ('linux', 'aarch64', set()),
+    ('darwin', 'arm64', {'faiss-cpu'}),
+    ('darwin', 'x86_64', {'faiss-cpu'}),
+    ('win32', 'AMD64', set()),
+    ('win32', 'ARM64', set()),
 ])
+@pytest.mark.parametrize('extra', ['', 'cpu'])
 def test_engine_faiss_platform_selection_survives_merge(
-        tmp_path, monkeypatch, platform, expected):
+        tmp_path, monkeypatch, platform, machine, expected, extra):
     from packaging.requirements import Requirement
 
     setup_kwargs = {}
@@ -265,13 +272,29 @@ def test_engine_faiss_platform_selection_survives_merge(
         requirement for requirement in engine['requires']
         if 'extra ==' in requirement
     ]
+    project = tomllib.loads(read_text(str(
+        REPO_ROOT / 'packages/kumo-engine/pyproject.toml')))['project']
+    assert not {'faiss-cpu', 'faiss-gpu', 'gpu'} & set(
+        project['optional-dependencies'])
+    for name in ('cpu',):
+        for value in project['optional-dependencies'][name]:
+            requirement = Requirement(value)
+            spec = str(requirement).split(';', 1)[0]
+            marker = str(requirement.marker) if requirement.marker else None
+            condition = f'({marker}) and ' if marker else ''
+            provider_requirements.append(
+                f'{spec}; {condition}extra == "{name}"')
     monkeypatch.setitem(COMPONENTS, 'kumo-engine', {
         **engine,
+        'extras': [*engine['extras'], 'cpu'],
         'requires': setup_kwargs['install_requires'] + provider_requirements,
     })
     result = _merge(tmp_path, list(COMPONENTS))
     assert result.returncode == 0, result.stderr
     metadata, manifest, _ = _read_wheel(tmp_path)
+    assert not {'faiss-cpu', 'faiss-gpu', 'gpu'} & set(
+        metadata.get_all('Provides-Extra'))
+    assert 'cpu' in metadata.get_all('Provides-Extra')
     faiss = [
         Requirement(value) for value in metadata.get_all('Requires-Dist')
         if value.startswith('faiss-')
@@ -283,11 +306,13 @@ def test_engine_faiss_platform_selection_survives_merge(
                and requirement.marker is not None for requirement in faiss)
     selected = {
         requirement.name for requirement in faiss
-        if requirement.marker.evaluate({'sys_platform': platform, 'extra': ''})
+        if requirement.marker.evaluate({'sys_platform': platform,
+                                        'platform_machine': machine,
+                                        'extra': extra})
     }
-    assert selected == expected
-    assert {str(requirement) for requirement in faiss} <= set(
-        manifest['requires'])
+    assert selected == (expected or ({f'faiss-{extra}'} if extra else set()))
+    assert {str(requirement) for requirement in faiss
+            if 'extra' not in str(requirement.marker)} <= set(manifest['requires'])
 
 
 @pytest.mark.parametrize('providers', [

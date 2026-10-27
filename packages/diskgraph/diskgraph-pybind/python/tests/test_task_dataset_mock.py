@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,7 +17,6 @@ from diskgraph import (
     TaskDatasetMetadataInputs,
     TrainTableColumnMappingInputs,
     build_node_prediction_task_dataset_bundle,
-    RuntimeIndex,
     task_stage_size,
 )
 
@@ -291,24 +291,34 @@ def test_native_iterator_surface_forwards_epoch_to_native_iterator(tmp_path, mon
     assert captured.args[8] is True
 
 
-def test_native_iterator_surface_forwards_selected_stage_node_ids(tmp_path, monkeypatch):
+@pytest.mark.parametrize("projections", [None, {"USER": []}, {"USER": ["age"]}])
+def test_native_iterator_surface_forwards_selected_stage_node_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    projections: dict[str, list[str]] | None,
+) -> None:
+    """Forward projections alongside the existing iterator options."""
     manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps({
-        "kind": "diskgraph_task_dataset",
-        "graph": {"index_path": "/idx"},
-        "stages": {
-            "train": {
-                "table_name": "tt_user__train",
-                "index_path": "/idx/train_tables/tt_user",
-                "row_count": 7,
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "kind": "diskgraph_task_dataset",
+                "graph": {"index_path": "/idx"},
+                "stages": {
+                    "train": {
+                        "table_name": "tt_user__train",
+                        "index_path": "/idx/train_tables/tt_user",
+                        "row_count": 7,
+                    }
+                },
             }
-        },
-    }))
+        )
+    )
     captured = SimpleNamespace(args=None, index_args=None)
 
     class FakeIterator:
         def num_samples(self):
-            return len(captured.args[-4])
+            return len(captured.args[-5])
 
     class FakeRuntimeIndex:
         def __init__(self, *args):
@@ -332,13 +342,15 @@ def test_native_iterator_surface_forwards_selected_stage_node_ids(tmp_path, monk
         epoch=0,
         batch_size=2,
         selected_stage_node_ids=selected_stage_node_ids,
+        projections=projections,
     )
 
     assert num_samples == 3
-    assert captured.args[-4] is selected_stage_node_ids
-    assert captured.args[-3] is True
-    assert captured.args[-2] is None
-    assert captured.args[-1] is False
+    assert captured.args[-5] is selected_stage_node_ids
+    assert captured.args[-4] is True
+    assert captured.args[-3] is None
+    assert captured.args[-2] is False
+    assert captured.args[-1] is projections
 
 
 def test_native_iterator_surface_resolves_weighted_seed_sampling(tmp_path, monkeypatch):
@@ -400,7 +412,7 @@ def test_native_iterator_surface_resolves_weighted_seed_sampling(tmp_path, monke
     )
 
     assert num_samples == 6
-    config = json.loads(captured.args[-5])
+    config = json.loads(captured.args[-6])
     assert config["buckets"] == [
         {
             "name": "false",
@@ -478,7 +490,7 @@ def test_native_iterator_surface_resolves_row_weight_sampling(tmp_path, monkeypa
     )
 
     assert num_samples == 12
-    config = json.loads(captured.args[-5])
+    config = json.loads(captured.args[-6])
     assert config["buckets"] == [{
         "name": "all",
         "node_ids_path": str(ids),
@@ -541,7 +553,7 @@ def test_native_iterator_surface_disables_seed_timestamps_for_static_task(
         batch_size=2,
     )
 
-    assert captured.args[-3] is False
+    assert captured.args[-4] is False
 
 
 def test_native_iterator_surface_forwards_pred_table_extension(tmp_path, monkeypatch):

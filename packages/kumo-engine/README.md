@@ -23,6 +23,17 @@ Kumo Engine uses a GPU when one is available: an NVIDIA GPU through CUDA, or an 
 pip install kumo-engine
 ```
 
+Linux x86_64 requires GPU Faiss, which also handles CPU retrieval. macOS keeps
+CPU Faiss and its existing Metal retrieval support. Faiss is optional on ARM64
+Linux and native Windows: without it, affected link-prediction retrieval raises
+an installation error while other tasks remain available. On those platforms,
+use `pip install "kumo-engine[cpu]"` for CPU retrieval with a compatible backend
+wheel for your platform and Python version. For CUDA retrieval, install a
+compatible GPU Faiss build directly, building from source on ARM64 Linux if
+needed. The CPU extra retains the required platform backend on Linux x86_64
+and macOS; it does not configure PyTorch or select the execution device.
+Choose one backend per environment.
+
 The base install reads local CSV and Parquet files. For other data sources, install the matching extra in the same environment:
 
 | Data source | Command |
