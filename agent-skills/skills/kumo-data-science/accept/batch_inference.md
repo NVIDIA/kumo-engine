@@ -14,10 +14,11 @@ wants it to score data. A training request never needs it. It adds to `SKILL.md`
 
 **`batch_inference` — resolved, never asked** (`accept/intake_contract.md`):
 - `source_scope`: a source the user named, else the connector named for this request (only on a
-  host whose *Source scope* accepts a connector name), else the source recorded with the model.
-  The bundle restores trainer state, **not** the graph, so the graph is rebuilt from source at 1c.
-  The record is read at 1c, not at intake: a source that is not in the conversation is not
-  missing.
+  host whose *Source scope* accepts a connector name), else the source in the team's training
+  record for the model (`kumo-model-persistence/references/reuse.md`) — the registry does not
+  keep one. The bundle restores trainer state, **not** the graph, so the graph is rebuilt from
+  source at 1c. The record is read at 1c, not at intake: a source that is not in the conversation
+  is not missing; ask for it only if 1c finds no training record.
 - `scoring_population`: defaults to every entity of the trained entity table, anchored at the
   latest timestamp in the rebuilt snapshot, tagged `[default]`. A subset or date the user names
   replaces it.
@@ -44,10 +45,10 @@ preds in the scores table", after a turn that named the model and the table, sup
 | Field | How it is obtained | Shown as |
 |---|---|---|
 | **task** — entity, outcome, window, task type | Reused from the model unchanged. Never reopened. | restated at 1d |
-| **`source_scope`** | In order: a source the user named → the connector the user named for this request, on a host whose *Source scope* accepts a connector name (one connector reads the source and writes the scores unless the user separates them) → the source scope recorded with the model at publication. When neither of the first two applies, restate `Source: recorded with <model> [inferred]` and do not ask: the record is read at 1c. Ask only if 1c then finds no recorded source. On a host that does not accept a connector name, a connector named alone is not a source: ask for the system and location as that host's adapter says. | `[supplied]` / `[inferred]` at 1c |
+| **`source_scope`** | In order: a source the user named → the connector the user named for this request, on a host whose *Source scope* accepts a connector name (one connector reads the source and writes the scores unless the user separates them) → the source scope in the team's training record for the model (`kumo-model-persistence/references/reuse.md`); the registry keeps only `spec_version`, the query and `snapshot_id`, not the source. When neither of the first two applies, restate `Source: from the training record of <model> [inferred]` and do not ask: the record is read at 1c. Ask only if 1c then finds no training record, or one that names no source. On a host that does not accept a connector name, a connector named alone is not a source: ask for the system and location as that host's adapter says. | `[supplied]` / `[inferred]` at 1c |
 | **graph** | Rebuilt from the model's recorded graph definition inside `source_scope`, then confirmed | `[inferred]` at 1c |
 | **`scoring_population`** | Default: every entity of the trained entity table, anchored at the latest timestamp in the rebuilt snapshot ("current predictions"). A static task has no anchor. If the user names a subset or an anchor date, use theirs. | `[default]` / `[supplied]` at 1d |
-| **model version** | The version the user named. If the address resolves to more than one version and none was named, ask which one. Never pick the latest yourself. | `[supplied]` at 1d |
+| **model version** | The version the user named. If the address resolves to more than one version and none was named, ask which one. Never pick the latest yourself. An address with a single version uses it. Either way, the generated code names the version explicitly. | `[supplied]` / `[inferred]` (the only version) at 1d |
 | **embeddings** | Only when the user explicitly asks ("export the entity and target-item embeddings") | restated at 1d |
 | **scoring options** | Set by the trained task type, below | restated at 1d |
 
@@ -169,7 +170,7 @@ With "…export the entity and target-item embeddings" added, the gate also carr
 > "Use trained model `trainingjob-abc123` to score current accounts."
 
 - `model_address` ✓ · `output_location` ✗
-- Not asked: the source (recorded with the model), the population ("current accounts" means all
+- Not asked: the source (from the model's training record), the population ("current accounts" means all
   accounts at the latest snapshot timestamp, the default), and the task. The task is never
   reopened.
 

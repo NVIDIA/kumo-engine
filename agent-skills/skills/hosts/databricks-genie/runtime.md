@@ -105,10 +105,8 @@ def run_sql(statement):
 ## 4. Destinations and read-back
 
 A confirmed destination `catalog.schema.table` is written through a connector on its own catalog
-and schema, with `table_name='<schema>__kumo__<table>'`
-(`kumoai-reference/references/kumo_finetuning_sdk.md` §9.2). The schema part must equal the output
-connector's `schema_name`; a bare table name fails in the sink. The table lands as
-`catalog.schema.table`, exactly that name.
+and schema, with `table_name` in the form `kumoai-reference/references/kumo_finetuning_sdk.md`
+§9.2 gives. The table lands as `catalog.schema.table`, exactly that name.
 
 ```python
 output_connector = kumo.DatabricksConnector(
@@ -241,7 +239,7 @@ reads and writes volumes as ordinary paths. The volume must exist; if the user n
 Creating one is a write that needs their confirmation.
 
 Build the archive with the packaged helper exactly as `retention.md` says, then copy it — never
-over an existing object — and check the copy's digest:
+over an existing object: `'xb'` fails if the target exists — and check the copy's digest:
 
 ```python
 import hashlib
@@ -249,10 +247,9 @@ import shutil
 from pathlib import Path
 
 target = Path(VOLUME_PREFIX) / Path(ARCHIVE_PATH).name
-if target.exists():
-    raise FileExistsError(f'{target} exists; choose a new run prefix')
 target.parent.mkdir(parents=True, exist_ok=True)
-shutil.copyfile(ARCHIVE_PATH, target)
+with open(ARCHIVE_PATH, 'rb') as src, open(target, 'xb') as dst:   # FileExistsError: new run prefix
+    shutil.copyfileobj(src, dst)
 copied = hashlib.sha256(target.read_bytes()).hexdigest()
 if copied != digest:
     raise RuntimeError(f'Retained archive digest mismatch: {copied} != {digest}')
