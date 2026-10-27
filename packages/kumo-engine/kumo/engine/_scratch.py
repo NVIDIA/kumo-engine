@@ -68,6 +68,19 @@ def get_scratch_dir() -> Path:
     return _root
 
 
+def _spool_dir() -> str:
+    return str(get_scratch_dir() / "spool")
+
+
+def _spool_parts() -> None:
+    from kumo_core.chunked_fs import set_spool_dir
+
+    set_spool_dir(_spool_dir)
+
+
+_spool_parts()
+
+
 def new_run_id() -> str:
     r"""A fresh, random id for one run -- a :class:`~kumo.engine.trainer.Trainer`
     instance, a `Trainer.predict` call, a `PredictiveQuery.

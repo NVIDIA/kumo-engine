@@ -2,11 +2,13 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import posixpath
 import shutil
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from pathlib import Path
-from typing import Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 import pandas as pd
 from kumoapi.jobs import WriteMode
@@ -21,6 +23,69 @@ _CHUNK = 8 * 1024 * 1024
 _OBJECT_STORES = frozenset({'s3', 'gcs', 'abfs'})
 
 
+def _chunked(filesystem: FileSystem) -> bool:
+    from kumo_core.chunked_fs import ChunkedFileHandler
+    from pyarrow.fs import PyFileSystem
+
+    return isinstance(filesystem, PyFileSystem) and isinstance(
+        filesystem.handler, ChunkedFileHandler)
+
+
+def open_sized(filesystem: FileSystem, path: str, size: int) -> Any:
+    """``open_output_stream(path)``, telling a chunked filesystem the size
+    the file will have."""
+    if _chunked(filesystem):
+        from kumo_core.chunked_fs import SIZE_KEY
+
+        return filesystem.open_output_stream(
+            path, metadata={SIZE_KEY: str(size)})
+    return filesystem.open_output_stream(path)
+
+
+def upload_bundle(filesystem: FileSystem, destination: str,
+                  bundle_dir: str) -> None:
+    """Copy every file of ``bundle_dir`` under ``destination``, the
+    provenance file last."""
+    from kumo_core.artifacts import PROVENANCE_FILE
+
+    root = Path(bundle_dir)
+    for source in sorted((item for item in root.rglob('*') if item.is_file()),
+                         key=lambda item:
+                         (item.name == PROVENANCE_FILE, item)):
+        target = f'{destination}/{source.relative_to(root).as_posix()}'
+        _prepared(filesystem, posixpath.dirname(target))
+        with open(source, 'rb') as reader, open_sized(
+                filesystem, target, source.stat().st_size) as writer:
+            shutil.copyfileobj(reader, writer, _CHUNK)
+
+
+def download_bundle(filesystem: FileSystem, source: str,
+                    local_dir: str) -> bool:
+    """Replace ``local_dir`` with the files under ``source``; False if there
+    are none."""
+    from kumo_core.sources.layout import confined
+    from pyarrow.fs import FileSelector, FileType
+
+    destination = Path(local_dir)
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    found = False
+    selector = FileSelector(source, recursive=True, allow_not_found=True)
+    for info in filesystem.get_file_info(selector):
+        if info.type is not FileType.File:
+            continue
+        found = True
+        # Remote keys are untrusted; each relative path must stay inside
+        # the local bundle, even when it contains parent components.
+        target = destination / confined(info.path[len(source) + 1:])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with filesystem.open_input_stream(info.path) as reader, \
+                open(target, 'wb') as writer:
+            shutil.copyfileobj(reader, writer, _CHUNK)
+    return found
+
+
 class ObjectStoreSinkBackend(ABC):
     scheme: str
     provider: str
@@ -30,6 +95,16 @@ class ObjectStoreSinkBackend(ABC):
                      coordinate: str) -> Tuple[FileSystem, str]:
         """Return the authenticated filesystem and validated bucket/key path."""
         raise NotImplementedError
+
+    def holds_files(self, connector: SourceConnector, path: str) -> bool:
+        """Every path of an object store is a file location."""
+        return True
+
+    def filesystem(self, connector: SourceConnector,
+                   path: str) -> Tuple[FileSystem, str]:
+        """The authenticated filesystem and resolved ``path``."""
+        filesystem, resolved = self._destination(connector, path)
+        return filesystem, resolved.rstrip('/')
 
     def write_table(
         self,
@@ -98,14 +173,7 @@ class ObjectStoreSinkBackend(ABC):
 
         filesystem, destination = self._destination(connector, path)
         destination = destination.rstrip('/')
-        root = Path(bundle_dir)
-        for source in sorted(item for item in root.rglob('*')
-                             if item.is_file()):
-            target = f'{destination}/{source.relative_to(root).as_posix()}'
-            _prepared(filesystem, posixpath.dirname(target))
-            with open(source, 'rb') as reader, \
-                    filesystem.open_output_stream(target) as writer:
-                shutil.copyfileobj(reader, writer, _CHUNK)
+        upload_bundle(filesystem, destination, bundle_dir)
         return PublishedModel(
             name=posixpath.basename(destination),
             version=destination,
@@ -124,9 +192,6 @@ class ObjectStoreSinkBackend(ABC):
     ) -> PublishedModel:
         """Replace the local directory with the published bundle."""
         del project_id
-        from kumo_core.sources.layout import confined
-        from pyarrow.fs import FileSelector, FileType
-
         if location is not None:
             raise NotImplementedError(
                 f"The local backend does not import a model by name from "
@@ -141,25 +206,7 @@ class ObjectStoreSinkBackend(ABC):
 
         filesystem, source = self._destination(connector, path)
         source = source.rstrip('/')
-        destination = Path(local_dir)
-        if destination.exists():
-            shutil.rmtree(destination)
-        destination.mkdir(parents=True)
-
-        found = False
-        selector = FileSelector(source, recursive=True, allow_not_found=True)
-        for info in filesystem.get_file_info(selector):
-            if info.type is not FileType.File:
-                continue
-            found = True
-            # Remote keys are untrusted; each relative path must stay inside
-            # the local bundle, even when it contains parent components.
-            target = destination / confined(info.path[len(source) + 1:])
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with filesystem.open_input_stream(info.path) as reader, \
-                    open(target, 'wb') as writer:
-                shutil.copyfileobj(reader, writer, _CHUNK)
-        if not found:
+        if not download_bundle(filesystem, source, local_dir):
             raise ValueError(
                 f"Nothing is published at {self.scheme}://{source}. Check the "
                 f"path the model was exported to.")
@@ -232,8 +279,21 @@ def _write_one(filesystem: FileSystem, frame: pd.DataFrame, path: str,
         with filesystem.open_output_stream(path) as writer:
             csv.write_csv(table, writer)
         return
-    pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), path,
-                   filesystem=filesystem)
+    table = pa.Table.from_pandas(frame, preserve_index=False)
+    if not _chunked(filesystem):
+        pq.write_table(table, path, filesystem=filesystem)
+        return
+    import tempfile
+
+    from kumo_core.chunked_fs import spool_root
+    # Spool so the size is known and a file up to one part stays plain.
+    with tempfile.TemporaryDirectory(
+            dir=spool_root(filesystem.handler)) as spool:
+        local = os.path.join(spool, 'frame.parquet')
+        pq.write_table(table, local)
+        with open(local, 'rb') as reader, open_sized(
+                filesystem, path, os.path.getsize(local)) as writer:
+            shutil.copyfileobj(reader, writer, _CHUNK)
 
 
 def _prepared(filesystem: FileSystem, directory: str) -> None:
@@ -309,9 +369,9 @@ class _ArrowExportFiles:
         # CSV conversion already applied this destination's metadata.
         columns = self.extra_columns if source.endswith('.parquet') else None
         with prepared_artifact_file(source, columns) as prepared:
-            with open(prepared,
-                      'rb') as reader, self.filesystem.open_output_stream(
-                          destination) as writer:
+            with open(prepared, 'rb') as reader, open_sized(
+                    self.filesystem, destination,
+                    os.path.getsize(prepared)) as writer:
                 shutil.copyfileobj(reader, writer, _CHUNK)
 
     def copy_files_threaded(self, pairs, overwrite, max_workers):
@@ -329,3 +389,35 @@ class _ArrowExportFiles:
         )
         with prepared_artifact_file(source, self.extra_columns) as prepared:
             parquet_to_csv(prepared, destination)
+
+
+class FilesystemSink(ObjectStoreSinkBackend):
+    """The object-store file writers over any sink's ``filesystem()``, for
+    the file paths of a sink that also writes tables: paths in, bare
+    resolved paths out."""
+    scheme = 'filesystem'
+
+    def __init__(self, sink: Any) -> None:
+        self._sink = sink
+        self.provider = type(sink).__name__
+
+    def _destination(self, connector, coordinate):
+        filesystem, path = self._sink.filesystem(connector, coordinate)
+        return filesystem, path + ('/' if coordinate.endswith('/') else '')
+
+    def _bare(self, uri: str) -> str:
+        return uri.removeprefix(f'{self.scheme}://')
+
+    def write_table(self, *args, **kwargs):
+        return self._bare(super().write_table(*args, **kwargs))
+
+    def write_files(self, *args, **kwargs):
+        return self._bare(super().write_files(*args, **kwargs))
+
+    def publish_model(self, *args, **kwargs):
+        published = super().publish_model(*args, **kwargs)
+        return replace(published, uri=self._bare(published.uri))
+
+    def fetch_model(self, *args, **kwargs):
+        fetched = super().fetch_model(*args, **kwargs)
+        return replace(fetched, uri=self._bare(fetched.uri))

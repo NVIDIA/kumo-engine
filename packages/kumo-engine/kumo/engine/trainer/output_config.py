@@ -11,9 +11,8 @@ from kumoapi.jobs import MetadataField, PredictionArtifactType, WriteMode
 from kumoapi.plugin import ModelRegistryLocation, SourceConnector
 from kumoapi.prediction_outputs import resolve_prediction_output_paths
 
+from kumo.engine.connector import is_file_destination
 from kumo.engine.connector.base import Connector
-
-_FILE_SOURCES = frozenset({'S3', 'GCS', 'ADLS', 'LOCAL_FILE'})
 
 
 @dataclass(frozen=True)
@@ -36,12 +35,15 @@ class PredictionOutputConfig:
 
     def __post_init__(self) -> None:
         if self.output_paths is not None:
-            if self.connector.source_type not in _FILE_SOURCES:
-                raise ValueError(
-                    'output_paths requires a file or object-store connector')
             paths = resolve_prediction_output_paths(
                 self.output_paths, output_types=self.artifact_type,
                 output_table_name=self.table_name)
+            if not all(
+                    is_file_destination(self.connector, path)
+                    for path in paths.values()):
+                raise ValueError(
+                    'output_paths requires a file or object-store connector '
+                    '(or a volume or stage path it holds)')
             sink = self.connector.sink_backend
             if isinstance(sink, ObjectStoreSessions):
                 # Reject aliases; retain caller paths.
@@ -75,8 +77,8 @@ class TrainingTableOutputConfig:
     write_mode: WriteMode = WriteMode.OVERWRITE
 
     def __post_init__(self) -> None:
-        if (self.connector.source_type in _FILE_SOURCES
-                and not self.table_name.endswith('/')):
+        if (not self.table_name.endswith('/')
+                and is_file_destination(self.connector, self.table_name)):
             object.__setattr__(self, 'table_name', self.table_name + '/')
 
 

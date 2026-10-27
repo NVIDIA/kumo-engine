@@ -29,6 +29,7 @@ from typing import (
     Mapping,
     Optional,
     Protocol,
+    Tuple,
     TypeVar,
     runtime_checkable,
 )
@@ -43,6 +44,7 @@ from kumoapi.typing import Dtype
 __all__ = [
     'ArtifactLocation',
     'ArtifactSink',
+    'FileStoreSink',
     'IngestResult',
     'ModelFetchingSink',
     'ModelListingSink',
@@ -601,6 +603,22 @@ class FileArtifactSink(Protocol):
         extra_columns: Optional[Mapping[str, Any]] = None,
     ) -> str:
         r"""Write exactly these Parquet files, stamping only requested columns."""
+        ...
+
+
+@runtime_checkable
+class FileStoreSink(Protocol):
+    r"""A sink that also holds files: snapshot exports, model bundles and
+    export manifests go through its filesystem."""
+    def holds_files(self, connector: SourceConnector, path: str) -> bool:
+        r"""Whether ``path`` is a file location of this sink rather than a
+        table name; decided from the path alone, without I/O."""
+        ...
+
+    def filesystem(self, connector: SourceConnector,
+                   path: str) -> Tuple[Any, str]:
+        r"""A ``pyarrow.fs.FileSystem`` and ``path`` resolved on it, for a
+        path :meth:`holds_files` accepts."""
         ...
 
 
