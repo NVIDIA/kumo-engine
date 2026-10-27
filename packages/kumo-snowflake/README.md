@@ -42,6 +42,15 @@ to, but reading from it raises: its `LIST` reports encrypted sizes (padded to
 the probe file, each file is downloaded once with `GET` into the spool
 directory instead, and a warning says so.
 
+`publish_model` registers a bundle in the Snowflake Model Registry. When an
+installed host registers a model builder under the
+`kumo_snowflake.registry_models` entry-point group, as kumo-engine does, the
+version is a runnable custom model that scores in Snowpark Container Services
+(`ModelVersion.run_batch`); otherwise it carries the bundle and refuses to
+score. A bundle whose `kumo_bundle_id` is already a Kumo version of the model
+returns that version rather than logging a new one. See "Batch inference in
+Snowflake" in `packages/kumo-engine/docs/mlops.md`.
+
 From the repository root, run the public tests without cloud credentials:
 
 ```sh

@@ -132,6 +132,8 @@ from kumo.engine.trainer._spec import (
     write_training_spec,
 )
 from kumo.engine.trainer.output_config import (
+    SERVING_OPTION_PREFIX,
+    SERVING_SNAPSHOT_KEY,
     ModelOutputConfig,
     PredictionOutputConfig,
     check_model_location,
@@ -837,6 +839,11 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
             for name in ('spec_version', 'predictive_query', 'snapshot_id')
         }
     metadata.update(registry_pointers(bundle_id))
+    if getattr(export_config, 'serving_snapshot', None):
+        metadata[SERVING_SNAPSHOT_KEY] = export_config.serving_snapshot
+    for name, value in (getattr(export_config, 'serving_options', None)
+                        or {}).items():
+        metadata[SERVING_OPTION_PREFIX + name] = str(value)
     location = export_config.location
     alias = location.alias if location else None
     if location and alias:

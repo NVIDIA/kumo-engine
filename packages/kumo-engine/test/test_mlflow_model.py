@@ -257,7 +257,7 @@ def test_pyfunc_returns_rows_in_input_order(fitted):
 
 
 def test_scores_pair_with_their_rows_when_scoring_reorders():
-    from kumo.engine.integrations._mlflow_model import _in_input_order
+    from kumo.engine.integrations._serving import _in_input_order
 
     day = pd.Timestamp('2024-05-01 12:00:00.250')
     rows = pd.DataFrame({

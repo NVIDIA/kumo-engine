@@ -10,26 +10,24 @@ the two client libraries the rest of the package uses. That library is
 imported inside the two methods below, so this module loading with the sink
 costs nothing: it is reached only when a model actually moves.
 
-**The registry is a catalog here, not a runtime.** A published version carries
-the vital bundle and the spec beside it; scoring still happens in Kumo, against
-a graph the caller supplies. That is a deliberate limit rather than an
-unfinished one: inference needs a materialized DiskGraph task over the graph
-being scored, which a warehouse has no way to build. What the registry buys is
-what a directory cannot -- versioning, lineage, discovery, and the account's
-own access control.
+With kumo-engine installed (it registers a builder under
+:data:`MODEL_BUILDER_GROUP`), a version is a runnable Kumo model: it carries the vital
+bundle and scores entity ids against an exported graph snapshot in Snowpark
+Container Services, e.g. with ``ModelVersion.run_batch`` on a GPU compute
+pool. Without kumo-engine (a hosted export), the bundle travels in
+:class:`_BundleModel`, a carrier that refuses to score. Either way the
+registry also buys versioning, lineage, discovery, and the account's own
+access control.
 
-Two consequences shape the code below.
+The carrier declares its signature explicitly rather than supplying sample
+data, because supplying sample data makes the packager infer a signature by
+*calling* the model -- and a carrier that answered with plausible-looking
+numbers would be worse than one that refuses.
 
-The registry logs *models*, so a bundle needs one to travel with, which is what
-:class:`_BundleModel` is. It declares its signature explicitly rather than
-supplying sample data, because supplying sample data makes the packager infer a
-signature by *calling* the model -- and a carrier that answered with
-plausible-looking numbers would be worse than one that refuses.
-
-Nothing reads that carrier back. An import downloads files and hands them to
-``kumo_core``, so the bundle is found by :func:`_locate_bundle` looking for the
-spec the export wrote, rather than at the path the packager stores artifacts
-under today. That path is snowflake-ml's private layout; the marker is ours.
+An import downloads files and hands them to ``kumo_core``, so the bundle is
+found by :func:`_locate_bundle` looking for the spec the export wrote, rather
+than at the path the packager stores artifacts under today. That path is
+snowflake-ml's private layout; the marker is ours.
 """
 
 import json
@@ -37,11 +35,13 @@ import logging
 import math
 import re
 import shutil
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     ContextManager,
     Dict,
     Iterator,
@@ -87,6 +87,10 @@ _IDENTIFIER = r'(?:[A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")+")'
 _MODEL_NAME = re.compile(rf'(?:{_IDENTIFIER}\.){{0,2}}{_IDENTIFIER}')
 
 _LOG = logging.getLogger(__name__)
+
+#: Entry-point group of the callable that turns a bundle into ``log_model``
+#: arguments for a runnable version; kumo-engine registers one.
+MODEL_BUILDER_GROUP = 'kumo_snowflake.registry_models'
 
 #: Where a fetched version is unpacked before its bundle is lifted out. Named
 #: rather than a temporary directory so a half-finished import leaves something
@@ -193,6 +197,67 @@ def _carrier_signature() -> Dict[str, "model_signature.ModelSignature"]:
             ],
         )
     }
+
+
+def _model_args(bundle: Path, metadata: Mapping[str, str],
+                connector: SourceConnector, workdir: str) -> Dict[str, Any]:
+    r"""``log_model`` arguments for a runnable model when an installed host
+    provides one (kumo-engine does), else for the carrier."""
+    try:
+        build = _model_builder()
+        if build is not None:
+            return build(str(bundle), metadata, _serving_target(connector),
+                         workdir)
+    except Exception as error:
+        _LOG.warning(
+            'Registering the bundle as a version that does not score in '
+            'Snowflake: %s', error)
+    return _carrier_args(bundle)
+
+
+def _model_builder() -> Optional[Callable[..., Dict[str, Any]]]:
+    from importlib.metadata import entry_points
+
+    for entry in entry_points(group=MODEL_BUILDER_GROUP):
+        return entry.load()
+    return None
+
+
+def _carrier_args(bundle: Path) -> Dict[str, Any]:
+    return {
+        'model': _bundle_model(str(bundle)),
+        'signatures': _carrier_signature()
+    }
+
+
+def _serving_target(connector: SourceConnector) -> Dict[str, Optional[str]]:
+    config = _target_config(connector)
+    return {
+        'warehouse': config.warehouse,
+        'database': config.database,
+        'schema': config.schema_name,
+    }
+
+
+def _version_holding(registry: "Registry", model_name: str,
+                     bundle_id: Optional[str]) -> Optional["ModelVersion"]:
+    r"""The Kumo version of ``model_name`` that records ``bundle_id``."""
+    if not bundle_id:
+        return None
+    try:
+        versions = registry.get_model(model_name).versions()
+    except Exception:
+        return None
+    for version in versions:
+        try:
+            recorded = dict(version.show_metrics() or {})
+        except Exception as error:
+            _LOG.warning('Could not read registry metadata: %s', error)
+            continue
+        if (recorded.get(ENGINE_MARKER) == '1'
+                and recorded.get(BUNDLE_ID_KEY) == bundle_id):
+            return version
+    return None
 
 
 def _locate_bundle(root: Path) -> Path:
@@ -383,7 +448,9 @@ class SnowflakeModelRegistryMixin:
         r"""Registers :obj:`bundle_dir` as a version of a registry model.
 
         The database and schema are the connector's, as they are for a table,
-        so only the model name is given here.
+        so only the model name is given here. A Kumo version of the model
+        that already records this ``kumo_bundle_id`` is returned instead of
+        registering the bundle again.
 
         Args:
             connector: The Snowflake target whose schema holds the registry.
@@ -396,13 +463,16 @@ class SnowflakeModelRegistryMixin:
                 this reports back what it created.
             metadata: Returned with the publication result; its
                 ``kumo_bundle_id`` is also recorded in the version's metrics.
+                ``kumo.serving_snapshot`` and ``kumo.serving.<option>``
+                configure a runnable version.
             metrics: The model's holdout metrics, recorded in the version's
                 metrics and as a line after ``location.comment``; also
                 returned with the publication result.
             project_id: Ignored; a local runtime has no projects.
 
         Returns:
-            The model name, the version actually written, and where it lives.
+            The model name, the version written or reused, and where it
+            lives.
         """
         del project_id
         _refuse_path(path, 'publishing')
@@ -417,16 +487,24 @@ class SnowflakeModelRegistryMixin:
                 f"has no {_SPEC_FILE}, which an export writes into every one.")
 
         record = {**_finite(metrics), **_version_record(metadata)}
-        with self._registry(connector) as registry:
-            version = registry.log_model(
-                _bundle_model(str(bundle)),
-                model_name=location.model_name,
-                version_name=location.version,
-                comment=_comment(location.comment, metrics),
-                metrics=record,
-                signatures=_carrier_signature(),
-                **_task(bundle),
-            )
+        with tempfile.TemporaryDirectory() as workdir, \
+                self._registry(connector) as registry:
+            version = _version_holding(registry, location.model_name,
+                                       metadata.get(BUNDLE_ID_KEY))
+            if version is not None:
+                _LOG.info('%s version %s already holds bundle %s; reused it',
+                          location.model_name, version.version_name,
+                          metadata.get(BUNDLE_ID_KEY))
+                _backfill(version, metrics, location.comment)
+            else:
+                version = registry.log_model(
+                    model_name=location.model_name,
+                    version_name=location.version,
+                    comment=_comment(location.comment, metrics),
+                    metrics=record,
+                    **_model_args(bundle, metadata, connector, workdir),
+                    **_task(bundle),
+                )
         return _published(connector, version, metadata=metadata,
                           metrics=metrics)
 
