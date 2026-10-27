@@ -127,7 +127,8 @@ def arrow_connection_options(endpoint_url: str | None, addressing_style: str,
         if int(pyarrow.__version__.split('.')[0]) < 21:
             raise RuntimeError(
                 'A custom CA bundle for S3 needs pyarrow>=21 '
-                f'(installed {pyarrow.__version__})')
+                f'(installed {pyarrow.__version__}). Upgrade it with '
+                '`pip install --upgrade "pyarrow>=21"` and restart Python.')
         options['tls_ca_file_path'] = ca_path
     return options
 
