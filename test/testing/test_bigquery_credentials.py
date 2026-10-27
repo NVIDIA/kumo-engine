@@ -24,6 +24,7 @@ _ENV_NAMES = (
     'GOOGLE_CLOUD_PROJECT',
     testing_bigquery.ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT,
     testing_bigquery.ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT,
+    'KUMO_TEST_PROFILE',
 )
 _RESTRICTED_KEYS = (
     (testing_bigquery.FAIL_TABLE_PERMISSION_BIGQUERY_KEY,
@@ -241,6 +242,50 @@ def test_fallback_identity_sequence(monkeypatch):
         assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
     assert len(set(paths)) == len(keys)
     assert secrets.call_args_list == [mock.call(key) for key in keys]
+
+
+@pytest.mark.parametrize('profile', ['gcp', 'gcp-aws'])
+@pytest.mark.parametrize('kind', ['service_account', 'authorized_user',
+                                  'impersonated_service_account'])
+def test_profile_rejects_nonfederated(monkeypatch, tmp_path, profile, kind):
+    monkeypatch.setenv('KUMO_TEST_PROFILE', profile)
+    path = write_credentials(tmp_path, kind)
+    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', path)
+    before = {name: os.environ.get(name) for name in _ENV_NAMES}
+    with pytest.raises(RuntimeError, match='external_account ADC'):
+        with testing_bigquery.setup_bigquery_credentials():
+            pytest.fail('nonfederated ADC must fail before test setup')
+    testing_bigquery.get_secrets.assert_not_called()
+    assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
+
+
+@pytest.mark.parametrize('profile', ['gcp', 'gcp-aws'])
+def test_profile_requires_explicit_adc(monkeypatch, tmp_path, profile):
+    monkeypatch.setenv('KUMO_TEST_PROFILE', profile)
+    path = write_credentials(tmp_path, 'external_account')
+    monkeypatch.setenv(testing_bigquery.ENV_GOOGLE_CREDENTIALS_JSON, path)
+    monkeypatch.setattr(testing_bigquery, 'ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH',
+                        path)
+    with pytest.raises(RuntimeError, match='GOOGLE_APPLICATION_CREDENTIALS'):
+        with testing_bigquery.setup_bigquery_credentials():
+            pytest.fail('ambient files must not activate profiled tests')
+    testing_bigquery.get_secrets.assert_not_called()
+
+
+def test_profile_decorator_only_marks(monkeypatch):
+    monkeypatch.setenv('KUMO_TEST_PROFILE', 'gcp')
+    read = mock.Mock(side_effect=AssertionError('credential I/O during import'))
+    monkeypatch.setattr(fsutil, 'read_text', read)
+
+    def test_body():
+        return 'test body'
+
+    decorated = testing_bigquery.withBigQueryCredentials(test_body)
+    assert decorated is test_body
+    assert {mark.name for mark in decorated.pytestmark} == {
+        'requires_credentials', 'bigquery_credentials'}
+    read.assert_not_called()
+    testing_bigquery.get_secrets.assert_not_called()
 
 
 def test_bigquery_rest_identity_uses_workload_exchange(monkeypatch):

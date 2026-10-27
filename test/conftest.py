@@ -70,6 +70,16 @@ from kumo.graph.graph import Graph  # noqa: E402
 from kumo.graph.table import Table  # noqa: E402
 from kumo.task.task import Task  # noqa: E402
 from kumo.testing import withDatabricksCredentials  # noqa: E402
+from kumo.testing.bigquery import (  # noqa: E402, F401
+    configure_bigquery_credentials,
+    configure_profile_credentials,
+    configured_profile,
+)
+from kumo.testing.gcs import (  # noqa: E402, F401
+    configure_gcs_credentials,
+    configure_gcs_session,
+    pytest_runtest_setup,
+)
 from kumo.testing.generator import EdgeSpec, GraphSpec, TableSpec  # noqa: E402
 from kumo.testing.snowflake import setup_snowflake_credentials  # noqa: E402
 from kumo.utils.embedding_models import embedding_model_store  # noqa: E402
@@ -80,15 +90,18 @@ from kumo.utils.embedding_models import embedding_model_store  # noqa: E402
 # OIDC tokens are not available). OIDC-migrated workflows override this
 # with the dedicated preprod test role after configuring their scoped
 # workflow identity; legacy workflows retain the existing default.
-os.environ.setdefault('AWS_TEST_ROLE_ARN',
-                      'arn:aws:iam::926922431314:role/unittest-iam-role')
+_test_profile = configured_profile()
+if _test_profile is None or 'aws' in _test_profile.capabilities:
+    os.environ.setdefault('AWS_TEST_ROLE_ARN',
+                          'arn:aws:iam::926922431314:role/unittest-iam-role')
 
 _TEMPORAL_LOCAL_STARTUP_TIMEOUT_SECONDS = 30
 
 # Production code resolves GloVe artifacts through deploy_env_config.json. Keep
 # the public dataset fallback for tests of that configuration path; the
 # session fixture below supplies small local artifacts to encoder tests.
-os.environ.setdefault('CUSTOM_ARTIFACT_ROOT', 's3://kumo-public-datasets')
+if _test_profile is None or 'aws' in _test_profile.capabilities:
+    os.environ.setdefault('CUSTOM_ARTIFACT_ROOT', 's3://kumo-public-datasets')
 
 _ENABLE_FSUTIL_DEBUG_LOGS_ENV = 'KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS'
 # Keep this in the environment so Kumo logging reinitialization in spawned
@@ -191,6 +204,11 @@ def pytest_runtest_makereport(item, call):
 
 
 def pytest_configure(config):
+    for marker in (
+            'requires_credentials(*capabilities): external test requirements',
+            'bigquery_credentials(key): BigQuery test identity',
+            'gcs_credentials: GCS test credentials'):
+        config.addinivalue_line('markers', marker)
     # register nightly marker
     config.addinivalue_line("markers",
                             ("nightly(name): Used to mark long-running"
