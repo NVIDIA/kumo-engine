@@ -894,59 +894,16 @@ impl DiskGraphEngine {
         }
     }
 
-    /// Resolve a plan's feature projection against THIS graph, once.
+    /// Resolve per-type feature columns once per iterator for non-fused sampling.
     ///
-    /// Produces, for every `type_id`, the column name list the non-fused
-    /// `fetch_features_for_type` path indexes into. Callers hold the result in
-    /// an `Arc` for the life of an iterator, so the string matching here
-    /// happens once per iterator instead of once per type per batch.
+    /// * Absent types (including an empty map): select all columns.
+    /// * Empty list: skip feature decoding while preserving topology.
+    /// * Non-empty list: select stored columns in request order, deduplicated.
+    ///   If no requested columns exist, fall back to select-all.
     ///
-    /// PROJECTION PUSHDOWN IS NON-FUSED ONLY. Fused-mode dispatch always
-    /// fetches every non-reserved column and never consults a
-    /// `ResolvedProjection`. `RuntimeBatchIterator::build` warns and ignores
-    /// projections for explicit fused mode. With automatic mode selection,
-    /// a non-empty projection forces non-fused dispatch.
-    ///
-    /// `projections` is a map from node type name to the columns the
-    /// caller will consume. Its states, and ONLY these:
-    ///
-    /// * An EMPTY MAP -- select all, everywhere. The pre-pushdown identity, so
-    ///   `&HashMap::new()` is the right "no projection" argument at every call
-    ///   site that has none (batch-pred, col-stats, the Flight gateway).
-    /// * A key ABSENT from the map -- select all for that type. This is also
-    ///   where a key that matches NO node type lands, which is why the
-    ///   unmatched-key warning below exists: that case fails open.
-    /// * A key mapped to an EMPTY VEC -- select NOTHING. The type is skipped
-    ///   outright: no rowpack decode, no emitted block. This is what makes a
-    ///   pure link table (all keys, no features) stop paying for columns the
-    ///   caller provably discards.
-    /// * A key mapped to a NON-EMPTY VEC -- materialize exactly those, INTERSECTED
-    ///   with the columns actually stored, so a schema skew between the task
-    ///   manifest and the snapshot degrades to "fetch what is there" instead of
-    ///   the hard `unknown feature` error `fetch_features_for_type` raises for an
-    ///   unknown name. Every requested name that does NOT survive the
-    ///   intersection is a CHECKED-CONTRACT violation, not an advisory: it is
-    ///   logged explicitly below for every type, not just when the whole
-    ///   request misses.
-    ///
-    /// Note the asymmetry that intersection creates, and that it is deliberate:
-    /// a non-empty request surviving no intersection resolves to select-all
-    /// (skew => fetch what is there), while an EMPTY request resolves to skip.
-    /// An empty request is a statement about the CALLER, which no amount of
-    /// snapshot skew can invalidate; a non-empty one is a statement about
-    /// columns, which skew can.
-    ///
-    /// `projections` is passed in rather than read off the plan: it is a
-    /// property of the CALLER's intent (which columns it will consume), not of
-    /// the traversal, and keeping it off `SamplingPlan` keeps it out of the
-    /// bincode wire format of `BatchSamplingRequest`.
-    ///
-    /// SKIPPING A TYPE IS SAFE FOR TRAVERSAL. Edges live in the relation
-    /// segments and are walked by `sample_segment_edges` / `EdgeUnpacker`,
-    /// which never touch a `RowPackDecoder`. A foreign key was consumed at
-    /// INGEST time to build those segments; its rowpack copy is a duplicate no
-    /// hop reads. Declining a type's columns declines its features, never its
-    /// topology.
+    /// Warn on unknown types and missing columns. The iterator ignores projections
+    /// for explicit fused mode; automatic mode uses non-fused sampling when a
+    /// non-empty projection is supplied.
     pub fn resolve_projection(
         &self,
         projections: &HashMap<String, Vec<String>>,
