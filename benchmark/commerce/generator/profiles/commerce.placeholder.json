@@ -1,0 +1,677 @@
+{
+  "graph": "commerce",
+  "source": "invented placeholder statistics",
+  "placeholder": true,
+  "sample": {},
+  "tables": {
+    "customers": {
+      "rows": 100000000,
+      "columns": {
+        "customer_id": {
+          "dtype": "int64",
+          "null_rate": 0.0
+        },
+        "signup_time": {
+          "dtype": "timestamp",
+          "null_rate": 0.0
+        },
+        "region": {
+          "dtype": "string",
+          "null_rate": 0.0,
+          "categorical": {
+            "cardinality": 30,
+            "zipf_s": 0.9
+          }
+        },
+        "city": {
+          "dtype": "string",
+          "null_rate": 0.0,
+          "categorical": {
+            "cardinality": 20000,
+            "zipf_s": 1.05
+          }
+        },
+        "membership": {
+          "dtype": "string",
+          "null_rate": 0.0,
+          "categorical": {
+            "cardinality": 4,
+            "zipf_s": 1.8
+          }
+        },
+        "platform": {
+          "dtype": "string",
+          "null_rate": 0.0,
+          "categorical": {
+            "cardinality": 3,
+            "zipf_s": 1.3
+          }
+        },
+        "marketing_opt_in": {
+          "dtype": "bool",
+          "null_rate": 0.0,
+          "boolean": {
+            "true_rate": 0.38
+          }
+        }
+      }
+    },
+    "merchants": {
+      "rows": 4000000,
+      "columns": {
+        "merchant_id": {
+          "dtype": "int64",
+          "null_rate": 0.0
+        },
+        "created_time": {
+          "dtype": "timestamp",
+          "null_rate": 0.0
+        },
+        "region": {
+          "dtype": "string",
+          "null_rate": 0.0,
+          "categorical": {
+            "cardinality": 30,
+            "zipf_s": 0.9
+          }
+        },
+        "primary_category": {
+          "dtype": "string",
+          "null_rate": 0.0,
+          "categorical": {
+            "cardinality": 80,
+            "zipf_s": 1.0
+          }
+        },
+        "tags": {
+          "dtype": "string",
+          "null_rate": 0.05,
+          "multicat": {
+            "len_quantiles": {
+              "p0": 1,
+              "p10": 1,
+              "p50": 3,
+              "p90": 6,
+              "p99": 9,
+              "p100": 12
+            },
+            "token_cardinality": 500,
+            "token_zipf_s": 0.9
+          }
+        },
+        "price_tier": {
+          "dtype": "string",
+          "null_rate": 0.0,
+          "categorical": {
+            "cardinality": 4,
+            "zipf_s": 0.8
+          }
+        },
+        "is_partner": {
+          "dtype": "bool",
+          "null_rate": 0.0,
+          "boolean": {
+            "true_rate": 0.22
+          }
+        },
+        "avg_rating": {
+          "dtype": "float64",
+          "null_rate": 0.07,
+          "numeric": {
+            "quantiles": {
+              "p1": 2.6,
+              "p5": 3.3,
+              "p10": 3.6,
+              "p25": 4.0,
+              "p50": 4.3,
+              "p75": 4.6,
+              "p90": 4.8,
+              "p95": 4.9,
+              "p99": 5.0
+            }
+          }
+        }
+      }
+    },
+    "purchases": {
+      "rows": 1449180000,
+      "columns": {
+        "purchase_id": {
+          "dtype": "int64",
+          "null_rate": 0.0
+        },
+        "purchase_time": {
+          "dtype": "timestamp",
+          "null_rate": 0.0
+        },
+        "customer_id": {
+          "dtype": "int64",
+          "null_rate": 0.0
+        },
+        "merchant_id": {
+          "dtype": "int64",
+          "null_rate": 0.0
+        },
+        "channel": {
+          "dtype": "string",
+          "null_rate": 0.0,
+          "categorical": {
+            "cardinality": 4,
+            "zipf_s": 1.4
+          }
+        },
+        "fulfillment": {
+          "dtype": "string",
+          "null_rate": 0.0,
+          "categorical": {
+            "cardinality": 3,
+            "zipf_s": 1.0
+          }
+        },
+        "item_count": {
+          "dtype": "int64",
+          "null_rate": 0.0,
+          "numeric": {
+            "quantiles": {
+              "p1": 1,
+              "p5": 1,
+              "p10": 1,
+              "p25": 1,
+              "p50": 2,
+              "p75": 3,
+              "p90": 5,
+              "p95": 7,
+              "p99": 14
+            }
+          }
+        },
+        "subtotal": {
+          "dtype": "float64",
+          "null_rate": 0.0,
+          "numeric": {
+            "quantiles": {
+              "p1": 4.5,
+              "p5": 8,
+              "p10": 11,
+              "p25": 18,
+              "p50": 29,
+              "p75": 46,
+              "p90": 72,
+              "p95": 95,
+              "p99": 180
+            }
+          }
+        },
+        "fees": {
+          "dtype": "float64",
+          "null_rate": 0.0,
+          "numeric": {
+            "quantiles": {
+              "p1": 0,
+              "p5": 0.99,
+              "p10": 0.99,
+              "p25": 1.99,
+              "p50": 2.99,
+              "p75": 3.99,
+              "p90": 5.49,
+              "p95": 6.99,
+              "p99": 9.99
+            }
+          }
+        },
+        "tip": {
+          "dtype": "float64",
+          "null_rate": 0.35,
+          "numeric": {
+            "quantiles": {
+              "p1": 0,
+              "p5": 0,
+              "p10": 0.5,
+              "p25": 2,
+              "p50": 3.5,
+              "p75": 5,
+              "p90": 8,
+              "p95": 10,
+              "p99": 20
+            }
+          }
+        },
+        "is_first_purchase": {
+          "dtype": "bool",
+          "null_rate": 0.0,
+          "boolean": {
+            "true_rate": 0.35
+          }
+        },
+        "rating": {
+          "dtype": "int64",
+          "null_rate": 0.82,
+          "numeric": {
+            "quantiles": {
+              "p1": 1,
+              "p5": 2,
+              "p10": 3,
+              "p25": 4,
+              "p50": 5,
+              "p75": 5,
+              "p90": 5,
+              "p95": 5,
+              "p99": 5
+            }
+          }
+        }
+      }
+    },
+    "merchant_views": {
+      "rows": 5499200000,
+      "columns": {
+        "view_time": {
+          "dtype": "timestamp",
+          "null_rate": 0.0
+        },
+        "customer_id": {
+          "dtype": "int64",
+          "null_rate": 0.0
+        },
+        "merchant_id": {
+          "dtype": "int64",
+          "null_rate": 0.0
+        },
+        "source": {
+          "dtype": "string",
+          "null_rate": 0.0,
+          "categorical": {
+            "cardinality": 8,
+            "zipf_s": 1.2
+          }
+        }
+      }
+    },
+    "searches": {
+      "rows": 1845680000,
+      "columns": {
+        "search_time": {
+          "dtype": "timestamp",
+          "null_rate": 0.0
+        },
+        "customer_id": {
+          "dtype": "int64",
+          "null_rate": 0.0
+        },
+        "query_term": {
+          "dtype": "string",
+          "null_rate": 0.0,
+          "categorical": {
+            "cardinality": 15000000,
+            "zipf_s": 1.05
+          }
+        },
+        "category": {
+          "dtype": "string",
+          "null_rate": 0.1,
+          "categorical": {
+            "cardinality": 80,
+            "zipf_s": 1.0
+          }
+        },
+        "result_page": {
+          "dtype": "int64",
+          "null_rate": 0.0,
+          "numeric": {
+            "quantiles": {
+              "p1": 1,
+              "p5": 1,
+              "p10": 1,
+              "p25": 1,
+              "p50": 1,
+              "p75": 1,
+              "p90": 2,
+              "p95": 3,
+              "p99": 5
+            }
+          }
+        }
+      }
+    },
+    "favorites": {
+      "rows": 256429999,
+      "columns": {
+        "created_time": {
+          "dtype": "timestamp",
+          "null_rate": 0.0
+        },
+        "customer_id": {
+          "dtype": "int64",
+          "null_rate": 0.0
+        },
+        "merchant_id": {
+          "dtype": "int64",
+          "null_rate": 0.0
+        }
+      }
+    },
+    "reviews": {
+      "rows": 181147500,
+      "columns": {
+        "review_time": {
+          "dtype": "timestamp",
+          "null_rate": 0.0
+        },
+        "customer_id": {
+          "dtype": "int64",
+          "null_rate": 0.0
+        },
+        "merchant_id": {
+          "dtype": "int64",
+          "null_rate": 0.0
+        },
+        "stars": {
+          "dtype": "int64",
+          "null_rate": 0.0,
+          "numeric": {
+            "quantiles": {
+              "p1": 1,
+              "p5": 1,
+              "p10": 2,
+              "p25": 4,
+              "p50": 5,
+              "p75": 5,
+              "p90": 5,
+              "p95": 5,
+              "p99": 5
+            }
+          }
+        }
+      }
+    }
+  },
+  "ratios": {},
+  "edges": {
+    "purchases.customer_id->customers": {
+      "in_degree": {
+        "quantiles": {
+          "p10": 0,
+          "p25": 1,
+          "p50": 5,
+          "p75": 13,
+          "p90": 30,
+          "p99": 120,
+          "p99.9": 350,
+          "p99.99": 900,
+          "max": 6000
+        },
+        "mean": 14.4918,
+        "frac_zero": 0.12
+      }
+    },
+    "purchases.merchant_id->merchants": {
+      "in_degree": {
+        "quantiles": {
+          "p10": 1,
+          "p25": 12,
+          "p50": 70,
+          "p75": 260,
+          "p90": 750,
+          "p99": 4500,
+          "p99.9": 18000,
+          "p99.99": 60000,
+          "max": 400000
+        },
+        "mean": 428.2516,
+        "frac_zero": 0.08
+      }
+    },
+    "merchant_views.customer_id->customers": {
+      "in_degree": {
+        "quantiles": {
+          "p10": 2,
+          "p25": 8,
+          "p50": 22,
+          "p75": 52,
+          "p90": 110,
+          "p99": 420,
+          "p99.9": 1200,
+          "p99.99": 3500,
+          "max": 30000
+        },
+        "mean": 54.992,
+        "frac_zero": 0.05
+      }
+    },
+    "merchant_views.merchant_id->merchants": {
+      "in_degree": {
+        "quantiles": {
+          "p10": 5,
+          "p25": 50,
+          "p50": 260,
+          "p75": 950,
+          "p90": 2800,
+          "p99": 16000,
+          "p99.9": 60000,
+          "p99.99": 200000,
+          "max": 1500000
+        },
+        "mean": 1531.3683,
+        "frac_zero": 0.03
+      }
+    },
+    "searches.customer_id->customers": {
+      "in_degree": {
+        "quantiles": {
+          "p10": 0,
+          "p25": 1,
+          "p50": 5,
+          "p75": 16,
+          "p90": 38,
+          "p99": 160,
+          "p99.9": 500,
+          "p99.99": 1500,
+          "max": 20000
+        },
+        "mean": 18.4568,
+        "frac_zero": 0.25
+      }
+    },
+    "favorites.customer_id->customers": {
+      "in_degree": {
+        "quantiles": {
+          "p10": 0,
+          "p25": 0,
+          "p50": 0,
+          "p75": 2,
+          "p90": 5,
+          "p99": 25,
+          "p99.9": 80,
+          "p99.99": 250,
+          "max": 3000
+        },
+        "mean": 2.5643,
+        "frac_zero": 0.55
+      }
+    },
+    "favorites.merchant_id->merchants": {
+      "in_degree": {
+        "quantiles": {
+          "p10": 0,
+          "p25": 1,
+          "p50": 8,
+          "p75": 35,
+          "p90": 110,
+          "p99": 800,
+          "p99.9": 3500,
+          "p99.99": 12000,
+          "max": 80000
+        },
+        "mean": 70.6602,
+        "frac_zero": 0.2
+      }
+    },
+    "reviews.customer_id->customers": {
+      "in_degree": {
+        "quantiles": {
+          "p10": 0,
+          "p25": 0,
+          "p50": 0,
+          "p75": 1,
+          "p90": 3,
+          "p99": 15,
+          "p99.9": 45,
+          "p99.99": 120,
+          "max": 1500
+        },
+        "mean": 1.3674,
+        "frac_zero": 0.7
+      }
+    },
+    "reviews.merchant_id->merchants": {
+      "in_degree": {
+        "quantiles": {
+          "p10": 0,
+          "p25": 1,
+          "p50": 5,
+          "p75": 25,
+          "p90": 90,
+          "p99": 600,
+          "p99.9": 2500,
+          "p99.99": 8000,
+          "max": 50000
+        },
+        "mean": 52.7371,
+        "frac_zero": 0.25
+      }
+    }
+  },
+  "time": {
+    "window_start": "2024-01-01T00:00:00Z",
+    "window_days": 730,
+    "hour_of_day": [
+      1.2,
+      0.7,
+      0.4,
+      0.3,
+      0.3,
+      0.5,
+      1.0,
+      2.2,
+      3.4,
+      4.0,
+      4.3,
+      5.0,
+      6.2,
+      5.6,
+      4.8,
+      4.6,
+      5.0,
+      6.0,
+      7.4,
+      8.2,
+      7.6,
+      6.0,
+      4.1,
+      2.4
+    ],
+    "day_of_week": [
+      0.95,
+      0.93,
+      0.95,
+      1.0,
+      1.15,
+      1.12,
+      0.9
+    ],
+    "created": {
+      "customers": {
+        "initial_frac": 0.35,
+        "growth_per_year": 0.6
+      },
+      "merchants": {
+        "initial_frac": 0.5,
+        "growth_per_year": 0.4
+      }
+    },
+    "events": {
+      "purchases": {
+        "p_burst": 0.3,
+        "burst_gap_seconds": {
+          "quantiles": {
+            "p10": 120,
+            "p50": 3600,
+            "p90": 21600,
+            "p99": 86400
+          }
+        }
+      },
+      "merchant_views": {
+        "p_burst": 0.7,
+        "burst_gap_seconds": {
+          "quantiles": {
+            "p10": 5,
+            "p50": 45,
+            "p90": 600,
+            "p99": 3600
+          }
+        }
+      },
+      "searches": {
+        "p_burst": 0.6,
+        "burst_gap_seconds": {
+          "quantiles": {
+            "p10": 5,
+            "p50": 60,
+            "p90": 900,
+            "p99": 7200
+          }
+        }
+      },
+      "favorites": {
+        "p_burst": 0.2,
+        "burst_gap_seconds": {
+          "quantiles": {
+            "p10": 30,
+            "p50": 600,
+            "p90": 14400,
+            "p99": 86400
+          }
+        }
+      }
+    },
+    "review_lag_seconds": {
+      "quantiles": {
+        "p1": 600,
+        "p10": 3600,
+        "p50": 86400,
+        "p90": 604800,
+        "p99": 2592000
+      }
+    }
+  },
+  "labels": {},
+  "marketplace": {
+    "n_clusters": 64,
+    "cluster_zipf_s": 0.6,
+    "p_in_cluster": {
+      "purchases": 0.75,
+      "merchant_views": 0.6,
+      "searches": 0.35
+    },
+    "drift_frac": 0.25,
+    "p_drift": 0.7,
+    "browser_frac": 0.06,
+    "browser_purchase_mult": 0.3,
+    "browser_view_mult": 1.6,
+    "rho": 0.9,
+    "repeat_rate_orders": 0.68,
+    "p_view_funnel": 0.15,
+    "funnel_days": 7,
+    "cold_start_frac": 0.02,
+    "cold_start_days": 45,
+    "cold_purchase_days": 6,
+    "p_home_region": 0.93,
+    "category_reveal": 0.7,
+    "tier_reveal": 0.7,
+    "tag_reveal": 0.5,
+    "search_category_reveal": 0.35,
+    "tier_spend_effect": 0.5,
+    "cross_shard_frac": 0.01
+  }
+}

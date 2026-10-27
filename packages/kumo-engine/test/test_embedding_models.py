@@ -146,7 +146,7 @@ def test_a_missing_model_fails_fit_before_any_work(fitted, monkeypatch):
 
 
 def test_each_fit_reports_what_inference_leaves_unencoded(fitted):
-    unencoded = ("Text column 'code' will not be encoded by default: its "
+    unencoded = ("Text column 'users.code' will not be encoded by default: its "
                  "values are too short or have too few known words. To "
                  "encode it anyway, set its encoder to TextEmbedding().")
     assert fitted[-1] == {

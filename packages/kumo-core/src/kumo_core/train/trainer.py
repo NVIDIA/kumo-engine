@@ -49,6 +49,7 @@ from kumo_core.job_config import (
     TrialStatus,
 )
 from kumo_core.public_error import PublicTrainingError
+from kumo_core.modeling.retrieval.mips import require_faiss
 from kumo_core.resolved_task import ResolvedNumericalTask
 from kumo_core.train.checkpoint import KumoCheckpointIO
 from kumo_core.train.formatting import format_embeddings, format_prediction
@@ -514,6 +515,8 @@ class Trainer(PortableConfigMixin):
                     module_kwargs.rhs_emb_init_std = 1.0
 
             module_kwargs.validate()
+            if module_kwargs.module != LinkPredModuleType.ID:
+                require_faiss()
 
             self._validate_eval_new_visit(task.task_type,
                                           module_kwargs.eval_new_visit)
@@ -1473,6 +1476,9 @@ class Trainer(PortableConfigMixin):
             inference_mode=False,
             **placement,
         )
+        if (self.task.task_type.is_link_pred
+                and self.module_kwargs.module != LinkPredModuleType.ID):
+            require_faiss(self.pl_trainer.strategy.root_device)
 
     @property
     def best_ckpt(self) -> str:

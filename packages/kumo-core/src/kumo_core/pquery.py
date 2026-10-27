@@ -104,6 +104,13 @@ class NativeGraphColumn:
     encoder: Mapping[str, Any] | None = None
     timestamp_format: str | None = None
     multicategorical_delimiter: str | None = None
+    table_name: str | None = dataclass_field(default=None, kw_only=True)
+
+    @property
+    def qualified_name(self) -> str:
+        """Return the column name qualified by its table when available."""
+        return (f"{self.table_name}.{self.name}"
+                if self.table_name is not None else self.name)
 
 
 @dataclass(frozen=True)
@@ -218,7 +225,7 @@ def split_column_fqn(value: str) -> tuple[str, str]:
     return parts[-2], parts[-1]
 
 
-def _column_from_payload(value: Any, ) -> NativeGraphColumn:
+def _column_from_payload(value: Any, *, table_name: str) -> NativeGraphColumn:
     if not isinstance(value, Mapping):
         raise PredictiveQueryPlanError(
             "portable graph columns must be fully resolved mappings")
@@ -230,6 +237,7 @@ def _column_from_payload(value: Any, ) -> NativeGraphColumn:
             f"portable graph column {name!r} requires dtype and stype")
     return NativeGraphColumn(
         name=name,
+        table_name=table_name,
         dtype=_enum_value(value["dtype"]).rsplit(".", 1)[-1],
         stype=_enum_value(value["stype"]).rsplit(".", 1)[-1],
         encoder=(dict(value["encoder"])
@@ -295,19 +303,19 @@ def normalize_graph(graph: Mapping[str, Any]) -> NativeGraph:
             raise PredictiveQueryPlanError(
                 f"portable graph table {name!r} requires a cols list")
         for raw_column in raw_columns:
-            column = _column_from_payload(raw_column)
+            column = _column_from_payload(raw_column, table_name=name)
             columns[column.name] = column
 
-        def add_special(field: Any) -> None:
+        def add_special(field: Any, table_name: str) -> None:
             column_name = _field_name(field)
             if not column_name:
                 return
-            column = _column_from_payload(field)
+            column = _column_from_payload(field, table_name=table_name)
             columns.setdefault(column_name, column)
 
-        add_special(raw_table.get("pkey"))
-        add_special(raw_table.get("time_col"))
-        add_special(raw_table.get("end_time_col"))
+        add_special(raw_table.get("pkey"), name)
+        add_special(raw_table.get("time_col"), name)
+        add_special(raw_table.get("end_time_col"), name)
 
         foreign_keys: list[NativeGraphForeignKey] = []
         if "fkeys" not in raw_table:
@@ -348,7 +356,7 @@ def normalize_graph(graph: Mapping[str, Any]) -> NativeGraph:
                     destination_name,
                     str(destination_column),
                 ))
-            add_special(raw_foreign_key)
+            add_special(raw_foreign_key, name)
 
         tables.append(
             NativeGraphTable(
@@ -1183,25 +1191,13 @@ def _encoder_input(column: NativeGraphColumn,
 
 
 def _infer_encoder(column: NativeGraphColumn,
-                   stats: Mapping[Any, Any]) -> dict[str, Any]:
-    normalized_stats = {
-        ColStatType(getattr(stat_type, "value", stat_type)):
-        (stat if isinstance(stat, _EncoderStat) else _EncoderStat(
-            value=stat,
-            approx=False,
-        ))
-        for stat_type, stat in stats.items()
-    }
-    try:
-        selected = select_encoder(
-            column.name,
-            Dtype(column.dtype),
-            Stype(column.stype),
-            normalized_stats,
-        )
-    except ValueError as error:
-        raise PredictiveQueryPlanError(
-            f"encoder inference for {column.name!r} failed: {error}") from error
+                   stats: Mapping[ColStatType, _EncoderStat]) -> dict[str, Any]:
+    selected = select_encoder(
+        column.qualified_name,
+        Dtype(column.dtype),
+        Stype(column.stype),
+        stats,
+    )
     return TypeAdapter(EncoderType).dump_python(selected, mode="json")
 
 

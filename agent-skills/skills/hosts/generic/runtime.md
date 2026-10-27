@@ -31,12 +31,14 @@ The first code cell holds the imports and every location as a named constant: th
 source, the confirmed destination, and any population table — each written verbatim.
 
 Values only the runtime knows — a Snowflake warehouse or `connections.toml` entry, a Databricks
-SQL warehouse or cluster — are constants here too. S3 and GCS have none: the ambient chain
-resolves credentials and region where the code runs (an instance or job role, the environment,
-`aws configure`), so add no region, profile or project constant for them, and pass `region=` only
-when the user named one. Write the user's value if they gave one;
-otherwise a placeholder of the form `'<DATABRICKS_WAREHOUSE_ID>'`, and list each placeholder in
-your reply as something to fill in before running. A placeholder never stands in for a confirmed
+SQL warehouse or cluster — are constants here too. S3, GCS and BigQuery have none: the ambient
+chain resolves credentials and region where the code runs (an instance or job role, the
+environment, `aws configure`, `gcloud`), and BigQuery bills queries to the confirmed dataset's own
+project. So add no region, profile, project or billing constant for them beyond the confirmed
+location, and pass `region=` or `billing_project_id=` only when the user named one. For the
+values that are constants, write the user's value if they gave one; otherwise a placeholder of
+the form `'<DATABRICKS_WAREHOUSE_ID>'`, and list each placeholder in your reply as something to
+fill in before running. A placeholder never stands in for a confirmed
 value, and never for a secret.
 
 End the cell with a guard, so a run with an unfilled value stops before reading anything:
@@ -61,7 +63,9 @@ connector = kumo.FileConnector(root_dir=SOURCE_DIR)
 # S3 / GCS — rooted at the confirmed prefix, so table_names() works
 connector = kumo.S3Connector(root_dir=SOURCE_URI)            # 's3://bucket/prefix/'; no region=
 connector = kumo.GCSConnector(root_dir=SOURCE_URI)           # 'gs://bucket/prefix/'
-# BigQuery — the identity is required; with no arguments it is the ambient Google credential
+# BigQuery — PROJECT_ID and DATASET_ID are the two parts of the confirmed `project.dataset` scope,
+# never placeholders. The identity is required; with no arguments it is the ambient Google
+# credential. No billing_project_id (§1).
 connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=DATASET_ID,
                                    identity=kumo.BigQueryIdentity())
 # Databricks — exactly one of warehouse_id / cluster_id
