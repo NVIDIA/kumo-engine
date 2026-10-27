@@ -253,6 +253,7 @@ pub struct SamplingState {
 
     /// slot = seed_slot_base[seed_type_id] + seed_index
     pub seed_slot_base: Vec<u32>,
+    pub seed_slots: usize,
     pub seed_maps: Vec<GxHashMap<u64, u32>>,
     pub commit_scratch: CommitScratch,
     pub raw_edges: Vec<Vec<RawEdge>>,
@@ -308,6 +309,7 @@ impl SamplingState {
             decode_scratch: diskgraph_rowpack::RowPackDecodeScratch::default(),
             stats: SamplingStats::new(),
             seed_slot_base: Vec::new(),
+            seed_slots: 0,
             seed_maps: Vec::new(),
             commit_scratch: CommitScratch::default(),
             raw_edges: Vec::new(),
@@ -324,6 +326,7 @@ impl SamplingState {
         self.reservoir_scratch.clear();
         self.stats.reset();
         self.seed_slot_base.clear();
+        self.seed_slots = 0;
         let per_buffer = RESET_THRESHOLD / self.raw_edges.len().max(1);
         for v in &mut self.raw_edges {
             clear_and_cap(v, per_buffer);

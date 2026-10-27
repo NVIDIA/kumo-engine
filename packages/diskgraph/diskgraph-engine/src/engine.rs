@@ -2134,8 +2134,9 @@ impl DiskGraphEngine {
                     slots += seed_ids.len() as u32;
                 }
             }
-            if state.seed_maps.len() < slots as usize {
-                state.seed_maps.resize_with(slots as usize, Default::default);
+            state.seed_slots = slots as usize;
+            if state.seed_maps.len() < state.seed_slots {
+                state.seed_maps.resize_with(state.seed_slots, Default::default);
             }
         }
 
@@ -3104,7 +3105,7 @@ impl DiskGraphEngine {
         let mut cs = std::mem::take(&mut state.commit_scratch);
         let base = state.seed_slot_base.clone();
         let slot = |e: &RawEdge| (base[e.seed_type_id as usize] + e.seed_index) as usize;
-        let slots = state.seed_maps.len();
+        let slots = state.seed_slots;
 
         cs.bounds.clear();
         cs.bounds.resize(slots + 1, 0);
