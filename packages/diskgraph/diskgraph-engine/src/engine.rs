@@ -2136,7 +2136,9 @@ impl DiskGraphEngine {
             }
             state.seed_slots = slots as usize;
             if state.seed_maps.len() < state.seed_slots {
-                state.seed_maps.resize_with(state.seed_slots, Default::default);
+                state
+                    .seed_maps
+                    .resize_with(state.seed_slots, Default::default);
             }
         }
 
@@ -3103,7 +3105,9 @@ impl DiskGraphEngine {
     ) -> Result<()> {
         let n: usize = chunks.iter().map(Vec::len).sum();
         if n >= PENDING as usize - 1 {
-            return Err(EngineError::Internal(format!("too many edges in one layer: {n}")));
+            return Err(EngineError::Internal(format!(
+                "too many edges in one layer: {n}"
+            )));
         }
         let mut cs = std::mem::take(&mut state.commit_scratch);
         let base = state.seed_slot_base.clone();
@@ -3150,7 +3154,10 @@ impl DiskGraphEngine {
             let dst_local_id = if r == NEW_NODE {
                 let ts = state.type_states.entry(e.dst_type_id).or_default();
                 if ts.nodes.len() >= PENDING as usize {
-                    return Err(EngineError::Internal(format!("too many nodes of type {}", e.dst_type_id)));
+                    return Err(EngineError::Internal(format!(
+                        "too many nodes of type {}",
+                        e.dst_type_id
+                    )));
                 }
                 let id = ts.nodes.len() as u32;
                 let node = NodeRecord {
@@ -3169,7 +3176,15 @@ impl DiskGraphEngine {
             } else {
                 r
             };
-            self.emit_edge(layer_idx, e.src_local_id, dst_local_id, e.rel_id, e.swap_edge_direction, state, output)?;
+            self.emit_edge(
+                layer_idx,
+                e.src_local_id,
+                dst_local_id,
+                e.rel_id,
+                e.swap_edge_direction,
+                state,
+                output,
+            )?;
         }
 
         let mut lo = 0;
@@ -3253,7 +3268,15 @@ impl DiskGraphEngine {
         };
 
         // Apply edge direction reversal if requested (PyG CSC convention).
-        self.emit_edge(layer_idx, src_local_id, dst_local_id, rel_id, swap_edge_direction, state, output)
+        self.emit_edge(
+            layer_idx,
+            src_local_id,
+            dst_local_id,
+            rel_id,
+            swap_edge_direction,
+            state,
+            output,
+        )
     }
 }
 

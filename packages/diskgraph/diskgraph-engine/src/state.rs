@@ -429,12 +429,16 @@ mod tests {
         let pool = StatePool::new();
         {
             let mut state = pool.acquire();
-            state.raw_edges = (0..4).map(|_| Vec::with_capacity(RESET_THRESHOLD * 2)).collect();
+            state.raw_edges = (0..4)
+                .map(|_| Vec::with_capacity(RESET_THRESHOLD * 2))
+                .collect();
             let cs = &mut state.commit_scratch;
             cs.order.reserve(RESET_THRESHOLD * 4);
             cs.res.reserve(RESET_THRESHOLD * 4);
             cs.new_edges.reserve(RESET_THRESHOLD * 4);
-            state.seed_maps = (0..64).map(|_| GxHashMap::with_capacity(RESET_THRESHOLD / 16)).collect();
+            state.seed_maps = (0..64)
+                .map(|_| GxHashMap::with_capacity(RESET_THRESHOLD / 16))
+                .collect();
         }
         let state = pool.acquire();
         let edge_capacity: usize = state.raw_edges.iter().map(Vec::capacity).sum();

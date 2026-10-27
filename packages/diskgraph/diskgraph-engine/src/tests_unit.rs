@@ -1448,7 +1448,11 @@ fn write_adjacency_shard(
     for &len in &lens {
         offsets.extend_from_slice(&(len as u16).to_le_bytes());
     }
-    assert_eq!(lens.iter().sum::<u64>(), edges_len, "offsets must sum to edge file size");
+    assert_eq!(
+        lens.iter().sum::<u64>(),
+        edges_len,
+        "offsets must sum to edge file size"
+    );
 
     let mut fo = File::create(dir.join(OFFSETS_FILENAME)).unwrap();
     fo.write_all(&offsets).unwrap();
@@ -2505,7 +2509,12 @@ fn test_finalize_preserves_anchor_major_seed_prefix() {
     );
 }
 
-type SampleSnapshot = (Vec<(usize, u16, u32, u32)>, Vec<Vec<(u64, u32, u32, u32)>>, Vec<Vec<u64>>, Vec<Vec<u64>>);
+type SampleSnapshot = (
+    Vec<(usize, u16, u32, u32)>,
+    Vec<Vec<(u64, u32, u32, u32)>>,
+    Vec<Vec<u64>>,
+    Vec<Vec<u64>>,
+);
 
 fn random_adjacency(rng: &mut rand_chacha::ChaCha8Rng, n: u8) -> Vec<Vec<(u8, u64)>> {
     use rand::Rng;
@@ -2513,7 +2522,12 @@ fn random_adjacency(rng: &mut rand_chacha::ChaCha8Rng, n: u8) -> Vec<Vec<(u8, u6
     (0..n)
         .map(|_| {
             let mut e: Vec<(u8, u64)> = (0..rng.gen_range(0..30))
-                .map(|_| (rng.gen_range(0..n), sk.encode_lower(rng.gen_range(0..1_000))))
+                .map(|_| {
+                    (
+                        rng.gen_range(0..n),
+                        sk.encode_lower(rng.gen_range(0..1_000)),
+                    )
+                })
                 .collect();
             e.sort_by_key(|&(_, k)| std::cmp::Reverse(k));
             e
@@ -2529,13 +2543,35 @@ fn per_seed_request(
     i: usize,
 ) -> BatchSamplingRequest {
     use rand::Rng;
-    let mode = if i % 2 == 0 { SamplingMode::TemporalMostRecent } else { SamplingMode::Uniform };
+    let mode = if i % 2 == 0 {
+        SamplingMode::TemporalMostRecent
+    } else {
+        SamplingMode::Uniform
+    };
     let mut req = make_sampling_request_with_mode(vec![], vec![6, 4, 3, 5], mode);
     for layer in &mut req.plan.layers {
         layer.default_fanout = layer.fanouts.drain().next().map(|(_, f)| f);
     }
-    req.seed_nodes = types.iter().map(|t| (t.to_string(), (0..seeds).map(|_| rng.gen_range(0..n as u64)).collect())).collect();
-    req.seed_timestamps = Some(types.iter().map(|t| (t.to_string(), (0..seeds).map(|_| rng.gen_range(0..1_000)).collect())).collect());
+    req.seed_nodes = types
+        .iter()
+        .map(|t| {
+            (
+                t.to_string(),
+                (0..seeds).map(|_| rng.gen_range(0..n as u64)).collect(),
+            )
+        })
+        .collect();
+    req.seed_timestamps = Some(
+        types
+            .iter()
+            .map(|t| {
+                (
+                    t.to_string(),
+                    (0..seeds).map(|_| rng.gen_range(0..1_000)).collect(),
+                )
+            })
+            .collect(),
+    );
     req.seed_timestamp_unit = diskgraph_core::time::TimeUnit::Seconds;
     req.flags.swap_edge_direction = i % 3 == 0;
     req
@@ -2543,22 +2579,40 @@ fn per_seed_request(
 
 /// Samples every request on both recording paths and asserts identical
 /// edges, node records and stats.
-fn assert_per_seed_matches_legacy(sampler: &mut DiskGraphEngine, requests: &[BatchSamplingRequest]) -> Vec<SampleSnapshot> {
+fn assert_per_seed_matches_legacy(
+    sampler: &mut DiskGraphEngine,
+    requests: &[BatchSamplingRequest],
+) -> Vec<SampleSnapshot> {
     let run = |sampler: &DiskGraphEngine| -> Vec<SampleSnapshot> {
         let pool = crate::state::StatePool::new();
         requests
             .iter()
             .map(|req| {
                 let mut state = pool.acquire();
-                let mut output = MockOutput { edges: vec![], feature_batches: vec![], schema: None, fused_batches: vec![] };
+                let mut output = MockOutput {
+                    edges: vec![],
+                    feature_batches: vec![],
+                    schema: None,
+                    fused_batches: vec![],
+                };
                 sampler.sample(req, &mut state, &mut output).unwrap();
                 let mut types: Vec<_> = state.type_states.iter().collect();
                 types.sort_by_key(|(t, _)| **t);
                 let nodes = types
                     .iter()
-                    .map(|(_, ts)| ts.nodes.iter().map(|r| (r.global_id, r.seed_index, r.local_id, r.seed_type_id)).collect())
+                    .map(|(_, ts)| {
+                        ts.nodes
+                            .iter()
+                            .map(|r| (r.global_id, r.seed_index, r.local_id, r.seed_type_id))
+                            .collect()
+                    })
                     .collect();
-                (output.edges, nodes, state.stats.nodes_per_type.clone(), state.stats.edges_per_type.clone())
+                (
+                    output.edges,
+                    nodes,
+                    state.stats.nodes_per_type.clone(),
+                    state.stats.edges_per_type.clone(),
+                )
             })
             .collect()
     };
@@ -2581,8 +2635,24 @@ fn per_seed_recording_matches_legacy_recording() {
     let (reader, _) = write_adjacency_shard(dir.path(), &adjacency, 16, &node_data);
     let reader = Arc::new(reader);
     let mut sampler = DiskGraphEngine::new(
-        [("User".to_string(), vec![ShardHandle { reader, min_id: 0, max_id: n as u64 - 1 }])].into(),
-        [(0, ("Connects".to_string(), "User".to_string(), "User".to_string()))].into(),
+        [(
+            "User".to_string(),
+            vec![ShardHandle {
+                reader,
+                min_id: 0,
+                max_id: n as u64 - 1,
+            }],
+        )]
+        .into(),
+        [(
+            0,
+            (
+                "Connects".to_string(),
+                "User".to_string(),
+                "User".to_string(),
+            ),
+        )]
+        .into(),
         [(0usize, SortKeyDecoder::new(&temporal_sortkey_meta()))].into(),
         [("User".to_string(), RowPackDecoder::new(ctx).unwrap())].into(),
         None,
@@ -2591,10 +2661,13 @@ fn per_seed_recording_matches_legacy_recording() {
         Some(4),
     );
 
-    let requests: Vec<BatchSamplingRequest> =
-        (0..6).map(|i| per_seed_request(&mut rng, &["User"], n, [1, 40, 700][i % 3], i)).collect();
+    let requests: Vec<BatchSamplingRequest> = (0..6)
+        .map(|i| per_seed_request(&mut rng, &["User"], n, [1, 40, 700][i % 3], i))
+        .collect();
     let per_seed = assert_per_seed_matches_legacy(&mut sampler, &requests);
-    let (edges, nodes) = per_seed.iter().fold((0, 0), |(e, v), s| (e + s.0.len(), v + s.1[0].len()));
+    let (edges, nodes) = per_seed
+        .iter()
+        .fold((0, 0), |(e, v), s| (e + s.0.len(), v + s.1[0].len()));
     assert!(edges > nodes, "the graph must revisit nodes within a seed");
 }
 
@@ -2607,12 +2680,23 @@ fn per_seed_recording_matches_legacy_recording_across_seed_types() {
     let dirs = [TempDir::new().unwrap(), TempDir::new().unwrap()];
     let readers: Vec<Arc<ShardReader>> = dirs
         .iter()
-        .map(|dir| Arc::new(write_adjacency_shard(dir.path(), &random_adjacency(&mut rng, n), 16, &node_data).0))
+        .map(|dir| {
+            Arc::new(
+                write_adjacency_shard(dir.path(), &random_adjacency(&mut rng, n), 16, &node_data).0,
+            )
+        })
         .collect();
-    let requests: Vec<BatchSamplingRequest> =
-        (0..6).map(|i| per_seed_request(&mut rng, &["A", "B"], n, [3, 40, 700][i % 3], i)).collect();
+    let requests: Vec<BatchSamplingRequest> = (0..6)
+        .map(|i| per_seed_request(&mut rng, &["A", "B"], n, [3, 40, 700][i % 3], i))
+        .collect();
     for threads in [1, 4] {
-        let shard = |t: usize| vec![ShardHandle { reader: readers[t].clone(), min_id: 0, max_id: n as u64 - 1 }];
+        let shard = |t: usize| {
+            vec![ShardHandle {
+                reader: readers[t].clone(),
+                min_id: 0,
+                max_id: n as u64 - 1,
+            }]
+        };
         let mut sampler = DiskGraphEngine::new(
             [("A".to_string(), shard(0)), ("B".to_string(), shard(1))].into(),
             [
@@ -2620,7 +2704,11 @@ fn per_seed_recording_matches_legacy_recording_across_seed_types() {
                 (1, ("BToA".to_string(), "B".to_string(), "A".to_string())),
             ]
             .into(),
-            [(0usize, SortKeyDecoder::new(&temporal_sortkey_meta())), (1usize, SortKeyDecoder::new(&temporal_sortkey_meta()))].into(),
+            [
+                (0usize, SortKeyDecoder::new(&temporal_sortkey_meta())),
+                (1usize, SortKeyDecoder::new(&temporal_sortkey_meta())),
+            ]
+            .into(),
             [
                 ("A".to_string(), RowPackDecoder::new(ctx.clone()).unwrap()),
                 ("B".to_string(), RowPackDecoder::new(ctx.clone()).unwrap()),
@@ -2632,7 +2720,9 @@ fn per_seed_recording_matches_legacy_recording_across_seed_types() {
             Some(threads),
         );
         let per_seed = assert_per_seed_matches_legacy(&mut sampler, &requests);
-        assert!(per_seed.iter().all(|s| s.1.len() == 2 && s.0.iter().any(|e| e.1 == 1)));
+        assert!(per_seed
+            .iter()
+            .all(|s| s.1.len() == 2 && s.0.iter().any(|e| e.1 == 1)));
     }
 }
 
@@ -2673,7 +2763,12 @@ fn repeated_runs_give_identical_output() {
         let runs: Vec<_> = (0..16)
             .map(|_| {
                 let mut state = crate::state::StatePool::new().acquire();
-                let mut output = MockOutput { edges: vec![], feature_batches: vec![], schema: None, fused_batches: vec![] };
+                let mut output = MockOutput {
+                    edges: vec![],
+                    feature_batches: vec![],
+                    schema: None,
+                    fused_batches: vec![],
+                };
                 sampler.sample(&req, &mut state, &mut output).unwrap();
                 let rhs: Vec<_> = state.type_states[&1].nodes.iter().map(|n| (n.global_id, n.seed_type_id)).collect();
                 (output.edges, rhs, output.fused_batches)
