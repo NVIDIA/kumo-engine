@@ -2189,7 +2189,8 @@ impl DiskGraphEngine {
         // 4. Finalize fused fetching by fetching leaf node features
         // and flush remaining features.
         if fused {
-            let type_ids: Vec<usize> = state.type_states.keys().cloned().collect();
+            let mut type_ids: Vec<usize> = state.type_states.keys().cloned().collect();
+            type_ids.sort_unstable();
             for type_id in type_ids {
                 let scratch = &mut state.decode_scratch;
                 if let Some(ts) = state.type_states.get_mut(&type_id) {
@@ -2814,6 +2815,7 @@ impl DiskGraphEngine {
                 work_queue.push((*node_type_id, frontier));
             }
         }
+        work_queue.sort_unstable_by_key(|(node_type_id, _)| *node_type_id);
 
         // Fused fetching path
         if fused {
