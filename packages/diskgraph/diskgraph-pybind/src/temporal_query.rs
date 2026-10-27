@@ -209,11 +209,21 @@ impl ScalarValue {
     }
 }
 
-fn scalar_values_to_array(values: &[ScalarValue]) -> Result<ArrayRef, String> {
+fn scalar_values_to_array(
+    values: &[ScalarValue],
+    sum_type: Option<SumType>,
+) -> Result<ArrayRef, String> {
     let first = values
         .iter()
-        .find(|value| !matches!(value, ScalarValue::Null));
-    match first {
+        .find(|value| !matches!(value, ScalarValue::Null))
+        .cloned()
+        .or_else(|| {
+            sum_type.map(|kind| match kind {
+                SumType::Int64 => ScalarValue::I64(0),
+                SumType::Uint64 => ScalarValue::U64(0),
+            })
+        });
+    match first.as_ref() {
         None => Ok(Arc::new(NullArray::new(values.len()))),
         Some(ScalarValue::Bool(_)) => Ok(Arc::new(BooleanArray::from(
             values
@@ -291,6 +301,7 @@ struct SequenceResult {
 struct AggregateResult {
     name: String,
     values: Vec<ScalarValue>,
+    sum_type: Option<SumType>,
 }
 
 #[derive(Default)]
@@ -1035,7 +1046,9 @@ fn reduce(
         return Err("sum_type is only valid for sum".into());
     }
     if operation == "count" {
-        return Ok(ScalarValue::F64(rows.len() as f64));
+        return i64::try_from(rows.len())
+            .map(ScalarValue::I64)
+            .map_err(|_| "count exceeds int64 range".to_string());
     }
     let values = rows
         .values(column.expect("validated reduction column"))?
@@ -1043,13 +1056,15 @@ fn reduce(
         .filter(|value| !matches!(value, ScalarValue::Null))
         .collect::<Vec<_>>();
     if operation == "count_distinct" {
-        return Ok(ScalarValue::F64(
+        return i64::try_from(
             values
                 .iter()
                 .map(ScalarValue::equality_key)
                 .collect::<HashSet<_>>()
-                .len() as f64,
-        ));
+                .len(),
+        )
+        .map(ScalarValue::I64)
+        .map_err(|_| "count_distinct exceeds int64 range".to_string());
     }
     if operation == "sum" && rows.len() == 0 {
         return Ok(match sum_type {
@@ -1177,6 +1192,9 @@ fn group_rows(rows: RowsView<'_>, plan: &GroupPlan, cutoff: i64) -> Result<Vec<O
         .iter()
         .map(|value| {
             validate_reduction(&value.operation, value.column.as_deref())?;
+            if value.sum_type.is_some() && value.operation != "sum" {
+                return Err("sum_type is only valid for sum".to_string());
+            }
             Ok(match &value.column {
                 Some(column) => Some(rows.values(column)?),
                 None => None,
@@ -1266,6 +1284,7 @@ fn aggregate_result(
     Ok(AggregateResult {
         name: plan.name.clone(),
         values,
+        sum_type: plan.sum_type,
     })
 }
 
@@ -1645,7 +1664,7 @@ impl QueryResult {
             let item = PyDict::new(py);
             item.set_item("name", aggregate.name)?;
             if model_format {
-                let values = scalar_values_to_array(&aggregate.values)
+                let values = scalar_values_to_array(&aggregate.values, aggregate.sum_type)
                     .map_err(DiskgraphConfigError::new_err)?;
                 item.set_item("values", values.to_data().to_pyarrow(py)?)?;
             } else {
@@ -1815,7 +1834,7 @@ mod tests {
                 None
             )
             .unwrap(),
-            ScalarValue::F64(0.0)
+            ScalarValue::I64(0)
         ));
     }
 
@@ -1829,9 +1848,11 @@ mod tests {
             reduce(RowsView::Owned(&rows), "sum", Some("value"), 0, Some(SumType::Int64)).unwrap(),
             ScalarValue::I64(value) if value == (1 << 53) + 1
         ));
-        let output =
-            scalar_values_to_array(&[ScalarValue::I64(0), ScalarValue::I64((1 << 53) + 1)])
-                .unwrap();
+        let output = scalar_values_to_array(
+            &[ScalarValue::I64(0), ScalarValue::I64((1 << 53) + 1)],
+            Some(SumType::Int64),
+        )
+        .unwrap();
         assert_eq!(output.data_type(), &arrow_schema::DataType::Int64);
         assert_eq!(
             output
@@ -1841,6 +1862,17 @@ mod tests {
                 .value(1),
             (1 << 53) + 1
         );
+        for kind in [SumType::Int64, SumType::Uint64] {
+            let output = scalar_values_to_array(&[ScalarValue::Null], Some(kind)).unwrap();
+            assert_eq!(output.null_count(), 1);
+            assert_eq!(
+                output.data_type(),
+                &match kind {
+                    SumType::Int64 => arrow_schema::DataType::Int64,
+                    SumType::Uint64 => arrow_schema::DataType::UInt64,
+                }
+            );
+        }
         let overflowing = [
             row(Some(ScalarValue::I64(i64::MAX))),
             row(Some(ScalarValue::I64(1))),
