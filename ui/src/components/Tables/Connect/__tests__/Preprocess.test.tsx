@@ -489,7 +489,7 @@ describe("Preprocessing", async () => {
 
         expect(docLink).toHaveAttribute(
             "href",
-            "https://kumo.ai/docs/column-preprocessing"
+            "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/column-preprocessing"
         );
 
         expect(screen.getByText(/See/)).toBeInTheDocument();

@@ -689,7 +689,7 @@ describe("ConnectTablesPage", () => {
         expect(learnMoreLink).toHaveAttribute(
             "href",
             expect.stringContaining(
-                "https://kumo.ai/docs/column-preprocessing#primary-key-column"
+                "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/column-preprocessing#primary-key-column"
             )
         );
         expect(learnMoreLink).toHaveAttribute("target", "_blank");
@@ -772,7 +772,7 @@ describe("ConnectTablesPage", () => {
         expect(learnMoreLink).toHaveAttribute(
             "href",
             expect.stringContaining(
-                "https://kumo.ai/docs/column-preprocessing#create-date-column"
+                "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/kumo-studio-guide-coming-soon/preliminary-documentation/connect-data/column-preprocessing#create-date-column"
             )
         );
         expect(learnMoreLink).toHaveAttribute("target", "_blank");
