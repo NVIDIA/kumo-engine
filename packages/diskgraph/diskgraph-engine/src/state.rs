@@ -115,7 +115,8 @@ pub struct NodeRecord {
 
 /// State specific to a single Node Type (table).
 pub struct TypeState {
-    /// Maps (Seed, Global) -> LocalID
+    /// Maps (Seed, Global) -> LocalID. Holds only the seeds when edges are
+    /// recorded through `SamplingState::seed_maps`.
     pub index_map: GxHashMap<LookupKey, u32>,
 
     /// Ordered list of nodes discovered (Index = LocalID)
