@@ -61,7 +61,8 @@ connector = kumo.FileConnector(root_dir=SOURCE_DIR)
 # S3 / GCS — rooted at the confirmed prefix, so table_names() works
 connector = kumo.S3Connector(root_dir=SOURCE_URI)            # 's3://bucket/prefix/'; no region=
 connector = kumo.GCSConnector(root_dir=SOURCE_URI)           # 'gs://bucket/prefix/'
-# BigQuery — the identity is required; with no arguments it is the ambient Google credential
+# BigQuery — the identity is required; with no arguments it is the ambient Google credential.
+# Queries bill to project_id: no billing constant unless the user named a billing project.
 connector = kumo.BigQueryConnector(project_id=PROJECT_ID, dataset_id=DATASET_ID,
                                    identity=kumo.BigQueryIdentity())
 # Databricks — exactly one of warehouse_id / cluster_id
