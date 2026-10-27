@@ -7,7 +7,7 @@ and [testing](TESTING.md) for this service module.
   and `packages/kumo-api`. Coordinate their consumers within this repository.
 - Compiler semantics live in `packages/diskgraph`; the Python compiler is
   `diskgraph-pybind/python/diskgraph/compiler.py` within that workspace.
-  Follow the [upstream mirror boundary](../../docs/development/generated-artifacts.md#diskgraph-source-mirror);
+  Follow the [DiskGraph source guidance](../../docs/development/generated-artifacts.md#diskgraph-source);
   update affected service/core adapters here.
 - Preserve temporal boundaries, split semantics, generated table schemas,
   weight handling, cached statistics, and serialized query compatibility.

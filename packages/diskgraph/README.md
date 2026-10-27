@@ -123,13 +123,15 @@ Use `--customer-prefix` if the storage directory differs from the customer name.
 
 ## Python wheel builds
 
-`.github/workflows/build.yml` builds the native Python wheel on every relevant
-push and pull request. The wheel contains the extension and the standalone
-`ingest` binary.
+The repository's CI builds the native Python wheel for every relevant push and
+pull request (`.github/workflows/_diskgraph-wheel.yml`), and the kumo-engine
+wheel bundles it. The wheel contains the extension and the standalone `ingest`
+binary.
 
 Kumo builds and distributes that artifact from its in-tree
-`packages/diskgraph` mirror. DiskGraph does not publish independently versioned
-or development wheels.
+`packages/diskgraph` source. This repository is the sole source of truth for
+DiskGraph; make changes here directly. DiskGraph does not publish independently
+versioned or development wheels.
 
 See `diskgraph-pybind/README.md` for local and portable Linux build commands.
 

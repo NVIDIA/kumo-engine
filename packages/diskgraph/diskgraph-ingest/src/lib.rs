@@ -7851,9 +7851,9 @@ impl IngestContext {
                 }
             }
             crate::col_stats::write_col_stats(&self.target, outputs)?;
-            eprintln!(
-                "wrote col_stats.json (and kumo_col_stats/) under {}",
-                root.display()
+            tracing::info!(
+                root = %root.display(),
+                "wrote col_stats.json (and kumo_col_stats/)"
             );
         }
         drop(node_senders);

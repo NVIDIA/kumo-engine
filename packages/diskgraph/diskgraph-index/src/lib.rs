@@ -22,4 +22,6 @@ pub mod reader;
 pub mod streaming;
 #[cfg(test)]
 mod tests_builder;
+#[cfg(test)]
+mod tests_reader;
 pub mod truncate;

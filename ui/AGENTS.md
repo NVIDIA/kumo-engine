@@ -6,7 +6,8 @@ Both are in this repository; coordinate component and caller changes together.
 
 - Trace API changes through shared schemas and [generated clients](../docs/development/generated-artifacts.md).
 - `src/gen/`, `src/utils/PQLParsing/grammar/`, and `pqDocs.json` are generated.
-  Editor help is updated by reviewed synchronization PRs from `kumo-ai/docs`.
+  Editor help is authored in `editor-hints/editor-hints.json`; regenerate with
+  `npm --prefix ui run generate:editor-help` from the repository root.
   Other files under `src/utils/PQLParsing/` include authored code.
 - Use existing query keys, invalidation helpers, route loaders, mocks, and tests.
 - From the repository root use `npm --prefix ui run type-check`,

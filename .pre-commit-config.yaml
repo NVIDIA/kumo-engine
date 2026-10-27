@@ -21,14 +21,14 @@ repos:
       - id: trailing-whitespace
         exclude: ^(packages/(diskgraph|kumo-ui-catalog)/|THIRD-PARTY\.txt)
       - id: check-yaml
-        exclude: ^(helm/kumo-helm/(templates/|examples/)|packages/diskgraph/)
+        exclude: ^helm/kumo-helm/(templates/|examples/)
 
   - repo: https://github.com/adrienverge/yamllint.git
     rev: v1.26.3
     hooks:
       - id: yamllint
         args: [-c=.yamllint.yml]
-        exclude: ^(packages/(diskgraph|kumo-ui-catalog)/)
+        exclude: ^packages/kumo-ui-catalog/
 
   - repo: https://github.com/regebro/pyroma
     rev: '5.0'
@@ -102,7 +102,7 @@ repos:
         entry: python3 scripts/gen_third_party.py --check THIRD-PARTY.txt
         language: system
         pass_filenames: false
-        files: ^(THIRD-PARTY\.txt|3rdparty/BUILD|3rdparty/kumo-wheels/|3rdparty/notices/|packages/diskgraph/(Cargo\.lock|diskgraph-ptrhash/|scripts/generate_artifact_manifest\.py|third_party/(artifact-manifest|source-provenance)\.json)|packages/kumo-core/src/kumo_core/evaluation/distribution\.py|packages/kumo-engine/scripts/(build_fat_wheel\.sh|build_wheel\.sh|merge_wheels\.py)|scripts/gen_third_party\.py|tools/glove-6b-50d/(build_wheel\.sh|pyproject\.toml))
+        files: ^(THIRD-PARTY\.txt|3rdparty/BUILD|3rdparty/kumo-wheels/|3rdparty/notices/|packages/diskgraph/(Cargo\.lock|diskgraph-ptrhash/|scripts/generate_artifact_manifest\.py|third_party/(artifact-manifest|source-provenance)\.json)|packages/kumo-core/src/kumo_core/evaluation/distribution\.py|packages/kumo-engine/scripts/(build_wheel\.sh|merge_wheels\.py)|scripts/gen_third_party\.py|tools/glove-6b-50d/(build_wheel\.sh|pyproject\.toml))
       - id: lint-staged
         name: ui-lint-staged
         entry: bash -c 'cd ui/ && npx lint-staged --config package.json --allow-empty'

@@ -15,8 +15,6 @@ Provider argument lists mirror the equivalent cloud SDK classes
 (`kumoai/connector/{snowflake,s3,gcs,bigquery,databricks}_connector.py`)
 minus the server-registry-only fields (`name`, `description`, `project_id`,
 `_response`) and the `_bind_connector` round-trip. See `kumo.engine.connector.base`.
-
-For `FileConnector`, see the package README's "Local files" section.
 """
 
 from kumo.engine.connector.base import Connector

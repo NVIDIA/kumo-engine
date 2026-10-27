@@ -4,7 +4,7 @@
 r"""Local, in-process relational deep learning with Kumo.
 
 No `Backend` protocol, no `set_backend`, no remote/hosted mode, no
-hosted project -- see "Object model" in the package README.
+hosted project.
 There is nothing to call analogous to the cloud SDK's
 `kumoai_studio.init(url=..., api_key=...)`: connectors and tables are constructed
 and threaded through directly (`Table`, `Graph`, `Connector` subclasses), and

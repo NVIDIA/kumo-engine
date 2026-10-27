@@ -231,7 +231,7 @@ Masks survive this flow because `load_data()` loads the correct `.pt` files from
 
 ## Performance Summary
 
-See [agent_design_and_performance.md](agent_design_and_performance.md) for general principles.
+See [agent_design_and_performance.md](../docs/agent_design_and_performance.md) for general principles.
 
 The key performance properties of TT gen are covered in the sections above. Summary of the design budget:
 
@@ -256,7 +256,7 @@ Nothing on the per-entity or per-row hot path does allocation, string comparison
 
 DiskGraph TT gen must produce the same output as GraphEngine's Spark pipeline for the same query and data. "Same" means: same (ENTITY, TIMESTAMP, TARGET) triples, same column values, same row count. When they differ, DG is wrong until proven otherwise — verify against raw source data before concluding Spark is wrong.
 
-Divergences found so far fall into categories (see [agent_debugging.md](agent_debugging.md) for the full list):
+Divergences found so far fall into categories (see [agent_debugging.md](../docs/agent_debugging.md) for the full list):
 - **Spark filters implicitly, DG doesn't**: Orphaned FKs dropped by Spark JOIN (#173), NULLs dropped by Spark in aggregations (#139), empty accumulators dropped by Spark INNER JOIN (#52)
 - **Timestamp unit mismatches**: Seconds vs nanoseconds at boundaries (#172, #170)
 - **Different aggregation semantics**: `>=` vs `>` at temporal boundaries (#170)
