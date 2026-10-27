@@ -288,7 +288,6 @@ fn clear_and_cap<T>(v: &mut Vec<T>, cap: usize) {
     }
 }
 
-const SEED_MAP_KEEP: usize = 1 << 14;
 const SEED_MAPS_KEEP: usize = 1 << 10;
 
 const RESET_THRESHOLD: usize = 1 << 18; // ~262k items
@@ -337,11 +336,13 @@ impl SamplingState {
         clear_and_cap(&mut cs.new_edges, RESET_THRESHOLD);
         clear_and_cap(&mut cs.new_bounds, RESET_THRESHOLD);
         self.seed_maps.truncate(SEED_MAPS_KEEP);
+        let mut budget = RESET_THRESHOLD;
         for m in &mut self.seed_maps {
             m.clear();
-            if m.capacity() > SEED_MAP_KEEP {
-                m.shrink_to(SEED_MAP_KEEP);
+            if m.capacity() > budget {
+                m.shrink_to(0);
             }
+            budget -= m.capacity();
         }
         // Scratch buffer is inherently reusable
     }
@@ -429,6 +430,7 @@ mod tests {
             cs.order.reserve(RESET_THRESHOLD * 4);
             cs.res.reserve(RESET_THRESHOLD * 4);
             cs.new_edges.reserve(RESET_THRESHOLD * 4);
+            state.seed_maps = (0..64).map(|_| GxHashMap::with_capacity(RESET_THRESHOLD / 16)).collect();
         }
         let state = pool.acquire();
         let edge_capacity: usize = state.raw_edges.iter().map(Vec::capacity).sum();
@@ -437,6 +439,9 @@ mod tests {
         assert!(cs.order.capacity() <= RESET_THRESHOLD);
         assert!(cs.res.capacity() <= RESET_THRESHOLD);
         assert!(cs.new_edges.capacity() <= RESET_THRESHOLD);
+        let map_capacity: usize = state.seed_maps.iter().map(GxHashMap::capacity).sum();
+        assert!(map_capacity <= RESET_THRESHOLD);
+        assert!(map_capacity > 0);
     }
 
     #[test]
