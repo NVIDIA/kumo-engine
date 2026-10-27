@@ -10,7 +10,7 @@ end-to-end against the runtime contract without standing up a graph fixture.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import kumo_core.diskgraph.runtime_adapter as runtime_adapter
 import pandas as pd
@@ -1788,19 +1788,18 @@ def _link_feature_schema() -> dict[str, Any]:
     return schema
 
 
-def test_skipped_namespace_still_gets_a_tensor_frame() -> None:
-    """A type requested as `[]` emits NO raw_features block, and the adapter
-    has to survive that.
-
-    `attach_tensor_frames`' back-fill pass builds a mapper-shaped empty TF for
-    a schema type with no RecordBatch. For a link table the mapper bank entry
-    is `{}` (no encoders were fitted), so this lands on the same
-    `get_tf(empty, {})` call the select-all path already reached through
-    `_record_batch_to_tf`'s no-overlap branch -- the two routes must agree,
-    because that equivalence is the entire safety argument for skipping.
-    """
+@pytest.mark.parametrize("num_nodes", [0, 2])
+def test_skipped_namespace_still_gets_a_tensor_frame(num_nodes: int) -> None:
+    """Skipped featureless types preserve sampled and empty topology row counts."""
+    batch = _link_batch()
+    main = batch["graphs"]["main"]
+    main["node_ids"]["Ownership"] = pa.array(range(num_nodes), type=pa.uint64())
+    main["batch_dict"]["Ownership"] = pa.array(range(num_nodes), type=pa.uint32())
+    main["num_sampled_nodes_dict"]["Ownership"] = pa.array(
+        [num_nodes], type=pa.uint64()
+    )
     hetero, raw_features, _ = runtime_batch_to_hetero(
-        _link_batch(),
+        batch,
         train_table_name="train_table",
         mapper_bank={
             **_user_mapper_bank(),
@@ -1822,6 +1821,56 @@ def test_skipped_namespace_still_gets_a_tensor_frame() -> None:
     assert len(hetero["Ownership"].tf.feat_dict) == 0, (
         "a link table has no encoders, so its TF carries no stypes"
     )
+    assert hetero["Ownership"].tf.num_rows == num_nodes
+
+
+@pytest.mark.parametrize("enc_mode", ["fuse", "column"])
+@pytest.mark.parametrize("has_null_encoder", [False, True])
+def test_featureless_train_predict_encoder_parity(
+    enc_mode: Literal["fuse", "column"], has_null_encoder: bool
+) -> None:
+    """Skipped training features retain prediction row counts and embeddings."""
+    from kumo_core.encoders.tensor_frame_encoder import TensorFrameEncoder
+    from kumoapi.encoder import Null
+
+    mapper_bank = {**_user_mapper_bank(), "links_v1": {}}
+    schema = _link_feature_schema()
+    schema["node_types"]["Ownership"]["feature_columns"] = (
+        ["unused"] if has_null_encoder else []
+    )
+    train, _, _ = runtime_batch_to_hetero(
+        _link_batch(),
+        train_table_name="train_table",
+        mapper_bank=mapper_bank,
+        feature_schema=schema,
+        attach_pkeys=False,
+    )
+    batch = _link_batch()
+    batch["raw_features"]["Ownership"] = {
+        "node_ids": pa.array([300, 301], type=pa.uint64()),
+        "record_batches": [pa.record_batch({"ownership_id": [7, 8]})],
+    }
+    predict, _, _ = runtime_batch_to_hetero(
+        batch,
+        train_table_name="train_table",
+        mapper_bank=mapper_bank,
+        feature_schema=schema,
+        pk_col_dict={"Ownership": "ownership_id"},
+    )
+    encoder = TensorFrameEncoder(
+        name="Ownership",
+        col_encoder_dict={"unused": Null()} if has_null_encoder else {},
+        time_col=None,
+        out_channels=8,
+        enc_mode=enc_mode,
+    )
+
+    train_output = encoder(train["Ownership"].tf, train["Ownership"].batch)
+    predict_output = encoder(predict["Ownership"].tf, predict["Ownership"].batch)
+
+    assert train["Ownership"].tf.num_rows == predict["Ownership"].tf.num_rows == 2
+    assert train_output.shape == predict_output.shape == (2, 8)
+    torch.testing.assert_close(train_output, predict_output)
 
 
 def test_skipping_a_namespace_leaves_topology_untouched() -> None:

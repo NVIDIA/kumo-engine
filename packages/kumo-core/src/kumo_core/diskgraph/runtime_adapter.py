@@ -335,13 +335,14 @@ def attach_tensor_frames(
     ``hetero[ns].tf`` (in place). Namespaces with no ``mapper_key`` are skipped;
     the placeholder pass fills them.
 
-    A schema node type that is present in ``hetero`` (e.g. a parity back-filled
-    empty block from ``_attach_graph_topology``) but has NO raw RecordBatch
-    still gets a MAPPER-SHAPED empty TF here: ``_record_batch_to_tf`` builds the
+    A schema node type with fitted mappers that is present in ``hetero`` (e.g.
+    a parity back-filled empty block from ``_attach_graph_topology``) but has no
+    raw RecordBatch still gets a mapper-shaped empty TF here. The adapter builds the
     encoder-correct ``feat_dict`` stypes at zero rows from the mapper. Without
     this the placeholder pass would attach a bare ``TensorFrame({}, {})`` whose
     empty ``feat_dict`` makes the feature encoder ``tf.feat_dict[stype]``
     KeyError (tensor_frame_encoder.py:240) for a type the encoder must encode.
+    Featureless types retain the topology's node count when decoding is skipped.
     """
     nodes_meta = feature_schema.get("node_types") or {}
     for namespace, record_batch in raw_feature_tables.items():
@@ -374,6 +375,11 @@ def attach_tensor_frames(
                 f"for namespace {namespace!r}, but mapper_bank has no "
                 f"such key.  Available: {sorted(mapper_bank)}")
         mapper_dict = dict(mapper_bank[mapper_key])
+        if not mapper_dict:
+            hetero[namespace].tf = TensorFrame(
+                {}, {}, num_rows=hetero[namespace].num_nodes or 0
+            )
+            continue
         empty_rb = pa.RecordBatch.from_pydict(
             {col: pa.array([], type=pa.string())
              for col in mapper_dict})
