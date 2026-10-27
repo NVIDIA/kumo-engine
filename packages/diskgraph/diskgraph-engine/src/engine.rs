@@ -5,7 +5,7 @@
 use crate::edge_unpacker::EdgeUnpacker;
 use crate::errors::{EngineError, Result};
 use crate::output::OutputHandler;
-use crate::state::{LookupKey, NodeRecord, SamplingState};
+use crate::state::{LookupKey, NodeRecord, ResolvedProjection, SamplingState};
 use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_core::tt_builder::{Value, WEIGHT_COL};
@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 const DETERMINISTIC_UNIFORM_SEED_V1: u64 = 41;
 const FREQUENCY_COL: &str = "__kumo_internal_frequency_column__";
@@ -894,6 +894,188 @@ impl DiskGraphEngine {
         }
     }
 
+    /// Resolve per-type feature columns once per iterator for non-fused sampling.
+    ///
+    /// * Absent types (including an empty map): select all columns.
+    /// * Empty list: skip feature decoding while preserving topology.
+    /// * Non-empty list: select stored columns in request order, deduplicated.
+    ///   If no requested columns exist, fall back to select-all.
+    ///
+    /// Warn on unknown types and missing columns. The iterator ignores projections
+    /// for explicit fused mode; automatic mode uses non-fused sampling when a
+    /// non-empty projection is supplied.
+    pub fn resolve_projection(
+        &self,
+        projections: &HashMap<String, Vec<String>>,
+    ) -> ResolvedProjection {
+        let num_types = self.id_to_node_type.len();
+        let mut names: Vec<Option<Vec<String>>> = Vec::with_capacity(num_types);
+
+        // Which projection keys actually bound to a node type. A key that binds
+        // to nothing is the silent-no-op failure mode this logging exists to
+        // catch, so track it explicitly rather than inferring it.
+        let mut matched_keys: Vec<&str> = Vec::new();
+        let mut narrowed: Vec<String> = Vec::new();
+        // Requested column names that did NOT survive intersection with the
+        // stored schema, even where OTHER names in the same request did. The
+        // all-miss case (schema skew) already degrades to select-all below;
+        // this also surfaces every partial miss, since a caller's requested
+        // list is a checked contract, not an advisory one.
+        let mut missing: Vec<String> = Vec::new();
+        // Types that resolved to the SKIP state (`Some([])`). Tracked
+        // separately from `narrowed` (which only covers the non-empty
+        // intersection branch) so the "narrowed nothing" diagnostic below
+        // does not fire when the only thing the projection did was skip a
+        // type outright -- skipping to zero columns is the most extreme form
+        // of narrowing there is, not a no-op.
+        let mut skipped: Vec<&str> = Vec::new();
+
+        for type_id in 0..num_types {
+            // NOTE: no `.filter(|cols| !cols.is_empty())` here. An entry mapped
+            // to an empty vec is the SKIP request; filtering it out would make
+            // it indistinguishable from an absent key, which is exactly the
+            // two-state collapse this tri-state exists to undo.
+            let requested: Option<&Vec<String>> = if projections.is_empty() {
+                None
+            } else {
+                self.id_to_node_type
+                    .get(type_id)
+                    .and_then(|type_name| projections.get(type_name))
+            };
+
+            // A key that bound to this type_id at all is a MATCH, whether or
+            // not the type has a decoder: matching is about the name landing
+            // on a real node type, not about that type having feature data.
+            // A pure link table (no decoder) is exactly the case that must
+            // count as matched, or skipping it always looks like a typo.
+            if requested.is_some() {
+                matched_keys.push(self.id_to_node_type[type_id].as_str());
+            }
+
+            let decoder = self.node_decoders.get(type_id).and_then(|d| d.as_ref());
+            // `None` == select all. See `ResolvedProjection::names`.
+            let selected: Option<Vec<String>> = match (requested, decoder) {
+                (Some(requested), Some(decoder)) => {
+                    if requested.is_empty() {
+                        // Explicit "I consume nothing". Not intersected with
+                        // anything -- it is a claim about the caller, not about
+                        // which columns the snapshot happens to hold.
+                        skipped.push(self.id_to_node_type[type_id].as_str());
+                        Some(Vec::new())
+                    } else {
+                        let stored = decoder.context();
+                        // Dedup while preserving order: `requested` is a
+                        // caller-built list (e.g. a union of encoder/mapper
+                        // columns), not a hand-typed literal, so an accidental
+                        // duplicate name is a realistic input, not a test-only
+                        // corner case. Undeduped, a duplicate name becomes a
+                        // duplicate field in the projected Arrow schema, which
+                        // `Schema::project` does not reject and which corrupts
+                        // any downstream column lookup by name.
+                        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                        let hits: Vec<String> = requested
+                            .iter()
+                            .filter(|n| stored.columns.iter().any(|c| &c.name == *n))
+                            .filter(|n| seen.insert(n.as_str()))
+                            .cloned()
+                            .collect();
+                        let misses: Vec<&str> = requested
+                            .iter()
+                            .filter(|n| !stored.columns.iter().any(|c| &c.name == *n))
+                            .map(String::as_str)
+                            .collect();
+                        if !misses.is_empty() {
+                            missing.push(format!(
+                                "{}: {}",
+                                self.id_to_node_type[type_id],
+                                misses.join(", ")
+                            ));
+                        }
+                        // A non-empty request that survives NO intersection is
+                        // schema skew, not a skip request: fall back to
+                        // select-all rather than silently starving the encoders.
+                        if hits.is_empty() {
+                            None
+                        } else {
+                            let floor = stored
+                                .columns
+                                .iter()
+                                .filter(|c| !is_reserved_feature_column(&c.name))
+                                .count();
+                            let kept =
+                                hits.iter().filter(|n| !is_reserved_feature_column(n)).count();
+                            if kept < floor {
+                                narrowed.push(format!(
+                                    "{}: {}/{} columns",
+                                    self.id_to_node_type[type_id], kept, floor
+                                ));
+                            }
+                            Some(hits)
+                        }
+                    }
+                }
+                // No entry for this type, or no feature data to project.
+                _ => None,
+            };
+
+            names.push(selected);
+        }
+
+        // A projection key that matches no node type FAILS OPEN: it resolves to
+        // `None`, which means select-all, and every correctness test still
+        // passes while the optimization silently does nothing. A rename on
+        // either side of the key contract lands exactly here. Say so, once per
+        // iterator.
+        if !projections.is_empty() {
+            let unmatched: Vec<&str> = projections
+                .keys()
+                .map(String::as_str)
+                .filter(|k| !matched_keys.contains(k))
+                .collect();
+            if !unmatched.is_empty() {
+                warn!(
+                    unmatched_keys = ?unmatched,
+                    known_node_types = ?self.id_to_node_type,
+                    "Feature projection keys matched no node type; those types \
+                     fall back to fetching ALL columns. Check the node-type \
+                     names in the task manifest against the graph snapshot."
+                );
+            }
+            if !missing.is_empty() {
+                warn!(
+                    missing = %missing.join("; "),
+                    "Feature projection named columns not present in the stored \
+                     schema. A type with at least one surviving column fetches \
+                     only what matched; a type with NO surviving column falls \
+                     back to select-all. Check the column names in the task \
+                     manifest against the graph snapshot."
+                );
+            }
+            if narrowed.is_empty() && skipped.is_empty() {
+                warn!(
+                    "Feature projection was supplied but narrowed nothing; \
+                     every node type will fetch all of its columns."
+                );
+            } else {
+                info!(
+                    narrowed = %narrowed.join(", "),
+                    skipped = %skipped.join(", "),
+                    "Feature projection resolved"
+                );
+            }
+        }
+
+        ResolvedProjection { names }
+    }
+
+    /// Materialize features for `node_ids` of one type.
+    ///
+    /// `feature_names` empty (or containing `"*"`) selects all non-reserved
+    /// columns; a non-empty list selects exactly those. A caller that wants to
+    /// SKIP a type entirely (the `ResolvedProjection::skips` state) must not
+    /// call this function at all for that type -- "emit a block with no
+    /// columns" is not a thing this function (or Arrow) can express, so the
+    /// skip decision belongs one level up, before the call.
     pub fn fetch_features_for_type(
         &self,
         node_type_id: usize,
@@ -1083,11 +1265,29 @@ impl DiskGraphEngine {
         // `None` (default) preserves the stage-table seeding behavior byte-for-byte.
         node_range: Option<NodeRangeSeed<'_>>,
         pseudo_time: Option<PseudoTimeFilter<'_>>,
+        // Pre-resolved feature projection, shared across every batch from one
+        // iterator (`Arc` clone = refcount bump). `None` resolves it here, which
+        // keeps every existing caller and test working unchanged.
+        projection: Option<Arc<ResolvedProjection>>,
     ) -> Result<crate::output::RuntimeBatch> {
         use crate::output::{InMemoryOutput, OutputHandler, RuntimeBatchOutput};
         use std::collections::HashSet;
 
         let cutoff = pseudo_time.map(|f| self.node_cutoff(f)).transpose()?;
+        // `None` => select-all. The projection is supplied by the caller that
+        // knows which columns it will consume (the pybind iterator, once at
+        // build time); a caller that supplies none gets the pre-pushdown
+        // behavior, which is exactly what the Rust integration tests want.
+        let projection = projection
+            .unwrap_or_else(|| Arc::new(self.resolve_projection(&HashMap::new())));
+        // Direct engine callers can bypass the iterator's projection handling.
+        if flags.fused_feature_fetching && !projection.is_trivial() {
+            warn!(
+                "sample_runtime_batch called with fused=true AND a non-trivial \
+                 feature projection; fused dispatch does not consult the \
+                 projection and will fetch every non-reserved column."
+            );
+        }
 
         // NodeRange seed mode: bypass stage/entity/target resolution AND
         // negatives, seed `[0, num_rhs)`-style ids at a fixed seed_time, then
@@ -1101,6 +1301,7 @@ impl DiskGraphEngine {
                 flags,
                 nr,
                 cutoff,
+                projection,
             );
         }
 
@@ -1473,6 +1674,14 @@ impl DiskGraphEngine {
                 if self.node_decoders.get(*type_id).and_then(|d| d.as_ref()).is_none() {
                     continue;
                 }
+                // The caller consumes NO column of this type: skip BEFORE
+                // `set_namespace`, so no `raw_features` block is emitted for it
+                // at all. The type still appears in the emitted topology --
+                // this declines a type's features, never its participation in
+                // the graph.
+                if projection.skips(*type_id) {
+                    continue;
+                }
                 let node_ids: Vec<u64> =
                     type_state.nodes.iter().map(|n| n.global_id).collect();
                 if node_ids.is_empty() {
@@ -1483,7 +1692,10 @@ impl DiskGraphEngine {
                     None => continue,
                 };
                 output.set_namespace(type_name);
-                self.fetch_features_for_type(*type_id, &node_ids, &[], &mut output)?;
+                // Feature projection pushdown: only the columns the caller says
+                // it will consume. `None` => select all (pre-pushdown behavior).
+                let feature_names = projection.names_for(*type_id).unwrap_or(&[]);
+                self.fetch_features_for_type(*type_id, &node_ids, feature_names, &mut output)?;
             }
         }
 
@@ -1673,6 +1885,8 @@ impl DiskGraphEngine {
         flags: &SamplingFlags,
         nr: NodeRangeSeed<'_>,
         cutoff: Option<NodeCutoff<'_>>,
+        // Already resolved by `sample_runtime_batch`, which is the only caller.
+        projection: Arc<ResolvedProjection>,
     ) -> Result<crate::output::RuntimeBatch> {
         use crate::output::{OutputHandler, RuntimeBatchOutput};
         use std::collections::HashSet;
@@ -1747,6 +1961,14 @@ impl DiskGraphEngine {
                 {
                     continue;
                 }
+                // The caller consumes NO column of this type: skip BEFORE
+                // `set_namespace`, so no `raw_features` block is emitted for it
+                // at all. The type still appears in the emitted topology --
+                // this declines a type's features, never its participation in
+                // the graph.
+                if projection.skips(*type_id) {
+                    continue;
+                }
                 let node_ids: Vec<u64> =
                     type_state.nodes.iter().map(|n| n.global_id).collect();
                 if node_ids.is_empty() {
@@ -1757,7 +1979,10 @@ impl DiskGraphEngine {
                     None => continue,
                 };
                 output.set_namespace(type_name);
-                self.fetch_features_for_type(*type_id, &node_ids, &[], &mut output)?;
+                // Feature projection pushdown: only the columns the caller says
+                // it will consume. `None` => select all (pre-pushdown behavior).
+                let feature_names = projection.names_for(*type_id).unwrap_or(&[]);
+                self.fetch_features_for_type(*type_id, &node_ids, feature_names, &mut output)?;
             }
         }
 
@@ -1964,7 +2189,8 @@ impl DiskGraphEngine {
         // 4. Finalize fused fetching by fetching leaf node features
         // and flush remaining features.
         if fused {
-            let type_ids: Vec<usize> = state.type_states.keys().cloned().collect();
+            let mut type_ids: Vec<usize> = state.type_states.keys().cloned().collect();
+            type_ids.sort_unstable();
             for type_id in type_ids {
                 let scratch = &mut state.decode_scratch;
                 if let Some(ts) = state.type_states.get_mut(&type_id) {
@@ -2589,6 +2815,7 @@ impl DiskGraphEngine {
                 work_queue.push((*node_type_id, frontier));
             }
         }
+        work_queue.sort_unstable_by_key(|(node_type_id, _)| *node_type_id);
 
         // Fused fetching path
         if fused {

@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+import importlib
 import sys
 import warnings
 from abc import ABC, abstractmethod
+from types import ModuleType
 
-import faiss
-import faiss.contrib.torch_utils
 import torch
+from kumo_core.errors import TrainingValidationError
 from torch import Tensor
 from torch_geometric.utils import scatter
 
@@ -19,6 +20,39 @@ logger = logging.getLogger(__name__)
 # as newer versions fixed the validation, e.g., see:
 # https://github.com/facebookresearch/faiss/blob/v1.12.0/faiss/gpu/impl/IndexUtils.cu#L30  # noqa: E501
 MAX_K = 2047  # Upper `faiss` limit
+
+
+class FaissUnavailableError(TrainingValidationError):
+    """The selected retrieval device lacks a compatible FAISS backend."""
+
+
+def require_faiss(device: torch.device | None = None) -> ModuleType:
+    """Load optional FAISS without hiding errors in an installed backend."""
+    try:
+        faiss = importlib.import_module('faiss')
+    except ModuleNotFoundError as error:
+        if error.name != 'faiss':
+            raise
+        raise FaissUnavailableError(
+            title="FAISS is required for link prediction retrieval",
+            message='Install "kumo-engine[cpu]" for CPU execution or '
+            'install a compatible GPU FAISS build directly for CUDA '
+            'execution, building from source if needed.',
+        ) from error
+
+    if device is not None and device.type == 'cuda' and (
+            not hasattr(faiss, 'StandardGpuResources')
+            or not hasattr(faiss, 'knn_gpu')):
+        raise FaissUnavailableError(
+            title="GPU FAISS is required for CUDA link prediction",
+            message='The installed FAISS backend lacks GPU support. Install '
+            'a compatible GPU FAISS build directly, building from source '
+            'if needed, or install "kumo-engine[cpu]" and explicitly '
+            'select CPU execution.',
+        )
+    # This patches FAISS search for Torch tensors only when retrieval is used.
+    importlib.import_module('faiss.contrib.torch_utils')
+    return faiss
 
 
 class MIPSStructure(ABC):
@@ -136,9 +170,10 @@ class MIPSFaiss(MIPSStructure):
     def __init__(self, key: Tensor) -> None:
         super().__init__(key=key)
 
+        faiss = require_faiss(key.device)
         self._cpu_index: MIPSBruteForce | None = None
-        self._res: faiss.StandardGpuResources | None = None
-        self._metal_index: faiss.Index | None = None
+        self._res = None
+        self._metal_index = None
         if sys.platform == 'darwin' and self.device.type == 'cpu':
             self._cpu_index = MIPSBruteForce(self._key)
             return
@@ -152,7 +187,7 @@ class MIPSFaiss(MIPSStructure):
                     or faiss.get_num_gpus() == 0):
                 raise RuntimeError(
                     'MPS retrieval requires a Metal-enabled Faiss build and '
-                    'an available Metal device. Install faiss-cpu==1.14.3 '
+                    'an available Metal device. Install "kumo-engine[cpu]" '
                     'on Apple Silicon or use CPU tensors.')
             self._res = faiss.StandardGpuResources()
             self._metal_index = faiss.index_cpu_to_gpu(
@@ -188,6 +223,7 @@ class MIPSFaiss(MIPSStructure):
                     f"retrieved.")
                 query_k = MAX_K
 
+        faiss = require_faiss(query.device)
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore', message='TypedStorage')
             if self._metal_index is not None:

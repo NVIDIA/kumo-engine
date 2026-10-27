@@ -242,6 +242,17 @@ def test_normalize_graph_preserves_direct_portable_encoder_payload():
     assert native.table("users").column("age").encoder == {"name": "Numerical"}
 
 
+def test_native_columns_carry_table_identity_for_all_roles():
+    native = normalize_graph(temporal_graph_config())
+
+    for table in native.tables:
+        for column in table.columns:
+            assert column.table_name == table.name
+            assert column.qualified_name == f"{table.name}.{column.name}"
+    assert native.table("users").column("id").qualified_name == "users.id"
+    assert native.table("orders").column("id").qualified_name == "orders.id"
+
+
 def test_duplicate_portable_columns_keep_the_last_definition():
     config = graph_config()
     config["tables"][0]["cols"].append({

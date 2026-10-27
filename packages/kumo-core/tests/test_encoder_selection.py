@@ -8,13 +8,14 @@ import pytest
 from kumo_core.encoder_selection import (
     _EncoderStat,
     select_encoder,
+    select_target_encoder,
     select_text_encoder,
 )
 from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumo_core.pquery import (
     NativeGraphColumn,
-    PredictiveQueryPlanError,
     _column_encoder_stats,
+    _feature_schema,
     _infer_encoder,
     build_native_pquery_task_plan,
     normalize_graph,
@@ -176,18 +177,23 @@ def test_flat_stats_do_not_cross_column_name_prefixes():
     }
 
 
-def test_id_selection_requires_the_statistic_population():
+def test_id_selection_warns_without_the_statistic_population(caplog):
     stats = {
         ColStatType.NA_FRACTION: _EncoderStat(0.0, approx=True),
         ColStatType.NUM_UNIQUE: _EncoderStat(8_000, approx=True),
     }
 
-    with pytest.raises(ValueError, match="must carry num_entries"):
-        select_encoder("account_id", Dtype.int64, Stype.ID, stats)
+    selected = select_encoder("users.account_id", Dtype.int64, Stype.ID, stats)
+
+    assert selected.name == "Null"
+    assert "users.account_id" in caplog.text
+    assert "must carry num_entries" in caplog.text
 
 
-def test_portable_selector_rejects_approximate_exact_stats():
-    column = NativeGraphColumn("category", "string", "categorical")
+@pytest.mark.parametrize("table_name", [None, "users"])
+def test_portable_selector_warns_for_approximate_exact_stats(table_name, caplog):
+    column = NativeGraphColumn("category", "string", "categorical",
+                               table_name=table_name)
     stats = {
         ColStatType.NA_FRACTION:
         _EncoderStat(0.0, approx=True),
@@ -201,8 +207,95 @@ def test_portable_selector_rejects_approximate_exact_stats():
         _EncoderStat([["a", 60], ["b", 40]], approx=False),
     }
 
-    with pytest.raises(PredictiveQueryPlanError, match="must be exact"):
-        _infer_encoder(column, stats)
+    assert _infer_encoder(column, stats)["name"] == "Null"
+    assert column.qualified_name in caplog.text
+    assert "COUNT must be exact" in caplog.text
+
+
+@pytest.mark.parametrize("missing_stat", [
+    ColStatType.STRING_GLOVE_OVERLAP,
+    ColStatType.STRING_AVG_TOKENS,
+    ColStatType.STRING_MAX_TOKENS,
+    ColStatType.STRING_AVG_NON_CHAR,
+])
+def test_missing_text_stats_warn_with_the_exact_reason(missing_stat, caplog):
+    column = NativeGraphColumn("description", "string", "text",
+                               table_name="users")
+    stats = {
+        ColStatType.NA_FRACTION: _EncoderStat(0.0, approx=True),
+        ColStatType.STRING_GLOVE_OVERLAP: _EncoderStat(0.8, approx=True),
+        ColStatType.STRING_AVG_TOKENS: _EncoderStat(5.0, approx=True),
+        ColStatType.STRING_MAX_TOKENS: _EncoderStat(20.0, approx=True),
+        ColStatType.STRING_AVG_NON_CHAR: _EncoderStat(0.0, approx=True),
+    }
+    del stats[missing_stat]
+    reason = (f"Column Stat {missing_stat} is required for encoder inferral "
+              "but was not provided.")
+
+    selected = select_encoder(column.qualified_name, Dtype.string, Stype.text,
+                              stats)
+    assert selected.name == "Null"
+    assert _infer_encoder(column, stats)["name"] == "Null"
+    assert len(caplog.records) == 2
+    for record in caplog.records:
+        assert "users.description" in record.getMessage()
+        assert reason in record.getMessage()
+
+
+@pytest.mark.parametrize("dtype,stype,missing_stat", [
+    ("float", "numerical", "MEAN"),
+    ("string", "categorical", "COUNT"),
+    ("string", "multicategorical", "NUM_UNIQUE_MULTI"),
+    ("int64", "ID", "NUM_UNIQUE"),
+    ("floatlist", "sequence", "SEQUENCE_MIN_LENGTH"),
+])
+def test_missing_feature_stats_return_null_and_warn(
+        dtype, stype, missing_stat, caplog):
+    column = NativeGraphColumn("feature", dtype, stype, table_name="users")
+
+    selected = _infer_encoder(column, {
+        ColStatType.NA_FRACTION: _EncoderStat(0.0, approx=True),
+    })
+
+    assert selected["name"] == "Null"
+    assert "users.feature" in caplog.text
+    assert f"Column Stat {missing_stat} is required" in caplog.text
+
+
+def test_missing_na_fraction_returns_null_and_warns(caplog):
+    column = NativeGraphColumn("feature", "float", "numerical",
+                               table_name="users")
+
+    assert _infer_encoder(column, {})["name"] == "Null"
+    assert "users.feature" in caplog.text
+    assert "NA_FRACTION is required" in caplog.text
+
+
+@pytest.mark.parametrize("count,num_na,num_unique,reason", [
+    (100, 101, 2, "NUM_NA (101) exceeds COUNT (100)"),
+    (100, 0, -1, "NUM_UNIQUE must be a finite nonnegative count"),
+    (100, 0, float("inf"), "NUM_UNIQUE must be a finite nonnegative count"),
+])
+def test_invalid_category_counts_warn_instead_of_raising(
+        count, num_na, num_unique, reason, caplog):
+    stats = {
+        ColStatType.NA_FRACTION: _EncoderStat(0.0, approx=True),
+        ColStatType.COUNT: _EncoderStat(count, approx=False),
+        ColStatType.NUM_NA: _EncoderStat(num_na, approx=False),
+        ColStatType.NUM_UNIQUE: _EncoderStat(num_unique, approx=False),
+        ColStatType.CATEGORY_COUNTS: _EncoderStat([], approx=False),
+    }
+    column = NativeGraphColumn("category", "string", "categorical",
+                               table_name="users")
+
+    assert _infer_encoder(column, stats)["name"] == "Null"
+    assert "users.category" in caplog.text
+    assert reason in caplog.text
+
+
+def test_target_selection_still_requires_numerical_stats():
+    with pytest.raises(ValueError, match="MEAN is required"):
+        select_target_encoder(Stype.numerical, {})
 
 
 def test_text_left_unencoded_is_reported_by_every_inference(caplog):
@@ -223,3 +316,72 @@ def test_text_left_unencoded_is_reported_by_every_inference(caplog):
         "too short or have too few known words. To encode it anyway, set its "
         "encoder to TextEmbedding()."
     ] * 2
+
+
+@pytest.mark.parametrize("num_unique", [None, "null", 4_000, 4_001])
+@pytest.mark.parametrize("approx", [False, True])
+def test_text_warnings_identify_tables_and_explain_high_cardinality(
+        num_unique, approx, monkeypatch, caplog):
+    config = _graph_config()
+    table = config["tables"][0]
+    table.pop("time_col")
+    table["cols"] = [
+        {
+            "name": "age",
+            "dtype": "int64",
+            "stype": "numerical"
+        },
+        {
+            "name": "category_01",
+            "dtype": "string",
+            "stype": "text"
+        },
+    ]
+    config["tables"].append({
+        **table,
+        "table_name": "orders",
+        "cols": [table["cols"][1]],
+    })
+    raw_stats = {
+        "category_01": {
+            "NA_FRACTION": _stat(0.0),
+            "STRING_GLOVE_OVERLAP": _stat(0.0),
+            "STRING_AVG_TOKENS": _stat(1.0),
+            "STRING_MAX_TOKENS": _stat(1.0),
+            "STRING_AVG_NON_CHAR": _stat(0.5),
+        },
+    }
+    if num_unique is not None:
+        raw_stats["category_01"]["NUM_UNIQUE"] = _stat(
+            None if num_unique == "null" else num_unique, approx=approx)
+    monkeypatch.setattr(
+        "kumo_core.pquery.read_col_stats",
+        lambda _index, _table, _kind: json.dumps(raw_stats),
+    )
+    graph = normalize_graph(config)
+    query = parse_and_validate_query("PREDICT users.age > 20 FOR EACH users.id",
+                                     graph)
+
+    schema = _feature_schema(graph, query, "index", lag_timesteps=None,
+                             year_over_year=False)
+
+    warnings = [record.getMessage() for record in caplog.records]
+    assert len(warnings) == 2
+    for table_name, message in zip(("users", "orders"), warnings):
+        qualified_name = f"{table_name}.category_01"
+        assert f"Text column {qualified_name!r}" in message
+        assert "too short or have too few known words" in message
+        if isinstance(num_unique, int) and num_unique > 4_000:
+            assert "4001 distinct values, exceeding MAX_CATEGORIES=4000" in message
+            assert "Hash() or Index()" in message
+            assert ("approximately" in message) == approx
+            assert (
+                f"model_plan.column_processing.encoder_overrides[{qualified_name!r}]"
+                in message)
+        else:
+            assert "TextEmbedding()" in message
+            assert "MAX_CATEGORIES" not in message
+        spec = next(spec
+                    for spec in schema["node_types"][table_name]["column_specs"]
+                    if spec["column_name"] == "category_01")
+        assert spec["encoder"]["name"] == "Null"
