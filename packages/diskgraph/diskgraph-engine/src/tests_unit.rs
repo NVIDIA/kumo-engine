@@ -2507,14 +2507,10 @@ fn test_finalize_preserves_anchor_major_seed_prefix() {
 
 type SampleSnapshot = (Vec<(usize, u16, u32, u32)>, Vec<Vec<(u64, u32, u32, u32)>>, Vec<Vec<u64>>, Vec<Vec<u64>>);
 
-#[test]
-fn per_seed_recording_matches_legacy_recording() {
-    use rand::{Rng, SeedableRng};
-    let dir = TempDir::new().unwrap();
-    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(11);
+fn random_adjacency(rng: &mut rand_chacha::ChaCha8Rng, n: u8) -> Vec<Vec<(u8, u64)>> {
+    use rand::Rng;
     let sk = SortKeyEncoder::new(&temporal_sortkey_meta());
-    let n = 41u8;
-    let adjacency: Vec<Vec<(u8, u64)>> = (0..n)
+    (0..n)
         .map(|_| {
             let mut e: Vec<(u8, u64)> = (0..rng.gen_range(0..30))
                 .map(|_| (rng.gen_range(0..n), sk.encode_lower(rng.gen_range(0..1_000))))
@@ -2522,33 +2518,32 @@ fn per_seed_recording_matches_legacy_recording() {
             e.sort_by_key(|&(_, k)| std::cmp::Reverse(k));
             e
         })
-        .collect();
-    let (ctx, node_data) = trivial_node_rowpack();
-    let (reader, _) = write_adjacency_shard(dir.path(), &adjacency, 16, &node_data);
-    let reader = Arc::new(reader);
-    let mut sampler = DiskGraphEngine::new(
-        [("User".to_string(), vec![ShardHandle { reader, min_id: 0, max_id: n as u64 - 1 }])].into(),
-        [(0, ("Connects".to_string(), "User".to_string(), "User".to_string()))].into(),
-        [(0usize, SortKeyDecoder::new(&temporal_sortkey_meta()))].into(),
-        [("User".to_string(), RowPackDecoder::new(ctx).unwrap())].into(),
-        None,
-        diskgraph_core::time::TimeUnit::Seconds,
-        Some(42),
-        Some(2),
-    );
+        .collect()
+}
 
-    let requests: Vec<BatchSamplingRequest> = (0..6)
-        .map(|i| {
-            let mode = if i % 2 == 0 { SamplingMode::TemporalMostRecent } else { SamplingMode::Uniform };
-            let seeds: Vec<u64> = (0..rng.gen_range(1..60)).map(|_| rng.gen_range(0..n as u64)).collect();
-            let mut req = make_sampling_request_with_mode(seeds.clone(), vec![6, 4, 3, 5], mode);
-            req.seed_timestamp_unit = diskgraph_core::time::TimeUnit::Seconds;
-            req.seed_timestamps = Some([("User".to_string(), seeds.iter().map(|_| rng.gen_range(0..1_000)).collect())].into());
-            req.flags.swap_edge_direction = i % 3 == 0;
-            req
-        })
-        .collect();
+fn per_seed_request(
+    rng: &mut rand_chacha::ChaCha8Rng,
+    types: &[&str],
+    n: u8,
+    seeds: usize,
+    i: usize,
+) -> BatchSamplingRequest {
+    use rand::Rng;
+    let mode = if i % 2 == 0 { SamplingMode::TemporalMostRecent } else { SamplingMode::Uniform };
+    let mut req = make_sampling_request_with_mode(vec![], vec![6, 4, 3, 5], mode);
+    for layer in &mut req.plan.layers {
+        layer.default_fanout = layer.fanouts.drain().next().map(|(_, f)| f);
+    }
+    req.seed_nodes = types.iter().map(|t| (t.to_string(), (0..seeds).map(|_| rng.gen_range(0..n as u64)).collect())).collect();
+    req.seed_timestamps = Some(types.iter().map(|t| (t.to_string(), (0..seeds).map(|_| rng.gen_range(0..1_000)).collect())).collect());
+    req.seed_timestamp_unit = diskgraph_core::time::TimeUnit::Seconds;
+    req.flags.swap_edge_direction = i % 3 == 0;
+    req
+}
 
+/// Samples every request on both recording paths and asserts identical
+/// edges, node records and stats.
+fn assert_per_seed_matches_legacy(sampler: &mut DiskGraphEngine, requests: &[BatchSamplingRequest]) -> Vec<SampleSnapshot> {
     let run = |sampler: &DiskGraphEngine| -> Vec<SampleSnapshot> {
         let pool = crate::state::StatePool::new();
         requests
@@ -2567,13 +2562,78 @@ fn per_seed_recording_matches_legacy_recording() {
             })
             .collect()
     };
-
-    let per_seed = run(&sampler);
+    sampler.legacy_recording = false;
+    let per_seed = run(sampler);
     sampler.legacy_recording = true;
-    let legacy = run(&sampler);
+    let legacy = run(sampler);
     assert_eq!(per_seed, legacy);
+    per_seed
+}
+
+#[test]
+fn per_seed_recording_matches_legacy_recording() {
+    use rand::SeedableRng;
+    let dir = TempDir::new().unwrap();
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(11);
+    let n = 41u8;
+    let adjacency = random_adjacency(&mut rng, n);
+    let (ctx, node_data) = trivial_node_rowpack();
+    let (reader, _) = write_adjacency_shard(dir.path(), &adjacency, 16, &node_data);
+    let reader = Arc::new(reader);
+    let mut sampler = DiskGraphEngine::new(
+        [("User".to_string(), vec![ShardHandle { reader, min_id: 0, max_id: n as u64 - 1 }])].into(),
+        [(0, ("Connects".to_string(), "User".to_string(), "User".to_string()))].into(),
+        [(0usize, SortKeyDecoder::new(&temporal_sortkey_meta()))].into(),
+        [("User".to_string(), RowPackDecoder::new(ctx).unwrap())].into(),
+        None,
+        diskgraph_core::time::TimeUnit::Seconds,
+        Some(42),
+        Some(4),
+    );
+
+    let requests: Vec<BatchSamplingRequest> =
+        (0..6).map(|i| per_seed_request(&mut rng, &["User"], n, [1, 40, 700][i % 3], i)).collect();
+    let per_seed = assert_per_seed_matches_legacy(&mut sampler, &requests);
     let (edges, nodes) = per_seed.iter().fold((0, 0), |(e, v), s| (e + s.0.len(), v + s.1[0].len()));
     assert!(edges > nodes, "the graph must revisit nodes within a seed");
+}
+
+#[test]
+fn per_seed_recording_matches_legacy_recording_across_seed_types() {
+    use rand::SeedableRng;
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(12);
+    let n = 41u8;
+    let (ctx, node_data) = trivial_node_rowpack();
+    let dirs = [TempDir::new().unwrap(), TempDir::new().unwrap()];
+    let readers: Vec<Arc<ShardReader>> = dirs
+        .iter()
+        .map(|dir| Arc::new(write_adjacency_shard(dir.path(), &random_adjacency(&mut rng, n), 16, &node_data).0))
+        .collect();
+    let requests: Vec<BatchSamplingRequest> =
+        (0..6).map(|i| per_seed_request(&mut rng, &["A", "B"], n, [3, 40, 700][i % 3], i)).collect();
+    for threads in [1, 4] {
+        let shard = |t: usize| vec![ShardHandle { reader: readers[t].clone(), min_id: 0, max_id: n as u64 - 1 }];
+        let mut sampler = DiskGraphEngine::new(
+            [("A".to_string(), shard(0)), ("B".to_string(), shard(1))].into(),
+            [
+                (0, ("AToB".to_string(), "A".to_string(), "B".to_string())),
+                (1, ("BToA".to_string(), "B".to_string(), "A".to_string())),
+            ]
+            .into(),
+            [(0usize, SortKeyDecoder::new(&temporal_sortkey_meta())), (1usize, SortKeyDecoder::new(&temporal_sortkey_meta()))].into(),
+            [
+                ("A".to_string(), RowPackDecoder::new(ctx.clone()).unwrap()),
+                ("B".to_string(), RowPackDecoder::new(ctx.clone()).unwrap()),
+            ]
+            .into(),
+            None,
+            diskgraph_core::time::TimeUnit::Seconds,
+            Some(42),
+            Some(threads),
+        );
+        let per_seed = assert_per_seed_matches_legacy(&mut sampler, &requests);
+        assert!(per_seed.iter().all(|s| s.1.len() == 2 && s.0.iter().any(|e| e.1 == 1)));
+    }
 }
 
 #[test]
