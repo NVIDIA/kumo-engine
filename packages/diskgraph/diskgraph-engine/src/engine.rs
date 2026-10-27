@@ -3184,6 +3184,9 @@ impl DiskGraphEngine {
             cs.res.resize_with(n, Default::default);
         }
         let threads = self.thread_pool.current_num_threads();
+        // 32k default: at 8 threads, layers of a few thousand to ~25k edges ran
+        // 10-50% slower on the pool, layers of 100k+ edges faster. Cuts fall on
+        // seed boundaries, so parts are uneven; 4 per thread lets the pool balance.
         let parts = if threads > 1 && n >= self.parallel_commit_min_edges {
             threads * 4
         } else {
