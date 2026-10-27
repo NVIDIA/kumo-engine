@@ -597,7 +597,7 @@ def test_temporal_query_shares_multihop_rows_between_sequences_and_aggregates(or
         ],
         "aggregates": [],
     }
-    length_cutoffs = [1609545600, 1609545600]  # Jan 2, exclusive upper bound.
+    length_cutoffs = [1609545600, 1609545600]  # Jan 2, inclusive upper bound.
     filtered = engine.query_temporal(
         {"users": root_ids},
         {"users": length_cutoffs},
@@ -620,7 +620,7 @@ def test_temporal_query_shares_multihop_rows_between_sequences_and_aggregates(or
         ]
         for sequence in filtered["sequences"]
     ]
-    assert expected_lengths == [[1, 0], [1, 0]]
+    assert expected_lengths == [[1, 1], [1, 1]]
     assert len(length_result["sequences"]) == 2
     assert length_result["sequences"][0]["name"] == "recent_orders"
     assert isinstance(length_result["sequences"][0]["lengths"], pa.UInt64Array)
@@ -666,12 +666,12 @@ def test_temporal_query_filters_sort_keys_before_rowpack_decode(sorted_orders_gr
             "operation": "sum", "column": "amount",
         }],
     }
-    cutoffs = [1609545600, 1609545600]  # Jan 2, exclusive.
+    cutoffs = [1609545600, 1609545600]  # Jan 2, inclusive.
     result = engine.query_temporal(
         {"users": roots}, {"users": cutoffs}, json.dumps(plan),
     )
-    assert result["sequences"][0]["offsets"] == [0, 1, 1]
-    assert result["sequences"][0]["batch"].column("order_id").to_pylist() == ["o1"]
-    assert result["aggregates"][0]["values"] == [10.0, 0.0]
+    assert result["sequences"][0]["offsets"] == [0, 1, 2]
+    assert result["sequences"][0]["batch"].column("order_id").to_pylist() == ["o1", "o2"]
+    assert result["aggregates"][0]["values"] == [10.0, 30.0]
     assert result["stats"]["edges_visited"] == 3
-    assert result["stats"]["rows_decoded"] == 1
+    assert result["stats"]["rows_decoded"] == 2
