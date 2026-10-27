@@ -444,7 +444,10 @@ mod tests {
             cs.order.reserve(RESET_THRESHOLD * 4);
             cs.res.resize_with(RESET_THRESHOLD * 4, Default::default);
             cs.parts = (0..4)
-                .map(|_| CommitPart { new_edges: Vec::with_capacity(RESET_THRESHOLD * 2), new_bounds: Vec::new() })
+                .map(|_| CommitPart {
+                    new_edges: Vec::with_capacity(RESET_THRESHOLD * 2),
+                    new_bounds: Vec::new(),
+                })
                 .collect();
             state.seed_maps = (0..64)
                 .map(|_| GxHashMap::with_capacity(RESET_THRESHOLD / 16))
@@ -456,7 +459,13 @@ mod tests {
         let cs = &state.commit_scratch;
         assert!(cs.order.capacity() <= RESET_THRESHOLD);
         assert!(cs.res.capacity() <= RESET_THRESHOLD);
-        assert!(cs.parts.iter().map(|p| p.new_edges.capacity()).sum::<usize>() <= RESET_THRESHOLD);
+        assert!(
+            cs.parts
+                .iter()
+                .map(|p| p.new_edges.capacity())
+                .sum::<usize>()
+                <= RESET_THRESHOLD
+        );
         let map_capacity: usize = state.seed_maps.iter().map(GxHashMap::capacity).sum();
         assert!(map_capacity <= RESET_THRESHOLD);
         assert!(map_capacity > 0);

@@ -8,17 +8,17 @@ use crate::output::OutputHandler;
 use crate::state::{
     CommitPart, LookupKey, NodeRecord, RawEdge, ResolvedProjection, SamplingState, TypeState,
 };
-use gxhash::HashMap as GxHashMap;
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_core::tt_builder::{Value, WEIGHT_COL};
 use diskgraph_core::time::{abs_from_unit, Seconds, TimeUnit};
 use diskgraph_index::layout::{EdgeListView, RelationSegment};
 use diskgraph_index::reader::ShardReader;
+use gxhash::HashMap as GxHashMap;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info, warn};
@@ -2224,7 +2224,13 @@ impl DiskGraphEngine {
         let anchors: Vec<Option<&[i64]>> = self
             .id_to_node_type
             .iter()
-            .map(|t| request.seed_timestamps.as_ref().and_then(|m| m.get(t)).map(Vec::as_slice))
+            .map(|t| {
+                request
+                    .seed_timestamps
+                    .as_ref()
+                    .and_then(|m| m.get(t))
+                    .map(Vec::as_slice)
+            })
             .collect();
         for layer_idx in 0..request.plan.layers.len() {
             let hop_start = Instant::now();
@@ -2914,7 +2920,15 @@ impl DiskGraphEngine {
                     let segments = edges_view.relation_segments().unwrap_or_default();
 
                     self.process_node_relations(
-                        layer_idx, src_type_id, &segments, node, layer_spec, request, anchors, state, output,
+                        layer_idx,
+                        src_type_id,
+                        &segments,
+                        node,
+                        layer_spec,
+                        request,
+                        anchors,
+                        state,
+                        output,
                         cutoff,
                     )?;
                 }
@@ -3170,10 +3184,17 @@ impl DiskGraphEngine {
             cs.res.resize_with(n, Default::default);
         }
         let threads = self.thread_pool.current_num_threads();
-        let parts = if threads > 1 && n >= self.parallel_commit_min_edges { threads * 4 } else { 1 };
+        let parts = if threads > 1 && n >= self.parallel_commit_min_edges {
+            threads * 4
+        } else {
+            1
+        };
         let mut cuts = vec![0];
         for k in 1..parts {
-            let cut = cs.bounds.partition_point(|&b| (b as usize) < n * k / parts).min(slots);
+            let cut = cs
+                .bounds
+                .partition_point(|&b| (b as usize) < n * k / parts)
+                .min(slots);
             if cut > *cuts.last().unwrap() {
                 cuts.push(cut);
             }
@@ -3182,17 +3203,21 @@ impl DiskGraphEngine {
             cuts.push(slots);
         }
         cs.parts.resize_with(cuts.len() - 1, Default::default);
-        self.for_each_part(&mut state.seed_maps, &cuts, &mut cs.parts, |maps, part, range| {
-            dedup_seeds(maps, &cs.order, &cs.bounds[range], &cs.res, part)
-        });
+        self.for_each_part(
+            &mut state.seed_maps,
+            &cuts,
+            &mut cs.parts,
+            |maps, part, range| dedup_seeds(maps, &cs.order, &cs.bounds[range], &cs.res, part),
+        );
 
         let mut dst_states: Vec<Option<TypeState>> = Vec::new();
         dst_states.resize_with(self.readers.len(), || None);
         for (i, e) in chunks.iter().flatten().enumerate() {
             let r = cs.res[i].load(Relaxed);
             let dst_local_id = if r == NEW_NODE {
-                let ts = dst_states[e.dst_type_id]
-                    .get_or_insert_with(|| state.type_states.remove(&e.dst_type_id).unwrap_or_default());
+                let ts = dst_states[e.dst_type_id].get_or_insert_with(|| {
+                    state.type_states.remove(&e.dst_type_id).unwrap_or_default()
+                });
                 if ts.nodes.len() >= PENDING as usize {
                     return Err(EngineError::Internal(format!(
                         "too many nodes of type {}",
@@ -3232,15 +3257,20 @@ impl DiskGraphEngine {
             }
         }
 
-        self.for_each_part(&mut state.seed_maps, &cuts, &mut cs.parts, |maps, part, _| {
-            let mut lo = 0;
-            for (map, &hi) in maps.iter_mut().zip(&part.new_bounds) {
-                for &(key, i) in &part.new_edges[lo..hi as usize] {
-                    map.insert(key, cs.res[i as usize].load(Relaxed));
+        self.for_each_part(
+            &mut state.seed_maps,
+            &cuts,
+            &mut cs.parts,
+            |maps, part, _| {
+                let mut lo = 0;
+                for (map, &hi) in maps.iter_mut().zip(&part.new_bounds) {
+                    for &(key, i) in &part.new_edges[lo..hi as usize] {
+                        map.insert(key, cs.res[i as usize].load(Relaxed));
+                    }
+                    lo = hi as usize;
                 }
-                lo = hi as usize;
-            }
-        });
+            },
+        );
         state.commit_scratch = cs;
         Ok(())
     }
@@ -3265,7 +3295,8 @@ impl DiskGraphEngine {
             let (m, p, r) = jobs.pop().unwrap();
             f(m, p, r);
         } else {
-            self.thread_pool.install(|| jobs.into_par_iter().for_each(|(m, p, r)| f(m, p, r)));
+            self.thread_pool
+                .install(|| jobs.into_par_iter().for_each(|(m, p, r)| f(m, p, r)));
         }
     }
 
