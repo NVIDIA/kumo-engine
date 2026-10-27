@@ -17,7 +17,7 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26,<3",
     # Parquet and Arrow IPC reads/writes in the Python artifact helpers.
-    "pyarrow==24.0.0",
+    "pyarrow>=16,<25",
 ]
 
 [project.optional-dependencies]
