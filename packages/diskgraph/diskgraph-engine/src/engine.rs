@@ -3149,6 +3149,9 @@ impl DiskGraphEngine {
             let r = cs.res[i];
             let dst_local_id = if r == NEW_NODE {
                 let ts = state.type_states.entry(e.dst_type_id).or_default();
+                if ts.nodes.len() >= PENDING as usize {
+                    return Err(EngineError::Internal(format!("too many nodes of type {}", e.dst_type_id)));
+                }
                 let id = ts.nodes.len() as u32;
                 let node = NodeRecord {
                     global_id: e.dst_global_id,
