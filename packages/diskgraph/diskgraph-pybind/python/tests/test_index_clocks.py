@@ -130,7 +130,7 @@ def _sampled_edges(index: str) -> dict:
     return sorted(edges)
 
 
-def _training_table(index: str, clock: str) -> list:
+def _training_table(index: str, clock: str, window_days: int = 7) -> list:
     builder = DiskGraphTTBuilder(clock)
     builder.temporal([(EPOCH_DAY + d) * DAY for d in (4, 8, 12, 16)], forecast_length=1,
                      unit="seconds")
@@ -140,7 +140,7 @@ def _training_table(index: str, clock: str) -> list:
     builder.set_target_stype("numerical")
     builder.aggregate(
         "orders_next_week", EdgeRef("users", "user_id", "orders", "user_id"), "count",
-        time_col="ordered_at", window=(0, 7), window_unit="days",
+        time_col="ordered_at", window=(0, window_days), window_unit="days",
         row_filter=RowFilter.compare(
             "ordered_at", ">", datetime.datetime(2023, 12, 10, tzinfo=datetime.timezone.utc),
             clock),
@@ -319,3 +319,12 @@ def test_values_beyond_the_clock_are_null_and_drop_required_rows(tmp_path):
     index = _ingest(tmp_path / "ns_required", "nanoseconds", tables)
     nodes = json.loads(diskgraph.read_index_metadata(index))["node_types"]
     assert [node["max_id"] for node in nodes if node["name"] == "events"] == [0]
+
+
+def test_rows_whose_window_leaves_the_clock_are_skipped(whole_day_data, tmp_path):
+    index = _ingest(tmp_path / "ns", "nanoseconds", _whole_day_tables(whole_day_data))
+    last_day_in_clock = (2**63 - 1) // (DAY * 10**9)
+    window_days = last_day_in_clock - (EPOCH_DAY + 8)
+    rows = _training_table(index, "nanoseconds", window_days)
+    anchors = {row["TIMESTAMP"].date() for part, row in rows if part.startswith("tt.parquet")}
+    assert anchors == {datetime.date(2023, 12, 13), datetime.date(2023, 12, 17)}
