@@ -251,11 +251,11 @@ def test_prediction_runs_are_never_resumed(fake, caplog):
     tracking.log_prediction_run(record)
     tracking.log_prediction_run(record)
 
-    assert {name: run['status']
-            for name, run in fake._instance.runs.items()} == {
-                'TRAINER_PREDICT_1': 'FINISHED',
-                'TRAINER_PREDICT_1_1': 'FINISHED',
-            }
+    first, second = fake._instance.runs
+    assert first == 'TRAINER_PREDICT_1'
+    assert re.fullmatch('TRAINER_PREDICT_1_[0-9A-F]{8}', second)
+    assert {run['status'] for run in fake._instance.runs.values()} == {
+        'FINISHED'}
     assert 'already exists' in caplog.text
 
 

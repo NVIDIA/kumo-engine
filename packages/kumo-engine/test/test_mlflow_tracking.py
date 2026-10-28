@@ -439,7 +439,7 @@ def test_a_monitoring_run_is_new_and_tags_its_prediction_run(tracking_uri):
     client = mlflow.MlflowClient()
     experiment = client.create_experiment('scores')
     predicted = client.create_run(experiment, tags={
-        'kumo.kind': 'prediction', 'kumo.run_id': 'pred-1'
+        'kumo.kind': 'prediction', 'kumo.prediction_id': 'pred-1'
     }).info.run_id
     client.set_terminated(predicted)
 
@@ -447,8 +447,7 @@ def test_a_monitoring_run_is_new_and_tags_its_prediction_run(tracking_uri):
         MlflowTracking(experiment_name='scores', log_system_metrics=False),
         'log_monitoring',
         RunRecord(name='monitor-pred-1', metrics={'psi': 0.1, 'ks': 0.2},
-                  tags={'kumo.kind': 'monitoring', 'kumo.run_id': 'm-1',
-                        'kumo.prediction_run': 'pred-1',
+                  tags={'kumo.kind': 'monitoring', 'kumo.monitors': 'pred-1',
                         'kumo.bundle_id': 'b'}))
 
     monitor, = [run for run in _runs(client)
@@ -456,7 +455,7 @@ def test_a_monitoring_run_is_new_and_tags_its_prediction_run(tracking_uri):
     assert monitor.info.run_name == 'monitor-pred-1'
     assert monitor.info.status == 'FINISHED'
     assert monitor.data.metrics == {'psi': 0.1, 'ks': 0.2}
-    assert monitor.data.tags['kumo.prediction_run'] == 'pred-1'
+    assert monitor.data.tags['kumo.monitors'] == 'pred-1'
     assert client.get_run(predicted).data.tags['kumo.monitored'] == (
         monitor.info.run_id)
 
@@ -493,7 +492,7 @@ def test_link_prediction_metric_names_are_logged(tracking_uri):
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracker = MlflowTracking(experiment_name='lp', log_system_metrics=False)
-    tags = {'kumo.kind': 'fit', 'kumo.run_id': 'r'}
+    tags = {'kumo.kind': 'fit'}
     tracker.start(RunRecord(name='r', tags=tags))
     tracker.finish(
         RunRecord(name='r', tags=tags, metrics={
@@ -566,8 +565,7 @@ def test_link_prediction_monitoring_metrics_are_logged(tracking_uri):
         RunRecord(
             name='m', tags={
                 'kumo.kind': 'monitoring',
-                'kumo.run_id': 'm',
-                'kumo.prediction_run': 'p'
+                'kumo.monitors': 'p'
             }, metrics={
                 'map@10': 0.5,
                 'precision@10': 0.25

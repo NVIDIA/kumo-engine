@@ -383,7 +383,7 @@ def test_failed_export_still_writes_and_tracks_the_run(graph, classifier,
     assert not (tmp_path / 'root' / 'predictions').exists()
     record, = recorder.records
     assert record.tags['kumo.error'] == 'OSError: disk full'
-    assert record.tags['kumo.run_id'] == manifest['id']
+    assert record.tags['kumo.prediction_id'] == manifest['id']
 
 
 def test_tracking_records_the_run_and_never_changes_it(graph, classifier,
@@ -396,7 +396,7 @@ def test_tracking_records_the_run_and_never_changes_it(graph, classifier,
 
     def predict(tracking):
         cfg = kumo.MLOps(artifact_root=str(tmp_path / 'root'),
-                         tracking=tracking, export=set())
+                         tracking=tracking, store=set())
         return trainer.predict(table, snapshot=snapshot, mlops=cfg,
                                binary_classification_threshold=0.4)
 

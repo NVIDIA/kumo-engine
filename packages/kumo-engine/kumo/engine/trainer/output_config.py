@@ -28,7 +28,9 @@ from kumo.engine.connector.base import Connector
 class PredictionOutputConfig:
     """Export via ``connector``.
 
-    Use ``output_paths`` for exact predictions/embeddings destinations, or
+    ``path`` names where predictions go: a directory or file on a file
+    destination (local, S3, GCS, a volume or stage), else a table. Use
+    ``output_paths`` for exact predictions/embeddings destinations, or
     ``artifact_type`` and ``table_name`` for one legacy destination.
     ``extra_fields`` applies to every selected artifact, only when passed to
     ``Trainer.predict``; ``PredictionResult.export`` rejects it.
@@ -46,8 +48,22 @@ class PredictionOutputConfig:
     extra_fields: List[MetadataField] = field(default_factory=list)
 
     output_paths: Optional[Mapping[str, str]] = None
+    path: Optional[str] = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
+        if self.path is not None:
+            if (self.output_paths is not None
+                    or self.artifact_type is not None
+                    or self.table_name is not None):
+                raise ValueError('path replaces output_paths, artifact_type '
+                                 'and table_name; pass only one form.')
+            if is_file_destination(self.connector, self.path):
+                object.__setattr__(self, 'output_paths',
+                                   {'predictions': self.path})
+            else:
+                object.__setattr__(self, 'artifact_type',
+                                   PredictionArtifactType.PREDICTIONS)
+                object.__setattr__(self, 'table_name', self.path)
         if self.output_paths is not None:
             paths = resolve_prediction_output_paths(
                 self.output_paths, output_types=self.artifact_type,
@@ -70,7 +86,7 @@ class PredictionOutputConfig:
             object.__setattr__(self, 'output_paths', paths)
         elif self.artifact_type is None or self.table_name is None:
             raise ValueError(
-                'Specify output_paths or artifact_type and table_name')
+                'Specify path, output_paths, or artifact_type and table_name')
         if self.write_mode is None and not all(
                 is_file_destination(self.connector, path)
                 for path in self.destinations().values()):

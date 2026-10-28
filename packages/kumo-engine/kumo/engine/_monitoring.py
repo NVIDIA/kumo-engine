@@ -404,7 +404,6 @@ def track(report: Any, run: Any, settings: Any) -> None:
         return
 
     from kumo.engine._mlops import full_error, raise_on_error, warn_failure
-    from kumo.engine._scratch import new_run_id
     from kumo.engine._tracking import RunSpec, log_run, run_record
 
     try:
@@ -423,7 +422,6 @@ def track(report: Any, run: Any, settings: Any) -> None:
         record = run_record(
             RunSpec(
                 kind='monitoring',
-                run_id=f'{prediction_id}-monitor-{new_run_id()}',
                 name=(f'evaluate-{prediction_id}' if isinstance(
                     report, EvaluationResult) else f'drift-{prediction_id}'),
                 params={
@@ -437,7 +435,7 @@ def track(report: Any, run: Any, settings: Any) -> None:
                     and not isinstance(value, bool)
                 },
                 parents={
-                    'prediction_run': prediction_id,
+                    'monitors': prediction_id,
                     'bundle_id': getattr(run, 'bundle_id', None),
                 },
                 artifacts=({

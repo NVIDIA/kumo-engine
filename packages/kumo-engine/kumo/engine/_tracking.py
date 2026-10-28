@@ -252,7 +252,6 @@ def prediction_record(manifest: 'PredictionManifest',
     return run_record(
         RunSpec(
             kind='prediction',
-            run_id=manifest.id,
             name=manifest.id,
             params={
                 key: value
@@ -263,7 +262,10 @@ def prediction_record(manifest: 'PredictionManifest',
                 for key, value in metrics.items() if isinstance(
                     value, (int, float)) and not isinstance(value, bool)
             },
-            parents={'bundle_id': manifest.parents.model.id},
+            parents={
+                'bundle_id': manifest.parents.model.id,
+                'prediction_id': manifest.id,
+            },
             artifacts={
                 PROVENANCE_FILE:
                 json.dumps(manifest.to_dict(), indent=2, sort_keys=True,
