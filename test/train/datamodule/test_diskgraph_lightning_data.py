@@ -3941,6 +3941,32 @@ def test_seed_time_to_index_unit_uses_manifest_unit(tmp_path) -> None:
     assert dm_ms._seed_time_to_index_unit(seed_ns) == 5_000  # 5e9 ns -> 5e3 ms
 
 
+# 1 day, 1 hour, 1 minute, 1 second and 1 nanosecond after the epoch.
+_SEED_NS = 90_061_000_000_001
+
+
+@pytest.mark.parametrize("clock,anchor", [
+    ("nanoseconds", 90_061_000_000_001),
+    ("microseconds", 90_061_000_000),
+    ("milliseconds", 90_061_000),
+    ("seconds", 90_061),
+    ("hours", 25),
+    ("days", 1),
+])
+def test_node_range_anchor_floors_into_the_index_clock(tmp_path, clock,
+                                                       anchor) -> None:
+    index = tmp_path / "index"
+    index.mkdir()
+    (index / "index_metadata.json").write_text(
+        json.dumps({"timestamp_unit": clock}))
+    dm = _rhs_dm(_rhs_lp_manifest(tmp_path / "m", num_rhs=3, test_time_ns=1))
+    dm._index_np_time_unit = dldm._index_np_time_unit(
+        {"graph_index_path": str(index)})
+
+    assert dm._seed_time_to_index_unit(torch.tensor([_SEED_NS])) == anchor
+    assert dm._seed_time_to_index_unit(torch.tensor([-1])) == -1
+
+
 def test_train_dataloader_sets_fork_context_when_workers(tmp_path) -> None:
     """Python 3.14 workers retain fork to avoid pickling CUDA state."""
     dm = DiskgraphLightningDataModule(
