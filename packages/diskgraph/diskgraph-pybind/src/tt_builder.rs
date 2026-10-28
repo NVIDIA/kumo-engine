@@ -17,8 +17,12 @@
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
-use diskgraph_core::time::{abs_from_unit, dur_from_unit, Abs, Seconds};
+use diskgraph_core::time::{
+    abs_from_unit, ceil_parts, convert_trunc, dur_from_unit, split_parts, Abs, Nanoseconds,
+    TimeUnit,
+};
 use diskgraph_core::tt_builder as tt;
+use diskgraph_core::with_index_clock;
 
 // ─── EdgeRef ─────────────────────────────────────────────────────────────────
 
@@ -66,12 +70,19 @@ impl RowFilter {
     /// RowFilter.compare("status", "==", "paid")
     /// ```
     #[staticmethod]
-    fn compare(column: String, op: &str, value: &Bound<'_, PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (column, op, value, timestamp_unit="seconds"))]
+    fn compare(
+        column: String,
+        op: &str,
+        value: &Bound<'_, PyAny>,
+        timestamp_unit: &str,
+    ) -> PyResult<Self> {
+        let clock = parse_index_clock(timestamp_unit)?;
         Ok(Self {
             inner: tt::RowFilter::Compare {
                 lhs: tt::RowFilterLhs::Column(column),
                 op: parse_compare_op(op)?,
-                rhs: tt::RowFilterRhs::Constant(extract_value(value)?),
+                rhs: tt::RowFilterRhs::Constant(extract_value(value, clock)?),
             },
         })
     }
@@ -98,12 +109,15 @@ impl RowFilter {
     /// RowFilter.compare_remote_lhs(order_to_merchant, "country", "==", "US")
     /// ```
     #[staticmethod]
+    #[pyo3(signature = (path, column, op, value, timestamp_unit="seconds"))]
     fn compare_remote_lhs(
         path: &Bound<'_, PyAny>,
         column: String,
         op: &str,
         value: &Bound<'_, PyAny>,
+        timestamp_unit: &str,
     ) -> PyResult<Self> {
+        let clock = parse_index_clock(timestamp_unit)?;
         Ok(Self {
             inner: tt::RowFilter::Compare {
                 lhs: tt::RowFilterLhs::Remote {
@@ -111,7 +125,7 @@ impl RowFilter {
                     column,
                 },
                 op: parse_compare_op(op)?,
-                rhs: tt::RowFilterRhs::Constant(extract_value(value)?),
+                rhs: tt::RowFilterRhs::Constant(extract_value(value, clock)?),
             },
         })
     }
@@ -206,12 +220,19 @@ impl StageFilter {
     /// StageFilter.compare("_sum", ">", 0)
     /// ```
     #[staticmethod]
-    fn compare(alias: String, op: &str, value: &Bound<'_, PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (alias, op, value, timestamp_unit="seconds"))]
+    fn compare(
+        alias: String,
+        op: &str,
+        value: &Bound<'_, PyAny>,
+        timestamp_unit: &str,
+    ) -> PyResult<Self> {
+        let clock = parse_index_clock(timestamp_unit)?;
         Ok(Self {
             inner: tt::StageFilter::Compare {
                 alias,
                 op: parse_compare_op(op)?,
-                rhs: tt::StageFilterRhs::Constant(extract_value(value)?),
+                rhs: tt::StageFilterRhs::Constant(extract_value(value, clock)?),
             },
         })
     }
@@ -310,15 +331,18 @@ impl StageFilter {
 
 // ─── DiskGraphTTBuilder ──────────────────────────────────────────────────────
 
+/// Holds plan times in nanoseconds; `build()` writes the plan in `timestamp_unit`.
 #[pyclass]
 pub struct DiskGraphTTBuilder {
-    entity: Option<tt::EntitySpec<Seconds>>,
-    temporal: Option<tt::TemporalSpec<Seconds>>,
+    timestamp_unit: TimeUnit,
+    entity: Option<tt::EntitySpec<Nanoseconds>>,
+    default_time_secs: Option<i64>,
+    temporal: Option<tt::TemporalSpec<Nanoseconds>>,
     prediction_type: tt::PredictionType,
     is_prediction: bool,
-    split: Option<tt::SplitSpec<Seconds>>,
-    stages: Vec<tt::Stage<Seconds>>,
-    current_ops: Vec<tt::Op<Seconds>>,
+    split: Option<tt::SplitSpec<Nanoseconds>>,
+    stages: Vec<tt::Stage<Nanoseconds>>,
+    current_ops: Vec<tt::Op<Nanoseconds>>,
     target_stype: Option<String>,
     fkey_mapping: Option<Vec<tt::TTFKeySpec>>,
 }
@@ -326,9 +350,12 @@ pub struct DiskGraphTTBuilder {
 #[pymethods]
 impl DiskGraphTTBuilder {
     #[new]
-    fn new() -> Self {
-        Self {
+    #[pyo3(signature = (timestamp_unit="seconds"))]
+    fn new(timestamp_unit: &str) -> PyResult<Self> {
+        Ok(Self {
+            timestamp_unit: parse_index_clock(timestamp_unit)?,
             entity: None,
+            default_time_secs: None,
             temporal: None,
             prediction_type: tt::PredictionType::Node,
             is_prediction: false,
@@ -337,10 +364,10 @@ impl DiskGraphTTBuilder {
             current_ops: Vec::new(),
             target_stype: None,
             fkey_mapping: None,
-        }
+        })
     }
 
-    /// `FOR EACH {table}.{column}`.
+    /// `FOR EACH {table}.{column}`; `default_time_value` is in epoch seconds.
     #[pyo3(signature = (table, column, output_time_col_name=None, default_time_value=None))]
     fn for_each(
         &mut self,
@@ -353,11 +380,12 @@ impl DiskGraphTTBuilder {
             table,
             column,
             output_time_col_name,
-            default_time_value: default_time_value.map(Abs::from_raw),
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
         });
+        self.default_time_secs = default_time_value;
     }
 
     /// Entity-level create-time column for temporal filtering.
@@ -414,7 +442,7 @@ impl DiskGraphTTBuilder {
         self.temporal = Some(tt::TemporalSpec {
             timestamps: timestamps
                 .into_iter()
-                .map(|v| abs_from_unit::<Seconds>(v, time_unit))
+                .map(|v| abs_from_unit::<Nanoseconds>(v, time_unit))
                 .collect(),
             forecast_length,
             lag_timesteps,
@@ -547,7 +575,7 @@ impl DiskGraphTTBuilder {
             alias,
             lhs: lhs_alias,
             op: parse_compare_op(op)?,
-            rhs: extract_value(value)?,
+            rhs: extract_value(value, self.timestamp_unit)?,
         });
         Ok(())
     }
@@ -583,9 +611,10 @@ impl DiskGraphTTBuilder {
         lag_offsets: Vec<i64>,
         lag_offset_unit: &str,
     ) -> PyResult<()> {
-        let target_op: tt::Op<Seconds> = serde_json::from_str(&target_op_json).map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!("Invalid target op JSON: {}", e))
-        })?;
+        let target_op: tt::Op<Nanoseconds> =
+            serde_json::from_str(&target_op_json).map_err(|e| {
+                crate::DiskgraphConfigError::new_err(format!("Invalid target op JSON: {}", e))
+            })?;
 
         let unit = parse_time_unit(lag_offset_unit)?;
         self.current_ops.push(tt::Op::Autoregression {
@@ -593,7 +622,7 @@ impl DiskGraphTTBuilder {
             target_op: Box::new(target_op),
             lag_offsets: lag_offsets
                 .into_iter()
-                .map(|v| dur_from_unit::<Seconds>(v, unit))
+                .map(|v| dur_from_unit::<Nanoseconds>(v, unit))
                 .collect(),
         });
         Ok(())
@@ -607,9 +636,10 @@ impl DiskGraphTTBuilder {
         future_offsets: Vec<i64>,
         future_offset_unit: &str,
     ) -> PyResult<()> {
-        let target_op: tt::Op<Seconds> = serde_json::from_str(&target_op_json).map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!("Invalid target op JSON: {}", e))
-        })?;
+        let target_op: tt::Op<Nanoseconds> =
+            serde_json::from_str(&target_op_json).map_err(|e| {
+                crate::DiskgraphConfigError::new_err(format!("Invalid target op JSON: {}", e))
+            })?;
 
         let unit = parse_time_unit(future_offset_unit)?;
         self.current_ops.push(tt::Op::FutureLabels {
@@ -617,7 +647,7 @@ impl DiskGraphTTBuilder {
             target_op: Box::new(target_op),
             future_offsets: future_offsets
                 .into_iter()
-                .map(|v| dur_from_unit::<Seconds>(v, unit))
+                .map(|v| dur_from_unit::<Nanoseconds>(v, unit))
                 .collect(),
         });
         Ok(())
@@ -678,7 +708,7 @@ impl DiskGraphTTBuilder {
             crate::DiskgraphConfigError::new_err("call for_each() before build()")
         })?;
 
-        let plan: tt::DiskGraphTTPlan<Seconds> = tt::DiskGraphTTPlan {
+        let plan: tt::DiskGraphTTPlan<Nanoseconds> = tt::DiskGraphTTPlan {
             entity,
             temporal: self.temporal.take(),
             prediction_type: std::mem::replace(&mut self.prediction_type, tt::PredictionType::Node),
@@ -697,8 +727,14 @@ impl DiskGraphTTBuilder {
             fact_pseudo_time: None,
         };
 
-        serde_json::to_string(&plan)
-            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))
+        let default_time_secs = self.default_time_secs.take();
+        with_index_clock!(self.timestamp_unit, U => {
+            plan.to_clock::<U>().and_then(|mut plan| {
+                plan.entity.default_time_value = default_time_secs.map(Abs::from_secs);
+                plan.to_json()
+            })
+        })
+        .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))
     }
 }
 
@@ -835,7 +871,7 @@ fn parse_timestamp_unit(unit: &str) -> PyResult<tt::TimeUnit> {
     }
 }
 
-/// The single implementation of the kumo split config → plan `SplitSpec<Seconds>`
+/// The single implementation of the kumo split config → plan `SplitSpec`
 /// contract.
 ///
 /// Both routes into the executor land here: the PQ path via
@@ -847,13 +883,13 @@ fn parse_timestamp_unit(unit: &str) -> PyResult<tt::TimeUnit> {
 ///
 /// One implementation is what keeps those two agreeing. The unit handling is
 /// asymmetric enough to invite drift: `offsets` must be *pre-scaled* into base
-/// units here, because `ttgen_executor` reads them as `Dur<Seconds>` and never
+/// units here, because `ttgen_executor` reads them as `Dur<U>` and never
 /// rescales (`offset_unit` survives only as a label — no consumer reads it),
 /// whereas `timeframe` / `anchor_start_offset` / `timeframe_step` must cross
 /// *unscaled*, because the executor rescales them itself with
 /// `dur_from_unit(v, unit)` — and for `TimeRangeSplit` that unit may be
 /// calendar (`months` / `years`), which has no fixed-duration form.
-fn make_split_spec(args: SplitSpecArgs) -> PyResult<tt::SplitSpec<Seconds>> {
+fn make_split_spec(args: SplitSpecArgs) -> PyResult<tt::SplitSpec<Nanoseconds>> {
     let SplitSpecArgs {
         kind,
         ratio,
@@ -922,7 +958,7 @@ fn make_split_spec(args: SplitSpecArgs) -> PyResult<tt::SplitSpec<Seconds>> {
         (_, Some(v)) => (
             Some(
                 v.into_iter()
-                    .map(|o| dur_from_unit::<Seconds>(o, off_unit))
+                    .map(|o| dur_from_unit::<Nanoseconds>(o, off_unit))
                     .collect::<Vec<_>>(),
             ),
             None,
@@ -951,13 +987,14 @@ fn make_split_spec(args: SplitSpecArgs) -> PyResult<tt::SplitSpec<Seconds>> {
             v.into_iter()
                 .map(|[lo, hi]| {
                     (
-                        abs_from_unit::<Seconds>(lo, rng_unit),
-                        abs_from_unit::<Seconds>(hi, rng_unit),
+                        abs_from_unit::<Nanoseconds>(lo, rng_unit),
+                        abs_from_unit::<Nanoseconds>(hi, rng_unit),
                     )
                 })
                 .collect()
         }),
-        backtesting_timestamp: backtesting_timestamp.map(|v| abs_from_unit::<Seconds>(v, rng_unit)),
+        backtesting_timestamp: backtesting_timestamp
+            .map(|v| abs_from_unit::<Nanoseconds>(v, rng_unit)),
         split_column,
         split_output_column,
         manual_train_values,
@@ -979,8 +1016,8 @@ fn make_split_spec(args: SplitSpecArgs) -> PyResult<tt::SplitSpec<Seconds>> {
 
 /// Marshal a `SplitSpec` into the standalone JSON that
 /// `build_train_table_artifacts_for_existing_table` accepts as
-/// `split_spec_json`: a serialized `SplitSpec<Seconds>`, which `custom_tt_entry`
-/// parses straight back with `serde_json::from_str`. Serialization and
+/// `split_spec_json`: a serialized `SplitSpec` in `timestamp_unit`, which
+/// `custom_tt_entry` parses straight back with `serde_json::from_str`. Serialization and
 /// deserialization are the derived impls on one struct, so the round-trip is
 /// symmetric by construction.
 ///
@@ -989,10 +1026,23 @@ fn make_split_spec(args: SplitSpecArgs) -> PyResult<tt::SplitSpec<Seconds>> {
 /// the call itself -- two hand-maintained argument lists were the weaker
 /// version of the same failure mode this exists to prevent.
 #[pyfunction]
-pub fn build_split_spec_json(spec: &Bound<'_, PyAny>) -> PyResult<String> {
-    serde_json::to_string(&make_split_spec(extract_split_spec(spec)?)?).map_err(|e| {
+#[pyo3(signature = (spec, timestamp_unit="seconds"))]
+pub fn build_split_spec_json(spec: &Bound<'_, PyAny>, timestamp_unit: &str) -> PyResult<String> {
+    let split = make_split_spec(extract_split_spec(spec)?)?;
+    with_index_clock!(parse_index_clock(timestamp_unit)?, U => {
+        split.to_clock::<U>().and_then(|split| serde_json::to_string(&split))
+    })
+    .map_err(|e| {
         crate::DiskgraphConfigError::new_err(format!("failed to serialize split spec: {e}"))
     })
+}
+
+pub(crate) fn parse_index_clock(unit: &str) -> PyResult<TimeUnit> {
+    TimeUnit::from_name(unit)
+        .filter(|unit| unit.is_index_clock())
+        .ok_or_else(|| {
+            crate::DiskgraphConfigError::new_err(format!("unsupported timestamp_unit {unit:?}"))
+        })
 }
 
 fn parse_time_unit(unit: &str) -> PyResult<tt::TimeUnit> {
@@ -1038,7 +1088,7 @@ fn reject_calendar_date_offset_unit(field: &str, unit: tt::TimeUnit) -> PyResult
     Ok(())
 }
 
-fn extract_value(value: &Bound<'_, PyAny>) -> PyResult<tt::Value> {
+fn extract_value(value: &Bound<'_, PyAny>, clock: TimeUnit) -> PyResult<tt::Value> {
     // Check bool before int — Python `bool` is a subclass of `int`.
     if let Ok(b) = value.extract::<bool>() {
         Ok(tt::Value::Bool(b))
@@ -1048,20 +1098,9 @@ fn extract_value(value: &Bound<'_, PyAny>) -> PyResult<tt::Value> {
         Ok(tt::Value::Float(f))
     } else if is_datetime(value) {
         // datetime.datetime (pd.Timestamp is a subclass, handled here too).
-        // Convert to epoch seconds via Python's .timestamp() method, then
-        // ceiling to match rowpack's div_ceil storage semantics.
-        let epoch_f: f64 = value
-            .call_method0("timestamp")
-            .map_err(|e| {
-                crate::DiskgraphConfigError::new_err(format!("datetime.timestamp() failed: {e}"))
-            })?
-            .extract::<f64>()
-            .map_err(|e| {
-                crate::DiskgraphConfigError::new_err(format!(
-                    "datetime.timestamp() did not return float: {e}"
-                ))
-            })?;
-        Ok(tt::Value::Int(epoch_f.ceil() as i64))
+        // Round up to the index clock to match rowpack's div_ceil storage semantics.
+        let (secs, nanos) = datetime_parts(value)?;
+        Ok(tt::Value::Int(ceil_parts(secs, nanos, clock)))
     } else if is_date(value) {
         // datetime.date — convert to midnight UTC epoch seconds.
         // date.toordinal() gives days since 0001-01-01; Unix epoch is ordinal 719163.
@@ -1077,7 +1116,11 @@ fn extract_value(value: &Bound<'_, PyAny>) -> PyResult<tt::Value> {
                 ))
             })?;
         let days_since_epoch = ordinal - 719_163;
-        Ok(tt::Value::Int(days_since_epoch * 86_400))
+        Ok(tt::Value::Int(convert_trunc(
+            days_since_epoch,
+            TimeUnit::Days,
+            clock,
+        )))
     } else if let Ok(s) = value.extract::<String>() {
         Ok(tt::Value::Str(s))
     } else if let Ok(values) = value.cast::<PyList>() {
@@ -1086,7 +1129,7 @@ fn extract_value(value: &Bound<'_, PyAny>) -> PyResult<tt::Value> {
         // instead of silently dropping a NULL member.
         let values = values
             .iter()
-            .map(|item| extract_value(&item))
+            .map(|item| extract_value(&item, clock))
             .collect::<PyResult<Vec<_>>>()?;
         Ok(tt::Value::List(values))
     } else {
@@ -1094,6 +1137,20 @@ fn extract_value(value: &Bound<'_, PyAny>) -> PyResult<tt::Value> {
             "value must be bool, int, float, str, datetime.datetime, datetime.date, or list",
         ))
     }
+}
+
+/// Exact epoch seconds and nanoseconds with `.timestamp()`'s time-zone rules
+/// (a naive `datetime` is local time, a naive `pd.Timestamp` is UTC). The float
+/// `.timestamp()` alone loses a `pd.Timestamp`'s nanoseconds.
+fn datetime_parts(value: &Bound<'_, PyAny>) -> PyResult<(i64, u32)> {
+    if value.hasattr("nanosecond")? {
+        let nanos: i64 = value.getattr("value")?.extract()?;
+        return Ok(split_parts(nanos, TimeUnit::Nanoseconds));
+    }
+    let epoch: f64 = value.call_method0("timestamp")?.extract()?;
+    let micros: u32 = value.getattr("microsecond")?.extract()?;
+    let secs = (epoch - f64::from(micros) / 1e6).round() as i64;
+    Ok((secs, micros * 1_000))
 }
 
 /// Check if a Python object is an instance of `datetime.datetime`.

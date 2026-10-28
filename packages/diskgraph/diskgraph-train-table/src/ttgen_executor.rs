@@ -1860,11 +1860,11 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
     let time_col_val: Option<Abs<U>> = plan
         .entity_time_col_idx
         .and_then(|idx| read_column_i64(&plan.entity_table, entity_node, idx))
-        .map(Abs::<U>::from_secs);
+        .map(Abs::<U>::from_raw);
     let valid_to_val: Option<Abs<U>> = plan
         .entity_valid_to_col_idx
         .and_then(|idx| read_column_i64(&plan.entity_table, entity_node, idx))
-        .map(Abs::<U>::from_secs);
+        .map(Abs::<U>::from_raw);
 
     // 2. Pre-resolve entity column values (for filter RHS EntityColumn)
     let entity_cols: Vec<Option<Value>> = plan
@@ -1941,7 +1941,7 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
     // 4. Temporal: binary search for valid timestamp range
     let timestamps = &plan.timestamps;
 
-    // Timestamps are sorted ascending. Point anchors (epoch seconds).
+    // Timestamps are sorted ascending. Point anchors (index-clock ticks).
     // Entity excluded if time_col > ts (strict >)
     // Entity excluded if valid_to_col < ts (strict <, i.e. LEQ boundary)
     let first_valid = match time_col_val {
@@ -2702,7 +2702,7 @@ fn execute_target_sequence<U: UnitSystem>(
 /// Execute all stages for an (entity, timestamp) pair.
 /// Returns true if all stages passed (output row should be emitted).
 ///
-/// `observation_ts` is the current observation timestamp (epoch seconds) for
+/// `observation_ts` is the current observation timestamp (index-clock ticks) for
 /// temporal plans. Used to compute absolute window bounds from relative offsets.
 /// `None` for non-temporal plans.
 ///
@@ -2904,10 +2904,7 @@ fn execute_has_edges<U: UnitSystem>(
     entity_cols: &[Option<Value>],
     observation_ts: Option<Abs<U>>,
 ) -> Option<Value> {
-    // SAFETY: encode_upper expects epoch-seconds (the index's internal unit).
-    // This is correct when U=Seconds. If the pipeline is ever monomorphized
-    // over a different unit (e.g. Nanoseconds), the encoder must be made
-    // unit-aware as part of the ingest/sampling unit awareness work.
+    // encode_upper expects index-clock ticks, which `U` is.
     let window = has_edges.window.as_ref().map(|w| {
         let obs = observation_ts.unwrap_or(Abs::<U>::from_raw(0));
         match w {

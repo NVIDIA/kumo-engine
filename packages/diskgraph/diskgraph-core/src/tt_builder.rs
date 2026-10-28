@@ -51,7 +51,7 @@ pub const ENTITY_NODE_ID_COL: &str = "entity_node_id";
 /// Resolved LP RHS positives (`list<i64>` node-ids).
 pub const TARGET_NODE_IDS_COL: &str = "target_node_ids";
 
-use crate::time::{Abs, Dur, UnitSystem};
+use crate::time::{convert_trunc, Abs, Dur, UnitSystem};
 use serde::{Deserialize, Serialize};
 
 // ─── Top-level plan ──────────────────────────────────────────────────────────
@@ -535,6 +535,106 @@ pub enum StageFilter {
     And(Vec<StageFilter>),
     Or(Vec<StageFilter>),
     Not(Box<StageFilter>),
+}
+
+// ─── Index clocks ────────────────────────────────────────────────────────────
+//
+// A serialized plan stores raw ticks of one clock, named by a top-level
+// `timestamp_unit` (omitted for seconds). Converting between clocks truncates
+// anchors, split bounds and offsets, as `main` does when it builds a plan.
+
+impl<U: UnitSystem> DiskGraphTTPlan<U> {
+    pub fn to_clock<V: UnitSystem>(&self) -> serde_json::Result<DiskGraphTTPlan<V>> {
+        let mut plan: DiskGraphTTPlan<V> = serde_json::from_value(serde_json::to_value(self)?)?;
+        if let Some(time) = &mut plan.entity.default_time_value {
+            rescale_abs(time, U::UNIT);
+        }
+        if let Some(temporal) = &mut plan.temporal {
+            for time in &mut temporal.timestamps {
+                rescale_abs(time, U::UNIT);
+            }
+        }
+        if let Some(split) = &mut plan.split {
+            split.rescale_from(U::UNIT);
+        }
+        for stage in &mut plan.stages {
+            for op in &mut stage.ops {
+                op.rescale_from(U::UNIT);
+            }
+        }
+        Ok(plan)
+    }
+
+    pub fn to_json(&self) -> serde_json::Result<String> {
+        if U::UNIT == TimeUnit::Seconds {
+            return serde_json::to_string(self);
+        }
+        let mut json = serde_json::to_value(self)?;
+        json["timestamp_unit"] = serde_json::to_value(U::UNIT)?;
+        serde_json::to_string(&json)
+    }
+}
+
+/// The clock a serialized plan is written in.
+pub fn plan_timestamp_unit(plan_json: &str) -> serde_json::Result<TimeUnit> {
+    #[derive(Deserialize)]
+    struct ClockTag {
+        #[serde(default)]
+        timestamp_unit: TimeUnit,
+    }
+    Ok(serde_json::from_str::<ClockTag>(plan_json)?.timestamp_unit)
+}
+
+impl<U: UnitSystem> SplitSpec<U> {
+    pub fn to_clock<V: UnitSystem>(&self) -> serde_json::Result<SplitSpec<V>> {
+        let mut split: SplitSpec<V> = serde_json::from_value(serde_json::to_value(self)?)?;
+        split.rescale_from(U::UNIT);
+        Ok(split)
+    }
+
+    fn rescale_from(&mut self, from: TimeUnit) {
+        for offset in self.offsets.iter_mut().flatten() {
+            rescale_dur(offset, from);
+        }
+        for (start, end) in self.ranges.iter_mut().flatten() {
+            rescale_abs(start, from);
+            rescale_abs(end, from);
+        }
+        if let Some(time) = &mut self.backtesting_timestamp {
+            rescale_abs(time, from);
+        }
+    }
+}
+
+impl<U: UnitSystem> Op<U> {
+    fn rescale_from(&mut self, from: TimeUnit) {
+        match self {
+            Op::Autoregression {
+                target_op,
+                lag_offsets: offsets,
+                ..
+            }
+            | Op::FutureLabels {
+                target_op,
+                future_offsets: offsets,
+                ..
+            } => {
+                target_op.rescale_from(from);
+                for offset in offsets {
+                    rescale_dur(offset, from);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rescale_abs<U: UnitSystem>(time: &mut Abs<U>, from: TimeUnit) {
+    *time = Abs::from_raw(convert_trunc(time.raw(), from, U::UNIT));
+}
+
+fn rescale_dur<U: UnitSystem>(duration: &mut Dur<U>, from: TimeUnit) {
+    *duration = Dur::from_raw(convert_trunc(duration.raw(), from, U::UNIT));
 }
 
 // ---------------------------------------------------------------------------

@@ -187,7 +187,7 @@ pub(crate) struct ChunkStats<U: UnitSystem> {
     pub(crate) entity_hll: Option<HyperLogLog>,
     pub(crate) entity_welford: Option<WelfordAccumulator>,
     pub(crate) entity_tdigest: Option<TDigestEstimator>,
-    // Distribution stats for TIMESTAMP column (numerical, epoch seconds)
+    // Distribution stats for TIMESTAMP column (numerical, index-clock ticks)
     pub(crate) timestamp_welford: Option<WelfordAccumulator>,
     pub(crate) timestamp_tdigest: Option<TDigestEstimator>,
     pub(crate) timestamp_hll: Option<HyperLogLog>,
@@ -265,7 +265,7 @@ pub(crate) struct StatsMerger<U: UnitSystem> {
     entity_hll: Option<HyperLogLog>,
     entity_welford: Option<WelfordAccumulator>,
     entity_tdigest: Option<TDigestEstimator>,
-    // Distribution stats for TIMESTAMP column (numerical, epoch seconds)
+    // Distribution stats for TIMESTAMP column (numerical, index-clock ticks)
     timestamp_welford: Option<WelfordAccumulator>,
     timestamp_tdigest: Option<TDigestEstimator>,
     timestamp_hll: Option<HyperLogLog>,
@@ -512,7 +512,7 @@ impl<U: UnitSystem> StatsMerger<U> {
             0
         };
 
-        // Format epoch-second bounds as RFC3339 strings for Kumo's cache.
+        // Format timestamp bounds as RFC3339 strings for Kumo's cache.
         use chrono::DateTime;
         let fmt_ts = |t: Abs<U>| -> JsonValue {
             let secs = t.to_secs();
@@ -1123,7 +1123,7 @@ pub fn build_inline_col_stats(
         }
     }
 
-    // TIMESTAMP numerical stats (epoch seconds — full stats including quantiles)
+    // TIMESTAMP numerical stats (index-clock ticks — full stats including quantiles)
     if let Some(w) = timestamp_welford {
         let count = w.count;
         let stype = "kumo.numerical";

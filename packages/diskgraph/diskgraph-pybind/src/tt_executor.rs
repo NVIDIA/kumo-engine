@@ -31,8 +31,9 @@ use std::path::{Component, Path};
 use arrow::pyarrow::ToPyArrow;
 use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_schema::SchemaRef;
-use diskgraph_core::time::Seconds;
+use diskgraph_core::time::{TimeUnit, UnitSystem};
 use diskgraph_core::tt_builder::{DiskGraphTTPlan, RefResolveKind, RefResolveSpec, TTFKeySpec};
+use diskgraph_core::with_index_clock;
 use diskgraph_train_table::ttgen_executor::{
     execute_tt_pass, execute_tt_pass_with_source, CustomTtSource, StageGenInfo, TTPassOutput,
     STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION,
@@ -109,7 +110,7 @@ pub(crate) struct TtIngestSpec {
 }
 
 impl TtIngestSpec {
-    pub(crate) fn from_plan(tt_id: &str, plan: &DiskGraphTTPlan<Seconds>) -> Self {
+    pub(crate) fn from_plan<U: UnitSystem>(tt_id: &str, plan: &DiskGraphTTPlan<U>) -> Self {
         Self {
             schema_version: TT_INGEST_SPEC_SCHEMA_VERSION.to_string(),
             tt_id: tt_id.to_string(),
@@ -144,6 +145,40 @@ pub(crate) fn rhs_node_type_from_resolution(
     })
 }
 
+/// The clock of the index at `index_path`.
+pub(crate) fn index_clock(index_path: &str) -> PyResult<TimeUnit> {
+    let metadata = diskgraph_ingest::index_metadata::read_index_metadata(Path::new(index_path))
+        .map_err(|e| {
+            crate::DiskgraphSystemError::new_err(format!("reading index metadata: {e}"))
+        })?;
+    let metadata: diskgraph_core::metadata::DatasetMetadata = serde_json::from_str(&metadata)
+        .map_err(|e| {
+            crate::DiskgraphConfigError::new_err(format!("invalid index metadata: {e}"))
+        })?;
+    if !metadata.timestamp_unit.is_index_clock() {
+        return Err(crate::DiskgraphConfigError::new_err(format!(
+            "unsupported index timestamp_unit {:?}",
+            metadata.timestamp_unit
+        )));
+    }
+    Ok(metadata.timestamp_unit)
+}
+
+/// Parses a plan, which must be written in the index clock `U`.
+fn parse_plan<U: UnitSystem>(plan_json: &str) -> PyResult<DiskGraphTTPlan<U>> {
+    let invalid = |e: serde_json::Error| {
+        crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}"))
+    };
+    let plan_clock = diskgraph_core::tt_builder::plan_timestamp_unit(plan_json).map_err(invalid)?;
+    if plan_clock != U::UNIT {
+        return Err(crate::DiskgraphConfigError::new_err(format!(
+            "plan is written in {plan_clock:?} but the index clock is {:?}",
+            U::UNIT
+        )));
+    }
+    serde_json::from_str(plan_json).map_err(invalid)
+}
+
 // ─── execute_tt_plan ─────────────────────────────────────────────────────────
 
 /// Run a TT-gen plan against a DiskGraph index. Writes TT artifacts and
@@ -163,13 +198,23 @@ pub fn execute_tt_plan(
     index_path: &str,
     tt_id: &str,
 ) -> PyResult<Py<PyAny>> {
+    with_index_clock!(index_clock(index_path)?, U => {
+        execute_tt_plan_in_clock::<U>(py, plan_json, index_path, tt_id)
+    })
+}
+
+fn execute_tt_plan_in_clock<U: UnitSystem>(
+    py: Python<'_>,
+    plan_json: &str,
+    index_path: &str,
+    tt_id: &str,
+) -> PyResult<Py<PyAny>> {
     validate_tt_id(tt_id)?;
     info!(
         "execute_tt_plan started (TT-NG end-state path) tt_id={}",
         tt_id
     );
-    let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
-        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
+    let plan: DiskGraphTTPlan<U> = parse_plan(plan_json)?;
 
     let idx = index_path.to_owned();
     let tt_id_owned = tt_id.to_owned();
@@ -719,8 +764,8 @@ pub(crate) fn resolve_ingest_stages(
 /// bundle the separate [`execute_tt_ingest`] job consumes. The producers
 /// differ only in how the plan is built, where the bundle lives, and their
 /// result-dict shapes — everything bundle-defining is here.
-pub(crate) fn run_gen_bundle(
-    plan: &DiskGraphTTPlan<Seconds>,
+pub(crate) fn run_gen_bundle<U: UnitSystem>(
+    plan: &DiskGraphTTPlan<U>,
     index_root: &Path,
     out_dir: &Path,
     tt_id: &str,
@@ -765,10 +810,20 @@ pub fn execute_tt_gen(
     index_path: &str,
     tt_id: &str,
 ) -> PyResult<Py<PyAny>> {
+    with_index_clock!(index_clock(index_path)?, U => {
+        execute_tt_gen_in_clock::<U>(py, plan_json, index_path, tt_id)
+    })
+}
+
+fn execute_tt_gen_in_clock<U: UnitSystem>(
+    py: Python<'_>,
+    plan_json: &str,
+    index_path: &str,
+    tt_id: &str,
+) -> PyResult<Py<PyAny>> {
     validate_tt_id(tt_id)?;
     info!("execute_tt_gen started (ttgen-only) tt_id={}", tt_id);
-    let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
-        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
+    let plan: DiskGraphTTPlan<U> = parse_plan(plan_json)?;
 
     let idx = index_path.to_owned();
     let tt_id_owned = tt_id.to_owned();
@@ -1499,8 +1554,18 @@ pub fn execute_bp_plan(
     index_path: &str,
     output_path: &str,
 ) -> PyResult<u64> {
-    let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
-        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
+    with_index_clock!(index_clock(index_path)?, U => {
+        execute_bp_plan_in_clock::<U>(py, plan_json, index_path, output_path)
+    })
+}
+
+fn execute_bp_plan_in_clock<U: UnitSystem>(
+    py: Python<'_>,
+    plan_json: &str,
+    index_path: &str,
+    output_path: &str,
+) -> PyResult<u64> {
+    let plan: DiskGraphTTPlan<U> = parse_plan(plan_json)?;
 
     let idx = index_path.to_owned();
     let out = output_path.to_owned();

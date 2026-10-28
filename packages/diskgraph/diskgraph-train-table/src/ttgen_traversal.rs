@@ -7,6 +7,7 @@
 //! `iter_edge` reads edges from a relation segment.
 //! `traverse_and_accumulate` recursively walks multi-hop paths.
 
+use diskgraph_core::time::{convert_trunc, TimeUnit};
 use diskgraph_core::tt_builder::Value;
 use diskgraph_index::graph::TableReader;
 use diskgraph_index::layout::RelationLayout;
@@ -206,7 +207,7 @@ pub fn read_column_value(
 
     match value_ref {
         ValueRef::Null => None,
-        _ => Some(value_ref_to_value(&value_ref)),
+        _ => Some(value_ref_to_value(&value_ref, decoder.clock())),
     }
 }
 
@@ -232,7 +233,7 @@ pub fn read_column_value_nullable(
 
     match value_ref {
         ValueRef::Null => Some(None),
-        _ => Some(Some(value_ref_to_value(&value_ref))),
+        _ => Some(Some(value_ref_to_value(&value_ref, decoder.clock()))),
     }
 }
 
@@ -385,7 +386,8 @@ where
         if matches!(value_ref, ValueRef::Null) {
             return SourceNull;
         }
-        return if observe(MulticatToken::Legacy(value_ref_to_value(&value_ref))) {
+        let value = value_ref_to_value(&value_ref, decoder.clock());
+        return if observe(MulticatToken::Legacy(value)) {
             Continue
         } else {
             Stop
@@ -477,8 +479,8 @@ where
     }
 }
 
-/// Convert a rowpack ValueRef to our Value type.
-fn value_ref_to_value(vr: &ValueRef) -> Value {
+/// Convert a rowpack ValueRef to our Value type; dates become ticks of `clock`.
+fn value_ref_to_value(vr: &ValueRef, clock: TimeUnit) -> Value {
     match vr {
         ValueRef::Null => Value::Int(0),
         ValueRef::Int64(v) => Value::Int(*v),
@@ -490,8 +492,8 @@ fn value_ref_to_value(vr: &ValueRef) -> Value {
         ValueRef::Bool(b) => Value::Bool(*b),
         ValueRef::String(s) => Value::Str(s.to_string()),
         ValueRef::Bytes(b) => Value::Str(String::from_utf8_lossy(b).to_string()),
-        ValueRef::Date(d) => Value::Int(*d as i64 * 86400),
-        ValueRef::Timestamp(secs) => Value::Int(*secs),
+        ValueRef::Date(d) => Value::Int(convert_trunc(i64::from(*d), TimeUnit::Days, clock)),
+        ValueRef::Timestamp(ticks) => Value::Int(*ticks),
         ValueRef::Decimal128(v) => Value::Float(*v as f64),
         _ => Value::Int(0), // Uuid, Ip, arrays, etc. → default
     }

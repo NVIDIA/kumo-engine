@@ -25,6 +25,7 @@ from ._c import (  # type: ignore[import]
     build_split_spec_json as _native_build_split_spec_json,
     build_train_table_artifacts_for_existing_table as _native_build,
 )
+from .compiler import index_timestamp_unit
 from .split_contract import SplitSpec
 
 
@@ -45,9 +46,11 @@ def _split_spec_to_plan_json(
     split_spec: Optional[SplitSpec],
     *,
     split_family_hint: Optional[str],
+    index_path: Optional[str] = None,
 ) -> Optional[str]:
     """Serialize a Python `SplitSpec` to the JSON the Rust executor consumes
-    (a `SplitSpec<Seconds>` from `diskgraph-core`), for
+    (a `SplitSpec` from `diskgraph-core` in the clock of the index at
+    `index_path`, seconds when omitted), for
     `build_train_table_artifacts_for_existing_table`'s `split_spec_json`.
 
     Returns None when split_spec is None (no split path).
@@ -80,7 +83,8 @@ def _split_spec_to_plan_json(
     resolved_family = split_spec.kind or split_family_hint
     if resolved_family != split_spec.kind:
         split_spec = dataclasses.replace(split_spec, kind=resolved_family)
-    return _native_build_split_spec_json(split_spec)
+    return _native_build_split_spec_json(split_spec,
+                                         index_timestamp_unit(index_path))
 
 
 def _resolve_common_config(
@@ -242,7 +246,7 @@ def build_train_table_artifacts_for_existing_table(
     )
 
     plan_split_json = _split_spec_to_plan_json(
-        split_config, split_family_hint=split_family_hint)
+        split_config, split_family_hint=split_family_hint, index_path=index_path)
 
     # The producer_summary_json + train_table_edges_config kwargs are
     # currently consumed elsewhere (kumo's separate edge-bundle pass).
