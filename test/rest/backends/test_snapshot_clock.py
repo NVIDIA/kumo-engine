@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
-import json
 from hashlib import md5
 from types import SimpleNamespace
 from typing import Any, cast, get_args
@@ -15,7 +14,7 @@ from fastapi.testclient import TestClient
 from kumoapi.typing import TimestampPrecision
 
 from io_utils.json import from_json_dict
-from kumo.diskgraph.service import DiskgraphHandle, DiskgraphService
+from kumo.diskgraph.service import DiskgraphService
 from rest.backends.data_backend.activities import \
     data_backend_activities as activities
 from rest.config.data_backend import GraphDataVersionInfo
@@ -113,21 +112,6 @@ def test_unknown_clock_is_rejected(snapshot_api):
     assert _create(snapshot_api,
                    timestamp_precision='months').status_code == 422
     snapshot_api.driver.create_graph_snapshot.assert_not_awaited()
-
-
-@pytest.mark.parametrize('metadata,clock', [
-    ({'timestamp_precision': 'milliseconds'}, 'milliseconds'),
-    ({'dataset_name': 'graph'}, 'seconds'),
-    (None, 'seconds'),
-])
-def test_snapshot_clock_comes_from_index_metadata(tmp_path, metadata, clock):
-    service = DiskgraphService(cast(Any, None))
-    handle = DiskgraphHandle(graph_key='graph', graph_data_version='v1')
-    if metadata is not None:
-        snapshot = tmp_path / 'diskgraph_snapshots' / 'graph' / 'v1'
-        snapshot.mkdir(parents=True)
-        (snapshot / 'index_metadata.json').write_text(json.dumps(metadata))
-    assert service.snapshot_timestamp_unit(handle, str(tmp_path)) == clock
 
 
 def test_prediction_statistics_use_the_snapshot_clock(monkeypatch):

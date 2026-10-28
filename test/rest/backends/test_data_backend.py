@@ -73,9 +73,7 @@ async def test_bp_stats_reads_only_manifest_selected_parts(tmp_path,
     )
     job_input.predictive_query.get_bp_entity_col_name.return_value = 'ENTITY'
     job_input.predictive_query.query_type = mock.sentinel.query_type
-    job_input.graph_data_compute_input.graph_key = 'graph'
-    job_input.graph_version_info = SimpleNamespace(graph_data_version='v1',
-                                                   timestamp_precision=clock)
+    job_input.graph_version_info = SimpleNamespace(timestamp_precision=clock)
 
     table_def = mock.Mock()
     table_def.fingerprint.return_value = 'fingerprint'
@@ -95,9 +93,7 @@ async def test_bp_stats_reads_only_manifest_selected_parts(tmp_path,
         table_refresh_result=mock.Mock(save=refresh_save),
     )
     compute = mock.Mock(coroutine=mock.AsyncMock(return_value=('{}', '{}')))
-    snapshot_clock = mock.Mock(coroutine=mock.AsyncMock(return_value=clock))
-    service = mock.Mock(compute_col_stats_for_parquet=compute,
-                        snapshot_timestamp_unit=snapshot_clock)
+    service = mock.Mock(compute_col_stats_for_parquet=compute)
     resolved = SimpleNamespace(
         root=str(artifact_root),
         files=tuple(str(path) for path in selected),
@@ -130,9 +126,6 @@ async def test_bp_stats_reads_only_manifest_selected_parts(tmp_path,
                 'rest.backends.data_backend.data_backend.get_active_cache',
                 return_value=cache), mock.patch(
                     'rest.backends.data_backend.data_backend.'
-                    'get_persist_dir', return_value=str(tmp_path)), \
-            mock.patch(
-                    'rest.backends.data_backend.data_backend.'
                     '_list_parquet_files',
                     side_effect=AssertionError(
                         'selected local stats must not list the root')):
@@ -142,7 +135,6 @@ async def test_bp_stats_reads_only_manifest_selected_parts(tmp_path,
     assert kwargs['parquet_paths'] == [str(path) for path in selected]
     assert str(artifact_root / 'foreign.parquet') not in kwargs['parquet_paths']
     assert kwargs['timestamp_precision'] == clock
-    assert snapshot_clock.coroutine.await_count == (clock != 'seconds')
 
 
 class _UnapprovedSingleActivityError(PublicException):
