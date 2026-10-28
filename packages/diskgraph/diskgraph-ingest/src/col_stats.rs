@@ -599,6 +599,8 @@ pub enum ColumnStatsCollector {
         count: u64,
         null_count: u64,
         parse_fail_count: u64,
+        /// Of `parse_fail_count`, values outside the index clock's range.
+        beyond_clock_count: u64,
         min: i64,
         max: i64,
         hll: HyperLogLog,
@@ -790,12 +792,30 @@ impl FileColStats {
         }
     }
 
-    pub fn warn_parse_failures(&self, column_names: &[String], table_name: &str) {
+    pub fn warn_parse_failures(
+        &self,
+        column_names: &[String],
+        table_name: &str,
+        clock: TimeUnit,
+        time_col: Option<&str>,
+    ) {
         for (col, name) in self.cols.iter().zip(column_names) {
-            let count = col.parse_fail_count();
+            let beyond = col.beyond_clock_count();
+            let count = col.parse_fail_count() - beyond;
             if count > 0 {
                 tracing::warn!(
                     "{count} invalid values found in {table_name}.{name}. Invalid values are parsed as null. Please correct and retrain if needed."
+                );
+            }
+            if beyond > 0 {
+                let dropped = if time_col == Some(name.as_str()) {
+                    "; as the table's time column, their rows are dropped"
+                } else {
+                    ""
+                };
+                tracing::warn!(
+                    "{beyond} values in {table_name}.{name} are outside the range of the {} index clock and are stored as null{dropped}.",
+                    format!("{clock:?}").to_lowercase()
                 );
             }
         }
@@ -1035,6 +1055,15 @@ fn single_byte_ascii(s: &str) -> Option<u8> {
 }
 
 impl ColumnStatsCollector {
+    fn beyond_clock_count(&self) -> u64 {
+        match self {
+            Self::Timestamp {
+                beyond_clock_count, ..
+            } => *beyond_clock_count,
+            _ => 0,
+        }
+    }
+
     fn parse_fail_count(&self) -> u64 {
         match self {
             Self::Numerical {
@@ -1112,6 +1141,7 @@ impl ColumnStatsCollector {
                 count: 0,
                 null_count: 0,
                 parse_fail_count: 0,
+                beyond_clock_count: 0,
                 min: i64::MAX,
                 max: i64::MIN,
                 hll: HyperLogLog::new(),
@@ -1269,6 +1299,7 @@ impl ColumnStatsCollector {
                     count,
                     null_count,
                     parse_fail_count,
+                    beyond_clock_count,
                     min,
                     max,
                     hll,
@@ -1277,6 +1308,7 @@ impl ColumnStatsCollector {
                     count: c2,
                     null_count: nc2,
                     parse_fail_count: pf2,
+                    beyond_clock_count: bc2,
                     min: ms2,
                     max: xs2,
                     hll: hll2,
@@ -1285,6 +1317,7 @@ impl ColumnStatsCollector {
                 *count += *c2;
                 *null_count += *nc2;
                 *parse_fail_count += *pf2;
+                *beyond_clock_count += *bc2;
                 hll.merge(hll2);
                 if *ms2 < *min {
                     *min = *ms2;
@@ -2886,6 +2919,17 @@ impl ColumnValueObserver for FileColStats {
             ColumnStatsCollector::Multicategorical { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Skip => {}
         }
+    }
+
+    #[inline]
+    fn observe_beyond_clock(&mut self, col_idx: usize) {
+        if let ColumnStatsCollector::Timestamp {
+            beyond_clock_count, ..
+        } = &mut self.cols[col_idx]
+        {
+            *beyond_clock_count += 1;
+        }
+        self.observe_parse_failure(col_idx);
     }
 
     #[inline]

@@ -125,9 +125,10 @@ pub fn div_ceil(value: i64, divisor: i64) -> i64 {
 // the source unit arm by arm, so every factor is a compile-time constant (for
 // the seconds clock, exactly main's hard-coded divisions).
 
-/// Converts `value` in `unit` to ticks of the clock `U`, rounding up.
+/// Converts `value` in `unit` to ticks of the clock `U`, rounding up; `None`
+/// when the clock cannot represent it.
 #[inline(always)]
-pub fn ceil_to_clock<U: UnitSystem>(value: i64, unit: TimeUnit) -> i64 {
+pub fn ceil_to_clock<U: UnitSystem>(value: i64, unit: TimeUnit) -> Option<i64> {
     match unit {
         TimeUnit::Nanoseconds => ceil_from_tick::<U>(value, 1),
         TimeUnit::Microseconds => ceil_from_tick::<U>(value, 1_000),
@@ -138,26 +139,27 @@ pub fn ceil_to_clock<U: UnitSystem>(value: i64, unit: TimeUnit) -> i64 {
 }
 
 #[inline(always)]
-fn ceil_from_tick<U: UnitSystem>(value: i64, tick: i64) -> i64 {
+fn ceil_from_tick<U: UnitSystem>(value: i64, tick: i64) -> Option<i64> {
     let clock_tick = U::TICK_NANOS;
     if tick >= clock_tick {
-        value.saturating_mul(tick / clock_tick)
+        value.checked_mul(tick / clock_tick)
     } else {
-        div_ceil(value, clock_tick / tick)
+        Some(div_ceil(value, clock_tick / tick))
     }
 }
 
 /// Floors `secs + nanos()` (with `0 <= nanos() < 1e9`) to a tick of the clock
-/// `U`; `nanos` is only evaluated when a tick is shorter than a second.
+/// `U`, or `None` when the clock cannot represent it; `nanos` is only
+/// evaluated when a tick is shorter than a second.
 #[inline(always)]
-pub fn floor_parts<U: UnitSystem>(secs: i64, nanos: impl FnOnce() -> u32) -> i64 {
+pub fn floor_parts<U: UnitSystem>(secs: i64, nanos: impl FnOnce() -> u32) -> Option<i64> {
     let clock_tick = U::TICK_NANOS;
     if clock_tick < NS_PER_SEC {
         let fraction = i64::from(nanos()) / clock_tick;
-        secs.saturating_mul(NS_PER_SEC / clock_tick)
-            .saturating_add(fraction)
+        secs.checked_mul(NS_PER_SEC / clock_tick)?
+            .checked_add(fraction)
     } else {
-        secs.div_euclid(clock_tick / NS_PER_SEC)
+        Some(secs.div_euclid(clock_tick / NS_PER_SEC))
     }
 }
 
@@ -1163,13 +1165,29 @@ mod tests {
 
     #[test]
     fn floor_parts_drops_the_fraction_below_one_tick() {
-        assert_eq!(floor_parts::<Seconds>(10, || 999_999_999), 10);
-        assert_eq!(floor_parts::<Milliseconds>(10, || 123_456_789), 10_123);
+        assert_eq!(floor_parts::<Seconds>(10, || 999_999_999), Some(10));
+        assert_eq!(
+            floor_parts::<Milliseconds>(10, || 123_456_789),
+            Some(10_123)
+        );
         assert_eq!(
             floor_parts::<Nanoseconds>(10, || 123_456_789),
-            10_123_456_789
+            Some(10_123_456_789)
         );
-        assert_eq!(floor_parts::<Hours>(-1, || 500_000_000), -1);
+        assert_eq!(floor_parts::<Hours>(-1, || 500_000_000), Some(-1));
+        assert_eq!(floor_parts::<Nanoseconds>(253_402_300_799, || 0), None);
+    }
+
+    #[test]
+    fn ceil_to_clock_is_none_beyond_the_clock() {
+        assert_eq!(
+            ceil_to_clock::<Nanoseconds>(253_402_300_799, TimeUnit::Seconds),
+            None
+        );
+        assert_eq!(
+            ceil_to_clock::<Seconds>(i64::MAX, TimeUnit::Nanoseconds),
+            Some(9_223_372_037)
+        );
     }
 
     #[test]
@@ -1184,11 +1202,9 @@ mod tests {
                 for clock in TimeUnit::INDEX_CLOCKS {
                     let ticks =
                         crate::with_index_clock!(clock, U => ceil_to_clock::<U>(value, unit));
-                    assert_eq!(
-                        ticks,
-                        convert_ceil(value, unit, clock),
-                        "{unit:?} -> {clock:?}"
-                    );
+                    let saturated = convert_ceil(value, unit, clock);
+                    let expected = Some(saturated).filter(|t| *t != i64::MAX && *t != i64::MIN);
+                    assert_eq!(ticks, expected, "{unit:?} -> {clock:?}");
                 }
             }
         }

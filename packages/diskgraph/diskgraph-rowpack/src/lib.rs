@@ -43,7 +43,9 @@ pub use crate::access::{
     BinaryStringHint, FloatListValues, FloatListView, IntListValues, IntListView, RowAccess,
     RowAccessHints, StringListValues, StringListView,
 };
-pub use crate::parser::{detect_encoded_int_format, detect_timestamp_format, TIMESTAMP_FORMATS};
+pub use crate::parser::{
+    detect_encoded_int_format, detect_timestamp_format, BeyondClock, TIMESTAMP_FORMATS,
+};
 
 pub(crate) const ROWPACK_VERSION: u8 = 3;
 pub(crate) const MAX_INPUT_STRING_BYTES: usize = 64 * 1024 * 1024;
@@ -2116,6 +2118,10 @@ pub trait ColumnValueObserver {
     fn observe_string_list(&mut self, col_idx: usize, view: &StringListView);
     fn observe_null(&mut self, col_idx: usize);
     fn observe_parse_failure(&mut self, col_idx: usize);
+    /// A timestamp outside the index clock's range, stored as null.
+    fn observe_beyond_clock(&mut self, col_idx: usize) {
+        self.observe_parse_failure(col_idx);
+    }
 }
 
 /// Zero-sized observer that does nothing. LLVM eliminates all calls via monomorphization.
@@ -3327,6 +3333,10 @@ impl RowPackEncoder {
                         observer.observe_timestamp(idx, secs);
                         write_varint(zigzag_encode(secs), data);
                         1u8
+                    }
+                    Err(err) if err.is::<BeyondClock>() => {
+                        observer.observe_beyond_clock(idx);
+                        0u8
                     }
                     Err(_) => {
                         observer.observe_parse_failure(idx);

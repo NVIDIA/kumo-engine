@@ -7891,7 +7891,12 @@ impl IngestContext {
                 if let Some(stats) = table_col_stats.get(&table.name) {
                     let col_names: Vec<String> =
                         table.columns.iter().map(|c| c.name.clone()).collect();
-                    stats.warn_parse_failures(&col_names, &table.name);
+                    stats.warn_parse_failures(
+                        &col_names,
+                        &table.name,
+                        clock,
+                        table.create_time.as_deref(),
+                    );
                 }
             }
             let mut outputs = Vec::new();
