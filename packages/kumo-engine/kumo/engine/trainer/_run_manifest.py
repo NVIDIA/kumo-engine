@@ -63,7 +63,8 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
            output_config: Any, settings: Any) -> None:
     r"""Export to ``output_config``, record the run (with the outputs
     written, even if the export fails), store it in the artifact root and
-    track it; a tracking failure raises last under ``on_error='raise'``."""
+    track it; a storing or tracking failure raises last under
+    ``on_error='raise'``."""
     from kumo.engine._mlops import raise_on_error
     from kumo.engine._tracking import track_prediction
 
@@ -72,6 +73,7 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
     written: List[PredictionOutput] = []
     error: Optional[BaseException] = None
     untracked: Optional[BaseException] = None
+    unstored: Optional[BaseException] = None
     try:
         if output_config is not None:
             result._export(
@@ -89,8 +91,12 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
             write(result, manifest)
         if settings is not None:
             if error is None and settings.wants('prediction'):
-                store(result, manifest, settings)
+                try:
+                    store(result, manifest, settings)
+                except Exception as failure:
+                    unstored = failure
             untracked = track_prediction(manifest, settings.tracking, error)
+    untracked = unstored or untracked
     if untracked is not None:
         raise_on_error(settings, untracked,
                        f'Trainer.predict (run {result.id}, outputs written)',
@@ -100,7 +106,7 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
 def store(result: Any, manifest: Optional[PredictionManifest],
           settings: Any) -> None:
     r"""Copy the run's outputs and manifest to
-    ``<root>/predictions/<id>/<artifact>/``; best-effort."""
+    ``<root>/predictions/<id>/<artifact>/``."""
     from kumo_core.train.artifact_manifest import load_prediction_selection
 
     from kumo.engine.trainer.output_config import PredictionOutputConfig
@@ -117,9 +123,8 @@ def store(result: Any, manifest: Optional[PredictionManifest],
                 for name in names
             }, write_mode=WriteMode.OVERWRITE), manifest)
     except Exception as error:
-        warnings.warn(
-            f"Could not store prediction run {result.id} in the artifact "
-            f"root: {error}", UserWarning, stacklevel=3)
+        raise RuntimeError(f"Could not store prediction run {result.id} in "
+                           f"the artifact root: {error}") from error
 
 
 def write(result: Any, manifest: PredictionManifest) -> None:
