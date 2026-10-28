@@ -450,3 +450,44 @@ def test_hint_constructors_shape():
     assert TemporalHint.of_format('%Y%m%d').kind is HintKind.FORMAT
     assert TemporalHint.native().kind is HintKind.NATIVE
     assert TemporalHint.unresolved().kind is HintKind.UNRESOLVED
+
+
+_TYPED = pd.Series(
+    pd.to_datetime([
+        '1969-12-31 23:59:59.5', '2024-01-01 00:00:00.000000001',
+        '1700-01-01 00:00:00.25', None
+    ], format='ISO8601'))
+
+
+@pytest.mark.parametrize('series', [
+    _TYPED.astype('datetime64[s]'),
+    _TYPED.astype('datetime64[ms]'),
+    _TYPED.astype('datetime64[us]'),
+    _TYPED,
+    _TYPED.dt.tz_localize('US/Pacific'),
+], ids=['s', 'ms', 'us', 'ns', 'tz'])
+def test_typed_columns_on_the_seconds_clock_match_diskgraph(series):
+    hint = TemporalHint.native()
+    assert list(tc.to_epoch_ticks(series, hint, 'seconds')) == list(
+        tc._resolve(series, hint, days=False, timestamp_precision='seconds'))
+
+
+def test_statistics_convert_in_the_snapshot_clock(monkeypatch):
+    from kumoapi.typing import Stype
+
+    from kumo.config import BaseColumnConfig
+    from kumo.connector.utils import coerce_timestamp_stype_series_for_stats
+
+    clocks = []
+
+    def resolve_temporal(values, fmt, unit, as_days, *, timestamp_precision):
+        clocks.append(timestamp_precision)
+        return [1_700_000_000_123], fmt, unit
+
+    monkeypatch.setattr(tc, 'resolve_temporal', resolve_temporal)
+    config = BaseColumnConfig(name='ts', stype=Stype.timestamp)
+    coerced = coerce_timestamp_stype_series_for_stats(
+        pd.Series(['2023-11-14 22:13:20.123']), config, 'milliseconds')
+
+    assert clocks == ['milliseconds']
+    assert coerced.tolist() == [pd.Timestamp('2023-11-14 22:13:20.123')]

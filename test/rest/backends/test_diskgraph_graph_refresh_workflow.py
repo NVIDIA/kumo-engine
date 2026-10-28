@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import json
 from types import SimpleNamespace
 from typing import Any, cast, get_type_hints
@@ -245,6 +246,26 @@ def _setup_pipeline_test(monkeypatch):
     wf._save_diskgraph_colstat_task_results = fake_save
 
     return wf, activity_calls, child_data_wf_calls, save_calls, state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('patched', [False, True])
+async def test_child_ingest_receives_the_snapshot_clock_once_patched(
+        monkeypatch, patched):
+    wf, _, child_data_wf_calls, _, _ = _setup_pipeline_test(monkeypatch)
+    wf._graph_version_info.timestamp_precision = 'milliseconds'
+    monkeypatch.setattr(
+        graph_refresh_workflow.workflow, 'patched',
+        lambda patch_id: patched and patch_id == 'diskgraph-index-clock-v1')
+
+    await wf._run_diskgraph_colstats_pipeline(source_size_bytes_by_table={},
+                                              source_size_bytes=0)
+
+    child_args = inspect.signature(
+        diskgraph_ingest_workflow.DiskgraphIngestWorkflow.run).bind(
+            None, *child_data_wf_calls[0]['args']).arguments
+    assert child_args.get('timestamp_precision') == ('milliseconds'
+                                                     if patched else None)
 
 
 @pytest.mark.asyncio
