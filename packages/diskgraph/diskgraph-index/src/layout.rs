@@ -91,7 +91,70 @@ impl<'a> EdgeListView<'a> {
     }
 
     pub fn node_data(&self) -> Result<Option<&'a [u8]>, std::io::Error> {
-        Ok(self.parse()?.1)
+        if self.raw.is_empty() {
+            return if self.has_node_data {
+                Err(std::io::ErrorKind::InvalidData.into())
+            } else {
+                Ok(None)
+            };
+        }
+
+        // Validate the entire count prefix before lengths or edge sizes, as
+        // parse() does. Replaying this small prefix avoids allocating counts
+        // and relation segments that a feature-only read would discard.
+        let mut cursor = 0usize;
+        for _ in self.layouts.iter() {
+            let (_, consumed) = decode_varint(&self.raw[cursor..])?;
+            cursor = cursor
+                .checked_add(consumed)
+                .ok_or(std::io::ErrorKind::InvalidData)?;
+        }
+        let node_data_len = if self.has_node_data {
+            let len_bytes = self.node_data_len_bytes as usize;
+            if len_bytes == 0 || len_bytes > 4 {
+                return Err(std::io::ErrorKind::InvalidData.into());
+            }
+            if cursor + len_bytes > self.raw.len() {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            let len = read_len_le(&self.raw[cursor..cursor + len_bytes]);
+            cursor += len_bytes;
+            Some(len)
+        } else {
+            None
+        };
+
+        let mut count_cursor = 0usize;
+        for layout in self.layouts.iter() {
+            let (count, consumed) = decode_varint(&self.raw[count_cursor..])?;
+            count_cursor += consumed; // Validated by the first pass.
+            let bytes = count
+                .checked_mul(layout.entry_bytes as u32)
+                .ok_or(std::io::ErrorKind::InvalidData)? as usize;
+            cursor = cursor
+                .checked_add(bytes)
+                .ok_or(std::io::ErrorKind::InvalidData)?;
+            if cursor > self.raw.len() {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+        }
+        if let Some(len) = node_data_len {
+            let end = cursor
+                .checked_add(len)
+                .ok_or(std::io::ErrorKind::InvalidData)?;
+            if end > self.raw.len() {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            if end != self.raw.len() {
+                return Err(std::io::ErrorKind::InvalidData.into());
+            }
+            Ok(Some(&self.raw[cursor..end]))
+        } else {
+            if cursor != self.raw.len() {
+                return Err(std::io::ErrorKind::InvalidData.into());
+            }
+            Ok(None)
+        }
     }
 
     pub fn pk_matches(
@@ -493,5 +556,170 @@ mod pk_value_matches_tests {
             ),
             Some(false)
         );
+    }
+}
+
+#[cfg(test)]
+mod node_data_tests {
+    use super::*;
+    use std::io::ErrorKind;
+    use std::sync::Arc;
+
+    fn layouts(widths: &[usize]) -> Arc<Vec<RelationLayout>> {
+        Arc::new(
+            widths
+                .iter()
+                .enumerate()
+                .map(|(i, &entry_bytes)| RelationLayout {
+                    relation_id: i as u16,
+                    dst_bits: 8,
+                    dest_sort_key_bits: None,
+                    entry_bytes,
+                    dst_mask: 255,
+                    dest_sort_key_mask: None,
+                })
+                .collect(),
+        )
+    }
+
+    fn check(view: &EdgeListView<'_>) {
+        let expected = view.parse().map(|(_, data)| data).map_err(|e| e.kind());
+        let actual = view.node_data().map_err(|e| e.kind());
+        assert_eq!(
+            actual, expected,
+            "raw={:?}, length width={}",
+            view.raw, view.node_data_len_bytes
+        );
+        if let Ok(Some(data)) = actual {
+            assert_eq!(data.as_ptr(), expected.unwrap().unwrap().as_ptr());
+        }
+    }
+
+    #[test]
+    fn node_data_matches_parse_for_valid_rows_and_all_truncations() {
+        for count_width in 1..=4 {
+            for len_width in 1..=4 {
+                for has_node_data in [false, true] {
+                    // Non-minimal count widths are accepted by the existing parser.
+                    let mut raw = Vec::new();
+                    for count in [2u32, 3] {
+                        let encoded = count | (((count_width - 1) as u32) << (count_width * 8 - 2));
+                        raw.extend_from_slice(&encoded.to_be_bytes()[4 - count_width..]);
+                    }
+                    // Preserve the old one-byte length behavior (read_len_le returns 0).
+                    let payload_len = if len_width == 1 { 0u32 } else { 7 };
+                    if has_node_data {
+                        raw.extend_from_slice(&payload_len.to_le_bytes()[..len_width]);
+                    }
+                    raw.extend_from_slice(&[17; 2 + 3 * 8]);
+                    if has_node_data {
+                        raw.resize(raw.len() + payload_len as usize, 29);
+                    }
+                    let view = EdgeListView {
+                        raw: &raw,
+                        layouts: layouts(&[1, 8]),
+                        has_node_data,
+                        node_data_len_bytes: len_width as u8,
+                    };
+                    let expected = if has_node_data {
+                        Some(&raw[raw.len() - payload_len as usize..])
+                    } else {
+                        None
+                    };
+                    assert_eq!(view.node_data().unwrap(), expected);
+                    check(&view);
+                    for end in 0..raw.len() {
+                        check(&EdgeListView {
+                            raw: &raw[..end],
+                            layouts: view.layouts.clone(),
+                            has_node_data,
+                            node_data_len_bytes: len_width as u8,
+                        });
+                    }
+                    raw.push(99);
+                    check(&EdgeListView {
+                        raw: &raw,
+                        layouts: layouts(&[1, 8]),
+                        has_node_data,
+                        node_data_len_bytes: len_width as u8,
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn node_data_preserves_error_precedence_and_empty_rows() {
+        type Case<'a> = (&'a [u8], &'a [usize], bool, u8, Option<ErrorKind>);
+        let cases: &[Case<'_>] = &[
+            (&[], &[8], false, 255, None),
+            (&[], &[], true, 2, Some(ErrorKind::InvalidData)),
+            (&[0], &[], true, 1, None),
+            (&[0, 0], &[8], true, 0, Some(ErrorKind::InvalidData)),
+            (&[0, 0], &[8], true, 5, Some(ErrorKind::InvalidData)),
+            // Missing second count takes precedence over invalid length width.
+            (&[0], &[1, 8], true, 0, Some(ErrorKind::UnexpectedEof)),
+            // Missing node-data length takes precedence over edge-size overflow.
+            (
+                &[255, 255, 255, 255],
+                &[8],
+                true,
+                2,
+                Some(ErrorKind::UnexpectedEof),
+            ),
+            // Earlier segment EOF takes precedence over later count multiplication overflow.
+            (
+                &[2, 255, 255, 255, 255, 0, 0],
+                &[1, 8],
+                true,
+                2,
+                Some(ErrorKind::UnexpectedEof),
+            ),
+            (
+                &[255, 255, 255, 255, 0, 0],
+                &[8],
+                true,
+                2,
+                Some(ErrorKind::InvalidData),
+            ),
+            (&[0, 0, 7], &[], true, 2, Some(ErrorKind::InvalidData)),
+            (&[7], &[], false, 2, Some(ErrorKind::InvalidData)),
+        ];
+        for &(raw, widths, has_node_data, node_data_len_bytes, error) in cases {
+            let view = EdgeListView {
+                raw,
+                layouts: layouts(widths),
+                has_node_data,
+                node_data_len_bytes,
+            };
+            check(&view);
+            assert_eq!(view.node_data().err().map(|e| e.kind()), error);
+        }
+    }
+
+    #[test]
+    fn node_data_matches_parse_for_arbitrary_buffers() {
+        let mut seed = 42u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..20_000 {
+            let len = (next() % 128) as usize;
+            let raw: Vec<_> = (0..len).map(|_| next() as u8).collect();
+            let relation_count = (next() % 9) as usize;
+            let widths: Vec<_> = (0..relation_count)
+                .map(|_| [0, 1, 8, 64, u32::MAX as usize, usize::MAX][(next() % 6) as usize])
+                .collect();
+            let view = EdgeListView {
+                raw: &raw,
+                layouts: layouts(&widths),
+                has_node_data: next() & 1 != 0,
+                node_data_len_bytes: (next() % 7) as u8,
+            };
+            check(&view);
+        }
     }
 }
