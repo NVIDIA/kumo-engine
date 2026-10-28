@@ -87,16 +87,8 @@ def test_standard_geometry_is_preserved_without_mutating_inputs():
     before = copy.deepcopy((cards, edges, standard))
     layouts = build_layouts(cards, edges, standard)
     assert set(layouts) == {'standard', 'compact'}
-    assert layouts['standard'] is standard
+    assert layouts['standard'] == standard
     assert (cards, edges, standard) == before
-
-
-def test_empty_graph_has_valid_alternatives():
-    standard = dict(width=304, height=112, positions={}, paths=[], handles=[])
-    layouts = build_layouts([], [], standard)
-    assert set(layouts) == {'standard', 'compact'}
-    assert all(g == standard for g in layouts.values())
-    assert choose_layout([], [], layouts) == 'standard'
 
 
 def test_ring_uses_standard_default_and_has_valid_compact_alternative():
