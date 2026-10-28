@@ -72,8 +72,9 @@ by a query. Map the YAML onto that file's `TABLE` and `RELATIONSHIP` records:
 | `source:` a SQL query, or a three-part name that is not a base table | a logical table defined by a query → ASK BACK, as that file says |
 | each entry of `joins:` (and of a join's own nested `joins:`) whose `source` is a base table | a `TABLE` with that base table; its `name` is a logical name |
 | a join whose `source` is a SQL query or not a base table | a logical table defined by a query → ASK BACK, as that file says |
-| that join's `on: <parent>.<fk> = <name>.<key>`, or `using: [<col>]` | a `RELATIONSHIP` from the parent (`source` for a top-level join, else the enclosing join) to this table: `FOREIGN_KEY` `<fk>`, `REF_KEY` `<key>` |
+| that join's `on: <parent>.<fk> = <name>.<key>`, or `using: [<col>]`, when its `cardinality` is absent or `many_to_one` | a `RELATIONSHIP` from the parent (`source` for a top-level join, else the enclosing join) to this table: `FOREIGN_KEY` `<fk>`, `REF_KEY` `<key>` |
 | an `on:` that is anything but one column-to-column equality | a non-equality relationship → ASK BACK, as that file says |
+| a join with any other `cardinality` (`one_to_many`, `one_to_one`, …) | → ASK BACK: name the join and its `cardinality`, say the skill reads only many-to-one joins, and ask which table holds the foreign key and which column it references. Never swap the keys yourself |
 | `dimensions:`, `measures:`, `filter:` | the view's dimensions, facts and metrics: ignored, as that file says |
 
 A metric view declares no keys of its own. A base table's `PRIMARY_KEY` is its Unity Catalog
