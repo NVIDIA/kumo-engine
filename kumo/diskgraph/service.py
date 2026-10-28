@@ -1718,11 +1718,26 @@ class DiskgraphService:
                     shutil.rmtree(staging_dir, ignore_errors=True)
 
     @blocking_method()
+    def snapshot_timestamp_unit(self, handle: DiskgraphHandle,
+                                dataplane_root: str) -> str:
+        """The clock in the snapshot's ``index_metadata.json``, or seconds
+        when the file is missing or unreadable."""
+        from io_utils import fsutil
+        snapshot_dir = self.dataplane_snapshot_path(handle, dataplane_root)
+        path = os.path.join(snapshot_dir, 'index_metadata.json')
+        try:
+            return json.loads(fsutil.read_text(path)).get(
+                'timestamp_precision', 'seconds')
+        except Exception:
+            return 'seconds'
+
+    @blocking_method()
     def compute_col_stats_for_parquet(
         self,
         parquet_paths: List[str],
         kumo_column_specs: List[dict],
         data_version: str,
+        timestamp_precision: str = 'seconds',
     ) -> Tuple[str, str]:
         """Compute Kumo-format column statistics over BP-output parquet.
 
@@ -1735,6 +1750,7 @@ class DiskgraphService:
                 ``name`` / ``stype`` / ``dtype`` (raw Kumo enum value strings);
                 pybind maps them via ``map_kumo_stype`` / ``map_kumo_dtype``.
             data_version: Stamped into every ``kumo_col_stats_v1`` entry.
+            timestamp_precision: Index clock that timestamp statistics are in.
 
         Returns:
             ``(full_json, min_json)`` — the full map and its min variant.
@@ -1744,6 +1760,7 @@ class DiskgraphService:
             parquet_paths=parquet_paths,
             kumo_column_specs_json=json.dumps(kumo_column_specs),
             data_version=data_version,
+            timestamp_unit=timestamp_precision,
         )
 
 

@@ -26,7 +26,12 @@ from pandas.api.types import (
 
 from io_utils import fsutil, kumo_dataclass, logging
 from kumo.config import BaseColumnConfig
-from kumo.connector.timestamp_convert import to_epoch_days, to_epoch_seconds
+from kumo.connector.timestamp_convert import (
+    PANDAS_UNIT_OF_INDEX_CLOCK,
+    to_epoch_days,
+    to_epoch_seconds,
+    to_epoch_ticks,
+)
 from kumo.connector.timestamp_infer import (
     HintKind,
     TemporalHint,
@@ -372,6 +377,7 @@ def name_inference_temporal_supported(
 def coerce_timestamp_stype_series_for_stats(
     ser: pd.Series,
     col_config: BaseColumnConfig,
+    timestamp_precision: str = 'seconds',
 ) -> pd.Series:
     r"""Coerce a ``timestamp``-stype series to a datetime series before the Python
     column-stat kernel reduces it.
@@ -385,11 +391,11 @@ def coerce_timestamp_stype_series_for_stats(
 
     The coercion resolves the column's :class:`TemporalHint`
     (:func:`_resolve_stats_temporal_hint`) and applies
-    :func:`~kumo.connector.timestamp_convert.to_epoch_seconds`, then wraps the
-    epoch-seconds back into a second-precision ``datetime64`` series. Because every
-    temporal column collapses to epoch-seconds with ceiling division, the resulting
-    MIN/MAX (and the other timestamp stats) are computed in the same epoch-seconds
-    domain the on-disk index uses and match it rather than drifting.
+    :func:`~kumo.connector.timestamp_convert.to_epoch_ticks` in the
+    ``timestamp_precision`` index clock, then wraps the ticks back into a
+    ``datetime64`` series of that precision. The resulting MIN/MAX (and the
+    other timestamp stats) are computed in the same domain the on-disk index
+    uses and match it rather than drifting.
 
     Best-effort and narrowly scoped:
       * non-``timestamp``-stype columns pass through untouched;
@@ -406,8 +412,9 @@ def coerce_timestamp_stype_series_for_stats(
         return ser
 
     hint = _resolve_stats_temporal_hint(ser, col_config)
-    epoch_seconds = to_epoch_seconds(ser, hint)
-    return pd.to_datetime(pd.Series(epoch_seconds, index=ser.index), unit='s',
+    ticks = to_epoch_ticks(ser, hint, timestamp_precision)
+    return pd.to_datetime(pd.Series(ticks, index=ser.index),
+                          unit=PANDAS_UNIT_OF_INDEX_CLOCK[timestamp_precision],
                           errors='coerce')
 
 
