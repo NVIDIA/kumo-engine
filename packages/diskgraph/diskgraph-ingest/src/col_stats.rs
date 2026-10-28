@@ -1602,9 +1602,9 @@ fn format_kumo_timestamp(ticks: i64, clock: TimeUnit) -> String {
     if ticks == i64::MAX || ticks == i64::MIN {
         return "kumo_timestamp_NaT".to_string();
     }
-    let (epoch_secs, _) = split_parts(ticks, clock);
-    match chrono::DateTime::from_timestamp(epoch_secs, 0) {
-        Some(dt) => format!("kumo_timestamp_{}", dt.format("%Y-%m-%d %H:%M:%S")),
+    let (epoch_secs, nanos) = split_parts(ticks, clock);
+    match chrono::DateTime::from_timestamp(epoch_secs, nanos) {
+        Some(dt) => format!("kumo_timestamp_{}", dt.format("%Y-%m-%d %H:%M:%S%.f")),
         None => "kumo_timestamp_NaT".to_string(),
     }
 }
@@ -3968,6 +3968,27 @@ mod tests {
 
         assert!(map.contains_key("ts__kumo.timestamp__DROPPED_ROWS__False"));
         assert!(map.contains_key("ts__kumo.timestamp__NUM_UNIQUE__False"));
+    }
+
+    #[test]
+    fn kumo_timestamps_carry_a_fraction_only_when_one_is_stored() {
+        let at = |ticks, clock| format_kumo_timestamp(ticks, clock);
+        assert_eq!(
+            at(1_700_000_000_123_456_789, TimeUnit::Nanoseconds),
+            "kumo_timestamp_2023-11-14 22:13:20.123456789"
+        );
+        assert_eq!(
+            at(1_700_000_000_250, TimeUnit::Milliseconds),
+            "kumo_timestamp_2023-11-14 22:13:20.250"
+        );
+        assert_eq!(
+            at(1_700_000_000_000, TimeUnit::Milliseconds),
+            "kumo_timestamp_2023-11-14 22:13:20"
+        );
+        assert_eq!(
+            at(1_700_000_000, TimeUnit::Seconds),
+            "kumo_timestamp_2023-11-14 22:13:20"
+        );
     }
 
     #[test]
