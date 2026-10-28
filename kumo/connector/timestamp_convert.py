@@ -13,10 +13,11 @@ format string is an opaque token here: stored, hashed and displayed, never
 interpreted.
 
 What remains on this side is the standardized output model:
-  * a timestamp collapses to an ``i64`` epoch-seconds value (UTC);
+  * a timestamp collapses to an ``i64`` epoch value (UTC) in ticks of an index
+    clock, seconds unless a snapshot's clock is given (:func:`to_epoch_ticks`);
   * a date collapses to an ``i32`` days-since-epoch value.
-Sub-second precision and timezone are never retained, and everything is computed
-in the integer epoch-seconds / epoch-days domain; only
+Timezone and precision finer than the clock are never retained, and everything
+is computed in the integer epoch-ticks / epoch-days domain; only
 :func:`epoch_seconds_to_timestamp` lifts the final scalar back into a
 ``pd.Timestamp`` for the stats value.
 
@@ -43,6 +44,15 @@ DATE32_MIN_DAY = -106752
 DATE32_MAX_DAY = 24855
 
 _NATIVE_UNIT_DIVISOR = {'s': 1, 'ms': 1_000, 'us': 1_000_000, 'ns': 1_000_000_000}
+
+PANDAS_UNIT_OF_INDEX_CLOCK = {
+    'nanoseconds': 'ns',
+    'microseconds': 'us',
+    'milliseconds': 'ms',
+    'seconds': 's',
+    'hours': 'h',
+    'days': 'D',
+}
 
 
 # ---------------------------------------------------------------------------
@@ -94,15 +104,17 @@ def days_from_secs(secs: int) -> int:
 # ---------------------------------------------------------------------------
 # The DiskGraph crossing: one call per column, no per-value Python work.
 # ---------------------------------------------------------------------------
-def _resolve(series: pd.Series, hint: TemporalHint, *,
-             days: bool) -> np.ndarray:
-    r"""Apply ``hint`` to a whole column, returning epoch seconds or epoch days.
+def _resolve(series: pd.Series, hint: TemporalHint, *, days: bool,
+             timestamp_precision: str = 'seconds') -> np.ndarray:
+    r"""Apply ``hint`` to a whole column, returning epoch days or epoch ticks
+    of the ``timestamp_precision`` clock.
 
     An ``UNRESOLVED`` column declares seconds rather than declaring nothing: a
     declared hint is what stops DiskGraph re-detecting the column at apply time.
     """
     unit = hint.unit or ('s' if hint.kind is HintKind.UNRESOLVED else None)
-    epochs, _, _ = resolve_temporal(_as_arrow(series), hint.strftime, unit, days)
+    epochs, _, _ = resolve_temporal(_as_arrow(series), hint.strftime, unit,
+                                    days, timestamp_unit=timestamp_precision)
     out = np.empty(len(epochs), dtype=object)
     out[:] = epochs
     return out
@@ -190,9 +202,20 @@ def to_epoch_seconds(series: pd.Series, hint: TemporalHint) -> np.ndarray:
     unconvertible or null value becomes ``None``, never raising. Returns a numpy
     object array of ints and ``None`` aligned with the input.
     """
-    if hint.kind is HintKind.NATIVE or is_datetime64_any_dtype(series):
+    return to_epoch_ticks(series, hint, 'seconds')
+
+
+def to_epoch_ticks(series: pd.Series, hint: TemporalHint,
+                   timestamp_precision: str) -> np.ndarray:
+    r"""Like :func:`to_epoch_seconds`, in ticks of the ``timestamp_precision``
+    index clock. Typed columns on the seconds clock take a vectorized path
+    that returns exactly what :func:`_resolve` does.
+    """
+    native = hint.kind is HintKind.NATIVE or is_datetime64_any_dtype(series)
+    if native and timestamp_precision == 'seconds':
         return timestamp_secs_from_array(series)
-    return _resolve(series, hint, days=False)
+    return _resolve(series, hint, days=False,
+                    timestamp_precision=timestamp_precision)
 
 
 def to_epoch_days(series: pd.Series, hint: TemporalHint) -> np.ndarray:
