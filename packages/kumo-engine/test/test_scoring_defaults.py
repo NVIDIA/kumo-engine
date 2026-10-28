@@ -137,3 +137,27 @@ def test_unlisted_or_unreadable_defaults_are_ignored(fitted, tmp_path):
     assert ignored.result.scoring_defaults == kumo.ScoringDefaults()
     with pytest.raises(ValueError, match='must be specified'):
         ignored.predict(table, snapshot=snapshot)
+
+
+def test_a_fit_stores_its_defaults_in_the_bundle(fitted, tmp_path):
+    from kumoapi.model_plan import TrainingTableGenerationPlan
+
+    from kumo.engine.trainer.trainer import TrainingResult
+
+    trainer, table, snapshot = fitted
+    first = trainer.result
+    defaults = kumo.ScoringDefaults(binary_classification_threshold=0.3)
+    refit = kumo.Trainer(trainer.model_plan)
+    result = refit._finish_fit(
+        TrainingResult({}, dict(first.artifact_paths),
+                       _copy(trainer, tmp_path / 'bundle')),
+        predictive_query=trainer._training_query,
+        snapshot_id=snapshot.id, export_config=None,
+        training_table_generation=TrainingTableGenerationPlan(),
+        graph_config=snapshot.graph_config, scoring_defaults=defaults)
+    assert result.scoring_defaults == defaults and result.id != first.id
+    loaded = kumo.Trainer.load(result.bundle_dir)
+    assert loaded.result.scoring_defaults == defaults
+    pd.testing.assert_frame_equal(
+        _frame(loaded, table, snapshot),
+        _frame(first, table, snapshot, binary_classification_threshold=0.3))

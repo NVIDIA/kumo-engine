@@ -66,7 +66,7 @@ from kumo.engine._embeddings import (
     with_text_encoders,
 )
 from kumo.engine._events import Event, EventEmitter, query_sha256
-from kumo.engine._manifest import Dependency, ModelManifest, stub
+from kumo.engine._manifest import Dependency, ModelManifest, TrackingRef, stub
 from kumo.engine._mlops import full_error, warn_failure
 from kumo.engine._predictor import TRAINER_PREDICTOR
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
@@ -77,7 +77,12 @@ from kumo.engine.graph import GraphSnapshot, report_other_graph
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer._run_spec import FitContext, fit_spec, fitted_spec
-from kumo.engine.trainer._scoring import ScoringDefaults, read_scoring_defaults
+from kumo.engine.trainer._scoring import (
+    ScoringDefaults,
+    normalized_scoring_defaults,
+    read_scoring_defaults,
+    write_scoring_defaults,
+)
 from kumo.engine.trainer._spec import (
     HOLDOUT_META_ROLE,
     HOLDOUT_ROLE,
@@ -144,6 +149,13 @@ class TrainingResult:
             return None
         return read_training_spec(self.bundle_dir).snapshot_id
 
+    @property
+    def tracking(self) -> Optional[TrackingRef]:
+        """The experiment tracker's run of the fit: its ``platform``,
+        ``run_id`` and ``url``; None when the fit was not tracked."""
+        manifest = self.manifest
+        return None if manifest is None else manifest.tracking
+
     def predict(self, *args: Any, **kwargs: Any) -> 'PredictionResult':
         """Score with this model, as :meth:`Trainer.predict`."""
         return self._model('predict').predict(*args, **kwargs)
@@ -157,14 +169,11 @@ class TrainingResult:
                               defaults: ScoringDefaults) -> 'TrainingResult':
         """A copy of this model whose ``predict`` applies ``defaults`` when a
         call omits them; a new bundle, whose manifest names this one in
-        ``parents.derived_from``."""
+        ``parents.derived_from``. To register a model with its defaults,
+        pass ``fit(scoring_defaults=...)`` instead."""
         from kumo_core.artifacts import bundle_task_type
 
         from kumo.engine.trainer._provenance import record_derivation
-        from kumo.engine.trainer._scoring import (
-            normalized_scoring_defaults,
-            write_scoring_defaults,
-        )
 
         if self._trainer is None:
             raise RuntimeError('This result has no model; use Trainer.load on '
@@ -441,13 +450,21 @@ def _require_publisher(export_config: ModelOutputConfig) -> None:
 
 
 def _mlflow_registry(settings: Any) -> Optional[ModelRegistryLocation]:
-    registry = None if settings is None else settings.registry
-    return registry if isinstance(registry, ModelRegistryLocation) else None
+    if settings is None or not _logs_models(settings.tracking):
+        return None
+    return settings.registry
 
 
 def _connector_registry(settings: Any) -> Optional[ModelOutputConfig]:
-    registry = None if settings is None else settings.registry
-    return registry if isinstance(registry, ModelOutputConfig) else None
+    if (settings is None or settings.registry is None
+            or _logs_models(settings.tracking)):
+        return None
+    return ModelOutputConfig(settings.tracking.connector,
+                             location=settings.registry)
+
+
+def _logs_models(tracking: Any) -> bool:
+    return callable(getattr(tracking, 'log_model', None))
 
 
 def _publish(bundle_dir: Path, bundle_id: Optional[str],
@@ -599,6 +616,7 @@ class Trainer:
         *,
         snapshot: GraphSnapshot,
         export_config: Optional[ModelOutputConfig] = None,
+        scoring_defaults: Optional[ScoringDefaults] = None,
         warm_start: Optional[Self] = None,
         mlops: Optional[Any] = None,
         callbacks: Sequence[Callable[[Event], None]] = (),
@@ -622,6 +640,9 @@ class Trainer:
                 generate_training_table(snapshot)`.
             snapshot: graph data and features to train against.
             export_config: if given, publishes the trained model bundle.
+            scoring_defaults: prediction arguments the bundle applies when
+                ``predict`` omits them, such as a classification threshold;
+                stored, registered and served with the model.
             warm_start: a fitted trainer or one restored with ``load`` or
                 ``load_from_connector``. Reuses its selected weights, optimizer
                 state, fitted encoders, architecture and neighbor sampling;
@@ -653,7 +674,6 @@ class Trainer:
         session = TrackingSession(
             None if settings is None else settings.tracking, warn=warn)
         events = EventEmitter(
-            run_id,
             [*callbacks, session.on_event] if session.enabled else callbacks)
         fit_start = time.monotonic()
         try:
@@ -667,6 +687,7 @@ class Trainer:
         try:
             result = self._fit(train_table, snapshot=snapshot,
                                export_config=export_config,
+                               scoring_defaults=scoring_defaults,
                                warm_start=warm_start, run_id=run_id,
                                events=events, tracking=session,
                                deps=Dependencies(settings=settings))
@@ -702,6 +723,7 @@ class Trainer:
         *,
         snapshot: GraphSnapshot,
         export_config: Optional[ModelOutputConfig],
+        scoring_defaults: Optional[ScoringDefaults],
         warm_start: Optional[Self],
         run_id: str,
         events: EventEmitter,
@@ -764,6 +786,9 @@ class Trainer:
             training_table_generation_plan=train_table.generation_plan,
             search=AutoMLSearchOptions(),
         )
+        if scoring_defaults is not None:
+            scoring_defaults = normalized_scoring_defaults(
+                scoring_defaults, TaskType(workflow.query.task_type))
         if warm_start_artifacts is not None:
             from kumo_core.artifacts import bundle_task_type
 
@@ -842,7 +867,6 @@ class Trainer:
             raise ValueError('The test split is empty: shorten the query '
                              'window or add data.')
         tracking.start(lambda: fit_spec(FitContext(
-            run_id=run_id,
             query=train_table.query,
             model_plan=to_json_dict(materialized.model_plan),
             inputs=fit_inputs(train_table.manifest),
@@ -905,6 +929,7 @@ class Trainer:
             graph_config=snapshot.graph_config,
             training_table_generation=train_table.generation_plan,
             export_config=export_config,
+            scoring_defaults=scoring_defaults,
             model_plan=effective_plan,
             provenance=dict(
                 train_table=train_table,
@@ -912,7 +937,7 @@ class Trainer:
                     warm_start._training_result.bundle_dir,
                     warm_start_bundle_id),
                 started_at=started_at, fit_mode=fit_mode,
-                tracked_run_id=run_id if tracking.enabled else None),
+                tracking=tracking.pointer()),
             deps=deps,
         )
 
@@ -928,6 +953,7 @@ class Trainer:
         model_plan: Optional[ModelPlan] = None,
         provenance: Optional[Mapping[str, Any]] = None,
         deps: Optional[Dependencies] = None,
+        scoring_defaults: Optional[ScoringDefaults] = None,
     ) -> TrainingResult:
         """Commit durable fit outputs before making this trainer usable."""
         from kumo_core.artifacts import bundle_id_from_manifest
@@ -943,6 +969,11 @@ class Trainer:
             training_table_generation=training_table_generation,
             graph_config=graph_config,
         )
+        if scoring_defaults is not None:
+            write_scoring_defaults(training_result.bundle_dir,
+                                   scoring_defaults)
+            training_result = replace(training_result,
+                                      scoring_defaults=scoring_defaults)
         training_result = _bundle_holdout(training_result)
         try:
             training_result = replace(
@@ -1315,12 +1346,20 @@ class Trainer:
         from trusted publishers; checkpoint deserialization happens at predict.
         ``accelerator`` selects the device for this instance (default: ``auto``).
         A `kumo.MLOps` ``model_registry`` reads ``path`` under its artifact
-        root (``models/<id>``).
+        root (``models/<id>``) and ``location`` from the registry its
+        tracker registers in.
         """
         from kumo.engine._mlops import MLOps, on_root
 
-        if isinstance(model_registry, MLOps) and path is None:
-            raise TypeError('Loading from a kumo.MLOps takes path=.')
+        if isinstance(model_registry, MLOps) and location is not None:
+            load = getattr(model_registry.tracking, 'load_model', None)
+            if path is not None or load is None:
+                raise TypeError(
+                    'Loading a registered model from a kumo.MLOps takes '
+                    'location= and its tracking=MlflowTracking(...) or '
+                    'SnowflakeTracking(connector, ...).')
+            return load(location, embedding_models=embedding_models,
+                        accelerator=accelerator)
         if path is not None:
             model_registry, path = on_root(model_registry, path)
         address = ModelOutputConfig(model_registry, path=path,

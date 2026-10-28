@@ -699,6 +699,20 @@ def test_invalid_export_alias_is_rejected_before_publishing(
     assert sink.published == {}
 
 
+class _RegistryTracker:
+    def __init__(self, sink):
+        self.connector = _FakeConnector(sink)
+
+    def start(self, record):
+        pass
+
+    def on_trial(self, record, event):
+        pass
+
+    def finish(self, record, error):
+        pass
+
+
 @pytest.mark.parametrize('sink,registered', [
     (_AliasingSink(), 'V1'),
     (SimpleNamespace(publish_model=lambda *a, **k: 1 / 0), None),
@@ -716,17 +730,16 @@ def test_mlops_registry_registers_after_the_fit(tmp_path: Path, monkeypatch,
     monkeypatch.setattr(
         Trainer, '_fit', lambda self, *a, **k: TrainingResult(
             {}, {}, bundle, bundle_id='b1'))
-    registry = kumo.ModelOutputConfig(
-        _FakeConnector(sink),
-        location=ModelRegistryLocation('CHURN_GNN', alias='prod'))
+    tracker = _RegistryTracker(sink)
+    registry = ModelRegistryLocation('CHURN_GNN', alias='prod')
     trainer = Trainer(ModelPlan())
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         result = trainer.fit(
             SimpleNamespace(query='PREDICT COUNT(*)'),
             snapshot=SimpleNamespace(id='s'),
-            mlops=kumo.MLOps(str(tmp_path / 'root'), registry=registry,
-                             store=False))
+            mlops=kumo.MLOps(str(tmp_path / 'root'), tracking=tracker,
+                             registry=registry, store=False))
     failures = [w for w in caught if 'Could not register' in str(w.message)]
     assert getattr(result.registered_model, 'version', None) == registered
     assert result.published_model is None
@@ -740,8 +753,9 @@ def test_mlops_registry_registers_after_the_fit(tmp_path: Path, monkeypatch,
             trainer.fit(
                 SimpleNamespace(query='PREDICT COUNT(*)'),
                 snapshot=SimpleNamespace(id='s'),
-                mlops=kumo.MLOps(str(tmp_path / 'root'), registry=registry,
-                                 store=False, on_error='raise'))
+                mlops=kumo.MLOps(str(tmp_path / 'root'), tracking=tracker,
+                                 registry=registry, store=False,
+                                 on_error='raise'))
         assert isinstance(raised.value.__cause__, ZeroDivisionError)
 
 
@@ -750,10 +764,10 @@ def test_mlops_registry_alias_is_checked_before_the_fit(tmp_path: Path,
     import kumo.engine as kumo
 
     monkeypatch.setattr(Trainer, '_fit', lambda *a, **k: 1 / 0)
-    registry = kumo.ModelOutputConfig(
-        _FakeConnector(_AliasingSink()),
-        location=ModelRegistryLocation('CHURN_GNN', alias='LATEST'))
     with pytest.raises(ValueError, match='model alias'):
         Trainer(ModelPlan()).fit(
             SimpleNamespace(query='q'), snapshot=SimpleNamespace(id='s'),
-            mlops=kumo.MLOps(str(tmp_path), registry=registry, store=False))
+            mlops=kumo.MLOps(
+                str(tmp_path), tracking=_RegistryTracker(_AliasingSink()),
+                registry=ModelRegistryLocation('CHURN_GNN', alias='LATEST'),
+                store=False))

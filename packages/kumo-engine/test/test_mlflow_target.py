@@ -40,30 +40,34 @@ def _connector(identity):
 
 
 def test_no_target_reads_mlflows_own_uris_once(tracking_uri):
-    target = resolve(None, None)
+    target = resolve(None)
     assert target.tracking_uri == tracking_uri
     assert not target.explicit
-    assert resolve(None, 'databricks').registry_uri == 'databricks-uc'
-    assert resolve(None, 'databricks://prod').registry_uri == (
+    assert target.platform == 'mlflow' and target.run_url('1', 'r') is None
+    assert resolve('databricks').registry_uri == 'databricks-uc'
+    assert resolve('databricks').platform == 'databricks'
+    assert resolve('databricks://prod').registry_uri == (
         'databricks-uc://prod')
-    assert resolve(None, 'http://mlflow:5000').registry_uri == (
-        'http://mlflow:5000')
-    with pytest.raises(ValueError, match='not both'):
-        resolve(SageMakerMLflow(ARN), 'http://x')
+    server = resolve('http://mlflow:5000')
+    assert server.registry_uri == 'http://mlflow:5000'
+    assert server.run_url('1', 'r') == (
+        'http://mlflow:5000/#/experiments/1/runs/r')
+    assert resolve(ARN).platform == 'sagemaker'
+    assert resolve(server) is server
 
 
 def test_ambient_identities_set_no_credentials(monkeypatch, tracking_uri):
     monkeypatch.setenv('DATABRICKS_TOKEN', 'mine')
     monkeypatch.setenv('MLFLOW_TRACKING_URI', tracking_uri)
-    target = resolve(_connector(DatabricksIdentity()), None)
+    target = resolve(_connector(DatabricksIdentity()))
     before = dict(os.environ)
     with target.scope():
         assert dict(os.environ) == before
         assert mlflow.get_tracking_uri() == tracking_uri
     assert not target.explicit
 
-    for target in (resolve(SageMakerMLflow(ARN, S3Identity()), None),
-                   resolve(SageMakerMLflow(ARN), None)):
+    for target in (resolve(SageMakerMLflow(ARN, S3Identity())),
+                   resolve(SageMakerMLflow(ARN))):
         with target.scope():
             assert mlflow.get_tracking_uri() == ARN
             assert target.artifact_repository('s3://b/run') is None
@@ -85,7 +89,7 @@ def test_a_databricks_service_principal_lends_a_token_for_each_call(
     target = resolve(
         _connector(
             DatabricksIdentity(host='https://dbc.example', client_id='sp',
-                               client_secret='secret')), None)
+                               client_secret='secret')))
 
     previous = mlflow.get_tracking_uri()
     with target.scope():
@@ -102,6 +106,8 @@ def test_a_databricks_service_principal_lends_a_token_for_each_call(
     assert 'DATABRICKS_TOKEN' not in os.environ
     assert (target.tracking_uri, target.registry_uri) == ('databricks',
                                                           'databricks-uc')
+    assert target.run_url('7', 'r') == (
+        'https://dbc.example/ml/experiments/7/runs/r')
 
 
 def test_an_aws_access_key_signs_sagemaker_calls_and_uploads(
@@ -112,7 +118,7 @@ def test_an_aws_access_key_signs_sagemaker_calls_and_uploads(
     monkeypatch.setenv('SAGEMAKER_MLFLOW_ASSUME_ROLE_ARN', 'arn:aws:iam::x')
     target = resolve(
         SageMakerMLflow(ARN, S3Identity(access_key_id='AKIA',
-                                        secret_access_key='s3cret')), None)
+                                        secret_access_key='s3cret')))
 
     with target.scope():
         assert mlflow.get_tracking_uri() == ARN
@@ -172,11 +178,14 @@ def test_an_unreachable_server_fails_when_mlops_is_built(
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     monkeypatch.setenv('MLFLOW_HTTP_REQUEST_MAX_RETRIES', '0')
-    tracking = MlflowTracking(tracking_uri='http://127.0.0.1:9',
+    tracking = MlflowTracking(target='http://127.0.0.1:9',
                               experiment_name='e')
     with pytest.raises(RuntimeError, match='MLflow at http://127.0.0.1:9 '
                        'is not usable with these credentials'):
         kumo.MLOps(str(tmp_path), tracking=tracking)
+    with pytest.raises(ValueError, match='pass experiment_name'):
+        kumo.MLOps(str(tmp_path),
+                   tracking=MlflowTracking(target='http://127.0.0.1:9'))
 
 
 def test_a_missing_unity_catalog_schema_fails_when_mlops_is_built(
@@ -255,7 +264,7 @@ def test_registering_a_registered_bundle_reuses_its_version(
         tracking_uri, caplog):
     from kumo.engine.integrations.mlflow import _register
 
-    target = resolve(None, None)
+    target = resolve(None)
     client = target.client()
     run = client.create_run('0')
     info = SimpleNamespace(model_uri=f'runs:/{run.info.run_id}/model',

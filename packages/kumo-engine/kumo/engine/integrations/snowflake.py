@@ -7,6 +7,7 @@ r"""Snowflake Experiment Tracking for `Trainer.fit`
 import logging
 import re
 import tempfile
+import uuid
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
@@ -36,16 +37,17 @@ class SnowflakeTracking:
     parameters are not changed.
 
     Args:
-        session: Snowpark session; needs CREATE EXPERIMENT on the schema, or
-            MODIFY on an existing experiment.
-        connector: a ``SnowflakeConnector`` whose identity opens the session
-            instead.
+        source: a ``SnowflakeConnector``, whose identity opens the session
+            and whose Snowflake Model Registry ``kumo.MLOps(registry=...)``
+            registers models in; or a Snowpark session, which tracks only.
+            It needs CREATE EXPERIMENT on the schema, or MODIFY on an
+            existing experiment.
         experiment_name: experiment for the fit run, created if missing.
         database: `None` uses the session's current database.
-        schema: `None` uses the session's current schema, or ``PUBLIC`` when
-            `database` is given or the session has none.
+        schema_name: `None` uses the session's current schema, or ``PUBLIC``
+            when `database` is given or the session has none.
         run_name: name of the fit run. `None` lets Snowflake pick one; a
-            taken name gets a suffix from the kumo run id.
+            taken name gets a random suffix.
         tags: extra tags for the fit run.
         native_model_lineage: keep the run open as a context for the whole
             fit, so models registered meanwhile are linked to it.
@@ -54,26 +56,32 @@ class SnowflakeTracking:
     by name), once it has started.
     """
 
+    platform = 'snowflake'
+    run_url = None
+
     def __init__(
         self,
-        session: Any = None,
+        source: Any,
         *,
-        connector: Any = None,
         experiment_name: str,
         database: Optional[str] = None,
-        schema: Optional[str] = None,
+        schema_name: Optional[str] = None,
         run_name: Optional[str] = None,
         tags: Optional[Mapping[str, str]] = None,
         native_model_lineage: bool = False,
     ) -> None:
+        from kumo.engine.connector.base import Connector
+
         self._module = import_provider('snowflake.ml.experiment', 'snowflake')
-        if (session is None) == (connector is None):
-            raise ValueError('SnowflakeTracking takes a session or a '
-                             'connector.')
-        self.session = session if session is not None else connector.session()
+        if source is None:
+            raise ValueError('SnowflakeTracking takes a SnowflakeConnector '
+                             'or a Snowpark session.')
+        self.connector = source if isinstance(source, Connector) else None
+        self.session = (source.session()
+                        if self.connector is not None else source)
         self.experiment_name = experiment_name
         self.database = database
-        self.schema = schema
+        self.schema = schema_name
         self.run_name = run_name
         self.tags = dict(tags or {})
         self.native_model_lineage = native_model_lineage
@@ -91,6 +99,17 @@ class SnowflakeTracking:
         self._artifacts: Set[str] = set()
         self._dropped_metrics: Set[str] = set()
         self._dropped_params = 0
+
+    def load_model(self, location: Any, **kwargs: Any) -> Any:
+        r"""The `Trainer` of the Snowflake Model Registry version
+        ``location`` names, through this tracker's connector."""
+        from kumo.engine.trainer.trainer import Trainer
+
+        if self.connector is None:
+            raise ValueError('Loading a registered model needs '
+                             'SnowflakeTracking(connector, ...).')
+        return Trainer.load_from_connector(self.connector, location=location,
+                                           **kwargs)
 
     def check(self, registry: Any = None) -> None:
         r"""Raises before any work unless the session can see the
@@ -135,8 +154,7 @@ class SnowflakeTracking:
                                              database_name=database,
                                              schema_name=schema or 'PUBLIC')
         self._run = tracking.start_run(
-            self._new_run_name(tracking, experiment.name,
-                               record.tags['kumo.run_id']))
+            self._new_run_name(tracking, experiment.name))
         self.run_id = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
@@ -191,8 +209,8 @@ class SnowflakeTracking:
                 self._run_context.close()
                 self._reset()
 
-    def _new_run_name(self, tracking: Any, experiment: Any,
-                      run_id: str) -> Optional[str]:
+    def _new_run_name(self, tracking: Any,
+                      experiment: Any) -> Optional[str]:
         if self.run_name is None:
             return None
         # start_run(name) resumes, or raises on, any run matching name as a
@@ -203,7 +221,7 @@ class SnowflakeTracking:
             for row in tracking._sql_client.show_runs_in_experiment(
                 experiment_name=experiment)
         ]
-        short = run_id.rsplit('-', 1)[-1]
+        short = uuid.uuid4().hex
         for name in (self.run_name, _suffixed(self.run_name, short[:8]),
                      _suffixed(self.run_name, short)):
             if not _taken(name, existing):

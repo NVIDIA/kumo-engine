@@ -17,7 +17,6 @@ from kumo.engine._tracking import RunSpec, _flatten
 class FitContext:
     r"""What a fit trains, known once its model plan is resolved."""
 
-    run_id: str
     query: str
     model_plan: Mapping[str, Any]
     inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
@@ -28,7 +27,6 @@ def fit_spec(context: FitContext, *,
              tags: Optional[Mapping[str, Any]] = None) -> RunSpec:
     return RunSpec(
         kind='fit',
-        run_id=context.run_id,
         params=dict(_flatten(context.model_plan)),
         tags=dict(tags or {}),
         inputs=dict(context.inputs),

@@ -116,11 +116,12 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     assert client.get_experiment(parent.info.experiment_id).name == 'ents'
     assert parent.info.status == 'FINISHED'
     assert {k for k in parent.data.tags if k.startswith('kumo.')} == {
-        'kumo.kind', 'kumo.run_id', 'kumo.bundle_id', 'kumo.dropped_params'}
+        'kumo.kind', 'kumo.bundle_id', 'kumo.dropped_params'}
     assert parent.data.tags['kumo.bundle_id'] == result.id
     stored = tmp_path / 'root' / 'models' / result.id / PROVENANCE_FILE
     assert json.loads(stored.read_text())['tracking'] == {
-        'run_id': parent.data.tags['kumo.run_id']}
+        'platform': 'mlflow', 'run_id': parent.info.run_id}
+    assert result.tracking.run_id == parent.info.run_id
     logged = client.download_artifacts(parent.info.run_id, PROVENANCE_FILE,
                                        str(tmp_path))
     assert json.loads(Path(logged).read_text())['id'] == result.id
@@ -231,7 +232,7 @@ def test_registry_model_names_are_checked_when_mlops_is_built(
     for name in good:
         check_model_name(name, uri)
     tracking = MlflowTracking(log_system_metrics=False,
-                              tracking_uri=f'sqlite:///{tmp_path}/m.db',
+                              target=f'sqlite:///{tmp_path}/m.db',
                               experiment_name='e')
     tracking.target.registry_uri = uri
     for name in bad:

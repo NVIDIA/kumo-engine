@@ -23,8 +23,8 @@ from kumo.engine._tracking import (
 from kumo.engine.tracking import Event, RunRecord
 from kumo.engine.trainer._run_spec import FitContext, fit_spec, fitted_spec
 
-RUN = 'trainer-fit-1'
-USER_TAGS = {'team': 'ents', 'kumo.run_id': 'overridden'}
+FIT = 'fit'
+USER_TAGS = {'team': 'ents', 'kumo.kind': 'overridden'}
 QUERY = 'PREDICT ents.Y FOR EACH ents.ID'
 INPUTS = {
     'ents': {'connector': 'S3', 'location': 's3://bucket/ents.parquet',
@@ -36,7 +36,7 @@ INPUTS = {
               'version': '1790000000', 'version_kind': 'timestamp'},
 }
 CONTEXT = FitContext(
-    run_id=RUN, query=QUERY, inputs=INPUTS,
+    query=QUERY, inputs=INPUTS,
     model_plan={
         'optimization': {'base_lr': [0.01, 0.001], 'max_epochs': 2},
         'training_job': {'tune_metric': 'mae'},
@@ -47,7 +47,7 @@ CONTEXT = FitContext(
 
 
 def _event(name, trial=None, epoch=None, metrics=None, **params):
-    return Event(name=name, run_id=RUN, time=0.0, trial=trial, epoch=epoch,
+    return Event(name=name, time=0.0, trial=trial, epoch=epoch,
                  metrics=metrics or {}, params=params)
 
 
@@ -125,7 +125,7 @@ def replay(tracker=None, events=EVENTS, result=RESULT,
         None if result is None else lambda: fitted_spec(
             session.spec, result, events[-1].metrics.get('seconds')), error)
     records = {
-        record.tags['kumo.run_id']: record
+        record.name: record
         for hook, record in recorder.calls if hook == 'on_trial'
     }
     spec = fit_spec(CONTEXT, tags=USER_TAGS)
@@ -133,7 +133,7 @@ def replay(tracker=None, events=EVENTS, result=RESULT,
         spec = fitted_spec(spec, result, events[-1].metrics.get('seconds'))
     if 'error' in events[-1].params:
         spec = replace(spec, error=str(events[-1].params['error']))
-    records[RUN] = run_record(spec)
+    records[FIT] = run_record(spec)
     return records
 
 
@@ -196,7 +196,8 @@ def gaps(expected: Dict[str, RunRecord], observed: Dict[str, Observed],
                    and k not in (DROPPED_PARAMS, DROPPED_METRICS)),
             sorted(k for k in record.tags if k.startswith('kumo.')))
         if adapter.nested_runs:
-            differ('parent', seen.parent, record.tags.get('kumo.parent_run'))
+            differ('parent', seen.parent,
+                   FIT if record.tags['kumo.kind'] == 'trial' else None)
         if adapter.artifacts:
             differ('artifacts', dict(seen.artifacts), dict(record.artifacts))
     return found
@@ -215,7 +216,11 @@ def mlflow_adapter(tmp_path, monkeypatch):
         client = mlflow.MlflowClient()
         runs = client.search_runs(
             [e.experiment_id for e in client.search_experiments()])
-        kumo_ids = {r.info.run_id: r.data.tags['kumo.run_id'] for r in runs}
+        kumo_ids = {
+            r.info.run_id:
+            FIT if r.data.tags['kumo.kind'] == 'fit' else r.info.run_name
+            for r in runs
+        }
 
         def history(run_id, key):
             return tuple((m.step, m.value) for m in sorted(
@@ -280,7 +285,7 @@ def snowflake_adapter(monkeypatch):
                 runs['steps'][name] = (*runs['steps'].get(name, ()),
                                        (step, value))
             for prefix, runs in names.items():
-                observed[runs['tags']['kumo.run_id']] = Observed(
+                observed[prefix or FIT] = Observed(
                     name=prefix,
                     artifacts=run['artifacts'] if prefix is None else {},
                     **runs)
@@ -300,8 +305,8 @@ def adapter(request) -> Adapter:
 def test_records_of_the_recorded_fit():
     records = replay()
 
-    fit = records[RUN]
-    assert fit.tags == {'team': 'ents', 'kumo.kind': 'fit', 'kumo.run_id': RUN,
+    fit = records[FIT]
+    assert fit.tags == {'team': 'ents', 'kumo.kind': 'fit',
                         'kumo.bundle_id': BUNDLE}
     assert fit.params == {
         'optimization.base_lr': '[0.01, 0.001]',
@@ -319,17 +324,15 @@ def test_records_of_the_recorded_fit():
     assert json.loads(fit.artifacts['model_plan.json']) == CONTEXT.model_plan
     assert fit.inputs == INPUTS
 
-    oom = records[f'{RUN}-trial-2-attempt-1']
+    oom = records['trial-2-attempt-1']
     assert oom == RunRecord(
         name='trial-2-attempt-1',
         params={'optimization.base_lr': '0.001', 'attempt': '1'}, tags={
             'kumo.kind': 'trial',
-            'kumo.run_id': f'{RUN}-trial-2-attempt-1',
-            'kumo.parent_run': RUN,
             'kumo.status': 'failed',
             'kumo.error': 'OutOfMemoryError: CUDA out of memory',
         })
-    retry = records[f'{RUN}-trial-2-attempt-2']
+    retry = records['trial-2-attempt-2']
     assert retry.params['attempt'] == '2'
     assert retry.metrics == {'best_val_mae': 0.3, 'seconds': 4.0}
     assert retry.steps == {'train_loss': ((1, 0.6), (2, 0.4)),
@@ -342,7 +345,7 @@ def test_adapter_records_the_same_runs(adapter, tmp_path):
                              bundle_dir=tmp_path)
     expected = replay(adapter.make(), result=result)
 
-    assert expected[RUN].artifacts[PROVENANCE_FILE] == '{"bundle": "b"}'
+    assert expected[FIT].artifacts[PROVENANCE_FILE] == '{"bundle": "b"}'
     assert gaps(expected, adapter.observe(), adapter) == []
 
 
@@ -367,7 +370,7 @@ def test_adapter_records_a_failed_fit(adapter):
     expected = replay(adapter.make(), [*EVENTS[:-1], failed], None,
                       ValueError('stop'))
 
-    assert expected[RUN].tags['kumo.error'] == 'ValueError: stop'
+    assert expected[FIT].tags['kumo.error'] == 'ValueError: stop'
     assert gaps(expected, adapter.observe(), adapter) == []
 
 

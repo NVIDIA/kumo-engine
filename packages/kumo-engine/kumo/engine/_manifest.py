@@ -245,7 +245,13 @@ class FitTiming(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class TrackingRef(Record):
+    r"""A run in an experiment tracker: its ``platform`` (``mlflow``,
+    ``databricks``, ``sagemaker``, ``snowflake``), the platform's own
+    ``run_id`` and, where the platform has one, the run's ``url``."""
+
+    platform: str
     run_id: str
+    url: Optional[str] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import inspect
+import re
 import threading
 import time
 from unittest import mock
@@ -81,7 +82,7 @@ def _replay(tracking, result=RESULT, error=None, during=None):
 def test_native_model_lineage_holds_the_run_open_during_the_fit(fake):
     lineage = []
     _replay(
-        _tracking(database='ml', schema='runs', run_name='fit',
+        _tracking(database='ml', schema_name='runs', run_name='fit',
                   native_model_lineage=True),
         during=lambda: lineage.extend(fake._instance.lineage_stack))
 
@@ -154,8 +155,8 @@ def test_an_existing_run_is_never_resumed(fake, taken, caplog):
     tracking = _tracking(session, run_name=run_name)
     _replay(tracking)
 
-    new = f"{run_name}_{CONTEXT.run_id.rsplit('-', 1)[-1][:8]}".upper()
-    assert tracking.run_id == new
+    new = tracking.run_id
+    assert re.fullmatch(f'{run_name}_[0-9a-f]{{8}}'.upper(), new)
     assert set(user.runs) == {taken, new}
     assert user.runs[taken]['params'] == {}
     assert user.runs[new]['status'] == 'FINISHED'
@@ -240,15 +241,43 @@ class _SchemaSession:
 def test_a_connector_opens_the_session_and_the_schema_is_checked_first(
         fake):
     import kumo.engine as kumo
+    from kumo.engine.connector.base import Connector
 
     session = _SchemaSession([('RUNS', )])
-    tracking = _tracking(None, connector=mock.Mock(session=lambda: session))
+    connector = mock.Mock(spec=Connector, session=lambda: session)
+    tracking = _tracking(connector)
     tracking.check()
-    assert tracking.session is session
+    assert tracking.session is session and tracking.connector is connector
     assert session.statements == ["SHOW SCHEMAS LIKE 'RUNS' IN DATABASE DB"]
 
     tracking.session = _SchemaSession([])
     with pytest.raises(ValueError, match='needs schema DB.RUNS'):
         kumo.MLOps('/tmp/root', tracking=tracking)
-    with pytest.raises(ValueError, match='a session or a connector'):
+    with pytest.raises(ValueError, match='or a Snowpark session'):
         _tracking(None)
+
+
+def test_mlops_loads_a_registered_model_through_the_tracker(
+        fake, monkeypatch, tmp_path):
+    import kumo.engine as kumo
+    from kumo.engine.connector.base import Connector
+
+    loaded = []
+    original = kumo.Trainer.load_from_connector.__func__
+    monkeypatch.setattr(
+        kumo.Trainer, 'load_from_connector',
+        classmethod(lambda cls, source, **kwargs: loaded.append(
+            (source, kwargs)) if not isinstance(source, kumo.MLOps) else
+                    original(cls, source, **kwargs)))
+    session = _SchemaSession([('RUNS', )])
+    connector = mock.Mock(spec=Connector, session=lambda: session)
+    tracking = _tracking(connector)
+    cfg = kumo.MLOps(str(tmp_path), tracking=tracking)
+    location = kumo.ModelRegistryLocation('CHURN', alias='champion')
+    kumo.Trainer.load_from_connector(cfg, location=location)
+    assert loaded == [(connector, {
+        'location': location, 'embedding_models': None,
+        'accelerator': 'auto'
+    })]
+    with pytest.raises(ValueError, match='SnowflakeTracking\\(connector'):
+        _tracking().load_model(location)
