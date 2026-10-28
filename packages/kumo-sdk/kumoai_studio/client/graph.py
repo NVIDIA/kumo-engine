@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from http import HTTPStatus
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, get_args
 
 from kumoapi.common import ValidationResponse
 from kumoapi.data_snapshot import GraphSnapshotID, GraphSnapshotResource
@@ -14,6 +14,7 @@ from kumoapi.graph import (
     GraphValidationRequest,
 )
 from kumoapi.json_serde import to_json_dict
+from kumoapi.typing import TimestampPrecision
 
 from kumoai_studio.client.endpoints import GraphEndpoints
 from kumoai_studio.client.transport import Transport
@@ -79,16 +80,31 @@ class GraphAPI:
         *,
         refresh_source: bool = False,
         project_id: Optional[str] = None,
+        timestamp_precision: TimestampPrecision = 'seconds',
     ) -> GraphSnapshotID:
+        if timestamp_precision not in get_args(TimestampPrecision):
+            raise ValueError(f"timestamp_precision must be one of "
+                             f"{get_args(TimestampPrecision)}, got "
+                             f"{timestamp_precision!r}")
         params: Dict[str, Any] = {
             'graph_id': graph_id,
             'refresh_source': refresh_source
         }
         if project_id is not None:
             params['project_id'] = project_id
+        if timestamp_precision != 'seconds':
+            params['timestamp_precision'] = timestamp_precision
         resp = self._client._request(GraphEndpoints.create_snapshot,
                                      params=params)
         raise_on_error(resp)
+        # Servers that predate index clocks send no header and build seconds.
+        built_precision = resp.headers.get('X-Kumo-Timestamp-Precision',
+                                           'seconds')
+        if built_precision != timestamp_precision:
+            raise RuntimeError(
+                f"Requested a {timestamp_precision} snapshot but the server "
+                f"built a {built_precision} one; upgrade the server to use "
+                f"this clock.")
         return GraphSnapshotID(parse_id_response(resp))
 
     def get_snapshot(
