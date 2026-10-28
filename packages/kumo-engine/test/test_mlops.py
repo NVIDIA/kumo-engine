@@ -27,6 +27,8 @@ def test_mlops_needs_an_artifact_root_it_can_write_files_to(tmp_path):
         holds_files=lambda c, p: False, filesystem=None))
     with pytest.raises(ValueError, match='file location'):
         kumo.MLOps(artifact_root=(table_only, 'DB.SCHEMA'))
+    with pytest.raises(ValueError, match='needs its connector'):
+        kumo.MLOps(artifact_root='@DB.SCHEMA.STAGE/kumo')
     with pytest.raises(ValueError, match='Unknown store kinds'):
         kumo.MLOps(artifact_root=str(tmp_path), store={'models'})
 
