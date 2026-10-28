@@ -27,7 +27,6 @@ from typing import (
     Tuple,
 )
 
-from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.instrumentation import format_error
 
 from kumo.engine._events import Event, _finite_floats
@@ -36,8 +35,7 @@ from kumo.engine._mlops import full_error, warn_failure
 if TYPE_CHECKING:
     from kumoapi.plugin import ModelRegistryLocation, PublishedModel
 
-    from kumo.engine.graph import GraphSnapshot
-    from kumo.engine.trainer.trainer import TrainingResult
+    from kumo.engine._manifest import ModelManifest
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +46,6 @@ DROPPED_METRICS = 'kumo.dropped_metrics'
 QUEUE_SIZE = 1000
 FINISH_SECONDS = 30.0
 MODEL_SECONDS = 3600.0
-
-
-@dataclass(frozen=True)
-class FitContext:
-    r"""What a fit trains, known once its model plan is resolved."""
-
-    run_id: str
-    query: str
-    model_plan: Mapping[str, Any]
-    inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
-        default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -77,6 +64,28 @@ class RunRecord:
     artifacts: Mapping[str, str] = field(default_factory=dict)
     inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
         default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RunSpec:
+    r"""What a run records, whatever trained or scored it: ``params`` are
+    flat, ``parents`` become ``kumo.<name>`` pointer tags and ``tags`` are
+    the user's own."""
+
+    kind: str
+    run_id: str
+    name: Optional[str] = None
+    params: Mapping[str, Any] = field(default_factory=dict)
+    metrics: Mapping[str, Any] = field(default_factory=dict)
+    steps: Mapping[str, Sequence[Tuple[int, float]]] = field(
+        default_factory=dict)
+    tags: Mapping[str, Any] = field(default_factory=dict)
+    inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
+        default_factory=dict)
+    parents: Mapping[str, Optional[str]] = field(default_factory=dict)
+    artifacts: Mapping[str, str] = field(default_factory=dict)
+    status: Optional[str] = None
+    error: Optional[str] = None
 
 
 INPUT_FIELDS = ('connector', 'location', 'version', 'version_kind')
@@ -116,43 +125,25 @@ def _text(value: Any) -> Optional[str]:
     return None if value is None else str(value)
 
 
-def run_record(context: FitContext, result: Optional['TrainingResult'] = None,
-               fit_ended: Optional[Event] = None, *,
-               tags: Optional[Mapping[str, str]] = None) -> RunRecord:
-    r"""The fit run's record; ``tags`` are the user's extra tags."""
-    metrics: Dict[str, float] = {}
-    pointers: Dict[str, str] = {}
-    artifacts = {
-        'query.pql': context.query,
-        'model_plan.json': json.dumps(dict(context.model_plan), indent=2,
-                                      default=str),
-    }
-    if result is not None:
-        metrics.update(result.metrics)
-        if fit_ended is not None and 'seconds' in fit_ended.metrics:
-            metrics['seconds'] = fit_ended.metrics['seconds']
-        if result.id:
-            pointers['kumo.bundle_id'] = str(result.id)
-        provenance = Path(result.bundle_dir) / PROVENANCE_FILE
-        if provenance.is_file():
-            artifacts[PROVENANCE_FILE] = provenance.read_text(
-                encoding='utf-8')
-    params = {
-        key: _param_value(value)
-        for key, value in _flatten(context.model_plan)
-    }
+def run_record(spec: RunSpec) -> RunRecord:
+    params = {key: _param_value(value) for key, value in spec.params.items()}
     return RunRecord(
+        name=spec.name,
         params=params,
-        metrics=_finite_floats(metrics),
+        metrics=_finite_floats(spec.metrics),
+        steps={name: tuple(history)
+               for name, history in spec.steps.items()},
         tags={
-            **_user_tags(tags, params),
-            'kumo.kind': 'fit',
-            'kumo.run_id': context.run_id,
-            **pointers,
-            **_error_tag(fit_ended),
+            **_user_tags(spec.tags, params),
+            'kumo.kind': spec.kind,
+            'kumo.run_id': spec.run_id,
+            **{f'kumo.{name}': str(value)
+               for name, value in spec.parents.items() if value},
+            **({} if spec.status is None else {'kumo.status': spec.status}),
+            **({} if spec.error is None else {'kumo.error': spec.error}),
         },
-        artifacts=artifacts,
-        inputs=dict(context.inputs),
+        artifacts=dict(spec.artifacts),
+        inputs=dict(spec.inputs),
     )
 
 
@@ -170,50 +161,34 @@ def _user_tags(tags: Optional[Mapping[str, Any]],
     }
 
 
-def _error_tag(ended: Optional[Event]) -> Dict[str, str]:
-    if ended is None or 'error' not in ended.params:
-        return {}
-    return {'kumo.error': str(ended.params['error'])}
-
-
-def trial_record(context: FitContext, events: Sequence[Event]) -> RunRecord:
-    r"""One trial attempt's record from its events so far."""
+def trial_spec(run_id: str, events: Sequence[Event]) -> RunSpec:
+    r"""One trial attempt of run ``run_id``, from its events so far."""
     started = next(event for event in events if event.name == 'trial_started')
     trial, attempt = started.trial, int(started.params['attempt'])
-    params: Dict[str, str] = {
-        key: _param_value(value)
-        for key, value in started.params.items()
-    }
     metrics: Dict[str, float] = {}
     steps: Dict[str, List[Tuple[int, float]]] = {}
-    ended: Dict[str, str] = {}
+    ended: Dict[str, Any] = {}
     for event in events:
         if event.name == 'epoch_ended' and event.epoch is not None:
             for name, value in event.metrics.items():
                 steps.setdefault(name, []).append((event.epoch, value))
         elif event.name == 'trial_ended':
-            ended = {
-                'kumo.status': str(event.params.get('status')),
-                **_error_tag(event),
-            }
+            ended = dict(status=str(event.params.get('status')),
+                         error=None if 'error' not in event.params else str(
+                             event.params['error']))
             metrics.update({
                 name if name == 'seconds' else f'best_{name}': value
                 for name, value in event.metrics.items()
             })
-    return RunRecord(
+    return RunSpec(
+        kind='trial',
+        run_id=f'{run_id}-trial-{trial}-attempt-{attempt}',
         name=f'trial-{trial}-attempt-{attempt}',
-        params=params,
+        params=dict(started.params),
         metrics=metrics,
-        steps={
-            name: tuple(history)
-            for name, history in steps.items()
-        },
-        tags={
-            'kumo.kind': 'trial',
-            'kumo.run_id': f'{context.run_id}-trial-{trial}-attempt-{attempt}',
-            'kumo.parent_run': context.run_id,
-            **ended,
-        },
+        steps=steps,
+        parents={'parent_run': run_id},
+        **ended,
     )
 
 
@@ -225,11 +200,12 @@ class Tracking(Protocol):
     the event that updated it, and `finish` the fit run's final record
     (`None` if tracking stopped early, which should end the run as failed).
     Optional members: ``prepare()``, called first on the fit's own thread;
-    ``tags`` (extra fit-run tags); ``log_model(result, snapshot, registry)``,
-    called after a fit that succeeded and before `finish`, which the fit waits
-    for while the tracking thread is alive, up to an hour (an error, a stopped
-    thread or the time limit ends the run as failed), and which returns the
-    version it registered at ``registry``, a ``ModelRegistryLocation``.
+    ``tags`` (extra fit-run tags); ``log_model(bundle_dir, manifest,
+    snapshot, registry)``, called after a fit that succeeded and before
+    `finish`, which the fit waits for while the tracking thread is alive, up
+    to an hour (an error, a stopped thread or the time limit ends the run as
+    failed), and which returns the version it registered at ``registry``, a
+    ``ModelRegistryLocation``.
     """
     def start(self, record: RunRecord) -> None:
         ...
@@ -252,9 +228,8 @@ class TrackingSession:
                  warn: bool = True) -> None:
         self._tracker = tracking if _rank() == 0 else None
         self._warn = warn
-        self._context: Optional[FitContext] = None
+        self.spec: Optional[RunSpec] = None
         self._trials: Dict[int, List[Event]] = {}
-        self._fit_ended: Optional[Event] = None
         self._jobs: 'queue.Queue[Optional[Callable[[], Any]]]' = queue.Queue(
             QUEUE_SIZE)
         self._worker: Optional[threading.Thread] = None
@@ -265,31 +240,29 @@ class TrackingSession:
     def enabled(self) -> bool:
         return self._tracker is not None
 
-    def start(self, context: Callable[[], FitContext]) -> None:
+    def start(self, spec: Callable[[], RunSpec]) -> None:
         if self._tracker is None:
             return
         try:
-            value = context()
+            value = spec()
         except Exception as error:
             logger.warning('Experiment tracking failed: %s; the fit continues',
                            full_error(error), exc_info=_debug())
             self._fail(error)
             self._tracker = None
             return
-        self._context = value
+        self.spec = value
         self._call(lambda tracker: getattr(tracker, 'prepare', _none)())
         self._worker = threading.Thread(target=self._work,
                                         name='kumo-tracking', daemon=True)
         self._worker.start()
         self._submit(lambda: self._call(lambda tracker: tracker.start(
-            run_record(value, tags=getattr(tracker, 'tags', None)))))
+            run_record(dataclasses.replace(value, tags={
+                **value.tags, **(getattr(tracker, 'tags', None) or {})
+            })))))
 
     def on_event(self, event: Event) -> None:
-        if self._context is None:
-            return
-        if event.name == 'fit_ended':
-            self._fit_ended = event
-        if event.trial is None:
+        if self.spec is None or event.trial is None:
             return
         if event.name == 'trial_started':
             self._trials[event.trial] = []
@@ -299,14 +272,15 @@ class TrackingSession:
                 **event.params, 'attempt': events[0].params['attempt']
             })
         events.append(event)
-        record = trial_record(self._context, events)
+        record = run_record(trial_spec(self.spec.run_id, events))
         self._submit(lambda: self._call(
             lambda tracker: tracker.on_trial(record, event)))
 
     def log_model(
         self,
-        result: 'TrainingResult',
-        snapshot: 'GraphSnapshot',
+        bundle_dir: Path,
+        manifest: Optional['ModelManifest'],
+        snapshot: Any,
         registry: Optional['ModelRegistryLocation'] = None,
     ) -> Tuple[Optional['PublishedModel'], Optional[BaseException]]:
         r"""Runs the tracker's ``log_model`` on the tracking thread and waits
@@ -327,7 +301,8 @@ class TrackingSession:
                             '' if self.error is None else
                             f' ({full_error(self.error)})'))
                 registered.append(
-                    getattr(tracker, 'log_model')(result, snapshot, registry))
+                    getattr(tracker, 'log_model')(bundle_dir, manifest,
+                                                  snapshot, registry))
             except BaseException as error:
                 failed.append(error)
             finally:
@@ -363,17 +338,18 @@ class TrackingSession:
             return None, error
         return (registered or [None])[0], None
 
-    def finish(self, result: Optional['TrainingResult'],
+    def finish(self, spec: Optional[Callable[[], RunSpec]],
                error: Optional[BaseException]) -> None:
+        r"""Ends the run with ``spec()``, its final spec (`None`: the started
+        one), failed if ``error``."""
         worker = self._worker
-        if self._context is None or worker is None:
+        if self.spec is None or worker is None:
             return
         try:
-            record: Optional[RunRecord] = run_record(self._context, result,
-                                                     self._fit_ended)
-            if error is not None and 'kumo.error' not in record.tags:
-                record = dataclasses.replace(record, tags={
-                    **record.tags, 'kumo.error': format_error(error)})
+            final = self.spec if spec is None else spec()
+            if error is not None and final.error is None:
+                final = dataclasses.replace(final, error=format_error(error))
+            record: Optional[RunRecord] = run_record(final)
         except Exception as failure:
             logger.warning('Could not build the tracking record: %s',
                            full_error(failure), exc_info=_debug())

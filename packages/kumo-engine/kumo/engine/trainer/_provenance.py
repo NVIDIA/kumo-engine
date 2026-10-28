@@ -6,9 +6,10 @@
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from kumo.engine._manifest import (
+    Dependency,
     FitTiming,
     ModelManifest,
     ModelParents,
@@ -32,6 +33,7 @@ def write_provenance(
     started_at: datetime,
     fit_mode: Optional[str],
     tracked_run_id: Optional[str] = None,
+    dependencies: Optional[List[Dependency]] = None,
 ) -> None:
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
 
@@ -54,6 +56,7 @@ def write_provenance(
             fit_mode=fit_mode,
             tracking=None if tracked_run_id is None else TrackingRef(
                 run_id=tracked_run_id),
+            dependencies=dependencies,
             **stamp(),
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
@@ -109,6 +112,7 @@ def record_derivation(bundle_dir: Path, parent_dir: Path,
             parents=ModelParents(
                 derived_from=None if parent is None else embedded_model(
                     parent)),
+            dependencies=None if parent is None else parent.dependencies,
             **stamp(),
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)

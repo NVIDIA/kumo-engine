@@ -22,7 +22,7 @@ from kumo.engine._manifest import (
 )
 from kumo.engine.trainer._provenance import embedded_model
 from kumo.engine.trainer._spec import MANIFEST_FILE
-from kumo.engine.trainer.trainer import TrainingResult
+from kumo.engine.trainer.trainer import TrainingResult, _store_and_register
 
 
 def test_fit_records_a_self_contained_manifest(fitted):
@@ -103,13 +103,14 @@ def _finish_stub_fit(bundle, trainer, warm_start=None, settings=None):
     (bundle / MANIFEST_FILE).write_text(json.dumps({'artifacts': []}))
     add_bundle_file(bundle, 'trainer_config', 'model/config.json')
     table = SimpleNamespace(tt_id='tt-raw', id='tt-1', manifest=None)
-    return trainer._finish_fit(
+    result = trainer._finish_fit(
         TrainingResult({}, {}, bundle), predictive_query='PREDICT x',
         snapshot_id='snap', export_config=None,
         training_table_generation=TrainingTableGenerationPlan(),
         provenance=dict(train_table=table, warm_start=warm_start,
-                        started_at=datetime.now(timezone.utc), fit_mode=None),
-        settings=settings)
+                        started_at=datetime.now(timezone.utc), fit_mode=None))
+    _store_and_register(result.bundle_dir, result.manifest, settings)
+    return result
 
 
 def test_missing_parents_are_stubs_and_retrain_chains_stay_flat(tmp_path):

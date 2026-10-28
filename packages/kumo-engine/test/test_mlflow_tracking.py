@@ -22,6 +22,7 @@ from test_tracking_contract import CONTEXT, join_tracking_threads, replay
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._tracking import run_record
+from kumo.engine.trainer._run_spec import fit_spec
 
 mlflow = pytest.importorskip('mlflow')
 autologging_utils = pytest.importorskip('mlflow.utils.autologging_utils')
@@ -249,11 +250,11 @@ def test_a_tracked_fit_on_sagemaker_says_how_to_open_the_ui(
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracker = MlflowTracking(log_system_metrics=False)
-    tracker.start(run_record(CONTEXT))
+    tracker.start(run_record(fit_spec(CONTEXT)))
     tracker.target.tracking_uri = uri
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        tracker.finish(run_record(CONTEXT), None)
+        tracker.finish(run_record(fit_spec(CONTEXT)), None)
     hints = [str(w.message) for w in caught if 'Studio' in str(w.message)]
     assert hints == ([] if command is None else [
         "MLflow's run links do not open on SageMaker: open the MLflow UI "
@@ -265,7 +266,7 @@ def test_user_disabled_autologging_stays_disabled(tracking_uri):
 
     tracker = MlflowTracking(log_system_metrics=False)
     with autologging_utils.disable_autologging():
-        tracker.start(run_record(CONTEXT))
+        tracker.start(run_record(fit_spec(CONTEXT)))
         tracker.finish(None, None)
         assert autologging_utils._AUTOLOGGING_GLOBALLY_DISABLED is True
 
