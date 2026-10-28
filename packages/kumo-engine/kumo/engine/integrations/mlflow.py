@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""MLflow tracking and models for `Trainer.fit`
-(``pip install 'kumo-engine[mlflow]'``)."""
+r"""MLflow tracking and models for `Trainer.fit`, `Trainer.predict` and
+monitoring (``pip install 'kumo-engine[mlflow]'``)."""
 
 import hashlib
 import json
@@ -54,6 +54,7 @@ from kumo.engine._tracking import (
     RegistrationError,
     RunRecord,
     by_step,
+    record_failure,
 )
 from kumo.engine._version import __version__
 from kumo.engine.connector._extras import import_provider
@@ -98,7 +99,9 @@ class MlflowTracking:
     tables (Unity Catalog then links them to a model registered from the
     run), file and object-store sources by URI. Params MLflow rejects are
     counted in ``kumo.dropped_params``. Concurrent fits in one process are
-    not supported.
+    not supported. As ``kumo.MLOps(tracking=...)``, it also records each
+    prediction run and each monitoring call as one run named after it,
+    placed like a fit run; ``run_name`` and ``tags`` apply to fit runs only.
 
     Args:
         experiment_name: experiment for the fit run, created if missing.
@@ -129,8 +132,9 @@ class MlflowTracking:
     process-wide tracking URI for each call: Unity Catalog downloads and the
     SageMaker plugin route with it.
 
-    ``run_id`` is the MLflow id of the latest fit run, once it has started,
-    and ``run_url`` its link in the MLflow UI, where the server has one.
+    ``run_id`` is the MLflow id of the most recent tracked run, once it has
+    started, and ``run_url`` its link in the MLflow UI, where the server has
+    one.
     """
 
     def __init__(
@@ -355,6 +359,24 @@ class MlflowTracking:
         if record.tags.get('kumo.kind') != 'fit':  # a fit logs Datasets
             with self.target.scope():
                 _log_inputs(self._mlflow, client, self._parent, record.inputs)
+
+    def log_prediction_run(self, record: RunRecord) -> None:
+        self.start(record)
+        self.finish(record, record_failure(record))
+
+    def log_monitoring(self, record: RunRecord) -> None:
+        self.start(record)
+        experiment_id, run_id = self._experiment_id, self.run_id
+        client = self._client
+        self.finish(record, None)
+        with self.target.scope():
+            for run in client.search_runs(
+                    [experiment_id], filter_string=(
+                        "tags.`kumo.kind` = 'prediction' AND "
+                        "tags.`kumo.run_id` = "
+                        f"'{record.tags['kumo.prediction_run']}'"),
+                    max_results=1):
+                client.set_tag(run.info.run_id, 'kumo.monitored', run_id)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         key = (event.trial or 0, int(event.params['attempt']))

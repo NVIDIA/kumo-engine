@@ -66,7 +66,7 @@ def test_a_root_is_a_uri_or_a_connector_and_path(tmp_path):
     assert uri.root.location('models/m') == 'models/m'
     assert uri.root.uri('models/m') == f'{tmp_path}/models/m'
     assert isinstance(uri.root.connector, kumo.FileConnector)
-    assert uri.kinds == {'snapshot', 'training_table', 'model'}
+    assert uri.kinds == {'snapshot', 'training_table', 'model', 'prediction'}
 
     connector = kumo.FileConnector(root_dir=str(tmp_path))
     pair = kumo.MLOps(artifact_root=(connector, 'volume/kumo/'),

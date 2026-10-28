@@ -27,6 +27,7 @@ from typing import (
     Tuple,
 )
 
+from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.instrumentation import format_error
 
 from kumo.engine._events import Event, _finite_floats
@@ -36,7 +37,11 @@ if TYPE_CHECKING:
     from kumo_core.summaries import Summary
     from kumoapi.plugin import ModelRegistryLocation, PublishedModel
 
-    from kumo.engine._manifest import ModelManifest, TrackingRef
+    from kumo.engine._manifest import (
+        ModelManifest,
+        PredictionManifest,
+        TrackingRef,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -95,14 +100,17 @@ INPUT_FIELDS = ('connector', 'location', 'version', 'version_kind')
 
 
 def fit_inputs(manifest: Any) -> Dict[str, Dict[str, Optional[str]]]:
-    r"""Source tables of a training table or model manifest, read from its
-    embedded parents; stub parents add none."""
+    r"""Source tables of a training table or model manifest, or a prediction
+    run's scoring snapshot, read from its embedded parents; stub parents add
+    none."""
     try:
-        table = manifest
-        if getattr(manifest, 'kind', None) == 'model':
+        table, kind = manifest, getattr(manifest, 'kind', None)
+        if kind == 'model':
             table = getattr(_parents(manifest), 'training_table', None)
-        parents = _parents(table)
-        snapshot = _parents(getattr(parents, 'snapshot', None))
+        parents = None if kind == 'prediction' else _parents(table)
+        snapshot = _parents(
+            getattr(_parents(manifest) if kind == 'prediction' else parents,
+                    'snapshot', None))
         tables = dict(getattr(snapshot, 'source_tables', None) or {})
         source = getattr(parents, 'source_table', None)
         if source is not None:
@@ -219,6 +227,87 @@ def trial_spec(events: Sequence[Event]) -> RunSpec:
     )
 
 
+def prediction_record(manifest: 'PredictionManifest',
+                      error: Optional[BaseException] = None) -> RunRecord:
+    r"""A prediction run's record, from its manifest: scoring options as
+    params, row counts and score percentiles as metrics, the scoring
+    snapshot's source tables as inputs, pointer tags (``kumo.error`` when
+    ``error`` ended the run), and the manifest as an artifact."""
+    table = manifest.prediction_table
+    params = {**manifest.scoring.to_dict(), 'anchors': table.anchors}
+    metrics: Dict[str, Any] = {'prediction_table.rows': table.rows}
+    if table.skipped_rows is not None:
+        metrics['predictions.skipped_rows'] = table.skipped_rows
+        metrics['predictions.skipped_fraction'] = (
+            table.skipped_rows / table.requested_rows
+            if table.requested_rows else 0.0)
+    for artifact, stats in (manifest.stats or {}).items():
+        flat = stats.to_dict()
+        flat.update(flat.pop('columns', None) or {})
+        for key, value in _flatten(flat, f'{artifact}.'):
+            if key.endswith('.percentiles'):
+                metrics.update(_logged_percentiles(key, value))
+            else:
+                metrics[key] = value
+    return run_record(
+        RunSpec(
+            kind='prediction',
+            run_id=manifest.id,
+            name=manifest.id,
+            params={
+                key: value
+                for key, value in params.items() if value is not None
+            },
+            metrics={
+                key: value
+                for key, value in metrics.items() if isinstance(
+                    value, (int, float)) and not isinstance(value, bool)
+            },
+            parents={'bundle_id': manifest.parents.model.id},
+            artifacts={
+                PROVENANCE_FILE:
+                json.dumps(manifest.to_dict(), indent=2, sort_keys=True,
+                           default=str)
+            },
+            inputs=fit_inputs(manifest),
+            error=None if error is None else format_error(error),
+        ))
+
+
+def record_failure(record: RunRecord) -> Optional[Exception]:
+    r"""The error a run record says ended its run (its ``kumo.error``)."""
+    error = record.tags.get('kumo.error')
+    return None if error is None else RuntimeError(error)
+
+
+def track_prediction(
+        manifest: Optional['PredictionManifest'], tracking: Any,
+        error: Optional[BaseException] = None) -> Optional[Exception]:
+    r"""Record a prediction run in ``tracking``, failed if ``error`` ended
+    it; returns the tracking failure instead of raising it."""
+    if getattr(tracking, 'log_prediction_run', None) is None:
+        return None
+    try:
+        if manifest is None:
+            raise ValueError('the run has no prediction manifest')
+        record = prediction_record(manifest, error)
+    except Exception as failure:
+        logger.warning('Experiment tracking failed: %s; the prediction run '
+                       'is not tracked', full_error(failure), exc_info=_debug())
+        return failure
+    return log_run(tracking, 'log_prediction_run', record)
+
+
+def _logged_percentiles(key: str, values: Any) -> Dict[str, Any]:
+    if not isinstance(values, list) or len(values) != 99:
+        return {}
+    column = key[:-len('percentiles')]
+    return {
+        f'{column}q{q:02d}': values[q - 1]
+        for q in (1, 5, 25, 50, 75, 95, 99)
+    }
+
+
 class Tracking(Protocol):
     r"""Records one `Trainer.fit` in an experiment tracker.
 
@@ -237,7 +326,9 @@ class Tracking(Protocol):
     ``ModelRegistryLocation``; ``connector``, a connector whose model
     registry ``registry`` registers in when there is no ``log_model``; and
     ``platform``, ``run_id`` and ``run_url``, the tracker's own run once
-    `start` returned, recorded as the model manifest's ``tracking``.
+    `start` returned, recorded as the model manifest's ``tracking``; and
+    the best-effort hooks ``log_prediction_run(record)`` and
+    ``log_monitoring(record)``.
     """
     def start(self, record: RunRecord) -> None:
         ...
@@ -521,6 +612,42 @@ class TrackingSession:
     def _fail(self, error: BaseException) -> None:
         if self.error is None:
             self.error = error
+
+
+def log_run(tracking: Any, hook: str,
+            record: RunRecord) -> Optional[Exception]:
+    r"""Log a standalone run with ``tracking.<hook>(record)`` on a tracking
+    thread, waiting up to `FINISH_SECONDS`; returns the tracking failure
+    instead of raising it."""
+    method = getattr(tracking, hook, None)
+    if method is None or _rank() != 0:
+        return None
+    failed: List[Exception] = []
+
+    def log() -> None:
+        try:
+            method(record)
+        except Exception as error:
+            logger.warning('Experiment tracking failed: %s; the %s run is not '
+                           'tracked', full_error(error),
+                           record.tags.get('kumo.kind'), exc_info=_debug())
+            failed.append(error)
+
+    try:
+        getattr(tracking, 'prepare', _none)()
+    except Exception as error:
+        logger.warning('Experiment tracking failed: %s; the %s run is not '
+                       'tracked', full_error(error),
+                       record.tags.get('kumo.kind'), exc_info=_debug())
+        return error
+    worker = threading.Thread(target=log, name='kumo-tracking', daemon=True)
+    worker.start()
+    worker.join(FINISH_SECONDS)
+    if worker.is_alive():
+        logger.warning(
+            'Experiment tracking did not finish within %ss; it goes on in '
+            'the background', FINISH_SECONDS)
+    return failed[0] if failed else None
 
 
 def _debug() -> bool:

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from kumo_core.artifacts import add_bundle_file
+from kumo_core.types import TaskType
 from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
 
 import kumo.engine as kumo
@@ -97,7 +98,8 @@ def test_each_fit_returns_a_new_result(fitted):
     assert second is not first and trainer.result is second
 
 
-def _finish_stub_fit(bundle, trainer, warm_start=None, settings=None):
+def _finish_stub_fit(bundle, trainer, warm_start=None, settings=None,
+                     holdout_path=None):
     (bundle / 'model').mkdir(parents=True)
     (bundle / 'model' / 'config.json').write_text('{}')
     (bundle / MANIFEST_FILE).write_text(json.dumps({'artifacts': []}))
@@ -108,7 +110,9 @@ def _finish_stub_fit(bundle, trainer, warm_start=None, settings=None):
         snapshot_id='snap', export_config=None,
         training_table_generation=TrainingTableGenerationPlan(),
         provenance=dict(train_table=table, warm_start=warm_start,
-                        started_at=datetime.now(timezone.utc), fit_mode=None))
+                        started_at=datetime.now(timezone.utc), fit_mode=None,
+                        task_type=TaskType.BINARY_CLASSIFICATION,
+                        holdout_path=holdout_path, holdout_truncated=False))
     _store_and_register(result.bundle_dir, result.manifest, settings)
     return result
 
@@ -166,3 +170,17 @@ def test_manifest_failure_warns_and_still_publishes(tmp_path, monkeypatch):
     assert result.manifest is None
     assert re.fullmatch('[0-9a-f]{64}', result.bundle_id)
     assert trainer.result is result
+
+
+def test_holdout_stats_failure_keeps_the_manifest(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise ValueError('unreadable holdout')
+
+    monkeypatch.setattr('kumo.engine.trainer._provenance.holdout_baseline',
+                        fail)
+    with pytest.warns(UserWarning, match='unreadable holdout'):
+        result = _finish_stub_fit(tmp_path / 'bundle',
+                                  kumo.Trainer(ModelPlan()),
+                                  holdout_path=tmp_path / 'test_df.parquet')
+    assert result.manifest.parents.training_table.id == 'tt-1'
+    assert result.manifest.holdout is None

@@ -95,6 +95,12 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         params={'snapshot': str(tmp_path / 'exports' / location)})
     assert list(served) == ['ENTITY', 'TARGET_PRED']
     assert len(served) == len(range(0, 400, 7))
+    with pytest.warns(UserWarning, match='skipped 1 of 2 requested '
+                      r'entities \(50\.0%\): not in snapshot'):
+        partial = mlflow.pyfunc.load_model('models:/m@champion').predict(
+            pd.DataFrame({'ENTITY': [7, 10**9]}),
+            params={'snapshot': str(tmp_path / 'exports' / location)})
+    assert list(partial['ENTITY']) == [7]
     assert load_model('models:/m@champion').result.id == result.id
     champion = kumo.Trainer.load_from_connector(
         cfg, location=kumo.ModelRegistryLocation('m', alias='champion'))

@@ -63,7 +63,7 @@ class MLOps:
             MLflow) for ``MlflowTracking``, the Snowflake Model Registry for
             ``SnowflakeTracking``.
         store: the artifact kinds stored under the root when produced
-            (``snapshot``, ``training_table``, ``model``);
+            (``snapshot``, ``training_table``, ``model``, ``prediction``);
             ``True`` for all, ``False`` for none.
         on_error: what a failure to track a run or register a model does:
             ``'warn'`` warns and the call returns; ``'raise'`` raises once
@@ -234,7 +234,7 @@ _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(
 @contextlib.contextmanager
 def mlops(settings: MLOps) -> Iterator[MLOps]:
     r"""Turns MLOps on for the calls in the block (in this thread or asyncio
-    task): each snapshot, training table and model is stored
+    task): each snapshot, training table, model and prediction run is stored
     under ``settings.artifact_root``. An inner block replaces an outer one;
     an ``mlops=`` argument replaces both for its call. Runs are tracked and
     models registered as ``settings`` says."""
