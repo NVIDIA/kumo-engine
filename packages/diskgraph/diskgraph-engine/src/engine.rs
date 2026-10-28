@@ -10,8 +10,8 @@ use crate::state::{
 };
 use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
+use diskgraph_core::time::{convert_trunc, TimeUnit};
 use diskgraph_core::tt_builder::{Value, WEIGHT_COL};
-use diskgraph_core::time::{abs_from_unit, Seconds, TimeUnit};
 use diskgraph_index::layout::{EdgeListView, RelationSegment};
 use diskgraph_index::reader::ShardReader;
 use gxhash::HashMap as GxHashMap;
@@ -685,9 +685,9 @@ impl DiskGraphEngine {
                     diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes).map_err(|e| {
                         EngineError::Internal(format!("failed to parse rowpack ctx: {}", e))
                     })?;
-                let decoder = RowPackDecoder::new(ctx).map_err(|e| {
-                    EngineError::Internal(format!("failed to create decoder: {}", e))
-                })?;
+                let decoder = RowPackDecoder::new(ctx)
+                    .map_err(|e| EngineError::Internal(format!("failed to create decoder: {}", e)))?
+                    .with_clock(metadata.timestamp_unit);
                 node_decoders_map.insert(node_type.name.clone(), decoder);
             }
         }
@@ -1498,11 +1498,7 @@ impl DiskGraphEngine {
                 col.as_any()
                     .downcast_ref::<arrow_array::Int64Array>()
                     .map(|arr| (0..arr.len()).map(|i| arr.value(i)).collect())
-                    .or_else(|| {
-                        col.as_any()
-                            .downcast_ref::<arrow_array::TimestampSecondArray>()
-                            .map(|arr| (0..arr.len()).map(|i| arr.value(i)).collect())
-                    })
+                    .or_else(|| seed_timestamps_in_clock(col, self.timestamp_unit))
             })
         } else {
             None
@@ -2109,26 +2105,18 @@ impl DiskGraphEngine {
     ) -> Result<()> {
         let sample_start = Instant::now();
 
-        // Convert seed timestamps from the caller's unit to the index unit (Seconds).
-        // The index always stores timestamps in seconds today; assert to catch if
-        // this assumption changes (at which point the engine should be made generic
-        // over UnitSystem).
-        assert_eq!(
-            self.timestamp_unit,
-            TimeUnit::Seconds,
-            "engine assumes seconds index; make engine generic over UnitSystem if this changes"
-        );
+        // Convert seed timestamps from the caller's unit to the index clock.
         let mut request_cow = std::borrow::Cow::Borrowed(request);
-        if request.seed_timestamp_unit != TimeUnit::Seconds {
+        if request.seed_timestamp_unit != self.timestamp_unit {
             if let Some(mut ts_map) = request.seed_timestamps.clone() {
                 for ts_vec in ts_map.values_mut() {
                     for ts in ts_vec.iter_mut() {
-                        *ts = abs_from_unit::<Seconds>(*ts, request.seed_timestamp_unit).raw();
+                        *ts = convert_trunc(*ts, request.seed_timestamp_unit, self.timestamp_unit);
                     }
                 }
                 let mut owned = request.clone();
                 owned.seed_timestamps = Some(ts_map);
-                owned.seed_timestamp_unit = TimeUnit::Seconds;
+                owned.seed_timestamp_unit = self.timestamp_unit;
                 request_cow = std::borrow::Cow::Owned(owned);
             }
         }
@@ -3386,6 +3374,29 @@ impl DiskGraphEngine {
             output,
         )
     }
+}
+
+/// Read a decoded `TIMESTAMP` column as ticks of the index clock.
+fn seed_timestamps_in_clock(col: &arrow_array::ArrayRef, clock: TimeUnit) -> Option<Vec<i64>> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::*;
+    use arrow_schema::{DataType, TimeUnit as ArrowTimeUnit};
+    let DataType::Timestamp(unit, _) = col.data_type() else {
+        return None;
+    };
+    let values = match unit {
+        ArrowTimeUnit::Second => col.as_primitive::<TimestampSecondType>().values(),
+        ArrowTimeUnit::Millisecond => col.as_primitive::<TimestampMillisecondType>().values(),
+        ArrowTimeUnit::Microsecond => col.as_primitive::<TimestampMicrosecondType>().values(),
+        ArrowTimeUnit::Nanosecond => col.as_primitive::<TimestampNanosecondType>().values(),
+    };
+    let unit = TimeUnit::from(*unit);
+    Some(
+        values
+            .iter()
+            .map(|&value| convert_trunc(value, unit, clock))
+            .collect(),
+    )
 }
 
 /// Project a seed-rowpack `RecordBatch` into the two consumer buckets
