@@ -53,7 +53,7 @@ use diskgraph_core::accumulators::{
     build_multicat_emit_stats, kumo_entry, kumo_key, kumo_safe_div, HyperLogLog, LocalColumnCounts,
     TDigestEstimator, WelfordAccumulator,
 };
-use diskgraph_core::time::{Abs, UnitSystem};
+use diskgraph_core::time::{split_parts, Abs, UnitSystem};
 use diskgraph_core::tt_builder::Value;
 
 use crate::split_decider::SplitDecider;
@@ -515,8 +515,8 @@ impl<U: UnitSystem> StatsMerger<U> {
         // Format timestamp bounds as RFC3339 strings for Kumo's cache.
         use chrono::DateTime;
         let fmt_ts = |t: Abs<U>| -> JsonValue {
-            let secs = t.to_secs();
-            DateTime::from_timestamp(secs, 0)
+            let (secs, nanos) = split_parts(t.raw(), U::UNIT);
+            DateTime::from_timestamp(secs, nanos)
                 .map(|dt| json!(dt.to_rfc3339()))
                 .unwrap_or_else(|| json!(secs))
         };
@@ -1572,7 +1572,7 @@ fn merge_chunk_stats_into<U: UnitSystem>(dst: &mut ChunkStats<U>, src: ChunkStat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diskgraph_core::time::Seconds;
+    use diskgraph_core::time::{Milliseconds, Seconds};
 
     #[test]
     fn test_finalize_contains_exact_stats_payload() {
@@ -1983,14 +1983,14 @@ mod tests {
     /// Helper: drive merger->finalize with the minimum knobs the kumo
     /// contract needs. All other args take their no-op defaults.
     #[allow(clippy::too_many_arguments)]
-    fn finalize_minimal(
-        chunk: ChunkStats<Seconds>,
+    fn finalize_minimal<U: UnitSystem>(
+        chunk: ChunkStats<U>,
         num_total_rows: u64,
         is_link_prediction: bool,
         target_category_counts: Option<HashMap<String, u64>>,
         target_stype: &str,
     ) -> TrainTableStatsPayload {
-        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
+        let mut merger: StatsMerger<U> = StatsMerger::default();
         let train_rows = chunk.num_train_rows;
         merger.merge(chunk);
         merger.finalize(
@@ -2287,6 +2287,20 @@ mod tests {
             mx.starts_with("20"),
             "expected RFC3339-shaped max_date, got {mx:?}"
         );
+    }
+
+    #[test]
+    fn top_level_dates_keep_the_fraction_of_a_second() {
+        let mut chunk: ChunkStats<Milliseconds> = ChunkStats {
+            num_train_rows: 2,
+            ..Default::default()
+        };
+        chunk.timestamp_min = Some(Abs::from_raw(1_700_000_000_000));
+        chunk.timestamp_max = Some(Abs::from_raw(1_700_000_000_250));
+
+        let kc = finalize_minimal(chunk, 2, false, None, "numerical").kumo_contract;
+        assert_eq!(kc.min_date, "2023-11-14T22:13:20+00:00");
+        assert_eq!(kc.max_date, "2023-11-14T22:13:20.250+00:00");
     }
 
     #[test]
