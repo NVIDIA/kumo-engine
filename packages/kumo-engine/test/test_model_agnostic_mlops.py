@@ -75,6 +75,8 @@ class _Tracker:
 
     def log_model(self, bundle_dir, manifest, snapshot, registry):
         self.calls.append(('log_model', (bundle_dir, manifest.id, snapshot)))
+        return registry and PublishedModel(name=registry.model_name,
+                                           version='2', uri='fake://TOY/2')
 
     def finish(self, record, error):
         self.calls.append(('finish', record))
@@ -83,48 +85,62 @@ class _Tracker:
 def test_any_run_is_tracked_from_its_spec():
     tracker = _Tracker()
     session = TrackingSession(tracker)
-    spec = RunSpec(kind='custom', run_id='loop-1', params={'lr': 0.1},
+    spec = RunSpec(kind='custom', params={'lr': 0.1},
                    inputs={'users': {'connector': 'S3'}})
     session.start(lambda: spec)
-    session.on_event(Event('trial_started', 'loop-1', 0.0, trial=1,
+    session.on_event(Event('trial_started', 0.0, trial=1,
                            params={'attempt': 1}))
     session.finish(lambda: replace(spec, metrics={'auc': 0.9},
                                    parents={'bundle_id': 'b'}), None)
     session._worker.join(5)
     started, trial, finished = (record for _, record in tracker.calls)
     assert started == run_record(spec)
-    assert trial.tags['kumo.parent_run'] == 'loop-1'
+    assert trial.name == 'trial-1-attempt-1'
+    assert trial.tags == {'kumo.kind': 'trial'}
     assert finished.metrics == {'auc': 0.9}
-    assert finished.tags == {'kumo.kind': 'custom', 'kumo.run_id': 'loop-1',
-                             'kumo.bundle_id': 'b'}
+    assert finished.tags == {'kumo.kind': 'custom', 'kumo.bundle_id': 'b'}
 
 
-def test_any_bundle_is_stored_logged_and_registered(tmp_path):
+class _RegistryTracker(_Tracker):
+    log_model = None
+
+    def __init__(self, connector):
+        super().__init__()
+        self.connector = connector
+
+
+@pytest.mark.parametrize('logs', [False, True])
+def test_any_bundle_is_stored_and_registered_by_its_tracker(tmp_path, logs):
     bundle, manifest = _toy_bundle(tmp_path / 'bundle')
     published = []
     sink = SimpleNamespace(
         publish_model=lambda connector, bundle_dir, **kw: published.append(
             (bundle_dir, kw)) or PublishedModel(name='TOY', version='1',
                                                 uri='fake://TOY/1'))
-    registry = kumo.ModelOutputConfig(SimpleNamespace(sink_backend=sink),
-                                      location=ModelRegistryLocation('TOY'))
-    settings = kumo.MLOps(str(tmp_path / 'root'), registry=registry)
-    tracker = _Tracker()
+    tracker = (_Tracker() if logs else _RegistryTracker(
+        SimpleNamespace(sink_backend=sink)))
+    settings = kumo.MLOps(str(tmp_path / 'root'), tracking=tracker,
+                          registry=ModelRegistryLocation('TOY'))
     session = TrackingSession(tracker)
-    session.start(lambda: RunSpec(kind='custom', run_id='loop-1'))
+    session.start(lambda: RunSpec(kind='custom'))
 
     registered, error = _store_and_register(
         bundle, manifest, settings, session=session, snapshot='snap',
         metrics={'auc': 0.9})
 
-    assert error is None and registered.version == '1'
+    assert error is None
     stored = tmp_path / 'root' / 'models' / manifest.id
     assert (stored / 'weight.txt').read_text() == '2.0'
-    assert ('log_model', (bundle, manifest.id, 'snap')) in tracker.calls
-    assert published == [(str(bundle), {
-        'path': None, 'location': ModelRegistryLocation('TOY'),
-        'metadata': {'kumo_bundle_id': manifest.id}, 'metrics': {'auc': 0.9}
-    })]
+    if logs:
+        assert registered.version == '2' and published == []
+        assert ('log_model', (bundle, manifest.id, 'snap')) in tracker.calls
+    else:
+        assert registered.version == '1'
+        assert published == [(str(bundle), {
+            'path': None, 'location': ModelRegistryLocation('TOY'),
+            'metadata': {'kumo_bundle_id': manifest.id},
+            'metrics': {'auc': 0.9}
+        })]
     session.finish(None, None)
 
 

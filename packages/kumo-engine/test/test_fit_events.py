@@ -78,7 +78,6 @@ def test_fit_reports_progress_events(table_and_snapshot, monkeypatch,
         'trial_started', 'epoch_ended', 'epoch_ended', 'trial_ended',
         'fit_ended',
     ]
-    assert len({event.run_id for event in events}) == 1
     assert set(events[0].params) == {'snapshot_id', 'query_sha256'}
     assert [(e.trial, e.epoch) for e in events if e.name == 'epoch_ended'
             ] == [(1, 1), (1, 2), (2, 1), (2, 2)]
@@ -124,7 +123,7 @@ def test_event_metrics_keep_finite_numbers():
     from kumo.engine._events import EventEmitter
 
     received = []
-    EventEmitter('run', [received.append]).emit(
+    EventEmitter([received.append]).emit(
         'epoch_ended', metrics={'val_loss': 'n/a', 'val_auc': float('nan'),
                                 'val_mae': 0.5})
 

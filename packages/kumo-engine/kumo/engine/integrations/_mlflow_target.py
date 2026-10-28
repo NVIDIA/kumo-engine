@@ -56,11 +56,34 @@ class Target:
 
     def __init__(self, tracking_uri: str, registry_uri: Optional[str],
                  swap: Optional[Callable[[], ContextManager[Any]]] = None,
-                 aws_session: Any = None) -> None:
+                 aws_session: Any = None, host: Optional[str] = None) -> None:
         self.tracking_uri = tracking_uri
         self.registry_uri = registry_uri
         self._swap = swap
         self._aws_session = aws_session
+        self._host = host
+
+    @property
+    def platform(self) -> str:
+        if SAGEMAKER_ARN.fullmatch(self.tracking_uri or ''):
+            return 'sagemaker'
+        if (self.tracking_uri or '').partition(':')[0] == 'databricks':
+            return 'databricks'
+        return 'mlflow'
+
+    def run_url(self, experiment_id: str, run_id: str) -> Optional[str]:
+        r"""The run's page in the MLflow UI; None where no link opens it
+        (SageMaker, local stores)."""
+        if self.platform == 'databricks':
+            host = self._host or _workspace_host()
+            return None if host is None else (
+                f"{host.rstrip('/')}/ml/experiments/{experiment_id}/runs/"
+                f'{run_id}')
+        if self.platform == 'mlflow' and self.tracking_uri.startswith(
+            ('http://', 'https://')):
+            return (f"{self.tracking_uri.rstrip('/')}/#/experiments/"
+                    f'{experiment_id}/runs/{run_id}')
+        return None
 
     @property
     def explicit(self) -> bool:
@@ -93,22 +116,33 @@ class Target:
                                        session_token=frozen.token)
 
 
-def resolve(target: Any, tracking_uri: Optional[str]) -> Target:
+def resolve(target: Any) -> Target:
     mlflow = import_provider('mlflow', 'mlflow')
-    if target is not None and tracking_uri is not None:
-        raise ValueError('Pass target or tracking_uri, not both.')
+    if isinstance(target, Target):
+        return target
     if target is None:
-        if tracking_uri is None:
-            return Target(mlflow.get_tracking_uri(), mlflow.get_registry_uri())
-        return Target(tracking_uri, registry_for(tracking_uri))
+        return Target(mlflow.get_tracking_uri(), mlflow.get_registry_uri())
+    if isinstance(target, str):
+        if SAGEMAKER_ARN.fullmatch(target):
+            return _sagemaker(SageMakerMLflow(target))
+        return Target(target, registry_for(target))
     if isinstance(target, SageMakerMLflow):
         return _sagemaker(target)
     from kumo.engine.connector.databricks import DatabricksConnector
 
     if isinstance(target, DatabricksConnector):
         return _databricks(target)
-    raise TypeError(f'MlflowTracking(target=...) takes a DatabricksConnector '
-                    f'or a SageMakerMLflow, not {type(target).__name__}.')
+    raise TypeError(f'MlflowTracking(target=...) takes a DatabricksConnector, '
+                    f'a SageMakerMLflow or a tracking URI, not '
+                    f'{type(target).__name__}.')
+
+
+def _workspace_host() -> Optional[str]:
+    try:
+        return import_provider('databricks.sdk.config',
+                               'databricks').Config().host
+    except Exception:
+        return None
 
 
 def registry_for(tracking_uri: str) -> str:
@@ -135,7 +169,8 @@ def _databricks(connector: Any) -> Target:
     client = import_provider('kumo_databricks.session',
                              'databricks')._client_for(principal)
     return Target('databricks', 'databricks-uc',
-                  swap=lambda: _databricks_token(client))
+                  swap=lambda: _databricks_token(client),
+                  host=client.config.host)
 
 
 @contextmanager

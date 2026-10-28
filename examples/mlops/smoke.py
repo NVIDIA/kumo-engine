@@ -88,8 +88,8 @@ def tracking(args: argparse.Namespace, suffix: str):
         schema_name=args.schema, identity=SnowflakeIdentity(
             account=args.account, username=args.user,
             private_key=Path(args.private_key_file).read_text()))
-    return SnowflakeTracking(connector=connector,
-                             experiment_name='KUMO_SMOKE'), None
+    return (SnowflakeTracking(connector, experiment_name='KUMO_SMOKE'),
+            f'KUMO_SMOKE_{suffix}')
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
@@ -109,10 +109,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     kumo.configure(scratch_dir=work / 'scratch')
     graph = data(work / 'data')
     tracker, model_name = tracking(args, time.strftime('%Y%m%d%H%M%S'))
-    cfg = kumo.MLOps(
-        args.artifact_root or str(work / 'root'), tracking=tracker,
-        registry=None if model_name is None else ModelRegistryLocation(
-            model_name, alias='candidate'), on_error='raise')
+    location = ModelRegistryLocation(model_name, alias='candidate')
+    cfg = kumo.MLOps(args.artifact_root or str(work / 'root'),
+                     tracking=tracker, registry=location, on_error='raise')
     print(f'checked the target in {time.monotonic() - started:.0f} s')
     with kumo.mlops(cfg):
         snapshot = graph.snapshot()
@@ -122,15 +121,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         plan.training_job.num_experiments = 1
         plan.optimization.max_epochs = 1
         result = kumo.Trainer(plan).fit(table, snapshot=snapshot)
-    print(f'fit run {tracker.run_id}, bundle {result.id}, '
+    print(f'fit run {result.tracking}, bundle {result.id}, '
           f'registered {result.registered_model}')
-    if model_name is not None:
-        from kumo.engine.integrations.mlflow import load_model
-
-        loaded = load_model(f'models:/{model_name}@candidate',
-                            tracking=tracker)
-        assert loaded.result.id == result.id, (loaded.result.id, result.id)
-        print('loaded the registered model back')
+    loaded = kumo.Trainer.load_from_connector(cfg, location=location)
+    assert loaded.result.id == result.id, (loaded.result.id, result.id)
+    print('loaded the registered model back')
     print(f'done in {time.monotonic() - started:.0f} s')
 
 

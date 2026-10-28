@@ -32,7 +32,6 @@ class Event:
     r"""One progress event. ``trial`` and ``epoch`` count from 1."""
 
     name: EventName
-    run_id: str
     time: float
     trial: Optional[int] = None
     epoch: Optional[int] = None
@@ -60,17 +59,14 @@ def _finite_floats(metrics: Mapping[str, Any]) -> Dict[str, float]:
 
 
 class EventEmitter(NoOpTrainingInstrumentation):
-    def __init__(self, run_id: str,
-                 callbacks: Sequence[Callable[[Event], None]]) -> None:
-        self.run_id = run_id
+    def __init__(self, callbacks: Sequence[Callable[[Event], None]]) -> None:
         self._callbacks = list(callbacks)
 
     def emit(self, name: EventName, *, trial: Optional[int] = None,
              epoch: Optional[int] = None,
              metrics: Optional[Mapping[str, float]] = None,
              params: Optional[Mapping[str, Any]] = None) -> None:
-        event = Event(name=name, run_id=self.run_id, time=time.time(),
-                      trial=trial, epoch=epoch,
+        event = Event(name=name, time=time.time(), trial=trial, epoch=epoch,
                       metrics=_finite_floats(metrics or {}),
                       params=dict(params or {}))
         for callback in list(self._callbacks):
@@ -79,7 +75,7 @@ class EventEmitter(NoOpTrainingInstrumentation):
             except Exception:
                 logger.warning(
                     'Progress callback %r failed; it is disabled for the '
-                    'rest of run %s', callback, self.run_id, exc_info=True)
+                    'rest of this fit', callback, exc_info=True)
                 self._callbacks.remove(callback)
 
     def event(self, name: str, **fields: Any) -> None:
