@@ -234,6 +234,10 @@ pub struct Dur<U: UnitSystem>(i64, PhantomData<U>);
 // -- Abs<U> convenience methods (delegate to UnitSystem) --------------------
 
 impl<U: UnitSystem> Abs<U> {
+    /// `self + dur`, or `None` when the result leaves the clock.
+    pub fn checked_add(self, dur: Dur<U>) -> Option<Self> {
+        self.0.checked_add(dur.0).map(Abs::from_raw)
+    }
     pub fn from_secs(secs: i64) -> Self {
         U::abs_from_secs(secs)
     }
@@ -605,14 +609,12 @@ pub fn dur_from_unit<U: UnitSystem>(value: i64, unit: TimeUnit) -> Dur<U> {
 /// Add calendar months to a timestamp. Uses chrono for correct month
 /// boundaries (e.g. Jan 31 + 1 month = Feb 28). Matches
 /// `pd.DateOffset(months=N)` behavior.
-pub fn add_calendar_months<U: UnitSystem>(ts: Abs<U>, months: i32) -> Abs<U> {
+pub fn add_calendar_months<U: UnitSystem>(ts: Abs<U>, months: i32) -> Option<Abs<U>> {
     use chrono::{DateTime, Datelike, NaiveDate, Timelike};
 
     let secs = ts.to_secs();
     let subsecond = ts - Abs::<U>::from_secs(secs);
-    let dt = DateTime::from_timestamp(secs, 0)
-        .expect("timestamp out of range for calendar arithmetic")
-        .naive_utc();
+    let dt = DateTime::from_timestamp(secs, 0)?.naive_utc();
 
     let total_months = dt.month0() as i32 + months;
     // Euclidean division to handle negative months correctly
@@ -623,12 +625,10 @@ pub fn add_calendar_months<U: UnitSystem>(ts: Abs<U>, months: i32) -> Abs<U> {
     let max_day = days_in_month(target_year, target_month);
     let day = dt.day().min(max_day);
 
-    let result = NaiveDate::from_ymd_opt(target_year, target_month, day)
-        .expect("invalid date in calendar arithmetic")
-        .and_hms_opt(dt.hour(), dt.minute(), dt.second())
-        .expect("invalid time in calendar arithmetic");
+    let date = NaiveDate::from_ymd_opt(target_year, target_month, day)?;
+    let result = date.and_hms_opt(dt.hour(), dt.minute(), dt.second())?;
 
-    Abs::<U>::from_secs(result.and_utc().timestamp()) + subsecond
+    Abs::from_raw(floor_parts::<U>(result.and_utc().timestamp(), || 0)?).checked_add(subsecond)
 }
 
 /// Add an offset to a timestamp. For fixed-size units (seconds through weeks)
@@ -637,11 +637,11 @@ pub fn add_calendar_months<U: UnitSystem>(ts: Abs<U>, months: i32) -> Abs<U> {
 ///
 /// This is the typed replacement for the ad-hoc `add_unit` that operated on
 /// raw nanosecond i64 values.
-pub fn add_offset<U: UnitSystem>(ts: Abs<U>, unit: TimeUnit, value: i64) -> Abs<U> {
+pub fn add_offset<U: UnitSystem>(ts: Abs<U>, unit: TimeUnit, value: i64) -> Option<Abs<U>> {
     match unit {
         TimeUnit::Months => add_calendar_months(ts, value as i32),
         TimeUnit::Years => add_calendar_months(ts, (value * 12) as i32),
-        _ => ts + dur_from_unit(value, unit),
+        _ => ts.checked_add(dur_from_unit(value, unit)),
     }
 }
 
@@ -944,7 +944,7 @@ mod tests {
     fn add_one_month_from_jan() {
         // 2024-01-15 00:00:00 UTC
         let ts = Abs::<Seconds>::from_secs(1_705_276_800);
-        let result = add_calendar_months(ts, 1);
+        let result = add_calendar_months(ts, 1).unwrap();
         // 2024-02-15 00:00:00 UTC
         assert_eq!(result.raw(), 1_707_955_200);
     }
@@ -953,7 +953,7 @@ mod tests {
     fn add_month_clamps_day_jan31_to_feb28() {
         // 2023-01-31 00:00:00 UTC = 1675123200
         let ts = Abs::<Seconds>::from_secs(1_675_123_200);
-        let result = add_calendar_months(ts, 1);
+        let result = add_calendar_months(ts, 1).unwrap();
         // 2023-02-28 00:00:00 UTC = 1677542400
         assert_eq!(result.raw(), 1_677_542_400);
     }
@@ -962,7 +962,7 @@ mod tests {
     fn subtract_one_month() {
         // 2024-03-15 00:00:00 UTC = 1710460800
         let ts = Abs::<Seconds>::from_secs(1_710_460_800);
-        let result = add_calendar_months(ts, -1);
+        let result = add_calendar_months(ts, -1).unwrap();
         // 2024-02-15 00:00:00 UTC = 1707955200
         assert_eq!(result.raw(), 1_707_955_200);
     }
@@ -971,7 +971,7 @@ mod tests {
     fn add_twelve_months_equals_one_year() {
         // 2024-06-01 00:00:00 UTC = 1717200000
         let ts = Abs::<Seconds>::from_secs(1_717_200_000);
-        let result = add_calendar_months(ts, 12);
+        let result = add_calendar_months(ts, 12).unwrap();
         // 2025-06-01 00:00:00 UTC = 1748736000
         assert_eq!(result.raw(), 1_748_736_000);
     }
@@ -1093,7 +1093,7 @@ mod tests {
     #[test]
     fn add_offset_days_nanoseconds() {
         let ts = Abs::<Nanoseconds>::from_secs(1000);
-        let result = add_offset(ts, TimeUnit::Days, 2);
+        let result = add_offset(ts, TimeUnit::Days, 2).unwrap();
         assert_eq!(result.raw(), ts.raw() + 2 * 86_400_000_000_000);
     }
 
@@ -1101,7 +1101,7 @@ mod tests {
     fn add_offset_months_nanoseconds() {
         // 2024-01-15 00:00:00 UTC in nanos
         let ts = Abs::<Nanoseconds>::from_secs(1_705_276_800);
-        let result = add_offset(ts, TimeUnit::Months, 1);
+        let result = add_offset(ts, TimeUnit::Months, 1).unwrap();
         // 2024-02-15 00:00:00 UTC in nanos
         let expected = Abs::<Nanoseconds>::from_secs(1_707_955_200);
         assert_eq!(result.raw(), expected.raw());
@@ -1111,7 +1111,7 @@ mod tests {
     fn add_offset_years_nanoseconds() {
         // 2024-01-15 00:00:00 UTC in nanos
         let ts = Abs::<Nanoseconds>::from_secs(1_705_276_800);
-        let result = add_offset(ts, TimeUnit::Years, 1);
+        let result = add_offset(ts, TimeUnit::Years, 1).unwrap();
         // 2025-01-15 00:00:00 UTC in nanos
         let expected = Abs::<Nanoseconds>::from_secs(1_736_899_200);
         assert_eq!(result.raw(), expected.raw());
@@ -1242,7 +1242,17 @@ mod tests {
     #[test]
     fn calendar_months_keep_the_time_of_day_below_one_second() {
         let ts = Abs::<Milliseconds>::from_raw(1_705_276_800_250);
-        assert_eq!(add_calendar_months(ts, 1).raw(), 1_707_955_200_250);
+        assert_eq!(add_calendar_months(ts, 1).unwrap().raw(), 1_707_955_200_250);
+    }
+
+    #[test]
+    fn calendar_months_beyond_the_clock_are_none() {
+        let last_ns = Abs::<Nanoseconds>::from_raw(i64::MAX - 1);
+        assert_eq!(add_calendar_months(last_ns, 1), None);
+        assert_eq!(
+            add_calendar_months(Abs::<Seconds>::from_raw(i64::MAX), 1),
+            None
+        );
     }
 
     #[test]

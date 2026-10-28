@@ -279,7 +279,7 @@ impl<U: UnitSystem> TimeRangeDecider<U> {
     pub(crate) fn decide_ts(&self, ts: Abs<U>) -> u8 {
         for (idx, (start, end)) in self.ranges.iter().enumerate() {
             let in_range = match self.end_shift {
-                Some(shift) => ts >= *start && apply_offset(ts, &shift) <= *end,
+                Some(shift) => ts >= *start && apply_offset(ts, &shift).is_some_and(|t| t <= *end),
                 None => ts > *start && ts <= *end,
             };
             if in_range {
@@ -1051,7 +1051,7 @@ impl<U: UnitSystem> OffsetUnit<U> {
     fn difference_at(&self, other: &Self, anchor: Abs<U>) -> Dur<U> {
         match (self, other) {
             (OffsetUnit::Fixed(a), OffsetUnit::Fixed(b)) => *a - *b,
-            _ => apply_offset(anchor, self) - apply_offset(anchor, other),
+            _ => offset_boundary(anchor, self) - offset_boundary(anchor, other),
         }
     }
 }
@@ -1067,12 +1067,25 @@ impl<U: UnitSystem> OffsetUnit<U> {
 /// `+ Months(-1)`) = `2023-12-31` (no clamp needed). This matches
 /// `pd.DateOffset(months=N)` and the existing `add_calendar_months`
 /// semantics already shared with the temporal-aggregation window code.
-pub(crate) fn apply_offset<U: UnitSystem>(anchor: Abs<U>, offset: &OffsetUnit<U>) -> Abs<U> {
+pub(crate) fn apply_offset<U: UnitSystem>(
+    anchor: Abs<U>,
+    offset: &OffsetUnit<U>,
+) -> Option<Abs<U>> {
     match offset {
-        OffsetUnit::Fixed(d) => anchor + *d,
+        OffsetUnit::Fixed(d) => anchor.checked_add(*d),
         OffsetUnit::Months(m) => add_calendar_months(anchor, *m),
         OffsetUnit::Years(y) => add_calendar_months(anchor, y.saturating_mul(12)),
     }
+}
+
+/// [`apply_offset`], pinned to the end of the clock it runs past.
+fn offset_boundary<U: UnitSystem>(anchor: Abs<U>, offset: &OffsetUnit<U>) -> Abs<U> {
+    let backwards = match offset {
+        OffsetUnit::Fixed(d) => d.raw() < 0,
+        OffsetUnit::Months(n) | OffsetUnit::Years(n) => *n < 0,
+    };
+    let clock_end = if backwards { i64::MIN } else { i64::MAX };
+    apply_offset(anchor, offset).unwrap_or(Abs::from_raw(clock_end))
 }
 
 /// Subtract a calendar-aware offset from an anchor.
@@ -1082,9 +1095,9 @@ pub(crate) fn apply_offset<U: UnitSystem>(anchor: Abs<U>, offset: &OffsetUnit<U>
 pub(crate) fn subtract_calendar_offset<U: UnitSystem>(
     anchor: Abs<U>,
     offset: OffsetUnit<U>,
-) -> Abs<U> {
+) -> Option<Abs<U>> {
     match offset {
-        OffsetUnit::Fixed(d) => anchor - d,
+        OffsetUnit::Fixed(d) => Some(anchor - d),
         OffsetUnit::Months(m) => add_calendar_months(anchor, -m),
         OffsetUnit::Years(y) => add_calendar_months(anchor, -y.saturating_mul(12)),
     }
@@ -1240,7 +1253,9 @@ impl<U: UnitSystem> DateOffsetDecider<U> {
         if self.boundaries.len() < 2 {
             return UNUSED_STAGE;
         }
-        let shifted = ts + self.shift;
+        let Some(shifted) = ts.checked_add(self.shift) else {
+            return UNUSED_STAGE;
+        };
         let mut out = UNUSED_STAGE;
         // Match pybind: scan all (start, end) pairs; LAST match wins.
         for (split_idx, w) in self.boundaries.windows(2).enumerate() {
@@ -1310,7 +1325,7 @@ impl<U: UnitSystem> SplitDecider<U> for DateOffsetDecider<U> {
         let mut boundaries: Vec<Abs<U>> = Vec::with_capacity(self.offsets.len() + 2);
         boundaries.push(min_ts);
         for off in &self.offsets {
-            boundaries.push(apply_offset(max_ts, off));
+            boundaries.push(offset_boundary(max_ts, off));
         }
         boundaries.push(max_ts + tf + self.anchor_start_offset);
         if self.flexible_boundaries {
@@ -1956,7 +1971,7 @@ mod tests {
     use super::*;
     use crate::errors::TTGenError;
     use crate::ttgen_stats::TTRowRef;
-    use diskgraph_core::time::{Abs, Seconds};
+    use diskgraph_core::time::{Abs, Nanoseconds, Seconds};
     use diskgraph_core::tt_builder::Value;
 
     fn sample_row<'a>(
@@ -2114,6 +2129,27 @@ mod tests {
         assert_eq!(d.decide_ts(Abs::from_secs(20)), 1);
         assert_eq!(d.decide_ts(Abs::from_secs(30)), 2);
         assert_eq!(d.decide_ts(Abs::from_secs(40)), UNUSED_STAGE);
+    }
+
+    #[test]
+    fn rows_shifted_past_the_clock_belong_to_no_stage() {
+        let end = Abs::<Nanoseconds>::from_raw(i64::MAX);
+        let time_range = TimeRangeDecider::new(vec![(Abs::from_raw(0), end)])
+            .with_end_shift(Some(OffsetUnit::Fixed(Dur::from_raw(10))));
+        assert_eq!(time_range.decide_ts(Abs::from_raw(i64::MAX - 20)), 0);
+        assert_eq!(
+            time_range.decide_ts(Abs::from_raw(i64::MAX - 5)),
+            UNUSED_STAGE
+        );
+
+        let mut date_offset = DateOffsetDecider::new(vec![], Dur::zero(), None);
+        date_offset.boundaries = vec![Abs::from_raw(0), end];
+        date_offset.shift = Dur::from_raw(10);
+        assert_eq!(date_offset.decide_ts(Abs::from_raw(i64::MAX - 20)), 0);
+        assert_eq!(
+            date_offset.decide_ts(Abs::from_raw(i64::MAX - 5)),
+            UNUSED_STAGE
+        );
     }
 
     #[test]
@@ -2982,7 +3018,7 @@ mod tests {
         // = 2024-02-29 (leap year, last valid day of Feb). This matches
         // `pd.DateOffset(months=-1)` and `add_calendar_months`'s behavior.
         let anchor = ymd_secs(2024, 3, 31);
-        let result = subtract_calendar_offset::<Seconds>(anchor, OffsetUnit::Months(1));
+        let result = subtract_calendar_offset::<Seconds>(anchor, OffsetUnit::Months(1)).unwrap();
         assert_eq!(
             ymd_to_str(result),
             "2024-02-29",
@@ -2992,7 +3028,7 @@ mod tests {
         // Non-leap year: 2023-03-31 - 1 month = 2023-02-28.
         let anchor_nonleap = ymd_secs(2023, 3, 31);
         let result_nonleap =
-            subtract_calendar_offset::<Seconds>(anchor_nonleap, OffsetUnit::Months(1));
+            subtract_calendar_offset::<Seconds>(anchor_nonleap, OffsetUnit::Months(1)).unwrap();
         assert_eq!(
             ymd_to_str(result_nonleap),
             "2023-02-28",
@@ -3005,7 +3041,7 @@ mod tests {
         // Sanity: OffsetUnit::Fixed(d) is identical to anchor + d.
         let anchor = ymd_secs(2024, 6, 15);
         let d = Dur::<Seconds>::from_secs(3600);
-        let via_offset = apply_offset(anchor, &OffsetUnit::Fixed(d));
+        let via_offset = apply_offset(anchor, &OffsetUnit::Fixed(d)).unwrap();
         let via_dur = anchor + d;
         assert_eq!(via_offset.raw(), via_dur.raw());
     }
