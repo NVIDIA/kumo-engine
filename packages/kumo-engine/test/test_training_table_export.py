@@ -446,7 +446,8 @@ def test_a_mlops_block_stores_each_table_once_under_the_root(graph, tmp_path):
     pquery = kumo.PredictiveQuery(graph=graph_,
                                   query='PREDICT ents.LABEL FOR EACH ents.ID')
     root = tmp_path / 'artifacts'
-    with kumo.mlops(kumo.MLOps(artifact_root=str(root))):
+    cfg = kumo.MLOps(artifact_root=str(root))
+    with kumo.mlops(cfg):
         table = pquery.generate_training_table(snapshot)
         stored = root / 'training_tables' / table.id
         parts = {p.name: p.stat().st_mtime_ns for p in stored.iterdir()}
@@ -455,7 +456,10 @@ def test_a_mlops_block_stores_each_table_once_under_the_root(graph, tmp_path):
     assert {p.name: p.stat().st_mtime_ns for p in stored.iterdir()} == parts
     assert json.loads((stored / '_provenance.json').read_text())['id'] == (
         table.id)
+    reloaded = kumo.TrainingTable.load_from_connector(
+        cfg, path=f'training_tables/{table.id}', pq=pquery, snapshot=snapshot)
+    assert _seeds(reloaded)[1] == _seeds(table)[1]
     off = pquery.generate_training_table(
         snapshot, mlops=kumo.MLOps(artifact_root=str(tmp_path / 'other'),
-                                   export={'model'}))
+                                   store={'model'}))
     assert off.id == table.id and not (tmp_path / 'other').exists()

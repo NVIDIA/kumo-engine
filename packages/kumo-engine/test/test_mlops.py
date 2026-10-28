@@ -27,8 +27,8 @@ def test_mlops_needs_an_artifact_root_it_can_write_files_to(tmp_path):
         holds_files=lambda c, p: False, filesystem=None))
     with pytest.raises(ValueError, match='file location'):
         kumo.MLOps(artifact_root=(table_only, 'DB.SCHEMA'))
-    with pytest.raises(ValueError, match='Unknown export kinds'):
-        kumo.MLOps(artifact_root=str(tmp_path), export={'models'})
+    with pytest.raises(ValueError, match='Unknown store kinds'):
+        kumo.MLOps(artifact_root=str(tmp_path), store={'models'})
 
 
 def test_a_root_is_a_uri_or_a_connector_and_path(tmp_path):
@@ -36,15 +36,15 @@ def test_a_root_is_a_uri_or_a_connector_and_path(tmp_path):
     assert uri.root.location('models/m') == 'models/m'
     assert uri.root.uri('models/m') == f'{tmp_path}/models/m'
     assert isinstance(uri.root.connector, kumo.FileConnector)
-    assert uri.exports == {'snapshot', 'training_table', 'model'}
+    assert uri.kinds == {'snapshot', 'training_table', 'model'}
 
     connector = kumo.FileConnector(root_dir=str(tmp_path))
     pair = kumo.MLOps(artifact_root=(connector, 'volume/kumo/'),
-                      export={'model'})
+                      store={'model'})
     assert pair.root.connector is connector
     assert pair.root.location('models/m') == 'volume/kumo/models/m'
     assert pair.wants('model') and not pair.wants('snapshot')
-    assert not kumo.MLOps(artifact_root=str(tmp_path), export=False).exports
+    assert not kumo.MLOps(artifact_root=str(tmp_path), store=False).kinds
 
 
 def test_a_call_argument_beats_the_nearest_block(tmp_path):

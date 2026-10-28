@@ -1,30 +1,69 @@
 # MLOps with Kumo Engine
 
-## Turning MLOps on
+## Quickstart
 
-`kumo.MLOps` says where artifacts go. Use it as a block, which notebooks and scheduled scripts alike can do, or pass it as `mlops=` on a single call:
+With a `graph` and a `pquery` (see the README), turn MLOps on with an artifact root and every snapshot, training table and model is stored under it:
 
 ```python
 import kumo.engine as kumo
 
-cfg = kumo.MLOps(artifact_root="s3://bucket/kumo")   # or (connector, path), e.g. a volume or stage
+cfg = kumo.MLOps("artifacts")                 # or s3://..., gs://..., /Volumes/..., (connector, "@DB.SCHEMA.STAGE/kumo")
 with kumo.mlops(cfg):
     snapshot = graph.snapshot()
+    result = kumo.Trainer(pquery.suggest_model_plan(snapshot)).fit(
+        pquery.generate_training_table(snapshot), snapshot=snapshot)
+# Later, on any machine that reaches the root:
+snapshot = kumo.GraphSnapshot.load_from_connector(cfg, id=result.snapshot_id)
+trainer = kumo.Trainer.load_from_connector(cfg, path=f"models/{result.id}")
 ```
 
-- **`artifact_root`** is required. It is a URI (`s3://`, `gs://`, `file://`, or a local path, including `/Volumes/...` on a Databricks cluster) or a `(connector, path)` pair for a store a URI cannot reach.
-- **Volumes and stages:** `(DatabricksConnector(...), "/Volumes/<catalog>/<schema>/<volume>/kumo")` and `(SnowflakeConnector(...), "@DB.SCHEMA.STAGE/kumo")` work as roots once the installed kumo-databricks or kumo-snowflake sink holds files at those paths; with an older plugin, building `kumo.MLOps` raises.
-- **`export`** names the artifact kinds stored under the root when they are produced: `snapshot`, `training_table` and `model` (default: all).
-- **Precedence:** a call's `mlops=` replaces the enclosing block, and an inner block replaces an outer one. A block covers the calling thread or asyncio task.
-- **Off by default.** Without a block or `mlops=`, every call behaves as it always has. Plain exports (`export(config)`, `export_config=`, `output_config=`) never write to the artifact root. A path export that finds a complete copy of the same artifact at its destination reuses it instead of uploading again (logged at info): a snapshot with the same bytes, a training table or prediction directory with `_SUCCESS` and the same `_KUMO_EXPORT` identity, or a model bundle with the same files and `_provenance.json`.
+## How it fits together
 
-## Lineage
+| artifact | id | stored at (MLOps on) |
+|---|---|---|
+| snapshot | `snapshot.id` | `<root>/snapshots/<graph id>/<data version>/` |
+| training table | `table.id` | `<root>/training_tables/<id>/` |
+| model | `result.id` (the bundle id) | `<root>/models/<id>/` |
+
+Each carries a `_provenance.json` manifest that embeds its parents' manifests (see [Lineage](#lineage)).
+
+## Turning MLOps on
+
+`kumo.MLOps` says where artifacts go. Use it as a block, or pass it as `mlops=` on a single call:
+
+```python
+cfg = kumo.MLOps("s3://bucket/kumo")
+with kumo.mlops(cfg):
+    snapshot = graph.snapshot()
+trainer.fit(table, snapshot=snapshot, mlops=cfg)
+```
+
+- **`artifact_root`** is required: a URI (`s3://`, `gs://`, `file://`, or a local path, including `/Volumes/...` on a Databricks cluster) or a `(connector, path)` pair for a store a URI cannot reach, such as `(DatabricksConnector(...), "/Volumes/<catalog>/<schema>/<volume>/kumo")` or `(SnowflakeConnector(...), "@DB.SCHEMA.STAGE/kumo")`. A connector whose sink cannot hold files there raises when `kumo.MLOps` is built.
+- **`store`** names the artifact kinds stored when they are produced: `snapshot`, `training_table` and `model` (default: all).
+- **Precedence:** a call's `mlops=` replaces the enclosing block, and an inner block replaces an outer one. A block covers the calling thread or asyncio task.
+- **Off by default.** Without a block or `mlops=`, every call behaves as it always has, and plain exports (`export(config)`, `export_config=`) never write to the artifact root.
+
+## Exporting and loading artifacts
+
+Every artifact has one way out, `<artifact>.export(<Kind>OutputConfig(...))`, and one way back, `<Class>.load_from_connector(...)`. Pass the `kumo.MLOps` in place of the connector to read from the artifact root, with paths relative to it:
+
+| Artifact | Export | Load |
+|---|---|---|
+| Snapshot | `snapshot.export(SnapshotOutputConfig(connector, path))`, returns the location | `GraphSnapshot.load_from_connector(connector, path=location)`, or `(cfg, id=snapshot_id)` |
+| Training table | `table.export(TrainingTableOutputConfig(connector, name))` | `TrainingTable.load_from_connector(connector, path=name, pq=pq, snapshot=snapshot)`, or `(cfg, path=f"training_tables/{id}", ...)` |
+| Model | `result.export(ModelOutputConfig(connector, path=... or location=...))` | `Trainer.load_from_connector(connector, path=... or location=...)`, or `(cfg, path=f"models/{id}")` |
+
+`fit(export_config=...)` is shorthand for fitting, then exporting. Loading needs a file destination (S3, GCS, local files, a volume or stage). Exporting again to a destination that already holds a complete copy of the same artifact reuses it (logged at info) instead of uploading again.
+
+## Reference
+
+### Lineage
 
 Every artifact carries a `_provenance.json` manifest, metadata only. The leading underscore keeps Spark and Hive Parquet readers from treating it as data.
 
 A graph snapshot's manifest, next to its index, records each source table's connector, location and version, plus the engine build that wrote it. `graph.snapshot(record_sources=False)` keeps only connector and table names, plus a SHA-256 of each full location so a source moved elsewhere is still noticed, and keeps Custom SQL only as a hash.
 
-### Training tables
+#### Training tables
 
 A generated or caller-supplied training table carries `_provenance.json` in its staging directory:
 - the query, the effective generation plan and the task type;
@@ -36,7 +75,7 @@ A generated or caller-supplied training table carries `_provenance.json` in its 
 
 With MLOps on, each table is stored once under `<root>/training_tables/<id>/`.
 
-### Models
+#### Models
 
 Every fitted bundle carries `_provenance.json` (`ModelManifest`):
 - its `id`, the bundle id (a content hash that leaves the manifest file out);
@@ -73,11 +112,11 @@ With MLOps on (`graph.snapshot(mlops=...)` or a `kumo.mlops` block), each snapsh
 
 ### Scoring without the graph
 
-A scoring job does not need the training job's `Graph` code. It loads the snapshot the training job exported and the model, then scores:
+A scoring job does not need the training job's `Graph` code. It loads a snapshot and the model from the artifact root, then scores:
 
 ```python
-snapshot = GraphSnapshot.load_from_connector(store, path=location)
-trainer = Trainer.load_from_connector(store, path="models/<bundle id>")
+snapshot = GraphSnapshot.load_from_connector(cfg, id=snapshot_id)
+trainer = Trainer.load_from_connector(cfg, path=f"models/{bundle_id}")
 result = trainer.predict(snapshot, binary_classification_threshold=0.5)
 ```
 

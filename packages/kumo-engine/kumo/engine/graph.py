@@ -406,19 +406,33 @@ class GraphSnapshot:
         return export(self, output_config.connector, output_config.path)
 
     @classmethod
-    def load_from_connector(cls, connector: Connector, *, path: str,
+    def load_from_connector(cls, connector: Connector, *,
+                            path: Optional[str] = None,
+                            id: Optional[str] = None,
                             graph: Optional['Graph'] = None) -> 'GraphSnapshot':
         r"""Copy the snapshot exported at `path` into the local store.
 
         Args:
+            connector: a connector, or a `kumo.MLOps` for its artifact root.
             path: the location `export` returned.
+            id: instead of `path`, the id of a snapshot stored under the
+                artifact root of the `kumo.MLOps` passed as `connector`.
             graph: if given, warn when its source tables changed since the
                 snapshot was built (see `source_changes`).
         """
         from kumo_core.diskgraph.snapshot import DiskgraphSnapshotHandle
 
+        from kumo.engine._mlops import MLOps, on_root, snapshot_path
         from kumo.engine._snapshot_io import holds_export, load_into, read
 
+        if (path is None) == (id is None):
+            raise ValueError('Pass exactly one of path or id.')
+        if id is not None:
+            if not isinstance(connector, MLOps):
+                raise TypeError('id= loads from a kumo.MLOps artifact root; '
+                                'pass path= with a connector.')
+            path = snapshot_path(id)
+        connector, path = on_root(connector, path)
         root, manifest = read(connector, path)
         graph_key = manifest['graph_key']
         if graph is not None and graph.id != graph_key:

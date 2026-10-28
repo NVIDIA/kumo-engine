@@ -125,7 +125,11 @@ class TrainingTable:
                             snapshot: GraphSnapshot) -> "TrainingTable":
         r"""Materialize a table written by :meth:`export` (a directory with a
         ``SPLIT`` column) against ``snapshot``, as :meth:`from_source_table`
-        with ``split_col='SPLIT'``."""
+        with ``split_col='SPLIT'``. A `kumo.MLOps` ``connector`` reads
+        ``path`` under its artifact root (``training_tables/<id>``)."""
+        from kumo.engine._mlops import on_root
+
+        connector, path = on_root(connector, path)
         return cls.from_source_table(connector[path],
                                      TrainingTableSpec(split_col='SPLIT'),
                                      pq=pq, snapshot=snapshot)

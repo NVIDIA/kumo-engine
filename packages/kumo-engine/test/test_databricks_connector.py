@@ -58,17 +58,12 @@ def test_strict_staging_requires_a_volume(staging_volume_path):
         )
 
 
-def test_identity_is_required():
-    with pytest.raises(TypeError, match='identity'):
-        DatabricksConnector(
-            catalog='main',
-            schema_name='analytics',
-            warehouse_id='warehouse-id',
-        )
-
-
-def test_from_notebook_builds_an_ambient_identity():
-    connector = DatabricksConnector.from_notebook(
+@pytest.mark.parametrize('build', [
+    DatabricksConnector.from_notebook,
+    DatabricksConnector,
+])
+def test_without_an_identity_the_connector_is_ambient(build):
+    connector = build(
         catalog='main',
         schema_name='analytics',
         warehouse_id='warehouse-id',
