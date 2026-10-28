@@ -32,7 +32,7 @@ from async_utils.sync import blocking_func
 from io_utils import fsutil, json, logging
 from io_utils.json import fast_from_json, load_many_json, save_json
 from kumo.connector import MAX_SUPPORTED_FILES
-from kumo.data import get_active_cache, get_persist_dir
+from kumo.data import get_active_cache
 from kumo.data.backend_cache import (
     AsyncDataTaskStatus,
     BackendCacheManager,
@@ -1223,7 +1223,7 @@ class DataBackend:
         """
         from kumoapi.pquery import QueryType
 
-        from kumo.diskgraph import DiskgraphHandle, get_service
+        from kumo.diskgraph import get_service
         from kumo.diskgraph.service import _to_kumo_col_specs
         from rest.backends.ml_backend.data_util import (
             get_job_base_dir,
@@ -1288,15 +1288,9 @@ class DataBackend:
                 raise ValueError(
                     'Direct Databricks stats stage contains no Parquet files.')
 
-        timestamp_precision = 'seconds'
-        version_info = job_input.graph_version_info
-        if (version_info is not None
-                and version_info.timestamp_precision != 'seconds'):
-            snapshot = DiskgraphHandle(
-                graph_key=job_input.graph_data_compute_input.graph_key,
-                graph_data_version=version_info.graph_data_version)
-            timestamp_precision = await get_service(
-            ).snapshot_timestamp_unit.coroutine(snapshot, get_persist_dir())
+        timestamp_precision = (job_input.graph_version_info.timestamp_precision
+                               if job_input.graph_version_info is not None else
+                               'seconds')
 
         entity_col_name = job_input.predictive_query.get_bp_entity_col_name()
         (bp_connector_spec, bp_table_def, bp_data_version,

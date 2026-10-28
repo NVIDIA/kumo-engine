@@ -1718,20 +1718,6 @@ class DiskgraphService:
                     shutil.rmtree(staging_dir, ignore_errors=True)
 
     @blocking_method()
-    def snapshot_timestamp_unit(self, handle: DiskgraphHandle,
-                                dataplane_root: str) -> str:
-        """The clock in the snapshot's ``index_metadata.json``, or seconds
-        when the file is missing or unreadable."""
-        from io_utils import fsutil
-        snapshot_dir = self.dataplane_snapshot_path(handle, dataplane_root)
-        path = os.path.join(snapshot_dir, 'index_metadata.json')
-        try:
-            return json.loads(fsutil.read_text(path)).get(
-                'timestamp_precision', 'seconds')
-        except Exception:
-            return 'seconds'
-
-    @blocking_method()
     def compute_col_stats_for_parquet(
         self,
         parquet_paths: List[str],
