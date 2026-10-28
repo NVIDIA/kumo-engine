@@ -12,6 +12,8 @@
 !packages/kumo-core/src/kumo_core/csv_rules.py
 !packages/kumo-core/src/kumo_core/custom_sql.py
 !packages/kumo-core/src/kumo_core/artifact_staging.py
+# Table sinks stamp run ids on exported prediction files with it.
+!packages/kumo-core/src/kumo_core/artifact_export.py
 # Model registries validate bundles through the portable artifact contract.
 !packages/kumo-core/src/kumo_core/artifacts.py
 !packages/kumo-core/src/kumo_core/config.py

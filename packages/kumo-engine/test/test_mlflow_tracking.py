@@ -429,6 +429,62 @@ def test_fit_inputs_come_from_the_embedded_parents():
     assert fit_inputs(None) == {}
 
 
+def test_a_monitoring_run_is_new_and_tags_its_prediction_run(tracking_uri):
+    from kumo.engine._tracking import RunRecord, log_run
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    client = mlflow.MlflowClient()
+    experiment = client.create_experiment('scores')
+    predicted = client.create_run(experiment, tags={
+        'kumo.kind': 'prediction', 'kumo.run_id': 'pred-1'
+    }).info.run_id
+    client.set_terminated(predicted)
+
+    log_run(
+        MlflowTracking(experiment_name='scores', log_system_metrics=False),
+        'log_monitoring',
+        RunRecord(name='monitor-pred-1', metrics={'psi': 0.1, 'ks': 0.2},
+                  tags={'kumo.kind': 'monitoring', 'kumo.run_id': 'm-1',
+                        'kumo.prediction_run': 'pred-1',
+                        'kumo.bundle_id': 'b'}))
+
+    monitor, = [run for run in _runs(client)
+                if run.data.tags['kumo.kind'] == 'monitoring']
+    assert monitor.info.run_name == 'monitor-pred-1'
+    assert monitor.info.status == 'FINISHED'
+    assert monitor.data.metrics == {'psi': 0.1, 'ks': 0.2}
+    assert monitor.data.tags['kumo.prediction_run'] == 'pred-1'
+    assert client.get_run(predicted).data.tags['kumo.monitored'] == (
+        monitor.info.run_id)
+
+
+def test_prediction_run_nests_under_the_active_run(tracking_uri):
+    from dataclasses import replace
+
+    from test_tracking_contract import PREDICTION_MANIFEST
+
+    from kumo.engine._tracking import track_prediction
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    client = mlflow.MlflowClient()
+    tracking = MlflowTracking(experiment_name='scores',
+                              log_system_metrics=False)
+    with mlflow.start_run() as outer:
+        track_prediction(PREDICTION_MANIFEST, tracking)
+        assert mlflow.active_run().info.run_id == outer.info.run_id
+    track_prediction(replace(PREDICTION_MANIFEST, id='trainer-predict-2'),
+                     tracking)
+
+    nested, top = sorted(
+        (run for run in _runs(client) if 'kumo.kind' in run.data.tags),
+        key=lambda run: 'mlflow.parentRunId' not in run.data.tags)
+    assert nested.data.tags['mlflow.parentRunId'] == outer.info.run_id
+    assert 'mlflow.parentRunId' not in top.data.tags
+    assert client.get_experiment(top.info.experiment_id).name == 'scores'
+    assert (top.info.run_name, top.info.status) == ('trainer-predict-2',
+                                                    'FINISHED')
+
+
 def test_link_prediction_metric_names_are_logged(tracking_uri):
     from kumo.engine._tracking import RunRecord
     from kumo.engine.integrations.mlflow import MlflowTracking
@@ -448,3 +504,24 @@ def test_link_prediction_metric_names_are_logged(tracking_uri):
         'test_map_at_10': 0.5,
         'val_precision_at_10': 0.25
     }
+
+
+def test_link_prediction_monitoring_metrics_are_logged(tracking_uri):
+    from kumo.engine._tracking import RunRecord
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    tracker = MlflowTracking(experiment_name='lp')
+    tracker.log_monitoring(
+        RunRecord(
+            name='m', tags={
+                'kumo.kind': 'monitoring',
+                'kumo.run_id': 'm',
+                'kumo.prediction_run': 'p'
+            }, metrics={
+                'map@10': 0.5,
+                'precision@10': 0.25
+            }))
+
+    run = mlflow.get_run(tracker.run_id)
+    assert run.info.status == 'FINISHED'
+    assert run.data.metrics == {'map_at_10': 0.5, 'precision_at_10': 0.25}

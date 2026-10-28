@@ -791,6 +791,17 @@ impl FileColStats {
         }
     }
 
+    /// Values of numerical column `col_idx` at quantiles `qs`, from its
+    /// t-digest; `None` for other columns or without values.
+    pub fn numerical_quantiles(&mut self, col_idx: usize, qs: &[f64]) -> Option<Vec<f64>> {
+        match self.cols.get_mut(col_idx)? {
+            ColumnStatsCollector::Numerical {
+                tdigest, welford, ..
+            } if welford.count > 0 => Some(qs.iter().map(|&q| tdigest.quantile_at(q)).collect()),
+            _ => None,
+        }
+    }
+
     /// Serialize accumulated stats to a JSON object keyed by column name.
     /// Category counts are read (not consumed) from the shared state.
     /// Reference for the `col_stats.json` that [`write_col_stats`] streams.

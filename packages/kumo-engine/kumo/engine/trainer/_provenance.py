@@ -3,14 +3,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """A model bundle's ``_provenance.json``; excluded from the bundle id."""
 
+import warnings
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from kumo_core.types import TaskType
+
 from kumo.engine._manifest import (
     Dependency,
     FitTiming,
+    HoldoutStats,
     ModelManifest,
     ModelParents,
     TrackingRef,
@@ -20,6 +24,7 @@ from kumo.engine._manifest import (
     stub,
     write_manifest,
 )
+from kumo.engine._score_stats import SCORE_COLUMNS
 from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer._spec import PROVENANCE_ROLE, listed_file
 
@@ -31,6 +36,9 @@ def write_provenance(
     train_table: TrainingTable,
     warm_start: Optional[ModelManifest],
     started_at: datetime,
+    task_type: TaskType,
+    holdout_path: Optional[Path],
+    holdout_truncated: Optional[bool],
     fit_mode: Optional[str],
     tracking: Optional[TrackingRef] = None,
     dependencies: Optional[List[Dependency]] = None,
@@ -39,6 +47,15 @@ def write_provenance(
 
     finished_at = datetime.now(timezone.utc)
     table = train_table.manifest
+    holdout: Optional[HoldoutStats] = None
+    if holdout_path is not None and task_type in SCORE_COLUMNS:
+        try:
+            holdout = holdout_baseline(holdout_path, task_type,
+                                       truncated=holdout_truncated)
+        except Exception as error:
+            warnings.warn(
+                f"Recording the model manifest without the holdout score "
+                f"statistics: {error}", UserWarning, stacklevel=3)
     write_manifest(
         bundle_dir / PROVENANCE_FILE,
         ModelManifest(
@@ -56,6 +73,7 @@ def write_provenance(
             fit_mode=fit_mode,
             tracking=tracking,
             dependencies=dependencies,
+            holdout=holdout,
             **stamp(),
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
@@ -112,6 +130,34 @@ def record_derivation(bundle_dir: Path, parent_dir: Path,
                 derived_from=None if parent is None else embedded_model(
                     parent)),
             dependencies=None if parent is None else parent.dependencies,
+            holdout=None if parent is None else parent.holdout,
             **stamp(),
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
+
+
+def holdout_baseline(path: Path, task_type: TaskType, *,
+                     truncated: Optional[bool]) -> HoldoutStats:
+    from kumo.engine._score_stats import (
+        TOP_SCORE,
+        parquet_stats,
+        positive_rate,
+        top_score_stats,
+    )
+
+    if task_type is TaskType.BINARY_CLASSIFICATION:
+        stats = parquet_stats([path], ['True_PROB', 'TARGET'])
+        return HoldoutStats.from_dict({
+            'truncated': truncated,
+            'rows': stats['TARGET']['count'],
+            'columns': {'True_PROB': stats['True_PROB']},
+            'label_positive_rate': positive_rate(stats['TARGET']),
+        })
+    if task_type.has_numerical_target:
+        columns = parquet_stats([path], ['TARGET_PRED', 'TARGET'])
+        return HoldoutStats(truncated=truncated,
+                            rows=columns['TARGET_PRED']['count'],
+                            columns=columns)
+    top = top_score_stats([path])
+    return HoldoutStats(truncated=truncated, rows=top['count'],
+                        columns={TOP_SCORE: top})

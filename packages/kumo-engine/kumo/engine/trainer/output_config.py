@@ -6,6 +6,7 @@
 from dataclasses import dataclass, field
 from typing import List, Mapping, Optional, cast
 
+from kumo_core.sources import layout
 from kumo_core.sources.object_store_sessions import ObjectStoreSessions
 from kumoapi.jobs import MetadataField, PredictionArtifactType, WriteMode
 from kumoapi.plugin import (
@@ -15,7 +16,7 @@ from kumoapi.plugin import (
 )
 from kumoapi.prediction_outputs import resolve_prediction_output_paths
 
-from kumo.engine.connector import is_file_destination
+from kumo.engine.connector import file_store, is_file_destination
 from kumo.engine.connector.base import Connector
 
 
@@ -27,12 +28,17 @@ class PredictionOutputConfig:
     ``artifact_type`` and ``table_name`` for one legacy destination.
     ``extra_fields`` applies to every selected artifact, only when passed to
     ``Trainer.predict``; ``PredictionResult.export`` rejects it.
+    A table appends by default and gets ``PREDICTION_ID`` and ``BUNDLE_ID``
+    columns. A file destination gets a directory per run by default,
+    ``<path>/<prediction id>/``, or ``<dir>/<prediction id>/<name>`` when
+    ``path`` ends in a file name such as ``scores.csv``;
+    ``WriteMode.OVERWRITE`` replaces ``path`` itself.
     """
 
     connector: Connector
     artifact_type: Optional[PredictionArtifactType] = None
     table_name: Optional[str] = None
-    write_mode: WriteMode = WriteMode.OVERWRITE
+    write_mode: Optional[WriteMode] = None
     extra_fields: List[MetadataField] = field(default_factory=list)
 
     output_paths: Optional[Mapping[str, str]] = None
@@ -61,12 +67,53 @@ class PredictionOutputConfig:
         elif self.artifact_type is None or self.table_name is None:
             raise ValueError(
                 'Specify output_paths or artifact_type and table_name')
+        if self.write_mode is None and not all(
+                is_file_destination(self.connector, path)
+                for path in self.destinations().values()):
+            object.__setattr__(self, 'write_mode', WriteMode.APPEND)
 
     def destinations(self) -> dict[str, str]:
         if self.output_paths is not None:
             return dict(self.output_paths)
         assert self.artifact_type is not None and self.table_name is not None
         return {self.artifact_type.value.lower(): self.table_name}
+
+    def _targets(self, run_id: Optional[str]) -> dict[str, str]:
+        r"""The destinations a run ``run_id`` writes to."""
+        if self.write_mode is not None or not run_id:
+            return self.destinations()
+        targets = {}
+        for name, path in self.destinations().items():
+            head, sep, tail = path.rstrip('/').rpartition('/')
+            targets[name] = (f'{head}{sep}{run_id}/{path[len(head + sep):]}'
+                             if layout.file_type(tail) else
+                             f'{head}{sep}{tail}/{run_id}/')
+        return targets
+
+    def _write(self, destination: str, files: List[str], **kwargs) -> str:
+        r"""Write ``files`` to ``destination``; ``OVERWRITE`` first empties
+        a directory destination unless it holds this export complete."""
+        from kumo_core.object_store_sink import holds_export
+
+        store = file_store(self.connector, destination)
+        export_id = kwargs.get('export_id')
+        if (self.write_mode is WriteMode.OVERWRITE and store is not None
+                and (destination.endswith('/') or len(files) > 1)
+                and not (export_id and holds_export(*store, export_id))):
+            store[0].delete_dir_contents(store[1], missing_dir_ok=True)
+        return self.connector.sink_backend.write_files(
+            self.connector, destination, files,
+            self.write_mode or WriteMode.OVERWRITE, **kwargs)
+
+    def _id_columns(self, destination: str, prediction_id: Optional[str],
+                    bundle_id: Optional[str]) -> dict[str, str]:
+        if is_file_destination(self.connector, destination):
+            return {}
+        return {
+            name: value
+            for name, value in (('PREDICTION_ID', prediction_id),
+                                ('BUNDLE_ID', bundle_id)) if value
+        }
 
 
 @dataclass(frozen=True)

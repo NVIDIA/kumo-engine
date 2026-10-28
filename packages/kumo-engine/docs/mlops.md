@@ -1,12 +1,12 @@
 # MLOps with Kumo Engine
 
-Turn MLOps on with one `kumo.MLOps` and the normal `kumo.engine` calls store their snapshots, training tables and models under an artifact root, record fits in your experiment tracker, and register models in its registry.
+Turn MLOps on with one `kumo.MLOps` and the normal `kumo.engine` calls store their snapshots, training tables, models and prediction runs under an artifact root, record fits and prediction runs in your experiment tracker, and register models in its registry.
 
 Install with `pip install "kumo-engine[mlflow]"` (add `s3`, `gcs`, `databricks`, `sagemaker` or `snowflake` as needed; Snowflake needs only `kumo-engine[snowflake]`). GPU, CUDA and Databricks Runtime notes are under [Install](#install).
 
 ## Quickstart
 
-Each block assumes a `graph` and a `pquery` (see the README). It trains, stores and registers a model, then scores with it.
+Each block assumes a `graph` and a `pquery` (see the README). It trains, stores and registers a model, scores with it, and checks score drift.
 
 ### Laptop or VM
 
@@ -20,8 +20,8 @@ with kumo.mlops(cfg):
     snapshot = graph.snapshot()
     result = kumo.Trainer(pquery.suggest_model_plan(snapshot)).fit(pquery.generate_training_table(snapshot),
         snapshot=snapshot, scoring_defaults=kumo.ScoringDefaults(binary_classification_threshold=0.5))
-    scores = result.predict(snapshot).frame
-    print(result.registered_model.version, result.tracking.run_id, len(scores))
+    run = result.predict(snapshot, output_config=kumo.PredictionOutputConfig(kumo.FileConnector(root_dir="out"), path="scores/"))
+    print(result.registered_model.version, run.scored_rows, result.score_drift(run).psi)
 ```
 
 ### Databricks
@@ -34,11 +34,12 @@ from kumo.engine.integrations.mlflow import MlflowTracking
 
 cfg = kumo.MLOps("/Volumes/main/ml/kumo", tracking=MlflowTracking("/Users/<you>/churn"),
                  registry=kumo.ModelRegistryLocation("main.ml.users_churn", alias="candidate"))
+dbx = kumo.DatabricksConnector(catalog="main", schema_name="ml", warehouse_id="<warehouse id>")
 with kumo.mlops(cfg):
     snapshot = graph.snapshot()
     result = kumo.Trainer(pquery.suggest_model_plan(snapshot)).fit(pquery.generate_training_table(snapshot),
         snapshot=snapshot, scoring_defaults=kumo.ScoringDefaults(binary_classification_threshold=0.5))
-    print(result.registered_model.version, result.tracking.url)
+    run = result.predict(snapshot, output_config=kumo.PredictionOutputConfig(dbx, path="churn_scores"))
 ```
 
 ### SageMaker
@@ -55,7 +56,7 @@ with kumo.mlops(cfg):
     snapshot = graph.snapshot()
     result = kumo.Trainer(pquery.suggest_model_plan(snapshot)).fit(pquery.generate_training_table(snapshot),
         snapshot=snapshot, scoring_defaults=kumo.ScoringDefaults(binary_classification_threshold=0.5))
-    print(result.registered_model.version, result.tracking.url)
+    run = result.predict(snapshot, output_config=kumo.PredictionOutputConfig(kumo.S3Connector(), path="s3://<bucket>/scores/"))
 ```
 
 Tables on S3 are read through an `S3Connector`:
@@ -83,7 +84,7 @@ with kumo.mlops(cfg):
     snapshot = graph.snapshot()
     result = kumo.Trainer(pquery.suggest_model_plan(snapshot)).fit(pquery.generate_training_table(snapshot),
         snapshot=snapshot, scoring_defaults=kumo.ScoringDefaults(binary_classification_threshold=0.5))
-    print(result.registered_model.version, result.tracking.url)
+    run = result.predict(snapshot, output_config=kumo.PredictionOutputConfig(sf, path="CHURN_SCORES"))
 ```
 
 To serve only a better model, move its alias yourself: [Promote a model](#promote-a-model).
@@ -91,21 +92,22 @@ To serve only a better model, move its alias yourself: [Promote a model](#promot
 ## How it fits together
 
 - The **artifact root** holds every artifact a block produces, each in its own directory with a `_provenance.json` manifest that embeds its parents' manifests.
-- The **tracker** records each fit as a run of its own; the **registry** is the tracker's: MLflow (Unity Catalog, SageMaker MLflow, any MLflow server) or the Snowflake Model Registry.
+- The **tracker** records each fit and prediction run as a run of its own; the **registry** is the tracker's: MLflow (Unity Catalog, SageMaker MLflow, any MLflow server) or the Snowflake Model Registry.
 
 | id | names | where to find it |
 |---|---|---|
 | `snapshot.id` | a graph snapshot | `<root>/snapshots/<graph id>/<data version>/`; `result.snapshot_id` |
 | `table.id` | a training table | `<root>/training_tables/<id>/` |
 | `result.id` | a model (its bundle id) | `<root>/models/<id>/`; the `kumo.bundle_id` run tag; `kumo_bundle_id` on the registered version |
+| `run.id` | a prediction run | `<root>/predictions/<id>/`; the `kumo.prediction_id` run tag; the `PREDICTION_ID` column of a table output |
 | `result.registered_model.version` | the registered version | the registry |
 | `result.tracking` | the tracker's own run of the fit: `platform`, `run_id`, `url` | the tracker's UI |
 
-Find runs with the platform's UI, or by tag: `kumo.kind` (`fit`, `trial`) and `kumo.bundle_id`.
+Find runs with the platform's UI, or by tag: `kumo.kind` (`fit`, `trial`, `prediction`, `monitoring`), `kumo.bundle_id`, `kumo.prediction_id`.
 
 ## Turning MLOps on
 
-`kumo.MLOps` says where artifacts go and what records them. Use it as a block, or pass it as `mlops=` on a single call (`fit`, `graph.snapshot`, `generate_training_table`):
+`kumo.MLOps` says where artifacts go and what records them. Use it as a block, or pass it as `mlops=` on a single call (`fit`, `predict`, `evaluate`, `score_drift`, `graph.snapshot`, `generate_training_table`):
 
 ```python
 cfg = kumo.MLOps("s3://bucket/kumo", tracking=..., registry=..., on_error="raise")
@@ -117,10 +119,10 @@ trainer.fit(table, snapshot=snapshot, mlops=cfg)
 - **`artifact_root`** (required): a URI (`s3://`, `gs://`, `file://`, or a local path, including `/Volumes/...` on a Databricks cluster) or a `(connector, path)` pair for a store a URI cannot reach: a volume through a `DatabricksConnector` (`"/Volumes/<catalog>/<schema>/<volume>/kumo"`) or a named stage through a `SnowflakeConnector` (`"@DB.SCHEMA.STAGE/kumo"`) once the installed sink holds files there.
 - **`tracking`**: `MlflowTracking` or `SnowflakeTracking` (below), or your own [`Tracking`](#custom-trackers).
 - **`registry`**: a `ModelRegistryLocation(name, alias=...)`; every fit registers its model there, in the tracker's registry.
-- **`store`**: the artifact kinds stored when produced: `snapshot`, `training_table` and `model` (default: all).
+- **`store`**: the artifact kinds stored when produced: `snapshot`, `training_table`, `model` and `prediction` (default: all).
 - **`on_error`**: `"warn"` (default) warns about a failed store, tracking call or registration and returns; `"raise"`, for scheduled jobs, raises once the call has finished, with the failure as the `__cause__`. After `fit`, `trainer.result` still holds the model. A model whose bundle or assets could not be stored under the root is never registered.
 - **Precedence:** a call's `mlops=` replaces the enclosing block, and an inner block replaces an outer one. A block covers the calling thread or asyncio task.
-- **Off by default.** Without a block or `mlops=`, every call behaves as it always has; plain exports (`export(config)`, `export_config=`) never write to the artifact root.
+- **Off by default.** Without a block or `mlops=`, every call behaves as it always has; plain exports (`export(config)`, `export_config=`, `output_config=`) never write to the artifact root.
 - `kumo.MLOps(...)` checks the tracker and registry when it is built (one experiment lookup, one registry listing, the model name's rules), so wrong credentials or a bad name fail before any work.
 
 ### Reading artifacts back
@@ -131,7 +133,8 @@ Pass the `kumo.MLOps` where a connector goes, with paths relative to the artifac
 snapshot = kumo.GraphSnapshot.load_from_connector(cfg, id=result.snapshot_id)
 trainer = kumo.Trainer.load_from_connector(cfg, path=f"models/{result.id}")
 champion = kumo.Trainer.load_from_connector(cfg, location=kumo.ModelRegistryLocation("users-churn", alias="champion"))
-table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{table_id}", pquery=pquery, snapshot=snapshot)
+run = kumo.PredictionResult.load_from_connector(cfg, path=f"predictions/{run_id}")
+table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{table_id}", pq=pquery, snapshot=snapshot)
 ```
 
 `location=` loads the version an alias (or `version=`) names from the tracker's registry, one way on every platform. A loaded model is a `Trainer`; its `result` is the `TrainingResult` (`.id`, `.manifest`, `.metrics`, `.scoring_defaults`, `.holdout_df()`).
@@ -142,7 +145,7 @@ table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{tabl
 
 - `result.registered_model` is the version `MLOps(registry=)` registered; `result.published_model` the one `fit(export_config=...)` published.
 - `result.tracking` is the tracker's run: `TrackingRef(platform="databricks", run_id="...", url="https://.../ml/experiments/.../runs/...")`. The model's `_provenance.json` records the same.
-- `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict` and the MLflow pyfunc apply them when a call omits them; explicit arguments and a query's `TOP k` win. A binary model always returns `True_PROB`; with no threshold passed or stored, its `TARGET_PRED` is null. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
+- `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict`, the MLflow pyfunc and the scoring jobs apply them when a call omits them; explicit arguments and a query's `TOP k` win. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
 - `result.export(cfg)` (or `trainer.export(cfg)` for a loaded model) registers a model at `cfg.registry` through its tracker. On every platform, registering a bundle the registry already holds under that name returns its version instead of adding one.
 - If registration fails, `fit` warns with the full error and returns with `registered_model=None` (with `on_error="raise"`, it raises), and the fit run ends failed with `kumo.error`. Registering a bundle the registry already holds under the name returns that version (logged at info) and moves the alias to it.
 
@@ -191,7 +194,20 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 
 ## Score
 
-`predict(snapshot)` scores the trained query's population at its prediction time; `entities=` scores given rows; `predict(prediction_table, snapshot=...)` scores a table generated beforehand. A scoring job needs no `Graph` code: `GraphSnapshot.load_from_connector(cfg, id=...)` and `Trainer.load_from_connector(cfg, ...)`, then `predict`. It warns when the snapshot was taken of a different graph than the model's, naming the schema changes.
+`predict(snapshot)` scores the trained query's population at its prediction time; `entities=` scores given rows; `predict(prediction_table, snapshot=...)` scores a table generated beforehand.
+
+```python
+run = champion.predict(snapshot, output_config=kumo.PredictionOutputConfig(connector, path="..."))
+run.id, run.bundle_id, run.snapshot_id, run.scored_rows, run.skipped_rows
+```
+
+- **`PredictionOutputConfig(connector, path=...)`**: a directory or file on a file destination (local, S3, GCS, a volume or stage), else a table. `output_paths={"predictions": ..., "embeddings": ...}` writes embeddings too.
+- **Tables** append and get two columns, `PREDICTION_ID` (`run.id`) and `BUNDLE_ID`, so each row names its run and model. **Files** go to a directory per run, `<path>/<prediction id>/` (or `<dir>/<prediction id>/scores.csv` for a file name), with the run's `_provenance.json` next to the Parquet parts. `write_mode=WriteMode.OVERWRITE` replaces the table or exactly `path`.
+- With MLOps on, each run is stored under `<root>/predictions/<id>/` and recorded as a tracker run named after its id: scoring options as params, row counts and score percentiles as metrics, the scoring snapshot's source tables as inputs. A failed export still records the run, ended failed with `kumo.error`.
+- Entities the snapshot does not hold are skipped and counted (`run.skipped_rows`, the `predictions.skipped_fraction` metric), never refused.
+- A scoring job needs no `Graph` code: `GraphSnapshot.load_from_connector(cfg, id=...)` and `Trainer.load_from_connector(cfg, ...)`, then `predict`. It warns when the snapshot was taken of a different graph than the model's, naming the schema changes.
+
+**Scheduled jobs:** [`examples/mlops`](../../../examples/mlops/README.md) has a fit job and a score job with Databricks Jobs, SageMaker Pipelines and Snowflake Tasks wiring.
 
 ### MLflow pyfunc
 
@@ -204,9 +220,65 @@ scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
     "prediction_time": "2024-06-01"})              # temporal queries
 ```
 
-- Input rows have an `ENTITY` column and optionally a `TIMESTAMP`; scores come back in input order, one per scored row. Binary classification returns `True_PROB`; `TARGET_PRED` needs `params={"binary_classification_threshold": ...}` or a stored threshold, and is null without one.
+- Input rows have an `ENTITY` column and optionally a `TIMESTAMP`; scores come back in input order, one per scored row. Binary classification needs `params={"binary_classification_threshold": ...}` unless the model carries scoring defaults.
 - Each replica loads a snapshot on its first `predict` with that URI and keeps it. `log_model(trainer, snapshot=..., serving_snapshot=...)` logs a model whose replicas load that snapshot at startup and use it when no `snapshot` param is given; `serving_snapshot` takes a URI, or a `GraphSnapshot` or snapshot id stored under the block's artifact root.
 - Serving needs an image with kumo-engine installed: `mlflow models serve -m <model dir> --env-manager local`. Its pip requirement is `kumo-engine[s3,gcs]` of the same version (plus `[text]` for text columns).
+
+## Monitor
+
+`score_drift` compares a run's scores with the model's holdout and a previous run; `evaluate` scores a run once its outcomes are in a newer snapshot. With tracking on, each call logs a monitoring run named `drift-<prediction id>` or `evaluate-<prediction id>`, tagged `kumo.kind=monitoring`, `kumo.monitors=<prediction id>` and `kumo.bundle_id`.
+
+```python
+with kumo.mlops(cfg):
+    drift = champion.score_drift(run, previous=earlier_run)          # psi, ks, wasserstein, features, input_changes
+    evaluation = champion.evaluate(run, labels_snapshot=newer)       # metrics, matured, labelled_fraction
+```
+
+- Inside a block, the training and scoring snapshots come from the manifests and the artifact root (only their column statistics are fetched); outside one, pass `snapshot=` and `training_snapshot=`. Missing inputs leave a field `None` with a `reasons` entry.
+- `evaluate` returns the metrics the fit reports (`auroc`/`ap`, `mae`/`rmse`, `acc`, `map@k`), `matured=False` while the label window is still open, and `actuals`, the evaluated rows. `evaluation.export(PredictionOutputConfig(...))` writes them to a table or directory for a warehouse monitor.
+
+A later job finds the champion's runs by tag and reads them from the root:
+
+```python
+champion = kumo.Trainer.load_from_connector(cfg, location=kumo.ModelRegistryLocation("users-churn", alias="champion"))
+runs = mlflow.search_runs(experiment_names=["churn"], order_by=["attributes.start_time DESC"], max_results=2,
+                          filter_string=f"tags.`kumo.kind` = 'prediction' AND tags.`kumo.bundle_id` = '{champion.result.id}'")
+latest, *earlier = [kumo.PredictionResult.load_from_connector(cfg, path=f"predictions/{prediction_id}")
+                    for prediction_id in runs["tags.kumo.prediction_id"]]
+with kumo.mlops(cfg):
+    drift = champion.score_drift(latest, previous=earlier[0] if earlier else None)
+```
+
+`load_from_connector` needs the run's `_SUCCESS` marker and fetches only its `_provenance.json`; the Parquet parts download when `evaluate` (or `files`) first reads them.
+
+### Warehouse model monitors
+
+Both platforms monitor the evaluated rows exported to a table; neither monitors link prediction or ranking outputs.
+
+**Databricks (Data Quality Monitoring, inference log; databricks-sdk ≥ 0.68):**
+
+```python
+evaluation.export(kumo.PredictionOutputConfig(dbx, path="churn_evaluated"))
+w = WorkspaceClient()
+table_id = w.tables.get("main.ml.churn_evaluated").table_id
+w.data_quality.create_monitor(monitor=Monitor(object_type="table", object_id=table_id,
+    data_profiling_config=DataProfilingConfig(output_schema_id=w.schemas.get("main.ml").schema_id,
+        assets_dir="/Workspace/Users/<you>/monitoring", inference_log=InferenceLogConfig(
+            problem_type=InferenceProblemType.INFERENCE_PROBLEM_TYPE_CLASSIFICATION,
+            prediction_column="TARGET_PRED", label_column="TARGET", model_id_column="BUNDLE_ID",
+            timestamp_column="EVALUATED_AT", granularities=[AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY]))))
+```
+
+**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered; the baseline is `result.holdout_df().assign(EVALUATED_AT=pd.Timestamp.now())` written with `session.write_pandas`:
+
+```sql
+CREATE MODEL MONITOR churn_monitor WITH MODEL=churn_gnn VERSION=v3 FUNCTION=predict
+  SOURCE=churn_evaluated BASELINE=churn_holdout_evaluated WAREHOUSE=wh REFRESH_INTERVAL='1 day'
+  AGGREGATION_WINDOW='1 day' TIMESTAMP_COLUMN=EVALUATED_AT ID_COLUMNS=(ENTITY)
+  PREDICTION_SCORE_COLUMNS=("True_PROB") ACTUAL_CLASS_COLUMNS=(TARGET);
+```
+
+Details per task type: [Warehouse monitor columns](#warehouse-monitor-columns).
 
 ## Credentials and running off-platform
 
@@ -251,8 +323,10 @@ Every artifact has one way out and one way back. A `kumo.MLOps` stands in for th
 | Artifact | Export | Load |
 |---|---|---|
 | Snapshot | `snapshot.export(SnapshotOutputConfig(connector, path))`, returns the location | `GraphSnapshot.load_from_connector(connector, path=location)`, `(cfg, id=...)` |
-| Training table | `table.export(TrainingTableOutputConfig(connector, name))` | `TrainingTable.load_from_connector(connector, path=name, pquery=pquery, snapshot=snapshot)` |
+| Training table | `table.export(TrainingTableOutputConfig(connector, name))` | `TrainingTable.load_from_connector(connector, path=name, pq=pq, snapshot=snapshot)` |
 | Model | `result.export(ModelOutputConfig(connector, path=... or location=...))`, or `fit(export_config=...)` | `Trainer.load_from_connector(connector, path=... or location=...)` |
+| Prediction run | `run.export(PredictionOutputConfig(connector, path=...))`, or `predict(output_config=...)` | `PredictionResult.load_from_connector(connector, path=...)` |
+| Evaluation | `evaluation.export(PredictionOutputConfig(connector, path=...))` | `EvaluationResult.load_from_connector(connector, path=...)` |
 
 Loading needs a file destination; a table export is for consumers outside kumo-engine. Exporting again to a destination that holds a complete copy of the same artifact reuses it (logged at info). `ModelOutputConfig(connector, location=...)` publishes to a connector's registry outside a block.
 
@@ -262,12 +336,13 @@ Every artifact carries `_provenance.json`, metadata only (the underscore keeps S
 
 - **Snapshot:** each source table's connector, location and version, and the engine build. `graph.snapshot(record_sources=False)` keeps only connector and table names, a SHA-256 of each location, and Custom SQL as a hash.
 - **Training table:** the query, generation plan, task type and split seed, its snapshot, and for `TrainingTable.from_source_table` the source table. `table.id` is deterministic over snapshot, query, plan, seed and engine build; a source without a version gets a random id.
-- **Model** (`ModelManifest`, `result.manifest`): the bundle id (a content hash excluding the manifest), fit times and fit mode, the training table and warm-start model (an embedded model keeps only ids of its own model parents), `tracking` (the tracker's run) and `dependencies`. The bundle carries the holdout predictions (`holdout.parquet`), so `holdout_df()` works on a loaded model.
+- **Model** (`ModelManifest`, `result.manifest`): the bundle id (a content hash excluding the manifest), fit times and fit mode, the training table and warm-start model (an embedded model keeps only ids of its own model parents), `tracking` (the tracker's run), `dependencies` and `holdout` (score statistics of the holdout rows: count, mean, min, max, q01..q99; the positive rate for binary tasks), the baseline `score_drift` compares against. The bundle carries the holdout predictions (`holdout.parquet`), so `holdout_df()` works on a loaded model.
+- **Prediction run** (`PredictionManifest`, `run.manifest`): its id; the model and the scoring snapshot; the prediction table (query hash, anchors, `requested_rows`, `scored_rows`, `skipped_rows` and up to 5 skipped ids per reason); the scoring options and where each came from; `outputs`, the destinations `output_config` wrote (even after a partial failure); status, timings and score statistics per output.
 
 ### Artifacts, bundles and dependencies
 
 - A model's **bundle** holds only its own state: weights, encoders, the training spec and the holdout. Its manifest's **`parents`** are lineage; its **`dependencies`** are what `predict` needs besides the bundle and a snapshot: the `predictor` entry point, the `kumo-engine` `package` (with `[text]` when a text column is encoded) and content-addressed `asset`s.
-- **Assets** are stored once under `<root>/assets/<asset_kind>/<sha256>/` and shared by every model that uses them. `Trainer.load` and the pyfunc look for each at the location recorded, then under the enclosing block's root, then in the embedding-model store, check its sha256 and cache non-local copies under `~/.cache/kumo/assets/`. A stored asset that cannot be found raises `MissingDependencyError`.
+- **Assets** are stored once under `<root>/assets/<asset_kind>/<sha256>/` and shared by every model that uses them. `Trainer.load`, the pyfunc and the jobs look for each at the location recorded, then under the enclosing block's root, then in the embedding-model store, check its sha256 and cache non-local copies under `~/.cache/kumo/assets/`. A stored asset that cannot be found raises `MissingDependencyError`.
 - **Text encoders** are the first assets: word-vector models (`GloVeVectors`) are stored; other `TokenEmbeddingModel`s are recorded by fingerprint and must be registered wherever the model loads:
 
 ```python
@@ -281,6 +356,18 @@ trainer = kumo.Trainer.load_from_connector(cfg, path=f"models/{result.id}")   # 
 
 A text column `infer_metadata()` reads as categorical (short values from a small vocabulary) takes a text encoder once its stype is text: `users.with_column("bio", stype="text")`.
 
+### Prediction output contract
+
+| Column | Task types | Meaning |
+|---|---|---|
+| `ENTITY` | all | the entity's primary key |
+| `ANCHOR_TIMESTAMP` | temporal queries | the prediction time, when a run scores several |
+| `TARGET_PRED` | binary classification, regression, forecasting | the predicted label or value |
+| `False_PROB`, `True_PROB` | binary classification | class probabilities; `True_PROB` is summarized |
+| `CLASS`, `SCORE` | multiclass, multilabel, ranking | one row per returned class; the top `SCORE` is summarized |
+
+`predict` checks each destination first: a directory holding another export raises `ArtifactDestinationConflict`. A table written without the id columns takes one `OVERWRITE` before it can append. Object stores replace a directory by deleting, then writing, so a reader in between finds no `_SUCCESS`; `APPEND` to files is not supported.
+
 ### Moving snapshots between machines
 
 - **Layout:** `export` writes `<path>/<graph id>/<data version>/`, holding `kumo_snapshot.json` and one directory per export generation (`index/` and `_provenance.json`).
@@ -289,13 +376,28 @@ A text column `infer_metadata()` reads as categorical (short values from a small
 - **Staleness:** `snapshot.source_changes(graph)` reports each table as `unchanged`, `changed` or `unknown`; `load_from_connector(..., graph=graph)` warns about another graph's schema or changed tables.
 - **Trust:** load only from paths whose writers you trust; checksums detect corruption, not tampering. A warehouse connector cannot hold a snapshot.
 
+### Drift statistics
+
+| statistic | definition | error from the stored curves |
+|---|---|---|
+| `psi` | population stability over the baseline's deciles | — |
+| `ks` | largest gap between the two CDFs | ≤ 0.02 + 2× the sketch's rank error |
+| `wasserstein` | mean absolute gap between the quantile functions, in score units | ≤ 0.01 × (sum of both score ranges) + sketch error |
+
+The statistics are read off the recorded percentile curves (min, q01..q99, max), with no pass over the data. `DriftReport.features` compares, per column the model encodes (by its stype in the model plan), the statistics DiskGraph wrote when both snapshots were built: numeric deltas of mean, std, min, max, quartiles, skewness, kurtosis, null rate and distinct count plus `standardized_mean_shift`; categorical null rate, distinct count, PSI and Jensen-Shannon divergence (`category_counts_capped` flags truncated counts); timestamp min and max shift. These are whole-snapshot statistics, so a slow change in a large event table is diluted. A tracked monitoring run logs the top ten columns by standardized shift and by PSI and the full comparison as `feature_drift.json`.
+
+### Warehouse monitor columns
+
+- Databricks keys the monitor on `EVALUATED_AT` (anchors are older than its lookback by the label window). For regression use `INFERENCE_PROBLEM_TYPE_REGRESSION`; for multiclass `prediction_column="CLASS"`. `True_PROB` is profiled as an ordinary column.
+- Snowflake: binary classification uses `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; multiclass `PREDICTION_CLASS_COLUMNS=(CLASS)`; regression `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`. The timestamp is `TIMESTAMP_NTZ`, columns free of nulls, NaN and infinities, each used once; mixed-case names such as `"True_PROB"` are double-quoted. Without `BASELINE` there is no drift. Registration records the version's task type, which Model Monitor requires.
+
 ### Custom trackers
 
-Other systems plug in through `kumo.engine.tracking.Tracking`, which receives ready-built `RunRecord`s so every tracker records the same names: `start(record)` with the fit run, `on_trial(record, event)` with a trial attempt after each of its events, and `finish(record, error)` with the final record (`None` when tracking stopped early). Optional members: `prepare()`, `tags`, `check(registry)` (when `kumo.MLOps` is built), `log_model(bundle_dir, manifest, snapshot, registry)` (logs and registers, returning the version) or `connector` (a connector whose model registry `registry` registers in), `load_model(location)` and `register(result, location)` (for loading and `result.export(cfg)`), `platform`/`run_id`/`run_url` (recorded as `result.tracking`). A tracker that raises is not called again for that fit and its run ends failed. `RunRecord.inputs` maps each source table to its `connector`, `location`, `version` and `version_kind`; a tracker's `tags` are added except `kumo.*` and param names.
+Other systems plug in through `kumo.engine.tracking.Tracking`, which receives ready-built `RunRecord`s so every tracker records the same names: `start(record)` with the fit run, `on_trial(record, event)` with a trial attempt after each of its events, and `finish(record, error)` with the final record (`None` when tracking stopped early). Optional members: `prepare()`, `tags`, `check(registry)` (when `kumo.MLOps` is built), `log_model(bundle_dir, manifest, snapshot, registry)` (logs and registers, returning the version) or `connector` (a connector whose model registry `registry` registers in), `load_model(location)` and `register(result, location)` (for loading and `result.export(cfg)`), `platform`/`run_id`/`run_url` (recorded as `result.tracking`), and the best-effort `log_prediction_run(record)` and `log_monitoring(record)`. A tracker that raises is not called again for that fit and its run ends failed. `RunRecord.inputs` maps each source table to its `connector`, `location`, `version` and `version_kind`; a tracker's `tags` are added except `kumo.*` and param names.
 
 ### Progress events
 
-`fit(callbacks=[...])` calls each callback with every `kumo.engine.tracking.Event`: `fit_started`, per trial `trial_started`, `epoch_ended` and `trial_ended`, then `fit_ended`. Ended events carry `params["status"]` and, on failure, `params["error"]`; a callback that raises is logged and not called again. For JSON lines: `callbacks=[lambda e: print(json.dumps(e.to_dict()))]`. `graph.snapshot(callbacks=[...])` reports `snapshot_started`, `table_staged` per table and `snapshot_ended` (with `snapshot_id` and `reused`), each with `params["seconds"]` since the start, and logs each at INFO.
+`fit(callbacks=[...])` calls each callback with every `kumo.engine.tracking.Event`: `fit_started`, per trial `trial_started`, `epoch_ended` and `trial_ended`, then `fit_ended`. Ended events carry `params["status"]` and, on failure, `params["error"]`; a callback that raises is logged and not called again. For JSON lines: `callbacks=[lambda e: print(json.dumps(e.to_dict()))]`.
 
 ### Limits
 

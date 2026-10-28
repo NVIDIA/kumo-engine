@@ -70,6 +70,9 @@ class GeneratedPredictionTable:
     table_path: str
     row_count: int
     tt_id: str
+    #: DiskGraph's ``row_failures`` report for caller-supplied rows: rows
+    #: read, rows skipped, and per-condition counts with source locations.
+    row_failures: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -254,11 +257,13 @@ def generate_custom_prediction_table(
             "custom prediction-table builder result missing tt_parquet_path")
     if row_count <= 0:
         raise RuntimeError("custom prediction table contains no rows")
+    failures = result.get("row_failures")
     return GeneratedPredictionTable(
         staging_dir=staging_dir,
         table_path=table_path,
         row_count=row_count,
         tt_id=request.tt_id,
+        row_failures=failures if isinstance(failures, Mapping) else None,
     )
 
 
