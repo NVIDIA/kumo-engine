@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 from kumo_snowflake import registry as registry_module
 from kumo_snowflake.registry import SnowflakeModelRegistryMixin
@@ -30,7 +31,11 @@ def fetch(tmp_path, monkeypatch):
     version = SimpleNamespace(
         model_name='CHURN', version_name='V1',
         fully_qualified_model_name='DB.SCHEMA.CHURN', export=export,
-        show_metrics=lambda: pytest.fail('read registry metrics'))
+        show_metrics=lambda: {
+            'kumo_engine': '1',
+            'kumo_bundle_id': 'b1',
+            'auc': 0.5
+        })
     model = SimpleNamespace(default=version, version=lambda _: version)
 
     @contextmanager
@@ -60,6 +65,7 @@ def test_fetch_returns_bundle_metrics(fetch, requested_version, metrics):
     payload = json.dumps(metrics) if metrics is not None else None
     published = run(payload, requested_version)
     assert published.metrics == (metrics or {})
+    assert published.metadata == {'kumo_bundle_id': 'b1'}
     assert published.version == 'V1'
     assert (destination / 'weights.bin').read_bytes() == b'model weights'
     assert not (destination / 'previous').exists()
@@ -75,9 +81,13 @@ def test_invalid_metrics_preserve_previous_destination(fetch, payload):
     assert (destination / 'previous').read_bytes() == b'previous bundle'
 
 
-@pytest.mark.parametrize('metadata', [{}, {'predictive_query': 'x' * 300}])
-def test_publish_records_only_engine_marker_in_catalog(tmp_path, monkeypatch,
-                                                       metadata):
+@pytest.mark.parametrize('metadata', [{}, {
+    'predictive_query': 'x' * 300,
+    'kumo_bundle_id': 'b1',
+    'kumo_engine': '0'
+}])
+def test_publish_records_only_pointers_in_catalog(
+        tmp_path, monkeypatch, metadata):
     bundle = tmp_path / 'bundle'
     bundle.mkdir()
     (bundle / 'training-spec.json').write_text('{}')
@@ -99,16 +109,20 @@ def test_publish_records_only_engine_marker_in_catalog(tmp_path, monkeypatch,
     monkeypatch.setattr(registry_module, '_carrier_signature', lambda: {})
     published = sink.publish_model(SimpleNamespace(), str(bundle),
                                    location=ModelRegistryLocation('CHURN'),
-                                   metadata=metadata, metrics={'auc': 0.92})
-    assert calls[0]['metrics'] == {'kumo_engine': '1'}
+                                   metadata=metadata,
+                                   metrics={'auc': 0.92, 'loss': float('nan')})
+    assert calls[0]['metrics'] == {
+        **({'kumo_bundle_id': 'b1'} if metadata else {}), 'kumo_engine': '1'
+    }
     assert published.metadata == metadata
-    assert published.metrics == {'auc': 0.92}
+    assert published.metrics['auc'] == 0.92
 
 
-def test_listing_filters_engine_marker_and_returns_empty_metrics(monkeypatch):
+def test_listing_filters_engine_marker_and_returns_lineage(monkeypatch):
     versions = []
     for name, recorded in [('V1', {
             'kumo_engine': '1',
+            'kumo_bundle_id': 'b1',
             'auc': 0.92
     }), ('V2', {
             'other': '1',
@@ -134,4 +148,163 @@ def test_listing_filters_engine_marker_and_returns_empty_metrics(monkeypatch):
     found = sink.list_models(SimpleNamespace())
     assert [item.version for item in found] == ['V1', 'V4']
     assert [item.metrics for item in found] == [{}, {}]
-    assert all(item.metadata == {} for item in found)
+    assert [item.metadata for item in found] == [{'kumo_bundle_id': 'b1'}, {}]
+
+
+class _Model:
+    def __init__(self, aliases):
+        self.aliases = aliases
+
+    def show_versions(self):
+        return pd.DataFrame([
+            dict(name=name, aliases=json.dumps(held))
+            for name, held in self.aliases.items()
+        ])
+
+    def version(self, version_or_alias):
+        name = next((name for name, held in self.aliases.items()
+                     if version_or_alias.upper() in held), version_or_alias)
+        held = self.aliases[name]
+
+        def export(directory):
+            bundle = Path(directory) / 'bundle'
+            bundle.mkdir()
+            (bundle / 'training-spec.json').write_text(name)
+            (bundle / 'publication-manifest.json').write_text('{}')
+
+        return SimpleNamespace(
+            version_name=name, model_name='CHURN',
+            fully_qualified_model_name='DB.SCHEMA.CHURN', export=export,
+            set_alias=lambda alias: held.append(alias.upper()),
+            unset_alias=lambda alias: held.remove(alias.upper()),
+            show_metrics=lambda: {
+                'kumo_engine': '1',
+                'kumo_bundle_id': f'id-{name}'
+            })
+
+
+def _aliasing_sink(monkeypatch, model):
+    @contextmanager
+    def registry(_):
+        yield SimpleNamespace(get_model=lambda _: model)
+
+    sink = SnowflakeModelRegistryMixin()
+    monkeypatch.setattr(sink, '_registry', registry)
+    return sink
+
+
+def test_set_alias_moves_it_and_refuses_what_snowflake_cannot(monkeypatch):
+    from kumo_snowflake.sink import SnowflakeSinkBackend
+    from kumoapi.plugin import ModelAliasingSink
+
+    assert isinstance(SnowflakeSinkBackend(), ModelAliasingSink)
+    model = _Model({'V1': ['FIRST'], 'V2': ['LAST', 'DEFAULT'], 'V3': []})
+    sink = _aliasing_sink(monkeypatch, model)
+
+    def set_alias(version, alias):
+        sink.set_model_alias(SimpleNamespace(),
+                             ModelRegistryLocation('CHURN', version=version),
+                             alias)
+
+    set_alias('V2', 'prod')
+    set_alias('V3', 'prod')
+    set_alias('V3', 'prod')
+    assert model.aliases == {
+        'V1': ['FIRST'],
+        'V2': ['LAST', 'DEFAULT'],
+        'V3': ['PROD']
+    }
+    for version, alias, match in [('V3', 'staging', 'already holds'),
+                                  ('V1', 'default', 'reserved'),
+                                  (None, 'prod', 'exact version')]:
+        with pytest.raises(ValueError, match=match):
+            set_alias(version, alias)
+    assert model.aliases['V3'] == ['PROD']
+
+
+def test_fetch_by_alias_reads_the_aliased_version(monkeypatch, tmp_path):
+    sink = _aliasing_sink(monkeypatch, _Model({
+        'V1': ['DEFAULT'],
+        'V2': ['PROD']
+    }))
+    published = sink.fetch_model(
+        SimpleNamespace(), str(tmp_path / 'out'),
+        location=ModelRegistryLocation('CHURN', alias='prod'))
+    assert published.version == 'V2'
+    assert published.metadata == {'kumo_bundle_id': 'id-V2'}
+    assert (tmp_path / 'out' / 'training-spec.json').read_text() == 'V2'
+    with pytest.raises(ValueError, match='holds alias'):
+        sink.fetch_model(SimpleNamespace(), str(tmp_path / 'other'),
+                         location=ModelRegistryLocation('CHURN', alias='V1'))
+
+
+def test_failed_alias_move_puts_it_back(monkeypatch):
+    model = _Model({'V1': ['PROD'], 'V2': []})
+
+    def fail(alias):
+        raise RuntimeError('lost connection')
+
+    def failing_version(name):
+        version = _Model.version(model, name)
+        if name == 'V2':
+            version.set_alias = fail
+        return version
+
+    model.version = failing_version
+    sink = _aliasing_sink(monkeypatch, model)
+    with pytest.raises(RuntimeError, match='lost connection'):
+        sink.set_model_alias(SimpleNamespace(),
+                             ModelRegistryLocation('CHURN', version='V2'),
+                             'prod')
+    assert model.aliases == {'V1': ['PROD'], 'V2': []}
+
+
+@pytest.mark.parametrize('task, expected', [
+    ('binary_classification', 'TABULAR_BINARY_CLASSIFICATION'),
+    ('link_prediction', None),
+])
+def test_publish_records_the_task_type_monitors_need(tmp_path, monkeypatch,
+                                                     task, expected):
+    import sys
+
+    bundle = tmp_path / 'bundle'
+    bundle.mkdir()
+    (bundle / 'training-spec.json').write_text('{}')
+    (bundle / 'prediction-schema.json').write_text(
+        json.dumps({'task_type': task}))
+    tasks = SimpleNamespace(
+        TABULAR_BINARY_CLASSIFICATION='TABULAR_BINARY_CLASSIFICATION')
+    monkeypatch.setitem(sys.modules, 'snowflake.ml.model',
+                        SimpleNamespace(type_hints=SimpleNamespace(Task=tasks)))
+    calls = []
+
+    @contextmanager
+    def registry(_):
+        yield SimpleNamespace(log_model=lambda *a, **kw: calls.append(kw) or
+                              SimpleNamespace(
+                                  model_name='CHURN', version_name='V1',
+                                  fully_qualified_model_name='DB.S.CHURN'))
+
+    sink = SnowflakeModelRegistryMixin()
+    monkeypatch.setattr(sink, '_registry', registry)
+    monkeypatch.setattr(registry_module, '_bundle_model', lambda _: object())
+    monkeypatch.setattr(registry_module, '_carrier_signature', lambda: {})
+    sink.publish_model(SimpleNamespace(), str(bundle),
+                       location=ModelRegistryLocation('CHURN'))
+    assert calls[0].get('task') == expected
+
+
+@pytest.mark.parametrize('name', ['USERS_CHURN', 'users_churn$2', '_m',
+                                  'ML.USERS_CHURN', 'DB.ML.USERS_CHURN',
+                                  '"users-churn"', '"a ""b"""'])
+def test_snowflake_identifiers_are_accepted_as_model_names(name):
+    SnowflakeModelRegistryMixin().check_model_location(
+        SimpleNamespace(), ModelRegistryLocation(name))
+
+
+@pytest.mark.parametrize('name', ['users-churn', '1churn', 'users churn',
+                                  'A.B.C.D', 'ML.', '""'])
+def test_other_model_names_are_refused_with_the_rule(name):
+    with pytest.raises(ValueError, match="letter or underscore.*USERS_CHURN"):
+        SnowflakeModelRegistryMixin().check_model_location(
+            SimpleNamespace(), ModelRegistryLocation(name))

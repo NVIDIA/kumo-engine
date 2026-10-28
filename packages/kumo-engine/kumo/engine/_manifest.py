@@ -303,6 +303,7 @@ class TrainingTableManifest(Manifest):
 class ModelParents(Record):
     training_table: Optional[TrainingTableManifest] = None
     warm_start: Optional['ModelManifest'] = None
+    derived_from: Optional['ModelManifest'] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -310,6 +311,11 @@ class FitTiming(Record):
     started_at: str
     finished_at: str
     seconds: float
+
+
+@dataclass(frozen=True, kw_only=True)
+class TrackingRef(Record):
+    run_id: str
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -323,6 +329,9 @@ class ModelManifest(Manifest):
     parents: Optional[ModelParents] = None
     fit: Optional[FitTiming] = None
     fit_mode: Optional[str] = None
+    tracking: Optional[TrackingRef] = omit_none()
+
+    EMBED_OMITS = ('tracking', )
 
 
 def manifest_bytes(manifest: Manifest) -> bytes:

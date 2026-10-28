@@ -27,13 +27,15 @@ dependencies = [
 
 [project.optional-dependencies]
 # What the SDK plugin half needs beyond the platform reader: Snowpark for the
-# session it opens, the model registry for what a sink publishes, and pyyaml
-# for the manifest that carries. The platform installs this distribution
+# session it opens, the model registry for what a sink publishes (and, from
+# 2.0, the experiment tracking kumo-engine records fits in; capped below 3
+# because that adapter reads ExperimentTracking internals), and pyyaml for the
+# manifest that carries. The platform installs this distribution
 # without this extra and imports `SnowflakeSourceReader` alone, so none of it
 # is loaded there -- `__init__` exports the plugin lazily to keep that true.
 sdk = [
   "snowflake-snowpark-python",
-  "snowflake-ml-python",
+  "snowflake-ml-python>=2.0,<3",
   "pyyaml",
 ]
 test = [
