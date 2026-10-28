@@ -21,7 +21,7 @@ TARGET = {'warehouse': 'WH', 'database': 'DB', 'schema': 'ML'}
 
 @pytest.fixture
 def served(fitted, tmp_path, monkeypatch):
-    monkeypatch.setattr(_serving, '_trainers', {})
+    monkeypatch.setattr(_serving, '_predictors', {})
     monkeypatch.setattr(_serving, '_snapshots', {})
     trainer, table, snapshot = fitted
     exports = tmp_path / 'exports'
@@ -193,6 +193,11 @@ def test_a_stage_snapshot_is_read_with_the_container_identity(monkeypatch):
     }]
 
 
+def _model(trainer):
+    return (trainer.result.bundle_dir, trainer.result.id,
+            trainer.result.metrics)
+
+
 def test_publish_passes_the_serving_snapshot_and_repository(fitted):
     from kumo.engine.trainer.trainer import _publish
 
@@ -203,10 +208,10 @@ def test_publish_passes_the_serving_snapshot_and_repository(fitted):
         SimpleNamespace(version='V1'))
     connector = SimpleNamespace(sink_backend=sink)
     location = kumo.ModelRegistryLocation('CHURN')
-    _publish(trainer.result,
+    _publish(*_model(trainer),
              kumo.ModelOutputConfig(connector, location=location))
     _publish(
-        trainer.result,
+        *_model(trainer),
         kumo.ModelOutputConfig(connector, location=location,
                                serving_snapshot='@DB.ML.KUMO/snapshots/s1',
                                serving_options={

@@ -7,7 +7,7 @@ import pandas as pd
 
 from kumo.engine.connector._extras import import_provider
 from kumo.engine.graph import GraphSnapshot
-from kumo.engine.integrations._serving import predict, snapshot_location
+from kumo.engine.integrations._serving import snapshot_location
 
 _pyfunc = import_provider('mlflow.pyfunc', 'mlflow')
 _schema = import_provider('mlflow.types.schema', 'mlflow')

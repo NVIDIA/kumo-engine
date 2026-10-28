@@ -10,9 +10,12 @@ import importlib
 import os
 import shutil
 import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import (
     Any,
+    Iterator,
     List,
     Mapping,
     Optional,
@@ -35,6 +38,21 @@ from kumo.engine._manifest import (
 
 #: A place assets are stored: a URI or path, or a ``(connector, path)``.
 Location = Union[str, Tuple[Any, str]]
+
+
+_LOCATIONS: ContextVar[Tuple[Location, ...]] = ContextVar(
+    'kumo_asset_locations', default=())
+
+
+@contextmanager
+def asset_locations(locations: Sequence[Location]) -> Iterator[None]:
+    r"""Asset roots that dependencies resolved in the block look in
+    first."""
+    token = _LOCATIONS.set((*locations, *_LOCATIONS.get()))
+    try:
+        yield
+    finally:
+        _LOCATIONS.reset(token)
 
 
 class Asset(Protocol):
@@ -127,7 +145,7 @@ class Dependencies:
         self.records: List[Dependency] = list(records)
         self.errors: List[BaseException] = []
         self._settings = settings
-        self._locations = list(locations)
+        self._locations = [*locations, *_LOCATIONS.get()]
 
     @classmethod
     def of(cls, manifest: Optional[ModelManifest], settings: Any = None,

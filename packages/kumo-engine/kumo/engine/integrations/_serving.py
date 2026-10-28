@@ -19,7 +19,7 @@ from kumo.engine.graph import GraphSnapshot
 logger = logging.getLogger(__name__)
 _ANCHOR = 'ANCHOR_TIMESTAMP'
 _lock = threading.Lock()
-_trainers: Dict[str, Any] = {}
+_predictors: Dict[str, Any] = {}
 _snapshots: Dict[str, GraphSnapshot] = {}
 
 
@@ -36,7 +36,7 @@ def predict(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
             'binary_classification_threshold'),
         num_classes_to_return=params.get('num_classes_to_return'),
     )
-    _require_inputs(trainer, snapshot, rows, params, time)
+    _require_inputs(trainer, snapshot, rows, time)
     trainer.scratch_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=trainer.scratch_dir) as tmp, \
             scoped_scratch_dir(Path(tmp) / 'scratch'):
@@ -104,28 +104,18 @@ def _seconds(values: pd.Series) -> pd.Series:
 
 
 def _require_inputs(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
-                    params: Mapping[str, Any],
                     time: Optional[pd.Timestamp]) -> None:
     from kumo_core.pquery import query_is_temporal
-    from kumo_core.types import TaskType
 
     from kumo.engine.pquery import PredictiveQuery
 
-    untimed = len(rows) > 0 and time is None and 'TIMESTAMP' not in rows
-    unthresholded = (
-        params.get('binary_classification_threshold') is None and
-        trainer.result.scoring_defaults.binary_classification_threshold is None)
-    if not (untimed or unthresholded):
+    if len(rows) == 0 or time is not None or 'TIMESTAMP' in rows:
         return
     parsed = PredictiveQuery._from_snapshot(snapshot,
                                             trainer._training_query)._parsed
-    if untimed and query_is_temporal(parsed, snapshot._native_graph):
+    if query_is_temporal(parsed, snapshot._native_graph):
         raise ValueError("temporal query: pass params={'prediction_time': "
                          "...} or a TIMESTAMP column")
-    if unthresholded and (TaskType(parsed.task_type)
-                          is TaskType.BINARY_CLASSIFICATION):
-        raise ValueError("binary classification: pass "
-                         "params={'binary_classification_threshold': ...}")
 
 
 def snapshot_location(uri: str) -> Tuple[Connector, str]:
@@ -150,13 +140,14 @@ def output_columns(bundle: Path) -> List[str]:
 
 def score_registered(bundle: str, serving: str, rows: pd.DataFrame,
                      params: Mapping[str, Any]) -> pd.DataFrame:
-    r"""Scores ``rows`` with the bundle at ``bundle`` against the snapshot
-    in ``params`` or the ``serving`` record. The bundle and each snapshot
+    r"""Scores ``rows`` with the predictor the bundle at ``bundle`` names,
+    against the snapshot in ``params`` or the ``serving`` record, with the
+    bundle's assets read from their stage. The bundle and each snapshot
     load once per process."""
-    from kumo.engine.trainer.trainer import Trainer
+    from kumo.engine._predictor import load_predictor
 
     record = json.loads(Path(serving).read_text())
-    columns = output_columns(Path(bundle))
+    columns = record.get('columns') or output_columns(Path(bundle))
     if rows.empty:
         return pd.DataFrame(columns=columns)
     uri = params.get('snapshot') or record.get('snapshot')
@@ -165,16 +156,44 @@ def score_registered(bundle: str, serving: str, rows: pd.DataFrame,
             "No snapshot to score against: register with ModelOutputConfig("
             "..., serving_snapshot='@DB.SCHEMA.STAGE/...') or pass "
             "InputSpec(params={'snapshot': ...})")
-    trainer = _cached(_trainers, bundle, lambda: Trainer.load(bundle))
+    predictor = _cached(_predictors, bundle,
+                        lambda: _staged(bundle, record, load_predictor))
     snapshot = _cached(_snapshots, uri, lambda: load_snapshot(uri, record))
-    rows = rows.assign(ENTITY=_entities(rows['ENTITY'], trainer, snapshot))
-    frame = predict(trainer, snapshot, rows,
-                    {k: v for k, v in params.items() if k != 'snapshot'})
+    trainer = getattr(predictor, 'trainer', None)
+    if trainer is not None:
+        rows = rows.assign(
+            ENTITY=_entities(rows['ENTITY'], trainer, snapshot))
+    frame = predictor.predict(
+        rows, snapshot, {k: v
+                         for k, v in params.items() if k != 'snapshot'})
     frame = frame.reindex(columns=columns)
     for column in ('ENTITY', 'CLASS'):
         if column in frame:
             frame[column] = frame[column].astype(str)
     return frame
+
+
+def _staged(bundle: str, target: Mapping[str, Any],
+            load: Callable[[str], Any]) -> Any:
+    r"""``load(bundle)``, with the stages holding the bundle's assets
+    readable with the Snowpark Container Services identity."""
+    from kumo.engine._deps import Dependencies, asset_locations
+    from kumo.engine.trainer._provenance import read_provenance
+
+    roots = sorted({
+        record.location.rsplit('/', 2)[0]
+        for record in Dependencies.of(read_provenance(Path(bundle))).records
+        if (record.location or '').startswith('@')
+    })
+    if not roots:
+        return load(bundle)
+    from kumo.engine.connector.snowflake import SnowflakeConnector
+
+    connector = SnowflakeConnector.from_spcs_env(
+        warehouse=target.get('warehouse'), database=target.get('database'),
+        schema_name=target.get('schema'))
+    with asset_locations([(connector, root) for root in roots]):
+        return load(bundle)
 
 
 def load_snapshot(uri: str, target: Mapping[str, Any]) -> GraphSnapshot:

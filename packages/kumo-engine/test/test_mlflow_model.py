@@ -221,7 +221,7 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
 
 def test_pyfunc_names_a_missing_prediction_time_and_needs_no_threshold(
         fitted):
-    from kumo.engine.integrations._mlflow_model import predict
+    from kumo.engine.integrations._serving import predict
 
     trainer, table, snapshot = fitted
     rows = pd.DataFrame({'ENTITY': range(5)})
@@ -240,7 +240,7 @@ def test_pyfunc_names_a_missing_prediction_time_and_needs_no_threshold(
 
 
 def test_pyfunc_returns_rows_in_input_order(fitted):
-    from kumo.engine.integrations._mlflow_model import predict
+    from kumo.engine.integrations._serving import predict
 
     trainer, table, snapshot = fitted
     time = pd.Timestamp(table.timestamps[0])

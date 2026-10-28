@@ -70,6 +70,7 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
     r"""``Registry.log_model`` arguments that register the bundle as a
     :class:`KumoModel` for Snowpark Container Services on GPU. ``target`` is
     the registering connector's warehouse, database and schema."""
+    from kumo.engine.integrations._serving import output_columns
     from kumo.engine.trainer._spec import read_bundle_artifact_paths
     from kumo.engine.trainer.output_config import (
         SERVING_OPTION_PREFIX,
@@ -81,6 +82,7 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
     serving.write_text(
         json.dumps({
             'snapshot': metadata.get(SERVING_SNAPSHOT_KEY),
+            'columns': output_columns(bundle),
             **target
         }))
     options = {

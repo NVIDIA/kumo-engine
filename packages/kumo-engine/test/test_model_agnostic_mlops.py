@@ -369,3 +369,35 @@ def test_a_model_that_was_not_stored_is_not_registered(
     registered, error = _store_and_register(bundle, manifest, settings,
                                             warn=False, stored=asset_failure)
     assert registered is None and error is asset_failure
+
+
+def test_the_snowflake_model_scores_with_the_bundles_predictor(
+        tmp_path, monkeypatch):
+    from kumo.engine.connector.snowflake import SnowflakeConnector
+    from kumo.engine.integrations import _serving
+
+    monkeypatch.setattr(_serving, '_predictors', {})
+    monkeypatch.setattr(_serving, '_snapshots', {})
+    monkeypatch.setattr(_serving, 'load_snapshot', lambda uri, record: uri)
+    bundle, manifest = _toy_bundle(tmp_path / 'toy')
+    serving = tmp_path / 'serving.json'
+    serving.write_text(json.dumps({'snapshot': 's', 'columns': ['ENTITY',
+                                                                'SCORE']}))
+    frame = _serving.score_registered(str(bundle), str(serving),
+                                      pd.DataFrame({'ENTITY': [1, 2]}), {})
+    assert frame.to_dict('list') == {'ENTITY': ['1', '2'], 'SCORE': [2.0, 4.0]}
+
+    staged = replace(manifest, dependencies=[
+        *manifest.dependencies,
+        _deps.Dependency(kind='asset', name='v', asset_kind='toy',
+                         sha256='a' * 64,
+                         location=f"@DB.ML.KUMO/assets/toy/{'a' * 64}")
+    ])
+    write_manifest(bundle / PROVENANCE_FILE, staged)
+    monkeypatch.setattr(SnowflakeConnector, 'from_spcs_env',
+                        classmethod(lambda cls, **kw: 'sf'))
+    assert _serving._staged(str(bundle), {}, lambda b: [
+        location for location in Dependencies().candidates(staged.
+                                                           dependencies[-1])
+        if location[0] == 'sf'
+    ]) == [('sf', f"@DB.ML.KUMO/assets/toy/{'a' * 64}")]
