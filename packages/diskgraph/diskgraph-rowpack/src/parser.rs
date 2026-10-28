@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::DataType;
 use chrono::{NaiveDate, NaiveDateTime};
+use diskgraph_core::time::{convert_ceil, TimeUnit};
 use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
 
 pub(crate) fn parse_bool(value: &str) -> Option<bool> {
@@ -242,6 +243,10 @@ fn parse_rfc3339_utc(value: &str) -> Option<NaiveDateTime> {
 }
 
 pub(crate) fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<i64> {
+    parse_timestamp_text_parts(value, format).map(|(secs, _)| secs)
+}
+
+pub(crate) fn parse_timestamp_text_parts(value: &str, format: Option<&str>) -> Option<(i64, u32)> {
     let ts = if let Some(fmt) = format {
         if format_has_tz(fmt) {
             chrono::DateTime::parse_from_str(value, fmt)
@@ -284,7 +289,7 @@ pub(crate) fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<
             })?
     };
     let ts = ts.and_utc();
-    Some(ts.timestamp())
+    Some((ts.timestamp(), ts.timestamp_subsec_nanos()))
 }
 
 pub(crate) fn parse_date_text(value: &str, format: Option<&str>) -> Option<i32> {
@@ -367,9 +372,13 @@ impl TimestampFormatParser {
             TimestampFormatKind::Ymd => parse_ymd_fast(value.as_bytes()),
             TimestampFormatKind::YmdHmSpace => parse_ymd_hm_space_fast(value.as_bytes()),
             TimestampFormatKind::YmdHmsSpace => parse_ymd_hms_space_fast(value.as_bytes()),
-            TimestampFormatKind::YmdHmsSpaceFrac => parse_ymd_hms_space_frac_fast(value.as_bytes()),
+            TimestampFormatKind::YmdHmsSpaceFrac => {
+                parse_ymd_hms_space_frac_fast(value.as_bytes()).map(|(secs, _)| secs)
+            }
             TimestampFormatKind::YmdHmsT => parse_ymd_hms_space_fast(value.as_bytes()),
-            TimestampFormatKind::YmdHmsTFrac => parse_ymd_hms_space_frac_fast(value.as_bytes()),
+            TimestampFormatKind::YmdHmsTFrac => {
+                parse_ymd_hms_space_frac_fast(value.as_bytes()).map(|(secs, _)| secs)
+            }
             TimestampFormatKind::YmdHmsSpaceOffset => {
                 parse_ymd_hms_offset_nocolon_fast(value.as_bytes())
             }
@@ -390,6 +399,16 @@ impl TimestampFormatParser {
             }
             TimestampFormatKind::CompactYmd => parse_compact_ymd_fast(value.as_bytes()),
             TimestampFormatKind::CompactYmdHms => parse_compact_ymd_hms_fast(value.as_bytes()),
+        }
+    }
+
+    /// Whole epoch seconds and the digits of any fractional second.
+    pub(crate) fn parse_timestamp_parts<'a>(&self, value: &'a str) -> Option<(i64, &'a [u8])> {
+        match self.kind {
+            TimestampFormatKind::YmdHmsSpaceFrac | TimestampFormatKind::YmdHmsTFrac => {
+                parse_ymd_hms_space_frac_fast(value.as_bytes())
+            }
+            _ => Some((self.parse_timestamp(value)?, &[])),
         }
     }
 
@@ -702,7 +721,7 @@ pub(crate) fn parse_ymd_hms_space_fast(bytes: &[u8]) -> Option<i64> {
 }
 
 // "%Y-%m-%d %H:%M:%S%.f" / "%Y-%m-%dT%H:%M:%S%.f"
-pub(crate) fn parse_ymd_hms_space_frac_fast(bytes: &[u8]) -> Option<i64> {
+pub(crate) fn parse_ymd_hms_space_frac_fast(bytes: &[u8]) -> Option<(i64, &[u8])> {
     if bytes.len() < 21 {
         return None;
     }
@@ -714,9 +733,25 @@ pub(crate) fn parse_ymd_hms_space_frac_fast(bytes: &[u8]) -> Option<i64> {
     if next != bytes.len() {
         return None;
     }
-    // Sub-second fraction discarded — standardized to epoch seconds.
     let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second);
-    Some(secs)
+    Some((secs, &bytes[20..]))
+}
+
+/// Nanoseconds in a fractional second written as `digits` (beyond nine truncate).
+pub(crate) fn fraction_nanos(digits: &[u8]) -> u32 {
+    const NANOS_PER_LAST_DIGIT: [u32; 10] = [
+        0,
+        100_000_000,
+        10_000_000,
+        1_000_000,
+        100_000,
+        10_000,
+        1_000,
+        100,
+        10,
+        1,
+    ];
+    parse_fraction(digits, 0).map_or(0, |(value, digits, _)| value * NANOS_PER_LAST_DIGIT[digits])
 }
 
 #[inline]
@@ -861,14 +896,29 @@ fn div_ceil_i64(value: i64, divisor: i64) -> i64 {
     if r > 0 { d + 1 } else { d }
 }
 
-pub(crate) fn timestamp_from_int(value: i64, unit: Option<arrow_schema::TimeUnit>) -> i64 {
+pub(crate) fn timestamp_from_int(
+    value: i64,
+    unit: Option<arrow_schema::TimeUnit>,
+    clock: TimeUnit,
+) -> i64 {
     let unit = unit.unwrap_or(arrow_schema::TimeUnit::Second);
-    match unit {
-        arrow_schema::TimeUnit::Second => value,
-        arrow_schema::TimeUnit::Millisecond => div_ceil_i64(value, 1_000),
-        arrow_schema::TimeUnit::Microsecond => div_ceil_i64(value, 1_000_000),
-        arrow_schema::TimeUnit::Nanosecond => div_ceil_i64(value, 1_000_000_000),
+    convert_ceil(value, unit.into(), clock)
+}
+
+/// A decimal epoch in `unit` as ticks of the clock `clock`, where `scaled(s)` is
+/// its unscaled value divided by `10^s` and truncated. It truncates to the
+/// finer of `unit` and the tick, then rounds up like an integer epoch.
+pub(crate) fn timestamp_from_decimal(
+    scale: i8,
+    unit: Option<arrow_schema::TimeUnit>,
+    clock: TimeUnit,
+    scaled: impl FnOnce(i32) -> Option<i64>,
+) -> Option<i64> {
+    let ticks_per_unit = timestamp_from_int(1, unit, clock);
+    if ticks_per_unit > 1 {
+        return scaled(i32::from(scale) - ticks_per_unit.ilog10() as i32);
     }
+    Some(timestamp_from_int(scaled(i32::from(scale))?, unit, clock))
 }
 
 pub(crate) fn days_from_secs(secs: i64) -> i32 {
@@ -942,7 +992,7 @@ pub(crate) fn parse_decimal_i256(value: &str, scale: i32) -> Option<arrow_buffer
     Some(parsed)
 }
 
-pub(crate) fn timestamp_secs_from_array(array: &ArrayRef, row: usize) -> Result<i64> {
+pub(crate) fn timestamp_from_array(array: &ArrayRef, row: usize, clock: TimeUnit) -> Result<i64> {
     let unit = match array.data_type() {
         DataType::Timestamp(unit, _) => *unit,
         _ => return Err(anyhow!("timestamp type mismatch")),
@@ -953,61 +1003,69 @@ pub(crate) fn timestamp_secs_from_array(array: &ArrayRef, row: usize) -> Result<
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampSecondArray>()
                 .ok_or_else(|| anyhow!("timestamp second cast"))?;
-            Ok(arr.value(row))
+            Ok(convert_ceil(arr.value(row), TimeUnit::Seconds, clock))
         }
         arrow_schema::TimeUnit::Millisecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampMillisecondArray>()
                 .ok_or_else(|| anyhow!("timestamp millisecond cast"))?;
-            Ok(div_ceil_i64(arr.value(row), 1_000))
+            Ok(convert_ceil(arr.value(row), TimeUnit::Milliseconds, clock))
         }
         arrow_schema::TimeUnit::Microsecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampMicrosecondArray>()
                 .ok_or_else(|| anyhow!("timestamp microsecond cast"))?;
-            Ok(div_ceil_i64(arr.value(row), 1_000_000))
+            Ok(convert_ceil(arr.value(row), TimeUnit::Microseconds, clock))
         }
         arrow_schema::TimeUnit::Nanosecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampNanosecondArray>()
                 .ok_or_else(|| anyhow!("timestamp nanosecond cast"))?;
-            Ok(div_ceil_i64(arr.value(row), 1_000_000_000))
+            Ok(convert_ceil(arr.value(row), TimeUnit::Nanoseconds, clock))
         }
     }
 }
 
-pub(crate) fn time_secs_from_array(array: &ArrayRef, row: usize) -> Result<i64> {
+pub(crate) fn time_from_array(array: &ArrayRef, row: usize, clock: TimeUnit) -> Result<i64> {
     match array.data_type() {
         DataType::Time32(arrow_schema::TimeUnit::Second) => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Time32SecondArray>()
                 .ok_or_else(|| anyhow!("time32 second cast"))?;
-            Ok(i64::from(arr.value(row)))
+            Ok(convert_ceil(
+                i64::from(arr.value(row)),
+                TimeUnit::Seconds,
+                clock,
+            ))
         }
         DataType::Time32(arrow_schema::TimeUnit::Millisecond) => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Time32MillisecondArray>()
                 .ok_or_else(|| anyhow!("time32 millisecond cast"))?;
-            Ok(div_ceil_i64(i64::from(arr.value(row)), 1_000))
+            Ok(convert_ceil(
+                i64::from(arr.value(row)),
+                TimeUnit::Milliseconds,
+                clock,
+            ))
         }
         DataType::Time64(arrow_schema::TimeUnit::Microsecond) => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Time64MicrosecondArray>()
                 .ok_or_else(|| anyhow!("time64 microsecond cast"))?;
-            Ok(div_ceil_i64(arr.value(row), 1_000_000))
+            Ok(convert_ceil(arr.value(row), TimeUnit::Microseconds, clock))
         }
         DataType::Time64(arrow_schema::TimeUnit::Nanosecond) => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Time64NanosecondArray>()
                 .ok_or_else(|| anyhow!("time64 nanosecond cast"))?;
-            Ok(div_ceil_i64(arr.value(row), 1_000_000_000))
+            Ok(convert_ceil(arr.value(row), TimeUnit::Nanoseconds, clock))
         }
         DataType::Time32(_) | DataType::Time64(_) => Err(anyhow!(
             "unsupported Arrow time unit for timestamp conversion: {:?}",

@@ -6,6 +6,7 @@ use anyhow::{anyhow, Result};
 use arrow_array::{Array, RecordBatch};
 use base64::Engine;
 use chrono::{DateTime, Utc};
+use diskgraph_core::time::{convert_trunc, split_parts, TimeUnit};
 use gxhash::{HashMap, HashMapExt};
 use half::f16;
 use half::slice::HalfFloatSliceExt;
@@ -415,7 +416,7 @@ pub enum ValueRef<'a> {
     Uuid256([u8; 32]),
     Ip([u8; 16]),
     Date(i32),
-    /// Epoch seconds.
+    /// Ticks of the index clock.
     Timestamp(i64),
     Decimal128(i128),
     Decimal256([u8; 32]),
@@ -5208,6 +5209,7 @@ fn estimate_bpe_bytes(samples: &[Vec<u8>], dict: &[Vec<u8>]) -> u64 {
 pub struct RowPackDecoder {
     ctx: RowPackContext,
     dict_values: Vec<Option<Vec<Vec<u8>>>>,
+    clock: TimeUnit,
 }
 
 pub struct RowPackDecodeScratch {
@@ -5258,7 +5260,20 @@ impl RowPackDecoder {
                 _ => dict_values.push(None),
             }
         }
-        Ok(Self { ctx, dict_values })
+        Ok(Self {
+            ctx,
+            dict_values,
+            clock: TimeUnit::Seconds,
+        })
+    }
+
+    pub fn with_clock(mut self, clock: TimeUnit) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    pub fn clock(&self) -> TimeUnit {
+        self.clock
     }
 
     pub fn context(&self) -> &RowPackContext {
@@ -5306,6 +5321,7 @@ impl RowPackDecoder {
                 tag,
                 &mut data,
                 self.dict_values[idx].as_ref(),
+                self.clock,
             )?;
         }
         Ok(out)
@@ -5341,7 +5357,13 @@ impl RowPackDecoder {
                 bool_idx += 1;
                 JsonValue::Bool(v)
             } else {
-                decode_value_json(col, tag, &mut data, self.dict_values[idx].as_ref())?
+                decode_value_json(
+                    col,
+                    tag,
+                    &mut data,
+                    self.dict_values[idx].as_ref(),
+                    self.clock,
+                )?
             };
             map.insert(col.name.clone(), value);
         }
@@ -5562,6 +5584,7 @@ impl RowPackDecoder {
                     &mut data,
                     self.dict_values[idx].as_ref(),
                     scratch,
+                    self.clock,
                 )?;
                 builder_cursor += 1;
             } else {
@@ -5603,7 +5626,8 @@ impl RowPackDecoder {
             if !requested_mask[idx] {
                 continue;
             }
-            let (field, builder) = make_arrow_builder(&col.name, col.logical_type, rows.len())?;
+            let (field, builder) =
+                make_arrow_builder(&col.name, col.logical_type, rows.len(), self.clock)?;
             decoded_indices.push(idx);
             fields.push(field);
             builders.push(builder);
@@ -5693,6 +5717,7 @@ fn decode_value_msgpack(
     tag: u8,
     data: &mut &[u8],
     dict: Option<&Vec<Vec<u8>>>,
+    clock: TimeUnit,
 ) -> Result<()> {
     match &col.encoding {
         ColumnEncoding::IntDict {
@@ -5777,8 +5802,8 @@ fn decode_value_msgpack(
             mp::write_sint(out, v)?;
         }
         ColumnEncoding::Timestamp => {
-            let secs = zigzag_decode(read_varint(data)?);
-            write_msgpack_timestamp(out, secs, 0)?;
+            let (secs, nanos) = split_parts(zigzag_decode(read_varint(data)?), clock);
+            write_msgpack_timestamp(out, secs, nanos)?;
         }
         ColumnEncoding::Decimal {
             scale,
@@ -5874,6 +5899,7 @@ fn decode_value_json(
     tag: u8,
     data: &mut &[u8],
     dict: Option<&Vec<Vec<u8>>>,
+    clock: TimeUnit,
 ) -> Result<JsonValue> {
     let value = match &col.encoding {
         ColumnEncoding::IntDict {
@@ -5952,8 +5978,8 @@ fn decode_value_json(
         }
         ColumnEncoding::Date { varint, bits } => JsonValue::from(decode_int(data, *varint, *bits)?),
         ColumnEncoding::Timestamp => {
-            let secs = zigzag_decode(read_varint(data)?);
-            let formatted = format_timestamp_default(secs, 0);
+            let (secs, nanos) = split_parts(zigzag_decode(read_varint(data)?), clock);
+            let formatted = format_timestamp_default(secs, nanos);
             JsonValue::from(formatted)
         }
         ColumnEncoding::Decimal {
@@ -7189,6 +7215,27 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
         b.append_null();
         return;
     }
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<TimestampMillisecondBuilder>()
+    {
+        b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<TimestampMicrosecondBuilder>()
+    {
+        b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<TimestampNanosecondBuilder>()
+    {
+        b.append_null();
+        return;
+    }
     if let Some(b) = builder.as_any_mut().downcast_mut::<Date32Builder>() {
         b.append_null();
         return;
@@ -7226,12 +7273,13 @@ pub fn make_arrow_builder(
     name: &str,
     dtype: IngestedType,
     capacity: usize,
+    clock: TimeUnit,
 ) -> Result<(
     arrow_schema::Field,
     Box<dyn arrow_array::builder::ArrayBuilder>,
 )> {
     use arrow_array::builder::*;
-    use arrow_schema::{DataType, TimeUnit};
+    use arrow_schema::DataType;
 
     let (arrow_type, builder): (DataType, Box<dyn ArrayBuilder>) = match dtype {
         IngestedType::Bool => (
@@ -7291,10 +7339,25 @@ pub fn make_arrow_builder(
             DataType::Binary,
             Box::new(BinaryBuilder::with_capacity(capacity, capacity * 32)),
         ),
-        IngestedType::Timestamp => (
-            DataType::Timestamp(TimeUnit::Second, None),
-            Box::new(TimestampSecondBuilder::with_capacity(capacity)),
-        ),
+        IngestedType::Timestamp => match clock {
+            TimeUnit::Nanoseconds => (
+                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+                Box::new(TimestampNanosecondBuilder::with_capacity(capacity)),
+            ),
+            TimeUnit::Microseconds => (
+                DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, None),
+                Box::new(TimestampMicrosecondBuilder::with_capacity(capacity)),
+            ),
+            TimeUnit::Milliseconds => (
+                DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+                Box::new(TimestampMillisecondBuilder::with_capacity(capacity)),
+            ),
+            TimeUnit::Seconds | TimeUnit::Hours | TimeUnit::Days => (
+                DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
+                Box::new(TimestampSecondBuilder::with_capacity(capacity)),
+            ),
+            other => unreachable!("{other:?} is not an index clock"),
+        },
         IngestedType::Date => (
             DataType::Date32,
             Box::new(Date32Builder::with_capacity(capacity)),
@@ -7360,6 +7423,7 @@ fn decode_and_append_to_builder(
     data: &mut &[u8],
     dict: Option<&Vec<Vec<u8>>>,
     scratch: &mut RowPackDecodeScratch,
+    clock: TimeUnit,
 ) -> Result<()> {
     use arrow_array::builder::*;
 
@@ -7491,12 +7555,27 @@ fn decode_and_append_to_builder(
                 .append_value(v as i32);
         }
         ColumnEncoding::Timestamp => {
-            let secs = zigzag_decode(read_varint(data)?);
-            builder
-                .as_any_mut()
-                .downcast_mut::<TimestampSecondBuilder>()
-                .unwrap()
-                .append_value(secs);
+            let ticks = zigzag_decode(read_varint(data)?);
+            let builder = builder.as_any_mut();
+            match clock {
+                TimeUnit::Nanoseconds => builder
+                    .downcast_mut::<TimestampNanosecondBuilder>()
+                    .unwrap()
+                    .append_value(ticks),
+                TimeUnit::Microseconds => builder
+                    .downcast_mut::<TimestampMicrosecondBuilder>()
+                    .unwrap()
+                    .append_value(ticks),
+                TimeUnit::Milliseconds => builder
+                    .downcast_mut::<TimestampMillisecondBuilder>()
+                    .unwrap()
+                    .append_value(ticks),
+                TimeUnit::Seconds | TimeUnit::Hours | TimeUnit::Days => builder
+                    .downcast_mut::<TimestampSecondBuilder>()
+                    .unwrap()
+                    .append_value(convert_trunc(ticks, clock, TimeUnit::Seconds)),
+                other => unreachable!("{other:?} is not an index clock"),
+            }
         }
         ColumnEncoding::Decimal {
             scale,
