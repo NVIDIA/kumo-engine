@@ -405,6 +405,33 @@ def test_glove_stays_a_pypi_dependency_of_the_text_extra(tmp_path):
     assert 'kumo_glove_6b_50d/__init__.py' not in names
 
 
+def test_plots_extra_survives_merge(tmp_path, monkeypatch):
+    project = tomllib.loads(read_text(str(
+        REPO_ROOT / 'packages/kumo-engine/pyproject.toml')))['project']
+    requirements = project['optional-dependencies']['plots']
+    assert requirements == ['matplotlib>=3.10.0']
+    engine = COMPONENTS['kumo-engine']
+    monkeypatch.setitem(COMPONENTS, 'kumo-engine', {
+        **engine,
+        'extras': [*engine['extras'], 'plots'],
+        'requires': [*engine['requires'],
+                     *(f'{item}; extra == "plots"' for item in requirements)],
+    })
+    core = COMPONENTS['kumo-core']
+    monkeypatch.setitem(COMPONENTS, 'kumo-core', {
+        **core, 'requires': [*core['requires'], *requirements],
+    })
+
+    result = _merge(tmp_path, CORE_COMPONENTS)
+
+    assert result.returncode == 0, result.stderr
+    metadata, manifest, _ = _read_wheel(tmp_path)
+    assert 'plots' in metadata.get_all('Provides-Extra')
+    assert 'matplotlib>=3.10.0' in manifest['requires']
+    assert ('matplotlib>=3.10.0; extra == "plots"'
+            in metadata.get_all('Requires-Dist'))
+
+
 @pytest.mark.parametrize('name', ['kumo-glove-6b-50d'])
 def test_published_packages_are_never_bundled(tmp_path, name):
     result = _merge(tmp_path, [*CORE_COMPONENTS, name])
