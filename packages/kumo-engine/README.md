@@ -151,7 +151,6 @@ graph.visualize(layout="compact")        # balance crowded groups
 ```
 
 The return value is SVG text with notebook display support.
-Primary keys, relationship foreign keys, and the declared time column (`T`) are always visible; `show_cols=True` adds other columns.
 Choose Standard or Compact from the notebook's layout selector.
 The default `layout="auto"` chooses an initial arrangement from graph structure, independently of viewport size.
 Use `layout="standard"` to retain the layered relationship view.
@@ -172,7 +171,7 @@ Optionally use `graph.visualize(sample_rows=3)` to fetch up to 30 preview rows p
 Samples have no guaranteed ordering, and previews can run warehouse queries and incur costs; the row limit does not bound bytes scanned.
 Unavailable previews and columns with no non-null values in the preview are labeled, and long values are abbreviated.
 Samples become part of saved notebook HTML; SVG text and exports always contain metadata only.
-The default view shows primary keys, relationship foreign keys, and the declared time column.
+The default view shows primary keys, relationship foreign keys, and the declared time column (`T`).
 `show_cols=True` adds columns up to 10 rows per table, or 5 for graphs with more than 10 tables; keys and the declared time column always remain visible, even above that limit.
 A footer counts hidden columns.
 Visualization accepts at most 30 tables; larger graphs raise an error so no tables or relationships are silently omitted.
