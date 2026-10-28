@@ -6,10 +6,11 @@ import dataclasses
 from typing import Callable
 
 import kumoapi.data_snapshot as snapshot_interfaces
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from fastapi.params import Query
 from kumoapi.graph import EdgeHealthResponse
 from kumoapi.table import TableDefinition as ApiTableDefinition
+from kumoapi.typing import TimestampPrecision
 from typing_extensions import Annotated
 
 from io_utils import logging
@@ -18,7 +19,10 @@ from rest.config.graph_v2 import GraphSnapshotRequest
 from rest.config.status import IDResponse
 from rest.config.table_v2 import TableDefinition, TableSnapshotResource
 from rest.deps.authentication import Authentication
-from rest.driver.data_snapshot_api_driver import DataSnapshotApiDriver
+from rest.driver.data_snapshot_api_driver import (
+    DataSnapshotApiDriver,
+    get_graph_snapshot_info,
+)
 from rest.utils.public import wrap_driver_errors
 from rest.utils.routers import StrictQueryAPIRoute, wrap_validation_exceptions
 from statedb.config.common import GraphIDv2, ProjectID
@@ -153,11 +157,14 @@ class GraphSnapshotRouter:
 
     async def create(
         self,
+        response: Response,
         graph_id: Annotated[str,
                             Query(description='Graph resource identifier')],
         project_id: Annotated[str, Query()],
         refresh_source: Annotated[
             bool, Query(description=_refresh_source_desc)] = False,
+        timestamp_precision: Annotated[TimestampPrecision,
+                                       Query()] = 'seconds',
     ) -> IDResponse:
         """Create a GraphSnapshotResource."""
         with wrap_driver_errors(), wrap_validation_exceptions():
@@ -167,7 +174,15 @@ class GraphSnapshotRouter:
                 graph_fpid,
                 refresh_source,
                 project_id=ProjectID(project_id),
+                timestamp_precision=timestamp_precision,
             )
+            built_precision = timestamp_precision
+            if timestamp_precision != 'seconds':
+                # A worker that predates index clocks records a seconds build.
+                _, version_info = await get_graph_snapshot_info(
+                    graph_snapshot_id)
+                built_precision = version_info.timestamp_precision
+        response.headers['X-Kumo-Timestamp-Precision'] = built_precision
         return IDResponse(graph_snapshot_id)
 
     async def get(

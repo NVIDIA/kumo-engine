@@ -10,6 +10,8 @@ of :mod:`pool.activities` (which would hit an import cycle through
 from dataclasses import dataclass
 from typing import Dict
 
+from kumoapi.typing import TimestampPrecision
+
 from rest.config.data_backend import ConnectorExecutionRef
 from rest.config.graph_v2 import GraphDefinition
 from rest.config.table_v2 import TableDefinition
@@ -25,3 +27,4 @@ class DiskgraphIngestArgs:
     connector_specs: Dict[str, ConnectorExecutionRef]
     all_graph_tables: Dict[str, TableDefinition]
     source_size_bytes_by_table: Dict[str, int]
+    timestamp_precision: TimestampPrecision = 'seconds'

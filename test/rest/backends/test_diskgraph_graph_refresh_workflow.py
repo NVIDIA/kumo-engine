@@ -183,6 +183,7 @@ def _setup_pipeline_test(monkeypatch):
     wf._graph_version_info = SimpleNamespace(
         graph_data_version="v1",
         table_data_versions={"users": "tv1"},
+        timestamp_precision="seconds",
     )
 
     monkeypatch.setattr(mod, "get_persist_dir", lambda: "/tmp/persist")

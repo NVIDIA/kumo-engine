@@ -641,14 +641,18 @@ class DataBackendActivities:
         md5_hasher = md5()
         for table_name, table_version in sorted(table_versions.items()):
             md5_hasher.update(f'{table_name}={table_version}'.encode())
+        if graph_input.timestamp_precision != 'seconds':
+            md5_hasher.update(('|timestamp_precision='
+                               f'{graph_input.timestamp_precision}').encode())
         graph_data_version = md5_hasher.hexdigest()
 
         # Save graph and table version info.
         await data_backend_cache().graph_cache.save_latest_graph_version.\
             coroutine(graph_input.graph_key, graph_data_version)
 
-        version_info = GraphDataVersionInfo(GraphVersion(graph_data_version),
-                                            table_versions)
+        version_info = GraphDataVersionInfo(
+            GraphVersion(graph_data_version), table_versions,
+            timestamp_precision=graph_input.timestamp_precision)
         await DataBackendActivities.save_graph_data_version(
             graph_input, version_info, job_id)
         return version_info
