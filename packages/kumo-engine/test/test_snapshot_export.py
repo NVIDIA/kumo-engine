@@ -794,3 +794,17 @@ def test_loading_a_missing_export_names_its_full_path(tmp_path, exports):
     with pytest.raises(FileNotFoundError,
                        match=f'No complete snapshot export at {missing}: '):
         _load(exports, 'snapshots/graph/version')
+
+
+@pytest.mark.parametrize('on_error', ['warn', 'raise'])
+def test_a_failed_store_follows_on_error(tmp_path, scratch, graph,
+                                         monkeypatch, on_error):
+    monkeypatch.setattr(snapshot_io, 'export',
+                        Mock(side_effect=OSError('ACCESS_DENIED')))
+    cfg = kumo.MLOps(str(tmp_path / 'root'), on_error=on_error)
+    if on_error == 'raise':
+        with pytest.raises(RuntimeError, match='Could not store snapshot'):
+            graph.snapshot(mlops=cfg)
+    else:
+        with pytest.warns(UserWarning, match='ACCESS_DENIED'):
+            graph.snapshot(mlops=cfg)

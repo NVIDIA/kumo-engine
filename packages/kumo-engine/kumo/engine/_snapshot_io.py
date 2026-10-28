@@ -194,9 +194,7 @@ def export_location(snapshot: Any, path: str) -> str:
 
 def store(snapshot: Any, settings: Any) -> None:
     r"""Export ``snapshot`` under ``<root>/snapshots/`` unless a complete
-    export of it is there; failures warn."""
-    import warnings
-
+    export of it is there."""
     try:
         connector = settings.root.connector
         path = settings.root.location('snapshots')
@@ -210,9 +208,8 @@ def store(snapshot: Any, settings: Any) -> None:
                 and marker.get('snapshot_id') == snapshot.id):
             export(snapshot, connector, path)
     except Exception as error:
-        warnings.warn(
-            f"Could not store snapshot {snapshot.id} under the artifact "
-            f"root: {error}", UserWarning, stacklevel=3)
+        raise RuntimeError(f"Could not store snapshot {snapshot.id} under the "
+                           f"artifact root: {error}") from error
 
 
 def export(snapshot: Any, connector: Any, path: str) -> str:

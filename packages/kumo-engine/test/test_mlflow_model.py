@@ -94,9 +94,17 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     assert list(served) == ['ENTITY', 'TARGET_PRED']
     assert len(served) == len(range(0, 400, 7))
     assert load_model('models:/m@champion').result.id == result.id
-    assert kumo.Trainer.load_from_connector(
-        cfg, location=kumo.ModelRegistryLocation('m', alias='champion')
-    ).result.id == result.id
+    champion = kumo.Trainer.load_from_connector(
+        cfg, location=kumo.ModelRegistryLocation('m', alias='champion'))
+    assert champion.result.id == result.id
+    assert champion.export(cfg).version == str(version.version)
+    client = mlflow.MlflowClient()
+    assert len(client.search_model_versions("name = 'm'")) == 1
+    other = kumo.MLOps(str(tmp_path / 'root'), tracking=cfg.tracking,
+                       registry=kumo.ModelRegistryLocation('m2'))
+    first = champion.export(other)
+    assert first.version == '1' and champion.export(other) == first
+    assert load_model('models:/m2/1').result.id == result.id
 
     original = mlflow.models.Model.load
 

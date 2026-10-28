@@ -106,9 +106,10 @@ class MlflowTracking:
     from for its duration (Databricks: ``DATABRICKS_HOST`` and a short-lived
     ``DATABRICKS_TOKEN``; SageMaker: the process-wide tracking URI), so do
     not call MLflow or Databricks yourself on other threads during a fit.
-    Ambient credentials (a notebook, job or instance role) change nothing,
-    except that a SageMaker target still sets the process-wide tracking URI
-    for each call, since the plugin signs and routes with it.
+    Ambient credentials (a notebook, job, profile or instance role) set no
+    credentials, but a Databricks or SageMaker target still sets the
+    process-wide tracking URI for each call: Unity Catalog downloads and the
+    SageMaker plugin route with it.
 
     ``run_id`` is the MLflow id of the latest fit run, once it has started,
     and ``run_url`` its link in the MLflow UI, where the server has one.
@@ -216,6 +217,50 @@ class MlflowTracking:
                      if location.alias else f'/{location.version}')
         return load_model(f'models:/{location.model_name}{reference}',
                           target=self.target, **kwargs)
+
+    def register(self, result: Any,
+                 location: ModelRegistryLocation) -> PublishedModel:
+        r"""Registers a fitted or loaded model (a `TrainingResult`) at
+        ``location``: the version that already holds its bundle, else a new
+        version of the model logged in a new run of this experiment."""
+        from kumo.engine._manifest import stub
+        from kumo.engine.graph import GraphSnapshot
+        from kumo.engine.trainer._spec import read_training_spec
+        from kumo.engine.trainer.trainer import registry_pointers
+
+        self._require_experiment()
+        client = self.target.client()
+        pointers = registry_pointers(result.id)
+        with _limited_http(frozenset(name for name in _HTTP_LIMITS
+                                     if name not in os.environ)):
+            with self.target.scope():
+                held = _registered_version(client, location.model_name,
+                                           pointers)
+            info = None
+            if held is None:
+                spec = read_training_spec(result.bundle_dir)
+                snapshot = GraphSnapshot(spec.snapshot_id, Path(),
+                                         spec.graph_config or {})
+                with self.target.scope():
+                    experiment_id = self._default_experiment or '0'
+                    if self.experiment_name is not None:
+                        experiment = client.get_experiment_by_name(
+                            self.experiment_name)
+                        experiment_id = (experiment.experiment_id
+                                         if experiment else
+                                         client.create_experiment(
+                                             self.experiment_name))
+                    run_id = client.create_run(
+                        experiment_id,
+                        tags={'kumo.bundle_id': str(result.id)}).info.run_id
+                info = _log_model(self.target, client, result.bundle_dir,
+                                  result.manifest or stub('model', result.id),
+                                  snapshot, name='model', run_id=run_id,
+                                  experiment_id=experiment_id,
+                                  serving_snapshot=None)
+                with self.target.scope():
+                    client.set_terminated(run_id, 'FINISHED')
+            return _register(self.target, client, info, location, pointers)
 
     def start(self, record: RunRecord) -> None:
         self._require_experiment()
@@ -804,8 +849,10 @@ def _registered_version(client: Any, name: str,
                 return None
             raise
         for version in page:
-            tags = version.tags or client.get_model_version(
-                name, version.version).tags
+            # Unity Catalog's search results carry tags as a method.
+            tags = version.tags
+            if not isinstance(tags, Mapping) or not tags:
+                tags = client.get_model_version(name, version.version).tags
             if (tags or {}).get(BUNDLE_ID_KEY) == bundle:
                 return str(version.version)
         token = page.token

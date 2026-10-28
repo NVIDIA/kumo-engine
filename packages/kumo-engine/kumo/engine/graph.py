@@ -720,9 +720,13 @@ class Graph:
             snapshot = self._snapshot_no_lock(graph_key, persist_dir,
                                               record_sources)
         if settings is not None and settings.wants('snapshot'):
+            from kumo.engine._mlops import raise_on_error
             from kumo.engine._snapshot_io import store
 
-            store(snapshot, settings)
+            try:
+                store(snapshot, settings)
+            except Exception as error:
+                raise_on_error(settings, error, 'Graph.snapshot')
         return snapshot
 
     def _snapshot_no_lock(self, graph_key: str, persist_dir: Path,
