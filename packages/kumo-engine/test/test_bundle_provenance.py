@@ -138,12 +138,15 @@ def test_a_mlops_block_stores_each_model_once(tmp_path):
                               settings=cfg)
     stored = tmp_path / 'artifacts' / 'models' / result.id
     assert kumo.Trainer.load(stored).result.id == result.id
+    loaded = kumo.Trainer.load_from_connector(cfg, path=f'models/{result.id}')
+    assert loaded.result.id == result.id
+    assert loaded.result.snapshot_id == result.snapshot_id
     (stored / 'model' / 'config.json').write_text('{"damaged": 1}')
     again = _finish_stub_fit(tmp_path / 'again', kumo.Trainer(ModelPlan()),
                              settings=cfg)
     assert again.id == result.id
     assert (stored / 'model' / 'config.json').read_text() == '{}'
-    off = kumo.MLOps(artifact_root=str(tmp_path / 'off'), export={'snapshot'})
+    off = kumo.MLOps(artifact_root=str(tmp_path / 'off'), store={'snapshot'})
     _finish_stub_fit(tmp_path / 'off-bundle', kumo.Trainer(ModelPlan()),
                      settings=off)
     assert not (tmp_path / 'off').exists()

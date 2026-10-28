@@ -64,6 +64,7 @@ from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer._spec import (
     HOLDOUT_META_ROLE,
     HOLDOUT_ROLE,
+    SPEC_FILE,
     listed_file,
     read_bundle_artifact_paths,
     read_training_spec,
@@ -114,6 +115,13 @@ class TrainingResult:
         from kumo.engine.trainer._provenance import read_provenance
 
         return read_provenance(self.bundle_dir)
+
+    @property
+    def snapshot_id(self) -> Optional[str]:
+        """The id of the snapshot the model was trained on."""
+        if not (self.bundle_dir / SPEC_FILE).is_file():
+            return None
+        return read_training_spec(self.bundle_dir).snapshot_id
 
     def predict(self, *args: Any, **kwargs: Any) -> 'PredictionResult':
         """Score with this model, as :meth:`Trainer.predict`."""
@@ -1049,7 +1057,15 @@ class Trainer:
         Hashes detect corruption, not publisher authentication. Load only models
         from trusted publishers; checkpoint deserialization happens at predict.
         ``accelerator`` selects the device for this instance (default: ``auto``).
+        A `kumo.MLOps` ``model_registry`` reads ``path`` under its artifact
+        root (``models/<id>``).
         """
+        from kumo.engine._mlops import MLOps, on_root
+
+        if isinstance(model_registry, MLOps) and path is None:
+            raise TypeError('Loading from a kumo.MLOps takes path=.')
+        if path is not None:
+            model_registry, path = on_root(model_registry, path)
         address = ModelOutputConfig(model_registry, path=path,
                                     location=location)
         bundle_dir = trainer_scratch_dir(new_run_id()) / 'fetched-model'

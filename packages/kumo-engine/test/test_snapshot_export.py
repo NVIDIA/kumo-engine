@@ -770,7 +770,8 @@ def test_a_sink_with_only_a_filesystem_holds_exports(tmp_path, scratch,
 def test_a_mlops_block_stores_each_snapshot_once(tmp_path, scratch, graph,
                                                  monkeypatch):
     root = tmp_path / 'artifacts'
-    with kumo.mlops(kumo.MLOps(artifact_root=str(root))):
+    cfg = kumo.MLOps(artifact_root=str(root))
+    with kumo.mlops(cfg):
         snapshot = graph.snapshot()
         monkeypatch.setattr(snapshot_io, 'export',
                             Mock(side_effect=AssertionError('re-exported')))
@@ -781,6 +782,10 @@ def test_a_mlops_block_stores_each_snapshot_once(tmp_path, scratch, graph,
     assert (_generation(stored) / '_provenance.json').is_file()
     assert _load(kumo.FileConnector(root_dir=str(root)),
                  f'snapshots/{graph_id}/{data_version}') == snapshot
+    assert GraphSnapshot.load_from_connector(cfg, id=snapshot.id) == snapshot
+    with pytest.raises(TypeError, match='kumo.MLOps'):
+        GraphSnapshot.load_from_connector(kumo.FileConnector(root_dir='.'),
+                                          id=snapshot.id)
     graph.snapshot(mlops=kumo.MLOps(artifact_root=str(tmp_path / 'off'),
-                                    export={'model'}))
+                                    store={'model'}))
     assert not (tmp_path / 'off').exists()

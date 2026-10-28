@@ -37,15 +37,18 @@ class MLOps:
             (``/Volumes/...`` on a Databricks cluster), or a ``(connector,
             path)`` pair for a store a URI cannot reach, such as a volume
             through a ``DatabricksConnector`` or a Snowflake stage.
-        export: the artifact kinds stored under the root when produced
+        store: the artifact kinds stored under the root when produced
             (``snapshot``, ``training_table``, ``model``);
             ``True`` for all, ``False`` for none.
+
+    In ``load_from_connector`` calls, an ``MLOps`` stands in for the
+    connector, with paths relative to its artifact root.
     """
 
     artifact_root: Union[str, Tuple[Any, str]]
-    export: Union[bool, Iterable[str]] = field(default=True, kw_only=True)
+    store: Union[bool, Iterable[str]] = field(default=True, kw_only=True)
     root: _Root = field(init=False, repr=False, compare=False)
-    exports: FrozenSet[str] = field(init=False, repr=False, compare=False)
+    kinds: FrozenSet[str] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         from kumo.engine.connector import (
@@ -65,19 +68,18 @@ class MLOps:
                     f'{type(connector).__name__} cannot hold files at '
                     f'{path!r}; artifact_root needs a file location.')
             root = _Root(connector, path, path)
-        kinds = (frozenset(KINDS) if self.export is True else
-                 frozenset() if self.export is False else frozenset(
-                     self.export))
+        kinds = (frozenset(KINDS) if self.store is True else
+                 frozenset() if self.store is False else frozenset(self.store))
         unknown = sorted(kinds - set(KINDS))
         if unknown:
-            raise ValueError(f'Unknown export kinds {unknown}; choose from '
+            raise ValueError(f'Unknown store kinds {unknown}; choose from '
                              f'{list(KINDS)}.')
         object.__setattr__(self, 'root', root)
-        object.__setattr__(self, 'exports', kinds)
+        object.__setattr__(self, 'kinds', kinds)
 
     def wants(self, kind: str) -> bool:
         r"""Whether artifacts of ``kind`` are stored under the root."""
-        return kind in self.exports
+        return kind in self.kinds
 
 
 _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(
@@ -103,3 +105,17 @@ def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
     r"""The settings a call runs with: its ``mlops=`` argument, else the
     enclosing block's, else None (off)."""
     return settings if settings is not None else _CURRENT.get()
+
+
+def on_root(source: Any, path: str) -> Tuple[Any, str]:
+    r"""The connector and path a ``load_from_connector(source, path=...)``
+    reads: an `MLOps` ``source`` reads ``path`` under its artifact root."""
+    if isinstance(source, MLOps):
+        return source.root.connector, source.root.location(path.lstrip('/'))
+    return source, path
+
+
+def snapshot_path(snapshot: Any) -> str:
+    r"""Where a snapshot, or a snapshot id, is stored under a root."""
+    snapshot_id = snapshot if isinstance(snapshot, str) else snapshot.id
+    return 'snapshots/' + snapshot_id.replace('@', '/')
