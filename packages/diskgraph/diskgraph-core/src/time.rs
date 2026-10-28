@@ -52,8 +52,18 @@ impl TimeUnit {
         Self::INDEX_CLOCKS.contains(&self)
     }
 
-    pub fn tick_nanos(self) -> i64 {
-        TICK_NANOS[fixed_index(self)]
+    pub const fn tick_nanos(self) -> i64 {
+        match self {
+            Self::Nanoseconds => 1,
+            Self::Microseconds => 1_000,
+            Self::Milliseconds => 1_000_000,
+            Self::Seconds => NS_PER_SEC,
+            Self::Minutes => 60 * NS_PER_SEC,
+            Self::Hours => 3_600 * NS_PER_SEC,
+            Self::Days => 86_400 * NS_PER_SEC,
+            Self::Weeks => 604_800 * NS_PER_SEC,
+            Self::Months | Self::Years => panic!("calendar units have no fixed tick"),
+        }
     }
 
     /// Parse a unit name string (used by builder methods that still accept strings).
@@ -79,117 +89,75 @@ impl TimeUnit {
 // `main` applies to some kind of value; coarse-to-fine conversions saturate.
 // ---------------------------------------------------------------------------
 
-/// The tick in nanoseconds of each unit with a fixed length, by `fixed_index`.
-const TICK_NANOS: [i64; 8] = [
-    1,
-    1_000,
-    1_000_000,
-    NS_PER_SEC,
-    60 * NS_PER_SEC,
-    3_600 * NS_PER_SEC,
-    86_400 * NS_PER_SEC,
-    604_800 * NS_PER_SEC,
-];
-
-/// Orders the fixed-length units from finest to coarsest.
-fn fixed_index(unit: TimeUnit) -> usize {
-    match unit {
-        TimeUnit::Nanoseconds => 0,
-        TimeUnit::Microseconds => 1,
-        TimeUnit::Milliseconds => 2,
-        TimeUnit::Seconds => 3,
-        TimeUnit::Minutes => 4,
-        TimeUnit::Hours => 5,
-        TimeUnit::Days => 6,
-        TimeUnit::Weeks => 7,
-        other => panic!("unsupported unit for a fixed tick: {:?}", other),
-    }
-}
-
-/// `FACTORS[i][j]` is how many ticks of the finer of units `i` and `j` make one
-/// tick of the coarser, precomputed so that converting a value never divides
-/// to find its factor.
-const FACTORS: [[i64; 8]; 8] = {
-    let mut factors = [[0; 8]; 8];
-    let mut i = 0;
-    while i < 8 {
-        let mut j = 0;
-        while j < 8 {
-            let (a, b) = (TICK_NANOS[i], TICK_NANOS[j]);
-            factors[i][j] = if a >= b { a / b } else { b / a };
-            j += 1;
-        }
-        i += 1;
-    }
-    factors
-};
-
-enum Scale {
-    Same,
-    Up(i64),
-    Down(i64),
-}
-
-#[inline]
-fn scale(from: TimeUnit, to: TimeUnit) -> Scale {
-    if from == to {
-        return Scale::Same;
-    }
-    let (from, to) = (fixed_index(from), fixed_index(to));
-    if from > to {
-        Scale::Up(FACTORS[from][to])
-    } else {
-        Scale::Down(FACTORS[from][to])
-    }
-}
-
-/// Calls `round(value, divisor)` with a literal divisor for the steps between
-/// sub-second units and seconds, so the compiler can turn the division into a
-/// multiplication as it did when these conversions were hard-coded.
-#[inline(always)]
-fn with_literal_divisor(value: i64, divisor: i64, round: impl Fn(i64, i64) -> i64) -> i64 {
-    match divisor {
-        1_000 => round(value, 1_000),
-        1_000_000 => round(value, 1_000_000),
-        1_000_000_000 => round(value, 1_000_000_000),
-        _ => round(value, divisor),
-    }
-}
-
 pub fn convert_trunc(value: i64, from: TimeUnit, to: TimeUnit) -> i64 {
-    match scale(from, to) {
-        Scale::Same => value,
-        Scale::Up(factor) => value.saturating_mul(factor),
-        Scale::Down(divisor) => with_literal_divisor(value, divisor, |v, d| v / d),
+    let (from, to) = (from.tick_nanos(), to.tick_nanos());
+    if from >= to {
+        value.saturating_mul(from / to)
+    } else {
+        value / (to / from)
     }
 }
 
 pub fn convert_floor(value: i64, from: TimeUnit, to: TimeUnit) -> i64 {
-    match scale(from, to) {
-        Scale::Same => value,
-        Scale::Up(factor) => value.saturating_mul(factor),
-        Scale::Down(divisor) => with_literal_divisor(value, divisor, i64::div_euclid),
+    let (from, to) = (from.tick_nanos(), to.tick_nanos());
+    if from >= to {
+        value.saturating_mul(from / to)
+    } else {
+        value.div_euclid(to / from)
     }
 }
 
 pub fn convert_ceil(value: i64, from: TimeUnit, to: TimeUnit) -> i64 {
-    match scale(from, to) {
-        Scale::Same => value,
-        Scale::Up(factor) => value.saturating_mul(factor),
-        Scale::Down(divisor) => with_literal_divisor(value, divisor, |v, d| {
-            v.div_euclid(d) + i64::from(v.rem_euclid(d) != 0)
-        }),
+    let (from, to) = (from.tick_nanos(), to.tick_nanos());
+    if from >= to {
+        value.saturating_mul(from / to)
+    } else {
+        div_ceil(value, to / from)
     }
 }
 
-/// Floors `secs + nanos()` (with `0 <= nanos() < 1e9`) to a tick of `to`;
-/// `nanos` is only evaluated when a tick is shorter than a second.
-pub fn floor_parts(secs: i64, nanos: impl FnOnce() -> u32, to: TimeUnit) -> i64 {
-    let whole = convert_floor(secs, TimeUnit::Seconds, to);
-    if to.tick_nanos() < NS_PER_SEC {
-        whole.saturating_add(i64::from(nanos()) / to.tick_nanos())
+#[inline]
+pub fn div_ceil(value: i64, divisor: i64) -> i64 {
+    value.div_euclid(divisor) + i64::from(value.rem_euclid(divisor) != 0)
+}
+
+// The conversions on the ingest hot path are generic over the clock and match
+// the source unit arm by arm, so every factor is a compile-time constant (for
+// the seconds clock, exactly main's hard-coded divisions).
+
+/// Converts `value` in `unit` to ticks of the clock `U`, rounding up.
+#[inline(always)]
+pub fn ceil_to_clock<U: UnitSystem>(value: i64, unit: TimeUnit) -> i64 {
+    match unit {
+        TimeUnit::Nanoseconds => ceil_from_tick::<U>(value, 1),
+        TimeUnit::Microseconds => ceil_from_tick::<U>(value, 1_000),
+        TimeUnit::Milliseconds => ceil_from_tick::<U>(value, 1_000_000),
+        TimeUnit::Seconds => ceil_from_tick::<U>(value, NS_PER_SEC),
+        other => ceil_from_tick::<U>(value, other.tick_nanos()),
+    }
+}
+
+#[inline(always)]
+fn ceil_from_tick<U: UnitSystem>(value: i64, tick: i64) -> i64 {
+    let clock_tick = U::TICK_NANOS;
+    if tick >= clock_tick {
+        value.saturating_mul(tick / clock_tick)
     } else {
-        whole
+        div_ceil(value, clock_tick / tick)
+    }
+}
+
+/// Floors `secs + nanos()` (with `0 <= nanos() < 1e9`) to a tick of the clock
+/// `U`; `nanos` is only evaluated when a tick is shorter than a second.
+#[inline(always)]
+pub fn floor_parts<U: UnitSystem>(secs: i64, nanos: impl FnOnce() -> u32) -> i64 {
+    let clock_tick = U::TICK_NANOS;
+    if clock_tick < NS_PER_SEC {
+        let fraction = i64::from(nanos()) / clock_tick;
+        secs.saturating_mul(NS_PER_SEC / clock_tick)
+            .saturating_add(fraction)
+    } else {
+        secs.div_euclid(clock_tick / NS_PER_SEC)
     }
 }
 
@@ -234,6 +202,7 @@ pub fn split_parts(value: i64, unit: TimeUnit) -> (i64, u32) {
 /// at the top-level dispatch site.
 pub trait UnitSystem: 'static + Copy + Send + Sync + Eq + Ord + std::hash::Hash {
     const UNIT: TimeUnit;
+    const TICK_NANOS: i64 = Self::UNIT.tick_nanos();
     fn abs_from_secs(secs: i64) -> Abs<Self>;
     fn abs_from_millis(ms: i64) -> Abs<Self>;
     fn abs_from_micros(us: i64) -> Abs<Self>;
@@ -1194,16 +1163,35 @@ mod tests {
 
     #[test]
     fn floor_parts_drops_the_fraction_below_one_tick() {
-        assert_eq!(floor_parts(10, || 999_999_999, TimeUnit::Seconds), 10);
+        assert_eq!(floor_parts::<Seconds>(10, || 999_999_999), 10);
+        assert_eq!(floor_parts::<Milliseconds>(10, || 123_456_789), 10_123);
         assert_eq!(
-            floor_parts(10, || 123_456_789, TimeUnit::Milliseconds),
-            10_123
-        );
-        assert_eq!(
-            floor_parts(10, || 123_456_789, TimeUnit::Nanoseconds),
+            floor_parts::<Nanoseconds>(10, || 123_456_789),
             10_123_456_789
         );
-        assert_eq!(floor_parts(-1, || 500_000_000, TimeUnit::Hours), -1);
+        assert_eq!(floor_parts::<Hours>(-1, || 500_000_000), -1);
+    }
+
+    #[test]
+    fn ceil_to_clock_matches_the_dynamic_conversion() {
+        for value in [-1_500_000_001, -1, 0, 1, 1_705_312_800_750] {
+            for unit in [
+                TimeUnit::Nanoseconds,
+                TimeUnit::Milliseconds,
+                TimeUnit::Seconds,
+                TimeUnit::Days,
+            ] {
+                for clock in TimeUnit::INDEX_CLOCKS {
+                    let ticks =
+                        crate::with_index_clock!(clock, U => ceil_to_clock::<U>(value, unit));
+                    assert_eq!(
+                        ticks,
+                        convert_ceil(value, unit, clock),
+                        "{unit:?} -> {clock:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
