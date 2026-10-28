@@ -286,3 +286,36 @@ def test_messy_values_follow_mains_rules_in_every_clock(messy_data, tmp_path, cl
         decoded = _features(index, "events", column, 3)
         # Hours and days decode as Arrow seconds, which are exact multiples.
         assert [None if v is None else _floor(v, clock) for v in decoded] == ticks, column
+
+
+def test_values_beyond_the_clock_are_null_and_drop_required_rows(tmp_path):
+    year_9999 = 253_402_300_799
+    pq.write_table(
+        pa.table({
+            "event_id": pa.array([0, 1], pa.int64()),
+            "happened_at": pa.array([1_705_312_800, 1_705_312_800], pa.timestamp("s")),
+            "noted": ["9999-12-31 23:59:59", "2024-01-15 10:00:00"],
+            "expires_at": pa.array([year_9999, 1_705_312_800], pa.timestamp("s")),
+        }),
+        tmp_path / "events.parquet",
+    )
+    timestamp = {"ingested_dtype": "timestamp"}
+    tables = [{
+        "name": "events",
+        "columns": [
+            {"name": "event_id", "ingested_dtype": "int64"},
+            {"name": "happened_at", **timestamp},
+            {"name": "noted", **timestamp},
+            {"name": "expires_at", **timestamp},
+        ],
+        "primary_key": "event_id",
+        "source": {"type": "parquet", "paths": [str(tmp_path / "events.parquet")]},
+    }]
+    index = _ingest(tmp_path / "ns", "nanoseconds", tables)
+    assert _features(index, "events", "noted", 2) == [None, 1_705_312_800 * 10**9]
+    assert _features(index, "events", "expires_at", 2) == [None, 1_705_312_800 * 10**9]
+
+    tables[0]["create_time"] = "expires_at"
+    index = _ingest(tmp_path / "ns_required", "nanoseconds", tables)
+    nodes = json.loads(diskgraph.read_index_metadata(index))["node_types"]
+    assert [node["max_id"] for node in nodes if node["name"] == "events"] == [0]

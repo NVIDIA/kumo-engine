@@ -885,11 +885,16 @@ pub(crate) fn days_from_civil_fast(year: i32, month: u32, day: u32) -> i64 {
     era * 146097 + doe - 719468
 }
 
+/// Fails for a value the index clock cannot represent; callers store a null.
+pub(crate) fn in_clock(ticks: Option<i64>) -> Result<i64> {
+    ticks.ok_or_else(|| anyhow!("timestamp does not fit the index clock"))
+}
+
 #[inline(always)]
 pub(crate) fn timestamp_from_int<U: UnitSystem>(
     value: i64,
     unit: Option<arrow_schema::TimeUnit>,
-) -> i64 {
+) -> Option<i64> {
     match unit.unwrap_or(arrow_schema::TimeUnit::Second) {
         arrow_schema::TimeUnit::Second => ceil_to_clock::<U>(value, TimeUnit::Seconds),
         arrow_schema::TimeUnit::Millisecond => ceil_to_clock::<U>(value, TimeUnit::Milliseconds),
@@ -907,11 +912,11 @@ pub(crate) fn timestamp_from_decimal<U: UnitSystem>(
     unit: Option<arrow_schema::TimeUnit>,
     scaled: impl FnOnce(i32) -> Option<i64>,
 ) -> Option<i64> {
-    let ticks_per_unit = timestamp_from_int::<U>(1, unit);
+    let ticks_per_unit = timestamp_from_int::<U>(1, unit)?;
     if ticks_per_unit > 1 {
         return scaled(i32::from(scale) - ticks_per_unit.ilog10() as i32);
     }
-    Some(timestamp_from_int::<U>(scaled(i32::from(scale))?, unit))
+    timestamp_from_int::<U>(scaled(i32::from(scale))?, unit)
 }
 
 pub(crate) fn days_from_secs(secs: i64) -> i32 {
@@ -997,28 +1002,28 @@ pub(crate) fn timestamp_from_array<U: UnitSystem>(array: &ArrayRef, row: usize) 
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampSecondArray>()
                 .ok_or_else(|| anyhow!("timestamp second cast"))?;
-            Ok(ceil_to_clock::<U>(arr.value(row), TimeUnit::Seconds))
+            in_clock(ceil_to_clock::<U>(arr.value(row), TimeUnit::Seconds))
         }
         arrow_schema::TimeUnit::Millisecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampMillisecondArray>()
                 .ok_or_else(|| anyhow!("timestamp millisecond cast"))?;
-            Ok(ceil_to_clock::<U>(arr.value(row), TimeUnit::Milliseconds))
+            in_clock(ceil_to_clock::<U>(arr.value(row), TimeUnit::Milliseconds))
         }
         arrow_schema::TimeUnit::Microsecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampMicrosecondArray>()
                 .ok_or_else(|| anyhow!("timestamp microsecond cast"))?;
-            Ok(ceil_to_clock::<U>(arr.value(row), TimeUnit::Microseconds))
+            in_clock(ceil_to_clock::<U>(arr.value(row), TimeUnit::Microseconds))
         }
         arrow_schema::TimeUnit::Nanosecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampNanosecondArray>()
                 .ok_or_else(|| anyhow!("timestamp nanosecond cast"))?;
-            Ok(ceil_to_clock::<U>(arr.value(row), TimeUnit::Nanoseconds))
+            in_clock(ceil_to_clock::<U>(arr.value(row), TimeUnit::Nanoseconds))
         }
     }
 }
@@ -1031,7 +1036,7 @@ pub(crate) fn time_from_array<U: UnitSystem>(array: &ArrayRef, row: usize) -> Re
                 .as_any()
                 .downcast_ref::<arrow_array::Time32SecondArray>()
                 .ok_or_else(|| anyhow!("time32 second cast"))?;
-            Ok(ceil_to_clock::<U>(
+            in_clock(ceil_to_clock::<U>(
                 i64::from(arr.value(row)),
                 TimeUnit::Seconds,
             ))
@@ -1041,7 +1046,7 @@ pub(crate) fn time_from_array<U: UnitSystem>(array: &ArrayRef, row: usize) -> Re
                 .as_any()
                 .downcast_ref::<arrow_array::Time32MillisecondArray>()
                 .ok_or_else(|| anyhow!("time32 millisecond cast"))?;
-            Ok(ceil_to_clock::<U>(
+            in_clock(ceil_to_clock::<U>(
                 i64::from(arr.value(row)),
                 TimeUnit::Milliseconds,
             ))
@@ -1051,14 +1056,14 @@ pub(crate) fn time_from_array<U: UnitSystem>(array: &ArrayRef, row: usize) -> Re
                 .as_any()
                 .downcast_ref::<arrow_array::Time64MicrosecondArray>()
                 .ok_or_else(|| anyhow!("time64 microsecond cast"))?;
-            Ok(ceil_to_clock::<U>(arr.value(row), TimeUnit::Microseconds))
+            in_clock(ceil_to_clock::<U>(arr.value(row), TimeUnit::Microseconds))
         }
         DataType::Time64(arrow_schema::TimeUnit::Nanosecond) => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Time64NanosecondArray>()
                 .ok_or_else(|| anyhow!("time64 nanosecond cast"))?;
-            Ok(ceil_to_clock::<U>(arr.value(row), TimeUnit::Nanoseconds))
+            in_clock(ceil_to_clock::<U>(arr.value(row), TimeUnit::Nanoseconds))
         }
         DataType::Time32(_) | DataType::Time64(_) => Err(anyhow!(
             "unsupported Arrow time unit for timestamp conversion: {:?}",

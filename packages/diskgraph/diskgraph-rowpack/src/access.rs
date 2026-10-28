@@ -2413,7 +2413,7 @@ impl<'p> RowAccess<'p> {
                     return Ok(Some(days));
                 }
                 if let Some(value) = parse_i64(text) {
-                    let secs = timestamp_from_int::<Seconds>(value, unit);
+                    let secs = in_clock(timestamp_from_int::<Seconds>(value, unit))?;
                     return Ok(Some(days_from_secs(secs)));
                 }
                 Err(anyhow!("date parse failed"))
@@ -2504,7 +2504,7 @@ impl<'p> RowAccess<'p> {
                     }
                     _ => return Err(anyhow!("date type mismatch")),
                 };
-                let secs = timestamp_from_int::<Seconds>(value, unit);
+                let secs = in_clock(timestamp_from_int::<Seconds>(value, unit))?;
                 Ok(Some(days_from_secs(secs)))
             }
             DataType::Timestamp(_, _) => {
@@ -2574,14 +2574,15 @@ impl<'p> RowAccess<'p> {
                 };
                 if let Some(parser) = fast {
                     if let Some((secs, fraction)) = parser.parse_timestamp_parts(text) {
-                        return Ok(Some(floor_parts::<U>(secs, || fraction_nanos(fraction))));
+                        let ticks = floor_parts::<U>(secs, || fraction_nanos(fraction));
+                        return Ok(Some(in_clock(ticks)?));
                     }
                 }
                 if let Some((secs, nanos)) = parse_timestamp_text_parts(text, format) {
-                    return Ok(Some(floor_parts::<U>(secs, || nanos)));
+                    return Ok(Some(in_clock(floor_parts::<U>(secs, || nanos))?));
                 }
                 if let Some(value) = parse_i64(text) {
-                    return Ok(Some(timestamp_from_int::<U>(value, unit)));
+                    return Ok(Some(in_clock(timestamp_from_int::<U>(value, unit))?));
                 }
                 Err(anyhow!("timestamp parse failed"))
             }
@@ -2591,13 +2592,11 @@ impl<'p> RowAccess<'p> {
                     .downcast_ref::<arrow_array::Decimal128Array>()
                     .ok_or_else(|| anyhow!("decimal128 cast"))?
                     .value(self.row);
-                timestamp_from_decimal::<U>(
+                Ok(Some(in_clock(timestamp_from_decimal::<U>(
                     *scale,
                     unit,
                     |scale| apply_decimal_scale_i128(value, scale).to_i64(),
-                )
-                .ok_or_else(|| anyhow!("decimal128 overflow"))
-                .map(Some)
+                ))?))
             }
             DataType::Decimal256(_, scale) if format.is_none() => {
                 let value = array
@@ -2605,13 +2604,11 @@ impl<'p> RowAccess<'p> {
                     .downcast_ref::<arrow_array::Decimal256Array>()
                     .ok_or_else(|| anyhow!("decimal256 cast"))?
                     .value(self.row);
-                timestamp_from_decimal::<U>(
+                Ok(Some(in_clock(timestamp_from_decimal::<U>(
                     *scale,
                     unit,
                     |scale| apply_decimal_scale_i256(value, scale).to_i64(),
-                )
-                .ok_or_else(|| anyhow!("decimal256 overflow"))
-                .map(Some)
+                ))?))
             }
             DataType::Int8
             | DataType::Int16
@@ -2705,10 +2702,10 @@ impl<'p> RowAccess<'p> {
                 if let Some(fmt) = format {
                     let text = value.to_string();
                     if let Some((secs, nanos)) = parse_timestamp_text_parts(&text, Some(fmt)) {
-                        return Ok(Some(floor_parts::<U>(secs, || nanos)));
+                        return Ok(Some(in_clock(floor_parts::<U>(secs, || nanos))?));
                     }
                 }
-                Ok(Some(timestamp_from_int::<U>(value, unit)))
+                Ok(Some(in_clock(timestamp_from_int::<U>(value, unit))?))
             }
             DataType::Date32 => {
                 let arr = array
@@ -2724,7 +2721,8 @@ impl<'p> RowAccess<'p> {
                 if !(-106752..=24855).contains(&days) {
                     return Err(anyhow!("date out of range: day {days}"));
                 }
-                Ok(Some(ceil_to_clock::<U>(i64::from(days), TimeUnit::Days)))
+                let ticks = ceil_to_clock::<U>(i64::from(days), TimeUnit::Days);
+                Ok(Some(in_clock(ticks)?))
             }
             _ => Err(anyhow!("timestamp type mismatch")),
         }
@@ -3785,9 +3783,7 @@ mod tests {
             (Clock::Days, 19_737, 19_738, 19_738),
         ];
         for (clock, text, millis, decimal) in expected {
-            let read = |access: &RowAccess<'static>| {
-                with_index_clock!(clock, U => access.timestamp_in::<U>(0))
-            };
+            let read = |access: &RowAccess<'static>| with_index_clock!(clock, U => access.timestamp_in::<U>(0));
             assert_eq!(read(&fractional_text)?, Some(text), "{clock:?}");
             assert_eq!(read(&epoch_millis)?, Some(millis), "{clock:?}");
             assert_eq!(read(&fractional_decimal)?, Some(decimal), "{clock:?}");
