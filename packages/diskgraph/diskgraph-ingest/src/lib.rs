@@ -7899,7 +7899,7 @@ impl IngestContext {
                 if let Some(stats) = table_col_stats.remove(&table.name) {
                     outputs.push(crate::col_stats::ColStatsTable {
                         name: table.name.clone(),
-                        stats,
+                        stats: stats.with_clock(clock),
                         column_names: table.columns.iter().map(|c| c.name.clone()).collect(),
                         ingested_types: table
                             .columns
