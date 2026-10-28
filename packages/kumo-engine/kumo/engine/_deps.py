@@ -10,7 +10,6 @@ import importlib
 import os
 import shutil
 import tempfile
-import warnings
 from pathlib import Path
 from typing import (
     Any,
@@ -126,6 +125,7 @@ class Dependencies:
                  settings: Any = None,
                  locations: Sequence[Location] = ()) -> None:
         self.records: List[Dependency] = list(records)
+        self.errors: List[BaseException] = []
         self._settings = settings
         self._locations = list(locations)
 
@@ -144,7 +144,10 @@ class Dependencies:
         location = None
         settings = self._settings
         if settings is not None and settings.wants('model'):
-            location = _store(asset, sha256, settings)
+            try:
+                location = _store(asset, sha256, settings)
+            except Exception as error:
+                self.errors.append(error)
         return self.add(
             Dependency(kind='asset', name=asset.name, version=asset.version,
                        asset_kind=asset.asset_kind, sha256=sha256,
@@ -214,8 +217,9 @@ def asset_cache() -> Path:
 
 def _store(asset: Asset, sha256: str, settings: Any) -> Optional[str]:
     r"""Writes ``asset`` once to ``<root>/assets/<asset_kind>/<sha256>/``,
-    its ``_provenance.json`` last; returns where, or None (with a
-    warning) if it failed."""
+    its ``_provenance.json`` last; returns where."""
+    from kumo_core.object_store_sink import _prepared
+
     from kumo.engine.connector import file_store
 
     relative = f'assets/{asset.asset_kind}/{sha256}'
@@ -226,7 +230,7 @@ def _store(asset: Asset, sha256: str, settings: Any) -> Optional[str]:
         marker = f'{root}/{PROVENANCE_FILE}'
         if filesystem.get_file_info(marker).is_file:
             return settings.root.uri(relative)
-        filesystem.create_dir(root, recursive=True)
+        _prepared(filesystem, root)
         for name, path in asset.files().items():
             with open(path, 'rb') as reader, \
                     filesystem.open_output_stream(f'{root}/{name}') as writer:
@@ -235,10 +239,9 @@ def _store(asset: Asset, sha256: str, settings: Any) -> Optional[str]:
             writer.write(manifest_bytes(_manifest(asset, sha256)))
         return settings.root.uri(relative)
     except Exception as error:
-        warnings.warn(
+        raise RuntimeError(
             f"Could not store {asset.asset_kind} {asset.name!r} under the "
-            f"artifact root: {error}", UserWarning, stacklevel=4)
-        return None
+            f"artifact root: {error}") from error
 
 
 def _manifest(asset: Asset, sha256: str) -> AssetManifest:

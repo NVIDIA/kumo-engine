@@ -9,8 +9,9 @@ notebook (``mlflow.utils.databricks_utils.get_databricks_host_creds``), and
 the SageMaker plugin signs with the process-wide tracking URI and a boto3
 session (``sagemaker_mlflow.auth_provider.AuthProvider.get_auth``). With
 explicit credentials, `Target.scope` sets exactly that state around each
-call, under one lock, and restores it. Ambient credentials set nothing,
-except that a SageMaker target still sets the process-wide tracking URI.
+call, under one lock, and restores it. Ambient credentials set no
+credentials; a Databricks or SageMaker target still sets the process-wide
+tracking URI.
 """
 
 import os
@@ -165,7 +166,10 @@ def _databricks(connector: Any) -> Target:
     principal = _principal(connector.identity)
     if (principal is None or principal.config.authentication
             is DatabricksAuthenticationKind.AMBIENT):
-        return Target('databricks', 'databricks-uc')
+        # Unity Catalog registration downloads the logged model through the
+        # process-wide tracking URI, so it must point at the workspace.
+        return Target('databricks', 'databricks-uc',
+                      swap=lambda: global_tracking_uri('databricks'))
     client = import_provider('kumo_databricks.session',
                              'databricks')._client_for(principal)
     return Target('databricks', 'databricks-uc',
