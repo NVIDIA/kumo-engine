@@ -278,7 +278,12 @@ pub struct CommitScratch {
     pub bounds: Vec<u32>,
     pub cursor: Vec<u32>,
     pub order: Vec<(u64, u32)>,
-    pub res: Vec<u32>,
+    pub res: Vec<std::sync::atomic::AtomicU32>,
+    pub parts: Vec<CommitPart>,
+}
+
+#[derive(Default)]
+pub struct CommitPart {
     pub new_edges: Vec<(u64, u32)>,
     pub new_bounds: Vec<u32>,
 }
@@ -337,8 +342,11 @@ impl SamplingState {
         clear_and_cap(&mut cs.cursor, RESET_THRESHOLD);
         clear_and_cap(&mut cs.order, RESET_THRESHOLD);
         clear_and_cap(&mut cs.res, RESET_THRESHOLD);
-        clear_and_cap(&mut cs.new_edges, RESET_THRESHOLD);
-        clear_and_cap(&mut cs.new_bounds, RESET_THRESHOLD);
+        let per_part = RESET_THRESHOLD / cs.parts.len().max(1);
+        for part in &mut cs.parts {
+            clear_and_cap(&mut part.new_edges, per_part);
+            clear_and_cap(&mut part.new_bounds, per_part);
+        }
         self.seed_maps.truncate(SEED_MAPS_KEEP);
         let mut budget = RESET_THRESHOLD;
         for m in &mut self.seed_maps {
@@ -434,8 +442,13 @@ mod tests {
                 .collect();
             let cs = &mut state.commit_scratch;
             cs.order.reserve(RESET_THRESHOLD * 4);
-            cs.res.reserve(RESET_THRESHOLD * 4);
-            cs.new_edges.reserve(RESET_THRESHOLD * 4);
+            cs.res.resize_with(RESET_THRESHOLD * 4, Default::default);
+            cs.parts = (0..4)
+                .map(|_| CommitPart {
+                    new_edges: Vec::with_capacity(RESET_THRESHOLD * 2),
+                    new_bounds: Vec::new(),
+                })
+                .collect();
             state.seed_maps = (0..64)
                 .map(|_| GxHashMap::with_capacity(RESET_THRESHOLD / 16))
                 .collect();
@@ -446,7 +459,13 @@ mod tests {
         let cs = &state.commit_scratch;
         assert!(cs.order.capacity() <= RESET_THRESHOLD);
         assert!(cs.res.capacity() <= RESET_THRESHOLD);
-        assert!(cs.new_edges.capacity() <= RESET_THRESHOLD);
+        assert!(
+            cs.parts
+                .iter()
+                .map(|p| p.new_edges.capacity())
+                .sum::<usize>()
+                <= RESET_THRESHOLD
+        );
         let map_capacity: usize = state.seed_maps.iter().map(GxHashMap::capacity).sum();
         assert!(map_capacity <= RESET_THRESHOLD);
         assert!(map_capacity > 0);
