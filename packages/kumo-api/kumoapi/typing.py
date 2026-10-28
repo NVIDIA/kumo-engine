@@ -31,6 +31,9 @@ _FORBID_EXTRA_CONFIG = _forbid_extra_config()
 SUPPORTED_MULTICATEGORICAL_DELIMITERS = frozenset({',', '|', ';', '\t'})
 MulticategoricalDelimiter = Literal[',', '|', ';', '\t']
 
+TimestampPrecision = Literal['nanoseconds', 'microseconds', 'milliseconds',
+                             'seconds', 'hours', 'days']
+
 
 class Stype(StrEnum):
     r"""The semantic type of a column.
