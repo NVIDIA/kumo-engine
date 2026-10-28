@@ -12,7 +12,8 @@ use crate::{
 use anyhow::{anyhow, Result};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::DataType;
-use diskgraph_core::time::{convert_trunc, floor_parts, TimeUnit};
+use diskgraph_core::time::{ceil_to_clock, floor_parts, Seconds, TimeUnit, UnitSystem};
+use diskgraph_core::with_index_clock;
 use num_traits::ToPrimitive;
 use std::sync::Arc;
 
@@ -66,7 +67,11 @@ pub struct RowAccess<'p> {
     tokenized_lists: Vec<Option<ArrayRef>>,
     /// The index clock that `get_timestamp` returns ticks of.
     clock: TimeUnit,
+    /// `timestamp_in` for `clock`, chosen once rather than per value.
+    read_timestamp: ReadTimestamp<'p>,
 }
+
+type ReadTimestamp<'p> = fn(&RowAccess<'p>, usize) -> Result<Option<i64>>;
 
 pub enum FloatListValues {
     F16(ArrayRef),
@@ -782,11 +787,14 @@ impl<'p> RowAccess<'p> {
             fast_parsers,
             tokenized_lists: vec![None; n],
             clock: TimeUnit::Seconds,
+            read_timestamp: Self::timestamp_in::<Seconds>,
         }
     }
 
     pub fn with_clock(mut self, clock: TimeUnit) -> Self {
         self.clock = clock;
+        self.read_timestamp =
+            with_index_clock!(clock, U => Self::timestamp_in::<U> as ReadTimestamp<'p>);
         self
     }
 
@@ -2080,7 +2088,7 @@ impl<'p> RowAccess<'p> {
                 return Ok(Some(with_stack_str(value, trimmed, f)?));
             }
             DataType::Timestamp(_, _) => {
-                let secs = timestamp_from_array(array, self.row, TimeUnit::Seconds)?;
+                let secs = timestamp_from_array::<Seconds>(array, self.row)?;
                 return Ok(Some(with_stack_str(secs, trimmed, f)?));
             }
             DataType::Decimal128(_, scale) => {
@@ -2405,7 +2413,7 @@ impl<'p> RowAccess<'p> {
                     return Ok(Some(days));
                 }
                 if let Some(value) = parse_i64(text) {
-                    let secs = timestamp_from_int(value, unit, TimeUnit::Seconds);
+                    let secs = timestamp_from_int::<Seconds>(value, unit);
                     return Ok(Some(days_from_secs(secs)));
                 }
                 Err(anyhow!("date parse failed"))
@@ -2496,11 +2504,11 @@ impl<'p> RowAccess<'p> {
                     }
                     _ => return Err(anyhow!("date type mismatch")),
                 };
-                let secs = timestamp_from_int(value, unit, TimeUnit::Seconds);
+                let secs = timestamp_from_int::<Seconds>(value, unit);
                 Ok(Some(days_from_secs(secs)))
             }
             DataType::Timestamp(_, _) => {
-                let secs = timestamp_from_array(array, self.row, TimeUnit::Seconds)?;
+                let secs = timestamp_from_array::<Seconds>(array, self.row)?;
                 Ok(Some(days_from_secs(secs)))
             }
             _ => Err(anyhow!("date type mismatch")),
@@ -2508,10 +2516,10 @@ impl<'p> RowAccess<'p> {
     }
 
     pub fn get_timestamp(&self, idx: usize) -> Result<Option<i64>> {
-        self.get_timestamp_in(idx, self.clock)
+        (self.read_timestamp)(self, idx)
     }
 
-    pub fn get_timestamp_in(&self, idx: usize, clock: TimeUnit) -> Result<Option<i64>> {
+    pub fn timestamp_in<U: UnitSystem>(&self, idx: usize) -> Result<Option<i64>> {
         let array = self.array(idx)?;
         if array.is_null(self.row) {
             return Ok(None);
@@ -2521,9 +2529,9 @@ impl<'p> RowAccess<'p> {
         let unit = hint.timestamp_unit;
         let fast = self.fast_parsers.get(idx).and_then(|v| v.as_ref());
         match array.data_type() {
-            DataType::Timestamp(_, _) => Ok(Some(timestamp_from_array(array, self.row, clock)?)),
+            DataType::Timestamp(_, _) => Ok(Some(timestamp_from_array::<U>(array, self.row)?)),
             DataType::Time32(_) | DataType::Time64(_) => {
-                Ok(Some(time_from_array(array, self.row, clock)?))
+                Ok(Some(time_from_array::<U>(array, self.row)?))
             }
             DataType::Utf8
             | DataType::LargeUtf8
@@ -2566,14 +2574,14 @@ impl<'p> RowAccess<'p> {
                 };
                 if let Some(parser) = fast {
                     if let Some((secs, fraction)) = parser.parse_timestamp_parts(text) {
-                        return Ok(Some(floor_parts(secs, || fraction_nanos(fraction), clock)));
+                        return Ok(Some(floor_parts::<U>(secs, || fraction_nanos(fraction))));
                     }
                 }
                 if let Some((secs, nanos)) = parse_timestamp_text_parts(text, format) {
-                    return Ok(Some(floor_parts(secs, || nanos, clock)));
+                    return Ok(Some(floor_parts::<U>(secs, || nanos)));
                 }
                 if let Some(value) = parse_i64(text) {
-                    return Ok(Some(timestamp_from_int(value, unit, clock)));
+                    return Ok(Some(timestamp_from_int::<U>(value, unit)));
                 }
                 Err(anyhow!("timestamp parse failed"))
             }
@@ -2583,10 +2591,9 @@ impl<'p> RowAccess<'p> {
                     .downcast_ref::<arrow_array::Decimal128Array>()
                     .ok_or_else(|| anyhow!("decimal128 cast"))?
                     .value(self.row);
-                timestamp_from_decimal(
+                timestamp_from_decimal::<U>(
                     *scale,
                     unit,
-                    clock,
                     |scale| apply_decimal_scale_i128(value, scale).to_i64(),
                 )
                 .ok_or_else(|| anyhow!("decimal128 overflow"))
@@ -2598,10 +2605,9 @@ impl<'p> RowAccess<'p> {
                     .downcast_ref::<arrow_array::Decimal256Array>()
                     .ok_or_else(|| anyhow!("decimal256 cast"))?
                     .value(self.row);
-                timestamp_from_decimal(
+                timestamp_from_decimal::<U>(
                     *scale,
                     unit,
-                    clock,
                     |scale| apply_decimal_scale_i256(value, scale).to_i64(),
                 )
                 .ok_or_else(|| anyhow!("decimal256 overflow"))
@@ -2699,10 +2705,10 @@ impl<'p> RowAccess<'p> {
                 if let Some(fmt) = format {
                     let text = value.to_string();
                     if let Some((secs, nanos)) = parse_timestamp_text_parts(&text, Some(fmt)) {
-                        return Ok(Some(floor_parts(secs, || nanos, clock)));
+                        return Ok(Some(floor_parts::<U>(secs, || nanos)));
                     }
                 }
-                Ok(Some(timestamp_from_int(value, unit, clock)))
+                Ok(Some(timestamp_from_int::<U>(value, unit)))
             }
             DataType::Date32 => {
                 let arr = array
@@ -2718,7 +2724,7 @@ impl<'p> RowAccess<'p> {
                 if !(-106752..=24855).contains(&days) {
                     return Err(anyhow!("date out of range: day {days}"));
                 }
-                Ok(Some(convert_trunc(i64::from(days), TimeUnit::Days, clock)))
+                Ok(Some(ceil_to_clock::<U>(i64::from(days), TimeUnit::Days)))
             }
             _ => Err(anyhow!("timestamp type mismatch")),
         }
@@ -3779,21 +3785,12 @@ mod tests {
             (Clock::Days, 19_737, 19_738, 19_738),
         ];
         for (clock, text, millis, decimal) in expected {
-            assert_eq!(
-                fractional_text.get_timestamp_in(0, clock)?,
-                Some(text),
-                "{clock:?}"
-            );
-            assert_eq!(
-                epoch_millis.get_timestamp_in(0, clock)?,
-                Some(millis),
-                "{clock:?}"
-            );
-            assert_eq!(
-                fractional_decimal.get_timestamp_in(0, clock)?,
-                Some(decimal),
-                "{clock:?}"
-            );
+            let read = |access: &RowAccess<'static>| {
+                with_index_clock!(clock, U => access.timestamp_in::<U>(0))
+            };
+            assert_eq!(read(&fractional_text)?, Some(text), "{clock:?}");
+            assert_eq!(read(&epoch_millis)?, Some(millis), "{clock:?}");
+            assert_eq!(read(&fractional_decimal)?, Some(decimal), "{clock:?}");
         }
         Ok(())
     }

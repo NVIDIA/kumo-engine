@@ -83,7 +83,7 @@ use diskgraph_core::metadata::{
     EdgeSortKeyWeightEncoding, EdgeSortKeyWeightKind, EdgeSortKeyWeightMetadata, EdgeStorageFormat,
     NodeDataCompression, NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
-use diskgraph_core::time::{convert_floor, convert_trunc, TimeUnit};
+use diskgraph_core::time::{convert_floor, convert_trunc, Seconds, TimeUnit};
 use diskgraph_fs::{CloudObjectCondition, CloudTransfer, PooledBytes};
 use diskgraph_index::builder::{
     EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget, MemoryBudgetGuard,
@@ -8897,7 +8897,7 @@ impl IngestContext {
             Some(idx) => Some(
                 // Buckets stay one second wide whatever the index clock.
                 access
-                    .get_timestamp_in(idx, TimeUnit::Seconds)
+                    .timestamp_in::<Seconds>(idx)
                     .with_context(|| {
                         format!(
                             "TT-NG ts-grouping: failed to decode TIMESTAMP for table `{}` row {}",
