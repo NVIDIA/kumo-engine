@@ -35,7 +35,7 @@ from kumo.engine._mlops import full_error, warn_failure
 if TYPE_CHECKING:
     from kumoapi.plugin import ModelRegistryLocation, PublishedModel
 
-    from kumo.engine._manifest import ModelManifest
+    from kumo.engine._manifest import ModelManifest, TrackingRef
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,6 @@ class RunSpec:
     the user's own."""
 
     kind: str
-    run_id: str
     name: Optional[str] = None
     params: Mapping[str, Any] = field(default_factory=dict)
     metrics: Mapping[str, Any] = field(default_factory=dict)
@@ -136,7 +135,6 @@ def run_record(spec: RunSpec) -> RunRecord:
         tags={
             **_user_tags(spec.tags, params),
             'kumo.kind': spec.kind,
-            'kumo.run_id': spec.run_id,
             **{f'kumo.{name}': str(value)
                for name, value in spec.parents.items() if value},
             **({} if spec.status is None else {'kumo.status': spec.status}),
@@ -161,8 +159,8 @@ def _user_tags(tags: Optional[Mapping[str, Any]],
     }
 
 
-def trial_spec(run_id: str, events: Sequence[Event]) -> RunSpec:
-    r"""One trial attempt of run ``run_id``, from its events so far."""
+def trial_spec(events: Sequence[Event]) -> RunSpec:
+    r"""One trial attempt of a fit, from its events so far."""
     started = next(event for event in events if event.name == 'trial_started')
     trial, attempt = started.trial, int(started.params['attempt'])
     metrics: Dict[str, float] = {}
@@ -182,12 +180,10 @@ def trial_spec(run_id: str, events: Sequence[Event]) -> RunSpec:
             })
     return RunSpec(
         kind='trial',
-        run_id=f'{run_id}-trial-{trial}-attempt-{attempt}',
         name=f'trial-{trial}-attempt-{attempt}',
         params=dict(started.params),
         metrics=metrics,
         steps=steps,
-        parents={'parent_run': run_id},
         **ended,
     )
 
@@ -205,7 +201,10 @@ class Tracking(Protocol):
     `finish`, which the fit waits for while the tracking thread is alive, up
     to an hour (an error, a stopped thread or the time limit ends the run as
     failed), and which returns the version it registered at ``registry``, a
-    ``ModelRegistryLocation``.
+    ``ModelRegistryLocation``; ``connector``, a connector whose model
+    registry ``registry`` registers in when there is no ``log_model``; and
+    ``platform``, ``run_id`` and ``run_url``, the tracker's own run once
+    `start` returned, recorded as the model manifest's ``tracking``.
     """
     def start(self, record: RunRecord) -> None:
         ...
@@ -234,6 +233,7 @@ class TrackingSession:
             QUEUE_SIZE)
         self._worker: Optional[threading.Thread] = None
         self._behind = False
+        self._started = threading.Event()
         self.error: Optional[BaseException] = None
 
     @property
@@ -256,10 +256,30 @@ class TrackingSession:
         self._worker = threading.Thread(target=self._work,
                                         name='kumo-tracking', daemon=True)
         self._worker.start()
-        self._submit(lambda: self._call(lambda tracker: tracker.start(
-            run_record(dataclasses.replace(value, tags={
+
+        def begin(tracker: Tracking) -> None:
+            tracker.start(run_record(dataclasses.replace(value, tags={
                 **value.tags, **(getattr(tracker, 'tags', None) or {})
-            })))))
+            })))
+
+        started = self._submit(lambda: self._call(begin))
+        if not (started and self._submit(self._started.set)):
+            self._started.set()
+
+    def pointer(self) -> Optional['TrackingRef']:
+        r"""The tracker's own run, once it started: its platform, run id
+        and URL."""
+        from kumo.engine._manifest import TrackingRef
+
+        if self.spec is None or not self._started.wait(FINISH_SECONDS):
+            return None
+        tracker = self._tracker
+        run_id = getattr(tracker, 'run_id', None)
+        if tracker is None or not run_id:
+            return None
+        return TrackingRef(
+            platform=str(getattr(tracker, 'platform', type(tracker).__name__)),
+            run_id=str(run_id), url=getattr(tracker, 'run_url', None))
 
     def on_event(self, event: Event) -> None:
         if self.spec is None or event.trial is None:
@@ -272,7 +292,7 @@ class TrackingSession:
                 **event.params, 'attempt': events[0].params['attempt']
             })
         events.append(event)
-        record = run_record(trial_spec(self.spec.run_id, events))
+        record = run_record(trial_spec(events))
         self._submit(lambda: self._call(
             lambda tracker: tracker.on_trial(record, event)))
 
@@ -285,8 +305,8 @@ class TrackingSession:
     ) -> Tuple[Optional['PublishedModel'], Optional[BaseException]]:
         r"""Runs the tracker's ``log_model`` on the tracking thread and waits
         for it; returns the registered version and the error it raised."""
-        if self._worker is None or (self._tracker is not None and not hasattr(
-                self._tracker, 'log_model')):
+        if self._worker is None or (self._tracker is not None and not callable(
+                getattr(self._tracker, 'log_model', None))):
             return None, None
         done = threading.Event()
         failed: List[BaseException] = []

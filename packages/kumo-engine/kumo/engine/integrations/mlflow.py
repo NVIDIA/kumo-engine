@@ -24,6 +24,7 @@ from typing import (
     FrozenSet,
     Iterator,
     List,
+    Literal,
     Mapping,
     Optional,
     Set,
@@ -83,8 +84,8 @@ class MlflowTracking:
 
     Args:
         experiment_name: experiment for the fit run, created if missing.
-            `None` uses MLflow's current experiment; required with
-            ``target`` or ``tracking_uri``.
+            `None` uses MLflow's current experiment; required to record
+            runs at a ``target``.
         run_name: name of the fit run. `None` names it after its UTC start
             time, as ``fit-20261027T061838Z``.
         log_system_metrics: sample CPU, memory, disk, network and (with
@@ -94,13 +95,11 @@ class MlflowTracking:
             before the fit returns. ``kumo.MLOps(registry=
             ModelRegistryLocation(...))`` also registers it, which implies
             this.
-        serving_snapshot: exported snapshot URI the served model loads at
-            startup (see `log_model`).
         target: where to record, with the credentials that reach it: a
             ``DatabricksConnector`` (Databricks MLflow and Unity Catalog,
-            as its identity) or a `SageMakerMLflow`. `None` uses MLflow's
-            own tracking and registry URIs, read once here.
-        tracking_uri: another MLflow server, instead of ``target``.
+            as its identity), a `SageMakerMLflow`, or another MLflow
+            server's tracking URI. `None` uses MLflow's own tracking and
+            registry URIs, read once here.
 
     With explicit credentials (a Databricks service principal, an AWS
     access key or role), each MLflow call sets the state MLflow reads them
@@ -111,7 +110,8 @@ class MlflowTracking:
     except that a SageMaker target still sets the process-wide tracking URI
     for each call, since the plugin signs and routes with it.
 
-    ``run_id`` is the MLflow id of the latest fit run, once it has started.
+    ``run_id`` is the MLflow id of the latest fit run, once it has started,
+    and ``run_url`` its link in the MLflow UI, where the server has one.
     """
 
     def __init__(
@@ -121,27 +121,20 @@ class MlflowTracking:
         log_system_metrics: bool = True,
         tags: Optional[Mapping[str, str]] = None,
         log_model: bool = False,
-        serving_snapshot: Optional[str] = None,
         *,
         target: Any = None,
-        tracking_uri: Optional[str] = None,
     ) -> None:
         self._mlflow = import_provider('mlflow', 'mlflow')
-        self.target = resolve_target(target, tracking_uri)
-        if experiment_name is None and (target is not None
-                                        or tracking_uri is not None):
-            raise ValueError('MlflowTracking(target=...) and '
-                             'MlflowTracking(tracking_uri=...) need an '
-                             'experiment_name.')
+        self.target = resolve_target(target)
+        self._named = target is not None
         self._default_experiment: Optional[str] = (
-            None if experiment_name is not None else
+            None if experiment_name is not None or self._named else
             import_provider('mlflow.tracking.fluent',
                             'mlflow')._get_experiment_id())
         self.experiment_name = experiment_name
         self.run_name = run_name
         self.log_system_metrics = log_system_metrics
         self.tags = dict(tags or {})
-        self.serving_snapshot = serving_snapshot
         self.logs_model = log_model
         self._outer: Optional[str] = None
         self.run_id: Optional[str] = None
@@ -157,6 +150,16 @@ class MlflowTracking:
         self._http_owned: FrozenSet[str] = frozenset()
         self._guard = ExitStack()
 
+    @property
+    def platform(self) -> str:
+        return self.target.platform
+
+    @property
+    def run_url(self) -> Optional[str]:
+        if self.run_id is None or self._experiment_id is None:
+            return None
+        return self.target.run_url(self._experiment_id, self.run_id)
+
     def check_model_name(self, name: str) -> None:
         r"""Raises :class:`ValueError` unless this tracker's registry
         accepts ``name``."""
@@ -167,6 +170,7 @@ class MlflowTracking:
         credentials and, given ``registry``, can register its model: one
         experiment lookup, one registry listing and, on Unity Catalog, the
         model's schema."""
+        self._require_experiment()
         if registry is not None:
             self.check_model_name(registry.model_name)
         uri = self.target.tracking_uri
@@ -195,7 +199,26 @@ class MlflowTracking:
         self._outer = (active.info.run_id
                        if active is not None and same else None)
 
+    def _require_experiment(self) -> None:
+        if self._named and self.experiment_name is None:
+            raise ValueError('MlflowTracking(target=...) records runs in an '
+                             'experiment: pass experiment_name.')
+
+    def load_model(self, location: ModelRegistryLocation,
+                   **kwargs: Any) -> 'Trainer':
+        r"""The `Trainer` of the version of ``location`` its alias or
+        version names, from this tracker's registry."""
+        if (location.alias is None) == (location.version is None):
+            raise ValueError('Loading from an MLflow registry takes a '
+                             'ModelRegistryLocation with an alias or a '
+                             'version.')
+        reference = (f'@{location.alias}'
+                     if location.alias else f'/{location.version}')
+        return load_model(f'models:/{location.model_name}{reference}',
+                          target=self.target, **kwargs)
+
     def start(self, record: RunRecord) -> None:
+        self._require_experiment()
         self._reset()
         self.run_id = None
         self._http_owned = frozenset(name for name in _HTTP_LIMITS
@@ -282,7 +305,7 @@ class MlflowTracking:
             info = _log_model(self.target, self._client, bundle_dir, manifest,
                               snapshot, name='model', run_id=run_id,
                               experiment_id=self._experiment_id,
-                              serving_snapshot=self.serving_snapshot)
+                              serving_snapshot=None)
         finally:
             if self._parent == run_id:
                 os.environ.update({name: _HTTP_LIMITS[name] for name in upload})
@@ -499,26 +522,32 @@ def log_model(
     snapshot: 'GraphSnapshot',
     name: str = 'model',
     run_id: Optional[str] = None,
-    serving_snapshot: Optional[str] = None,
-    tracking: Optional[MlflowTracking] = None,
+    serving_snapshot: Any = None,
+    target: Any = None,
+    experiment_name: Optional[str] = None,
 ) -> Any:
     r"""Log a trainer's bundle as an MLflow pyfunc model in ``run_id`` (or
-    the active run, else a new one) with its source tables as run inputs;
-    returns its `ModelInfo`. ``tracking`` says where, with what credentials
-    (its experiment holds a new run); `None` uses MLflow's own tracking
-    URI. Scores with ``predict(entities, params={'snapshot': uri})``; with
-    ``serving_snapshot`` (an exported snapshot URI), each serving replica
-    downloads that snapshot once at startup and scores against it when no
-    ``snapshot`` param is given."""
+    the active run, else a new one in ``experiment_name``) with its source
+    tables as run inputs; returns its `ModelInfo`. ``target`` says where,
+    with what credentials, as in `MlflowTracking`; `None` uses MLflow's own
+    tracking URI. Scores with ``predict(entities, params={'snapshot':
+    uri})``; with ``serving_snapshot`` (an exported snapshot URI, or a
+    `GraphSnapshot` or snapshot id stored under the artifact root of the
+    enclosing `kumo.mlops` block), each serving replica downloads that
+    snapshot once at startup and scores against it when no ``snapshot``
+    param is given."""
     from kumo.engine._manifest import stub
+    from kumo.engine._mlops import snapshot_uri
     from kumo.engine._tracking import fit_inputs
 
     mlflow = import_provider('mlflow', 'mlflow')
     result = trainer.result
     if result is None:
         raise ValueError('log_model requires a fitted or loaded Trainer')
-    tracking = tracking or MlflowTracking()
+    tracking = MlflowTracking(experiment_name, target=target)
     target = tracking.target
+    if run_id is None and tracking._named and experiment_name is None:
+        tracking._require_experiment()
     client = target.client()
     active = mlflow.active_run()
     if run_id is None and active is not None and (
@@ -539,7 +568,7 @@ def log_model(
                       (None if result.id is None else stub('model', result.id)),
                       snapshot, name=name, run_id=run_id,
                       experiment_id=experiment_id,
-                      serving_snapshot=serving_snapshot)
+                      serving_snapshot=snapshot_uri(serving_snapshot))
     with target.scope():
         if result.metrics:
             client.log_batch(run_id, metrics=[
@@ -557,22 +586,25 @@ def load_model(
     model_uri: str,
     embedding_models: Optional['EmbeddingModelStore'] = None,
     *,
-    tracking: Optional[MlflowTracking] = None,
+    target: Any = None,
+    accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
 ) -> 'Trainer':
     r"""Restore the `Trainer` of a model `log_model` logged, from the
-    server ``tracking`` reaches (`None`: MLflow's own tracking URI)."""
+    server ``target`` reaches, as in `MlflowTracking` (`None`: MLflow's own
+    tracking URI)."""
     from kumo.engine._scratch import new_run_id, trainer_scratch_dir
     from kumo.engine.trainer.trainer import Trainer, warn_if_other_bundle
 
     mlflow = import_provider('mlflow', 'mlflow')
-    target = (tracking or MlflowTracking()).target
+    target = resolve_target(target)
     destination = trainer_scratch_dir(new_run_id()) / 'mlflow-model'
     destination.mkdir(parents=True)
     with target.scope():
         local = Path(_download(mlflow, target, model_uri, destination))
     model = mlflow.models.Model.load(str(local))
     bundle = model.flavors['python_function']['artifacts']['bundle']['path']
-    trainer = Trainer.load(local / bundle, embedding_models)
+    trainer = Trainer.load(local / bundle, embedding_models,
+                           accelerator=accelerator)
     warn_if_other_bundle(model.metadata, trainer)
     return trainer
 

@@ -32,7 +32,7 @@ def write_provenance(
     warm_start: Optional[ModelManifest],
     started_at: datetime,
     fit_mode: Optional[str],
-    tracked_run_id: Optional[str] = None,
+    tracking: Optional[TrackingRef] = None,
     dependencies: Optional[List[Dependency]] = None,
 ) -> None:
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
@@ -54,8 +54,7 @@ def write_provenance(
                 seconds=round((finished_at - started_at).total_seconds(), 3),
             ),
             fit_mode=fit_mode,
-            tracking=None if tracked_run_id is None else TrackingRef(
-                run_id=tracked_run_id),
+            tracking=tracking,
             dependencies=dependencies,
             **stamp(),
         ))

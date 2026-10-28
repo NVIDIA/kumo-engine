@@ -36,26 +36,29 @@ def test_mlops_needs_an_artifact_root_it_can_write_files_to(tmp_path):
         kumo.MLOps(artifact_root=str(tmp_path), on_error='ignore')
 
 
-def test_a_connector_registry_checks_the_name_when_mlops_is_built(tmp_path):
+def test_the_tracker_registers_and_its_registry_checks_the_name(tmp_path):
     def check_model_location(connector, location):
         if '-' in location.model_name:
             raise ValueError('bad name')
 
-    connector = SimpleNamespace(sink_backend=SimpleNamespace(
-        check_model_location=check_model_location))
+    tracker = SimpleNamespace(connector=SimpleNamespace(
+        sink_backend=SimpleNamespace(
+            check_model_location=check_model_location)))
     good = kumo.ModelRegistryLocation('USERS_CHURN', alias='candidate')
-    kumo.MLOps(artifact_root=str(tmp_path),
-               registry=kumo.ModelOutputConfig(connector, location=good))
+    kumo.MLOps(str(tmp_path), tracking=tracker, registry=good)
     with pytest.raises(ValueError, match='bad name'):
-        kumo.MLOps(artifact_root=str(tmp_path),
-                   registry=kumo.ModelOutputConfig(
-                       connector,
-                       location=kumo.ModelRegistryLocation('users-churn')))
+        kumo.MLOps(str(tmp_path), tracking=tracker,
+                   registry=kumo.ModelRegistryLocation('users-churn'))
     with pytest.raises(ValueError, match='model alias'):
-        kumo.MLOps(artifact_root=str(tmp_path),
-                   registry=kumo.ModelOutputConfig(
-                       connector, location=kumo.ModelRegistryLocation(
-                           'USERS_CHURN', alias='LATEST')))
+        kumo.MLOps(str(tmp_path), tracking=tracker,
+                   registry=kumo.ModelRegistryLocation('USERS_CHURN',
+                                                       alias='LATEST'))
+    with pytest.raises(ValueError, match='registers through the tracker'):
+        kumo.MLOps(str(tmp_path), registry=good)
+    with pytest.raises(TypeError, match='ModelRegistryLocation'):
+        kumo.MLOps(str(tmp_path), tracking=tracker,
+                   registry=kumo.ModelOutputConfig(tracker.connector,
+                                                   location=good))
 
 
 def test_a_root_is_a_uri_or_a_connector_and_path(tmp_path):

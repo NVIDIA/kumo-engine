@@ -65,7 +65,6 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     assert {k: v for k, v in parent.data.tags.items()
             if k.startswith('kumo.')} == {
                 'kumo.kind': 'fit',
-                'kumo.run_id': parent.data.tags['kumo.run_id'],
                 'kumo.bundle_id': result.id,
             }
     assert result.registered_model == PublishedModel(
@@ -95,6 +94,9 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     assert list(served) == ['ENTITY', 'TARGET_PRED']
     assert len(served) == len(range(0, 400, 7))
     assert load_model('models:/m@champion').result.id == result.id
+    assert kumo.Trainer.load_from_connector(
+        cfg, location=kumo.ModelRegistryLocation('m', alias='champion')
+    ).result.id == result.id
 
     original = mlflow.models.Model.load
 
@@ -289,7 +291,7 @@ def test_fit_waits_for_model_logging_and_fails_the_run_if_it_fails(
     for fail in (False, True):
         tracker = Tracker(fail)
         session = TrackingSession(tracker)
-        session.start(lambda: fit_spec(FitContext('r', 'q', {})))
+        session.start(lambda: fit_spec(FitContext('q', {})))
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
             _, error = session.log_model(result.bundle_dir, None, None)
@@ -329,7 +331,7 @@ def test_model_logging_wait_is_bounded(monkeypatch, stall):
 
     tracker = Tracker()
     session = TrackingSession(tracker)
-    session.start(lambda: fit_spec(FitContext('r', 'q', {})))
+    session.start(lambda: fit_spec(FitContext('q', {})))
     if stall == 'dead thread':
         session._submit(lambda: (_ for _ in ()).throw(SystemExit()))
         session._worker.join(5)
@@ -418,7 +420,7 @@ def test_a_tracker_dropped_earlier_says_the_model_was_not_logged():
             pass
 
     session = TrackingSession(Tracker())
-    session.start(lambda: fit_spec(FitContext('r', 'q', {})))
+    session.start(lambda: fit_spec(FitContext('q', {})))
     deadline = time.monotonic() + 10
     while session._tracker is not None and time.monotonic() < deadline:
         time.sleep(0.01)
