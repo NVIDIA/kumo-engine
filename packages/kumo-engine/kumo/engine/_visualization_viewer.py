@@ -482,7 +482,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')hide()},{signal});
 document.addEventListener('scroll',place,{capture:true,signal});
 window.addEventListener('resize',place,{signal});
 const resizeObserver=new ResizeObserver(()=>{
-if(disposed)return;
+if(signal.aborted)return;
 cancelAnimationFrame(resizeFrame);
 resizeFrame=requestAnimationFrame(()=>{
 if(view.clientWidth===viewWidth&&view.clientHeight===viewHeight)return;
