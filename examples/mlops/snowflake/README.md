@@ -12,9 +12,9 @@ generates is undocumented) and has not been run end to end; see
   on `USERS`, `ITEMS` and `ORDERS` in `<database>.<schema>`, publishes a new
   version of model `USERS_CHURN` in that schema's Model Registry and moves the
   `champion` alias to it (`--registry snowflake`, which builds
-  `kumo.MLOps(registry=ModelOutputConfig(connector, location=...))`). The
-  snapshot, training table and model are stored under `--artifact-root`. The
-  fit is recorded in
+  `kumo.MLOps(tracking=SnowflakeTracking(connector, ...),
+  registry=ModelRegistryLocation(...))`). The snapshot, training table and
+  model are stored under `--artifact-root`. The fit is recorded in
   Snowflake Experiment Tracking through the connector's own Snowpark session
   (`SnowflakeConnector.session()`, the container's OAuth token).
 - **`KUMO_SCORE`** (`KUMO_SCORE_TASK`, daily 03:00 UTC) runs `score_job.py`,

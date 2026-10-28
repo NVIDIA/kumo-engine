@@ -128,7 +128,7 @@ def _window(orders, anchor):
 def test_evaluate_matured_run(snapshots, classifier):
     trainer, run = classifier
     started = pd.Timestamp.now(tz='UTC')
-    result = trainer.evaluate(run, snapshot=snapshots.after)
+    result = trainer.evaluate(run, labels_snapshot=snapshots.after)
 
     assert pd.Timestamp(result.anchors[0]).tz_convert(None) == ANCHOR
     assert (result.matured, result.bundle_matches,
@@ -151,7 +151,7 @@ def test_evaluate_matured_run(snapshots, classifier):
         roc_auc_score(joined['TARGET'], joined['True_PROB']), abs=1e-6)
 
     with pytest.warns(UserWarning, match='labels are not mature yet'):
-        immature = trainer.evaluate(run, snapshot=snapshots.before)
+        immature = trainer.evaluate(run, labels_snapshot=snapshots.before)
     assert immature.matured is False
     assert immature.metrics == {'auroc': None, 'ap': None}
     assert 'undefined' in immature.reasons['metrics']
@@ -165,7 +165,7 @@ def test_evaluate_immature_run_returns_metrics_and_warns(
     monkeypatch.setattr(kumo_core.pquery, '_target_maximum',
                         lambda *args: ANCHOR + pd.Timedelta(days=1))
     with pytest.warns(UserWarning, match='labels are not mature yet'):
-        result = trainer.evaluate(run, snapshot=snapshots.after)
+        result = trainer.evaluate(run, labels_snapshot=snapshots.after)
     assert result.matured is False and result.labelled == 60
     assert result.metrics['auroc'] is not None and result.reasons == {}
 
@@ -187,7 +187,7 @@ def test_evaluate_joins_several_anchors(snapshots, classifier, monkeypatch):
                     anchor.tz_localize('UTC').isoformat()
                     for anchor in anchors
                 ]))))
-    result = trainer.evaluate(run, snapshot=snapshots.after)
+    result = trainer.evaluate(run, labels_snapshot=snapshots.after)
 
     assert (result.rows, result.labelled, result.matured) == (120, 120, True)
     labels = pd.read_parquet(result.actuals).set_index(
@@ -201,7 +201,7 @@ def test_evaluate_joins_several_anchors(snapshots, classifier, monkeypatch):
 
     monkeypatch.undo()
     monkeypatch.setattr(PredictionResult, 'manifest', property(lambda _: None))
-    result = trainer.evaluate(run, snapshot=snapshots.after)
+    result = trainer.evaluate(run, labels_snapshot=snapshots.after)
     assert result.reasons['metrics'] == 'the run records no anchor timestamps'
     assert (result.metrics, result.actuals) == ({}, None)
 
@@ -243,7 +243,7 @@ def test_evaluation_exports_its_rows(snapshots, classifier, tmp_path):
     from kumo.engine.trainer.output_config import PredictionOutputConfig
 
     trainer, run = classifier
-    result = trainer.evaluate(run, snapshot=snapshots.after)
+    result = trainer.evaluate(run, labels_snapshot=snapshots.after)
     connector = kumo.FileConnector(root_dir=str(tmp_path))
     output = PredictionOutputConfig(connector,
                                     output_paths={'predictions': 'evaluated/'})
@@ -272,7 +272,7 @@ def test_evaluation_appends_to_a_table_with_its_ids(snapshots, classifier):
     from kumo.engine.trainer.output_config import PredictionOutputConfig
 
     trainer, run = classifier
-    result = trainer.evaluate(run, snapshot=snapshots.after)
+    result = trainer.evaluate(run, labels_snapshot=snapshots.after)
     sink = SimpleNamespace(write_files=Mock())
     output = PredictionOutputConfig(
         SimpleNamespace(sink_backend=sink), PredictionArtifactType.PREDICTIONS,
@@ -433,8 +433,7 @@ def test_monitoring_a_run_loaded_from_its_export(snapshots, classifier,
 
     trainer, run = classifier
     connector = kumo.FileConnector(root_dir=str(tmp_path))
-    output = PredictionOutputConfig(connector,
-                                    output_paths={'predictions': 'p/'})
+    output = PredictionOutputConfig(connector, path='p/')
     run.export(output)
     success = tmp_path / 'p' / run.id / '_SUCCESS'
     written = success.stat().st_mtime_ns
@@ -451,8 +450,8 @@ def test_monitoring_a_run_loaded_from_its_export(snapshots, classifier,
     assert (loaded.id, loaded.bundle_id, loaded.snapshot_id,
             loaded.num_rows) == (run.id, run.bundle_id, run.snapshot_id,
                                  run.num_rows)
-    assert trainer.evaluate(loaded, snapshot=snapshots.after).metrics == \
-        trainer.evaluate(run, snapshot=snapshots.after).metrics
+    assert trainer.evaluate(loaded, labels_snapshot=snapshots.after).metrics == \
+        trainer.evaluate(run, labels_snapshot=snapshots.after).metrics
     assert trainer.score_drift(loaded).psi == trainer.score_drift(run).psi
 
     local = loaded._exported.local
@@ -464,6 +463,14 @@ def test_monitoring_a_run_loaded_from_its_export(snapshots, classifier,
     (tmp_path / path / '_SUCCESS').unlink()
     with pytest.raises(FileNotFoundError, match='_SUCCESS'):
         PredictionResult.load_from_connector(connector, path=path)
+
+    from kumo.engine.trainer import _run_manifest
+
+    cfg = kumo.MLOps(str(tmp_path / 'root'))
+    _run_manifest.store(run, run.manifest, cfg)
+    stored = PredictionResult.load_from_connector(cfg,
+                                                  path=f'predictions/{run.id}')
+    assert (stored.id, stored.num_rows) == (run.id, run.num_rows)
 
 
 def test_tracked_monitoring_logs_a_new_run(snapshots, classifier, tmp_path):
@@ -487,14 +494,14 @@ def test_tracked_monitoring_logs_a_new_run(snapshots, classifier, tmp_path):
     cfg = kumo.MLOps(artifact_root=str(tmp_path / 'root'), tracking=Tracker())
     report = trainer.score_drift(run, mlops=cfg)
     with kumo.mlops(cfg):
-        trainer.evaluate(run, snapshot=snapshots.after)
+        trainer.evaluate(run, labels_snapshot=snapshots.after)
 
     drift, evaluation = Tracker.records
     assert (drift.name, evaluation.name) == (f'drift-{run.id}',
                                              f'evaluate-{run.id}')
     for record in (drift, evaluation):
         assert record.tags['kumo.kind'] == 'monitoring'
-        assert record.tags['kumo.prediction_run'] == run.id
+        assert record.tags['kumo.monitors'] == run.id
         assert record.tags['kumo.bundle_id'] == run.bundle_id
     assert drift.metrics['psi'] == report.psi
     assert drift.metrics['wasserstein'] == report.wasserstein

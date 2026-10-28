@@ -378,7 +378,8 @@ def snowflake_adapter(monkeypatch):
                 runs['steps'][name] = (*runs['steps'].get(name, ()),
                                        (step, value))
             for prefix, runs in names.items():
-                observed[prefix or FIT] = Observed(
+                key = prefix or runs['tags'].get('kumo.prediction_id', FIT)
+                observed[key] = Observed(
                     name=prefix or run_name,
                     artifacts=run['artifacts'] if prefix is None else {},
                     **runs)
@@ -604,7 +605,7 @@ def test_prediction_record_of_the_recorded_run():
         'predictions.predicted_positive_rate': 0.62,
     }
     assert record.tags == {'kumo.kind': 'prediction',
-                           'kumo.run_id': PREDICTION_RUN,
+                           'kumo.prediction_id': PREDICTION_RUN,
                            'kumo.bundle_id': BUNDLE}
     assert record.inputs == INPUTS
     assert json.loads(record.artifacts[PROVENANCE_FILE]) == (
