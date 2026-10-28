@@ -1427,6 +1427,7 @@ fn test_detect_timestamp_formats_from_parquet() {
 
     // Build a GraphConfig with a Timestamp column pointing to the parquet file.
     let mut config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test".to_string(),
         tables: vec![TableSpec {
             name: "events".to_string(),
@@ -1558,6 +1559,7 @@ fn test_detect_timestamp_formats_allows_unrecognized_create_time_strings() {
     writer.close().unwrap();
 
     let mut config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test".to_string(),
         tables: vec![TableSpec {
             name: "accounts".to_string(),
@@ -1647,6 +1649,7 @@ fn test_detect_timestamp_formats_skips_native_timestamp_columns() {
     writer.close().unwrap();
 
     let mut config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test".to_string(),
         tables: vec![TableSpec {
             name: "events".to_string(),
@@ -1718,6 +1721,7 @@ fn test_detect_timestamp_formats_integer_yyyymmdd() {
     writer.close().unwrap();
 
     let mut config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test".to_string(),
         tables: vec![TableSpec {
             name: "events".to_string(),
@@ -1803,6 +1807,7 @@ fn test_detect_timestamp_formats_multi_value_sampling() {
     writer.close().unwrap();
 
     let mut config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test".to_string(),
         tables: vec![TableSpec {
             name: "events".to_string(),
@@ -1896,6 +1901,7 @@ fn test_detect_timestamp_formats_skips_empty_parquet_files() {
 
     // Point the config at the directory (not individual files).
     let mut config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test".to_string(),
         tables: vec![TableSpec {
             name: "transactions".to_string(),
@@ -2182,6 +2188,7 @@ fn test_inference_skips_columns_with_explicit_timestamp_format() {
     writer.close().unwrap();
 
     let mut config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "ds".to_string(),
         tables: vec![TableSpec {
             name: "events".to_string(),

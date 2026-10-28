@@ -89,6 +89,7 @@ pub fn convert_kumo_to_diskgraph(
     }
 
     let mut config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: options.dataset_name.clone(),
         tables,
         rowpack: None,

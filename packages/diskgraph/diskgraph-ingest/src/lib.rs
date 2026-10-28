@@ -83,6 +83,7 @@ use diskgraph_core::metadata::{
     EdgeSortKeyWeightEncoding, EdgeSortKeyWeightKind, EdgeSortKeyWeightMetadata, EdgeStorageFormat,
     NodeDataCompression, NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
+use diskgraph_core::time::{convert_floor, convert_trunc, TimeUnit};
 use diskgraph_fs::{CloudObjectCondition, CloudTransfer, PooledBytes};
 use diskgraph_index::builder::{
     EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget, MemoryBudgetGuard,
@@ -658,6 +659,15 @@ fn encoded_num_shards(root: &Path) -> Result<Option<usize>> {
         .map(|n| n as usize))
 }
 
+/// An Encode marker written before the clock was always recorded omits it, which
+/// reads as seconds.
+fn encode_marker_matches(marker: &[u8], payload: &[u8]) -> bool {
+    marker == payload
+        || serde_json::from_slice::<GraphConfig>(marker)
+            .and_then(|config| serde_json::to_vec(&config))
+            .is_ok_and(|normalized| normalized == payload)
+}
+
 fn table_sized_bytes(declared: Option<u64>, compute_local_bytes: impl FnOnce() -> u64) -> u64 {
     match declared {
         Some(bytes) if bytes > 0 => bytes,
@@ -890,7 +900,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
                 }
                 if pred == IngestPhase::Encode {
                     let marker = fs::read(phase_marker_path(root, pred.name()))?;
-                    if marker != encode_marker_payload {
+                    if !encode_marker_matches(&marker, &encode_marker_payload) {
                         return Err(anyhow!(
                             "resume source identity does not match the completed Encode marker"
                         ));
@@ -1387,9 +1397,24 @@ mod tests_resume_phase {
     use std::collections::HashSet;
 
     #[test]
+    fn a_config_without_a_clock_is_seconds_and_resumes_its_encode_marker() {
+        let source: GraphConfig =
+            serde_json::from_str(r#"{"dataset_name": "old", "tables": []}"#).unwrap();
+        assert_eq!(source.timestamp_unit, TimeUnit::Seconds);
+        let payload = serde_json::to_vec(&source).unwrap();
+        let mut marker = serde_json::to_value(&source).unwrap();
+        assert_eq!(marker["timestamp_unit"], "seconds");
+        marker.as_object_mut().unwrap().remove("timestamp_unit");
+        let marker = serde_json::to_vec(&marker).unwrap();
+        assert!(encode_marker_matches(&marker, &payload));
+        assert!(!encode_marker_matches(br#"{"dataset_name": "other", "tables": []}"#, &payload));
+    }
+
+    #[test]
     fn public_ingest_rejects_graduation_for_exact_graph_feature_stats() {
         let output = tempfile::tempdir().unwrap();
         let source = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "graduation_rejected".to_owned(),
             tables: Vec::new(),
             rowpack: None,
@@ -1830,6 +1855,7 @@ mod tests_repopulate_helpers {
 
     fn graph_config(tables: Vec<TableSpec>) -> GraphConfig {
         GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "test_dataset".to_string(),
             tables,
             rowpack: None,
@@ -6391,6 +6417,7 @@ pub(crate) enum TimestampEncodingKind {
     Int8,
     Int16,
     Int32,
+    Int64,
 }
 
 #[derive(Clone, Debug)]
@@ -6415,7 +6442,14 @@ struct WeightEncodingSpec {
 }
 
 /// Convert TimeSpec from config to internal encoding spec.
-fn time_spec_to_encoding(spec: &TimeSpec) -> TimestampEncodingSpec {
+fn time_spec_to_encoding(spec: &TimeSpec, clock: TimeUnit) -> TimestampEncodingSpec {
+    if crate::graph_config::keys_full_timestamp(clock) {
+        return TimestampEncodingSpec {
+            kind: TimestampEncodingKind::Int64,
+            anchor: 0,
+            step: 1,
+        };
+    }
     let kind = match spec.bitwidth {
         Some(8) => TimestampEncodingKind::Int8,
         Some(16) => TimestampEncodingKind::Int16,
@@ -6441,8 +6475,8 @@ fn time_spec_to_encoding(spec: &TimeSpec) -> TimestampEncodingSpec {
     };
     TimestampEncodingSpec {
         kind,
-        anchor: spec.anchor_time.unwrap_or(0),
-        step,
+        anchor: convert_floor(spec.anchor_time.unwrap_or(0), TimeUnit::Seconds, clock),
+        step: convert_trunc(step, TimeUnit::Seconds, clock).max(1),
     }
 }
 
@@ -6541,6 +6575,7 @@ fn timestamp_width_bits(kind: &TimestampEncodingKind) -> u8 {
         TimestampEncodingKind::Int8 => 8,
         TimestampEncodingKind::Int16 => 16,
         TimestampEncodingKind::Int32 => 32,
+        TimestampEncodingKind::Int64 => 64,
     }
 }
 
@@ -6554,10 +6589,13 @@ fn weight_width_bits(kind: &WeightEncodingKind) -> u8 {
     }
 }
 
-fn build_relation_sort_key_config(spec: &DirectionSpec) -> Option<RelationSortKeyConfig> {
+fn build_relation_sort_key_config(
+    spec: &DirectionSpec,
+    clock: TimeUnit,
+) -> Option<RelationSortKeyConfig> {
     let mut width_bits: u16 = 0;
     let timestamp = spec.time.as_ref().map(|ts| {
-        let encoding = time_spec_to_encoding(ts);
+        let encoding = time_spec_to_encoding(ts, clock);
         width_bits += timestamp_width_bits(&encoding.kind) as u16;
         SortKeyTimestampConfig {
             table: ts.table.clone(),
@@ -6599,6 +6637,7 @@ fn build_sort_key_metadata(cfg: &RelationSortKeyConfig) -> EdgeSortKeyMetadata {
                         TimestampEncodingKind::Int8 => EdgeSortKeyTimestampKind::Int8,
                         TimestampEncodingKind::Int16 => EdgeSortKeyTimestampKind::Int16,
                         TimestampEncodingKind::Int32 => EdgeSortKeyTimestampKind::Int32,
+                        TimestampEncodingKind::Int64 => EdgeSortKeyTimestampKind::Int64,
                     },
                     anchor: ts.encoding.anchor,
                     step: ts.encoding.step,
@@ -6771,6 +6810,7 @@ pub(crate) fn encode_timestamp_value(value: Option<i64>, encoding: &TimestampEnc
             let clamped = delta.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
             ordered_signed_to_u64(clamped as i64, 32)
         }
+        TimestampEncodingKind::Int64 => ordered_signed_to_u64(delta, 64),
     }
 }
 
@@ -7170,11 +7210,11 @@ impl IngestContext {
                 let dst_sort = fkey
                     .forward
                     .as_ref()
-                    .and_then(build_relation_sort_key_config);
+                    .and_then(|spec| build_relation_sort_key_config(spec, source.timestamp_unit));
                 let src_sort = fkey
                     .reverse
                     .as_ref()
-                    .and_then(build_relation_sort_key_config);
+                    .and_then(|spec| build_relation_sort_key_config(spec, source.timestamp_unit));
 
                 let rev_name = format!("{base}_reverse");
                 // Forward relation: paired with reverse only when bidirectional.
@@ -7219,20 +7259,18 @@ impl IngestContext {
                     name: fwd_name.clone(),
                     src_table: edge.src_fk.ref_table.clone(),
                     dst_table: edge.dst_fk.ref_table.clone(),
-                    sort_key: edge
-                        .forward
-                        .as_ref()
-                        .and_then(build_relation_sort_key_config),
+                    sort_key: edge.forward.as_ref().and_then(|spec| {
+                        build_relation_sort_key_config(spec, source.timestamp_unit)
+                    }),
                     reverse_of: Some(rev_name.clone()),
                 };
                 let dst_rel = RelationDef {
                     name: rev_name,
                     src_table: edge.dst_fk.ref_table.clone(),
                     dst_table: edge.src_fk.ref_table.clone(),
-                    sort_key: edge
-                        .reverse
-                        .as_ref()
-                        .and_then(build_relation_sort_key_config),
+                    sort_key: edge.reverse.as_ref().and_then(|spec| {
+                        build_relation_sort_key_config(spec, source.timestamp_unit)
+                    }),
                     reverse_of: Some(fwd_name),
                 };
                 relation_defs.push(src_rel);
@@ -7372,6 +7410,7 @@ impl IngestContext {
         let col_stats_enabled = self.col_stats;
         let cat_count_strategy = self.cat_count_strategy;
         let row_subsample = self.row_subsample;
+        let clock = self.source.timestamp_unit;
 
         let mut table_cat_counts: HashMap<
             String,
@@ -7494,6 +7533,7 @@ impl IngestContext {
                                 &dest_key_errors,
                                 &relation_defs,
                                 &fk_edge_targets,
+                                clock,
                             )?;
                             Ok((dropped, key_failures))
                         },
@@ -7523,7 +7563,7 @@ impl IngestContext {
                     let mut pk_max_key_len = 0usize;
                     let row_access_hints = build_row_access_hints(table);
                     let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
-                    let mut access = RowAccess::new(row_access_hints, stats);
+                    let mut access = RowAccess::new(row_access_hints, stats).with_clock(clock);
                     let mut prefix = Vec::new();
                     let mut prefix_rows = 0usize;
                     let mut prefix_bytes = 0usize;
@@ -7738,6 +7778,7 @@ impl IngestContext {
                                     ref_resolver.as_deref(),
                                     &sidecars,
                                     &mut observer,
+                                    clock,
                                 )?;
                                 observer.flush_categories();
                                 Ok((node, key_failures, Some(observer)))
@@ -7760,6 +7801,7 @@ impl IngestContext {
                                     ref_resolver.as_deref(),
                                     &sidecars,
                                     &mut diskgraph_rowpack::NoOpObserver,
+                                    clock,
                                 )?;
                                 Ok((node, key_failures, None))
                             }
@@ -8383,6 +8425,7 @@ impl IngestContext {
         ref_resolver: Option<&crate::mapping::RefResolver>,
         sidecars: &StageSidecarColumns,
         observer: &mut O,
+        clock: TimeUnit,
     ) -> Result<TempNodeFileResult>
     where
         O: diskgraph_rowpack::ColumnValueObserver,
@@ -8436,7 +8479,7 @@ impl IngestContext {
         let mut total_rows = 0u64;
         let row_access_hints = build_row_access_hints(table);
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
-        let mut access = RowAccess::new(row_access_hints, stats);
+        let mut access = RowAccess::new(row_access_hints, stats).with_clock(clock);
         let mut key_bufs: Vec<Vec<u8>> = vec![Vec::new(); table.columns.len()];
         let mut f16_buf: Vec<f16> = Vec::new();
         let mut node_tags = Vec::new();
@@ -8852,8 +8895,9 @@ impl IngestContext {
         // (`group_ts_idx.is_some()`), so the non-grouping path is unchanged.
         let group_ts = match group_ts_idx {
             Some(idx) => Some(
+                // Buckets stay one second wide whatever the index clock.
                 access
-                    .get_timestamp(idx)
+                    .get_timestamp_in(idx, TimeUnit::Seconds)
                     .with_context(|| {
                         format!(
                             "TT-NG ts-grouping: failed to decode TIMESTAMP for table `{}` row {}",
@@ -8973,6 +9017,7 @@ impl IngestContext {
         dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         relation_defs: &[RelationDef],
         fk_edge_targets: &HashMap<String, FkEdgeTarget>,
+        clock: TimeUnit,
     ) -> Result<u64>
     where
         I: IntoIterator<Item = Result<arrow_array::RecordBatch>>,
@@ -9030,7 +9075,7 @@ impl IngestContext {
 
         let row_access_hints = build_row_access_hints(table);
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
-        let mut access = RowAccess::new(row_access_hints, stats);
+        let mut access = RowAccess::new(row_access_hints, stats).with_clock(clock);
         macro_rules! process_edge_batch {
             ($batch:expr, $src_key_buf:expr, $dst_key_buf:expr, $forward_row:expr) => {
                 let timestamp_idx = create_time_info.as_ref().map(|(idx, _)| *idx);
@@ -11969,7 +12014,7 @@ impl IngestContext {
         }
 
         let index_metadata = DatasetMetadata {
-            timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
+            timestamp_unit: self.source.timestamp_unit,
             dataset_name: self.source.dataset_name.clone(),
             node_types,
             edge_relations,
@@ -14856,6 +14901,7 @@ impl SortKeyComponentBatcher {
                 column_idx,
                 encoding,
             } => {
+                let clock = access.clock();
                 let ts_value = if let Some(secs) = access.get_timestamp(*column_idx).ok().flatten()
                 {
                     Some(secs)
@@ -14864,7 +14910,7 @@ impl SortKeyComponentBatcher {
                         .get_date(*column_idx)
                         .ok()
                         .flatten()
-                        .map(|days| i64::from(days) * 86_400)
+                        .map(|days| convert_trunc(i64::from(days), TimeUnit::Days, clock))
                 };
                 encode_timestamp_value(ts_value, encoding)
             }

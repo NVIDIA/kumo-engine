@@ -4,6 +4,7 @@
 
 use anyhow::{anyhow, ensure, Context, Result};
 use diskgraph_core::metadata::EdgeStorageFormat;
+use diskgraph_core::time::TimeUnit;
 use diskgraph_rowpack::RowPackConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -53,6 +54,8 @@ fn source_dtype_is_decimal(dtype: Option<&str>) -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphConfig {
+    #[serde(default)]
+    pub timestamp_unit: TimeUnit,
     pub dataset_name: String,
     pub tables: Vec<TableSpec>,
     #[serde(default)]
@@ -65,6 +68,11 @@ pub struct GraphConfig {
     /// Default is Lossless (allows safe and conditional coercions).
     #[serde(default, skip_serializing_if = "is_default_coercion_mode")]
     pub coercion_mode: CoercionMode,
+}
+
+/// Sub-second ticks overflow a 32-bit key within years, so they key on the full value.
+pub(crate) fn keys_full_timestamp(clock: TimeUnit) -> bool {
+    clock.tick_nanos() < TimeUnit::Seconds.tick_nanos()
 }
 
 fn is_default_coercion_mode(mode: &CoercionMode) -> bool {
@@ -782,6 +790,28 @@ impl GraphConfig {
         }
         if self.tables.is_empty() {
             errors.push("at least one table is required".to_string());
+        }
+        if !self.timestamp_unit.is_index_clock() {
+            errors.push(format!(
+                "unsupported timestamp_unit {:?}",
+                self.timestamp_unit
+            ));
+        }
+        let mut directions = self.tables.iter().flat_map(|table| {
+            let fkeys = table.fkeys.iter().flat_map(|fk| [&fk.forward, &fk.reverse]);
+            let edges = table
+                .edge_table
+                .iter()
+                .flat_map(|e| [&e.forward, &e.reverse]);
+            fkeys.chain(edges).flatten()
+        });
+        if keys_full_timestamp(self.timestamp_unit)
+            && directions.any(|d| d.time.is_some() && d.weight.is_some())
+        {
+            errors.push(format!(
+                "a {:?} time key leaves no room for a sort key weight",
+                self.timestamp_unit
+            ));
         }
         if let Some(shards) = self.num_shards {
             if shards == 0 {
@@ -1763,6 +1793,7 @@ mod tests {
         });
 
         let config = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "test".to_string(),
             tables: vec![customers, orders],
             rowpack: None,
@@ -1819,6 +1850,7 @@ mod tests {
         });
 
         let config = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "test".to_string(),
             tables: vec![users, products, reviews],
             rowpack: None,
@@ -1877,6 +1909,7 @@ mod tests {
         });
 
         let config = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "test".to_string(),
             tables: vec![customers, orders],
             rowpack: None,
@@ -1923,6 +1956,7 @@ mod tests {
         });
 
         let config = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "test".to_string(),
             tables: vec![customers, orders],
             rowpack: None,
@@ -1993,6 +2027,7 @@ mod tests {
     fn normalize_flips_string_multicat_with_delim_to_stringarray() {
         let col = make_multicat_column("tags", IngestedType::String, Some(","));
         let mut cfg = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "t".into(),
             tables: vec![make_table("items", vec![col], None)],
             rowpack: None,
@@ -2019,6 +2054,7 @@ mod tests {
     fn normalize_leaves_string_multicat_without_delim_alone() {
         let col = make_multicat_column("tags", IngestedType::String, None);
         let mut cfg = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "t".into(),
             tables: vec![make_table("items", vec![col], None)],
             rowpack: None,
@@ -2038,6 +2074,7 @@ mod tests {
     fn normalize_leaves_native_stringarray_alone() {
         let col = make_multicat_column("tags", IngestedType::StringArray, None);
         let mut cfg = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "t".into(),
             tables: vec![make_table("items", vec![col], None)],
             rowpack: None,
@@ -2059,6 +2096,7 @@ mod tests {
         col.semantic_type = Some(SemanticType::Text);
         col.multicategorical_delimiter = Some(",".into());
         let mut cfg = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "t".into(),
             tables: vec![make_table("items", vec![col], None)],
             rowpack: None,
@@ -2077,6 +2115,7 @@ mod tests {
     fn normalize_is_idempotent() {
         let col = make_multicat_column("tags", IngestedType::String, Some(","));
         let mut cfg = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "t".into(),
             tables: vec![make_table("items", vec![col], None)],
             rowpack: None,
@@ -2107,6 +2146,7 @@ mod tests {
     fn normalize_latlong_forces_fixed_len_two() {
         let col = make_latlong_column("location", IngestedType::Float32Array, None);
         let mut cfg = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "t".into(),
             tables: vec![make_table("items", vec![col], None)],
             rowpack: None,
@@ -2125,6 +2165,7 @@ mod tests {
     fn validate_latlong_requires_numeric_array() {
         let col = make_latlong_column("location", IngestedType::String, Some(2));
         let cfg = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "t".into(),
             tables: vec![make_table("items", vec![col], None)],
             rowpack: None,
@@ -2145,6 +2186,7 @@ mod tests {
     fn validate_latlong_requires_fixed_len_two() {
         let col = make_latlong_column("location", IngestedType::Float32Array, Some(3));
         let cfg = GraphConfig {
+            timestamp_unit: Default::default(),
             dataset_name: "t".into(),
             tables: vec![make_table("items", vec![col], None)],
             rowpack: None,

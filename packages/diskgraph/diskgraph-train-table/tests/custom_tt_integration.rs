@@ -290,6 +290,7 @@ fn build_users_only_graph(root: &Path, n_users: i64) -> PathBuf {
     write_parquet(&data_dir.join("users.parquet"), &users_batch);
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_custom_tt".to_string(),
         tables: vec![TableSpec {
             name: "users".to_string(),
@@ -373,6 +374,7 @@ fn build_users_and_products_graph(root: &Path, n_users: i64, n_products: i64) ->
     };
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_custom_tt_lp".to_string(),
         tables: vec![
             mk_table("users", "user_id", "users.parquet"),

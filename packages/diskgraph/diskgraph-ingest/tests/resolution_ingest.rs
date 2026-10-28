@@ -98,6 +98,7 @@ fn ingest_tiny_parent_index(parent_root: &Path, num_rows: i64) -> Result<()> {
         group_by_timestamp: false,
     };
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "tiny_parent".to_string(),
         tables: vec![table],
         rowpack: None,
@@ -276,6 +277,7 @@ fn ingest_resolution_with_stats(
     let mut table = stage_table_spec(stage_parquet.to_str().unwrap());
     table.fkeys = vec![]; // explicit: no FK edges.
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "resolve_run".to_string(),
         tables: vec![table],
         rowpack: None,
@@ -677,6 +679,7 @@ fn ingest_exclude_resolution(
     });
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "resolve_exclude_run".to_string(),
         tables: vec![table],
         rowpack: None,
