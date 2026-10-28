@@ -19,21 +19,31 @@ type ResolvedColumn = (Vec<Option<i64>>, Option<String>, Option<String>);
 
 /// Detect (unless declared) and apply one pyarrow column's temporal hint in a
 /// single call, so the resolved format never round-trips through Python.
-/// Returns epoch seconds — epoch days when `as_days` — aligned with the input,
-/// `None` for a null or unparseable value, plus the hint that was resolved.
+/// Returns epochs in `timestamp_unit` ticks — epoch days when `as_days` —
+/// aligned with the input, `None` for a null or unparseable value, plus the
+/// hint that was resolved.
 #[pyfunction]
-#[pyo3(signature = (values, declared_format=None, declared_unit=None, as_days=false))]
+#[pyo3(signature = (
+    values,
+    declared_format=None,
+    declared_unit=None,
+    as_days=false,
+    timestamp_unit="seconds",
+))]
 pub fn resolve_temporal(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
     declared_format: Option<String>,
     declared_unit: Option<String>,
     as_days: bool,
+    timestamp_unit: &str,
 ) -> PyResult<ResolvedColumn> {
     let array = make_array(ArrayData::from_pyarrow_bound(values)?);
     let unit = declared_unit.as_deref().and_then(map_timestamp_unit);
-    let resolved = py
-        .detach(|| inference::resolve_temporal(&array, declared_format.as_deref(), unit, as_days));
+    let clock = crate::tt_builder::parse_index_clock(timestamp_unit)?;
+    let resolved = py.detach(|| {
+        inference::resolve_temporal(&array, declared_format.as_deref(), unit, as_days, clock)
+    });
     Ok((
         resolved.epochs,
         resolved.format,

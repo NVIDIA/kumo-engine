@@ -1414,6 +1414,8 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 ///         invalid. Semantic and logical types are mapped through the same
 ///         ``map_kumo_stype`` / ``map_kumo_dtype`` helpers ingest uses.
 ///     data_version: version string stamped into every emitted entry.
+///     timestamp_unit: keyword-only index clock that timestamp statistics are
+///         computed in (default ``"seconds"``).
 ///     _category_count_limit_for_testing: keyword-only test hook that lowers
 ///         the retained category limit. ``None`` preserves the production
 ///         1,000,000-category limit; a supplied value must be greater than 0.
@@ -1428,6 +1430,7 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
     kumo_column_specs_json,
     data_version,
     *,
+    timestamp_unit="seconds",
     _category_count_limit_for_testing=None,
 ))]
 #[tracing::instrument(level = "debug", skip(py, kumo_column_specs_json))]
@@ -1436,6 +1439,7 @@ fn compute_col_stats_for_parquet(
     parquet_paths: Vec<String>,
     kumo_column_specs_json: &str,
     data_version: &str,
+    timestamp_unit: &str,
     _category_count_limit_for_testing: Option<u64>,
 ) -> PyResult<(String, String)> {
     use diskgraph_ingest::config_converter::{
@@ -1505,6 +1509,7 @@ fn compute_col_stats_for_parquet(
         .collect::<PyResult<Vec<_>>>()?;
     let data_version = data_version.to_string();
     let paths_owned = parquet_paths;
+    let clock = tt_builder::parse_index_clock(timestamp_unit)?;
 
     py.detach(|| -> anyhow::Result<(String, String)> {
         let paths: Vec<&std::path::Path> =
@@ -1515,8 +1520,9 @@ fn compute_col_stats_for_parquet(
                 &columns,
                 &data_version,
                 limit,
+                clock,
             ),
-            None => compute_parquet_col_stats(&paths, &columns, &data_version),
+            None => compute_parquet_col_stats(&paths, &columns, &data_version, clock),
         }
     })
     // Route schema failures through the shared exception classifier rather
