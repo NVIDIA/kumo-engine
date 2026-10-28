@@ -171,7 +171,7 @@ Optionally use `graph.visualize(sample_rows=3)` to fetch up to 30 preview rows p
 Samples have no guaranteed ordering, and previews can run warehouse queries and incur costs; the row limit does not bound bytes scanned.
 Unavailable previews and columns with no non-null values in the preview are labeled, and long values are abbreviated.
 Samples become part of saved notebook HTML; SVG text and exports always contain metadata only.
-The default view shows primary keys, relationship foreign keys, and the declared time column (`T`).
+The default view shows primary keys, relationship foreign keys, and the declared time column (`TS`).
 `show_cols=True` adds columns up to 10 rows per table, or 5 for graphs with more than 10 tables; keys and the declared time column always remain visible, even above that limit.
 A footer counts hidden columns.
 Visualization accepts at most 30 tables; larger graphs raise an error so no tables or relationships are silently omitted.

@@ -203,7 +203,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                 raise ValueError(f'Time column {name}.{definition.time_col} is '
                                  'missing from the table columns.')
             role = keys[name].get(definition.time_col, '')
-            keys[name][definition.time_col] = f'{role}/T' if role else 'T'
+            keys[name][definition.time_col] = f'{role}/TS' if role else 'TS'
 
     cards = {}
     for name in names:
@@ -369,7 +369,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         f'font-family="{THEME["font"]}">',
         '<title>Table relationships</title>',
         '<desc>Lines connect foreign keys (FK) to primary keys (PK).'
-        ' T marks the declared time column.'
+        ' TS marks the declared time column.'
         '</desc>', f'<defs><pattern id="{uid}-grid" width="16" height="16" '
         'patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.7" '
         f'fill="{THEME["grid"]}"/></pattern></defs>',

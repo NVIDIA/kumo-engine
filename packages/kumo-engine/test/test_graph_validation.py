@@ -258,7 +258,7 @@ def test_visualize_bounds_column_detail(count, limit, show_cols):
         assert {row.get('data-kumo-column') for row in rows
                 if row.get('data-kumo-column')} == expected
         time = next(row for row in rows if row.get('data-kumo-column') == 'event_time')
-        assert 'Role: T' in time.get('data-kumo-tip')
+        assert 'Role: TS' in time.get('data-kumo-tip')
         assert re.search(rf'\+\s*{len(extras) - visible} (other )?columns',
                          ''.join(card.itertext()))
 
@@ -291,7 +291,7 @@ def test_visualize_retains_keys_beyond_column_limit(time_column, show_cols):
     if time_column:
         row = root.find('.//{http://www.w3.org/2000/svg}g'
                         f'[@data-kumo-column="{time_column}"]')
-        role = {'event_id': 'PK/FK/T', 'foreign_00': 'FK/T'}.get(time_column, 'T')
+        role = {'event_id': 'PK/FK/TS', 'foreign_00': 'FK/TS'}.get(time_column, 'TS')
         assert f'Role: {role}' in row.get('data-kumo-tip')
 
 
