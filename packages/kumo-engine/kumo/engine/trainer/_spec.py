@@ -44,6 +44,7 @@ class TrainingSpec:
     model_plan: Dict[str, Any]
     snapshot_id: str
     training_table_generation: Dict[str, Any]
+    timestamp_precision: str = 'seconds'
 
 
 def _sha256(path: Path) -> str:
@@ -83,6 +84,7 @@ def write_training_spec(
     model_plan: ModelPlan,
     snapshot_id: str,
     training_table_generation: TrainingTableGenerationPlan,
+    timestamp_precision: str = 'seconds',
 ) -> None:
     r"""Write an integrity-covered training spec into a completed bundle."""
     from kumo_core.io.json import to_json_dict
@@ -93,6 +95,7 @@ def write_training_spec(
         model_plan=to_json_dict(model_plan),
         snapshot_id=snapshot_id,
         training_table_generation=to_json_dict(training_table_generation),
+        timestamp_precision=timestamp_precision,
     )
     spec_path = bundle_dir / SPEC_FILE
     _atomic_write(
@@ -147,6 +150,7 @@ def read_training_spec(bundle_dir: Path) -> TrainingSpec:
         model_plan=data['model_plan'],
         snapshot_id=data['snapshot_id'],
         training_table_generation=data['training_table_generation'],
+        timestamp_precision=data.get('timestamp_precision', 'seconds'),
     )
 
 
