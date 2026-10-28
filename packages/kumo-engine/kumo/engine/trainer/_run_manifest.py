@@ -7,9 +7,18 @@ import warnings
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
-from kumo_core.types import PredictionArtifactType, TaskType
+from kumo_core.types import TaskType
 from kumoapi.jobs import WriteMode
 
 from kumo.engine._manifest import (
@@ -22,6 +31,7 @@ from kumo.engine._manifest import (
     PredictionTableRecord,
     RunScoring,
     RunTimings,
+    SnapshotManifest,
     embedded,
     stamp,
     stub,
@@ -131,28 +141,20 @@ def _manifest(result: Any, trainer: Any, snapshot: Any,
 
     selection = load_prediction_selection(result.selection,
                                           validate_objects=False)
-    stats: Dict[str, Dict[str, Any]] = {}
-    for item in selection.artifacts:
-        stats[item.artifact_type.value.lower()] = {'rows': item.num_rows}
-        if item.artifact_type is PredictionArtifactType.PREDICTIONS:
-            try:
-                files = replace(result, artifact_type=item.artifact_type).files
-                stats['predictions'].update(output_stats(files, task_type))
-            except Exception as error:
-                warnings.warn(
-                    f"Recording the prediction manifest without output "
-                    f"score statistics: {error}", UserWarning, stacklevel=4)
     model: Optional[ModelManifest] = trainer.result.manifest
     scoring_snapshot = getattr(snapshot, 'manifest', None)
-    return PredictionManifest(
-        id=result.id,
-        parents=PredictionParents(
-            model=(stub('model', trainer.result.id)
-                   if model is None else embedded_model(model)),
-            snapshot=(stub('snapshot', snapshot.id) if scoring_snapshot is None
-                      else embedded(scoring_snapshot)),
-        ),
-        prediction_table=PredictionTableRecord(
+    return _record_predictions(
+        result.id, {
+            item.artifact_type.value.lower():
+            (item.num_rows, lambda kind=item.artifact_type: replace(
+                result, artifact_type=kind).files)
+            for item in selection.artifacts
+        },
+        model=(stub('model', trainer.result.id) if model is None else model),
+        snapshot=(stub('snapshot', snapshot.id)
+                  if scoring_snapshot is None else scoring_snapshot),
+        task_type=task_type,
+        table=PredictionTableRecord(
             query_sha256=query_sha256(prediction_table.query),
             source=prediction_table.source,
             anchors=[
@@ -165,7 +167,43 @@ def _manifest(result: Any, trainer: Any, snapshot: Any,
             skipped_rows=prediction_table.skipped_rows,
             skipped_sample=list(prediction_table.skipped_sample),
             skip_reason=prediction_table.skip_reason,
+        ), scoring=scoring, started_at=started_at)
+
+
+def _record_predictions(
+    run_id: str,
+    outputs: Mapping[str, Tuple[Optional[int], Callable[[], Sequence[str]]]],
+    *,
+    model: ModelManifest,
+    snapshot: SnapshotManifest,
+    task_type: TaskType,
+    table: PredictionTableRecord,
+    scoring: RunScoring,
+    started_at: str,
+) -> PredictionManifest:
+    r"""The manifest of prediction run ``run_id`` of any ``model``:
+    ``outputs`` maps each artifact (``predictions``, ``embeddings``) to its
+    row count and a call listing its Parquet files, whose scores are
+    summarized for ``task_type`` (see the column contract in mlops.md);
+    ``table`` holds the requested, scored and skipped counts."""
+    stats: Dict[str, Dict[str, Any]] = {}
+    for name, (rows, files) in outputs.items():
+        stats[name] = {'rows': rows}
+        if name == 'predictions':
+            try:
+                stats[name].update(output_stats(files(), task_type))
+            except Exception as error:
+                warnings.warn(
+                    f"Recording the prediction manifest without output "
+                    f"score statistics: {error}", UserWarning, stacklevel=5)
+    return PredictionManifest(
+        id=run_id,
+        parents=PredictionParents(
+            model=(model if model.reconstructed else embedded_model(model)),
+            snapshot=(snapshot if snapshot.reconstructed else
+                      embedded(snapshot)),
         ),
+        prediction_table=table,
         scoring=scoring,
         outputs=[],
         status=None,
