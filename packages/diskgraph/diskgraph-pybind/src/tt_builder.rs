@@ -18,8 +18,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 
 use diskgraph_core::time::{
-    abs_from_unit, ceil_parts, convert_trunc, dur_from_unit, split_parts, Abs, Nanoseconds,
-    TimeUnit,
+    abs_from_unit, ceil_parts, convert_trunc, dur_from_unit, split_parts, Abs, Dur, Seconds,
+    TimeUnit, UnitSystem,
 };
 use diskgraph_core::tt_builder as tt;
 use diskgraph_core::with_index_clock;
@@ -331,20 +331,42 @@ impl StageFilter {
 
 // ─── DiskGraphTTBuilder ──────────────────────────────────────────────────────
 
-/// Holds plan times in nanoseconds; `build()` writes the plan in `timestamp_unit`.
+/// Keeps every plan time as given, with its unit; `build()` converts each one
+/// once, into `timestamp_unit`.
 #[pyclass]
 pub struct DiskGraphTTBuilder {
     timestamp_unit: TimeUnit,
-    entity: Option<tt::EntitySpec<Nanoseconds>>,
-    default_time_secs: Option<i64>,
-    temporal: Option<tt::TemporalSpec<Nanoseconds>>,
+    entity: Option<tt::EntitySpec<Seconds>>,
+    temporal: Option<TemporalArgs>,
     prediction_type: tt::PredictionType,
     is_prediction: bool,
-    split: Option<tt::SplitSpec<Nanoseconds>>,
-    stages: Vec<tt::Stage<Nanoseconds>>,
-    current_ops: Vec<tt::Op<Nanoseconds>>,
+    split: Option<SplitSpecArgs>,
+    stages: Vec<(Vec<BuilderOp>, Option<tt::StageFilter>)>,
+    current_ops: Vec<BuilderOp>,
     target_stype: Option<String>,
     fkey_mapping: Option<Vec<tt::TTFKeySpec>>,
+}
+
+struct TemporalArgs {
+    timestamps: Vec<i64>,
+    unit: tt::TimeUnit,
+    forecast_length: i64,
+    lag_timesteps: Option<i64>,
+}
+
+/// Lag and horizon offsets are the only op fields typed by the clock, so they
+/// wait for `build()`; every other op is complete when added.
+enum BuilderOp {
+    Ready(tt::Op<Seconds>),
+    Autoregression(ShiftedOp),
+    FutureLabels(ShiftedOp),
+}
+
+struct ShiftedOp {
+    alias: String,
+    target_op_json: String,
+    offsets: Vec<i64>,
+    unit: tt::TimeUnit,
 }
 
 #[pymethods]
@@ -355,7 +377,6 @@ impl DiskGraphTTBuilder {
         Ok(Self {
             timestamp_unit: parse_index_clock(timestamp_unit)?,
             entity: None,
-            default_time_secs: None,
             temporal: None,
             prediction_type: tt::PredictionType::Node,
             is_prediction: false,
@@ -367,7 +388,7 @@ impl DiskGraphTTBuilder {
         })
     }
 
-    /// `FOR EACH {table}.{column}`; `default_time_value` is in epoch seconds.
+    /// `FOR EACH {table}.{column}`.
     #[pyo3(signature = (table, column, output_time_col_name=None, default_time_value=None))]
     fn for_each(
         &mut self,
@@ -380,12 +401,11 @@ impl DiskGraphTTBuilder {
             table,
             column,
             output_time_col_name,
-            default_time_value: None,
+            default_time_value: default_time_value.map(Abs::from_raw),
             time_col: None,
             valid_to_col: None,
             filter: None,
         });
-        self.default_time_secs = default_time_value;
     }
 
     /// Entity-level create-time column for temporal filtering.
@@ -438,12 +458,9 @@ impl DiskGraphTTBuilder {
         lag_timesteps: Option<i64>,
         unit: &str,
     ) -> PyResult<()> {
-        let time_unit = parse_time_unit(unit)?;
-        self.temporal = Some(tt::TemporalSpec {
-            timestamps: timestamps
-                .into_iter()
-                .map(|v| abs_from_unit::<Nanoseconds>(v, time_unit))
-                .collect(),
+        self.temporal = Some(TemporalArgs {
+            timestamps,
+            unit: parse_time_unit(unit)?,
             forecast_length,
             lag_timesteps,
         });
@@ -462,7 +479,7 @@ impl DiskGraphTTBuilder {
     /// The unit rules live in [`make_split_spec`], shared with
     /// [`build_split_spec_json`] -- see there for why they are asymmetric.
     fn split_ratio(&mut self, spec: &Bound<'_, PyAny>) -> PyResult<()> {
-        self.split = Some(make_split_spec(extract_split_spec(spec)?)?);
+        self.split = Some(extract_split_spec(spec)?);
         Ok(())
     }
 
@@ -529,7 +546,7 @@ impl DiskGraphTTBuilder {
         let agg_func = parse_agg_func(func)?;
         let unit = window_unit.map(parse_time_unit).transpose()?;
 
-        self.current_ops.push(tt::Op::Aggregate {
+        self.current_ops.push(BuilderOp::Ready(tt::Op::Aggregate {
             alias,
             path: edge_path,
             func: agg_func,
@@ -540,7 +557,7 @@ impl DiskGraphTTBuilder {
             row_filter: row_filter.map(|f| f.inner),
             limit,
             target_entity_table,
-        });
+        }));
         Ok(())
     }
 
@@ -554,12 +571,12 @@ impl DiskGraphTTBuilder {
         path: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
         let path = path.map(extract_edge_path).transpose()?.unwrap_or_default();
-        self.current_ops.push(tt::Op::Column {
+        self.current_ops.push(BuilderOp::Ready(tt::Op::Column {
             alias,
             table,
             column,
             path,
-        });
+        }));
         Ok(())
     }
 
@@ -571,12 +588,12 @@ impl DiskGraphTTBuilder {
         op: &str,
         value: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        self.current_ops.push(tt::Op::Compare {
+        self.current_ops.push(BuilderOp::Ready(tt::Op::Compare {
             alias,
             lhs: lhs_alias,
             op: parse_compare_op(op)?,
             rhs: extract_value(value, self.timestamp_unit)?,
-        });
+        }));
         Ok(())
     }
 
@@ -594,11 +611,11 @@ impl DiskGraphTTBuilder {
             }
         };
 
-        self.current_ops.push(tt::Op::LogicalOp {
+        self.current_ops.push(BuilderOp::Ready(tt::Op::LogicalOp {
             alias,
             op: op_kind,
             operands,
-        });
+        }));
         Ok(())
     }
 
@@ -611,20 +628,8 @@ impl DiskGraphTTBuilder {
         lag_offsets: Vec<i64>,
         lag_offset_unit: &str,
     ) -> PyResult<()> {
-        let target_op: tt::Op<Nanoseconds> =
-            serde_json::from_str(&target_op_json).map_err(|e| {
-                crate::DiskgraphConfigError::new_err(format!("Invalid target op JSON: {}", e))
-            })?;
-
-        let unit = parse_time_unit(lag_offset_unit)?;
-        self.current_ops.push(tt::Op::Autoregression {
-            alias,
-            target_op: Box::new(target_op),
-            lag_offsets: lag_offsets
-                .into_iter()
-                .map(|v| dur_from_unit::<Nanoseconds>(v, unit))
-                .collect(),
-        });
+        let op = ShiftedOp::new(alias, target_op_json, lag_offsets, lag_offset_unit)?;
+        self.current_ops.push(BuilderOp::Autoregression(op));
         Ok(())
     }
 
@@ -636,20 +641,8 @@ impl DiskGraphTTBuilder {
         future_offsets: Vec<i64>,
         future_offset_unit: &str,
     ) -> PyResult<()> {
-        let target_op: tt::Op<Nanoseconds> =
-            serde_json::from_str(&target_op_json).map_err(|e| {
-                crate::DiskgraphConfigError::new_err(format!("Invalid target op JSON: {}", e))
-            })?;
-
-        let unit = parse_time_unit(future_offset_unit)?;
-        self.current_ops.push(tt::Op::FutureLabels {
-            alias,
-            target_op: Box::new(target_op),
-            future_offsets: future_offsets
-                .into_iter()
-                .map(|v| dur_from_unit::<Nanoseconds>(v, unit))
-                .collect(),
-        });
+        let op = ShiftedOp::new(alias, target_op_json, future_offsets, future_offset_unit)?;
+        self.current_ops.push(BuilderOp::FutureLabels(op));
         Ok(())
     }
 
@@ -665,14 +658,14 @@ impl DiskGraphTTBuilder {
     ) -> PyResult<()> {
         let path = extract_edge_path(path)?;
         let unit = window_unit.map(parse_time_unit).transpose()?;
-        self.current_ops.push(tt::Op::HasEdges {
+        self.current_ops.push(BuilderOp::Ready(tt::Op::HasEdges {
             alias,
             path,
             time_col,
             window,
             window_unit: unit,
             row_filter: row_filter.map(|f| f.inner.clone()),
-        });
+        }));
         Ok(())
     }
 
@@ -683,38 +676,75 @@ impl DiskGraphTTBuilder {
             .current_ops
             .pop()
             .ok_or_else(|| crate::DiskgraphConfigError::new_err("No operations to pop"))?;
-        serde_json::to_string(&op).map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!("Failed to serialize op: {}", e))
-        })
+        with_index_clock!(self.timestamp_unit, U => serde_json::to_string(&op.in_clock::<U>()?))
+            .map_err(|e| {
+                crate::DiskgraphConfigError::new_err(format!("Failed to serialize op: {}", e))
+            })
     }
 
     /// Close current stage with a short-circuit filter, start new stage.
     fn filter(&mut self, expr: StageFilter) {
         let ops = std::mem::take(&mut self.current_ops);
-        self.stages.push(tt::Stage {
-            ops,
-            filter: Some(expr.inner),
-        });
+        self.stages.push((ops, Some(expr.inner)));
     }
 
     /// Finalise and return `DiskGraphTTPlan` as JSON.
     fn build(&mut self) -> PyResult<String> {
         if !self.current_ops.is_empty() {
             let ops = std::mem::take(&mut self.current_ops);
-            self.stages.push(tt::Stage { ops, filter: None });
+            self.stages.push((ops, None));
         }
 
         let entity = self.entity.take().ok_or_else(|| {
             crate::DiskgraphConfigError::new_err("call for_each() before build()")
         })?;
 
-        let plan: tt::DiskGraphTTPlan<Nanoseconds> = tt::DiskGraphTTPlan {
-            entity,
-            temporal: self.temporal.take(),
+        with_index_clock!(self.timestamp_unit, U => self.plan::<U>(entity)?.to_json())
+            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))
+    }
+}
+
+impl DiskGraphTTBuilder {
+    fn plan<U: UnitSystem>(
+        &mut self,
+        entity: tt::EntitySpec<Seconds>,
+    ) -> PyResult<tt::DiskGraphTTPlan<U>> {
+        let stages = std::mem::take(&mut self.stages)
+            .into_iter()
+            .map(|(ops, filter)| {
+                let ops = ops
+                    .iter()
+                    .map(BuilderOp::in_clock)
+                    .collect::<PyResult<_>>()?;
+                Ok(tt::Stage { ops, filter })
+            })
+            .collect::<PyResult<_>>()?;
+
+        Ok(tt::DiskGraphTTPlan {
+            entity: tt::EntitySpec {
+                table: entity.table,
+                column: entity.column,
+                output_time_col_name: entity.output_time_col_name,
+                default_time_value: entity
+                    .default_time_value
+                    .map(|secs| abs_from_unit::<U>(secs.raw(), TimeUnit::Seconds)),
+                time_col: entity.time_col,
+                valid_to_col: entity.valid_to_col,
+                filter: entity.filter,
+            },
+            temporal: self.temporal.take().map(|temporal| tt::TemporalSpec {
+                timestamps: temporal
+                    .timestamps
+                    .into_iter()
+                    .map(|v| abs_from_unit::<U>(v, temporal.unit))
+                    .collect(),
+                forecast_length: temporal.forecast_length,
+                lag_timesteps: temporal.lag_timesteps,
+            }),
             prediction_type: std::mem::replace(&mut self.prediction_type, tt::PredictionType::Node),
             is_prediction: self.is_prediction,
-            split: self.split.take(),
-            stages: std::mem::take(&mut self.stages),
+            split: self.split.take().map(make_split_spec::<U>).transpose()?,
+            stages,
             target_stype: self.target_stype.take(),
             // weight_col is set on custom-TT plans only, via the new
             // `build_train_table_artifacts_for_existing_table` entry
@@ -725,17 +755,51 @@ impl DiskGraphTTBuilder {
             lp_resolution: None,
             lp_rhs_is_temporal: false,
             fact_pseudo_time: None,
-        };
-
-        let default_time_secs = self.default_time_secs.take();
-        with_index_clock!(self.timestamp_unit, U => {
-            plan.to_clock::<U>().and_then(|mut plan| {
-                plan.entity.default_time_value = default_time_secs.map(Abs::from_secs);
-                plan.to_json()
-            })
         })
-        .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))
     }
+}
+
+impl BuilderOp {
+    fn in_clock<U: UnitSystem>(&self) -> PyResult<tt::Op<U>> {
+        Ok(match self {
+            BuilderOp::Ready(op) => op
+                .clone()
+                .map_clock(&|offset| dur_from_unit(offset.raw(), TimeUnit::Seconds)),
+            BuilderOp::Autoregression(op) => tt::Op::Autoregression {
+                alias: op.alias.clone(),
+                target_op: Box::new(parse_op(&op.target_op_json)?),
+                lag_offsets: op.offsets_in_clock(),
+            },
+            BuilderOp::FutureLabels(op) => tt::Op::FutureLabels {
+                alias: op.alias.clone(),
+                target_op: Box::new(parse_op(&op.target_op_json)?),
+                future_offsets: op.offsets_in_clock(),
+            },
+        })
+    }
+}
+
+impl ShiftedOp {
+    fn new(alias: String, target_op_json: String, offsets: Vec<i64>, unit: &str) -> PyResult<Self> {
+        Ok(Self {
+            alias,
+            target_op_json,
+            offsets,
+            unit: parse_time_unit(unit)?,
+        })
+    }
+
+    fn offsets_in_clock<U: UnitSystem>(&self) -> Vec<Dur<U>> {
+        self.offsets
+            .iter()
+            .map(|&v| dur_from_unit::<U>(v, self.unit))
+            .collect()
+    }
+}
+
+fn parse_op<U: UnitSystem>(json: &str) -> PyResult<tt::Op<U>> {
+    serde_json::from_str(json)
+        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("Invalid target op JSON: {}", e)))
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -889,7 +953,7 @@ fn parse_timestamp_unit(unit: &str) -> PyResult<tt::TimeUnit> {
 /// *unscaled*, because the executor rescales them itself with
 /// `dur_from_unit(v, unit)` — and for `TimeRangeSplit` that unit may be
 /// calendar (`months` / `years`), which has no fixed-duration form.
-fn make_split_spec(args: SplitSpecArgs) -> PyResult<tt::SplitSpec<Nanoseconds>> {
+fn make_split_spec<U: UnitSystem>(args: SplitSpecArgs) -> PyResult<tt::SplitSpec<U>> {
     let SplitSpecArgs {
         kind,
         ratio,
@@ -958,7 +1022,7 @@ fn make_split_spec(args: SplitSpecArgs) -> PyResult<tt::SplitSpec<Nanoseconds>> 
         (_, Some(v)) => (
             Some(
                 v.into_iter()
-                    .map(|o| dur_from_unit::<Nanoseconds>(o, off_unit))
+                    .map(|o| dur_from_unit::<U>(o, off_unit))
                     .collect::<Vec<_>>(),
             ),
             None,
@@ -987,14 +1051,13 @@ fn make_split_spec(args: SplitSpecArgs) -> PyResult<tt::SplitSpec<Nanoseconds>> 
             v.into_iter()
                 .map(|[lo, hi]| {
                     (
-                        abs_from_unit::<Nanoseconds>(lo, rng_unit),
-                        abs_from_unit::<Nanoseconds>(hi, rng_unit),
+                        abs_from_unit::<U>(lo, rng_unit),
+                        abs_from_unit::<U>(hi, rng_unit),
                     )
                 })
                 .collect()
         }),
-        backtesting_timestamp: backtesting_timestamp
-            .map(|v| abs_from_unit::<Nanoseconds>(v, rng_unit)),
+        backtesting_timestamp: backtesting_timestamp.map(|v| abs_from_unit::<U>(v, rng_unit)),
         split_column,
         split_output_column,
         manual_train_values,
@@ -1028,9 +1091,9 @@ fn make_split_spec(args: SplitSpecArgs) -> PyResult<tt::SplitSpec<Nanoseconds>> 
 #[pyfunction]
 #[pyo3(signature = (spec, timestamp_unit="seconds"))]
 pub fn build_split_spec_json(spec: &Bound<'_, PyAny>, timestamp_unit: &str) -> PyResult<String> {
-    let split = make_split_spec(extract_split_spec(spec)?)?;
+    let args = extract_split_spec(spec)?;
     with_index_clock!(parse_index_clock(timestamp_unit)?, U => {
-        split.to_clock::<U>().and_then(|split| serde_json::to_string(&split))
+        serde_json::to_string(&make_split_spec::<U>(args)?)
     })
     .map_err(|e| {
         crate::DiskgraphConfigError::new_err(format!("failed to serialize split spec: {e}"))
@@ -1099,7 +1162,9 @@ fn extract_value(value: &Bound<'_, PyAny>, clock: TimeUnit) -> PyResult<tt::Valu
     } else if is_datetime(value) {
         // datetime.datetime (pd.Timestamp is a subclass, handled here too).
         // Round up to the index clock to match rowpack's div_ceil storage semantics.
-        let (secs, nanos) = datetime_parts(value)?;
+        let (secs, nanos) = datetime_parts(value).map_err(|e| {
+            crate::DiskgraphConfigError::new_err(format!("cannot read datetime {value}: {e}"))
+        })?;
         Ok(tt::Value::Int(ceil_parts(secs, nanos, clock)))
     } else if is_date(value) {
         // datetime.date — convert to midnight UTC epoch seconds.
@@ -1209,7 +1274,7 @@ mod tests {
         // `split_ratio` now takes a Python object, so exercise the shared
         // implementation directly -- it is what carries the semantics under
         // test, and it needs no interpreter.
-        let split = make_split_spec(SplitSpecArgs {
+        let split = make_split_spec::<Seconds>(SplitSpecArgs {
             kind: Some("TimeRangeSplit".to_string()),
             ratio: None,
             rnd_seed: None,

@@ -328,3 +328,24 @@ def test_rows_whose_window_leaves_the_clock_are_skipped(whole_day_data, tmp_path
     rows = _training_table(index, "nanoseconds", window_days)
     anchors = {row["TIMESTAMP"].date() for part, row in rows if part.startswith("tt.parquet")}
     assert anchors == {datetime.date(2023, 12, 13), datetime.date(2023, 12, 17)}
+
+
+@pytest.mark.parametrize("clock", ["seconds", "milliseconds"])
+def test_plans_keep_anchors_beyond_the_nanosecond_range(clock):
+    year_9999 = 253_402_300_799
+    builder = DiskGraphTTBuilder(clock)
+    builder.temporal([year_9999], forecast_length=1)
+    builder.for_each("users", "user_id", default_time_value=year_9999)
+    plan = json.loads(builder.build())
+    ticks = year_9999 * TICK_NS["seconds"] // TICK_NS[clock]
+    assert plan["temporal"]["timestamps"] == [ticks]
+    assert plan["entity"]["default_time_value"] == ticks
+
+
+def test_an_unreadable_datetime_is_a_config_error():
+    class NoTimestamp(datetime.datetime):
+        def timestamp(self):
+            raise OverflowError("out of range")
+
+    with pytest.raises(diskgraph.DiskgraphConfigError):
+        RowFilter.compare("ordered_at", ">", NoTimestamp(2024, 1, 1), "milliseconds")
