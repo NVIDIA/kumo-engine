@@ -26,7 +26,36 @@ pub enum TimeUnit {
     Years,
 }
 
+impl From<arrow_schema::TimeUnit> for TimeUnit {
+    fn from(unit: arrow_schema::TimeUnit) -> Self {
+        match unit {
+            arrow_schema::TimeUnit::Second => Self::Seconds,
+            arrow_schema::TimeUnit::Millisecond => Self::Milliseconds,
+            arrow_schema::TimeUnit::Microsecond => Self::Microseconds,
+            arrow_schema::TimeUnit::Nanosecond => Self::Nanoseconds,
+        }
+    }
+}
+
 impl TimeUnit {
+    /// The units an index can store its timestamps in.
+    pub const INDEX_CLOCKS: [TimeUnit; 6] = [
+        Self::Nanoseconds,
+        Self::Microseconds,
+        Self::Milliseconds,
+        Self::Seconds,
+        Self::Hours,
+        Self::Days,
+    ];
+
+    pub fn is_index_clock(self) -> bool {
+        Self::INDEX_CLOCKS.contains(&self)
+    }
+
+    pub fn tick_nanos(self) -> i64 {
+        TICK_NANOS[fixed_index(self)]
+    }
+
     /// Parse a unit name string (used by builder methods that still accept strings).
     pub fn from_name(s: &str) -> Option<Self> {
         match s {
@@ -46,6 +75,149 @@ impl TimeUnit {
 }
 
 // ---------------------------------------------------------------------------
+// Converting raw values between fixed units. Each rounding mode is a rule that
+// `main` applies to some kind of value; coarse-to-fine conversions saturate.
+// ---------------------------------------------------------------------------
+
+/// The tick in nanoseconds of each unit with a fixed length, by `fixed_index`.
+const TICK_NANOS: [i64; 8] = [
+    1,
+    1_000,
+    1_000_000,
+    NS_PER_SEC,
+    60 * NS_PER_SEC,
+    3_600 * NS_PER_SEC,
+    86_400 * NS_PER_SEC,
+    604_800 * NS_PER_SEC,
+];
+
+/// Orders the fixed-length units from finest to coarsest.
+fn fixed_index(unit: TimeUnit) -> usize {
+    match unit {
+        TimeUnit::Nanoseconds => 0,
+        TimeUnit::Microseconds => 1,
+        TimeUnit::Milliseconds => 2,
+        TimeUnit::Seconds => 3,
+        TimeUnit::Minutes => 4,
+        TimeUnit::Hours => 5,
+        TimeUnit::Days => 6,
+        TimeUnit::Weeks => 7,
+        other => panic!("unsupported unit for a fixed tick: {:?}", other),
+    }
+}
+
+/// `FACTORS[i][j]` is how many ticks of the finer of units `i` and `j` make one
+/// tick of the coarser, precomputed so that converting a value never divides
+/// to find its factor.
+const FACTORS: [[i64; 8]; 8] = {
+    let mut factors = [[0; 8]; 8];
+    let mut i = 0;
+    while i < 8 {
+        let mut j = 0;
+        while j < 8 {
+            let (a, b) = (TICK_NANOS[i], TICK_NANOS[j]);
+            factors[i][j] = if a >= b { a / b } else { b / a };
+            j += 1;
+        }
+        i += 1;
+    }
+    factors
+};
+
+enum Scale {
+    Same,
+    Up(i64),
+    Down(i64),
+}
+
+#[inline]
+fn scale(from: TimeUnit, to: TimeUnit) -> Scale {
+    if from == to {
+        return Scale::Same;
+    }
+    let (from, to) = (fixed_index(from), fixed_index(to));
+    if from > to {
+        Scale::Up(FACTORS[from][to])
+    } else {
+        Scale::Down(FACTORS[from][to])
+    }
+}
+
+/// Calls `round(value, divisor)` with a literal divisor for the steps between
+/// sub-second units and seconds, so the compiler can turn the division into a
+/// multiplication as it did when these conversions were hard-coded.
+#[inline(always)]
+fn with_literal_divisor(value: i64, divisor: i64, round: impl Fn(i64, i64) -> i64) -> i64 {
+    match divisor {
+        1_000 => round(value, 1_000),
+        1_000_000 => round(value, 1_000_000),
+        1_000_000_000 => round(value, 1_000_000_000),
+        _ => round(value, divisor),
+    }
+}
+
+pub fn convert_trunc(value: i64, from: TimeUnit, to: TimeUnit) -> i64 {
+    match scale(from, to) {
+        Scale::Same => value,
+        Scale::Up(factor) => value.saturating_mul(factor),
+        Scale::Down(divisor) => with_literal_divisor(value, divisor, |v, d| v / d),
+    }
+}
+
+pub fn convert_floor(value: i64, from: TimeUnit, to: TimeUnit) -> i64 {
+    match scale(from, to) {
+        Scale::Same => value,
+        Scale::Up(factor) => value.saturating_mul(factor),
+        Scale::Down(divisor) => with_literal_divisor(value, divisor, i64::div_euclid),
+    }
+}
+
+pub fn convert_ceil(value: i64, from: TimeUnit, to: TimeUnit) -> i64 {
+    match scale(from, to) {
+        Scale::Same => value,
+        Scale::Up(factor) => value.saturating_mul(factor),
+        Scale::Down(divisor) => with_literal_divisor(value, divisor, |v, d| {
+            v.div_euclid(d) + i64::from(v.rem_euclid(d) != 0)
+        }),
+    }
+}
+
+/// Floors `secs + nanos()` (with `0 <= nanos() < 1e9`) to a tick of `to`;
+/// `nanos` is only evaluated when a tick is shorter than a second.
+pub fn floor_parts(secs: i64, nanos: impl FnOnce() -> u32, to: TimeUnit) -> i64 {
+    let whole = convert_floor(secs, TimeUnit::Seconds, to);
+    if to.tick_nanos() < NS_PER_SEC {
+        whole.saturating_add(i64::from(nanos()) / to.tick_nanos())
+    } else {
+        whole
+    }
+}
+
+/// Rounds `secs + nanos` (with `0 <= nanos < 1e9`) up to a tick of `to`.
+pub fn ceil_parts(secs: i64, nanos: u32, to: TimeUnit) -> i64 {
+    if to.tick_nanos() < NS_PER_SEC {
+        let fraction = convert_ceil(i64::from(nanos), TimeUnit::Nanoseconds, to);
+        convert_floor(secs, TimeUnit::Seconds, to).saturating_add(fraction)
+    } else {
+        convert_ceil(
+            secs.saturating_add(i64::from(nanos > 0)),
+            TimeUnit::Seconds,
+            to,
+        )
+    }
+}
+
+/// Splits a value in `unit` into whole epoch seconds and a nanosecond fraction.
+pub fn split_parts(value: i64, unit: TimeUnit) -> (i64, u32) {
+    let ticks_per_sec = NS_PER_SEC / unit.tick_nanos();
+    if ticks_per_sec == 0 {
+        return (convert_floor(value, unit, TimeUnit::Seconds), 0);
+    }
+    let nanos = value.rem_euclid(ticks_per_sec) * unit.tick_nanos();
+    (value.div_euclid(ticks_per_sec), nanos as u32)
+}
+
+// ---------------------------------------------------------------------------
 // UnitSystem trait + Abs<U> / Dur<U> phantom-typed wrappers
 // ---------------------------------------------------------------------------
 
@@ -53,13 +225,15 @@ impl TimeUnit {
 ///
 /// Implementations provide construction from various source units and
 /// extraction back to raw i64. Current implementations:
-/// - [`Seconds`] — epoch seconds, used by rowpack storage and the core engine
-/// - [`Nanoseconds`] — epoch nanoseconds, used at the PyO3/Arrow boundary
+/// - [`Seconds`] — epoch seconds, the default index clock
+/// - [`Nanoseconds`] — epoch nanoseconds, also used at the PyO3/Arrow boundary
 ///   where timestamps arrive as `TimestampNanosecondArray`
+/// - [`Microseconds`], [`Milliseconds`], [`Hours`], [`Days`] — the other index clocks
 ///
 /// Adding a new unit requires a new marker struct + impl block + one match arm
 /// at the top-level dispatch site.
 pub trait UnitSystem: 'static + Copy + Send + Sync + Eq + Ord + std::hash::Hash {
+    const UNIT: TimeUnit;
     fn abs_from_secs(secs: i64) -> Abs<Self>;
     fn abs_from_millis(ms: i64) -> Abs<Self>;
     fn abs_from_micros(us: i64) -> Abs<Self>;
@@ -243,13 +417,12 @@ impl<'de, U: UnitSystem> Deserialize<'de> for Dur<U> {
 // -- Seconds unit system ----------------------------------------------------
 
 /// The seconds unit system. `Abs<Seconds>` stores epoch seconds, `Dur<Seconds>`
-/// stores duration in seconds. This is the only implementation today — it
-/// matches the rowpack storage contract where `access.get_timestamp()` always
-/// returns epoch seconds.
+/// stores duration in seconds. This is the default index clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Seconds;
 
 impl UnitSystem for Seconds {
+    const UNIT: TimeUnit = TimeUnit::Seconds;
     fn abs_from_secs(secs: i64) -> Abs<Self> {
         Abs(secs, PhantomData)
     }
@@ -299,6 +472,7 @@ pub struct Nanoseconds;
 const NS_PER_SEC: i64 = 1_000_000_000;
 
 impl UnitSystem for Nanoseconds {
+    const UNIT: TimeUnit = TimeUnit::Nanoseconds;
     fn abs_from_secs(secs: i64) -> Abs<Self> {
         Abs(secs.saturating_mul(NS_PER_SEC), PhantomData)
     }
@@ -335,6 +509,95 @@ impl UnitSystem for Nanoseconds {
     fn abs_to_nanos(ts: Abs<Self>) -> i64 {
         ts.0
     }
+}
+
+// -- Microseconds, milliseconds, hours and days ------------------------------
+
+macro_rules! fixed_clock {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name;
+
+        impl UnitSystem for $name {
+            const UNIT: TimeUnit = TimeUnit::$name;
+            fn abs_from_secs(secs: i64) -> Abs<Self> {
+                Abs::from_raw(convert_trunc(secs, TimeUnit::Seconds, Self::UNIT))
+            }
+            fn abs_from_millis(ms: i64) -> Abs<Self> {
+                Abs::from_raw(convert_trunc(ms, TimeUnit::Milliseconds, Self::UNIT))
+            }
+            fn abs_from_micros(us: i64) -> Abs<Self> {
+                Abs::from_raw(convert_trunc(us, TimeUnit::Microseconds, Self::UNIT))
+            }
+            fn abs_from_nanos(ns: i64) -> Abs<Self> {
+                Abs::from_raw(convert_trunc(ns, TimeUnit::Nanoseconds, Self::UNIT))
+            }
+            fn abs_from_days(days: i32) -> Abs<Self> {
+                Abs::from_raw(convert_trunc(i64::from(days), TimeUnit::Days, Self::UNIT))
+            }
+            fn abs_raw(ts: Abs<Self>) -> i64 {
+                ts.0
+            }
+            fn abs_to_secs(ts: Abs<Self>) -> i64 {
+                convert_trunc(ts.0, Self::UNIT, TimeUnit::Seconds)
+            }
+            fn dur_from_secs(secs: i64) -> Dur<Self> {
+                Dur::from_raw(convert_trunc(secs, TimeUnit::Seconds, Self::UNIT))
+            }
+            fn dur_from_nanos(ns: i64) -> Dur<Self> {
+                Dur::from_raw(convert_trunc(ns, TimeUnit::Nanoseconds, Self::UNIT))
+            }
+            fn dur_from_days(days: i64) -> Dur<Self> {
+                Dur::from_raw(convert_trunc(days, TimeUnit::Days, Self::UNIT))
+            }
+            fn dur_raw(dur: Dur<Self>) -> i64 {
+                dur.0
+            }
+            fn abs_to_nanos(ts: Abs<Self>) -> i64 {
+                convert_trunc(ts.0, Self::UNIT, TimeUnit::Nanoseconds)
+            }
+        }
+    };
+}
+
+fixed_clock!(Microseconds);
+fixed_clock!(Milliseconds);
+fixed_clock!(Hours);
+fixed_clock!(Days);
+
+/// Runs `$body` with `$U` bound to the `UnitSystem` of an index clock.
+/// Callers validate the clock with [`TimeUnit::is_index_clock`] first.
+#[macro_export]
+macro_rules! with_index_clock {
+    ($clock:expr, $U:ident => $body:expr) => {
+        match $clock {
+            $crate::time::TimeUnit::Nanoseconds => {
+                type $U = $crate::time::Nanoseconds;
+                $body
+            }
+            $crate::time::TimeUnit::Microseconds => {
+                type $U = $crate::time::Microseconds;
+                $body
+            }
+            $crate::time::TimeUnit::Milliseconds => {
+                type $U = $crate::time::Milliseconds;
+                $body
+            }
+            $crate::time::TimeUnit::Seconds => {
+                type $U = $crate::time::Seconds;
+                $body
+            }
+            $crate::time::TimeUnit::Hours => {
+                type $U = $crate::time::Hours;
+                $body
+            }
+            $crate::time::TimeUnit::Days => {
+                type $U = $crate::time::Days;
+                $body
+            }
+            other => unreachable!("{:?} is not an index clock", other),
+        }
+    };
 }
 
 // -- Helpers for converting from a dynamic TimeUnit -------------------------
@@ -375,6 +638,7 @@ pub fn add_calendar_months<U: UnitSystem>(ts: Abs<U>, months: i32) -> Abs<U> {
     use chrono::{DateTime, Datelike, NaiveDate, Timelike};
 
     let secs = ts.to_secs();
+    let subsecond = ts - Abs::<U>::from_secs(secs);
     let dt = DateTime::from_timestamp(secs, 0)
         .expect("timestamp out of range for calendar arithmetic")
         .naive_utc();
@@ -393,7 +657,7 @@ pub fn add_calendar_months<U: UnitSystem>(ts: Abs<U>, months: i32) -> Abs<U> {
         .and_hms_opt(dt.hour(), dt.minute(), dt.second())
         .expect("invalid time in calendar arithmetic");
 
-    Abs::<U>::from_secs(result.and_utc().timestamp())
+    Abs::<U>::from_secs(result.and_utc().timestamp()) + subsecond
 }
 
 /// Add an offset to a timestamp. For fixed-size units (seconds through weeks)
@@ -896,6 +1160,85 @@ mod tests {
         assert_eq!(TimeUnit::from_name("weeks"), Some(TimeUnit::Weeks));
         assert_eq!(TimeUnit::from_name("milliseconds"), Some(TimeUnit::Milliseconds));
         assert_eq!(TimeUnit::from_name("microseconds"), Some(TimeUnit::Microseconds));
+    }
+
+    // -- Conversions between fixed units --------------------------------------
+
+    #[test]
+    fn finer_to_coarser_rounds_by_mode() {
+        let ms = TimeUnit::Milliseconds;
+        let s = TimeUnit::Seconds;
+        assert_eq!(convert_ceil(1_500, ms, s), 2);
+        assert_eq!(convert_ceil(-1_500, ms, s), -1);
+        assert_eq!(convert_floor(1_500, ms, s), 1);
+        assert_eq!(convert_floor(-1_500, ms, s), -2);
+        assert_eq!(convert_trunc(1_500, ms, s), 1);
+        assert_eq!(convert_trunc(-1_500, ms, s), -1);
+    }
+
+    #[test]
+    fn coarser_to_finer_multiplies_and_saturates() {
+        for convert in [convert_ceil, convert_floor, convert_trunc] {
+            assert_eq!(convert(2, TimeUnit::Hours, TimeUnit::Seconds), 7_200);
+            assert_eq!(
+                convert(i64::MAX / 2, TimeUnit::Seconds, TimeUnit::Nanoseconds),
+                i64::MAX
+            );
+            assert_eq!(
+                convert(i64::MIN / 2, TimeUnit::Days, TimeUnit::Seconds),
+                i64::MIN
+            );
+            assert_eq!(convert(-7, TimeUnit::Days, TimeUnit::Days), -7);
+        }
+    }
+
+    #[test]
+    fn floor_parts_drops_the_fraction_below_one_tick() {
+        assert_eq!(floor_parts(10, || 999_999_999, TimeUnit::Seconds), 10);
+        assert_eq!(
+            floor_parts(10, || 123_456_789, TimeUnit::Milliseconds),
+            10_123
+        );
+        assert_eq!(
+            floor_parts(10, || 123_456_789, TimeUnit::Nanoseconds),
+            10_123_456_789
+        );
+        assert_eq!(floor_parts(-1, || 500_000_000, TimeUnit::Hours), -1);
+    }
+
+    #[test]
+    fn ceil_parts_rounds_any_fraction_up_to_one_tick() {
+        assert_eq!(ceil_parts(10, 0, TimeUnit::Seconds), 10);
+        assert_eq!(ceil_parts(10, 1, TimeUnit::Seconds), 11);
+        assert_eq!(ceil_parts(10, 1, TimeUnit::Milliseconds), 10_001);
+        assert_eq!(ceil_parts(3_600, 0, TimeUnit::Hours), 1);
+        assert_eq!(ceil_parts(3_600, 1, TimeUnit::Hours), 2);
+        assert_eq!(ceil_parts(-1, 500_000_000, TimeUnit::Hours), 0);
+    }
+
+    #[test]
+    fn split_parts_returns_seconds_and_a_positive_fraction() {
+        assert_eq!(split_parts(-1, TimeUnit::Nanoseconds), (-1, 999_999_999));
+        assert_eq!(
+            split_parts(10_123, TimeUnit::Milliseconds),
+            (10, 123_000_000)
+        );
+        assert_eq!(split_parts(2, TimeUnit::Hours), (7_200, 0));
+        assert_eq!(split_parts(i64::MAX, TimeUnit::Days), (i64::MAX, 0));
+    }
+
+    #[test]
+    fn every_index_clock_has_a_unit_system() {
+        for clock in TimeUnit::INDEX_CLOCKS {
+            let day = crate::with_index_clock!(clock, U => Abs::<U>::from_days(1).to_secs());
+            assert_eq!(day, 86_400, "{clock:?}");
+        }
+    }
+
+    #[test]
+    fn calendar_months_keep_the_time_of_day_below_one_second() {
+        let ts = Abs::<Milliseconds>::from_raw(1_705_276_800_250);
+        assert_eq!(add_calendar_months(ts, 1).raw(), 1_707_955_200_250);
     }
 
     #[test]
