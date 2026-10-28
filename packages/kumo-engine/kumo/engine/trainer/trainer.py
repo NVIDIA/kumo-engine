@@ -161,8 +161,14 @@ class TrainingResult:
         """Score with this model, as :meth:`Trainer.predict`."""
         return self._model('predict').predict(*args, **kwargs)
 
-    def export(self, config: ModelOutputConfig) -> PublishedModel:
-        """Publish this model's bundle, as :meth:`Trainer.export`."""
+    def export(self, config: Any) -> PublishedModel:
+        """Publish this model's bundle to a ``ModelOutputConfig``, or
+        register it at a `kumo.MLOps` ``registry`` through its tracker; a
+        registry that already holds the bundle returns that version."""
+        from kumo.engine._mlops import MLOps
+
+        if isinstance(config, MLOps):
+            return _register_result(self, config)
         _require_publisher(config)
         return _publish(self.bundle_dir, self.bundle_id, self.metrics, config)
 
@@ -352,15 +358,25 @@ def _store_and_register(
     snapshot: Any = None,
     metrics: Mapping[str, float] = {},
     warn: bool = True,
+    stored: Optional[BaseException] = None,
 ) -> Tuple[Optional[PublishedModel], Optional[BaseException]]:
     r"""Store a fitted bundle under the artifact root, log it in the
     session's run and register it, as MLOps ``settings`` say; returns the
-    registered version and the first failure."""
-    if settings is not None and settings.wants('model'):
-        _store_model(bundle_dir, manifest, settings)
+    registered version and the first failure. A model whose bundle or
+    assets (``stored``, the asset failure) could not be stored is not
+    registered."""
+    if stored is None and settings is not None and settings.wants('model'):
+        try:
+            _store_model(bundle_dir, manifest, settings)
+        except Exception as error:
+            stored = error
+    if stored is not None and warn:
+        warn_failure(f'{stored}; the model is not registered', stored, 3)
     registered, error = (None, None) if session is None else session.log_model(
-        bundle_dir, manifest, snapshot, _mlflow_registry(settings))
-    registry = _connector_registry(settings)
+        bundle_dir, manifest, snapshot,
+        None if stored else _mlflow_registry(settings))
+    error = stored or error
+    registry = None if stored else _connector_registry(settings)
     if registry is None:
         return registered, error
     errors: List[BaseException] = []
@@ -379,7 +395,7 @@ def _store_and_register(
 def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
                  settings: Any) -> None:
     r"""Copy the bundle to ``<root>/models/<bundle id>/`` unless a complete
-    copy is there; failures warn."""
+    copy is there."""
     from kumo_core.object_store_sink import holds_bundle, upload_bundle
     from pyarrow.fs import FileSelector
 
@@ -398,9 +414,8 @@ def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
             filesystem.delete_dir_contents(root, missing_dir_ok=True)
         upload_bundle(filesystem, root, str(bundle_dir))
     except Exception as error:
-        warnings.warn(
-            f"Could not store model {manifest.id} under the artifact "
-            f"root: {error}", UserWarning, stacklevel=4)
+        raise RuntimeError(f"Could not store model {manifest.id} under the "
+                           f"artifact root: {error}") from error
 
 
 def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
@@ -446,6 +461,19 @@ def _require_publisher(export_config: ModelOutputConfig) -> None:
             f'{type(export_config.connector).__name__} cannot publish '
             f'models')
     check_model_location(export_config)
+
+
+def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
+    if settings.registry is None:
+        raise ValueError('export(cfg) registers at cfg.registry, which is '
+                         'not set.')
+    register = getattr(settings.tracking, 'register', None)
+    if callable(register):
+        return register(result, settings.registry)
+    registry = cast(ModelOutputConfig, _connector_registry(settings))
+    _require_publisher(registry)
+    return _publish(result.bundle_dir, result.bundle_id, result.metrics,
+                    registry)
 
 
 def _mlflow_registry(settings: Any) -> Optional[ModelRegistryLocation]:
@@ -602,12 +630,10 @@ class Trainer:
                 "this same Trainer instance.")
         return self._training_result
 
-    def export(self, config: ModelOutputConfig) -> PublishedModel:
-        """Publish the fitted or loaded model bundle."""
-        training_result = self._fitted('export')
-        _require_publisher(config)
-        return _publish(training_result.bundle_dir, training_result.bundle_id,
-                        training_result.metrics, config)
+    def export(self, config: Any) -> PublishedModel:
+        """Publish the fitted or loaded model bundle, as
+        :meth:`TrainingResult.export`."""
+        return self._fitted('export').export(config)
 
     @_without_torch_scatter_hint
     def fit(
@@ -675,6 +701,7 @@ class Trainer:
             None if settings is None else settings.tracking, warn=warn)
         events = EventEmitter(
             [*callbacks, session.on_event] if session.enabled else callbacks)
+        deps = Dependencies(settings=settings)
         fit_start = time.monotonic()
         try:
             started = {
@@ -690,7 +717,7 @@ class Trainer:
                                scoring_defaults=scoring_defaults,
                                warm_start=warm_start, run_id=run_id,
                                events=events, tracking=session,
-                               deps=Dependencies(settings=settings))
+                               deps=deps)
         except BaseException as error:
             events.emit('fit_ended', params={
                 'status': 'failed',
@@ -706,7 +733,8 @@ class Trainer:
             result.bundle_dir, result.manifest or (
                 None if result.bundle_id is None else stub(
                     'model', result.bundle_id)), settings, session=session,
-            snapshot=snapshot, metrics=result.metrics, warn=warn)
+            snapshot=snapshot, metrics=result.metrics, warn=warn,
+            stored=(deps.errors or [None])[0])
         if registered is not None:
             result = replace(result, registered_model=registered)
             self._training_result = result

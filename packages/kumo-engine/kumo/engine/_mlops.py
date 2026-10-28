@@ -237,13 +237,13 @@ def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
 
 def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
                    call: str, stacklevel: int = 2) -> None:
-    r"""Reports ``error``, a tracking or registration failure of a finished
-    ``call``: raises when ``settings.on_error`` is ``'raise'``, else warns
-    unless `warn_failure` already warned about it."""
+    r"""Reports ``error``, a storing, tracking or registration failure of a
+    finished ``call``: raises when ``settings.on_error`` is ``'raise'``,
+    else warns unless `warn_failure` already warned about it."""
     if error is None or settings is None:
         return
-    message = (f'{call} finished, but MLOps tracking or registration '
-               f'failed: {full_error(error)}')
+    message = (f'{call} finished, but MLOps storing, tracking or '
+               f'registration failed: {full_error(error)}')
     if settings.on_error == 'raise':
         raise RuntimeError(message) from error
     warn_failure(message, error, stacklevel + 1)

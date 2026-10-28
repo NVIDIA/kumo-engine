@@ -62,9 +62,13 @@ def test_ambient_identities_set_no_credentials(monkeypatch, tracking_uri):
     target = resolve(_connector(DatabricksIdentity()))
     before = dict(os.environ)
     with target.scope():
-        assert dict(os.environ) == before
-        assert mlflow.get_tracking_uri() == tracking_uri
-    assert not target.explicit
+        # A profile or notebook identity: Unity Catalog registration
+        # downloads through the process-wide URI, so it points at Databricks.
+        assert mlflow.get_tracking_uri() == 'databricks'
+        assert {k: v for k, v in os.environ.items()
+                if k.startswith('DATABRICKS_')} == {'DATABRICKS_TOKEN': 'mine'}
+    assert mlflow.get_tracking_uri() == tracking_uri
+    assert dict(os.environ) == before
 
     for target in (resolve(SageMakerMLflow(ARN, S3Identity())),
                    resolve(SageMakerMLflow(ARN))):
@@ -297,3 +301,41 @@ def test_the_smoke_script_compiles(tmp_path):
                                doraise=True)
             return
     pytest.skip('examples/mlops is not in this checkout')
+
+
+def test_a_service_principal_client_ignores_a_token_lent_to_mlflow(
+        monkeypatch):
+    from kumo_databricks import session
+
+    from kumo.engine.integrations._mlflow_target import _principal
+
+    made = []
+    monkeypatch.setattr(session, 'WorkspaceClient',
+                        lambda **kwargs: made.append(kwargs))
+    monkeypatch.setenv('DATABRICKS_TOKEN', 'short-lived')
+    session._client_for(_principal(DatabricksIdentity(
+        host='https://dbc.example', client_id='sp', client_secret='secret')))
+    assert made[0]['auth_type'] == 'oauth-m2m'
+
+
+def test_unity_catalog_search_results_with_tags_as_a_method():
+    from kumo.engine.integrations.mlflow import _registered_version
+
+    class Search:
+        def __init__(self, version):
+            self.version = version
+
+        def tags(self):
+            raise AssertionError('not a mapping')
+
+    class Page(list):
+        token = None
+
+    held = {'1': {'kumo_bundle_id': 'other'}, '2': {'kumo_bundle_id': 'b'}}
+    client = SimpleNamespace(
+        search_model_versions=lambda *a, **k: Page([Search('1'),
+                                                    Search('2')]),
+        get_model_version=lambda name, version: SimpleNamespace(
+            tags=held[version]))
+    assert _registered_version(client, 'm', {'kumo_bundle_id': 'b'}) == '2'
+    assert _registered_version(client, 'm', {'kumo_bundle_id': 'x'}) is None

@@ -4,11 +4,13 @@
 """The MLOps seams take any bundle, run and predictor, not only the
 Trainer's."""
 
+import io
 import json
 import os
 import subprocess
 import sys
 import textwrap
+import warnings
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -283,3 +285,82 @@ def test_a_model_serves_from_its_bundle_snapshot_and_assets_alone(
                           capture_output=True, text=True, timeout=600)
     assert "MissingDependencyError: The model needs text_encoder 'colors'" \
         in done.stderr
+
+
+class _PrefixOnlyS3:
+    r"""An S3 filesystem whose credentials cover only the root's prefix:
+    HeadBucket and parent marker objects are refused."""
+    type_name = 's3'
+
+    def __init__(self):
+        self.objects = {}
+
+    def get_file_info(self, path):
+        return SimpleNamespace(is_file=path in self.objects)
+
+    def create_dir(self, path, recursive=True):
+        raise OSError('AWS Error ACCESS_DENIED during HeadBucket operation')
+
+    def open_output_stream(self, path):
+        objects = self.objects
+
+        class Writer(io.BytesIO):
+            def close(self):
+                objects[path] = self.getvalue()
+                super().close()
+
+        return Writer()
+
+
+def test_an_asset_is_stored_on_s3_with_prefix_scoped_rights(
+        tmp_path, monkeypatch):
+    from kumo.engine import connector
+
+    s3 = _PrefixOnlyS3()
+    monkeypatch.setattr(connector, 'file_store',
+                        lambda connector, path: (s3, f'bucket/kumo/{path}'))
+    (tmp_path / 'vocab').mkdir()
+    (tmp_path / 'vocab' / 'words.txt').write_text('a b c')
+    deps = Dependencies(settings=kumo.MLOps(str(tmp_path / 'root')))
+    record = deps.require(FileAsset('toy', 'vocab', tmp_path / 'vocab'))
+    assert deps.errors == [] and record.location
+    assert sorted(s3.objects) == [
+        f'bucket/kumo/assets/toy/{record.sha256}/_provenance.json',
+        f'bucket/kumo/assets/toy/{record.sha256}/words.txt']
+
+
+@pytest.mark.parametrize('on_error', ['warn', 'raise'])
+def test_a_model_that_was_not_stored_is_not_registered(
+        tmp_path, monkeypatch, on_error):
+    from kumo.engine._mlops import raise_on_error
+    from kumo.engine.trainer import trainer
+
+    bundle, manifest = _toy_bundle(tmp_path / 'bundle')
+    published = []
+    sink = SimpleNamespace(
+        publish_model=lambda *a, **k: published.append(a) or 1 / 0)
+    settings = kumo.MLOps(str(tmp_path / 'root'), on_error=on_error,
+                          tracking=_RegistryTracker(
+                              SimpleNamespace(sink_backend=sink)),
+                          registry=ModelRegistryLocation('TOY'))
+
+    def refuse(*args):
+        raise RuntimeError('Could not store model m under the artifact '
+                           'root: validate: oauth and pat')
+
+    monkeypatch.setattr(trainer, '_store_model', refuse)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        registered, error = _store_and_register(
+            bundle, manifest, settings, warn=on_error == 'warn')
+    assert registered is None and published == []
+    assert 'oauth and pat' in str(error)
+    assert any('not registered' in str(w.message)
+               for w in caught) is (on_error == 'warn')
+    if on_error == 'raise':
+        with pytest.raises(RuntimeError, match='oauth and pat'):
+            raise_on_error(settings, error, 'Trainer.fit')
+    asset_failure = OSError('ACCESS_DENIED')
+    registered, error = _store_and_register(bundle, manifest, settings,
+                                            warn=False, stored=asset_failure)
+    assert registered is None and error is asset_failure
