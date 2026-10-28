@@ -179,6 +179,26 @@ def test_mlops_stores_the_run_after_its_export(graph, classifier, tmp_path):
     assert not (tmp_path / 'off' / 'predictions').exists()
 
 
+@pytest.mark.parametrize('on_error', ['warn', 'raise'])
+def test_a_failed_store_of_a_run_follows_on_error(graph, classifier,
+                                                  tmp_path, monkeypatch,
+                                                  on_error):
+    _, snapshot = graph
+    trainer, table = classifier
+    monkeypatch.setattr(
+        kumo.PredictionResult, '_export',
+        lambda self, *args: (_ for _ in ()).throw(OSError('ACCESS_DENIED')))
+    cfg = kumo.MLOps(str(tmp_path / 'root'), on_error=on_error)
+    if on_error == 'raise':
+        with pytest.raises(RuntimeError, match='Could not store prediction'):
+            trainer.predict(table, snapshot=snapshot, mlops=cfg,
+                            binary_classification_threshold=0.5)
+    else:
+        with pytest.warns(UserWarning, match='ACCESS_DENIED'):
+            trainer.predict(table, snapshot=snapshot, mlops=cfg,
+                            binary_classification_threshold=0.5)
+
+
 def test_prediction_manifest_round_trips_unchanged(graph, classifier,
                                                    tmp_path):
     _, snapshot = graph
