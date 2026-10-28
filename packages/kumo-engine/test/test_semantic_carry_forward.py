@@ -26,6 +26,8 @@ from kumo.engine.pquery.prediction_table import (
 )
 from kumo.engine.trainer.trainer import Trainer, _stage_model_bundle
 
+_SPLIT = SimpleNamespace(stage_counts={'test': 1})
+
 
 @dataclass(frozen=True)
 class _TaskDataset:
@@ -395,7 +397,7 @@ def test_fit_consumes_generated_rows_with_fresh_task_metadata(
 
     def fake_materialize(request, task_dataset, generated, **kwargs):
         calls.append((request, task_dataset, generated, kwargs.get('tt_id')))
-        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask),
+        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask, split=_SPLIT),
                                model_plan=CoreModelPlan(),
                                bundle_dir=str(tmp_path))
 
@@ -528,7 +530,7 @@ def test_fit_materializes_existing_rows_against_explicit_snapshot(
 
     def fake_materialize(request, task_dataset, generated, **kwargs):
         calls.append((request, task_dataset, generated))
-        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask),
+        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask, split=_SPLIT),
                                model_plan=CoreModelPlan(),
                                bundle_dir=str(tmp_path))
 
@@ -604,7 +606,7 @@ def test_fit_uses_selected_graph_task_semantics_without_regenerating_rows(
     def fake_materialize(request, task_dataset, generated, **kwargs):
         captured.update(request=request, task_dataset=task_dataset,
                         generated=generated)
-        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask),
+        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask, split=_SPLIT),
                                model_plan=CoreModelPlan(),
                                bundle_dir=str(tmp_path))
 
@@ -780,7 +782,7 @@ def test_repeated_fit_calls_get_distinct_ingest_targets(snapshot, tmp_path,
     def fake_materialize(request, task_dataset, generated, **kwargs):
         tt_ids.append(kwargs.get('tt_id'))
         task_datasets.append(task_dataset)
-        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask),
+        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask, split=_SPLIT),
                                model_plan=CoreModelPlan(),
                                bundle_dir=str(tmp_path))
 
@@ -864,7 +866,7 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
     def fake_materialize(request, task_dataset, generated, **kwargs):
         with records_lock:
             records.append((kwargs['tt_id'], task_dataset, request.run_id))
-        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask),
+        return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask, split=_SPLIT),
                                model_plan=CoreModelPlan(),
                                bundle_dir=str(tmp_path))
 
