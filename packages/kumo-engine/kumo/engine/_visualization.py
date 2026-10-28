@@ -14,6 +14,7 @@ from kumoapi.graph import Edge, validate_edge_endpoints
 from kumoapi.source_table import CustomSQLSourceTable
 from kumoapi.table import TableDefinition
 
+from kumo.engine._widget import THEME
 from kumo.engine.table import Table
 
 _COLUMN_LIMIT = 10
@@ -365,14 +366,14 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         f'<svg xmlns="http://www.w3.org/2000/svg" '
         f'width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
         'role="group" aria-label="Table relationships" '
-        'font-family="Arial, Helvetica, sans-serif">',
+        f'font-family="{THEME["font"]}">',
         '<title>Table relationships</title>',
         '<desc>Lines connect foreign keys (FK) to primary keys (PK).'
         ' T marks the declared time column.'
         '</desc>', f'<defs><pattern id="{uid}-grid" width="16" height="16" '
         'patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.7" '
-        'fill="#d9ddd5"/></pattern></defs>',
-        f'<rect width="{width}" height="{height}" fill="white"/>',
+        f'fill="{THEME["grid"]}"/></pattern></defs>',
+        f'<rect width="{width}" height="{height}" fill="{THEME["background"]}"/>',
         f'<rect width="{width}" height="{height}" fill="url(#{uid}-grid)"/>'
     ]
     if not names:
@@ -394,7 +395,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         svg.append(
             f'<g role="img" aria-label="{label}"><title>{label}</title>'
             f'<path class="kumo-edge" {endpoints} d="{path}" fill="none" '
-            'stroke="#a1a1a1" stroke-width="1"/></g>')
+            f'stroke="{THEME["edge"]}" stroke-width="1"/></g>')
     for name in names:
         x, y = geometry['positions'][name]
         title, header, rows, ports, footer, card_height = cards[name]
@@ -417,16 +418,16 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                    f'transform="translate({x} {y})">'
                    f'<defs><clipPath id="{clip}"><path d="{shape}"/>'
                    '</clipPath></defs>'
-                   f'<path d="{shape}" fill="white" stroke="#94a3b8"/>')
+                   f'<path d="{shape}" fill="{THEME["background"]}" stroke="{THEME["card_border"]}"/>')
         svg.append(_tooltip(summary, table=name, connected_tables=connected))
         svg.append(f'<path class="kumo-surface" '
                    f'd="{_squircle(card_width, header, square_bottom=True)}" '
-                   f'clip-path="url(#{clip})" fill="#f4f8ec" '
-                   'stroke="#c8d9ad"/>')
+                   f'clip-path="url(#{clip})" fill="{THEME["header_background"]}" '
+                   f'stroke="{THEME["header_border"]}"/>')
         for i, line in enumerate(title):
             svg.append('<text xml:space="preserve" '
                        f'x="16" y="{26 + 22 * i}" font-size="17" '
-                       f'font-weight="700" fill="#386000">{escape(line)}'
+                       f'font-weight="700" fill="{THEME["accent"]}">{escape(line)}'
                        '</text>')
         svg.append('</g>')
         for row_index, (column, lines, ry, rh) in enumerate(rows):
@@ -452,19 +453,19 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
             for i, line in enumerate(lines):
                 svg.append('<text xml:space="preserve" '
                            f'x="18" y="{ry + 21 + 20 * i}" '
-                           f'font-size="16" fill="#202020">{escape(line)}'
+                           f'font-size="16" fill="{THEME["foreground"]}">{escape(line)}'
                            '</text>')
             if role:
                 svg.append(f'<text x="{card_width - 18}" '
                            f'y="{ry + rh / 2 + 4}" text-anchor="end" '
                            f'font-size="10" font-weight="700" '
-                           f'fill="#386000">{role}</text>')
+                           f'fill="{THEME["accent"]}">{role}</text>')
             svg.append('</g>')
         if footer:
             svg.append(f'<text x="18" y="{card_height - 14}" font-size="12" '
-                       f'fill="#64748b">{footer}</text>')
+                       f'fill="{THEME["muted"]}">{footer}</text>')
         svg.append('</g>')
     for x, y in geometry['handles']:
-        svg.append(f'<circle cx="{x}" cy="{y}" r="4" fill="#64748b"/>')
+        svg.append(f'<circle cx="{x}" cy="{y}" r="4" fill="{THEME["muted"]}"/>')
     return SVG(''.join(svg) + '</svg>', samples, uid, layouts=layouts,
                initial_layout=selected)

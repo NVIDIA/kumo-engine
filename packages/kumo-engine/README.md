@@ -177,6 +177,45 @@ A footer counts hidden columns.
 Visualization accepts at most 30 tables; larger graphs raise an error so no tables or relationships are silently omitted.
 Self-relations are rejected because graph snapshots do not support them.
 
+### Developing another notebook widget
+
+Internal widgets share `kumo.engine._widget` for theme values, HTML chrome, buttons, safe JSON payloads and instance cleanup.
+Keep feature data, rendering and interactions in the feature module; a chart does not need graph tables, layouts or camera controls.
+Scope feature-specific CSS under a feature root class; the shared toolbar and button defaults use lower specificity so later notebook outputs do not override feature styling.
+This synthetic example uses the same shell and button styling as graph visualization:
+
+```python
+from html import escape
+from IPython.display import HTML, display
+from kumo.engine._widget import THEME, button, render_widget
+
+label = "Synthetic contribution: 75%"
+body = (
+    '<div class="kumo-widget-toolbar">'
+    + button("chart-values", "Toggle values", text="#") + '</div>'
+    '<svg width="320" height="64" viewBox="0 0 320 64" role="img" '
+    f'aria-label="{escape(label)}" font-family="{THEME["font"]}">'
+    f'<rect x="0" y="8" width="225" height="24" fill="{THEME["accent"]}"/>'
+    f'<text class="chart-value" x="0" y="55" fill="{THEME["foreground"]}">'
+    '75%</text></svg>'
+)
+script = """
+const toggle=host.querySelector('.chart-values');
+toggle.addEventListener('click',()=>{
+  host.querySelector('.chart-value').toggleAttribute('hidden');
+},{signal});
+toggle.disabled=false;
+"""
+display(HTML(render_widget(body, script=script)))
+```
+
+These helpers are internal implementation interfaces, not a public explainability API.
+`body`, `style` and `script` accept trusted feature-authored code; escape user text with `html.escape`, pass structured values through `data=`, and read the decoded `data` in the initializer.
+The initializer also receives `host`, a unique `widgetId`, `signal` and `onDispose(callback)`; scope DOM queries to `host`, bind listeners with `signal`, and register timers or observers for cleanup when the output is removed.
+Each render creates a new instance; render again after removal rather than reinserting disposed HTML.
+Keep meaningful static content and enable controls only after their handlers are initialized.
+Interactive output requires a notebook host that executes trusted inline scripts; the shell adds no network dependency and does not mount React components or load chart data.
+
 ## Local storage and results
 
 Snapshots, generated tables, model bundles, and unexported predictions live under

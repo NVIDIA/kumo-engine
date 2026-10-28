@@ -3,58 +3,43 @@
 # SPDX-License-Identifier: Apache-2.0
 """Self-contained notebook viewer; layout geometry is computed in Python."""
 
-import json
-from html import escape
+from string import Template
 
-_STYLE = r"""
-.kumo-graph{position:relative;display:flex;flex-direction:column;
-max-width:100%;padding:8px;box-sizing:border-box;background:white;
-color:#202020;font:14px Arial,Helvetica,sans-serif}
+from kumo.engine._widget import THEME, button, render_widget
+
+_STYLE = Template(r"""
 .kumo-graph{container:kumo-graph/inline-size}
 .kumo-graph,.kumo-graph *{user-select:none;-webkit-user-select:none}
-.kumo-graph [hidden]{display:none!important}
 .kumo-graph:fullscreen{width:100%;height:100%;max-height:none}
-.kumo-graph-toolbar{display:grid;align-items:center;
-grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);
-gap:6px;flex:none;margin-bottom:16px}
+.kumo-graph-toolbar{display:grid;
+grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
 .kumo-graph-layout{display:flex;grid-column:2;justify-self:center;
-border-radius:18px;background:#fff;padding:2px;color:#555;
-font:13px Arial,Helvetica,sans-serif}
+border-radius:18px;background:$background;padding:2px;color:$chrome_foreground;
+font:13px $font}
 .kumo-graph-layout label{position:relative;cursor:pointer}
 .kumo-graph-layout input{position:absolute;opacity:0;width:1px;height:1px}
 .kumo-graph-layout span{display:flex;align-items:center;height:28px;
 padding:0 12px;border-radius:16px}
-.kumo-graph-layout input:checked+span{background:#e8e8e8;color:#202020}
+.kumo-graph-layout input:checked+span{background:$chrome_hover;color:$foreground}
 .kumo-graph-actions{display:flex;align-items:center;gap:6px;
 grid-column:3;justify-self:end}
 .kumo-graph-zoom{display:flex;align-items:center;gap:0;flex:none;
-background:#fff;border-radius:18px}
+background:$background;border-radius:18px}
 .kumo-graph-layout,.kumo-graph-zoom,.kumo-graph-actions>button{
-box-shadow:0 1px 4px #0000001a}
+box-shadow:$chrome_shadow}
 @container kumo-graph (max-width:560px){
 .kumo-graph-toolbar{grid-template-columns:minmax(0,1fr)}
 .kumo-graph-layout,.kumo-graph-actions{grid-column:1}}
-.kumo-graph-toolbar button{box-sizing:border-box;display:inline-flex;
-align-items:center;justify-content:center;flex:0 0 32px;
-width:32px!important;min-width:32px!important;max-width:32px!important;
-height:32px!important;min-height:32px!important;max-height:32px!important;
-padding:6px;margin:0;background:#fff;color:#555;
-border:0;border-radius:16px;
-cursor:pointer;font:18px/18px Arial,Helvetica,sans-serif}
-.kumo-graph-toolbar button:hover{background:#e8e8e8}
-.kumo-graph-toolbar button:focus-visible,
 .kumo-graph-layout input:focus-visible+span{
-outline:2px solid #598d13;outline-offset:2px}
-.kumo-graph-toolbar button>svg{display:block;flex:none;
-width:18px!important;height:18px!important}
+outline:2px solid $focus;outline-offset:2px}
 .kumo-graph-scale{min-width:44px;text-align:center;color:#666;
-font:12px Arial,Helvetica,sans-serif;font-variant-numeric:tabular-nums}
+font:12px $font;font-variant-numeric:tabular-nums}
 .kumo-graph .kumo-graph-exit{display:none}
 .kumo-graph:fullscreen .kumo-graph-enter{display:none}
 .kumo-graph:fullscreen .kumo-graph-exit{display:inline-flex}
 .kumo-graph-view{position:relative;overflow:clip;min-height:0;flex:none;
 max-width:100%;cursor:grab;
-background:radial-gradient(circle at 1px 1px,#d9ddd5 .7px,
+background:radial-gradient(circle at 1px 1px,$grid .7px,
 transparent .8px) 0 0/16px 16px}
 .kumo-graph:fullscreen .kumo-graph-view{flex:1;height:auto!important}
 .kumo-graph-scene{position:absolute;left:0;top:0;transform-origin:0 0}
@@ -67,33 +52,33 @@ max-height:none!important}
 .kumo-graph-tooltip{position:absolute;top:0;left:0;z-index:10;
 box-sizing:border-box;
 width:320px;max-width:calc(100% - 16px);border:1px solid #cbd8ba;
-border-radius:18px;corner-shape:squircle;background:#fff;color:#202020;
+border-radius:18px;corner-shape:squircle;background:$background;color:$foreground;
 box-shadow:0 5px 18px #24331416,0 1px 3px #2433140a;
-font:16px/1.4 Arial,Helvetica,sans-serif;overflow-wrap:anywhere;
+font:16px/1.4 $font;overflow-wrap:anywhere;
 overflow:hidden;pointer-events:none;opacity:0;visibility:hidden;
 transform:translateY(4px);transition:opacity 140ms ease,transform 140ms ease,
 visibility 140ms ease}
 .kumo-graph-tooltip[data-open]{opacity:1;visibility:visible;
 transform:translateY(0)}
-.kumo-tip-head{background:#f4f8ec;border-bottom:1px solid #e1e9d6;
+.kumo-graph .kumo-tip-head{background:$header_background;border-bottom:1px solid $tooltip_header_border;
 padding:7px 10px}
-.kumo-tip-context{color:#6a7a58;font-size:16px;margin-bottom:2px}
-.kumo-tip-name{font-size:17px;font-weight:700;color:#386000}
-.kumo-tip-body{padding:7px 10px}
-.kumo-tip-badges{display:flex;flex-wrap:wrap;gap:5px}
-.kumo-tip-samples{display:flex;gap:5px}
-.kumo-tip-badge{background:#f2f4ef;border:1px solid #e1e6db;
+.kumo-graph .kumo-tip-context{color:#6a7a58;font-size:16px;margin-bottom:2px}
+.kumo-graph .kumo-tip-name{font-size:17px;font-weight:700;color:$accent}
+.kumo-graph .kumo-tip-body{padding:7px 10px}
+.kumo-graph .kumo-tip-badges{display:flex;flex-wrap:wrap;gap:5px}
+.kumo-graph .kumo-tip-samples{display:flex;gap:5px}
+.kumo-graph .kumo-tip-badge{background:#f2f4ef;border:1px solid #e1e6db;
 border-radius:7px;corner-shape:squircle;padding:2px 6px;color:#536247}
-.kumo-tip-key{background:#ecf4df;border-color:#d1e2b7;color:#487014}
-.kumo-tip-type{color:#536247}
-.kumo-tip-ref{padding-top:5px;color:#5b6751}
-.kumo-tip-connections{list-style:none;padding:0;margin:0;display:grid;gap:4px 10px;
+.kumo-graph .kumo-tip-key{background:#ecf4df;border-color:#d1e2b7;color:#487014}
+.kumo-graph .kumo-tip-type{color:#536247}
+.kumo-graph .kumo-tip-ref{padding-top:5px;color:#5b6751}
+.kumo-graph .kumo-tip-connections{list-style:none;padding:0;margin:0;display:grid;gap:4px 10px;
 grid-auto-flow:column;grid-template-columns:minmax(0,1fr)}
-.kumo-tip-connections[data-columns="2"]{grid-template-columns:repeat(2,minmax(0,1fr))}
-.kumo-tip-connection{color:#455239;font-weight:500;min-width:0;
+.kumo-graph .kumo-tip-connections[data-columns="2"]{grid-template-columns:repeat(2,minmax(0,1fr))}
+.kumo-graph .kumo-tip-connection{color:#455239;font-weight:500;min-width:0;
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.kumo-tip-label{color:#7a8470;margin:5px 0 3px}
-.kumo-tip-sample{flex:1;min-width:0;max-width:100%;white-space:nowrap;
+.kumo-graph .kumo-tip-label{color:#7a8470;margin:5px 0 3px}
+.kumo-graph .kumo-tip-sample{flex:1;min-width:0;max-width:100%;white-space:nowrap;
 overflow:hidden;text-overflow:ellipsis;background:#f5f7f2;border-radius:7px;corner-shape:squircle;
 padding:2px 6px;color:#455239;
 font:16px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
@@ -102,11 +87,11 @@ font:16px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
 opacity:0;pointer-events:none;transition:opacity 140ms ease}
 .kumo-graph .kumo-active .kumo-row-light{opacity:1}
 .kumo-graph [data-kumo-tip]:focus-visible .kumo-row-light{
-stroke:#598d13;stroke-width:2}
+stroke:$focus;stroke-width:2}
 .kumo-graph [data-kumo-row]:not([data-kumo-row=""]) .kumo-row-light{
 stroke:none;filter:drop-shadow(0 1px 2px #00000026)}
 .kumo-graph [data-kumo-row]:not([data-kumo-row=""]):focus-visible .kumo-row-light{
-filter:drop-shadow(0 0 2px #598d13)}
+filter:drop-shadow(0 0 2px $focus)}
 .kumo-graph .kumo-table-veil{fill:#26341a;opacity:0;pointer-events:none;
 transition:opacity 140ms ease}
 .kumo-graph[data-highlight=table] .kumo-focused>.kumo-table-veil{opacity:.16}
@@ -114,14 +99,13 @@ transition:opacity 140ms ease}
 .kumo-graph .kumo-edge{transition:stroke 140ms ease,stroke-width 140ms ease,
 opacity 140ms ease}
 .kumo-graph.kumo-links-focused .kumo-edge:not(.kumo-edge-active){opacity:.35}
-.kumo-graph:fullscreen .kumo-edge{vector-effect:non-scaling-stroke}
 .kumo-graph .kumo-edge-active{stroke:#6e9947;stroke-width:1.8}
 @media(prefers-reduced-motion:reduce){.kumo-graph-tooltip,
 .kumo-graph .kumo-row-light,.kumo-graph .kumo-table-veil,
 .kumo-graph .kumo-edge{transition:none}}
 
 .kumo-graph .kumo-edge{vector-effect:non-scaling-stroke}
-"""
+""").substitute(THEME)
 
 _HOVER = r"""
 const tip=document.createElement('div');
@@ -362,17 +346,16 @@ const label=host.querySelector('.kumo-graph-scale');
 const status=host.querySelector('[role=status]');
 const enter=host.querySelector('.kumo-graph-enter');
 const exit=host.querySelector('.kumo-graph-exit');
-const payload=JSON.parse(host.querySelector('.kumo-graph-layout-data').textContent);
+const payload=data;
 const layouts=payload.layouts;
 let selected=payload.initial, scale=1, fitted=true, full=false, inlineCamera=null;
 let layoutWidth=Number(svg.getAttribute('width'))||304;
 let layoutHeight=Number(svg.getAttribute('height'))||112;
-let resizeFrame=0, disposed=false, panX=0, panY=0, isDragging=false, drag=null;
+let resizeFrame=0, panX=0, panY=0, isDragging=false, drag=null;
 let viewWidth=0, viewHeight=0;
 const cards=new Map(Array.from(svg.querySelectorAll(':scope>[data-kumo-card]'),
 el=>[el.dataset.kumoCard,el]));
 const controls=host.querySelectorAll('button,input');
-controls.forEach(el=>el.disabled=false);
 selector.querySelectorAll('input').forEach(el=>{
 el.name=tip.id+'-layout';el.checked=el.value===selected});
 if(Object.keys(layouts).length<2)selector.hidden=true;
@@ -390,7 +373,7 @@ const handles=document.createElementNS(svg.namespaceURI,'g');
 handles.setAttribute('class','kumo-graph-handles');
 for(const [x,y] of layout.handles){
 const circle=document.createElementNS(svg.namespaceURI,'circle');
-for(const [key,value] of Object.entries({cx:x,cy:y,r:4,fill:'#64748b'}))
+for(const [key,value] of Object.entries({cx:x,cy:y,r:4,fill:'__MUTED_COLOR__'}))
 circle.setAttribute(key,value);handles.append(circle)}
 svg.append(handles);layoutWidth=layout.width;layoutHeight=layout.height;
 svg.setAttribute('viewBox',`0 0 ${layoutWidth} ${layoutHeight}`);
@@ -412,7 +395,7 @@ scene.style.transform=`translate(${panX}px,${panY}px)`;
 view.style.backgroundSize=`${16*scale}px ${16*scale}px`;
 view.style.backgroundPosition=`${panX}px ${panY}px`;
 view.style.backgroundImage=`radial-gradient(circle at ${scale}px ${scale}px,
-#d9ddd5 ${.7*scale}px,transparent ${.8*scale}px)`;
+__GRID_COLOR__ ${.7*scale}px,transparent ${.8*scale}px)`;
 label.textContent=Math.round(scale*100)+'%';host.dataset.scale=String(scale);
 };
 const panBy=(dx,dy)=>{fitted=false;panX+=dx;panY+=dy;resizeScene()};
@@ -506,27 +489,17 @@ if(view.clientWidth===viewWidth&&view.clientHeight===viewHeight)return;
 if(fitted)fit();else{hide();resizeScene()}
 });
 });
-const dispose=()=>{
-if(disposed)return;disposed=true;stopDrag();hide();controller.abort();
-cancelAnimationFrame(resizeFrame);resizeObserver.disconnect();removalObserver.disconnect();
-host.dataset.disposed='true';
-};
-// Notebook outputs can disappear without any later scroll or keyboard event.
-const removalObserver=new MutationObserver(records=>{
-if(records.some(record=>record.removedNodes.length)&&!host.isConnected)dispose();
+onDispose(()=>{
+stopDrag();hide();cancelAnimationFrame(resizeFrame);resizeObserver.disconnect();
 });
-removalObserver.observe(host.getRootNode(),{childList:true,subtree:true});
 view.style.height=inlineHeight()+'px';host.dataset.layout=selected;
-fit();resizeObserver.observe(view);
-"""
+fit();resizeObserver.observe(view);controls.forEach(el=>el.disabled=false);
+""".replace('__GRID_COLOR__', THEME['grid']).replace(
+    '__MUTED_COLOR__', THEME['muted'])
 
 
 def render_html(svg: str, mode: str, layouts: dict, initial_layout: str) -> str:
     """Wrap one SVG with controls and serialized, precomputed geometries."""
-    payload = json.dumps({'layouts': layouts, 'initial': initial_layout},
-                         ensure_ascii=True, separators=(',', ':'))
-    payload = payload.replace('<', r'\u003c').replace('>', r'\u003e')
-    payload = payload.replace('&', r'\u0026')
     options = ''.join(
         '<label><input type="radio" '
         f'value="{name}" disabled=""/><span>{label}</span></label>'
@@ -542,40 +515,30 @@ def render_html(svg: str, mode: str, layouts: dict, initial_layout: str) -> str:
     exit_icon = ('M 3 9 H 9 V 3 M 15 3 V 9 H 21 M 9 21 V 15 H 3 '
                  'M 21 15 H 15 V 21')
 
-    def button(cls: str, label: str, icon: str = '', text: str = '') -> str:
-        graphic = (f'<svg width="18" height="18" viewBox="0 0 24 24" '
-                   f'aria-hidden="true"><path d="{icon}" fill="none" '
-                   'stroke="currentColor" stroke-width="1.5" '
-                   'stroke-linecap="round" stroke-linejoin="round"/></svg>'
-                   if icon else text)
-        return (f'<button type="button" class="kumo-graph-{cls}" '
-                f'aria-label="{label}" title="{label}" disabled="">{graphic}'
-                '</button>')
-
-    return (
-        f'<div class="kumo-graph" data-highlight="{escape(mode)}">'
-        f'<style>{_STYLE}</style><div class="kumo-graph-toolbar">'
+    body = (
+        '<div class="kumo-widget-toolbar kumo-graph-toolbar">'
         '<div class="kumo-graph-layout" role="radiogroup" '
         f'aria-label="Graph layout">{options}</div>'
         '<div class="kumo-graph-actions">'
         '<div class="kumo-graph-zoom" role="group" aria-label="Graph zoom">'
         '<span class="kumo-graph-scale" aria-live="polite"></span>'
-        + button('zoom-out', 'Zoom out', text='−')
-        + button('zoom-in', 'Zoom in', text='+')
-        + '</div>' + button('fit', 'Fit graph', fit_icon)
-        + button('enter', 'Enter full screen', enter_icon)
-        + button('exit', 'Exit full screen', exit_icon) + '</div></div>'
+        + button('kumo-graph-zoom-out', 'Zoom out', text='−')
+        + button('kumo-graph-zoom-in', 'Zoom in', text='+')
+        + '</div>' + button('kumo-graph-fit', 'Fit graph', fit_icon)
+        + button('kumo-graph-enter', 'Enter full screen', enter_icon)
+        + button('kumo-graph-exit', 'Exit full screen', exit_icon) + '</div></div>'
         '<span class="kumo-graph-status" role="status" hidden="">'
         'Full screen is unavailable in this notebook. Use the graph controls '
         'here or open the exported SVG.</span>'
         '<div class="kumo-graph-view" tabindex="0" role="region" '
         'aria-label="Pannable graph visualization">'
-        f'<div class="kumo-graph-scene">{svg}</div></div>'
-        f'<script type="application/json" class="kumo-graph-layout-data">'
-        f'{payload}</script><script>//<![CDATA[\n(()=>{{'
-        'const host=document.currentScript.parentElement;'
-        'const controller=new AbortController(),signal=controller.signal;'
+        f'<div class="kumo-graph-scene">{svg}</div></div>')
+    script = (
         'const view=host.querySelector(".kumo-graph-view");'
         'const svg=view.querySelector("svg"),scene=view.firstElementChild;'
         'const edges=Array.from(view.querySelectorAll(".kumo-edge"));'
-        + _HOVER + _CAMERA + '})();\n//]]>\n</script></div>')
+        + _HOVER + _CAMERA)
+    return render_widget(body, style=_STYLE, script=script,
+                         data={'layouts': layouts, 'initial': initial_layout},
+                         class_name='kumo-graph',
+                         attributes={'data-highlight': mode})

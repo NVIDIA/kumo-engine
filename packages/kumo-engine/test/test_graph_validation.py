@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -407,6 +408,35 @@ def test_visualize_rejects_invalid_metadata(case, message):
 def test_visualize_empty_graph():
     svg = Graph([]).visualize()
     assert 'No tables' in ''.join(ElementTree.fromstring(svg).itertext())
+
+
+def test_widget_shell_composes_non_graph_content_and_escapes_data():
+    from kumo.engine._widget import button, render_widget
+
+    label = '</script><script>alert("chart")</script> & values'
+    body = ('<div class="kumo-widget-toolbar">' +
+            button('chart-toggle', label, text='<Toggle>') + '</div>'
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 30">'
+            '<rect width="75" height="20"/></svg>')
+    rendered = [
+        render_widget(body, data={'labels': [label], 'values': [0.75]},
+                      attributes={'aria-label': label}) for _ in range(2)
+    ]
+    roots = [ElementTree.fromstring(html) for html in rendered]
+    assert roots[0].get('id') != roots[1].get('id')
+    with pytest.raises(ValueError, match='data-.*aria-'):
+        render_widget(body, attributes={'onclick': 'alert(1)'})
+    for root, html in zip(roots, rendered):
+        assert root.get('aria-label') == label
+        control = root.find('.//button')
+        assert control.get('aria-label') == label
+        assert control.text == '<Toggle>'
+        assert 'disabled' in control.attrib
+        payload = root.find('.//script[@type="application/json"]')
+        assert json.loads(payload.text) == {'labels': [label], 'values': [0.75]}
+        assert root.find('.//{http://www.w3.org/2000/svg}rect').get('width') == '75'
+        assert '<script>alert(' not in html
+        assert 'data-kumo-card' not in html
 
 
 @pytest.mark.parametrize('layout',
