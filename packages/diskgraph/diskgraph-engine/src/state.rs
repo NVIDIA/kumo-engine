@@ -115,7 +115,8 @@ pub struct NodeRecord {
 
 /// State specific to a single Node Type (table).
 pub struct TypeState {
-    /// Maps (Seed, Global) -> LocalID
+    /// Maps (Seed, Global) -> LocalID. Holds only the seeds when edges are
+    /// recorded through `SamplingState::seed_maps`.
     pub index_map: GxHashMap<LookupKey, u32>,
 
     /// Ordered list of nodes discovered (Index = LocalID)
@@ -250,7 +251,46 @@ pub struct SamplingState {
 
     /// Statistics for the current run.
     pub stats: SamplingStats,
+
+    /// slot = seed_slot_base[seed_type_id] + seed_index
+    pub seed_slot_base: Vec<u32>,
+    pub seed_slots: usize,
+    pub seed_maps: Vec<GxHashMap<u64, u32>>,
+    pub commit_scratch: CommitScratch,
+    pub raw_edges: Vec<Vec<RawEdge>>,
 }
+
+/// A discovered edge before it is formally committed to the SamplingState.
+pub struct RawEdge {
+    pub src_local_id: u32,
+    pub dst_global_id: u64,
+    pub dst_type_id: usize,
+    pub rel_id: u16,
+    pub seed_index: u32,
+    /// Root seed type id, propagated from the source node so the destination
+    /// node can resolve its timestamp anchor against the correct per-type array.
+    pub seed_type_id: u32,
+    pub swap_edge_direction: bool,
+}
+
+#[derive(Default)]
+pub struct CommitScratch {
+    pub bounds: Vec<u32>,
+    pub cursor: Vec<u32>,
+    pub order: Vec<(u64, u32)>,
+    pub res: Vec<u32>,
+    pub new_edges: Vec<(u64, u32)>,
+    pub new_bounds: Vec<u32>,
+}
+
+fn clear_and_cap<T>(v: &mut Vec<T>, cap: usize) {
+    v.clear();
+    if v.capacity() > cap {
+        v.shrink_to(cap);
+    }
+}
+
+const SEED_MAPS_KEEP: usize = 1 << 10;
 
 const RESET_THRESHOLD: usize = 1 << 18; // ~262k items
 
@@ -269,6 +309,11 @@ impl SamplingState {
             reservoir_scratch: Vec::with_capacity(128),
             decode_scratch: diskgraph_rowpack::RowPackDecodeScratch::default(),
             stats: SamplingStats::new(),
+            seed_slot_base: Vec::new(),
+            seed_slots: 0,
+            seed_maps: Vec::new(),
+            commit_scratch: CommitScratch::default(),
+            raw_edges: Vec::new(),
         }
     }
 
@@ -281,6 +326,28 @@ impl SamplingState {
         self.key_scratch.clear();
         self.reservoir_scratch.clear();
         self.stats.reset();
+        self.seed_slot_base.clear();
+        self.seed_slots = 0;
+        let per_buffer = RESET_THRESHOLD / self.raw_edges.len().max(1);
+        for v in &mut self.raw_edges {
+            clear_and_cap(v, per_buffer);
+        }
+        let cs = &mut self.commit_scratch;
+        clear_and_cap(&mut cs.bounds, RESET_THRESHOLD);
+        clear_and_cap(&mut cs.cursor, RESET_THRESHOLD);
+        clear_and_cap(&mut cs.order, RESET_THRESHOLD);
+        clear_and_cap(&mut cs.res, RESET_THRESHOLD);
+        clear_and_cap(&mut cs.new_edges, RESET_THRESHOLD);
+        clear_and_cap(&mut cs.new_bounds, RESET_THRESHOLD);
+        self.seed_maps.truncate(SEED_MAPS_KEEP);
+        let mut budget = RESET_THRESHOLD;
+        for m in &mut self.seed_maps {
+            m.clear();
+            if m.capacity() > budget {
+                m.shrink_to(0);
+            }
+            budget -= m.capacity();
+        }
         // Scratch buffer is inherently reusable
     }
     /// Access or create the state for a specific node type.
@@ -356,6 +423,34 @@ impl Drop for PooledState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_caps_edge_buffers_and_commit_scratch() {
+        let pool = StatePool::new();
+        {
+            let mut state = pool.acquire();
+            state.raw_edges = (0..4)
+                .map(|_| Vec::with_capacity(RESET_THRESHOLD * 2))
+                .collect();
+            let cs = &mut state.commit_scratch;
+            cs.order.reserve(RESET_THRESHOLD * 4);
+            cs.res.reserve(RESET_THRESHOLD * 4);
+            cs.new_edges.reserve(RESET_THRESHOLD * 4);
+            state.seed_maps = (0..64)
+                .map(|_| GxHashMap::with_capacity(RESET_THRESHOLD / 16))
+                .collect();
+        }
+        let state = pool.acquire();
+        let edge_capacity: usize = state.raw_edges.iter().map(Vec::capacity).sum();
+        assert!(edge_capacity <= RESET_THRESHOLD);
+        let cs = &state.commit_scratch;
+        assert!(cs.order.capacity() <= RESET_THRESHOLD);
+        assert!(cs.res.capacity() <= RESET_THRESHOLD);
+        assert!(cs.new_edges.capacity() <= RESET_THRESHOLD);
+        let map_capacity: usize = state.seed_maps.iter().map(GxHashMap::capacity).sum();
+        assert!(map_capacity <= RESET_THRESHOLD);
+        assert!(map_capacity > 0);
+    }
 
     #[test]
     fn test_pool_recycling() {

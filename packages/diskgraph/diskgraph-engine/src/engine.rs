@@ -5,7 +5,7 @@
 use crate::edge_unpacker::EdgeUnpacker;
 use crate::errors::{EngineError, Result};
 use crate::output::OutputHandler;
-use crate::state::{LookupKey, NodeRecord, ResolvedProjection, SamplingState};
+use crate::state::{LookupKey, NodeRecord, RawEdge, ResolvedProjection, SamplingState};
 use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_core::tt_builder::{Value, WEIGHT_COL};
@@ -462,6 +462,17 @@ pub struct DiskGraphEngine {
     /// Uses a per-instance pool (not the global pool) to avoid
     /// deadlocks when PyTorch DataLoader forks worker processes.
     pub thread_pool: rayon::ThreadPool,
+    /// Record edges through the global `index_map`; same output.
+    pub legacy_recording: bool,
+}
+
+const NEW_NODE: u32 = u32::MAX;
+const PENDING: u32 = 1 << 31;
+
+#[inline]
+fn node_key(type_id: usize, global_id: u64) -> u64 {
+    debug_assert!(global_id < 1 << 56);
+    (global_id << 8) | type_id as u64
 }
 
 struct CompiledSamplingPlan {
@@ -473,18 +484,6 @@ struct CompiledLayerSpec {
     default_fanout: Option<FanoutSpec>,
 }
 
-/// A discovered edge before it is formally committed to the SamplingState.
-struct RawEdge {
-    src_local_id: u32,
-    dst_global_id: u64,
-    dst_type_id: usize,
-    rel_id: u16,
-    seed_index: u32,
-    /// Root seed type id, propagated from the source node so the destination
-    /// node can resolve its timestamp anchor against the correct per-type array.
-    seed_type_id: u32,
-    swap_edge_direction: bool,
-}
 
 impl DiskGraphEngine {
     /// Build an engine directly from an already-opened `GraphIndexReader`.
@@ -860,7 +859,12 @@ impl DiskGraphEngine {
             local_to_merged_rel,
             random_seed,
             thread_pool,
+            legacy_recording: false,
         }
+    }
+
+    fn per_seed_recording(&self, fused: bool) -> bool {
+        !fused && !self.legacy_recording && self.readers.len() <= 256
     }
 
     pub fn get_type_name_mapping(&self) -> TypeNameMapping {
@@ -2120,6 +2124,24 @@ impl DiskGraphEngine {
 
         let fused = request.flags.fused_feature_fetching;
 
+        let per_seed = self.per_seed_recording(fused);
+        if per_seed {
+            state.seed_slot_base.resize(num_types, 0);
+            let mut slots = 0u32;
+            for (seed_type, seed_ids) in &request.seed_nodes {
+                if let Some(&t) = self.node_type_to_id.get(seed_type) {
+                    state.seed_slot_base[t] = slots;
+                    slots += seed_ids.len() as u32;
+                }
+            }
+            state.seed_slots = slots as usize;
+            if state.seed_maps.len() < state.seed_slots {
+                state
+                    .seed_maps
+                    .resize_with(state.seed_slots, Default::default);
+            }
+        }
+
         // 2. Initialize Seed Layer (Hop 0)
         // This ensures seed nodes get Local IDs 0..K and are preserved in order.
         for (seed_type, seed_ids) in &request.seed_nodes {
@@ -2139,6 +2161,10 @@ impl DiskGraphEngine {
                 if !seed_state.index_map.contains_key(&key) {
                     let local_id = seed_state.nodes.len() as u32;
                     seed_state.index_map.insert(key, local_id);
+                    if per_seed {
+                        let slot = (state.seed_slot_base[seed_type_id] + seed_index) as usize;
+                        state.seed_maps[slot].insert(node_key(seed_type_id, global_id), local_id);
+                    }
 
                     // Cache Node (Hop 0). A seed is its own root, so its
                     // root seed type is its own type id.
@@ -2881,11 +2907,18 @@ impl DiskGraphEngine {
 
             // Map Phase: Parallel Shard Traversal
             // Each thread processes one shard to emit all sampled RawEdge
+            let mut buffers = std::mem::take(&mut state.raw_edges);
+            let spare = buffers.split_off(shards.len().min(buffers.len()));
+            buffers.resize_with(shards.len(), Vec::new);
             let raw_edges_results: Vec<Vec<RawEdge>> = self.thread_pool.install(|| shard_groups
                 .into_par_iter()
+                .zip(buffers.into_par_iter())
                 .enumerate()
-                .filter(|(_, nodes)| !nodes.is_empty())
-                .map(|(shard_idx, mut shard_nodes)| {
+                .map(|(shard_idx, (mut shard_nodes, mut local_raw_edges))| {
+                    local_raw_edges.clear();
+                    if shard_nodes.is_empty() {
+                        return local_raw_edges;
+                    }
                     let shard = &shards[shard_idx];
 
                     // STABLE SORT: Sort by global_id, then seed_index to ensure
@@ -2894,7 +2927,6 @@ impl DiskGraphEngine {
                         a.global_id.cmp(&b.global_id).then(a.seed_index.cmp(&b.seed_index))
                     });
 
-                    let mut local_raw_edges = Vec::new();
                     let mut current_segments = Vec::new();
                     let mut last_id = None;
 
@@ -2968,8 +3000,15 @@ impl DiskGraphEngine {
                 .collect()
             );
 
+            if self.per_seed_recording(fused) {
+                self.commit_edges(layer_idx, &raw_edges_results, state, output)?;
+                state.raw_edges = raw_edges_results;
+                state.raw_edges.extend(spare);
+                continue;
+            }
+
             // Reduce Phase: Sequential Commitment
-            for raw_edges in raw_edges_results {
+            for raw_edges in &raw_edges_results {
                 for edge in raw_edges {
                     self.record_edge(
                         layer_idx,
@@ -2985,6 +3024,8 @@ impl DiskGraphEngine {
                     )?;
                 }
             }
+            state.raw_edges = raw_edges_results;
+            state.raw_edges.extend(spare);
         }
 
         Ok(())
@@ -3054,6 +3095,134 @@ impl DiskGraphEngine {
         Ok(())
     }
 
+    /// Same result as `record_edge` per edge, deduplicated per seed.
+    fn commit_edges(
+        &self,
+        layer_idx: usize,
+        chunks: &[Vec<RawEdge>],
+        state: &mut SamplingState,
+        output: &mut impl OutputHandler,
+    ) -> Result<()> {
+        let n: usize = chunks.iter().map(Vec::len).sum();
+        if n >= PENDING as usize - 1 {
+            return Err(EngineError::Internal(format!(
+                "too many edges in one layer: {n}"
+            )));
+        }
+        let mut cs = std::mem::take(&mut state.commit_scratch);
+        let base = state.seed_slot_base.clone();
+        let slot = |e: &RawEdge| (base[e.seed_type_id as usize] + e.seed_index) as usize;
+        let slots = state.seed_slots;
+
+        cs.bounds.clear();
+        cs.bounds.resize(slots + 1, 0);
+        for e in chunks.iter().flatten() {
+            cs.bounds[slot(e) + 1] += 1;
+        }
+        for s in 0..slots {
+            cs.bounds[s + 1] += cs.bounds[s];
+        }
+        cs.cursor.clear();
+        cs.cursor.extend_from_slice(&cs.bounds[..slots]);
+        cs.order.resize(n, (0, 0));
+        for (i, e) in chunks.iter().flatten().enumerate() {
+            let cur = &mut cs.cursor[slot(e)];
+            cs.order[*cur as usize] = (node_key(e.dst_type_id, e.dst_global_id), i as u32);
+            *cur += 1;
+        }
+
+        cs.res.resize(n, 0);
+        cs.new_edges.clear();
+        cs.new_bounds.clear();
+        for s in 0..slots {
+            let map = &mut state.seed_maps[s];
+            for &(key, i) in &cs.order[cs.bounds[s] as usize..cs.bounds[s + 1] as usize] {
+                match map.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(o) => cs.res[i as usize] = *o.get(),
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(PENDING | i);
+                        cs.res[i as usize] = NEW_NODE;
+                        cs.new_edges.push((key, i));
+                    }
+                }
+            }
+            cs.new_bounds.push(cs.new_edges.len() as u32);
+        }
+
+        for (i, e) in chunks.iter().flatten().enumerate() {
+            let r = cs.res[i];
+            let dst_local_id = if r == NEW_NODE {
+                let ts = state.type_states.entry(e.dst_type_id).or_default();
+                if ts.nodes.len() >= PENDING as usize {
+                    return Err(EngineError::Internal(format!(
+                        "too many nodes of type {}",
+                        e.dst_type_id
+                    )));
+                }
+                let id = ts.nodes.len() as u32;
+                let node = NodeRecord {
+                    global_id: e.dst_global_id,
+                    seed_index: e.seed_index,
+                    local_id: id,
+                    seed_type_id: e.seed_type_id,
+                };
+                ts.nodes.push(node);
+                ts.next_frontier.push(node);
+                state.stats.record_node(layer_idx + 1, e.dst_type_id);
+                cs.res[i] = id;
+                id
+            } else if r & PENDING != 0 {
+                cs.res[(r & !PENDING) as usize]
+            } else {
+                r
+            };
+            self.emit_edge(
+                layer_idx,
+                e.src_local_id,
+                dst_local_id,
+                e.rel_id,
+                e.swap_edge_direction,
+                state,
+                output,
+            )?;
+        }
+
+        let mut lo = 0;
+        for (s, &hi) in cs.new_bounds.iter().enumerate() {
+            let map = &mut state.seed_maps[s];
+            for &(key, i) in &cs.new_edges[lo..hi as usize] {
+                map.insert(key, cs.res[i as usize]);
+            }
+            lo = hi as usize;
+        }
+        state.commit_scratch = cs;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_edge(
+        &self,
+        layer_idx: usize,
+        src_local_id: u32,
+        dst_local_id: u32,
+        rel_id: u16,
+        swap_edge_direction: bool,
+        state: &mut SamplingState,
+        output: &mut impl OutputHandler,
+    ) -> Result<()> {
+        let (actual_rel, actual_src, actual_dst) = if swap_edge_direction {
+            match self.reverse_rel_map.get(rel_id as usize) {
+                Some(Some(rev_id)) => (*rev_id as u16, dst_local_id, src_local_id),
+                _ => (rel_id, src_local_id, dst_local_id),
+            }
+        } else {
+            (rel_id, src_local_id, dst_local_id)
+        };
+        output.handle_edge(layer_idx, actual_rel, actual_src, actual_dst)?;
+        state.stats.record_edge(layer_idx, actual_rel as usize);
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn record_edge(
         &self,
@@ -3099,19 +3268,15 @@ impl DiskGraphEngine {
         };
 
         // Apply edge direction reversal if requested (PyG CSC convention).
-        let (actual_rel, actual_src, actual_dst) = if swap_edge_direction {
-            match self.reverse_rel_map.get(rel_id as usize) {
-                Some(Some(rev_id)) => (*rev_id as u16, dst_local_id, src_local_id),
-                _ => (rel_id, src_local_id, dst_local_id),
-            }
-        } else {
-            (rel_id, src_local_id, dst_local_id)
-        };
-
-        output.handle_edge(layer_idx, actual_rel, actual_src, actual_dst)?;
-        state.stats.record_edge(layer_idx, actual_rel as usize);
-
-        Ok(())
+        self.emit_edge(
+            layer_idx,
+            src_local_id,
+            dst_local_id,
+            rel_id,
+            swap_edge_direction,
+            state,
+            output,
+        )
     }
 }
 
