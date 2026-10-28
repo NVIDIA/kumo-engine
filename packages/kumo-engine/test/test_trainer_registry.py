@@ -29,6 +29,7 @@ from kumo.engine.trainer._spec import (
     SPEC_FILE,
     write_training_spec,
 )
+from kumo.engine.trainer.output_config import ModelOutputConfig
 from kumo.engine.trainer.trainer import Trainer, TrainingResult
 
 
@@ -238,7 +239,11 @@ def test_finish_fit_forwards_publication_details_and_returns_assigned_version(
     class Sink:
         def publish_model(self, connector, bundle_dir, **kwargs):
             spec = json.loads((Path(bundle_dir) / SPEC_FILE).read_text())
-            assert kwargs['metadata'] == {
+            assert {
+                key: value
+                for key, value in kwargs['metadata'].items()
+                if not key.startswith('kumo_')
+            } == {
                 name: str(spec[name])
                 for name in ('spec_version', 'predictive_query', 'snapshot_id')
             }
@@ -258,6 +263,7 @@ def test_finish_fit_forwards_publication_details_and_returns_assigned_version(
     assert calls[0][2]['path'] == path
     assert calls[0][2]['location'] == location
     assert calls[0][2]['metrics'] == {'val_auroc': .9}
+    assert calls[0][2]['metadata']['kumo_bundle_id'] == result.bundle_id
     assert result.published_model is published
     assert result.metrics == original.metrics
     assert result.bundle_dir == bundle
@@ -572,3 +578,182 @@ def test_predict_works_after_load_without_refitting(snapshot: GraphSnapshot,
                              binary_classification_threshold=.5)
 
     assert result.frame['TARGET_PRED'].tolist() == [True]
+
+
+def _export(sink, bundle, location=None, artifact_paths=None):
+    return Trainer(ModelPlan())._finish_fit(
+        TrainingResult({}, artifact_paths or {},
+                       bundle), predictive_query='PREDICT COUNT(*)',
+        snapshot_id='snap-123', training_table_generation=_generation_plan(),
+        export_config=SimpleNamespace(
+            connector=SimpleNamespace(sink_backend=sink),
+            path=None if location else 'm', location=location))
+
+
+def _recording_sink(calls):
+    return SimpleNamespace(publish_model=lambda *a, **k: calls.append(k) or
+                           PublishedModel(name='m', version='1', uri='u'))
+
+
+def test_publish_records_only_the_bundle_id_pointer(tmp_path: Path) -> None:
+    calls = []
+    result = _export(_recording_sink(calls), _fake_published_bundle(tmp_path))
+    assert {k: v
+            for k, v in calls[0]['metadata'].items()
+            if k.startswith('kumo_')} == {'kumo_bundle_id': result.bundle_id}
+
+
+class _AliasingSink(_FakeSink):
+    def __init__(self, recorded: Optional[str] = None,
+                 fail: bool = False) -> None:
+        super().__init__()
+        self.recorded = recorded
+        self.fail = fail
+        self.aliases: dict = {}
+
+    def set_model_alias(self, connector, location, alias) -> None:
+        if self.fail:
+            raise RuntimeError('registry unavailable')
+        self.aliases[alias] = location.version
+
+    def fetch_model(self, connector, local_dir, **kwargs) -> PublishedModel:
+        shutil.copytree(self.published['CHURN_GNN@latest'], local_dir,
+                        dirs_exist_ok=True)
+        return PublishedModel(name='CHURN_GNN', version='V1', uri='fake://',
+                              metadata={'kumo_bundle_id': self.recorded})
+
+
+@pytest.mark.parametrize('sink,warning', [
+    (_AliasingSink(), None),
+    (_AliasingSink(fail=True), 'registry unavailable'),
+    (_FakeSink(), 'cannot set model aliases'),
+])
+def test_export_with_alias_publishes_then_sets_it_best_effort(
+        tmp_path: Path, sink, warning) -> None:
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        result = _export(sink, _fake_published_bundle(tmp_path),
+                         ModelRegistryLocation('CHURN_GNN', alias='prod'))
+    assert result.published_model.version == 'V1'
+    assert list(sink.published) == ['CHURN_GNN@latest']
+    messages = [str(w.message) for w in caught if 'alias' in str(w.message)]
+    if warning is None:
+        assert sink.aliases == {'prod': 'V1'} and messages == []
+    else:
+        assert len(messages) == 1 and warning in messages[0]
+
+
+def test_load_by_alias_warns_on_recorded_bundle_mismatch(
+        tmp_path: Path) -> None:
+    bundle = _fake_published_bundle(tmp_path)
+    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
+                        model_plan=ModelPlan(), snapshot_id='snap-123',
+                        training_table_generation=_generation_plan())
+    sink = _AliasingSink('other')
+    sink.publish_model(None, str(bundle),
+                       location=ModelRegistryLocation('CHURN_GNN'))
+    with pytest.warns(UserWarning, match='registry records bundle other'):
+        loaded = Trainer.load_from_connector(
+            _FakeConnector(sink),
+            location=ModelRegistryLocation('CHURN_GNN', alias='prod'))
+    assert loaded.result.id == Trainer.load(bundle).result.id
+
+
+def test_training_result_exports_like_its_trainer(tmp_path: Path) -> None:
+    bundle = _fake_published_bundle(tmp_path)
+    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
+                        model_plan=ModelPlan(), snapshot_id='snap-123',
+                        training_table_generation=_generation_plan())
+    sink = _AliasingSink()
+    published = TrainingResult({}, {}, bundle).export(
+        ModelOutputConfig(_FakeConnector(sink),
+                          location=ModelRegistryLocation('CHURN_GNN',
+                                                         alias='prod')))
+    assert published.version == 'V1' and sink.aliases == {'prod': 'V1'}
+    assert list(sink.published) == ['CHURN_GNN@latest']
+
+
+def test_alias_needs_an_aliasing_sink() -> None:
+    connector = _FakeConnector(_FakeSink())
+    with pytest.raises(NotImplementedError, match='alias'):
+        Trainer.load_from_connector(
+            connector, location=ModelRegistryLocation('m', alias='prod'))
+    for kwargs in (dict(alias='prod', version='3'), dict(alias='')):
+        with pytest.raises(ValueError, match='alias'):
+            ModelRegistryLocation('m', **kwargs)
+
+
+def test_invalid_export_alias_is_rejected_before_publishing(
+        tmp_path: Path) -> None:
+    sink = _AliasingSink()
+    trainer = Trainer(ModelPlan())
+    trainer._training_result = TrainingResult({}, {},
+                                              _fake_published_bundle(tmp_path))
+    with pytest.raises(ValueError, match='model alias'):
+        trainer.export(
+            SimpleNamespace(
+                connector=SimpleNamespace(sink_backend=sink), path=None,
+                location=ModelRegistryLocation('CHURN_GNN', alias='LATEST')))
+    assert sink.published == {}
+
+
+@pytest.mark.parametrize('sink,registered', [
+    (_AliasingSink(), 'V1'),
+    (SimpleNamespace(publish_model=lambda *a, **k: 1 / 0), None),
+])
+def test_mlops_registry_registers_after_the_fit(tmp_path: Path, monkeypatch,
+                                                sink, registered) -> None:
+    import warnings
+
+    import kumo.engine as kumo
+
+    bundle = _fake_published_bundle(tmp_path)
+    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
+                        model_plan=ModelPlan(), snapshot_id='snap-123',
+                        training_table_generation=_generation_plan())
+    monkeypatch.setattr(
+        Trainer, '_fit', lambda self, *a, **k: TrainingResult(
+            {}, {}, bundle, bundle_id='b1'))
+    registry = kumo.ModelOutputConfig(
+        _FakeConnector(sink),
+        location=ModelRegistryLocation('CHURN_GNN', alias='prod'))
+    trainer = Trainer(ModelPlan())
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        result = trainer.fit(
+            SimpleNamespace(query='PREDICT COUNT(*)'),
+            snapshot=SimpleNamespace(id='s'),
+            mlops=kumo.MLOps(str(tmp_path / 'root'), registry=registry,
+                             store=False))
+    failures = [w for w in caught if 'Could not register' in str(w.message)]
+    assert getattr(result.registered_model, 'version', None) == registered
+    assert result.published_model is None
+    if registered:
+        assert trainer.result is result and not failures
+        assert sink.aliases == {'prod': 'V1'}
+    else:
+        assert len(failures) == 1
+        assert 'ZeroDivisionError' in str(failures[0].message)
+        with pytest.raises(RuntimeError, match='ZeroDivisionError') as raised:
+            trainer.fit(
+                SimpleNamespace(query='PREDICT COUNT(*)'),
+                snapshot=SimpleNamespace(id='s'),
+                mlops=kumo.MLOps(str(tmp_path / 'root'), registry=registry,
+                                 store=False, on_error='raise'))
+        assert isinstance(raised.value.__cause__, ZeroDivisionError)
+
+
+def test_mlops_registry_alias_is_checked_before_the_fit(tmp_path: Path,
+                                                        monkeypatch) -> None:
+    import kumo.engine as kumo
+
+    monkeypatch.setattr(Trainer, '_fit', lambda *a, **k: 1 / 0)
+    registry = kumo.ModelOutputConfig(
+        _FakeConnector(_AliasingSink()),
+        location=ModelRegistryLocation('CHURN_GNN', alias='LATEST'))
+    with pytest.raises(ValueError, match='model alias'):
+        Trainer(ModelPlan()).fit(
+            SimpleNamespace(query='q'), snapshot=SimpleNamespace(id='s'),
+            mlops=kumo.MLOps(str(tmp_path), registry=registry, store=False))

@@ -7,8 +7,20 @@ import contextlib
 import contextvars
 import os
 import posixpath
+import warnings
 from dataclasses import dataclass, field
-from typing import Any, FrozenSet, Iterable, Iterator, Optional, Tuple, Union
+from typing import (
+    Any,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    Literal,
+    Optional,
+    Tuple,
+    Union,
+)
+
+from kumoapi.plugin import ModelRegistryLocation, check_model_alias
 
 from kumo.engine._manifest import KINDS
 
@@ -31,24 +43,38 @@ class _Root:
 
 @dataclass(frozen=True)
 class MLOps:
-    r"""Where artifacts go, for :func:`mlops` blocks and ``mlops=``
-    arguments.
+    r"""Where artifacts go and what records them, for :func:`mlops` blocks
+    and ``mlops=`` arguments.
 
     Args:
         artifact_root: an ``s3://``, ``gs://``, ``file://`` or local path
             (``/Volumes/...`` on a Databricks cluster), or a ``(connector,
             path)`` pair for a store a URI cannot reach, such as a volume
             through a ``DatabricksConnector`` or a Snowflake stage.
+        tracking: the experiment tracker, a
+            ``kumo.engine.tracking.Tracking``. Its ``check(registry)``, if
+            any, runs here, so a server or registry that is unreachable or
+            refuses these credentials fails before any work.
+        registry: where fits register models: a ``ModelOutputConfig`` with a
+            registry ``location``, or a ``ModelRegistryLocation`` registered
+            through the MLflow tracker.
         store: the artifact kinds stored under the root when produced
             (``snapshot``, ``training_table``, ``model``);
             ``True`` for all, ``False`` for none.
+        on_error: what a failure to track a run or register a model does:
+            ``'warn'`` warns and the call returns; ``'raise'`` raises once
+            the call has finished and stored its result, with the failure as
+            the cause.
 
     In ``load_from_connector`` calls, an ``MLOps`` stands in for the
     connector, with paths relative to its artifact root.
     """
 
     artifact_root: Union[str, Tuple[Any, str]]
+    tracking: Any = field(default=None, kw_only=True)
+    registry: Any = field(default=None, kw_only=True)
     store: Union[bool, Iterable[str]] = field(default=True, kw_only=True)
+    on_error: Literal['warn', 'raise'] = field(default='warn', kw_only=True)
     root: _Root = field(init=False, repr=False, compare=False)
     kinds: FrozenSet[str] = field(init=False, repr=False, compare=False)
 
@@ -60,6 +86,9 @@ class MLOps:
 
         if not self.artifact_root:
             raise ValueError('MLOps needs an artifact_root.')
+        if self.on_error not in ('warn', 'raise'):
+            raise ValueError(f"on_error must be 'warn' or 'raise', not "
+                             f"{self.on_error!r}.")
         if isinstance(self.artifact_root, str):
             if self.artifact_root.startswith('@'):
                 raise ValueError(
@@ -83,6 +112,28 @@ class MLOps:
                              f'{list(KINDS)}.')
         if kinds:
             _require_writable(root)
+        from kumo.engine.trainer.output_config import (
+            ModelOutputConfig,
+            check_model_location,
+        )
+
+        if isinstance(self.registry, ModelOutputConfig):
+            check_model_location(self.registry)
+        if isinstance(self.registry, ModelRegistryLocation):
+            if not callable(getattr(self.tracking, 'log_model', None)):
+                raise ValueError(
+                    'registry=ModelRegistryLocation(...) registers through '
+                    'the MLflow tracker: pass tracking=MlflowTracking(...), '
+                    'or registry=ModelOutputConfig(connector, location=...).')
+            if self.registry.version is not None:
+                raise ValueError('MLflow assigns registered model versions; '
+                                 'leave ModelRegistryLocation.version unset.')
+            if self.registry.alias is not None:
+                check_model_alias(self.registry.alias)
+        check = getattr(self.tracking, 'check', None)
+        if callable(check):
+            check(self.registry if isinstance(
+                self.registry, ModelRegistryLocation) else None)
         object.__setattr__(self, 'root', root)
         object.__setattr__(self, 'kinds', kinds)
 
@@ -156,7 +207,8 @@ def mlops(settings: MLOps) -> Iterator[MLOps]:
     r"""Turns MLOps on for the calls in the block (in this thread or asyncio
     task): each snapshot, training table and model is stored
     under ``settings.artifact_root``. An inner block replaces an outer one;
-    an ``mlops=`` argument replaces both for its call."""
+    an ``mlops=`` argument replaces both for its call. Runs are tracked and
+    models registered as ``settings`` says."""
     if not isinstance(settings, MLOps):
         raise TypeError('kumo.mlops() takes a kumo.MLOps')
     token = _CURRENT.set(settings)
@@ -170,6 +222,39 @@ def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
     r"""The settings a call runs with: its ``mlops=`` argument, else the
     enclosing block's, else None (off)."""
     return settings if settings is not None else _CURRENT.get()
+
+
+def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
+                   call: str, stacklevel: int = 2) -> None:
+    r"""Reports ``error``, a tracking or registration failure of a finished
+    ``call``: raises when ``settings.on_error`` is ``'raise'``, else warns
+    unless `warn_failure` already warned about it."""
+    if error is None or settings is None:
+        return
+    message = (f'{call} finished, but MLOps tracking or registration '
+               f'failed: {full_error(error)}')
+    if settings.on_error == 'raise':
+        raise RuntimeError(message) from error
+    warn_failure(message, error, stacklevel + 1)
+
+
+def full_error(error: BaseException) -> str:
+    r"""``Type: message``, not shortened."""
+    return f'{type(error).__name__}: {error}'
+
+
+def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
+                 also: Optional[BaseException] = None) -> None:
+    r"""Warns ``message`` (a :class:`UserWarning`) once per ``error``; it
+    also reports ``also``, an earlier error that caused ``error``."""
+    if getattr(error, '_kumo_warned', False):
+        return
+    warnings.warn(message, UserWarning, stacklevel=stacklevel + 1)
+    for reported in (error, also):
+        try:
+            setattr(reported, '_kumo_warned', True)
+        except AttributeError:
+            pass
 
 
 def on_root(source: Any, path: str) -> Tuple[Any, str]:

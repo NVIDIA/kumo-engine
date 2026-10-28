@@ -12,6 +12,7 @@ from kumo.engine._manifest import (
     FitTiming,
     ModelManifest,
     ModelParents,
+    TrackingRef,
     embedded,
     read_manifest,
     stamp,
@@ -30,6 +31,7 @@ def write_provenance(
     warm_start: Optional[ModelManifest],
     started_at: datetime,
     fit_mode: Optional[str],
+    tracked_run_id: Optional[str] = None,
 ) -> None:
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
 
@@ -50,6 +52,8 @@ def write_provenance(
                 seconds=round((finished_at - started_at).total_seconds(), 3),
             ),
             fit_mode=fit_mode,
+            tracking=None if tracked_run_id is None else TrackingRef(
+                run_id=tracked_run_id),
             **stamp(),
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
@@ -67,8 +71,9 @@ def embedded_model(manifest: ModelManifest) -> ModelManifest:
         return None if model is None else ModelManifest(id=model.id,
                                                         reconstructed=True)
 
-    return replace(copy,
-                   parents=replace(parents, warm_start=cut(parents.warm_start)))
+    return replace(copy, parents=replace(
+        parents, warm_start=cut(parents.warm_start),
+        derived_from=cut(parents.derived_from)))
 
 
 def parent_model(bundle_dir: Path, bundle_id: Optional[str]
@@ -84,3 +89,26 @@ def parent_model(bundle_dir: Path, bundle_id: Optional[str]
 def read_provenance(bundle_dir: Path) -> Optional[ModelManifest]:
     path = listed_file(bundle_dir, PROVENANCE_ROLE)
     return None if path is None else read_manifest(path, ModelManifest)
+
+
+def record_derivation(bundle_dir: Path, parent_dir: Path,
+                      parent_id: Optional[str]) -> None:
+    r"""Writes the manifest of ``bundle_dir``, a copy of the bundle at
+    ``parent_dir`` with other scoring defaults."""
+    from kumo_core.artifacts import (
+        PROVENANCE_FILE,
+        add_bundle_file,
+        bundle_id_from_manifest,
+    )
+
+    parent = parent_model(parent_dir, parent_id)
+    write_manifest(
+        bundle_dir / PROVENANCE_FILE,
+        ModelManifest(
+            id=bundle_id_from_manifest(bundle_dir),
+            parents=ModelParents(
+                derived_from=None if parent is None else embedded_model(
+                    parent)),
+            **stamp(),
+        ))
+    add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
