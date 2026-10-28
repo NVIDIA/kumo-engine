@@ -2341,9 +2341,13 @@ impl DiskGraphEngine {
                     if is_reserved_feature_column(&col.name) {
                         continue;
                     }
-                    let (_, builder) =
-                        diskgraph_rowpack::make_arrow_builder(&col.name, col.logical_type, 1024)
-                            .map_err(|e| EngineError::Internal(e.to_string()))?;
+                    let (_, builder) = diskgraph_rowpack::make_arrow_builder(
+                        &col.name,
+                        col.logical_type,
+                        1024,
+                        decoder.clock(),
+                    )
+                    .map_err(|e| EngineError::Internal(e.to_string()))?;
                     builders.push(builder);
                 }
                 type_state.builders = Some(builders);
