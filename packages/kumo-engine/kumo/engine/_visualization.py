@@ -25,7 +25,7 @@ class SVG(str):
 
     def __new__(cls, value: str, samples: dict[str, str] | None = None,
                 namespace: str = '', layouts: dict | None = None,
-                initial_layout: str = 'original'):
+                initial_layout: str = 'standard'):
         obj = super().__new__(cls, value)
         obj._samples = samples or {}
         obj._namespace = namespace
@@ -74,13 +74,16 @@ def _wrap(text: str, width: int) -> list[str]:
     return lines + [line]
 
 
-def _squircle(width: float, height: float, radius: float = 18) -> str:
+def _squircle(width: float, height: float, radius: float = 18,
+              *, square_bottom: bool = False) -> str:
     # Cubic corners flatten at the sides, unlike circular rounded rectangles.
     r = min(radius, width / 2, height / 2)
+    bottom = (f'V {height} H 0 ' if square_bottom else
+              f'V {height - r} C {width} {height} {width} {height} '
+              f'{width - r} {height} H {r} C 0 {height} 0 {height} '
+              f'0 {height - r} ')
     return (f'M {r} 0 H {width - r} C {width} 0 {width} 0 {width} {r} '
-            f'V {height - r} C {width} {height} {width} {height} '
-            f'{width - r} {height} H {r} C 0 {height} 0 {height} '
-            f'0 {height - r} V {r} C 0 0 0 0 {r} 0 Z')
+            f'{bottom}V {r} C 0 0 0 0 {r} 0 Z')
 
 
 def _tooltip(text: str, row: str = '', table: str = '',
@@ -147,8 +150,8 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
     from kumo.engine._visualization_layout import build_layouts, choose_layout
 
     if not isinstance(layout, str) or layout not in (
-            'auto', 'original', 'compact'):
-        raise ValueError('layout must be auto, original, or compact.')
+            'auto', 'standard', 'compact'):
+        raise ValueError('layout must be auto, standard, or compact.')
     if type(sample_rows) is not int or not 0 <= sample_rows <= 3:
         raise ValueError('sample_rows must be an integer from 0 to 3.')
     if len(tables) > 30:
@@ -193,12 +196,21 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         neighbors[src].add(dst)
         neighbors[dst].add(src)
 
+    for name, definition in definitions.items():
+        if definition.time_col is not None:
+            if definition.time_col not in {col.name for col in definition.cols}:
+                raise ValueError(f'Time column {name}.{definition.time_col} is '
+                                 'missing from the table columns.')
+            role = keys[name].get(definition.time_col, '')
+            keys[name][definition.time_col] = f'{role}/T' if role else 'T'
+
     cards = {}
     for name in names:
         definition = definitions[name]
         pkey = definition.pkey
         columns = sorted((col.name for col in definition.cols), key=lambda col:
-                         (col != pkey, col not in keys[name], col))
+                         (col != pkey, 'FK' not in keys[name].get(col, ''),
+                          col not in keys[name], col))
         limit = (_COLUMN_LIMIT
                  if len(names) <= 10 else _LARGE_GRAPH_COLUMN_LIMIT)
         columns = columns[:max(len(keys[name]), limit if show_cols else 0)]
@@ -208,8 +220,9 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         ports = {}
         y = header + 8
         for column in columns:
-            # Leave room for the widest PK/FK badge and a 12px text gap.
-            lines = _wrap(column, 25)
+            # Reserve extra room when a field carries all three role markers.
+            lines = _wrap(column, 23 if len(keys[name].get(column, '')) > 5
+                          else 25)
             height = 12 + 20 * len(lines)
             ports[column] = y + height / 2
             rows.append((column, lines, y, height))
@@ -292,7 +305,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
     height = top + canvas_height + 40
     if not names:
         width, height = 304, 112
-    original_paths = []
+    standard_paths = []
     lane = 0
     handles = set()
     for index, edge in enumerate(edges):
@@ -326,7 +339,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                      f'{sx} {overhead} C {sx - gap} {overhead} '
                      f'{dx + gap} {overhead} {dx} {overhead} '
                      f'C {dx - bow} {overhead} {dx - bow} {dy} {dx} {dy}')
-        original_paths.append(path)
+        standard_paths.append(path)
         handles.update(((sx, sy), (dx, dy)))
 
     layout_cards = [dict(name=name, width=card_width,
@@ -338,10 +351,10 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                              definitions[edge.dst_table].pkey],
                          target_port=cards[edge.src_table][3][edge.fkey])
                     for edge in edges]
-    original = dict(width=width, height=height,
+    standard = dict(width=width, height=height,
                     positions={name: list(xy[node_ids[name]]) for name in names},
-                    paths=original_paths, handles=sorted(handles))
-    layouts = build_layouts(layout_cards, layout_edges, original)
+                    paths=standard_paths, handles=sorted(handles))
+    layouts = build_layouts(layout_cards, layout_edges, standard)
     selected = (choose_layout(layout_cards, layout_edges, layouts)
                 if layout == 'auto' else layout)
     geometry = layouts[selected]
@@ -355,6 +368,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         'font-family="Arial, Helvetica, sans-serif">',
         '<title>Table relationships</title>',
         '<desc>Lines connect foreign keys (FK) to primary keys (PK).'
+        ' T marks the declared time column.'
         '</desc>', f'<defs><pattern id="{uid}-grid" width="16" height="16" '
         'patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.7" '
         'fill="#d9ddd5"/></pattern></defs>',
@@ -406,7 +420,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                    f'<path d="{shape}" fill="white" stroke="#94a3b8"/>')
         svg.append(_tooltip(summary, table=name, connected_tables=connected))
         svg.append(f'<path class="kumo-surface" '
-                   f'd="{_squircle(card_width, header)}" '
+                   f'd="{_squircle(card_width, header, square_bottom=True)}" '
                    f'clip-path="url(#{clip})" fill="#f4f8ec" '
                    'stroke="#c8d9ad"/>')
         for i, line in enumerate(title):

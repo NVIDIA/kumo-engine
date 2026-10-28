@@ -244,7 +244,8 @@ def test_visualize_exports_escaped_svg_without_source_access(
 
 @pytest.mark.parametrize('count, limit', [(1, 10), (10, 10), (11, 5)])
 @pytest.mark.parametrize('show_cols', [False, True])
-def test_visualize_bounds_column_detail(count, limit, show_cols):
+@pytest.mark.parametrize('with_time', [False, True])
+def test_visualize_bounds_column_detail(count, limit, show_cols, with_time):
     users, _ = _s3_tables()
     extras = [
         Column(f'feature_{i:03}', Stype.numerical, Dtype.int64)
@@ -252,33 +253,55 @@ def test_visualize_bounds_column_detail(count, limit, show_cols):
     ]
     table = replace(
         users, definition=replace(users.definition,
-                                  cols=[*users.definition.cols, *extras]))
+                                  time_col='event_time' if with_time else None,
+                                  cols=[*users.definition.cols, *extras] + (
+                                      [Column('event_time', Stype.timestamp,
+                                              Dtype.date)] if with_time else [])))
     graph = Graph({f'table_{i:02}': table for i in range(count)})
     root = ElementTree.fromstring(graph.visualize(show_cols=show_cols))
     text = ' '.join(
         element.text or ''
         for element in root.iter('{http://www.w3.org/2000/svg}text'))
-    visible = limit - 1 if show_cols else 0
+    visible = limit - 1 - int(with_time) if show_cols else 0
     for i in range(120):
         assert (f'feature_{i:03}' in text) == (i < visible)
     assert re.search(rf'\+\s*{120 - visible} (other )?columns', text)
+    tips = root.findall('.//{http://www.w3.org/2000/svg}g[@data-kumo-column="event_time"]')
+    assert len(tips) == (count if with_time else 0)
+    assert all('Role: T' in tip.get('data-kumo-tip') for tip in tips)
 
 
-def test_visualize_retains_keys_beyond_column_limit():
+@pytest.mark.parametrize('time_column', [None, 'occurred_at', 'event_id', 'foreign_00'])
+@pytest.mark.parametrize('show_cols', [False, True])
+def test_visualize_retains_keys_beyond_column_limit(time_column, show_cols):
     users, events = _s3_tables()
     keys = [Column(f'foreign_{i:02}', Stype.ID, Dtype.int64) for i in range(12)]
     events = replace(
         events, definition=replace(events.definition,
-                                   cols=[events.definition.cols[0], *keys]))
-    graph = Graph([users, events],
-                  [Edge('events', column.name, 'users') for column in keys])
-    text = ''.join(ElementTree.fromstring(graph.visualize()).itertext())
+                                   time_col=time_column,
+                                   cols=[events.definition.cols[0], *keys,
+                                         Column('occurred_at', Stype.timestamp,
+                                                Dtype.date)]))
+    edges = [Edge('events', column.name, 'users') for column in keys]
+    if time_column == 'event_id':
+        edges.append(Edge('events', 'event_id', 'users'))
+    graph = Graph([users, events], edges)
+    root = ElementTree.fromstring(graph.visualize(show_cols=show_cols))
+    text = ''.join(root.itertext())
     assert all(column.name in text for column in keys)
     assert 'event_id' in text and 'id' in text
+    if time_column:
+        row = root.find('.//{http://www.w3.org/2000/svg}g'
+                        f'[@data-kumo-column="{time_column}"]')
+        role = {'event_id': 'PK/FK/T', 'foreign_00': 'FK/T'}.get(time_column, 'T')
+        assert f'Role: {role}' in row.get('data-kumo-tip')
+    else:
+        assert root.find('.//{http://www.w3.org/2000/svg}g'
+                         '[@data-kumo-column="occurred_at"]') is None
 
 
 @pytest.mark.parametrize('ambiguous', [False, True])
-@pytest.mark.parametrize('layout', ['auto', 'original', 'compact'])
+@pytest.mark.parametrize('layout', ['auto', 'standard', 'compact'])
 def test_visualize_layout_is_deterministic_with_cycles_and_isolates(
         ambiguous, layout):
     _, table = _s3_tables()
@@ -347,6 +370,7 @@ def test_visualize_layout_is_deterministic_with_cycles_and_isolates(
     ('no_primary_key', 'primary key'),
     ('missing_primary_key', 'missing|primary key'),
     ('missing_foreign_key', 'missing|foreign key'),
+    ('missing_time_column', 'Time column users.gone is missing'),
     ('self_relation', '[Ss]elf'),
     ('duplicate_columns', 'duplicate column'),
     ('xml_control', 'valid XML'),
@@ -365,6 +389,8 @@ def test_visualize_rejects_invalid_metadata(case, message):
         edge = Edge('missing', 'user_id', 'users')
     elif case == 'missing_foreign_key':
         edge = Edge('events', 'gone', 'users')
+    elif case == 'missing_time_column':
+        users = replace(users, definition=replace(users.definition, time_col='gone'))
     elif case == 'self_relation':
         edge = Edge('events', 'user_id', 'events')
     elif case == 'duplicate_columns':
@@ -384,7 +410,7 @@ def test_visualize_empty_graph():
 
 
 @pytest.mark.parametrize('layout',
-                         [None, '', 'flow', 'Original', 'circular', [], 1])
+                         [None, '', 'flow', 'original', 'Standard', 'circular', [], 1])
 def test_visualize_rejects_invalid_layout_before_source_access(layout):
     with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
                       side_effect=AssertionError('source accessed')):
@@ -396,7 +422,7 @@ def test_visualize_layouts_preserve_schema_and_export_selection(tmp_path):
     graph = Graph(_s3_tables(), [Edge('events', 'user_id', 'users')])
     schemas = []
     svg_ns = '{http://www.w3.org/2000/svg}'
-    for layout in ('original', 'compact'):
+    for layout in ('standard', 'compact'):
         destination = tmp_path / f'{layout}.svg'
         with patch.object(S3Connector, 'source_backend',
                           new_callable=PropertyMock,

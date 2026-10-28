@@ -221,21 +221,42 @@ def _point(point: Point) -> str:
     return f'{point[0]:.3f} {point[1]:.3f}'
 
 
-def _smooth(points: list[Point]) -> str:
-    # Rounding is smaller than obstacle clearance, so curves cannot cut into
-    # cards when replacing a visibility-graph corner.
+def _smooth(points: list[Point], rectangles: list[Rect]) -> str:
+    # Grow corner rounding only as far as the surrounding tables allow.
     path = 'M ' + _point(points[0])
     for a, b, c in zip(points, points[1:], points[2:]):
         before, after = math.dist(a, b), math.dist(b, c)
         if min(before, after) < 1e-9:
             continue
-        radius = min(12.0, before * .35, after * .35)
-        p = (b[0] + (a[0] - b[0]) * radius / before,
-             b[1] + (a[1] - b[1]) * radius / before)
-        q = (b[0] + (c[0] - b[0]) * radius / after,
-             b[1] + (c[1] - b[1]) * radius / after)
+        radius = min(64.0, before * .45, after * .45)
+        while True:
+            p = (b[0] + (a[0] - b[0]) * radius / before,
+                 b[1] + (a[1] - b[1]) * radius / before)
+            q = (b[0] + (c[0] - b[0]) * radius / after,
+                 b[1] + (c[1] - b[1]) * radius / after)
+            controls = (p, ((p[0] + 2 * b[0]) / 3, (p[1] + 2 * b[1]) / 3),
+                        ((q[0] + 2 * b[0]) / 3, (q[1] + 2 * b[1]) / 3), q)
+            if radius <= 1 or all(_curve_clear(controls, rect)
+                                  for rect in rectangles):
+                break
+            radius /= 2
         path += f' L {_point(p)} Q {_point(b)} {_point(q)}'
     return path + ' L ' + _point(points[-1])
+
+
+def _segments(points: list[Point]):
+    """Index collinear route segments by their supporting line."""
+    for a, b in zip(points, points[1:]):
+        length = math.dist(a, b)
+        if length < 1e-9:
+            continue
+        dx, dy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
+        if dx < 0 or (dx == 0 and dy < 0):
+            dx, dy = -dx, -dy
+        key = (round(dx, 8), round(dy, 8), round(a[1] * dx - a[0] * dy, 3))
+        low, high = sorted((a[0] * dx + a[1] * dy,
+                            b[0] * dx + b[1] * dy))
+        yield key, low, high
 
 
 class _Router:
@@ -311,16 +332,17 @@ def _geometry(cards: list[Card], edges: list[Edge]) -> Geometry:
                    positions[c['name']][0] + c['width'],
                    positions[c['name']][1] + c['height']) for c in cards]
     routers: dict[int, _Router] = {}
-    paths, handles = [], set()
-    edge_keys = sorted({(e['source'], e['target'], e['source_port'],
-                         e['target_port']) for e in edges})
-    lanes = {key: index % 7 for index, key in enumerate(edge_keys)}
-    for edge in edges:
-        source, target = edge['source'], edge['target']
+    handles = set()
+    occupied: dict[tuple, list[tuple[float, float]]] = defaultdict(list)
+    keys = [(e['source'], e['target'], e['source_port'], e['target_port'])
+            for e in edges]
+    routed = {}
+    for key in sorted(set(keys)):
+        source, target, source_port, target_port = key
         sx, sy = positions[source]
         tx, ty = positions[target]
-        start = (sx + lookup[source]['width'], sy + edge['source_port'])
-        end = (tx, ty + edge['target_port'])
+        start = (sx + lookup[source]['width'], sy + source_port)
+        end = (tx, ty + target_port)
         handles.update((start, end))
         half = (end[0] - start[0]) / 2
         curve = (start, (start[0] + half, start[1]),
@@ -330,18 +352,28 @@ def _geometry(cards: list[Card], edges: list[Edge]) -> Geometry:
                                      rect[2] + 10, rect[3] + 10))
                 for c, rect in zip(cards, rectangles)
                 if c['name'] not in (source, target)):
-            paths.append('M ' + _point(start) + ' C '
-                         + ' '.join(_point(p) for p in curve[1:]))
+            routed[key] = ('M ' + _point(start) + ' C '
+                           + ' '.join(_point(p) for p in curve[1:]))
         else:
-            lane = lanes[(source, target, edge['source_port'],
-                          edge['target_port'])]
-            if lane not in routers:
-                routers[lane] = _Router(rectangles, 14 + lane * 3.5)
-            offset = 40 + lane * 3.5
-            route = routers[lane].route(
-                (start[0] + offset, start[1]),
-                (end[0] - offset, end[1]))
-            paths.append(_smooth([start, *route, end]))
+            candidates = []
+            for lane in range(7):
+                if lane not in routers:
+                    routers[lane] = _Router(rectangles, 14 + lane * 3.5)
+                offset = 40 + lane * 3.5
+                route = routers[lane].route(
+                    (start[0] + offset, start[1]),
+                    (end[0] - offset, end[1]))
+                segments = list(_segments(route))
+                overlap = sum(max(0, min(high, old_high) - max(low, old_low))
+                              for line, low, high in segments
+                              for old_low, old_high in occupied[line])
+                length = sum(math.dist(a, b) for a, b in zip(route, route[1:]))
+                candidates.append((overlap * 4 + length, lane, route, segments))
+            _, _, route, segments = min(candidates)
+            for line, low, high in segments:
+                occupied[line].append((low, high))
+            routed[key] = _smooth([start, *route, end], rectangles)
+    paths = [routed[key] for key in keys]
     _, _, right, bottom = _bounds(cards, positions)
     return {'width': right + _MARGIN, 'height': bottom + _MARGIN,
             'positions': positions, 'paths': paths,
@@ -349,29 +381,29 @@ def _geometry(cards: list[Card], edges: list[Edge]) -> Geometry:
 
 
 def build_layouts(cards: list[Card], edges: list[Edge],
-                  original: Geometry) -> dict[str, Geometry]:
+                  standard: Geometry) -> dict[str, Geometry]:
     """Build alternatives once; callers own camera and layout selection.
 
-    The original geometry is passed through unchanged. Input collections are
+    The standard geometry is passed through unchanged. Input collections are
     never mutated, and alternate geometry does not depend on viewport size.
     """
     if not cards:
-        return dict.fromkeys(('original', 'compact'), original)
+        return dict.fromkeys(('standard', 'compact'), standard)
     ordered = sorted(cards, key=lambda c: c['name'])
-    return {'original': original, 'compact': _geometry(ordered, edges)}
+    return {'standard': standard, 'compact': _geometry(ordered, edges)}
 
 
 def choose_layout(cards: list[Card], edges: list[Edge],
                   layouts: dict[str, Geometry]) -> str:
     """Conservative structural defaults, selected once when rendering."""
     if not cards:
-        return 'original'
-    original, compact = layouts['original'], layouts['compact']
+        return 'standard'
+    standard, compact = layouts['standard'], layouts['compact']
     components = _components(cards, edges)
     ranks: dict[int, int] = defaultdict(int)
     for card in cards:
         ranks[card['rank']] += 1
-    crowded = max(ranks.values()) >= 7 and original['height'] > 1800
+    crowded = max(ranks.values()) >= 7 and standard['height'] > 1800
     rank_by_name = {c['name']: c['rank'] for c in cards}
     feedback = any(rank_by_name[e['source']] >= rank_by_name[e['target']]
                    for e in edges)
@@ -379,12 +411,12 @@ def choose_layout(cards: list[Card], edges: list[Edge],
     # Keep layered many-to-many dimensions in their familiar two-column
     # overview; compact remains available as an explicit alternative.
     if len(ranks) == 2 and min(ranks.values()) >= 7:
-        return 'original'
+        return 'standard'
     disconnected = len(components) > 1
-    old_extent = max(original['width'] / 1.45, original['height'])
+    old_extent = max(standard['width'] / 1.45, standard['height'])
     new_extent = max(compact['width'] / 1.45, compact['height'])
     improvement = 1.0 if disconnected else .85
     if ((crowded or dense or disconnected)
             and new_extent < old_extent * improvement):
         return 'compact'
-    return 'original'
+    return 'standard'
