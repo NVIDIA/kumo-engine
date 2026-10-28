@@ -26,6 +26,7 @@ SPEC_VERSION = 1
 MANIFEST_FILE = 'publication-manifest.json'
 SPEC_ROLE = 'training_spec'
 PROVENANCE_ROLE = 'provenance'
+SCORING_DEFAULTS_ROLE = 'scoring_defaults'
 HOLDOUT_ROLE = 'holdout'
 HOLDOUT_META_ROLE = 'holdout_meta'
 
@@ -146,6 +147,7 @@ def read_bundle_artifact_paths(
     return {
         entry['role']: str(bundle_dir / entry['relative_path'])
         for entry in artifacts
-        if entry['role'] not in (SPEC_ROLE, PROVENANCE_ROLE, HOLDOUT_ROLE,
+        if entry['role'] not in (SPEC_ROLE, PROVENANCE_ROLE,
+                                 SCORING_DEFAULTS_ROLE, HOLDOUT_ROLE,
                                  HOLDOUT_META_ROLE)
     }, bundle_id

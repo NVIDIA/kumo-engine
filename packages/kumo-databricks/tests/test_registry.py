@@ -15,6 +15,8 @@ from kumo_databricks import registry
 from kumo_databricks.sink import DatabricksSinkBackend
 from kumoapi.data_source import DatabricksConnectorResourceConfig
 from kumoapi.plugin import (
+    ENGINE_MARKER,
+    ModelAliasingSink,
     ModelFetchingSink,
     ModelListingSink,
     ModelPublishingSink,
@@ -61,6 +63,7 @@ def test_sink_implements_registry_protocols():
     assert isinstance(sink, ModelPublishingSink)
     assert isinstance(sink, ModelFetchingSink)
     assert isinstance(sink, ModelListingSink)
+    assert isinstance(sink, ModelAliasingSink)
 
 
 def test_publish_uses_connector_client_and_reports_assigned_version(
@@ -97,10 +100,19 @@ def test_publish_uses_connector_client_and_reports_assigned_version(
 
 @pytest.mark.parametrize(
     'name',
-    ['other.analytics.churn', 'main.other.churn', 'other.churn', 'a.b.c.d', ''])
+    ['other.analytics.churn', 'main.other.churn', 'other.churn', 'a.b.c.d', '',
+     'users churn', 'users/churn', 'x' * 256])
 def test_cross_schema_or_invalid_names_are_refused(connector, name):
     with pytest.raises(ValueError):
-        registry._address(connector, None, ModelRegistryLocation(name))
+        DatabricksSinkBackend().check_model_location(
+            connector, ModelRegistryLocation(name))
+
+
+@pytest.mark.parametrize('name', ['users_churn', 'users-churn',
+                                  'main.analytics.Users-Churn'])
+def test_unity_catalog_model_names_are_accepted(connector, name):
+    DatabricksSinkBackend().check_model_location(connector,
+                                                 ModelRegistryLocation(name))
 
 
 @pytest.mark.parametrize('kwargs', [
@@ -141,7 +153,7 @@ def test_invalid_fetch_version_fails_before_authentication(
 
 
 def version(number, kumo=True, status='READY'):
-    tags = {registry._ENGINE_MARKER: '1'} if kumo else {}
+    tags = {ENGINE_MARKER: '1'} if kumo else {}
     return dict(version=number, status=status,
                 tags=[dict(key=k, value=v) for k, v in tags.items()])
 
@@ -155,6 +167,7 @@ class Client:
             upload=self.upload, list_directory_contents=self.list_directory,
             download=self.download)
         self.objects = {}
+        self.aliases = {}
         self.calls = []
         self.deleted = []
         self.versions = [
@@ -173,6 +186,12 @@ class Client:
 
     def do(self, method, path, query=None, body=None):
         self.calls.append((method, path, query, body))
+        if '/aliases/' in path:
+            alias = path.rsplit('/', 1)[-1]
+            if method == 'PUT':
+                self.aliases[alias] = body['version_num']
+                return {}
+            return dict(version=self.aliases[alias])
         if method == 'POST':
             assert all(len(tag['value']) <= 256 for tag in body['tags'])
             self.versions.append(
@@ -207,8 +226,11 @@ class Client:
             if key.startswith(path + '/'):
                 relative = key[len(path) + 1:]
                 child = relative.split('/')[0]
-                children[child] = SimpleNamespace(path=path + '/' + child,
-                                                  is_directory='/' in relative)
+                directory = '/' in relative
+                # The Files API lists directories with a trailing slash.
+                children[child] = SimpleNamespace(
+                    path=f"{path}/{child}{'/' if directory else ''}",
+                    is_directory=directory)
         return children.values()
 
     def download(self, path):
@@ -485,3 +507,67 @@ def test_invalid_bundle_metadata_keeps_destination(client, bundle, tmp_path,
         registry.fetch_bundle(client, name='main.analytics.churn',
                               local_dir=destination, version='7')
     assert (destination / 'weights.bin').read_bytes() == b'previous'
+
+
+def test_bundle_id_is_tagged_listed_and_fetched_by_version_and_alias(
+        connector, client, bundle, tmp_path, monkeypatch):
+    lineage = dict(kumo_bundle_id='ab' * 32)
+    sink = DatabricksSinkBackend()
+    monkeypatch.setattr(sink, '_client', lambda _: client)
+    published = sink.publish_model(
+        connector, str(bundle), location=ModelRegistryLocation('churn'),
+        metadata=dict(spec_version='1', kumo_engine='0', kumo_run_id='run-1',
+                      **lineage))
+    assert registry._tags(client.versions[-1]) == {
+        'kumo_engine': '1',
+        **lineage
+    }
+    listed = registry.list_models(client, catalog='main', schema='analytics')
+    assert next(m for m in listed if m.version == '7').metadata == lineage
+
+    sink.set_model_alias(
+        connector, ModelRegistryLocation('churn', version=published.version),
+        'prod')
+    assert client.calls[-1] == (
+        'PUT',
+        '/api/2.1/unity-catalog/models/main.analytics.churn/aliases/prod', None,
+        dict(version_num=7))
+    for location in (ModelRegistryLocation('churn', version='7'),
+                     ModelRegistryLocation('churn', alias='prod')):
+        fetched = sink.fetch_model(connector, str(tmp_path / 'restored'),
+                                   location=location)
+        assert fetched.version == '7'
+        assert fetched.metadata == {
+            'spec_version': '1',
+            'predictive_query': 'PREDICT COUNT(*)',
+            'snapshot_id': 'snapshot',
+            **lineage
+        }
+
+
+def test_set_alias_needs_a_positive_version(connector, monkeypatch):
+    sink = DatabricksSinkBackend()
+    monkeypatch.setattr(sink, '_client',
+                        lambda _: pytest.fail('resolved identity'))
+    with pytest.raises(ValueError, match='positive integer'):
+        sink.set_model_alias(connector,
+                             ModelRegistryLocation('churn', version='0'),
+                             'prod')
+
+
+def test_publishing_a_registered_bundle_again_reuses_its_version(
+        client, bundle, caplog):
+    metadata = dict(kumo_bundle_id='ab' * 32)
+    first = registry.publish_bundle(client, 'main.analytics.churn', bundle,
+                                    metadata=metadata)
+    posts = sum(call[0] == 'POST' for call in client.calls)
+    with caplog.at_level('INFO', logger=registry.__name__):
+        again = registry.publish_bundle(client, 'main.analytics.churn',
+                                        bundle, metadata=metadata)
+    assert again == first and again.version == '7'
+    assert sum(call[0] == 'POST' for call in client.calls) == posts
+    assert 'already holds bundle' in caplog.text
+    other = registry.publish_bundle(client, 'main.analytics.churn', bundle,
+                                    metadata=dict(kumo_bundle_id='cd' * 32))
+    assert sum(call[0] == 'POST' for call in client.calls) == posts + 1
+    assert other.metadata == dict(kumo_bundle_id='cd' * 32)

@@ -293,6 +293,9 @@ test_requires = [
     "respx==0.22.0",
     "pytorch-frame==0.3.0",
     "pytorch-lightning==2.6.6",
+    # A superset of kumo-engine's `mlflow` extra (mlflow-skinny): the tests use
+    # MLflow's local SQLite store. Its wheel is tested with --no-deps.
+    "mlflow>=3.13,<4",
 ]
 
 dev_requires = test_requires + [
