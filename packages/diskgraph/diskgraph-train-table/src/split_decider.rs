@@ -157,7 +157,7 @@ pub(crate) trait SplitDecider<U: UnitSystem>: Send + Sync {
 /// is a refcount bump, no data copy). Then re-downcasts on construction
 /// and stores both the keep-alive Arc plus the typed pointer-equivalent.
 /// We avoid self-referential structs by re-running the downcast inside
-/// `ts_secs_at` — but that's a single `as_any()` + ptr-cast per call,
+/// `ts_at` — but that's a single `as_any()` + ptr-cast per call,
 /// not a schema-name lookup, and inlines.
 pub(crate) struct TsBatchView<'a> {
     /// Reference to the timestamp column (TimestampNanosecondArray or Int64Array).
@@ -187,25 +187,19 @@ impl<'a> TsBatchView<'a> {
         })
     }
 
-    /// Read the timestamp at `row_idx` as epoch seconds.
+    /// Read the timestamp at `row_idx` as a typed `Abs<U>`.
     #[inline]
-    pub(crate) fn ts_secs_at(&self, row_idx: usize) -> i64 {
+    pub(crate) fn ts_at<U: UnitSystem>(&self, row_idx: usize) -> Abs<U> {
         if let Some(arr) = self.ts_col.as_any().downcast_ref::<TimestampNanosecondArray>() {
-            arr.value(row_idx) / 1_000_000_000
+            Abs::<U>::from_nanos(arr.value(row_idx))
         } else if let Some(arr) = self.ts_col.as_any().downcast_ref::<Int64Array>() {
-            arr.value(row_idx)
+            Abs::<U>::from_secs(arr.value(row_idx))
         } else {
             panic!(
                 "TsBatchView: TIMESTAMP column has unexpected dtype {:?}",
                 self.ts_col.data_type()
             );
         }
-    }
-
-    /// Read the timestamp at `row_idx` as a typed `Abs<U>`.
-    #[inline]
-    pub(crate) fn ts_at<U: UnitSystem>(&self, row_idx: usize) -> Abs<U> {
-        Abs::<U>::from_secs(self.ts_secs_at(row_idx))
     }
 }
 
@@ -719,7 +713,7 @@ impl<U: UnitSystem> SplitDecider<U> for RandomDecider<U> {
 
     #[inline]
     fn decide(&self, row: &TTRowRef<'_, U>) -> u8 {
-        self.decide_entity_ts(row.entity_pk, row.ts.raw())
+        self.decide_entity_ts(row.entity_pk, row.ts.to_secs())
     }
 
     #[inline(always)]

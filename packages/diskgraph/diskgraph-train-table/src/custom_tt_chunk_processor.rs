@@ -50,7 +50,7 @@ use crossbeam_channel::Sender;
 use diskgraph_core::accumulators::{
     HyperLogLog, LocalColumnCounts, SharedColumnCounts, TDigestEstimator, WelfordAccumulator,
 };
-use diskgraph_core::time::{Abs, TimeUnit, UnitSystem};
+use diskgraph_core::time::{convert_trunc, Abs, TimeUnit, UnitSystem};
 use diskgraph_core::tt_builder::{PredictionType, Value};
 use diskgraph_index::pkmap;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -386,44 +386,46 @@ pub(crate) fn cell_to_value(arr: &dyn Array, idx: usize) -> Option<Value> {
     None
 }
 
-/// Read one cell of an Arrow timestamp column as epoch seconds.
+/// Read one cell of an Arrow timestamp column as ticks of `clock`, truncating.
 ///
 /// Dispatches by the column's typed Arrow `DataType` — no inference of
 /// units from value magnitude. Supported:
-///   * `Timestamp(Nanosecond)`  → value / 1e9 (declared ignored; array self-describes)
-///   * `Timestamp(Microsecond)` → value / 1e6 (declared ignored)
-///   * `Timestamp(Millisecond)` → value / 1e3 (declared ignored)
-///   * `Timestamp(Second)`      → value as-is (declared ignored)
-///   * `Int64`                  → divide by `declared`-derived factor
+///   * `Timestamp(_)` → the array's own unit (declared ignored; array self-describes)
+///   * `Int64`        → the `declared` unit
 ///
 /// For `Int64` (no inherent unit), `declared` is the bridge-supplied
 /// `CustomTtSource::input_timestamp_unit`. Kumo's rehydration declares
 /// this as `Nanoseconds` because kumo's canonical TIMESTAMP is int64 ns.
 /// Non-sub-second variants (Minutes, Hours, ...) are not meaningful for
 /// epoch timestamps and return `None`.
-fn read_timestamp_secs(arr: &dyn Array, idx: usize, declared: TimeUnit) -> Option<i64> {
+fn read_timestamp_ticks(
+    arr: &dyn Array,
+    idx: usize,
+    declared: TimeUnit,
+    clock: TimeUnit,
+) -> Option<i64> {
     if arr.is_null(idx) {
         return None;
     }
     if let Some(a) = arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
-        return Some(a.value(idx) / 1_000_000_000);
+        return Some(convert_trunc(a.value(idx), TimeUnit::Nanoseconds, clock));
     }
     if let Some(a) = arr.as_any().downcast_ref::<TimestampMicrosecondArray>() {
-        return Some(a.value(idx) / 1_000_000);
+        return Some(convert_trunc(a.value(idx), TimeUnit::Microseconds, clock));
     }
     if let Some(a) = arr.as_any().downcast_ref::<TimestampMillisecondArray>() {
-        return Some(a.value(idx) / 1_000);
+        return Some(convert_trunc(a.value(idx), TimeUnit::Milliseconds, clock));
     }
     if let Some(a) = arr.as_any().downcast_ref::<TimestampSecondArray>() {
-        return Some(a.value(idx));
+        return Some(convert_trunc(a.value(idx), TimeUnit::Seconds, clock));
     }
     if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
         let v = a.value(idx);
         return match declared {
-            TimeUnit::Nanoseconds => Some(v / 1_000_000_000),
-            TimeUnit::Microseconds => Some(v / 1_000_000),
-            TimeUnit::Milliseconds => Some(v / 1_000),
-            TimeUnit::Seconds => Some(v),
+            TimeUnit::Nanoseconds
+            | TimeUnit::Microseconds
+            | TimeUnit::Milliseconds
+            | TimeUnit::Seconds => Some(convert_trunc(v, declared, clock)),
             // Non-sub-second units are not used for epoch timestamps in
             // kumo's data model; surface as None so the caller's "skip
             // null timestamp" path applies.
@@ -1204,11 +1206,14 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 sentinel_ts
             }
             Some(arr) => {
-                let ts_secs = read_timestamp_secs(arr.as_ref(), row_idx, input_timestamp_unit)
-                    .ok_or_else(|| {
-                        TTGenError::SchemaError("custom-TT timestamp cannot be read".to_string())
-                    })?;
-                Abs::<U>::from_secs(ts_secs)
+                let ticks =
+                    read_timestamp_ticks(arr.as_ref(), row_idx, input_timestamp_unit, U::UNIT)
+                        .ok_or_else(|| {
+                            TTGenError::SchemaError(
+                                "custom-TT timestamp cannot be read".to_string(),
+                            )
+                        })?;
+                Abs::<U>::from_raw(ticks)
             }
             None => sentinel_ts,
         };
@@ -1280,7 +1285,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
             record_filter(RowFailureKind::NonCanonicalEntity, entity_column(0))?;
             continue;
         }
-        let ts_secs = ts.to_secs();
+        let ts_ticks = ts.raw();
 
         for (col_idx, name) in &sequence_feature_indices {
             let entry = processor
@@ -1450,7 +1455,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                         {
                             pk_table.contains_pk_value_temporal(
                                 primary,
-                                ts_secs,
+                                ts_ticks,
                                 plan.custom_target_temporal_create_col_idx,
                                 plan.custom_target_temporal_end_col_idx,
                                 &mut target_pk_scratch,
@@ -1578,7 +1583,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                         {
                             pk_table.contains_pk_value_temporal(
                                 &target,
-                                ts_secs,
+                                ts_ticks,
                                 plan.custom_target_temporal_create_col_idx,
                                 plan.custom_target_temporal_end_col_idx,
                                 &mut target_pk_scratch,
@@ -1888,9 +1893,10 @@ mod contract_tests {
         for (token, array) in scalar_corpus() {
             let listed = token.is_some_and(|t| TIMESTAMP_TYPES.contains(&t));
             assert_eq!(
-                read_timestamp_secs(array.as_ref(), 0, TimeUnit::Nanoseconds).is_some(),
+                read_timestamp_ticks(array.as_ref(), 0, TimeUnit::Nanoseconds, TimeUnit::Seconds)
+                    .is_some(),
                 listed,
-                "TIMESTAMP_TYPES disagrees with read_timestamp_secs for {}",
+                "TIMESTAMP_TYPES disagrees with read_timestamp_ticks for {}",
                 array.data_type()
             );
         }
@@ -2021,7 +2027,7 @@ mod tests {
     /// Typed `Timestamp(unit)` arrays self-describe their unit; the
     /// `declared` arg is ignored for them.
     #[test]
-    fn read_timestamp_secs_typed_units_ignore_declared() {
+    fn read_timestamp_ticks_typed_units_ignore_declared() {
         // Year 2024 (~1.7e9 epoch seconds) expressed in each unit.
         let secs: i64 = 1_700_000_000;
         let nanos: i64 = secs * 1_000_000_000;
@@ -2033,18 +2039,30 @@ mod tests {
         let wrong = TimeUnit::Seconds;
 
         let ns_arr = TimestampNanosecondArray::from(vec![Some(nanos), None]);
-        assert_eq!(read_timestamp_secs(&ns_arr, 0, wrong), Some(secs));
-        assert_eq!(read_timestamp_secs(&ns_arr, 1, wrong), None);
+        assert_eq!(
+            read_timestamp_ticks(&ns_arr, 0, wrong, TimeUnit::Seconds),
+            Some(secs)
+        );
+        assert_eq!(
+            read_timestamp_ticks(&ns_arr, 1, wrong, TimeUnit::Seconds),
+            None
+        );
 
         let us_arr = TimestampMicrosecondArray::from(vec![Some(micros)]);
-        assert_eq!(read_timestamp_secs(&us_arr, 0, wrong), Some(secs));
+        assert_eq!(
+            read_timestamp_ticks(&us_arr, 0, wrong, TimeUnit::Seconds),
+            Some(secs)
+        );
 
         let ms_arr = TimestampMillisecondArray::from(vec![Some(millis)]);
-        assert_eq!(read_timestamp_secs(&ms_arr, 0, wrong), Some(secs));
+        assert_eq!(
+            read_timestamp_ticks(&ms_arr, 0, wrong, TimeUnit::Seconds),
+            Some(secs)
+        );
 
         let s_arr = TimestampSecondArray::from(vec![Some(secs)]);
         assert_eq!(
-            read_timestamp_secs(&s_arr, 0, TimeUnit::Nanoseconds),
+            read_timestamp_ticks(&s_arr, 0, TimeUnit::Nanoseconds, TimeUnit::Seconds),
             Some(secs)
         );
     }
@@ -2053,7 +2071,7 @@ mod tests {
     /// `CustomTtSource::input_timestamp_unit`. Cover all four sub-second
     /// declarations.
     #[test]
-    fn read_timestamp_secs_int64_uses_declared() {
+    fn read_timestamp_ticks_int64_uses_declared() {
         let secs: i64 = 1_700_000_000;
         let nanos: i64 = secs * 1_000_000_000;
         let micros: i64 = secs * 1_000_000;
@@ -2061,35 +2079,47 @@ mod tests {
 
         let ns = Int64Array::from(vec![Some(nanos)]);
         assert_eq!(
-            read_timestamp_secs(&ns, 0, TimeUnit::Nanoseconds),
+            read_timestamp_ticks(&ns, 0, TimeUnit::Nanoseconds, TimeUnit::Seconds),
             Some(secs)
         );
 
         let us = Int64Array::from(vec![Some(micros)]);
         assert_eq!(
-            read_timestamp_secs(&us, 0, TimeUnit::Microseconds),
+            read_timestamp_ticks(&us, 0, TimeUnit::Microseconds, TimeUnit::Seconds),
             Some(secs)
         );
 
         let ms = Int64Array::from(vec![Some(millis)]);
         assert_eq!(
-            read_timestamp_secs(&ms, 0, TimeUnit::Milliseconds),
+            read_timestamp_ticks(&ms, 0, TimeUnit::Milliseconds, TimeUnit::Seconds),
             Some(secs)
         );
 
         let s = Int64Array::from(vec![Some(secs)]);
-        assert_eq!(read_timestamp_secs(&s, 0, TimeUnit::Seconds), Some(secs));
+        assert_eq!(
+            read_timestamp_ticks(&s, 0, TimeUnit::Seconds, TimeUnit::Seconds),
+            Some(secs)
+        );
     }
 
     /// Non-sub-second declared units (Minutes, Hours, ...) are not
     /// meaningful for epoch timestamps — return None so the caller
     /// skips the row.
     #[test]
-    fn read_timestamp_secs_int64_non_sub_second_returns_none() {
+    fn read_timestamp_ticks_int64_non_sub_second_returns_none() {
         let int_arr = Int64Array::from(vec![Some(1_700_000_000_i64)]);
-        assert_eq!(read_timestamp_secs(&int_arr, 0, TimeUnit::Minutes), None);
-        assert_eq!(read_timestamp_secs(&int_arr, 0, TimeUnit::Hours), None);
-        assert_eq!(read_timestamp_secs(&int_arr, 0, TimeUnit::Days), None);
+        assert_eq!(
+            read_timestamp_ticks(&int_arr, 0, TimeUnit::Minutes, TimeUnit::Seconds),
+            None
+        );
+        assert_eq!(
+            read_timestamp_ticks(&int_arr, 0, TimeUnit::Hours, TimeUnit::Seconds),
+            None
+        );
+        assert_eq!(
+            read_timestamp_ticks(&int_arr, 0, TimeUnit::Days, TimeUnit::Seconds),
+            None
+        );
     }
 
     #[test]
