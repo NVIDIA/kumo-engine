@@ -14,11 +14,11 @@ settings.
   `<catalog>.<schema>.<model_name>` (default `users_churn`) and moves the
   `champion` alias to it.
 - **`kumo_score`** runs `score_job.py` daily at 03:00 UTC (created paused).
-  It loads `models:/<catalog>.<schema>.<model_name>@champion`, builds a fresh
-  snapshot and appends to `<predictions_table>` (default
-  `users_churn_predictions`) in the connector's schema. Add
-  `--snapshot snapshots/<graph key>/<version>` to score a stored snapshot
-  instead.
+  It loads the version `champion` points at in
+  `<catalog>.<schema>.<model_name>`, builds a fresh snapshot and appends to
+  `<predictions_table>` (default `users_churn_predictions`) in the
+  connector's schema. Add `--snapshot <snapshot id>` to score a stored
+  snapshot instead.
 
 ## Before deploying
 
@@ -74,8 +74,6 @@ settings.
 - **MLflow.** `MLFLOW_TRACKING_URI=databricks` and
   `MLFLOW_REGISTRY_URI=databricks-uc` are set explicitly;
   `MLFLOW_EXPERIMENT_NAME` is required in jobs.
-- **One registry format.** A `DatabricksConnector` publish and an MLflow
-  pyfunc model are different formats; use one per registered model.
 - **Job clusters.** Both jobs repeat the cluster block; YAML anchors would
   remove the copy but are untested with `databricks bundle validate`.
 

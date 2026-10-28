@@ -6,14 +6,13 @@
 import argparse
 from typing import Optional, Sequence
 
-from kumoapi.jobs import MetadataField, PredictionArtifactType
+from kumoapi.jobs import MetadataField
 from kumoapi.typing import Stype
 
 import kumo.engine as kumo
 from kumo.engine import (
     Edge,
     Graph,
-    ModelOutputConfig,
     ModelRegistryLocation,
     PredictionOutputConfig,
     Table,
@@ -37,7 +36,8 @@ def parse_args(argv: Optional[Sequence[str]], *,
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--artifact-root', required=True,
-        help='s3://, gs://, file:// or a local or /Volumes path')
+        help='s3://, gs://, file://, a local or /Volumes path, or with '
+        '--source snowflake an @DB.SCHEMA.STAGE path')
     parser.add_argument(
         '--source', required=True,
         help='databricks, snowflake, or a directory holding users, items '
@@ -67,12 +67,16 @@ def parse_args(argv: Optional[Sequence[str]], *,
             '--model-path',
             help='models/<bundle id> under the artifact root, without a '
             'registry')
-        parser.add_argument('--snapshot',
-                            help='a stored snapshot under the artifact root')
+        parser.add_argument(
+            '--snapshot', help='the id of a snapshot stored under the '
+            'artifact root, instead of a new one')
         parser.add_argument('--predictions-table')
     else:
         parser.add_argument('--query', default=QUERY)
         parser.add_argument('--num-experiments', type=int)
+        parser.add_argument(
+            '--threshold', type=float, default=0.5,
+            help='binary classification threshold the model scores with')
     args = parser.parse_args(argv)
     if args.registry and not args.model_name:
         parser.error('--registry needs --model-name')
@@ -85,9 +89,9 @@ def parse_args(argv: Optional[Sequence[str]], *,
 
 def source(args: argparse.Namespace) -> Connector:
     if args.source == 'databricks':
-        return DatabricksConnector.from_notebook(catalog=args.catalog,
-                                                 schema_name=args.schema,
-                                                 warehouse_id=args.warehouse)
+        return DatabricksConnector(catalog=args.catalog,
+                                   schema_name=args.schema,
+                                   warehouse_id=args.warehouse)
     if args.source == 'snowflake':
         return SnowflakeConnector.from_spcs_env(warehouse=args.warehouse,
                                                 database=args.catalog,
@@ -96,26 +100,25 @@ def source(args: argparse.Namespace) -> Connector:
 
 
 def mlops(args: argparse.Namespace, connector: Connector) -> kumo.MLOps:
+    root = ((connector, args.artifact_root)
+            if args.artifact_root.startswith('@') else args.artifact_root)
     if args.registry == 'mlflow':
         from kumo.engine.integrations.mlflow import MlflowTracking
 
-        return kumo.MLOps(
-            args.artifact_root, tracking=MlflowTracking(),
-            registry=ModelRegistryLocation(args.model_name, alias=args.alias),
-            on_error=args.on_error)
-    if args.registry == 'snowflake':
+        tracking = MlflowTracking()
+    elif args.registry == 'snowflake':
         from kumo.engine.integrations.snowflake import SnowflakeTracking
 
-        assert isinstance(connector, SnowflakeConnector)
-        return kumo.MLOps(
-            args.artifact_root,
-            tracking=SnowflakeTracking(connector.session(),
-                                       experiment_name=args.model_name),
-            registry=ModelOutputConfig(
-                connector, location=ModelRegistryLocation(
-                    args.model_name, alias=args.alias)),
-            on_error=args.on_error)
-    return kumo.MLOps(args.artifact_root, on_error=args.on_error)
+        tracking = SnowflakeTracking(connector,
+                                     experiment_name=args.model_name)
+    else:
+        return kumo.MLOps(root, on_error=args.on_error)
+    return kumo.MLOps(root, tracking=tracking, registry=registry(args),
+                      on_error=args.on_error)
+
+
+def registry(args: argparse.Namespace) -> ModelRegistryLocation:
+    return ModelRegistryLocation(args.model_name, alias=args.alias)
 
 
 def build_graph(connector: Connector, prefix: str = '') -> Graph:
@@ -144,17 +147,10 @@ def build_graph(connector: Connector, prefix: str = '') -> Graph:
         ])
 
 
-def load_model(args: argparse.Namespace, connector: Connector) -> Trainer:
-    if args.registry == 'mlflow':
-        from kumo.engine.integrations.mlflow import load_model
-
-        return load_model(f'models:/{args.model_name}@{args.alias}')
-    if args.registry == 'snowflake':
-        return Trainer.load_from_connector(
-            connector,
-            location=ModelRegistryLocation(args.model_name, alias=args.alias))
-    return Trainer.load_from_connector(connector_for_root(args.artifact_root),
-                                       path=args.model_path)
+def load_model(args: argparse.Namespace, cfg: kumo.MLOps) -> Trainer:
+    if args.registry:
+        return Trainer.load_from_connector(cfg, location=registry(args))
+    return Trainer.load_from_connector(cfg, path=args.model_path)
 
 
 def prediction_output(
@@ -163,6 +159,5 @@ def prediction_output(
     if not args.predictions_table:
         return None
     return PredictionOutputConfig(
-        connector, artifact_type=PredictionArtifactType.PREDICTIONS,
-        table_name=args.predictions_table,
+        connector, path=args.predictions_table,
         extra_fields=[MetadataField.ANCHOR_TIMESTAMP])

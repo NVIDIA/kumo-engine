@@ -27,7 +27,9 @@ def main(argv: Optional[Sequence[str]] = None) -> kumo.TrainingResult:
         plan = query.suggest_model_plan(snapshot)
         if args.num_experiments:
             plan.training_job.num_experiments = args.num_experiments
-        result = kumo.Trainer(plan).fit(table, snapshot=snapshot)
+        result = kumo.Trainer(plan).fit(
+            table, snapshot=snapshot, scoring_defaults=kumo.ScoringDefaults(
+                binary_classification_threshold=args.threshold))
     print(f'model: models/{result.id}')
     return result
 

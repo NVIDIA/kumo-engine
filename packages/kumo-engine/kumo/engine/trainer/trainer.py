@@ -280,7 +280,10 @@ class PredictionResult:
                             path: str) -> 'PredictionResult':
         r"""Load a Parquet directory written by :meth:`export` for monitoring.
 
-        The export must be complete (its ``_SUCCESS`` marker present). Only
+        A `kumo.MLOps` ``connector`` reads ``path`` under its artifact root,
+        such as ``predictions/<prediction id>``; a run directory loads its
+        ``predictions/``. The export must be complete (its ``_SUCCESS``
+        marker present). Only
         its ``_provenance.json`` is fetched here; the Parquet parts are
         downloaded, in parallel, when ``files`` is first read, into a local
         directory removed when the result is garbage-collected.
@@ -291,15 +294,21 @@ class PredictionResult:
         from pyarrow.fs import FileType
 
         from kumo.engine._manifest import read_manifest
+        from kumo.engine._mlops import on_root
         from kumo.engine._scratch import get_scratch_dir
         from kumo.engine.connector import file_store
 
+        connector, path = on_root(connector, path)
         store = file_store(connector, path)
         if store is None:
             raise TypeError(f'{path} is not a file destination of this '
                             f'connector')
         filesystem, root = store
         root = root.rstrip('/')
+        if (filesystem.get_file_info(f'{root}/_SUCCESS').type
+                == FileType.NotFound and filesystem.get_file_info(
+                    f'{root}/predictions/_SUCCESS').type == FileType.File):
+            root, path = f'{root}/predictions', f"{path.rstrip('/')}/predictions"
         if filesystem.get_file_info(
                 f'{root}/_SUCCESS').type == FileType.NotFound:
             raise FileNotFoundError(
@@ -1628,9 +1637,11 @@ class Trainer:
         _run_manifest.finish(result, manifest, output_config, settings)
         return result
 
-    def evaluate(self, run: PredictionResult, *, snapshot: GraphSnapshot,
+    def evaluate(self, run: PredictionResult, *,
+                 labels_snapshot: GraphSnapshot,
                  mlops: Optional[Any] = None) -> 'EvaluationResult':
-        r"""Score a run against labels regenerated on a newer snapshot.
+        r"""Score a run against labels regenerated on ``labels_snapshot``, a
+        snapshot newer than the one the run scored, holding its outcomes.
 
         With MLOps tracking on (``mlops`` or a `kumo.mlops` block), the
         result is logged as a new monitoring run of ``run``.
@@ -1639,7 +1650,7 @@ class Trainer:
         from kumo.engine._monitoring import evaluate, track
 
         settings = resolve(mlops)
-        result = evaluate(self, run, snapshot)
+        result = evaluate(self, run, labels_snapshot)
         track(result, run, settings)
         return result
 

@@ -373,8 +373,8 @@ class MlflowTracking:
             for run in client.search_runs(
                     [experiment_id], filter_string=(
                         "tags.`kumo.kind` = 'prediction' AND "
-                        "tags.`kumo.run_id` = "
-                        f"'{record.tags['kumo.prediction_run']}'"),
+                        "tags.`kumo.prediction_id` = "
+                        f"'{record.tags['kumo.monitors']}'"),
                     max_results=1):
                 client.set_tag(run.info.run_id, 'kumo.monitored', run_id)
 

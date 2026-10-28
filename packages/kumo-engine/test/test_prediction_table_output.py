@@ -75,3 +75,16 @@ def test_file_outputs_default_to_a_run_directory_without_id_columns(
     with pytest.raises(NotImplementedError, match='APPEND'):
         trainer.predict(table, snapshot=snapshot, output_config=appended,
                         binary_classification_threshold=.5)
+
+
+def test_path_names_a_file_destination_or_a_table():
+    files = kumo.FileConnector(root_dir='.')
+    assert PredictionOutputConfig(files, path='scores/').destinations() == {
+        'predictions': 'scores/'}
+    table = SimpleNamespace(source_type='SNOWFLAKE', sink_backend=None)
+    config = PredictionOutputConfig(table, path='CHURN_SCORES')
+    assert config.destinations() == {'predictions': 'CHURN_SCORES'}
+    assert config.write_mode is WriteMode.APPEND
+    with pytest.raises(ValueError, match='only one form'):
+        PredictionOutputConfig(files, path='scores/',
+                               output_paths={'predictions': 'x/'})
