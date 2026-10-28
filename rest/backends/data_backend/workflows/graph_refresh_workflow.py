@@ -301,6 +301,10 @@ class GraphRefreshWorkflow(mixins.TableParentWorkflowMixin):
         use_ingest_stats_v2 = workflow.patched('diskgraph-ingest-stats-v2')
         if use_ingest_stats_v2:
             wf_id = f'{wf_id}:stats-v2'
+        index_clock_args = []
+        if workflow.patched('diskgraph-index-clock-v1'):
+            index_clock_args.append(
+                self._graph_version_info.timestamp_precision)
         child_task = await workflow_utils.start_child_data_wf(
             diskgraph_ingest_workflow.DiskgraphIngestWorkflow.run,
             self._ctx,
@@ -317,6 +321,7 @@ class GraphRefreshWorkflow(mixins.TableParentWorkflowMixin):
                 source_size_bytes,
                 self._resource_hint,
                 source_size_bytes_by_table,
+                *index_clock_args,
             ],
             execution_timeout=timedelta(
                 hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS),
