@@ -6,7 +6,7 @@
 import json
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
@@ -17,11 +17,11 @@ from kumo_core.artifacts import PROVENANCE_FILE
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
-    FitContext,
     TrackingSession,
     run_record,
 )
 from kumo.engine.tracking import Event, RunRecord
+from kumo.engine.trainer._run_spec import FitContext, fit_spec, fitted_spec
 
 RUN = 'trainer-fit-1'
 USER_TAGS = {'team': 'ents', 'kumo.run_id': 'overridden'}
@@ -118,15 +118,22 @@ def replay(tracker=None, events=EVENTS, result=RESULT,
     of it."""
     recorder = _Recorder(tracker)
     session = TrackingSession(recorder)
-    session.start(lambda: CONTEXT)
+    session.start(lambda: fit_spec(CONTEXT))
     for event in events:
         session.on_event(event)
-    session.finish(result, error)
+    session.finish(
+        None if result is None else lambda: fitted_spec(
+            session.spec, result, events[-1].metrics.get('seconds')), error)
     records = {
         record.tags['kumo.run_id']: record
         for hook, record in recorder.calls if hook == 'on_trial'
     }
-    records[RUN] = run_record(CONTEXT, result, events[-1], tags=USER_TAGS)
+    spec = fit_spec(CONTEXT, tags=USER_TAGS)
+    if result is not None:
+        spec = fitted_spec(spec, result, events[-1].metrics.get('seconds'))
+    if 'error' in events[-1].params:
+        spec = replace(spec, error=str(events[-1].params['error']))
+    records[RUN] = run_record(spec)
     return records
 
 
@@ -304,9 +311,8 @@ def test_records_of_the_recorded_fit():
     }
     with pytest.warns(UserWarning,
                       match="'kumo.bundle_id', 'training_job.tune_metric'"):
-        spoofed = run_record(CONTEXT, tags={'kumo.bundle_id': 'x',
-                                            'training_job.tune_metric': 'y',
-                                            'a': 1})
+        spoofed = run_record(fit_spec(CONTEXT, tags={
+            'kumo.bundle_id': 'x', 'training_job.tune_metric': 'y', 'a': 1}))
     assert spoofed.tags.keys() - fit.tags.keys() == {'a'}
     assert fit.metrics == {'val_mae': 0.3, 'test_mae': 0.32, 'seconds': 9.0}
     assert fit.artifacts['query.pql'] == QUERY
@@ -370,8 +376,8 @@ def test_only_rank_zero_tracks(monkeypatch):
     recorder = _Recorder()
     session = TrackingSession(recorder)
 
-    session.start(lambda: CONTEXT)
-    session.finish(RESULT, None)
+    session.start(lambda: fit_spec(CONTEXT))
+    session.finish(lambda: fitted_spec(session.spec, RESULT), None)
 
     assert recorder.calls == []
 

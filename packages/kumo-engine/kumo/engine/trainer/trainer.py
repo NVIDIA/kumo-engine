@@ -56,21 +56,27 @@ from kumoapi.plugin import (
 from kumoapi.train import TrainingStage
 from typing_extensions import Self
 
+from kumo.engine import _deps as dependency
+from kumo.engine._deps import Dependencies
 from kumo.engine._embeddings import (
     no_encoder_inference_warnings,
     require_embedding_models,
+    require_text_encoders,
     require_trained_embedding_models,
+    with_text_encoders,
 )
 from kumo.engine._events import Event, EventEmitter, query_sha256
-from kumo.engine._manifest import ModelManifest
+from kumo.engine._manifest import Dependency, ModelManifest, stub
 from kumo.engine._mlops import full_error, warn_failure
+from kumo.engine._predictor import TRAINER_PREDICTOR
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
-from kumo.engine._tracking import FitContext, TrackingSession, fit_inputs
+from kumo.engine._tracking import RunSpec, TrackingSession, fit_inputs
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot, report_other_graph
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
+from kumo.engine.trainer._run_spec import FitContext, fit_spec, fitted_spec
 from kumo.engine.trainer._scoring import ScoringDefaults, read_scoring_defaults
 from kumo.engine.trainer._spec import (
     HOLDOUT_META_ROLE,
@@ -145,7 +151,7 @@ class TrainingResult:
     def export(self, config: ModelOutputConfig) -> PublishedModel:
         """Publish this model's bundle, as :meth:`Trainer.export`."""
         _require_publisher(config)
-        return _publish(self, config)
+        return _publish(self.bundle_dir, self.bundle_id, self.metrics, config)
 
     def with_scoring_defaults(self,
                               defaults: ScoringDefaults) -> 'TrainingResult':
@@ -329,7 +335,41 @@ def _listed_holdout(bundle_dir: Path) -> tuple[Optional[Path], Optional[bool]]:
     return path, truncated
 
 
-def _store_model(result: TrainingResult, settings: Any) -> None:
+def _store_and_register(
+    bundle_dir: Path,
+    manifest: Optional[ModelManifest],
+    settings: Any,
+    *,
+    session: Optional[TrackingSession] = None,
+    snapshot: Any = None,
+    metrics: Mapping[str, float] = {},
+    warn: bool = True,
+) -> Tuple[Optional[PublishedModel], Optional[BaseException]]:
+    r"""Store a fitted bundle under the artifact root, log it in the
+    session's run and register it, as MLOps ``settings`` say; returns the
+    registered version and the first failure."""
+    if settings is not None and settings.wants('model'):
+        _store_model(bundle_dir, manifest, settings)
+    registered, error = (None, None) if session is None else session.log_model(
+        bundle_dir, manifest, snapshot, _mlflow_registry(settings))
+    registry = _connector_registry(settings)
+    if registry is None:
+        return registered, error
+    errors: List[BaseException] = []
+    try:
+        registered = _publish(bundle_dir, None if manifest is None else
+                              manifest.id, metrics, registry, errors, warn)
+    except Exception as failure:
+        if warn:
+            warn_failure(
+                f"Could not register the model: {full_error(failure)}",
+                failure, 3)
+        return registered, error or failure
+    return registered, error or (errors or [None])[0]
+
+
+def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
+                 settings: Any) -> None:
     r"""Copy the bundle to ``<root>/models/<bundle id>/`` unless a complete
     copy is there; failures warn."""
     from kumo_core.object_store_sink import holds_bundle, upload_bundle
@@ -337,21 +377,21 @@ def _store_model(result: TrainingResult, settings: Any) -> None:
 
     from kumo.engine.connector import file_store
 
-    if result.bundle_id is None:
+    if manifest is None:
         return
     try:
         filesystem, root = file_store(
             settings.root.connector,
-            settings.root.location(f'models/{result.bundle_id}'))
-        if holds_bundle(filesystem, root, str(result.bundle_dir)):
+            settings.root.location(f'models/{manifest.id}'))
+        if holds_bundle(filesystem, root, str(bundle_dir)):
             return
         if filesystem.get_file_info(
                 FileSelector(root, allow_not_found=True)):
             filesystem.delete_dir_contents(root, missing_dir_ok=True)
-        upload_bundle(filesystem, root, str(result.bundle_dir))
+        upload_bundle(filesystem, root, str(bundle_dir))
     except Exception as error:
         warnings.warn(
-            f"Could not store model {result.bundle_id} under the artifact "
+            f"Could not store model {manifest.id} under the artifact "
             f"root: {error}", UserWarning, stacklevel=4)
 
 
@@ -410,27 +450,29 @@ def _connector_registry(settings: Any) -> Optional[ModelOutputConfig]:
     return registry if isinstance(registry, ModelOutputConfig) else None
 
 
-def _publish(training_result: TrainingResult,
-             export_config: ModelOutputConfig,
+def _publish(bundle_dir: Path, bundle_id: Optional[str],
+             metrics: Mapping[str, float], export_config: ModelOutputConfig,
              errors: Optional[List[BaseException]] = None,
              warn: bool = True) -> PublishedModel:
-    spec = read_training_spec(training_result.bundle_dir)
-    metadata = {
-        name: str(getattr(spec, name))
-        for name in ('spec_version', 'predictive_query', 'snapshot_id')
-    }
-    metadata.update(registry_pointers(training_result))
+    metadata = {}
+    if (bundle_dir / SPEC_FILE).is_file():
+        spec = read_training_spec(bundle_dir)
+        metadata = {
+            name: str(getattr(spec, name))
+            for name in ('spec_version', 'predictive_query', 'snapshot_id')
+        }
+    metadata.update(registry_pointers(bundle_id))
     location = export_config.location
     alias = location.alias if location else None
     if location and alias:
         location = replace(location, alias=None)
     published = export_config.connector.sink_backend.publish_model(
         export_config.connector,
-        str(training_result.bundle_dir),
+        str(bundle_dir),
         path=export_config.path,
         location=location,
         metadata=metadata,
-        metrics=training_result.metrics,
+        metrics=metrics,
     )
     if location and alias:
         try:
@@ -547,7 +589,8 @@ class Trainer:
         """Publish the fitted or loaded model bundle."""
         training_result = self._fitted('export')
         _require_publisher(config)
-        return _publish(training_result, config)
+        return _publish(training_result.bundle_dir, training_result.bundle_id,
+                        training_result.metrics, config)
 
     @_without_torch_scatter_hint
     def fit(
@@ -625,8 +668,8 @@ class Trainer:
             result = self._fit(train_table, snapshot=snapshot,
                                export_config=export_config,
                                warm_start=warm_start, run_id=run_id,
-                               events=events, settings=settings,
-                               tracking=session)
+                               events=events, tracking=session,
+                               deps=Dependencies(settings=settings))
         except BaseException as error:
             events.emit('fit_ended', params={
                 'status': 'failed',
@@ -634,37 +677,24 @@ class Trainer:
             })
             session.finish(None, error)
             raise
+        seconds = time.monotonic() - fit_start
         events.emit('fit_ended', metrics={
-            **result.metrics, 'seconds': time.monotonic() - fit_start
+            **result.metrics, 'seconds': seconds
         }, params={'status': 'succeeded'})
-        registered, error = session.log_model(result, snapshot,
-                                              _mlflow_registry(settings))
+        registered, error = _store_and_register(
+            result.bundle_dir, result.manifest or (
+                None if result.bundle_id is None else stub(
+                    'model', result.bundle_id)), settings, session=session,
+            snapshot=snapshot, metrics=result.metrics, warn=warn)
         if registered is not None:
             result = replace(result, registered_model=registered)
             self._training_result = result
-        if registry is not None:
-            result, failure = self._register(result, registry, warn)
-            error = error or failure
-        session.finish(result, error)
+        session.finish(
+            lambda: fitted_spec(cast(RunSpec, session.spec), result, seconds),
+            error)
         raise_on_error(settings, session.error or error,
                        'Trainer.fit (its model is in trainer.result)')
         return result
-
-    def _register(
-        self, result: TrainingResult, registry: ModelOutputConfig, warn: bool
-    ) -> Tuple[TrainingResult, Optional[BaseException]]:
-        errors: List[BaseException] = []
-        try:
-            registered = _publish(result, registry, errors, warn)
-        except Exception as error:
-            if warn:
-                warn_failure(
-                    f"Could not register the model: {full_error(error)}",
-                    error, 3)
-            return result, error
-        result = replace(result, registered_model=registered)
-        self._training_result = result
-        return result, (errors or [None])[0]
 
     def _fit(
         self,
@@ -675,8 +705,8 @@ class Trainer:
         warm_start: Optional[Self],
         run_id: str,
         events: EventEmitter,
-        settings: Optional[Any],
         tracking: TrackingSession,
+        deps: Dependencies,
     ) -> TrainingResult:
         from kumo_core.automl.runtime import (
             inherit_warm_start_model_plan,
@@ -811,12 +841,12 @@ class Trainer:
                 and not materialized.task.task_type.is_link_pred):
             raise ValueError('The test split is empty: shorten the query '
                              'window or add data.')
-        tracking.start(lambda: FitContext(
+        tracking.start(lambda: fit_spec(FitContext(
             run_id=run_id,
             query=train_table.query,
             model_plan=to_json_dict(materialized.model_plan),
             inputs=fit_inputs(train_table.manifest),
-        ))
+        )))
         training_input = ResolvedTrainingInput(
             task=materialized.task,
             model_plan=materialized.model_plan,
@@ -883,7 +913,7 @@ class Trainer:
                     warm_start_bundle_id),
                 started_at=started_at, fit_mode=fit_mode,
                 tracked_run_id=run_id if tracking.enabled else None),
-            settings=settings,
+            deps=deps,
         )
 
     def _finish_fit(
@@ -897,7 +927,7 @@ class Trainer:
         graph_config: Optional[Dict[str, Any]] = None,
         model_plan: Optional[ModelPlan] = None,
         provenance: Optional[Mapping[str, Any]] = None,
-        settings: Optional[Any] = None,
+        deps: Optional[Dependencies] = None,
     ) -> TrainingResult:
         """Commit durable fit outputs before making this trainer usable."""
         from kumo_core.artifacts import bundle_id_from_manifest
@@ -923,19 +953,21 @@ class Trainer:
                           UserWarning, stacklevel=3)
         if provenance is not None and training_result.bundle_id is not None:
             try:
-                write_provenance(training_result.bundle_dir,
-                                 bundle_id=training_result.bundle_id,
-                                 **provenance)
+                write_provenance(
+                    training_result.bundle_dir,
+                    bundle_id=training_result.bundle_id,
+                    dependencies=self._dependencies(training_result, deps
+                                                    or Dependencies()),
+                    **provenance)
             except Exception as error:
                 warnings.warn(
                     f"Publishing the model bundle without _provenance.json: "
                     f"{error}", UserWarning, stacklevel=3)
         if export_config is not None:
             training_result = replace(
-                training_result,
-                published_model=_publish(training_result, export_config))
-        if settings is not None and settings.wants('model'):
-            _store_model(training_result, settings)
+                training_result, published_model=_publish(
+                    training_result.bundle_dir, training_result.bundle_id,
+                    training_result.metrics, export_config))
 
         training_result = replace(training_result, _trainer=self)
         self._training_result = training_result
@@ -945,6 +977,18 @@ class Trainer:
         self._training_table_generation_plan = training_table_generation
 
         return training_result
+
+    def _dependencies(self, result: TrainingResult,
+                      deps: Dependencies) -> List[Dependency]:
+        from kumo.engine._version import __version__
+
+        deps.add(dependency.predictor(TRAINER_PREDICTOR))
+        text = require_text_encoders(deps, self._embedding_models,
+                                     _encoders(result.bundle_dir))
+        deps.add(
+            dependency.package('kumo-engine', __version__,
+                               ['text'] if text else []))
+        return deps.records
 
     @_without_torch_scatter_hint
     def predict(
@@ -1321,6 +1365,12 @@ class Trainer:
         trainer._training_query = spec.predictive_query
         trainer._training_table_generation_plan = from_json_dict(
             spec.training_table_generation, TrainingTableGenerationPlan)
+        from kumo.engine._mlops import resolve
+        from kumo.engine.trainer._provenance import read_provenance
+
+        trainer._embedding_models = with_text_encoders(
+            trainer._embedding_models, _encoders(bundle_dir),
+            Dependencies.of(read_provenance(bundle_dir), resolve()))
         holdout_path, holdout_truncated = _listed_holdout(bundle_dir)
         trainer._training_result = TrainingResult(
             metrics, paths, bundle_dir, holdout_path=holdout_path,
@@ -1328,6 +1378,15 @@ class Trainer:
             scoring_defaults=read_scoring_defaults(bundle_dir, paths),
             _trainer=trainer)
         return trainer
+
+
+def _encoders(bundle_dir: Path) -> Any:
+    from kumo_core.encoders.config import EncodersConfig
+    from kumo_core.io.json import load_json
+
+    path = listed_file(bundle_dir, 'encoders')
+    return (load_json(str(path), EncodersConfig)
+            if path is not None and path.is_file() else None)
 
 
 def _set_alias(connector: Connector, location: ModelRegistryLocation,
@@ -1350,5 +1409,5 @@ def warn_if_other_bundle(metadata: Optional[Mapping[str, Any]],
             stacklevel=3)
 
 
-def registry_pointers(result: TrainingResult) -> Dict[str, str]:
-    return {BUNDLE_ID_KEY: result.bundle_id} if result.bundle_id else {}
+def registry_pointers(bundle_id: Optional[str]) -> Dict[str, str]:
+    return {BUNDLE_ID_KEY: bundle_id} if bundle_id else {}

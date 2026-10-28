@@ -18,6 +18,7 @@ from test_tracking_contract import (
 )
 
 from kumo.engine._tracking import TrackingSession
+from kumo.engine.trainer._run_spec import fit_spec, fitted_spec
 
 FAKED = ('__init__', 'set_experiment', 'start_run', 'end_run', 'log_params',
          'log_metrics', 'log_artifact')
@@ -63,7 +64,7 @@ def _tracking(session=FakeSession, **kwargs):
 
 def _replay(tracking, result=RESULT, error=None, during=None):
     session = TrackingSession(tracking)
-    session.start(lambda: CONTEXT)
+    session.start(lambda: fit_spec(CONTEXT))
     for event in EVENTS:
         session.on_event(event)
     if during is not None:
@@ -71,7 +72,10 @@ def _replay(tracking, result=RESULT, error=None, during=None):
         session._submit(caught_up.set)
         caught_up.wait(30)
         during()
-    session.finish(result, error)
+    session.finish(
+        None if result is None else
+        lambda: fitted_spec(session.spec, result, EVENTS[-1].metrics['seconds']),
+        error)
 
 
 def test_native_model_lineage_holds_the_run_open_during_the_fit(fake):

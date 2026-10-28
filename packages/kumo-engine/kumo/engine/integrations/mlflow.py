@@ -50,8 +50,9 @@ __all__ = ['MlflowTracking', 'SageMakerMLflow', 'load_model', 'log_model']
 if TYPE_CHECKING:
     from kumo_core.embedding_models import EmbeddingModelStore
 
+    from kumo.engine._manifest import ModelManifest
     from kumo.engine.graph import GraphSnapshot
-    from kumo.engine.trainer.trainer import Trainer, TrainingResult
+    from kumo.engine.trainer.trainer import Trainer
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +263,8 @@ class MlflowTracking:
 
     def log_model(
         self,
-        result: 'TrainingResult',
+        bundle_dir: Path,
+        manifest: Optional['ModelManifest'],
         snapshot: 'GraphSnapshot',
         registry: Optional[ModelRegistryLocation] = None,
     ) -> Optional[PublishedModel]:
@@ -277,8 +279,8 @@ class MlflowTracking:
         }
         os.environ.update(upload)
         try:
-            info = _log_model(self.target, self._client, result, snapshot,
-                              name='model', run_id=run_id,
+            info = _log_model(self.target, self._client, bundle_dir, manifest,
+                              snapshot, name='model', run_id=run_id,
                               experiment_id=self._experiment_id,
                               serving_snapshot=self.serving_snapshot)
         finally:
@@ -293,7 +295,7 @@ class MlflowTracking:
             return None
         try:
             return _register(self.target, self._client, info, registry,
-                             registry_pointers(result))
+                             registry_pointers(_id(manifest)))
         except Exception as error:
             raise RegistrationError(full_error(error)) from error
 
@@ -508,6 +510,7 @@ def log_model(
     ``serving_snapshot`` (an exported snapshot URI), each serving replica
     downloads that snapshot once at startup and scores against it when no
     ``snapshot`` param is given."""
+    from kumo.engine._manifest import stub
     from kumo.engine._tracking import fit_inputs
 
     mlflow = import_provider('mlflow', 'mlflow')
@@ -532,8 +535,10 @@ def log_model(
                 tracking._default_experiment or '0').info.run_id
         experiment_id = client.get_run(run_id).info.experiment_id
         _log_inputs(mlflow, client, run_id, fit_inputs(result.manifest))
-    info = _log_model(target, client, result, snapshot, name=name,
-                      run_id=run_id, experiment_id=experiment_id,
+    info = _log_model(target, client, result.bundle_dir, result.manifest or
+                      (None if result.id is None else stub('model', result.id)),
+                      snapshot, name=name, run_id=run_id,
+                      experiment_id=experiment_id,
                       serving_snapshot=serving_snapshot)
     with target.scope():
         if result.metrics:
@@ -594,25 +599,35 @@ def _download(mlflow: Any, target: Any, model_uri: str,
         tracking_uri=target.tracking_uri, registry_uri=target.registry_uri)
 
 
-def _log_model(target: Any, client: Any, result: 'TrainingResult',
+def _log_model(target: Any, client: Any, bundle_dir: Path,
+               manifest: Optional['ModelManifest'],
                snapshot: Optional['GraphSnapshot'], *, name: str, run_id: str,
                experiment_id: Optional[str],
                serving_snapshot: Optional[str]) -> Any:
     r"""What ``mlflow.pyfunc.log_model`` does, through ``client``: it only
-    logs to the process-wide tracking URI."""
+    logs to the process-wide tracking URI. A bundle without a training spec
+    is logged without a signature."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
     from kumo.engine.integrations import _mlflow_model, _mlflow_model_code
-    from kumo.engine.trainer._spec import read_training_spec
+    from kumo.engine.trainer._spec import (
+        SPEC_FILE,
+        listed_file,
+        read_training_spec,
+    )
     from kumo.engine.trainer.trainer import registry_pointers
 
     mlflow = import_provider('mlflow', 'mlflow')
     if snapshot is None:
         raise ValueError('log_model needs the snapshot the model trained on')
-    spec = read_training_spec(result.bundle_dir)
-    signature, example = _mlflow_model.signature(snapshot,
-                                                 spec.predictive_query)
-    provenance = result.bundle_dir / PROVENANCE_FILE
+    bundle_dir = Path(bundle_dir)
+    signature, example = None, None
+    if (bundle_dir / SPEC_FILE).is_file():
+        signature, example = _mlflow_model.signature(
+            snapshot,
+            read_training_spec(bundle_dir).predictive_query)
+    pointers = registry_pointers(_id(manifest))
+    provenance = bundle_dir / PROVENANCE_FILE
     with target.scope():
         model = client.create_logged_model(
             experiment_id or client.get_run(run_id).info.experiment_id,
@@ -620,8 +635,7 @@ def _log_model(target: Any, client: Any, result: 'TrainingResult',
             params=dict(client.get_run(run_id).data.params))
     mlflow_model = mlflow.models.Model(
         artifact_path=model.artifact_location, model_uuid=model.model_id,
-        run_id=run_id, metadata=registry_pointers(result),
-        model_id=model.model_id)
+        run_id=run_id, metadata=pointers, model_id=model.model_id)
     model_logger = logging.getLogger('mlflow.models.model')
     model_logger.addFilter(_no_serving_check)
     try:
@@ -631,18 +645,21 @@ def _log_model(target: Any, client: Any, result: 'TrainingResult',
                 local, mlflow_model=mlflow_model,
                 python_model=_mlflow_model_code.__file__,
                 model_config={
-                    'columns': signature.outputs.input_names(),
+                    'columns': [] if signature is None else
+                    signature.outputs.input_names(),
                     'snapshot': serving_snapshot,
                 },
                 artifacts={
-                    'bundle': str(result.bundle_dir),
+                    'bundle': str(bundle_dir),
                     **({'provenance': str(provenance)}
                        if provenance.is_file() else {}),
                 },
                 signature=signature,
                 input_example=example,
-                metadata=registry_pointers(result),
-                pip_requirements=[_requirement(result)],
+                metadata=pointers,
+                pip_requirements=[
+                    _requirement(listed_file(bundle_dir, 'encoders'))
+                ],
             )
             with target.scope():
                 repository = target.artifact_repository(
@@ -665,13 +682,17 @@ def _log_model(target: Any, client: Any, result: 'TrainingResult',
     return mlflow_model.get_model_info(logged)
 
 
-def _requirement(result: 'TrainingResult') -> str:
+def _id(manifest: Optional['ModelManifest']) -> Optional[str]:
+    return None if manifest is None else manifest.id
+
+
+def _requirement(encoders: Optional[Path]) -> str:
     from kumo_core.encoders.config import EncodersConfig
     from kumo_core.io.json import load_json
     from kumoapi.encoder import TextEmbedding
 
     extras = ['s3', 'gcs']
-    path = result.artifact_paths.get('encoders')
+    path = None if encoders is None else str(encoders)
     config = (load_json(path, EncodersConfig)
               if path and Path(path).is_file() else None)
     if config is not None and any(

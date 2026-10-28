@@ -29,9 +29,9 @@ _DTYPES = {
 
 class KumoModel(_pyfunc.PythonModel):
     def load_context(self, context: Any) -> None:
-        from kumo.engine.trainer.trainer import Trainer
+        from kumo.engine._predictor import load_predictor
 
-        self._trainer = Trainer.load(context.artifacts['bundle'])
+        self._predictor = load_predictor(context.artifacts['bundle'])
         self._columns = list(context.model_config['columns'])
         self._snapshots: Dict[str, GraphSnapshot] = {}
         self._default = context.model_config.get('snapshot')
@@ -47,8 +47,8 @@ class KumoModel(_pyfunc.PythonModel):
         if not uri:
             raise ValueError("Pass params={'snapshot': <exported snapshot "
                              "URI>}.")
-        return predict(self._trainer, self._snapshot(uri), model_input,
-                       params)
+        return self._predictor.predict(model_input, self._snapshot(uri),
+                                       params)
 
     def _snapshot(self, uri: str) -> GraphSnapshot:
         if uri not in self._snapshots:

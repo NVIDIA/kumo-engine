@@ -249,18 +249,51 @@ class TrackingRef(Record):
 
 
 @dataclass(frozen=True, kw_only=True)
+class Dependency(Record):
+    r"""One thing a model needs to predict: its ``predictor`` entry point,
+    a ``package`` requirement, or an ``asset`` (content-addressed by
+    ``sha256``, loaded by ``entry_point``, stored at ``location``)."""
+
+    kind: str
+    name: str
+    version: Optional[str] = omit_none()
+    extras: Optional[List[str]] = omit_none()
+    asset_kind: Optional[str] = omit_none()
+    sha256: Optional[str] = omit_none()
+    entry_point: Optional[str] = omit_none()
+    packing: Optional[str] = omit_none()
+    location: Optional[str] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
 class ModelManifest(Manifest):
     """How a model bundle was fitted: from which training table (embedded,
     with its snapshot) and warm-start model, when, and with which fit
-    mode. Its ``id`` is the bundle id."""
+    mode. Its ``id`` is the bundle id; ``dependencies`` is what predicting
+    needs besides the bundle and a snapshot (none listed: the built-in
+    `Trainer` predictor)."""
 
     kind: str = 'model'
     parents: Optional[ModelParents] = None
     fit: Optional[FitTiming] = None
     fit_mode: Optional[str] = None
     tracking: Optional[TrackingRef] = omit_none()
+    dependencies: Optional[List[Dependency]] = omit_none()
 
     EMBED_OMITS = ('tracking', )
+
+
+@dataclass(frozen=True, kw_only=True)
+class AssetManifest(Manifest):
+    """An asset a model depends on, stored once under
+    ``<root>/assets/<asset_kind>/<sha256>/``; its ``id`` is the sha256."""
+
+    kind: str = 'asset'
+    asset_kind: Optional[str] = None
+    name: Optional[str] = None
+    version: Optional[str] = None
+    format: Optional[str] = None
+    source: Optional[str] = None
 
 
 def manifest_bytes(manifest: Manifest) -> bytes:

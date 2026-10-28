@@ -51,6 +51,33 @@ With MLOps on, each bundle is stored under `<root>/models/<bundle id>/`. A compl
 
 The bundle also carries the published model's holdout predictions (`holdout.parquet`, with its truncation flag), so `result.holdout_df()` works on a model loaded with `Trainer.load` or `Trainer.load_from_connector` (a path or a registry), not only on the result of `fit`. Bundles fitted before this have no copy, and `holdout_df()` raises `FileNotFoundError` for them.
 
+### Artifacts, bundles and dependencies
+
+- An **artifact** is anything with its own id and `_provenance.json`: a snapshot, a training table, a model, a prediction run, or an asset.
+- A model's **bundle** holds only the model's own state: weights, encoders, the training spec and the holdout.
+- Its manifest's **`parents`** are lineage: the training table and the warm-start model it came from.
+- Its **`dependencies`** are what `predict` needs besides the bundle and a snapshot. The snapshot is an input to each call, never a dependency. Each entry has a `kind`:
+  - `predictor`: the entry point that scores the bundle;
+  - `package`: the `kumo-engine` version and its extras, with `[text]` only when the model encodes a text column;
+  - `asset`: a content-addressed file set, by `asset_kind`, `name`, `version` and `sha256`.
+- Bundles fitted before dependencies were recorded list none. They load as before, with the built-in predictor.
+- **Assets** are not copied into bundles. With MLOps on, each asset is stored once under `<root>/assets/<asset_kind>/<sha256>/` with its own `_provenance.json`, and every model that uses it shares that copy. The dependency records where it was stored.
+- **Resolving assets:** `Trainer.load`, the MLflow pyfunc and scoring jobs look for each asset at the location the dependency records, then under the artifact root of the enclosing `kumo.mlops` block, then in the embedding-model store. They check its sha256 and cache non-local copies under `~/.cache/kumo/assets/<sha256>/`. If an asset is stored but cannot be found, loading fails with `MissingDependencyError`, which names the asset kind, name and sha256. A bundle without stored assets resolves its models from the store, as before.
+- **Text encoders** are the first assets (`asset_kind="text_encoder"`): the word vectors of each text column's embedding model. Word-vector models (`GloVeVectors`) are stored. Other `TokenEmbeddingModel`s are recorded by fingerprint and must be registered wherever the model is loaded.
+
+To train with your own word vectors and serve the model without registering them again, register them under a name, fit with MLOps on, and load the stored model anywhere that can reach the artifact root:
+
+```python
+store = kumo.EmbeddingModelStore()
+store.add("colors", kumo.GloVeVectors("/data/vectors"))   # a .zip release or a directory of converted files
+plan.column_processing.encoder_overrides = {"users.bio": TextEmbedding("colors")}
+with kumo.mlops(kumo.MLOps(artifact_root="s3://bucket/kumo")):
+    result = kumo.Trainer(plan, embedding_models=store).fit(table, snapshot=snapshot)
+# Elsewhere, with no store: the vectors come from <root>/assets/text_encoder/<sha256>/.
+trainer = kumo.Trainer.load_from_connector(kumo.S3Connector(root_dir="s3://bucket/kumo"),
+                                           path=f"models/{result.id}")
+```
+
 ### Scoring defaults
 
 A model can carry the prediction arguments `predict` uses when a call omits them:
@@ -290,7 +317,7 @@ scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
 
 - `fit` waits for the upload and registration before it returns, for up to an hour, with a 600 s MLflow HTTP timeout during the upload (unless `MLFLOW_HTTP_REQUEST_TIMEOUT` is set). If they fail, the tracking thread stops or the hour passes, `fit` warns once (`Could not log the model: ...` or `Could not register the model: ...`, with the full error) and still returns its result with `registered_model=None` (with `on_error="raise"`, it raises instead), the run ends `FAILED` with the error in `kumo.error`, and a model that finishes uploading later is not registered.
 - `MlflowTracking(log_model=True)` logs the model without registering it. `log_model(trainer, snapshot=...)` logs a fitted or loaded model in any run, with the bundle's source tables as run inputs.
-- The model's metadata, the registered version's tags and `result.registered_model.metadata` hold `kumo_bundle_id`. The model's `provenance` artifact is the bundle's `_provenance.json`. Its pip requirement is `kumo-engine[s3,gcs]` of the same version, plus `[text]` when the model encodes a text column. A model trained with a custom embedding model also needs that model's package in the serving environment.
+- The model's metadata, the registered version's tags and `result.registered_model.metadata` hold `kumo_bundle_id`. The model's `provenance` artifact is the bundle's `_provenance.json`. Its pip requirement is `kumo-engine[s3,gcs]` of the same version, plus `[text]` when the model encodes a text column. The pyfunc scores with the predictor the bundle's manifest names. It resolves the model's assets, such as non-default word vectors, as described in [Artifacts, bundles and dependencies](#artifacts-bundles-and-dependencies).
 - The pyfunc model loads a snapshot on its first `predict` with that URI and keeps it for the life of the process: each serving replica, and each Spark executor of `mlflow.pyfunc.spark_udf`, downloads the snapshot once and keeps every snapshot it has loaded (no eviction), so its disk must hold them. With `serving_snapshot=<snapshot URI>` (on `log_model` or `MlflowTracking`), each replica downloads that snapshot when it starts, and `predict` uses it when no `snapshot` param is given. `params={"population": True}` scores every entity and returns the whole frame in memory; for large populations use `Trainer.predict` with a `PredictionOutputConfig`. Each `predict` call works in its own scratch directory and removes it before returning.
 - Input rows have an `ENTITY` column and, optionally, a `TIMESTAMP` column. Scores come back in the input's row order, one per input row (repeated rows included); rows whose entity is not in the snapshot are left out. A temporal query scores entities at a time: pass `params={"prediction_time": ...}` or a `TIMESTAMP` column; without either, `predict` fails with `temporal query: pass params={'prediction_time': ...} or a TIMESTAMP column`. Binary classification needs `params={"binary_classification_threshold": ...}` unless the model's `scoring_defaults` set one.
 - Serving needs an image with kumo-engine already installed; MLflow's stock serving containers cannot install it. Serve with `mlflow models serve -m <model dir> --env-manager local` (on SageMaker endpoints, `-m /opt/ml/model -p 8080`). SageMaker batch transform takes JSON input (`dataframe_split` plus `params`), not CSV, which carries no params.

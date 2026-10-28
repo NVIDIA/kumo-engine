@@ -166,7 +166,7 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
                 pyfunc.predict(rows,
                                params={**params, 'population': population})),
             expected)
-    scratch = pyfunc.unwrap_python_model()._trainer.scratch_dir
+    scratch = pyfunc.unwrap_python_model()._predictor.trainer.scratch_dir
     assert list(scratch.iterdir()) == []
     assert set(tables.glob('*')) == before | {tables / 'other-call'}
 
@@ -261,7 +261,8 @@ def test_fit_waits_for_model_logging_and_fails_the_run_if_it_fails(
     import time
 
     from kumo.engine import _tracking
-    from kumo.engine._tracking import FitContext, TrackingSession
+    from kumo.engine._tracking import TrackingSession
+    from kumo.engine.trainer._run_spec import FitContext, fit_spec
 
     monkeypatch.setattr(_tracking, 'FINISH_SECONDS', 0.01)
 
@@ -275,7 +276,7 @@ def test_fit_waits_for_model_logging_and_fails_the_run_if_it_fails(
         def on_trial(self, record, event):
             pass
 
-        def log_model(self, result, snapshot, registry):
+        def log_model(self, bundle_dir, manifest, snapshot, registry):
             time.sleep(0.2)
             self.calls.append('log_model')
             if self.fail:
@@ -288,11 +289,11 @@ def test_fit_waits_for_model_logging_and_fails_the_run_if_it_fails(
     for fail in (False, True):
         tracker = Tracker(fail)
         session = TrackingSession(tracker)
-        session.start(lambda: FitContext('r', 'q', {}))
+        session.start(lambda: fit_spec(FitContext('r', 'q', {})))
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
-            _, error = session.log_model(result, None)
-        session.finish(result, error)
+            _, error = session.log_model(result.bundle_dir, None, None)
+        session.finish(None, error)
         session._worker.join(5)
         assert tracker.calls[:2] == ['start', 'log_model']
         assert tracker.calls[2] == ('finish', error)
@@ -305,7 +306,8 @@ def test_model_logging_wait_is_bounded(monkeypatch, stall):
     import threading
 
     from kumo.engine import _tracking
-    from kumo.engine._tracking import FitContext, TrackingSession
+    from kumo.engine._tracking import TrackingSession
+    from kumo.engine.trainer._run_spec import FitContext, fit_spec
 
     monkeypatch.setattr(_tracking, 'MODEL_SECONDS', 0.5)
     release = threading.Event()
@@ -319,7 +321,7 @@ def test_model_logging_wait_is_bounded(monkeypatch, stall):
         def on_trial(self, record, event):
             pass
 
-        def log_model(self, result, snapshot, registry):
+        def log_model(self, bundle_dir, manifest, snapshot, registry):
             release.wait(30)
 
         def finish(self, record, error):
@@ -327,12 +329,12 @@ def test_model_logging_wait_is_bounded(monkeypatch, stall):
 
     tracker = Tracker()
     session = TrackingSession(tracker)
-    session.start(lambda: FitContext('r', 'q', {}))
+    session.start(lambda: fit_spec(FitContext('r', 'q', {})))
     if stall == 'dead thread':
         session._submit(lambda: (_ for _ in ()).throw(SystemExit()))
         session._worker.join(5)
     with pytest.warns(UserWarning, match='Could not log the model'):
-        _, error = session.log_model(SimpleNamespace(), None)
+        _, error = session.log_model(None, None, None)
     release.set()
     session.finish(None, error)
 
@@ -349,6 +351,7 @@ def test_model_upload_gets_a_longer_http_timeout_and_a_late_one_is_dropped(
 
     from kumo.engine._tracking import TrackingSession
     from kumo.engine.integrations import mlflow as integration
+    from kumo.engine.trainer._run_spec import fit_spec
 
     for name in integration._HTTP_LIMITS:
         monkeypatch.delenv(name, raising=False)
@@ -356,7 +359,7 @@ def test_model_upload_gets_a_longer_http_timeout_and_a_late_one_is_dropped(
     location = kumo.ModelRegistryLocation('m')
     seen = []
 
-    def log_model(target, client, result, snapshot, **kwargs):
+    def log_model(target, client, bundle_dir, manifest, snapshot, **kwargs):
         seen.append(os.environ.get('MLFLOW_HTTP_REQUEST_TIMEOUT'))
         if len(seen) == 2:
             tracker.finish(None, None)
@@ -366,9 +369,8 @@ def test_model_upload_gets_a_longer_http_timeout_and_a_late_one_is_dropped(
     monkeypatch.setattr(integration, '_register', lambda *args: 'registered')
     for _ in range(2):
         session = TrackingSession(tracker)
-        session.start(lambda: CONTEXT)
-        registered, error = session.log_model(
-            SimpleNamespace(bundle_id=None), None, location)
+        session.start(lambda: fit_spec(CONTEXT))
+        registered, error = session.log_model(None, None, None, location)
         assert error is None
         during = os.environ.get('MLFLOW_HTTP_REQUEST_TIMEOUT')
         session.finish(None, None)
@@ -391,8 +393,7 @@ def test_a_model_with_text_columns_requires_the_text_extra(tmp_path):
     def requirement(encoders):
         path = tmp_path / 'encoders.json'
         save_json(EncodersConfig(encoders={'users': encoders}), str(path))
-        return _requirement(
-            SimpleNamespace(artifact_paths={'encoders': str(path)}))
+        return _requirement(path)
 
     assert requirement({'age': Numerical()}) == (
         f'kumo-engine[s3,gcs]=={kumo.__version__}')
@@ -403,27 +404,28 @@ def test_a_model_with_text_columns_requires_the_text_extra(tmp_path):
 def test_a_tracker_dropped_earlier_says_the_model_was_not_logged():
     import time
 
-    from kumo.engine._tracking import FitContext, TrackingSession
+    from kumo.engine._tracking import TrackingSession
+    from kumo.engine.trainer._run_spec import FitContext, fit_spec
 
     class Tracker:
         def start(self, record):
             raise RuntimeError('server down')
 
-        def log_model(self, result, snapshot, registry):
+        def log_model(self, bundle_dir, manifest, snapshot, registry):
             raise AssertionError('not called')
 
         def finish(self, record, error):
             pass
 
     session = TrackingSession(Tracker())
-    session.start(lambda: FitContext('r', 'q', {}))
+    session.start(lambda: fit_spec(FitContext('r', 'q', {})))
     deadline = time.monotonic() + 10
     while session._tracker is not None and time.monotonic() < deadline:
         time.sleep(0.01)
     with pytest.warns(UserWarning, match=r'Could not log the model: '
                       r'RuntimeError: tracking stopped after an earlier '
                       r'failure \(RuntimeError: server down\)'):
-        registered, error = session.log_model(SimpleNamespace(), None)
+        registered, error = session.log_model(None, None, None)
     session.finish(None, error)
     assert registered is None and isinstance(error, RuntimeError)
     assert str(session.error) == 'server down'
