@@ -467,6 +467,46 @@ fn encode_timestamp_int8() {
 }
 
 #[test]
+fn far_future_date32_edge_keys_sort_after_2037_in_every_clock() {
+    use crate::{
+        encode_timestamp_value, time_spec_to_encoding, timestamp_width_bits,
+        SortKeyComponentBatcher, SortKeyComponentEncoder, SortKeyComponentKind,
+    };
+    use diskgraph_core::time::{convert_trunc, TimeUnit};
+    let year_9999: ArrayRef = Arc::new(arrow_array::Date32Array::from(vec![2_932_896]));
+    let spec = crate::graph_config::TimeSpec {
+        table: "events".into(),
+        column: "at".into(),
+        bitwidth: None,
+        anchor_time: None,
+        unit: "seconds".into(),
+    };
+    for clock in TimeUnit::INDEX_CLOCKS {
+        let mut access = RowAccess::new(vec![RowAccessHints::default()], RowAccessStats::new(None))
+            .with_clock(clock);
+        access.set_cols(std::slice::from_ref(&year_9999));
+        let encoding = time_spec_to_encoding(&spec, clock);
+        let width = timestamp_width_bits(&encoding.kind) / 8;
+        let year_2037 = convert_trunc(24_472, TimeUnit::Days, clock);
+        let key_2037 = encode_timestamp_value(Some(year_2037), &encoding);
+        let mut batcher = SortKeyComponentBatcher::new(
+            Arc::from("events"),
+            SortKeyComponentKind::Timestamp,
+            width,
+            SortKeyComponentEncoder::Timestamp {
+                column_idx: 0,
+                encoding,
+            },
+            1,
+        );
+        batcher.push_row(0, &mut access).unwrap();
+        let mut key = [0u8; 8];
+        key[..usize::from(width)].copy_from_slice(&batcher.buffers[0]);
+        assert!(u64::from_le_bytes(key) > key_2037, "{clock:?}");
+    }
+}
+
+#[test]
 fn convert_string_date_to_rowpack_date() {
     let table = TableSpec {
         name: "events".to_string(),
