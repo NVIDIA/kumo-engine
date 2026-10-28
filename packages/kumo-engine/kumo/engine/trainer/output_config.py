@@ -4,7 +4,7 @@
 """Prediction, training table and model export destinations."""
 
 from dataclasses import dataclass, field
-from typing import List, Mapping, Optional, cast
+from typing import Any, List, Mapping, Optional, cast
 
 from kumo_core.sources.object_store_sessions import ObjectStoreSessions
 from kumoapi.jobs import MetadataField, PredictionArtifactType, WriteMode
@@ -170,8 +170,10 @@ class ModelOutputConfig:
     """Publish a model to exactly one ``path`` or registry ``location``.
 
     For a Snowflake Model Registry ``location``, ``serving_snapshot`` is the
-    exported snapshot (an ``@DB.SCHEMA.STAGE/...`` path) the version scores
-    against in Snowflake, and ``serving_options`` overrides how it runs:
+    snapshot the version scores against in Snowflake: an exported
+    ``@DB.SCHEMA.STAGE/...`` path, or a `GraphSnapshot` or snapshot id
+    stored under the stage artifact root of the enclosing `kumo.mlops`
+    block. ``serving_options`` overrides how it runs:
     ``cuda_version`` (default ``12.6``), ``python_version`` (the registering
     Python, which it must equal), ``function_type`` (``TABLE_FUNCTION``), and
     ``pip_repository``, a Snowflake pip artifact repository the version's
@@ -181,7 +183,7 @@ class ModelOutputConfig:
     connector: Connector
     path: Optional[str] = None
     location: Optional[ModelRegistryLocation] = None
-    serving_snapshot: Optional[str] = None
+    serving_snapshot: Any = None
     serving_options: Optional[Mapping[str, str]] = None
 
     def __post_init__(self) -> None:

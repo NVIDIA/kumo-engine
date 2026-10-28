@@ -215,7 +215,7 @@ class Dependencies:
             else:
                 connector, path = location
                 found.append((connector, f"{path.rstrip('/')}/{relative}"))
-        if record.location:
+        if record.location and not record.location.startswith('@'):
             parent, _, leaf = record.location.rstrip('/').rpartition('/')
             try:
                 found.append((connector_for_root(parent or '/'), leaf))
@@ -226,6 +226,20 @@ class Dependencies:
             found.append((settings.root.connector,
                           settings.root.location(f'assets/{relative}')))
         return found
+
+
+def connector_roots(manifest: Optional[ModelManifest],
+                    connector: Any) -> List[Tuple[Any, str]]:
+    r"""The stage and volume asset roots of ``manifest`` that ``connector``
+    reads, which no URI reaches."""
+    from kumo.engine.connector import is_file_destination
+
+    return [(connector, root) for root in sorted({
+        record.location.rsplit('/', 2)[0]
+        for record in Dependencies.of(manifest).records
+        if (record.location or '').startswith(('@', '/Volumes/'))
+        and is_file_destination(connector, record.location)
+    })]
 
 
 def asset_cache() -> Path:
