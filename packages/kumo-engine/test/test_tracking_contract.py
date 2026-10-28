@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Every tracking adapter records the same run records as a recorded fit."""
+"""Every tracking adapter records the same run records as a recorded fit
+and a recorded prediction run."""
 
 import json
 import threading
@@ -24,11 +25,19 @@ from kumo_core.summaries import (
     Table,
 )
 
+from kumo.engine._manifest import (
+    ArtifactStats,
+    PredictionManifest,
+    PredictionParents,
+    stub,
+)
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
     TrackingSession,
+    prediction_record,
     run_record,
+    track_prediction,
 )
 from kumo.engine._version import __version__
 from kumo.engine.tracking import Event, RunRecord
@@ -97,6 +106,53 @@ BUNDLE = 'b' * 64
 RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
                          id=BUNDLE, bundle_dir=Path('no-bundle'),
                          registered_model=None)
+
+
+PREDICTION_RUN = 'trainer-predict-1'
+PREDICTION_MANIFEST = PredictionManifest.from_dict({
+    'kind': 'prediction',
+    'schema_version': 1,
+    'id': PREDICTION_RUN,
+    'parents': {
+        'model': {'kind': 'model', 'schema_version': 1, 'id': BUNDLE,
+                  'reconstructed': True},
+        'snapshot': {
+            'kind': 'snapshot', 'schema_version': 1, 'id': 'g@d',
+            'parents': {'source_tables': INPUTS},
+        },
+    },
+    'created_at': '2026-10-21T00:00:00+00:00',
+    'environment': None,
+    'prediction_table': {
+        'query_sha256': '69dab700',
+        'source': 'pql',
+        'anchors': ['2024-04-29T00:00:00+00:00'],
+        'rows': 50,
+    },
+    'scoring': {
+        'binary_classification_threshold': 0.4,
+        'threshold_source': 'argument',
+        'num_classes_to_return': None,
+        'count_source': 'none',
+        'num_workers': None,
+    },
+    'outputs': [],
+    'status': 'succeeded',
+    'timings': {'started_at': '2026-10-21T00:00:00+00:00',
+                'finished_at': '2026-10-21T00:01:00+00:00'},
+    'stats': {
+        'predictions': {
+            'rows': 50,
+            'columns': {
+                'True_PROB': {
+                    'count': 50,
+                    'percentiles': [q / 100 for q in range(1, 100)],
+                }
+            },
+            'predicted_positive_rate': 0.62,
+        },
+    },
+})
 
 
 class _Recorder:
@@ -526,3 +582,69 @@ def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch):
 
     assert elapsed < 1.5
     assert isinstance(session.error, TimeoutError)
+
+
+def test_prediction_record_of_the_recorded_run():
+    record = prediction_record(PREDICTION_MANIFEST)
+
+    assert record.name == PREDICTION_RUN
+    assert record.params == {
+        'anchors': '["2024-04-29T00:00:00+00:00"]',
+        'binary_classification_threshold': '0.4',
+        'threshold_source': 'argument',
+        'count_source': 'none',
+    }
+    assert record.metrics == {
+        'prediction_table.rows': 50.0,
+        'predictions.rows': 50.0,
+        'predictions.True_PROB.count': 50.0,
+        **{
+            f'predictions.True_PROB.q{q:02d}': q / 100
+            for q in (1, 5, 25, 50, 75, 95, 99)
+        },
+        'predictions.predicted_positive_rate': 0.62,
+    }
+    assert record.tags == {'kumo.kind': 'prediction',
+                           'kumo.run_id': PREDICTION_RUN,
+                           'kumo.bundle_id': BUNDLE}
+    assert record.inputs == INPUTS
+    assert json.loads(record.artifacts[PROVENANCE_FILE]) == (
+        PREDICTION_MANIFEST.to_dict())
+
+
+def test_prediction_record_of_a_partial_manifest():
+    record = prediction_record(
+        replace(PREDICTION_MANIFEST,
+                parents=PredictionParents(model=stub('model', BUNDLE),
+                                          snapshot=stub('snapshot', 'g@d')),
+                scoring=replace(PREDICTION_MANIFEST.scoring,
+                                num_classes_to_return=3),
+                stats={'predictions': ArtifactStats(rows=150, columns={
+                    'top_score': {'count': 150, 'percentiles': []}}),
+                       'embeddings': ArtifactStats(rows=150)}),
+        RuntimeError('disk full'))
+
+    assert record.params['num_classes_to_return'] == '3'
+    assert record.metrics == {'prediction_table.rows': 50.0,
+                              'predictions.rows': 150.0,
+                              'predictions.top_score.count': 150.0,
+                              'embeddings.rows': 150.0}
+    assert record.inputs == {}
+    assert record.tags['kumo.error'] == 'RuntimeError: disk full'
+
+
+def test_adapter_records_the_same_prediction_run(adapter):
+    track_prediction(PREDICTION_MANIFEST, adapter.make())
+
+    expected = {PREDICTION_RUN: prediction_record(PREDICTION_MANIFEST)}
+    assert gaps(expected, adapter.observe(), adapter) == []
+
+
+def test_prediction_run_without_a_manifest_or_hook_is_skipped(caplog):
+    recorder = _Recorder()
+    recorder.log_prediction_run = recorder.calls.append
+    track_prediction(None, recorder)
+    track_prediction(PREDICTION_MANIFEST, _Recorder())
+
+    assert recorder.calls == []
+    assert 'not tracked' in caplog.text

@@ -160,6 +160,10 @@ def test_generated_degenerate_labels_are_rejected_before_publication(
                 },
             },
         }))
+    labels = generate_train_table(
+        request(tmp_path, task_type=task_type, target_stype=target_stype),
+        runtime=FakeRuntime(str(staging)), validate_targets=False)
+    assert labels.staging_dir == str(staging) and staging.is_dir()
     with pytest.raises(GenerationValidationError, match=message):
         generate_train_table(
             request(tmp_path, task_type=task_type, target_stype=target_stype),

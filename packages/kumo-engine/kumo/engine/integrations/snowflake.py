@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Snowflake Experiment Tracking for `Trainer.fit`
-(``pip install 'kumo-engine[snowflake]'``)."""
+r"""Snowflake Experiment Tracking for `Trainer.fit`, `Trainer.predict` and
+monitoring (``pip install 'kumo-engine[snowflake]'``)."""
 
 import json
 import logging
@@ -44,6 +44,7 @@ from kumo.engine._tracking import (
     DROPPED_PARAMS,
     RunRecord,
     by_step,
+    record_failure,
 )
 from kumo.engine.connector._extras import import_provider
 
@@ -62,7 +63,9 @@ class SnowflakeTracking:
     trial attempts are logged in it under ``trial-<n>-attempt-<m>/`` names and
     tags are logged as params. Snowflake has no dataset inputs, so a fit's
     source tables are not recorded as inputs. The Snowpark session's
-    parameters are not changed.
+    parameters are not changed. As ``kumo.MLOps(tracking=...)``, it also
+    records each prediction run and each monitoring call as one run named
+    after it; ``run_name`` and ``tags`` apply to fit runs only.
 
     Args:
         source: a ``SnowflakeConnector``, whose identity opens the session
@@ -81,8 +84,8 @@ class SnowflakeTracking:
         native_model_lineage: keep the run open as a context for the whole
             fit, so models registered meanwhile are linked to it.
 
-    ``run_id`` is the latest fit run's name (Snowflake runs are identified
-    by name), once it has started.
+    ``run_id`` is the most recent tracked run's name (Snowflake runs are
+    identified by name), once it has started.
     """
 
     platform = 'snowflake'
@@ -185,16 +188,26 @@ class SnowflakeTracking:
         experiment = tracking.set_experiment(self.experiment_name,
                                              database_name=database,
                                              schema_name=schema or 'PUBLIC')
+        fit = record.tags.get('kumo.kind') == 'fit'
         self._run = tracking.start_run(
             self._new_run_name(
                 tracking, experiment.name,
-                self.run_name or _run_identifier(record.name or 'fit')))
+                self.run_name if fit and self.run_name else
+                _run_identifier(record.name or 'fit')))
         self.run_id = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)
         self._log_params({**record.params, **record.tags})
         self._log_artifacts(record.artifacts)
+
+    def log_prediction_run(self, record: RunRecord) -> None:
+        self.start(record)
+        self.finish(record, record_failure(record))
+
+    def log_monitoring(self, record: RunRecord) -> None:
+        self.start(record)
+        self.finish(record, None)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         if self._run is None:
@@ -272,7 +285,7 @@ class SnowflakeTracking:
         if name != run_name:
             logger.warning(
                 'Snowflake run %s already exists in experiment %s; recording '
-                'this fit as %s', run_name, self.experiment_name,
+                'this run as %s', run_name, self.experiment_name,
                 name or 'a generated run name')
         return name
 

@@ -8,7 +8,7 @@ from diskgraph import tt_artifacts
 
 
 @pytest.mark.parametrize('prediction', [False, True])
-def test_builder_warns_with_distinct_rows_and_all_reasons(
+def test_training_builder_warns_with_distinct_rows_and_all_reasons(
         prediction, monkeypatch, caplog):
     result = {
         'row_count': 3,
@@ -41,6 +41,10 @@ def test_builder_warns_with_distinct_rows_and_all_reasons(
         kwargs['split_config'] = None
     assert builder(**kwargs) is result
     assert calls[0]['ingest_on_error'] == 'skip_row_on_error'
+    if prediction:
+        # The caller reports skipped entities to score.
+        assert not caplog.records
+        return
     assert '2 of 5 rows were skipped; training on 3 rows' in caplog.text
     assert 'null weight[WEIGHT]=2' in caplog.text
     assert 'empty target list[TARGET]=1' in caplog.text

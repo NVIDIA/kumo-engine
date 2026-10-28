@@ -141,3 +141,38 @@ def test_an_append_does_not_retry_after_token_expiry(monkeypatch):
         pass
     else:
         raise AssertionError("append must not be retried after token expiry")
+
+
+def test_an_append_loads_files_stamped_with_extra_columns(monkeypatch,
+                                                          tmp_path):
+    import pandas as pd
+    import pyarrow.parquet as pq
+
+    backend = SnowflakeSinkBackend()
+    artifact = tmp_path / "part-0.parquet"
+    pd.DataFrame({"ENTITY": ["a"]}).to_parquet(artifact)
+
+    @contextmanager
+    def open_session(_connector):
+        yield _Session()
+
+    monkeypatch.setattr(backend, "_session", open_session)
+    monkeypatch.setattr(sink, "_require_snowpark", lambda _session: None)
+    loads = []
+
+    def load(target, table_name, path, replace, *, artifact_files,
+             upload_local):
+        prepare = upload_local.keywords["prepare_file"]
+        with prepare(path) as staged:
+            loads.append((table_name, replace,
+                          pq.read_table(staged).to_pydict()))
+
+    monkeypatch.setattr("kumo_snowflake.write.write_artifacts_to_table", load)
+    monkeypatch.setattr(backend, "_qualified", lambda _c, name: name)
+    backend.write_files(SimpleNamespace(), "PREDICTIONS", [str(artifact)],
+                        WriteMode.APPEND, extra_columns={"PREDICTION_ID": "p1"})
+
+    assert loads == [("PREDICTIONS", False, {
+        "ENTITY": ["a"],
+        "PREDICTION_ID": ["p1"]
+    })]

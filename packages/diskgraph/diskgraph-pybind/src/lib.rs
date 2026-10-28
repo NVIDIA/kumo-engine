@@ -184,6 +184,7 @@ use diskgraph_engine::state::{SamplingState, StatePool};
 
 mod artifact_helpers;
 mod bp_col_stats;
+mod bp_evaluate;
 mod col_stats_export;
 mod custom_tt_entry;
 mod index_metadata;
@@ -1387,7 +1388,7 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 
 /// Compute Kumo-format column statistics over one or more parquet files.
 ///
-/// Wraps :func:`bp_col_stats::compute_parquet_col_stats` for kumo's
+/// Wraps :func:`bp_col_stats::compute_parquet_col_stats_with_options` for kumo's
 /// batch-prediction stats path: after a BP run writes its output parquet,
 /// kumo invokes this to produce the same ``kumo_col_stats_v1`` JSON that
 /// ingest emits, so downstream readers (UI, encoder inference,
@@ -1414,6 +1415,21 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 ///         invalid. Semantic and logical types are mapped through the same
 ///         ``map_kumo_stype`` / ``map_kumo_dtype`` helpers ingest uses.
 ///     data_version: version string stamped into every emitted entry.
+///     percentiles: also emit approximate ``PERCENTILES`` (q01 through q99,
+///         from each numerical column's t-digest).
+///     summary_stats_by_class: emit ``SUMMARY_STATS_BY_CLASS`` for a
+///         ``SCORE``/``CLASS`` pair (the default); ``False`` skips its
+///         per-class map.
+///     histograms: emit ``HISTOGRAM`` statistics (the default), which take a
+///         second read; ``False`` skips them.
+///     category_counts_limit: keep at most this many ``CATEGORY_COUNTS``
+///         entries in the full output (all by default; the min output keeps
+///         20) and record ``CATEGORY_COUNTS_CAPPED``, whether counting hit
+///         the category cap so ``NUM_UNIQUE`` is an estimate.
+///     max_per: compute every statistic over the maximum of each column
+///         within each run of equal values of these columns, in path and row
+///         order (for example each prediction's top score). Needs numerical
+///         columns, ``histograms=False`` and ``summary_stats_by_class=False``.
 ///     _category_count_limit_for_testing: keyword-only test hook that lowers
 ///         the retained category limit. ``None`` preserves the production
 ///         1,000,000-category limit; a supplied value must be greater than 0.
@@ -1428,6 +1444,11 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
     kumo_column_specs_json,
     data_version,
     *,
+    percentiles=false,
+    summary_stats_by_class=true,
+    histograms=true,
+    category_counts_limit=None,
+    max_per=None,
     _category_count_limit_for_testing=None,
 ))]
 #[tracing::instrument(level = "debug", skip(py, kumo_column_specs_json))]
@@ -1436,6 +1457,11 @@ fn compute_col_stats_for_parquet(
     parquet_paths: Vec<String>,
     kumo_column_specs_json: &str,
     data_version: &str,
+    percentiles: bool,
+    summary_stats_by_class: bool,
+    histograms: bool,
+    category_counts_limit: Option<usize>,
+    max_per: Option<Vec<String>>,
     _category_count_limit_for_testing: Option<u64>,
 ) -> PyResult<(String, String)> {
     use diskgraph_ingest::config_converter::{
@@ -1443,9 +1469,9 @@ fn compute_col_stats_for_parquet(
     };
     use diskgraph_ingest::graph_config::ColumnSpec;
 
-    use crate::bp_col_stats::{
-        compute_parquet_col_stats, compute_parquet_col_stats_with_max_categories,
-    };
+    use diskgraph_core::accumulators::MAX_CATEGORIES;
+
+    use crate::bp_col_stats::{compute_parquet_col_stats_with_options, ColStatsOptions};
 
     if _category_count_limit_for_testing == Some(0) {
         return Err(DiskgraphConfigError::new_err(
@@ -1505,24 +1531,67 @@ fn compute_col_stats_for_parquet(
         .collect::<PyResult<Vec<_>>>()?;
     let data_version = data_version.to_string();
     let paths_owned = parquet_paths;
+    let options = ColStatsOptions {
+        percentiles,
+        summary_stats_by_class,
+        histograms,
+        category_counts_limit,
+        max_per: max_per.unwrap_or_default(),
+    };
 
     py.detach(|| -> anyhow::Result<(String, String)> {
         let paths: Vec<&std::path::Path> =
             paths_owned.iter().map(std::path::Path::new).collect();
-        match _category_count_limit_for_testing {
-            Some(limit) => compute_parquet_col_stats_with_max_categories(
-                &paths,
-                &columns,
-                &data_version,
-                limit,
-            ),
-            None => compute_parquet_col_stats(&paths, &columns, &data_version),
-        }
+        compute_parquet_col_stats_with_options(
+            &paths,
+            &columns,
+            &data_version,
+            _category_count_limit_for_testing.unwrap_or(MAX_CATEGORIES),
+            &options,
+        )
     })
     // Route schema failures through the shared exception classifier rather
     // than reporting missing columns or invalid timestamp metadata as a
     // blanket system error. Unclassified failures still fall through to
     // `DiskgraphSystemError`.
+    .map_err(map_anyhow_err)
+}
+
+/// Join batch-prediction Parquet outputs with generated label Parquet parts
+/// and compute realized metrics, streaming and hash-partitioning both sides.
+///
+/// Args:
+///     prediction_paths: the run's prediction Parquet files.
+///     label_paths: the label Parquet parts.
+///     spec_json: JSON object with ``task`` (``"binary"``, ``"regression"``,
+///         ``"multiclass"`` or ``"link"``), ``prediction_keys`` and
+///         ``label_keys`` (paired by position), ``label_target``,
+///         ``spill_dir``, and optional ``actuals_dir`` with
+///         ``actual_columns`` (``[label name, output name]`` pairs) to write
+///         the matched label rows, ``prediction_columns`` (pairs copied
+///         from the matched prediction), ``constant_timestamps``
+///         (``[output name, UTC nanoseconds]`` pairs written on every row),
+///         and ``partition_rows``.
+///
+/// Returns a JSON string ``{"rows", "labelled", "metrics"}``: distinct
+/// predictions, those with a label, and the metric values (``null`` when
+/// undefined).
+#[pyfunction]
+#[pyo3(signature = (prediction_paths, label_paths, spec_json))]
+fn evaluate_prediction_parquet(
+    py: Python<'_>,
+    prediction_paths: Vec<String>,
+    label_paths: Vec<String>,
+    spec_json: &str,
+) -> PyResult<String> {
+    let spec: bp_evaluate::EvaluateSpec = serde_json::from_str(spec_json)
+        .map_err(|e| DiskgraphConfigError::new_err(format!("invalid spec_json: {e}")))?;
+    py.detach(|| -> anyhow::Result<String> {
+        let predictions: Vec<&std::path::Path> =
+            prediction_paths.iter().map(std::path::Path::new).collect();
+        let labels: Vec<&std::path::Path> = label_paths.iter().map(std::path::Path::new).collect();
+        Ok(bp_evaluate::evaluate_prediction_parquet(&predictions, &labels, &spec)?.to_string())
+    })
     .map_err(map_anyhow_err)
 }
 
@@ -1627,6 +1696,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(has_resumable_ingest, m)?)?;
     m.add_function(wrap_pyfunction!(validated_index_resume_progress, m)?)?;
     m.add_function(wrap_pyfunction!(compute_col_stats_for_parquet, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_prediction_parquet, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_edge_stats, m)?)?;
     m.add_class::<SamplerEngine>()?;

@@ -8,9 +8,10 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+from kumo_core.artifact_export import ArtifactDestinationConflict
 from kumo_core.chunked_fs import ChunkedFileHandler
 from kumo_core.object_store_sink import FilesystemSink
-from kumoapi.jobs import PredictionArtifactType
+from kumoapi.jobs import PredictionArtifactType, WriteMode
 from kumoapi.plugin import FileStoreSink
 from pyarrow.fs import PyFileSystem
 
@@ -215,3 +216,17 @@ def test_publishing_an_identical_bundle_again_reuses_the_copy(
                         lambda *a: uploads.append(a) or upload(*a))
     files.publish_model(connector, str(bundle), path='@stage/models/m')
     assert len(uploads) == 1
+
+
+def test_an_occupied_directory_is_refused_by_its_full_location(
+        tmp_path, connector):
+    files = FilesystemSink(connector.sink_backend)
+    part = tmp_path / 'part-0.parquet'
+    pd.DataFrame({'x': range(3)}).to_parquet(part)
+    files.write_files(connector, '@stage/out/', [str(part)])
+
+    files.preflight_write_files(connector, '@stage/new/')
+    files.preflight_write_files(connector, '@stage/out/',
+                                write_mode=WriteMode.OVERWRITE)
+    with pytest.raises(ArtifactDestinationConflict, match="'@stage/out/'"):
+        files.preflight_write_files(connector, '@stage/out/')

@@ -158,7 +158,7 @@ class SourceTableEntry(Record):
 
 
 #: The artifact kinds, as manifests and the artifact root name them.
-KINDS = ('snapshot', 'training_table', 'model')
+KINDS = ('snapshot', 'training_table', 'model', 'prediction')
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -393,6 +393,14 @@ class Dependency(Record):
 
 
 @dataclass(frozen=True, kw_only=True)
+class HoldoutStats(Record):
+    truncated: Optional[bool]
+    rows: int
+    columns: Dict[str, Dict[str, Any]]
+    label_positive_rate: Optional[float] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
 class ModelManifest(Manifest):
     """How a model bundle was fitted: from which training table (embedded,
     with its snapshot) and warm-start model, when, and with which fit
@@ -407,8 +415,79 @@ class ModelManifest(Manifest):
     fit_mode: Optional[str] = None
     tracking: Optional[TrackingRef] = omit_none()
     dependencies: Optional[List[Dependency]] = omit_none()
+    holdout: Optional[HoldoutStats] = omit_none()
 
-    EMBED_OMITS = ('tracking', )
+    EMBED_OMITS = ('tracking', 'holdout')
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionParents(Record):
+    model: ModelManifest
+    snapshot: SnapshotManifest
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionTableRecord(Record):
+    query_sha256: str
+    source: Optional[str]
+    anchors: List[str]
+    rows: Optional[int]
+    requested_rows: Optional[int] = None
+    scored_rows: Optional[int] = None
+    skipped_rows: Optional[int] = None
+    skipped_sample: Optional[List[Any]] = None
+    skip_reason: Optional[str] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunScoring(Record):
+    binary_classification_threshold: Optional[float]
+    threshold_source: str
+    num_classes_to_return: Optional[int]
+    count_source: str
+    num_workers: Optional[int]
+
+
+@dataclass(frozen=True, kw_only=True)
+class OutputDestination(Record):
+    connector: str
+    location: Optional[str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionOutput(Record):
+    artifact: str
+    destination: OutputDestination
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunTimings(Record):
+    started_at: str
+    finished_at: Optional[str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ArtifactStats(Record):
+    rows: Optional[int]
+    columns: Optional[Dict[str, Dict[str, Any]]] = omit_none()
+    predicted_positive_rate: Optional[float] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionManifest(Manifest):
+    """A prediction run: its model and scoring snapshot (embedded), the
+    prediction table, scoring options, outputs and score statistics."""
+
+    kind: str = 'prediction'
+    parents: PredictionParents
+    prediction_table: PredictionTableRecord
+    scoring: RunScoring
+    outputs: Optional[List[PredictionOutput]]
+    status: Optional[str]
+    timings: Optional[RunTimings]
+    stats: Optional[Dict[str, ArtifactStats]]
+
+    EMBED_OMITS = ('outputs', 'stats', 'status', 'timings')
 
 
 @dataclass(frozen=True, kw_only=True)

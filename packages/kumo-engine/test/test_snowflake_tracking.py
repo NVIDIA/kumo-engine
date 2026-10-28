@@ -16,11 +16,12 @@ from test_fit_events import table_and_snapshot  # noqa: F401
 from test_tracking_contract import (
     CONTEXT,
     EVENTS,
+    PREDICTION_MANIFEST,
     RESULT,
     join_tracking_threads,
 )
 
-from kumo.engine._tracking import TrackingSession
+from kumo.engine._tracking import TrackingSession, prediction_record
 from kumo.engine.trainer._run_spec import fit_spec, fitted_spec
 
 FAKED = ('__init__', 'set_experiment', 'start_run', 'end_run', 'log_params',
@@ -118,6 +119,7 @@ def test_failed_fit_ends_the_run_failed(fake):
 def test_an_instance_in_use_is_left_alone_and_fails_strict_mode(
         fake, busy, table_and_snapshot, tmp_path, monkeypatch):
     import kumo.engine as kumo
+    from kumo.engine._tracking import log_run
     from kumo.engine.integrations.snowflake import SnowflakeTracking
 
     monkeypatch.setattr(SnowflakeTracking, 'check', lambda *args: None)
@@ -142,8 +144,11 @@ def test_an_instance_in_use_is_left_alone_and_fails_strict_mode(
         trainer.fit(table, snapshot=snapshot, mlops=kumo.MLOps(
             str(tmp_path / 'root'), tracking=_tracking(session),
             store=False, on_error='raise'))
+    failure = log_run(_tracking(session), 'log_prediction_run',
+                      prediction_record(PREDICTION_MANIFEST))
 
     assert trainer.result is not None
+    assert in_use in str(failure)
     assert user.calls[calls:] == []
     assert (user._run, user.warnings_as_errors) == (run, True)
 
@@ -179,7 +184,7 @@ def test_an_existing_run_is_never_resumed(fake, taken, caplog):
     assert set(user.runs) == {taken, new}
     assert user.runs[taken]['params'] == {}
     assert user.runs[new]['status'] == 'FINISHED'
-    assert 'recording this fit as' in caplog.text
+    assert 'recording this run as' in caplog.text
 
 
 def test_metric_and_param_limits(fake, monkeypatch):
@@ -238,6 +243,20 @@ def test_a_hung_snowflake_call_does_not_stall_the_fit(fake, monkeypatch):
     assert isinstance(session.error, TimeoutError)
     run, = fake._instance.runs.values()
     assert run['status'] == 'FINISHED'
+
+
+def test_prediction_runs_are_never_resumed(fake, caplog):
+    tracking = _tracking()
+    record = prediction_record(PREDICTION_MANIFEST)
+    tracking.log_prediction_run(record)
+    tracking.log_prediction_run(record)
+
+    assert {name: run['status']
+            for name, run in fake._instance.runs.items()} == {
+                'TRAINER_PREDICT_1': 'FINISHED',
+                'TRAINER_PREDICT_1_1': 'FINISHED',
+            }
+    assert 'already exists' in caplog.text
 
 
 class _SchemaSession:
