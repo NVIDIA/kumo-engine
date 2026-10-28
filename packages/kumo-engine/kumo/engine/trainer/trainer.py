@@ -601,6 +601,10 @@ class Trainer:
             tt_id=ingest_tt_id,
         )
         del task_dataset
+        if (materialized.task.split.stage_counts.get('test') == 0
+                and not materialized.task.task_type.is_link_pred):
+            raise ValueError('The test split is empty: shorten the query '
+                             'window or add data.')
         training_input = ResolvedTrainingInput(
             task=materialized.task,
             model_plan=materialized.model_plan,

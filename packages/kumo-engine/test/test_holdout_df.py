@@ -194,3 +194,13 @@ def test_unreadable_size_record_does_not_fail_fit(tmp_path, caplog, content):
     assert truncated is None
     assert len(pd.read_parquet(path)) == 2
     assert 'truncation is unknown' in caplog.text
+
+
+def test_an_empty_test_split_fails_the_fit_with_a_clear_message(graph):
+    graph, snapshot = graph
+    pquery = kumo.PredictiveQuery(
+        graph=graph,
+        query='PREDICT COUNT(events.*, 0, 30, days) > 15 FOR EACH ents.ID')
+    with pytest.raises(ValueError, match='test split is empty'):
+        kumo.Trainer(pquery.suggest_model_plan(snapshot)).fit(
+            pquery.generate_training_table(snapshot), snapshot=snapshot)

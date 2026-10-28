@@ -59,6 +59,10 @@ class MLOps:
         if not self.artifact_root:
             raise ValueError('MLOps needs an artifact_root.')
         if isinstance(self.artifact_root, str):
+            if self.artifact_root.startswith('@'):
+                raise ValueError(
+                    'A stage artifact_root needs its connector: pass '
+                    f'(SnowflakeConnector(...), {self.artifact_root!r}).')
             root = _Root(connector_for_root(self.artifact_root), '',
                          self.artifact_root)
         else:
