@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from http import HTTPStatus
-from typing import Any, Dict, Optional, get_args
+from typing import Any, Dict, Optional
 
 from kumoapi.common import ValidationResponse
 from kumoapi.data_snapshot import GraphSnapshotID, GraphSnapshotResource
@@ -14,7 +14,7 @@ from kumoapi.graph import (
     GraphValidationRequest,
 )
 from kumoapi.json_serde import to_json_dict
-from kumoapi.typing import TimestampPrecision
+from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
 
 from kumoai_studio.client.endpoints import GraphEndpoints
 from kumoai_studio.client.transport import Transport
@@ -82,10 +82,7 @@ class GraphAPI:
         project_id: Optional[str] = None,
         timestamp_precision: TimestampPrecision = 'seconds',
     ) -> GraphSnapshotID:
-        if timestamp_precision not in get_args(TimestampPrecision):
-            raise ValueError(f"timestamp_precision must be one of "
-                             f"{get_args(TimestampPrecision)}, got "
-                             f"{timestamp_precision!r}")
+        validate_timestamp_precision(timestamp_precision)
         params: Dict[str, Any] = {
             'graph_id': graph_id,
             'refresh_source': refresh_source

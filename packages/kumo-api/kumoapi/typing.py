@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import builtins
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, get_args
 
 import pydantic
 from pandas import DateOffset
@@ -33,6 +33,13 @@ MulticategoricalDelimiter = Literal[',', '|', ';', '\t']
 
 TimestampPrecision = Literal['nanoseconds', 'microseconds', 'milliseconds',
                              'seconds', 'hours', 'days']
+
+
+def validate_timestamp_precision(timestamp_precision: str) -> None:
+    if timestamp_precision not in get_args(TimestampPrecision):
+        raise ValueError(f"timestamp_precision must be one of "
+                         f"{get_args(TimestampPrecision)}, got "
+                         f"{timestamp_precision!r}")
 
 
 class Stype(StrEnum):

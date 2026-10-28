@@ -64,11 +64,11 @@ import warnings
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence, get_args
+from typing import Any, Dict, Mapping, Sequence
 
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
-from kumoapi.typing import TimestampPrecision
+from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
 
 from kumo.engine._scratch import (
     fingerprint,
@@ -367,10 +367,7 @@ class Graph:
         """
         from filelock import FileLock
 
-        if timestamp_precision not in get_args(TimestampPrecision):
-            raise ValueError(f"timestamp_precision must be one of "
-                             f"{get_args(TimestampPrecision)}, got "
-                             f"{timestamp_precision!r}")
+        validate_timestamp_precision(timestamp_precision)
         self.validate()
         for table in self._named_tables.values():
             table.connector.validate_scratch_dir(get_scratch_dir())
