@@ -51,7 +51,8 @@ class SnowflakeTracking:
         database: `None` uses the session's current database.
         schema_name: `None` uses the session's current schema, or ``PUBLIC``
             when `database` is given or the session has none.
-        run_name: name of the fit run. `None` lets Snowflake pick one; a
+        run_name: name of the fit run. `None` names it after its registry
+            model and UTC start, as ``"fit-USERS_CHURN-20261027-0618"``; a
             taken name gets a random suffix.
         tags: extra tags for the fit run.
         native_model_lineage: keep the run open as a context for the whole
@@ -159,7 +160,7 @@ class SnowflakeTracking:
                                              database_name=database,
                                              schema_name=schema or 'PUBLIC')
         self._run = tracking.start_run(
-            self._new_run_name(tracking, experiment.name))
+            self._new_run_name(tracking, experiment.name, record.name))
         self.run_id = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
@@ -220,9 +221,10 @@ class SnowflakeTracking:
         if self._run is not None:
             self._log_metrics(metrics, _EPOCH_METRICS, step=step)
 
-    def _new_run_name(self, tracking: Any,
-                      experiment: Any) -> Optional[str]:
-        if self.run_name is None:
+    def _new_run_name(self, tracking: Any, experiment: Any,
+                      default: Optional[str]) -> Optional[str]:
+        wanted = self.run_name or (default and f'"{default}"')
+        if wanted is None:
             return None
         # start_run(name) resumes, or raises on, any run matching name as a
         # SQL LIKE pattern and cannot create an existing run, so pick a name
@@ -233,16 +235,16 @@ class SnowflakeTracking:
                 experiment_name=experiment)
         ]
         short = uuid.uuid4().hex
-        for name in (self.run_name, _suffixed(self.run_name, short[:8]),
-                     _suffixed(self.run_name, short)):
+        for name in (wanted, _suffixed(wanted, short[:8]),
+                     _suffixed(wanted, short)):
             if not _taken(name, existing):
                 break
         else:
             name = None
-        if name != self.run_name:
+        if name != wanted:
             logger.warning(
                 'Snowflake run %s already exists in experiment %s; recording '
-                'this fit as %s', self.run_name, self.experiment_name,
+                'this fit as %s', wanted, self.experiment_name,
                 name or 'a generated run name')
         return name
 

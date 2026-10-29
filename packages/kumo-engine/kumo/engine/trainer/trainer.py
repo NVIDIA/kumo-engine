@@ -748,7 +748,9 @@ class Trainer:
                                scoring_defaults=scoring_defaults,
                                warm_start=warm_start, run_id=run_id,
                                events=events, tracking=session,
-                               deps=deps)
+                               deps=deps, model_name=None if (
+                                   settings is None or settings.registry is
+                                   None) else settings.registry.name)
         except BaseException as error:
             events.emit('fit_ended', params={
                 'status': 'failed',
@@ -769,8 +771,11 @@ class Trainer:
         if registered is not None:
             result = replace(result, registered_model=registered)
             self._training_result = result
+        alias = None if settings is None or settings.registry is None else (
+            settings.registry.alias)
         session.finish(
-            lambda: fitted_spec(cast(RunSpec, session.spec), result, seconds),
+            lambda: fitted_spec(cast(RunSpec, session.spec), result, seconds,
+                                alias),
             error)
         raise_on_error(settings, session.error or error,
                        'Trainer.fit (its model is in trainer.result)')
@@ -788,6 +793,7 @@ class Trainer:
         events: EventEmitter,
         tracking: TrackingSession,
         deps: Dependencies,
+        model_name: Optional[str] = None,
     ) -> TrainingResult:
         from kumo_core.automl.runtime import (
             inherit_warm_start_model_plan,
@@ -931,6 +937,10 @@ class Trainer:
             query=train_table.query,
             model_plan=to_json_dict(materialized.model_plan),
             inputs=fit_inputs(train_table.manifest),
+            started=started_at,
+            snapshot_id=snapshot.id,
+            task_type=materialized.task.task_type.value,
+            model_name=model_name,
         )))
         training_input = ResolvedTrainingInput(
             task=materialized.task,

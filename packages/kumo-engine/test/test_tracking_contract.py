@@ -7,6 +7,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
@@ -35,8 +36,10 @@ INPUTS = {
     'users': {'connector': 'SNOWFLAKE', 'location': '"DB"."SCH"."USERS"',
               'version': '1790000000', 'version_kind': 'timestamp'},
 }
+SNAPSHOT = f"{'s' * 64}@{'v' * 16}"
 CONTEXT = FitContext(
-    query=QUERY, inputs=INPUTS,
+    query=QUERY, inputs=INPUTS, snapshot_id=SNAPSHOT, task_type='regression',
+    started=datetime(2026, 10, 29, 6, 18, tzinfo=timezone.utc),
     model_plan={
         'optimization': {'base_lr': [0.01, 0.001], 'max_epochs': 2},
         'training_job': {'tune_metric': 'mae'},
@@ -82,7 +85,8 @@ SEARCH = {'search/best_val_mae': ((1, 0.35), (2, 0.3))}
 SELECTED = {'train_loss': ((1, 0.6), (2, 0.4)), 'val_mae': ((1, 0.5), (2, 0.3))}
 BUNDLE = 'b' * 64
 RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
-                         id=BUNDLE, bundle_dir=Path('no-bundle'))
+                         id=BUNDLE, bundle_dir=Path('no-bundle'),
+                         registered_model=None)
 
 
 class _Recorder:
@@ -273,7 +277,7 @@ def snowflake_adapter(monkeypatch):
 
     def observe():
         observed = {}
-        for run in fake._instance.runs.values():
+        for run_name, run in fake._instance.runs.items():
             names: Dict[Optional[str], Dict[str, Dict[str, Any]]] = {}
 
             def bucket(key):
@@ -298,7 +302,7 @@ def snowflake_adapter(monkeypatch):
                                        (step, value))
             for prefix, runs in names.items():
                 observed[prefix or FIT] = Observed(
-                    name=prefix,
+                    name=prefix or run_name,
                     artifacts=run['artifacts'] if prefix is None else {},
                     **runs)
         return observed
@@ -318,8 +322,10 @@ def test_records_of_the_recorded_fit():
     records = replay()
 
     fit = records[FIT]
+    assert fit.name == 'fit-20261029-0618'
     assert fit.tags == {'team': 'ents', 'kumo.kind': 'fit',
-                        'kumo.bundle_id': BUNDLE}
+                        'kumo.bundle_id': BUNDLE, 'kumo.snapshot_id': SNAPSHOT,
+                        'kumo.task_type': 'regression'}
     assert fit.params == {
         'optimization.base_lr': '[0.01, 0.001]',
         'optimization.max_epochs': '2',
@@ -335,6 +341,12 @@ def test_records_of_the_recorded_fit():
     assert fit.steps == {'search/best_val_mae': ((1, 0.35), (2, 0.3)),
                          'train/loss': ((1, 0.6), (2, 0.4)),
                          'val/mae': ((1, 0.5), (2, 0.3))}
+    registered = SimpleNamespace(**{**vars(RESULT), 'registered_model':
+                                    SimpleNamespace(name='ents', version='3')})
+    tags = run_record(fitted_spec(fit_spec(CONTEXT), registered,
+                                  alias='candidate')).tags
+    assert tags.items() >= {'kumo.model_name': 'ents', 'kumo.model_version':
+                            '3', 'kumo.model_alias': 'candidate'}.items()
     assert fit.artifacts['query.pql'] == QUERY
     assert json.loads(fit.artifacts['model_plan.json']) == CONTEXT.model_plan
     assert fit.inputs == INPUTS
@@ -356,8 +368,7 @@ def test_records_of_the_recorded_fit():
 
 def test_adapter_records_the_same_runs(adapter, tmp_path):
     (tmp_path / PROVENANCE_FILE).write_text('{"bundle": "b"}')
-    result = SimpleNamespace(metrics=RESULT.metrics, id=BUNDLE,
-                             bundle_dir=tmp_path)
+    result = SimpleNamespace(**{**vars(RESULT), 'bundle_dir': tmp_path})
     expected = replay(adapter.make(), result=result)
 
     assert expected[FIT].artifacts[PROVENANCE_FILE] == '{"bundle": "b"}'
