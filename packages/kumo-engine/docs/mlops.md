@@ -145,7 +145,7 @@ table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{tabl
 
 - `result.registered_model` is the version `MLOps(registry=)` registered; `result.published_model` the one `fit(export_config=...)` published.
 - `result.tracking` is the tracker's run: `TrackingRef(platform="databricks", run_id="...", url="https://.../ml/experiments/.../runs/...")`. The model's `_provenance.json` records the same.
-- `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict`, the MLflow pyfunc and the scoring jobs apply them when a call omits them; explicit arguments and a query's `TOP k` win. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
+- `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict`, the MLflow pyfunc and the scoring jobs apply them when a call omits them; explicit arguments and a query's `TOP k` win. A binary model always returns `True_PROB`; with no threshold passed or stored, its `TARGET_PRED` is null. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
 - `result.export(cfg)` (or `trainer.export(cfg)` for a loaded model) registers a model at `cfg.registry` through its tracker. On every platform, registering a bundle the registry already holds under that name returns its version instead of adding one.
 - If registration fails, `fit` warns with the full error and returns with `registered_model=None` (with `on_error="raise"`, it raises), and the fit run ends failed with `kumo.error`. Registering a bundle the registry already holds under the name returns that version (logged at info) and moves the alias to it.
 
@@ -174,9 +174,10 @@ with cfg.tracking.client() as client:          # the tracker's MLflow server, as
 In the Snowflake Model Registry a version holds at most one alias: take `champion` off the old version (there is none on the first promotion) and `candidate` off the new one, then set it:
 
 ```sql
-ALTER MODEL ML.MODELS.CHURN_GNN VERSION champion UNSET ALIAS;   -- skip on the first promotion
-ALTER MODEL ML.MODELS.CHURN_GNN VERSION V3 UNSET ALIAS;         -- V3 holds candidate
-ALTER MODEL ML.MODELS.CHURN_GNN VERSION V3 SET ALIAS = champion;
+SHOW VERSIONS IN MODEL ML.MODELS.CHURN_GNN;                         -- or result.registered_model.version
+ALTER MODEL ML.MODELS.CHURN_GNN VERSION champion UNSET ALIAS;        -- skip on the first promotion
+ALTER MODEL ML.MODELS.CHURN_GNN VERSION <version> UNSET ALIAS;       -- it holds candidate
+ALTER MODEL ML.MODELS.CHURN_GNN VERSION <version> SET ALIAS = champion;
 ```
 
 Jobs that load `alias="champion"` pick up the new version on their next run.
@@ -220,7 +221,7 @@ scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
     "prediction_time": "2024-06-01"})              # temporal queries
 ```
 
-- Input rows have an `ENTITY` column and optionally a `TIMESTAMP`; scores come back in input order, one per scored row. Binary classification needs `params={"binary_classification_threshold": ...}` unless the model carries scoring defaults.
+- Input rows have an `ENTITY` column and optionally a `TIMESTAMP`; scores come back in input order, one per scored row. Binary classification returns `True_PROB`; `TARGET_PRED` needs `params={"binary_classification_threshold": ...}` or a stored threshold, and is null without one.
 - Each replica loads a snapshot on its first `predict` with that URI and keeps it. `log_model(trainer, snapshot=..., serving_snapshot=...)` logs a model whose replicas load that snapshot at startup and use it when no `snapshot` param is given; `serving_snapshot` takes a URI, or a `GraphSnapshot` or snapshot id stored under the block's artifact root.
 - Serving needs an image with kumo-engine installed: `mlflow models serve -m <model dir> --env-manager local`. Its pip requirement is `kumo-engine[s3,gcs]` of the same version (plus `[text]` for text columns).
 
@@ -260,15 +261,21 @@ latest, *earlier = sorted((kumo.PredictionResult.load_from_connector(cfg, path=f
                            for prediction_id in ids), key=lambda run: run.manifest.created_at, reverse=True)
 ```
 
+`latest` is the run started or written last; when a backfill scores older data after a daily run, order by `run.manifest.prediction_table.anchors` instead.
+
 `load_from_connector` needs the run's `_SUCCESS` marker and fetches only its `_provenance.json`; the Parquet parts download when `evaluate` (or `files`) first reads them.
 
 ### Warehouse model monitors
 
 Both platforms monitor the evaluated rows exported to a table; neither monitors link prediction or ranking outputs.
 
-**Databricks (Data Quality Monitoring, inference log; databricks-sdk ≥ 0.68):**
+**Databricks (Data Quality Monitoring, inference log; databricks-sdk ≥ 0.68).** The classification monitor reads `TARGET_PRED`, so the run needs a threshold (passed or stored):
 
 ```python
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.dataquality import (AggregationGranularity, DataProfilingConfig, InferenceLogConfig,
+                                                InferenceProblemType, Monitor)
+
 evaluation.export(kumo.PredictionOutputConfig(dbx, path="churn_evaluated"))
 w = WorkspaceClient()
 table_id = w.tables.get("main.ml.churn_evaluated").table_id
@@ -283,10 +290,10 @@ w.data_quality.create_monitor(monitor=Monitor(object_type="table", object_id=tab
 **Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` to a Snowflake table writes `TARGET` as a number and `EVALUATED_AT` as `TIMESTAMP_NTZ`, as the monitor needs; the baseline is `result.holdout_df().astype({"TARGET": int}).assign(EVALUATED_AT=pd.Timestamp.now())` written with `session.write_pandas`:
 
 ```sql
-CREATE MODEL MONITOR churn_monitor WITH MODEL=churn_gnn VERSION=v3 FUNCTION=predict
+CREATE MODEL MONITOR churn_monitor WITH MODEL=churn_gnn VERSION=<version> FUNCTION=predict
   SOURCE=churn_evaluated BASELINE=churn_holdout_evaluated WAREHOUSE=wh REFRESH_INTERVAL='1 day'
-  AGGREGATION_WINDOW='1 day' TIMESTAMP_COLUMN=EVALUATED_AT ID_COLUMNS=(ENTITY)
-  PREDICTION_SCORE_COLUMNS=("True_PROB") ACTUAL_CLASS_COLUMNS=(TARGET);
+  AGGREGATION_WINDOW='1 day' TIMESTAMP_COLUMN=EVALUATED_AT ID_COLUMNS=('ENTITY')
+  PREDICTION_SCORE_COLUMNS=('True_PROB') ACTUAL_CLASS_COLUMNS=('TARGET');
 ```
 
 Details per task type: [Warehouse monitor columns](#warehouse-monitor-columns).
@@ -372,8 +379,8 @@ A text column `infer_metadata()` reads as categorical (short values from a small
 | Column | Task types | Meaning |
 |---|---|---|
 | `ENTITY` | all | the entity's primary key |
-| `ANCHOR_TIMESTAMP` | temporal queries | the prediction time, when a run scores several |
-| `TARGET_PRED` | binary classification, regression, forecasting | the predicted label or value |
+| `ANCHOR_TIMESTAMP` | temporal queries | the prediction time, only with `PredictionOutputConfig(..., extra_fields=[MetadataField.ANCHOR_TIMESTAMP])` (`from kumoapi.jobs import MetadataField`); otherwise it is `run.manifest.prediction_table.anchors` |
+| `TARGET_PRED` | binary classification, regression, forecasting | the predicted label or value; null for a binary run without a threshold |
 | `False_PROB`, `True_PROB` | binary classification | class probabilities; `True_PROB` is summarized |
 | `CLASS`, `SCORE` | multiclass, multilabel, ranking | one row per returned class; the top `SCORE` is summarized |
 
@@ -400,7 +407,7 @@ The statistics are read off the recorded percentile curves (min, q01..q99, max),
 ### Warehouse monitor columns
 
 - Databricks keys the monitor on `EVALUATED_AT` (anchors are older than its lookback by the label window). For regression use `INFERENCE_PROBLEM_TYPE_REGRESSION`; for multiclass `prediction_column="CLASS"`. `True_PROB` is profiled as an ordinary column.
-- Snowflake: binary classification uses `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; multiclass `PREDICTION_CLASS_COLUMNS=(CLASS)`; regression `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`. The timestamp is `TIMESTAMP_NTZ`, columns free of nulls, NaN and infinities, each used once; mixed-case names such as `"True_PROB"` are double-quoted. Without `BASELINE` there is no drift. Registration records the version's task type, which Model Monitor requires.
+- Snowflake: binary classification uses `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; multiclass `PREDICTION_CLASS_COLUMNS=(CLASS)`; regression `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`. The timestamp is `TIMESTAMP_NTZ`, columns free of nulls, NaN and infinities, each used once; columns are listed as string literals in their stored case, `('True_PROB')` (`'"True_PROB"'` is not found). Without `BASELINE` there is no drift. Registration records the version's task type, which Model Monitor requires.
 
 ### Custom trackers
 
