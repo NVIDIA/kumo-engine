@@ -110,11 +110,15 @@ const tip=document.createElement('div');
 tip.className='kumo-graph-tooltip';tip.role='tooltip';
 tip.id='kumo-tip-'+Math.random().toString(36).slice(2);host.append(tip);
 let active=null, card=null, timer, placement=null, hoverLock=null, pointer=null;
+let panTimer=null,panFrame=0,dwellPoint=null;
+const HOVER_DWELL=100,PAN_DURATION=250;
 const firstCard=svg.querySelector(':scope>[data-kumo-card]');
 const element=(cls,text)=>{const n=document.createElement('div');
 n.className='kumo-tip-'+cls;n.textContent=text;return n};
 const cancelHide=()=>{clearTimeout(timer);timer=null};
-const hide=()=>{cancelHide();tip.removeAttribute('data-open');
+const cancelPan=()=>{clearTimeout(panTimer);panTimer=null;
+cancelAnimationFrame(panFrame);panFrame=0};
+const hide=()=>{cancelHide();cancelPan();tip.removeAttribute('data-open');
 placement=hoverLock=null;
 if(host.classList.contains('kumo-links-focused'))
 edges.forEach(edge=>svg.insertBefore(edge.parentElement,firstCard));
@@ -267,7 +271,7 @@ layoutConnections(b.sx);
 const t=tip.getBoundingClientRect(),left=placement.side==='left';
 let x=(left?c.left-t.width-12*b.sx:c.right+12*b.sx)+placement.offset*b.sx;
 const y=Math.max(b.top,Math.min(a.top,b.bottom-t.height));
-if(allowPan===true){
+if(allowPan){
 const clamp=(v,lo,hi)=>Math.max(lo,Math.min(v,hi));
 if(active.dataset.kumoRow){
 // Compare the final popup with only route portions visible before the one pan.
@@ -283,14 +287,17 @@ placement.offset+=(x-adjacent)/b.sx}
 const dx=clamp(clamp(x<b.left?b.left-x:x+t.width>b.right?b.right-x-t.width:0,
 -(b.right-b.left),b.right-b.left),b.left+Math.min(24*b.sx,a.width/2)-a.right,
 b.right-Math.min(24*b.sx,a.width/2)-a.left);
-if(Math.abs(dx)>.5){hoverLock=pointer?{...pointer}:{};
-panBy(dx/b.sx,0);place();return}}
+if(allowPan===true&&Math.abs(dx)>.5){hoverLock=pointer?{...pointer}:{};
+panBy(dx/b.sx,0,true);return}}
 if(!intersects(a,b)){hide();return}
 const raw=x;x=Math.max(b.left,Math.min(x,b.right-t.width));
 tip.dataset.side=placement.side;tip.dataset.clamped=String(x!==raw||y!==a.top);
 tip.style.left=(x-b.h.left)/b.sx+'px';tip.style.top=(y-b.h.top)/b.sy+'px'};
-const show=(el,event)=>{if(isDragging||hoverLock)return;
-cancelHide();if(active===el)return;
+const schedulePan=()=>{clearTimeout(panTimer);dwellPoint=pointer?{...pointer}:null;
+panTimer=setTimeout(()=>{panTimer=null;
+if(active&&!drag&&!hoverLock){placement.pending=false;place(true)}},HOVER_DWELL)};
+const show=(el,event)=>{if(drag||hoverLock)return;
+cancelHide();if(active===el){if(!panTimer&&placement?.pending)schedulePan();return}
 if(event&&Number.isFinite(event.clientX))pointer={x:event.clientX,y:event.clientY};
 hide();active=el;card=el.parentElement;
 el.classList.add('kumo-active');
@@ -303,8 +310,10 @@ const dst=d.dstTable===table?d.dstColumn===column:false;
 edge.classList.toggle('kumo-edge-active',src||dst);
 if(src||dst){svg.insertBefore(edge.parentElement,firstCard);
 host.classList.add('kumo-links-focused')}})}
-placement=classify();tip.setAttribute('data-open','');place(true)};
-const scheduleHide=()=>{if(timer)return;timer=setTimeout(()=>{timer=null;
+placement=classify();placement.pending=true;tip.setAttribute('data-open','');place('prepare');
+if(active)schedulePan()};
+const scheduleHide=()=>{if(hoverLock)return;
+clearTimeout(panTimer);panTimer=null;if(timer)return;timer=setTimeout(()=>{timer=null;
 if(!hoverLock&&active!==document.activeElement)hide()},150)};
 view.querySelectorAll('title').forEach(el=>el.remove());
 view.querySelectorAll('[data-kumo-tip]').forEach(el=>{
@@ -315,16 +324,20 @@ el.addEventListener('pointerenter',e=>{if(e.pointerType!=='touch')show(el,e)},{s
 el.addEventListener('pointerleave',scheduleHide,{signal});
 el.addEventListener('focus',()=>{hoverLock=null;show(el)},{signal});
 el.addEventListener('blur',scheduleHide,{signal})});
-host.addEventListener('pointerleave',()=>{hoverLock=null;scheduleHide()},{signal});
+host.addEventListener('pointerleave',()=>{cancelPan();hoverLock=null;scheduleHide()},{signal});
 document.addEventListener('pointerout',e=>{
-if(!e.relatedTarget){hoverLock=null;scheduleHide()}
+if(!e.relatedTarget){cancelPan();hoverLock=null;scheduleHide()}
 },{signal});
 document.addEventListener('pointermove',e=>{
-pointer={x:e.clientX,y:e.clientY};if(isDragging||!active)return;
-if(hoverLock&&Math.hypot(pointer.x-hoverLock.x,pointer.y-hoverLock.y)<=1)return;
+pointer={x:e.clientX,y:e.clientY};if(drag||!active)return;
+if(hoverLock&&Math.hypot(pointer.x-hoverLock.x,pointer.y-hoverLock.y)<=4)return;
+if(panFrame){cancelPan();placement.pending=true}
 hoverLock=null;const hit=document.elementFromPoint(e.clientX,e.clientY);
 const next=hit?.closest('[data-kumo-tip]');
-if(next&&view.contains(next)){show(next,e);return}
+if(next&&view.contains(next)){
+if(next===active&&panTimer&&dwellPoint&&
+Math.hypot(pointer.x-dwellPoint.x,pointer.y-dwellPoint.y)>4)schedulePan();
+show(next,e);return}
 scheduleHide();
 },{capture:true,signal});
 
@@ -389,7 +402,19 @@ view.style.backgroundImage=`radial-gradient(circle at ${scale}px ${scale}px,
 __GRID_COLOR__ ${.7*scale}px,transparent ${.8*scale}px)`;
 label.textContent=Math.round(scale*100)+'%';host.dataset.scale=String(scale);
 };
-const panBy=(dx,dy)=>{fitted=false;panX+=dx;panY+=dy;resizeScene()};
+const panBy=(dx,dy,animate=false)=>{fitted=false;
+if(!animate){panX+=dx;panY+=dy;resizeScene();return}
+const x=panX,start=performance.now();
+const duration=matchMedia('(prefers-reduced-motion:reduce)').matches?0:PAN_DURATION;
+const step=now=>{
+if(!active||signal.aborted){panFrame=0;return}
+if(view.clientWidth!==viewWidth||view.clientHeight!==viewHeight){hide();resizeScene();return}
+const t=duration?Math.min(1,(now-start)/duration):1,k=t*t*(3-2*t);
+panX=x+dx*k;resizeScene();place();
+if(!active){panFrame=0;return}
+if(t<1)panFrame=requestAnimationFrame(step);
+else{panFrame=0;hoverLock=pointer?{...pointer}:{}}};
+panFrame=requestAnimationFrame(step)};
 const fit=()=>{
 hide();fitted=true;scale=fitScale();
 panX=(view.clientWidth-layoutWidth*scale)/2;
@@ -403,6 +428,7 @@ panX=x-graphX*scale;panY=y-graphY*scale;resizeScene();
 };
 view.addEventListener('pointerdown',e=>{
 if(e.button!==0||e.pointerType==='touch')return;
+hide();
 const rect=view.getBoundingClientRect();
 drag={id:e.pointerId,x:e.clientX,y:e.clientY,panX,panY,
 sx:rect.width/view.clientWidth,sy:rect.height/view.clientHeight};
@@ -470,8 +496,8 @@ inlineCamera=null;enter.focus({preventScroll:true});
 }
 },{signal});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')hide()},{signal});
-document.addEventListener('scroll',place,{capture:true,signal});
-window.addEventListener('resize',place,{signal});
+document.addEventListener('scroll',()=>{cancelPan();hoverLock=null;place()},{capture:true,signal});
+window.addEventListener('resize',hide,{signal});
 const resizeObserver=new ResizeObserver(()=>{
 if(signal.aborted)return;
 cancelAnimationFrame(resizeFrame);
