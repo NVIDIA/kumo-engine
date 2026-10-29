@@ -494,6 +494,26 @@ def test_the_pyfunc_reads_a_volume_snapshot_through_assets_from(
     assert loads[1][0] is not volume and loads[1][1] == 'version'
 
 
+def test_a_volume_snapshot_without_assets_from_names_the_argument(
+        monkeypatch):
+    from kumo.engine.graph import GraphSnapshot
+    from kumo.engine.integrations import _mlflow_model
+
+    def missing(connector, *, path):
+        raise FileNotFoundError(f'No complete snapshot export at {path}.')
+
+    monkeypatch.setattr(GraphSnapshot, 'load_from_connector', missing)
+    monkeypatch.setattr(_mlflow_model.os.path, 'isdir', lambda path: False)
+    model = _mlflow_model.KumoModel()
+    model._snapshots, model._reader = {}, None
+    with pytest.raises(FileNotFoundError,
+                       match=r"'assets_from': DatabricksConnector\(\.\.\.\)"):
+        model._snapshot('/Volumes/c/s/v/a/snapshots/g/version')
+    with pytest.raises(FileNotFoundError) as error:
+        model._snapshot('/tmp/a/snapshots/g/version')
+    assert 'assets_from' not in str(error.value)
+
+
 def test_a_stage_root_registers_versions_that_serve_its_snapshot(tmp_path):
     from kumo.engine.trainer.trainer import _connector_registry, _publish
 

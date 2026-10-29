@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+import os
 from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
@@ -66,9 +67,26 @@ class KumoModel(_pyfunc.PythonModel):
                                if self._reader is not None
                                and reads(self._reader, uri) else
                                snapshot_location(uri))
-            self._snapshots[uri] = GraphSnapshot.load_from_connector(
-                connector, path=path)
+            try:
+                self._snapshots[uri] = GraphSnapshot.load_from_connector(
+                    connector, path=path)
+            except FileNotFoundError as error:
+                reader = _remote_reader(uri)
+                if reader is None or connector is self._reader:
+                    raise
+                raise FileNotFoundError(
+                    f"{error} To read {uri} from here, pass "
+                    f"model_config={{'assets_from': {reader}(...)}} to "
+                    f"mlflow.pyfunc.load_model(model_uri, ...).") from error
         return self._snapshots[uri]
+
+
+def _remote_reader(uri: str) -> Optional[str]:
+    if uri.startswith('@'):
+        return 'SnowflakeConnector'
+    if uri.startswith('/Volumes/') and not os.path.isdir('/Volumes'):
+        return 'DatabricksConnector'
+    return None
 
 
 def signature(snapshot: GraphSnapshot, query: str) -> Tuple[Any, pd.DataFrame]:
