@@ -107,7 +107,7 @@ SELECTED = {'train_loss': ((1, 0.6), (2, 0.4)), 'val_mae': ((1, 0.5), (2, 0.3))}
 BUNDLE = 'b' * 64
 RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
                          id=BUNDLE, bundle_dir=Path('no-bundle'),
-                         registered_model=None)
+                         registered_model=None, registered_alias=None)
 
 
 PREDICTION_RUN = 'trainer-predict-1'
@@ -428,10 +428,10 @@ def test_records_of_the_recorded_fit():
     assert fit.steps == {'search/best_val_mae': ((1, 0.35), (2, 0.3)),
                          'train/loss': ((1, 0.6), (2, 0.4)),
                          'val/mae': ((1, 0.5), (2, 0.3))}
-    registered = SimpleNamespace(**{**vars(RESULT), 'registered_model':
-                                    SimpleNamespace(name='ents', version='3')})
-    tags = run_record(fitted_spec(fit_spec(CONTEXT), registered,
-                                  alias='candidate')).tags
+    registered = SimpleNamespace(**{
+        **vars(RESULT), 'registered_alias': 'candidate',
+        'registered_model': SimpleNamespace(name='ents', version='3')})
+    tags = run_record(fitted_spec(fit_spec(CONTEXT), registered)).tags
     assert tags.items() >= {'kumo.model_name': 'ents', 'kumo.model_version':
                             '3', 'kumo.model_alias': 'candidate'}.items()
     assert fit.artifacts['query.pql'] == QUERY

@@ -1037,21 +1037,21 @@ class Trainer:
         events.emit('fit_ended', metrics={
             **result.metrics, 'seconds': seconds
         }, params={'status': 'succeeded'})
+        alias = None if settings is None or settings.registry is None else (
+            settings.registry.alias)
         registered, error = _store_and_register(
             result.bundle_dir, result.manifest or (
                 None if result.bundle_id is None else stub(
                     'model', result.bundle_id)), settings, session=session,
             snapshot=snapshot, metrics=result.metrics, warn=warn,
             stored=(deps.errors or [None])[0])
-        alias = None if settings is None or settings.registry is None else (
-            settings.registry.alias)
         if registered is not None:
             result = replace(result, registered_model=registered,
                              registered_alias=alias)
             self._training_result = result
         session.finish(
             lambda: fitted_spec(
-                cast(RunSpec, session.spec), result, seconds, alias, (
+                cast(RunSpec, session.spec), result, seconds, (
                     *result._summaries,
                     *snapshot_summaries(Path(snapshot.index_path),
                                         snapshot.graph_config),
@@ -1710,7 +1710,7 @@ class Trainer:
                 num_workers=num_workers,
             ), started_at=started_at.isoformat(timespec='seconds'))
         _run_manifest.finish(result, manifest, output_config, settings,
-                             training_result)
+                             training_result, snapshot)
         return result
 
     def evaluate(self, run: PredictionResult, *,
