@@ -27,12 +27,23 @@ from typing import (
     Literal,
     Mapping,
     Optional,
+    Sequence,
     Set,
     Tuple,
 )
 from urllib.parse import quote
 
 from kumo_core.instrumentation import format_error
+from kumo_core.summaries import (
+    Confusion,
+    Curve,
+    Dataset,
+    Histogram,
+    Scalar,
+    Series,
+    Summary,
+    Table,
+)
 from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
 from kumo.engine._events import Event
@@ -340,8 +351,9 @@ class MlflowTracking:
                 _SystemMetrics(self._log_system_metrics))
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
-        with self.target.scope():
-            _log_inputs(self._mlflow, client, self._parent, record.inputs)
+        if record.tags.get('kumo.kind') != 'fit':  # a fit logs Datasets
+            with self.target.scope():
+                _log_inputs(self._mlflow, client, self._parent, record.inputs)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         key = (event.trial or 0, int(event.params['attempt']))
@@ -415,6 +427,7 @@ class MlflowTracking:
                                   model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
                 self._log_artifacts(record.artifacts)
+                self.log_summaries(record.summaries)
                 if error is None:
                     status = 'FINISHED'
         finally:
@@ -437,6 +450,86 @@ class MlflowTracking:
                             step: int) -> None:
         self._log_metrics(self._parent, metrics, step)
 
+    def log_summaries(self, summaries: Sequence[Summary]) -> None:
+        r"""Logs each summary on the current run through its type's call in
+        `_SINKS`; a test scalar also goes on the logged model."""
+        for summary in summaries:
+            _SINKS[type(summary)](self, summary)
+
+    def _log_scalar(self, summary: Scalar) -> None:
+        model_id = self._model_id if summary.name.startswith('test/') else None
+        self._log_metrics(self._parent, {summary.name: summary.value},
+                          model_id=model_id)
+
+    def _log_series(self, summary: Series) -> None:
+        self._log_points({summary.name: summary.points})
+
+    def _log_curve(self, summary: Curve) -> None:
+        self._log_points({summary.x.name: summary.x.points,
+                          summary.y.name: summary.y.points})
+
+    def _log_histogram(self, summary: Histogram) -> None:
+        self._log_points({
+            f'{summary.name}/count': tuple(enumerate(summary.counts)),
+            f'{summary.name}/lower_edge': tuple(enumerate(summary.edges, 1)),
+        })
+
+    def _log_table(self, summary: Table) -> None:
+        path = f'{summary.name}.json'
+        self._log_artifacts({path: json.dumps({
+            'columns': list(summary.columns),
+            'data': [list(row) for row in summary.rows],
+        }, default=str)})
+        with self.target.scope():
+            tags = self._client.get_run(self._parent).data.tags
+            logged = json.loads(tags.get('mlflow.loggedArtifacts', '[]'))
+            entry = {'path': path, 'type': 'table'}
+            if entry not in logged:
+                self._client.set_tag(self._parent, 'mlflow.loggedArtifacts',
+                                     json.dumps([*logged, entry]))
+
+    def _log_confusion(self, summary: Confusion) -> None:
+        self._log_table(Table(
+            summary.name, ('actual', *summary.labels),
+            tuple((label, *row)
+                  for label, row in zip(summary.labels, summary.counts))))
+
+    def _log_dataset(self, summary: Dataset) -> None:
+        source = _dataset_source(summary.source)
+        if source is None:
+            return
+        entities = self._mlflow.entities
+        version = summary.source.get('version') or ''
+        dataset = entities.Dataset(
+            name=summary.name,
+            digest=version[:36] or hashlib.sha256(json.dumps(
+                dict(summary.source), sort_keys=True).encode()).hexdigest()[:8],
+            source_type=source._get_source_type(),
+            source=source.to_json(),
+            schema=json.dumps({'mlflow_colspec': [
+                {'name': name, 'type': _COLUMN_TYPES.get(column['dtype'],
+                                                         'string')}
+                for name, column in summary.schema.items()]}),
+            profile=json.dumps(summary.profile, default=str))
+        with self.target.scope():
+            self._client.log_inputs(self._parent, datasets=[
+                entities.DatasetInput(dataset, tags=[entities.InputTag(
+                    'mlflow.data.context', summary.context)])])
+
+    def _log_points(self, series: Mapping[str, Sequence[Tuple[int, float]]]
+                    ) -> None:
+        entities = self._mlflow.entities
+        timestamp = int(time.time() * 1000)
+        metrics = [
+            entities.Metric(metric_key(name), float(value), timestamp, step)
+            for name, points in series.items() for step, value in points
+        ]
+        with self.target.scope():
+            for start in range(0, len(metrics), _BATCH_METRICS):
+                self._client.log_batch(
+                    self._parent,
+                    metrics=metrics[start:start + _BATCH_METRICS])
+
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         for name, text in artifacts.items():
             if name in self._artifacts:
@@ -449,9 +542,10 @@ class MlflowTracking:
                     self._client.log_text(self._parent, text, name)
                 else:
                     with tempfile.TemporaryDirectory() as tmp:
-                        path = Path(tmp) / name
+                        path = Path(tmp) / posixpath.basename(name)
                         path.write_text(text)
-                        repository.log_artifact(str(path))
+                        repository.log_artifact(
+                            str(path), posixpath.dirname(name) or None)
             self._artifacts.add(name)
 
     def _log_tags(self, run_id: str, tags: Mapping[str, str]) -> None:
@@ -489,6 +583,21 @@ class MlflowTracking:
                                     step, model_id=model_id)
                     for key, value in metrics.items()
                 ])
+
+
+_SINKS: Dict[type, Callable[[MlflowTracking, Any], None]] = {
+    Scalar: MlflowTracking._log_scalar,
+    Series: MlflowTracking._log_series,
+    Curve: MlflowTracking._log_curve,
+    Histogram: MlflowTracking._log_histogram,
+    Table: MlflowTracking._log_table,
+    Confusion: MlflowTracking._log_confusion,
+    Dataset: MlflowTracking._log_dataset,
+}
+_BATCH_METRICS = 1000  # MLflow's per-request limit
+_COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
+                 'float32': 'float', 'bool': 'boolean', 'date': 'datetime',
+                 'time': 'datetime'}
 
 
 class _SystemMetrics:

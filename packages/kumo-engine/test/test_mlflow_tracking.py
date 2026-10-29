@@ -15,9 +15,15 @@ import numpy as np
 import pandas as pd
 import pytest
 from kumo_core.artifacts import PROVENANCE_FILE
+from kumo_core.summaries import Dataset
 from kumoapi.encoder import Numerical
 from kumoapi.model_plan import ModelPlan
-from test_tracking_contract import CONTEXT, join_tracking_threads, replay
+from test_tracking_contract import (
+    CONTEXT,
+    INPUTS,
+    join_tracking_threads,
+    replay,
+)
 
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
@@ -140,9 +146,10 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     }
     tested = {name: value for name, value in logged_names(
         result.metrics).items() if name.startswith('test/')}
-    assert set(metrics) == {*tested, 'seconds', 'search/best_val_mae',
-                            *(name for name in metrics
-                              if name.startswith(('train/', 'val/')))}
+    assert {name for name in metrics if not name.startswith((
+        'train/', 'val/', 'data/', 'graph/'))} == {
+            *tested, 'seconds', 'search/best_val_mae'}
+    assert metrics['graph/rows/ents'] == 400
     assert {name: metrics[name] for name in tested} == tested
     assert 'off for the rest of this run' not in caplog.text
     ents, = parent.inputs.dataset_inputs
@@ -360,7 +367,9 @@ def test_source_tables_are_logged_as_native_inputs(
 
     monkeypatch.setattr(DeltaDatasetSource, '_lookup_table_id',
                         lambda self, name: 'table-id')
-    replay(MlflowTracking(log_system_metrics=False))
+    replay(MlflowTracking(log_system_metrics=False), summaries=[
+        Dataset(name, source, {}, {}, 'training')
+        for name, source in INPUTS.items()])
 
     run, = [run for run in _runs(mlflow.MlflowClient())
             if run.data.tags['kumo.kind'] == 'fit']
