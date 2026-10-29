@@ -36,9 +36,13 @@ Each Task runs its job synchronously with the statement
 
 ## Before running
 
-1. Make the kumo-engine wheel installable in the job container: a URL the
-   external access integration reaches (or a private package index). Name it
-   with a direct reference, `kumo-engine[snowflake] @ <wheel URL>`: a bare
+1. Put the kumo-engine wheel in the payload: copy it into
+   `examples/mlops/wheels/` and pass
+   `--requirement './wheels/<kumo_engine wheel>[snowflake]'`. The ML Jobs
+   launcher runs `pip install -r requirements.txt` inside the payload
+   directory, so a path relative to it works; pip cannot read an `@stage`
+   path. The wheel's third-party dependencies come from PyPI through the
+   external access integration (or `SNOWFLAKE.PYPI_REPOSITORY_USER`). A bare
    `kumo-engine[snowflake]` resolves to PyPI's kumo-engine 1.0.0, which
    predates the MLOps API.
 2. Create the GPU compute pool `<compute_pool>`, the stage `<stage>` for the
@@ -52,7 +56,7 @@ Each Task runs its job synchronously with the statement
      --compute-pool <compute_pool> --stage <stage> --database <database> \
      --schema <schema> --warehouse <warehouse> \
      --artifact-root @<db>.<schema>.<root stage>/kumo \
-     --requirement 'kumo-engine[snowflake] @ <wheel URL>' \
+     --requirement './wheels/<kumo_engine wheel>[snowflake]' \
      --external-access-integration <eai>
    ```
    `--model-name` (default `USERS_CHURN`), `--predictions-table` (default
