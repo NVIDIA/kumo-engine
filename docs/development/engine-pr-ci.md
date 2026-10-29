@@ -71,23 +71,32 @@ runtime. Each run records its actual device and rejects CPU fallback.
 ## Timing and evidence
 
 The target is 20 minutes through the last required result. It includes build,
-queues, installation, generation, selected checks, reporting, and uploads.
+queues, installation, fixture validation, selected checks, reporting, and uploads.
 Per-job timeouts are execution bounds. They do not prove the complete target.
+The source wrapper waits up to 30 minutes for the existing source workflow.
+Its job limit leaves time for setup and result upload. A source workflow that
+exceeds 20 minutes still fails the timing target. The longer observation
+window allows the wrapper to retain the completed test result.
 The recorded manual trial and worker timings do not replace a GitHub run.
 
 The Rust cache includes workspace crates and keys them to the native sources
 and bundle builder. A miss still builds from source. Every run retains the
 exact-source and glibc checks. Cache improvements need runtime measurement.
 
-The [recorded attempt at `4a508a93`](https://github.com/NVIDIA/kumo-engine/actions/runs/40924279550)
-took 25 minutes 56 seconds and failed before any primary fit. Its exact wheel
-build passed in 13 minutes 15 seconds. The GPU job lacked the generator token
-required by that earlier implementation. Committed fixtures remove that
-dependency. The owner source suite also failed its credential selection and
-a shared test's unconditional CUDA check. Both paths have focused fixes.
-This is a failed measurement, not a passing runtime estimate. The current
-control jobs use Ubuntu 22. The existing owner workflow retains its own runners
-and waiting time.
+The [first run with bundled fixtures at `ca562fb`](https://github.com/NVIDIA/kumo-engine/actions/runs/40947297560)
+completed its GPU checks successfully. It verified eight normal seed-zero
+primary fits and 39 additional installation and behavior fits on a Tesla T4.
+The selected worker took 462.61 seconds. The GPU job, including setup,
+installation, validation and upload, took 10 minutes 45 seconds.
+
+That cold build took 14 minutes 33 seconds. Native compilation occupied
+766.69 seconds. The job saved the new workspace-crate cache, but its warm
+benefit still needs measurement. The complete Engine workflow took 28 minutes
+27 seconds and failed because the previous 15-minute source observer stopped
+before the existing source workflow completed. The source workflow later
+passed in 24 minutes 55 seconds, with 49 successful jobs and one conditional
+skip. The longer observer preserves that completed result. These measurements
+do not establish a passing 20-minute PR check.
 
 After a run finishes, download its run metadata and the complete job inventory,
 including all pages for its recorded attempt. Then audit that run:
@@ -101,9 +110,9 @@ python3 .github/scripts/engine-pr-timing.py \
 The audit includes queue time and all jobs through their final completion.
 It rejects incomplete attempts, stale commits, and failed jobs hidden by a
 green workflow. Audit the other required workflows too before claiming the
-complete PR target. The existing source workflow previously took 1,302 seconds.
-It remains active and can exceed the target independently of the new worker.
+complete PR target. The measured existing source workflow took 1,495 seconds. It remains active
+and exceeds the target independently of the new worker in that attempt.
 
 The workflow keeps selection, build identity, installation, task results,
-physical-fit receipts, test results, generator logs, and failed-run evidence.
+physical-fit receipts, test results, fixture integrity, and failed-run evidence.
 No nightly, weekly, release, or reference-calibration job is added here.
