@@ -30,8 +30,8 @@ with a `PipelineSchedule` trigger (`pipeline.put_triggers`).
    `kumo-engine[mlflow,sagemaker,text]` (MLflow, S3, `sagemaker-mlflow` and the default word vectors for text columns) and torch 2.12 for CUDA 12.6
    on `python:3.12-slim`, from a directory holding the kumo-engine wheel and
    its kumo-core, kumo-api, kumo-pql, kumo-s3 and diskgraph wheels
-   (`--find-links`; the engine wheel goes in by path, since PyPI's unrelated
-   `kumo-engine` would otherwise win). Add `--build-arg TORCH=cpu` for a CPU
+   (`--find-links`; the engine wheel goes in by path, since PyPI's `kumo-engine`
+   1.0.0 release, which predates the MLOps API, would otherwise win). Add `--build-arg TORCH=cpu` for a CPU
    image. The images are about 8 GB (GPU) and 3.5 GB (CPU).
    ```bash
    docker build -f examples/mlops/sagemaker/Dockerfile -t kumo-engine-sagemaker <wheel dir>
@@ -87,7 +87,7 @@ with a `PipelineSchedule` trigger (`pipeline.put_triggers`).
   processing step); only MLflow's own settings are environment variables.
 - **MLflow.** `MLFLOW_TRACKING_URI` is the tracking server or MLflow App ARN.
   Managed MLflow servers run MLflow 3.0; the `mlflow` extra installs
-  mlflow-skinny 3.0.1 or later, which works against them, so do not pin the
+  mlflow-skinny 3.5 or later, which works against them, so do not pin the
   client to the server's version. Aliases are letters, digits and underscores, so
   SageMaker's reserved `SageMakerLifecycle-` aliases cannot be set. Model names
   are letters, digits and hyphens (no `_` or `.`), checked when `kumo.MLOps`

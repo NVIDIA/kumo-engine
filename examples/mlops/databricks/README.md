@@ -7,8 +7,8 @@ settings.
 
 - **`kumo_train`** runs `fit_job.py` on the `users`, `items` and `orders`
   tables (each prefixed with `table_prefix`) in `<catalog>.<schema>` inside
-  `kumo.mlops(...)` with the artifact root
-  `/Volumes/<catalog>/<schema>/<volume>/kumo`: the snapshot, training table
+  `kumo.mlops(...)` with the artifact root `artifact_root` (default
+  `/Volumes/<catalog>/<schema>/<volume>/kumo`): the snapshot, training table
   and model are stored under it. `--registry mlflow` logs the fit to
   `MLFLOW_EXPERIMENT_NAME`, registers the model as a new version of
   `<catalog>.<schema>.<model_name>` (default `users_churn`) and moves the
@@ -41,10 +41,11 @@ settings.
      older than kumo-core needs, pip replaces torch and breaks the
      preinstalled torchvision.
 2. Replace the `<...>` placeholders in `databricks.yml` (or pass
-   `--var catalog=...`). `model_name`, `predictions_table`, `table_prefix`,
-   `experiment` and `on_error` have defaults; set them to run beside existing
+   `--var catalog=...`). `artifact_root`, `model_name`, `predictions_table`,
+   `table_prefix`, `experiment` and `on_error` have defaults; set them to run beside existing
    objects in the same schema. The parent folder of the MLflow experiment
-   path must already exist in the workspace.
+   path must already exist in the workspace (building `kumo.MLOps` creates the
+   experiment and says so if it cannot).
 3. Adjust the `dev` target (workspace `root_path`, under your user folder by
    default) or add your own, then
    `databricks bundle validate` and `databricks bundle deploy -t <target>`. The bundle syncs this
