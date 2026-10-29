@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from numbers import Real
 from typing import Any, Iterable, Mapping
 
 from kumoapi.encoder import (
@@ -130,22 +131,50 @@ def supports_encoder(dtype: Dtype, encoder: Encoder) -> bool:
     return type(encoder) in supported_encoder_types(dtype) + [Null, Index]
 
 
-def _stat(
+def _stats_error(
     stats: _EncoderStats,
-    stat_type: ColStatType,
+    stat_types: Iterable[ColStatType],
     *,
     exact: bool,
-) -> _EncoderStat:
-    stat = stats.get(stat_type)
-    if stat is None:
-        raise ValueError(
-            f"Column Stat {stat_type} is required for encoder inferral but "
-            "was not provided.")
-    if exact and stat.approx:
-        raise ValueError(
-            f"The provided Column Stat {stat_type} must be exact for proper "
-            "encoder inferral but was passed in as approx")
-    return stat
+) -> str | None:
+    for stat_type in stat_types:
+        stat = stats.get(stat_type)
+        if stat is None:
+            return (f"Column Stat {stat_type} is required for encoder inferral "
+                    "but was not provided.")
+        if exact and stat.approx:
+            return (f"The provided Column Stat {stat_type} must be exact for "
+                    "proper encoder inferral but was passed in as approx")
+    return None
+
+
+def _required_stats(
+    column_name: str,
+    stats: _EncoderStats,
+    stat_types: tuple[ColStatType, ...],
+    *,
+    exact: bool = False,
+) -> list[_EncoderStat] | None:
+    reason = _stats_error(stats, stat_types, exact=exact)
+    if reason is not None:
+        logger.warning("%r will not be encoded: %s Using Null encoder.",
+                       column_name, reason)
+        return None
+    for stat_type in stat_types:
+        value = stats[stat_type].value
+        if stat_type in (
+                ColStatType.COUNT,
+                ColStatType.NUM_NA,
+                ColStatType.NUM_UNIQUE,
+                ColStatType.NUM_UNIQUE_MULTI,
+        ) and (not isinstance(value, Real) or not _is_finite(value)
+               or value < 0):
+            logger.warning(
+                "%r will not be encoded: Column Stat %s must be a finite "
+                "nonnegative count (got %r). Using Null encoder.",
+                column_name, stat_type, value)
+            return None
+    return [stats[stat_type] for stat_type in stat_types]
 
 
 def _is_finite(value: Any) -> bool:
@@ -163,11 +192,15 @@ def select_encoder(
     stype: Stype,
     stats: _EncoderStats,
 ) -> EncoderType:
-    na_fraction = _stat(stats, ColStatType.NA_FRACTION, exact=False).value
+    """Select a feature encoder, warning and returning Null for unusable stats."""
+    required = _required_stats(column_name, stats, (ColStatType.NA_FRACTION,))
+    if required is None:
+        return Null()
+    na_fraction = required[0].value
     if na_fraction is not None and na_fraction > 1.0 - 1e-6:
         return Null()
     if stype == Stype.numerical:
-        return select_numerical_encoder(stats)
+        return select_numerical_encoder(stats, column_name=column_name)
     if stype == Stype.categorical:
         return select_categorical_encoder(column_name, dtype, stats)
     if stype == Stype.multicategorical:
@@ -179,10 +212,12 @@ def select_encoder(
     if stype == Stype.timestamp:
         return Datetime()
     if stype == Stype.sequence:
-        return select_sequence_encoder(dtype, stats)
+        return select_sequence_encoder(dtype, stats, column_name=column_name)
     if stype == Stype.image:
         return Image()
-    raise NotImplementedError
+    logger.warning("%r will not be encoded: no feature encoder for stype %r.",
+                   column_name, stype)
+    return Null()
 
 
 def select_target_encoder(stype: Stype, stats: _EncoderStats) -> EncoderType:
@@ -191,22 +226,36 @@ def select_target_encoder(stype: Stype, stats: _EncoderStats) -> EncoderType:
     if stype == Stype.multicategorical:
         return MultiCategorical()
     if stype == Stype.numerical:
-        return select_numerical_encoder(stats)
+        reason = _stats_error(stats, _NUMERICAL_STATS, exact=False)
+        if reason is not None:
+            raise ValueError(reason)
+        return _numerical_encoder([stats[k].value for k in _NUMERICAL_STATS])
     raise ValueError(f"no TARGET encoder for stype {stype!r}")
 
 
-def select_numerical_encoder(stats: _EncoderStats) -> EncoderType:
-    values = [
-        _stat(stats, stat_type, exact=False).value for stat_type in (
-            ColStatType.MEAN,
-            ColStatType.MEDIAN,
-            ColStatType.STD,
-            ColStatType.MIN,
-            ColStatType.MAX,
-            ColStatType.KURTOSIS,
-            ColStatType.QUANTILES,
-        )
-    ]
+_NUMERICAL_STATS = (
+    ColStatType.MEAN,
+    ColStatType.MEDIAN,
+    ColStatType.STD,
+    ColStatType.MIN,
+    ColStatType.MAX,
+    ColStatType.KURTOSIS,
+    ColStatType.QUANTILES,
+)
+
+
+def select_numerical_encoder(
+    stats: _EncoderStats,
+    *,
+    column_name: str,
+) -> EncoderType:
+    required = _required_stats(column_name, stats, _NUMERICAL_STATS)
+    if required is None:
+        return Null()
+    return _numerical_encoder([stat.value for stat in required])
+
+
+def _numerical_encoder(values: list[Any]) -> EncoderType:
     mean, median, std, minimum, maximum, kurtosis, quantiles = values
     if not all(_is_finite(value) for value in (mean, median, minimum, maximum)):
         return Numerical()
@@ -240,9 +289,21 @@ def select_categorical_encoder(
 ) -> EncoderType:
     if dtype.is_bool():
         return Index()
-    count = _stat(stats, ColStatType.COUNT, exact=True).value
-    num_na = _stat(stats, ColStatType.NUM_NA, exact=True).value
+    required = _required_stats(column_name, stats, (
+        ColStatType.COUNT,
+        ColStatType.NUM_NA,
+        ColStatType.NUM_UNIQUE,
+        ColStatType.CATEGORY_COUNTS,
+    ), exact=True)
+    if required is None:
+        return Null()
+    count, num_na, num_unique, category_counts = [s.value for s in required]
     non_na = count - num_na
+    if non_na < 0:
+        logger.warning(
+            "%r will not be encoded: NUM_NA (%s) exceeds COUNT (%s). "
+            "Using Null encoder.", column_name, num_na, count)
+        return Null()
     if non_na == 0:
         logger.warning(
             "%r will not be encoded because it only contains N/A values",
@@ -253,10 +314,7 @@ def select_categorical_encoder(
     unique_fraction_threshold = CATEGORY_UNIQUE_THRESHOLD_MULTIPLIER * (
         1 / math.sqrt(non_na))
     unique_threshold = int(non_na * unique_fraction_threshold)
-    num_unique = _stat(stats, ColStatType.NUM_UNIQUE, exact=True).value
     min_occ = max(int(math.sqrt(num_unique)), 2)
-    category_counts = _stat(stats, ColStatType.CATEGORY_COUNTS,
-                            exact=True).value
     retained = sum(1 for _, occurrences in category_counts
                    if occurrences > min_occ)
     supported = supported_encoder_types(dtype)
@@ -283,7 +341,11 @@ def select_multicategorical_encoder(
     column_name: str,
     stats: _EncoderStats,
 ) -> EncoderType:
-    num_unique = _stat(stats, ColStatType.NUM_UNIQUE_MULTI, exact=False).value
+    required = _required_stats(column_name, stats,
+                               (ColStatType.NUM_UNIQUE_MULTI,))
+    if required is None:
+        return Null()
+    num_unique = required[0].value
     if num_unique <= MAX_MULTI_LABEL_CATEGORIES:
         return MultiCategorical()
     logger.warning(
@@ -301,14 +363,19 @@ def select_id_encoder(
     dtype: Dtype,
     stats: _EncoderStats,
 ) -> EncoderType:
-    num_unique = _stat(stats, ColStatType.NUM_UNIQUE, exact=False)
+    required = _required_stats(column_name, stats, (ColStatType.NUM_UNIQUE,))
+    if required is None:
+        return Null()
+    num_unique = required[0]
     if num_unique.value <= MAX_CATEGORIES:
         return select_categorical_encoder(column_name, dtype, stats)
     num_entries = num_unique.num_entries
     if num_entries is None:
-        raise ValueError(
-            f"Column Stat {ColStatType.NUM_UNIQUE} for {column_name!r} must "
-            "carry num_entries for ID encoder inferral.")
+        logger.warning(
+            "%r will not be encoded: Column Stat %s must carry num_entries "
+            "for ID encoder inferral. Using Null encoder.",
+            column_name, ColStatType.NUM_UNIQUE)
+        return Null()
     if (not is_mostly_unique_id(num_unique.value, num_entries)
             and Hash in supported_encoder_types(dtype)):
         if num_unique.value <= 4_000:
@@ -341,27 +408,35 @@ def select_text_encoder(
     column_name: str,
     stats: _EncoderStats,
 ) -> EncoderType:
-    try:
-        coverage, average, maximum, non_char = [
-            _stat(stats, stat_type, exact=False).value for stat_type in (
-                ColStatType.STRING_GLOVE_OVERLAP,
-                ColStatType.STRING_AVG_TOKENS,
-                ColStatType.STRING_MAX_TOKENS,
-                ColStatType.STRING_AVG_NON_CHAR,
-            )
-        ]
-    except ValueError as exc:
-        logger.warning(
-            "Unable to get text stats for column %s due to error %s. Using "
-            "Null encoder.",
-            column_name,
-            exc,
-        )
+    required = _required_stats(column_name, stats, (
+        ColStatType.STRING_GLOVE_OVERLAP,
+        ColStatType.STRING_AVG_TOKENS,
+        ColStatType.STRING_MAX_TOKENS,
+        ColStatType.STRING_AVG_NON_CHAR,
+    ))
+    if required is None:
         return Null()
+    coverage, average, maximum, non_char = [s.value for s in required]
     if (coverage >= GLOVE_COVERAGE_THRESHOLD and non_char <= NON_CHAR_THRESHOLD
             and average > AVG_TOKENS_THRESHOLD and maximum > 2 * average):
         logger.debug("%r will be encoded with TextEmbedding", column_name)
         return TextEmbedding()
+    num_unique = stats.get(ColStatType.NUM_UNIQUE)
+    if (num_unique is not None and num_unique.value is not None
+            and num_unique.value > MAX_CATEGORIES):
+        logger.warning(
+            "Text column %r will not be encoded by default: it has %s%s "
+            "distinct values, exceeding MAX_CATEGORIES=%s, and its values "
+            "are too short or have too few known words. To encode it as "
+            "categorical data, use Hash() or Index() via "
+            "model_plan.column_processing.encoder_overrides[%r].",
+            column_name,
+            "approximately " if num_unique.approx else "",
+            num_unique.value,
+            MAX_CATEGORIES,
+            column_name,
+        )
+        return Null()
     logger.warning(
         "Text column %r will not be encoded by default: its values are too "
         "short or have too few known words. To encode it anyway, set its "
@@ -374,12 +449,17 @@ def select_text_encoder(
 def select_sequence_encoder(
     dtype: Dtype,
     stats: _EncoderStats,
+    *,
+    column_name: str,
 ) -> EncoderType:
     if dtype.is_list() or dtype.is_string():
-        minimum = _stat(stats, ColStatType.SEQUENCE_MIN_LENGTH,
-                        exact=False).value
-        maximum = _stat(stats, ColStatType.SEQUENCE_MAX_LENGTH,
-                        exact=False).value
+        required = _required_stats(column_name, stats, (
+            ColStatType.SEQUENCE_MIN_LENGTH,
+            ColStatType.SEQUENCE_MAX_LENGTH,
+        ))
+        if required is None:
+            return Null()
+        minimum, maximum = [s.value for s in required]
         if minimum == maximum and minimum > 0:
             return NumericalList()
     return Null()

@@ -242,8 +242,18 @@ class _FileSinkBackend(ObjectStoreSinkBackend):
 class FileConnector(Connector):
     """Read local CSV/Parquet tables and write local artifacts.
 
-    See the package README's "Local files" section for usage, path and
-    scratch constraints, source versioning, and artifact limitations.
+    For usage and path rules, see
+    https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/connect-your-data-linux.
+
+    Source versions use paths, sizes and modification times, not content
+    hashes: keep sources unchanged during reads, and do not restore
+    timestamps after edits. Source identities use canonical paths and are
+    not portable across machines.
+
+    Write artifacts to a separate root. Single-file outputs overwrite,
+    partitioned outputs need an empty directory, and append is unsupported.
+    Model publication copies a bundle to an empty destination and rejects
+    symlinks and overlap.
     """
     def __init__(self, *, root_dir: str):
         super().__init__()

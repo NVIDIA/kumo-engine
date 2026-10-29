@@ -36,5 +36,5 @@ guides for their interfaces and development workflows.
 | Shared execution runtime | [kumo-core](../packages/kumo-core/README.md) |
 | Query language | [kumo-pql](../packages/kumo-pql/README.md) and [existing instructions](../packages/kumo-pql/AGENTS.md) |
 | UI component library | [catalog](../packages/kumo-ui-catalog/README.md) and [existing component guide](../packages/kumo-ui-catalog/CLAUDE.md) |
-| Native graph engine | [DiskGraph](../packages/diskgraph/README.md); preserve its [source mirror](development/generated-artifacts.md#diskgraph-source-mirror) |
+| Native graph engine | [DiskGraph](../packages/diskgraph/README.md); maintained directly in this repository |
 | Source providers | [S3](../packages/kumo-s3/README.md), [GCS](../packages/kumo-gcs/README.md), [BigQuery](../packages/kumo-bigquery/README.md), [Databricks](../packages/kumo-databricks/README.md), [Snowflake](../packages/kumo-snowflake/README.md) |

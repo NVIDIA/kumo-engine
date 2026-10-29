@@ -37,7 +37,7 @@ Inspect a table through `.definition` (`.pkey`, `.time_col`, `.end_time_col`) an
 
 ### Symptom: `connector.table("X")` raises `ValueError`
 **Cause:** The table name does not exist in the connector.
-**Fix:** List what is actually there before constructing tables: `connector.table_names()`, or guard with `connector.has_table(name)`. Snowflake object names are typically uppercase (`connector.table("ORDERS")`).
+**Fix:** List what is actually there before constructing tables: `connector.table_names()`, or guard with `connector.has_table(name)`. Snowflake object names, for example, are typically uppercase (`connector.table("ORDERS")`).
 
 ### Symptom: a column's `stype` is unset, or the query fails because a column has no semantic type
 **Cause:** `Table.from_source_table()` and the explicit `Table(...)` constructor do **not** fully populate `dtype`/`stype`. A partially specified table is legal until it is used in a predictive query.

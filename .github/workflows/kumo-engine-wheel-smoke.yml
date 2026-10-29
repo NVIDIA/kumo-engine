@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   smoke:
-    runs-on: ${{ vars.KUMO_ENGINE_PR_GPU_RUNNER || 'linux-amd64-gpu-t4-latest-1' }}
+    runs-on: linux-amd64-gpu-t4-latest-1
     timeout-minutes: 22
     environment:
       name: gha-kumo-workflow-tests

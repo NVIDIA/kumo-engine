@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo Engine PR
+
+# NVIDIA admits GPU work through the existing trusted copied-PR branches.
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: ["pull-request/[0-9]+"]
+    paths-ignore: ["docs/**", "**/*.md"]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request whose current head is tested
+        required: true
+        type: string
+      qualify:
+        description: Measure GPU prediction variation without qualifying a pass
+        type: boolean
+        default: false
+      repetitions:
+        description: Complete eight-task repetitions for qualification
+        type: choice
+        options: ["1", "3"]
+        default: "1"
+
+permissions:
+  contents: read
+  pull-requests: read
+  id-token: write
+
+concurrency:
+  group: engine-pr-${{ github.ref }}-${{ inputs.qualify && 'qualification' || 'check' }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  gpu:
+    name: ${{ inputs.qualify && 'Engine GPU qualification' || 'kumo-engine-pr-ci' }}
+    runs-on: linux-amd64-gpu-t4-latest-1
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    timeout-minutes: ${{ inputs.qualify && 50 || 22 }}
+    env:
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require the current candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PR: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          pr="${INPUT_PR:-${GITHUB_REF_NAME#pull-request/}}"
+          [[ "$pr" =~ ^[1-9][0-9]*$ ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .head.sha)" = "$GITHUB_SHA"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: packages/diskgraph
+          prefix-key: engine-pr-zig-workspace-v2
+          key: py312-glibc234-${{ hashFiles('packages/diskgraph/**', 'packages/kumo-engine/scripts/build_wheel.sh') }}
+          cache-workspace-crates: true
+      - name: Build the candidate wheel
+        run: |
+          python -m pip --isolated install ziglang
+          packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/pr-wheel"
+      - uses: ./.github/actions/engine-gpu-smoke
+        with:
+          wheel-path: ${{ runner.temp }}/pr-wheel/*.whl
+          repetitions: ${{ inputs.qualify && inputs.repetitions || '1' }}
+          qualify: ${{ inputs.qualify || 'false' }}
+      - name: Retain the tested wheel and task results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: engine-pr-gpu-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/pr-wheel/*.whl
+            ${{ runner.temp }}/engine-gpu-smoke/summary.json
+            ${{ runner.temp }}/engine-gpu-smoke/wheel.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14

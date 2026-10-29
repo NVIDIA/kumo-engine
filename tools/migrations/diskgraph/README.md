@@ -1,39 +1,16 @@
-# DiskGraph source import
+# DiskGraph import provenance
 
-`packages/diskgraph` is the buildable mirror of `kumo-ai/kumo-diskgraph` at the
-revision recorded in `source_revision.txt`. The initial import rewrites that
-repository beneath `packages/diskgraph` and merges the rewritten ancestry into
-Kumo so the original file history remains reachable.
+This repository is the sole source of truth for DiskGraph. Make engine changes
+and add tests directly in `packages/diskgraph`; no upstream synchronization or
+mirror verification is required.
 
-The imported tree is byte-identical to the frozen source revision. Run the
-verification from a checkout that can read the source repository:
+`source_revision.txt` and `generated/source_manifest.json` record the historical
+import from `kumo-ai/kumo-diskgraph`. They are retained for provenance and do
+not describe the current tree or need updating when DiskGraph changes. The
+imported ancestry remains reachable in Git history.
 
-```bash
-python tools/migrations/diskgraph/verify_import.py \
-  --source-repo /path/to/kumo-diskgraph
-```
-
-CI verifies the committed mirror against the manifest without requiring
-cross-repository credentials:
-
-```bash
-python tools/migrations/diskgraph/verify_import.py
-```
-
-The generated manifest records every source path, destination path, mode, and
-blob identifier. Subsequent synchronization is one-way from
-`kumo-diskgraph/main`; Kumo builds the native wheel from the mirrored source.
-Monorepo build integration lives outside the mirrored directory.
-
-Do not edit `packages/diskgraph` in Kumo pull requests. Merge the change into
-`kumo-diskgraph/main`; its dispatch workflow opens or updates the mechanical
-Kumo synchronization pull request and credits the upstream authors. That pull
-request also regenerates the
-[third-party notices](../../../3rdparty/README.md).
-
-The mirrored tree retains DiskGraph's formatting and lint policy. Kumo's
-repository-wide format, lint, and type checks exclude only
-`packages/diskgraph`; Kumo integration code remains covered by those checks.
-
-The history-bearing import pull request must be merge-committed. Squashing or
-rebasing it would discard the imported ancestry.
+DiskGraph retains its package-local formatting and lint policy. Repository-wide
+Python format, lint, and type checks continue to exclude `packages/diskgraph`;
+Kumo integration code remains covered by those checks. Follow the package's
+build and test instructions and regenerate affected
+[third-party notices](../../../3rdparty/README.md) after dependency changes.

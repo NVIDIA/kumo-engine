@@ -192,9 +192,7 @@ PRIVATE_GITHUB_ALLOWLIST = {
 # These dependencies must be published, vendored, or replaced before release.
 # The normal CI check permits only these existing path/repository counts, while
 # --strict reports every occurrence so the remaining work stays visible.
-KNOWN_PRIVATE_GITHUB_DEPENDENCIES = {
-    (".github/workflows/sync-diskgraph.yml", "kumo-diskgraph"): 1,
-}
+KNOWN_PRIVATE_GITHUB_DEPENDENCIES: dict[tuple[str, str], int] = {}
 
 SKIPPED_PATHS = {
     "THIRD-PARTY.txt",
@@ -206,8 +204,7 @@ SKIPPED_SUFFIXES = (
     ".min.js",
     ".map",
 )
-# DiskGraph is mirrored from its own repository, which is the source of truth
-# for these files. Fixes are made there and arrive through synchronization.
+# Imported DiskGraph content retains its existing public-reference exclusion.
 SKIPPED_PREFIXES = ("packages/diskgraph/", )
 
 

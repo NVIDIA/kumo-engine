@@ -86,6 +86,71 @@ def suppress_batch_indices_warning() -> Iterator[None]:
         yield
 
 
+@contextmanager
+def suppress_explain_workers_warning() -> Iterator[None]:
+    r"""Silences Lightning's "does not have many workers" hint for the
+    duration of an explanation pass.
+
+    Explanation passes load data without worker processes: while capturing a
+    stage's explanation inputs, the data module records each batch's input
+    nodes on itself (see ``_make_dataloader``), and ``explain_dataloader``
+    replays only the selected seed nodes. The hint suggests raising
+    ``num_workers``, which is neither possible nor useful here.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message=r"The '\w+' does not have many workers",
+            category=UserWarning,
+        )
+        yield
+
+
+@contextmanager
+def suppress_checkpoint_callback_state_warnings() -> Iterator[None]:
+    r"""Silences Lightning's warnings about training-callback state that a
+    ``predict()`` call restoring ``ckpt_path`` cannot reload.
+
+    The checkpoint carries the state of training callbacks such as early
+    stopping and model checkpointing, and a published bundle no longer lives
+    in the directory it was trained in. Prediction neither stops early nor
+    saves checkpoints, so this state does not affect the result.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message=r'Be aware that when using `ckpt_path`, callbacks used '
+            r'to create the checkpoint',
+            category=UserWarning,
+        )
+        warnings.filterwarnings(
+            'ignore',
+            message=r'The dirpath has changed from',
+            category=UserWarning,
+        )
+        yield
+
+
+@contextmanager
+def suppress_lightning_leafspec_warning() -> Iterator[None]:
+    r"""Silences torch's ``LeafSpec`` deprecation warning for the duration of
+    a Lightning ``fit``/``validate``/``test``/``predict`` call.
+
+    From torch 2.10, constructing ``torch.utils._pytree.LeafSpec`` raises a
+    ``FutureWarning``. Lightning's ``CombinedLoader`` flattens dataloaders with
+    its own ``tree_flatten`` copy (``pytorch_lightning/utilities/_pytree.py``),
+    which still constructs one in every release, including 2.6.6; upstream
+    treats the warning as harmless. Kumo cannot act on it.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message=r'`isinstance\(treespec, LeafSpec\)` is deprecated',
+            category=FutureWarning,
+        )
+        yield
+
+
 _WORKER_COOPERATIVE_GRACE_SECONDS = 5.0
 _WORKER_TERM_GRACE_SECONDS = 5.0
 _WORKER_SHUTDOWN_DEADLINE_SECONDS = 90.0
@@ -1252,10 +1317,13 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         stage_batch_targets: Mapping[str, int] | None = None,
         stage_num_seeds: Mapping[str, int] | None = None,
         stage_runtime_options: Mapping[str, Mapping[str, Any]] | None = None,
+        projections: Mapping[str, list[str]] | None = None,
     ) -> None:
         self.manifest_path = manifest_path
         self.stages = (stage, ) if isinstance(stage, str) else tuple(stage)
         self.sampling_plan = sampling_plan
+        # Absent types select all columns; [] skips a type's feature decoding.
+        self.projections = dict(projections) if projections else None
         self.batch_size = int(batch_size)
         self.shuffle = bool(shuffle)
         self.drop_last = bool(drop_last)
@@ -1477,18 +1545,19 @@ class DiskgraphTaskBatchIterable(IterableDataset):
             stage_worker_id: int | None = None,
         ):
             stage_options = self.stage_runtime_options.get(stage, {})
+            options = {**iter_options, **stage_options}
             iterator, num_samples = index.iter(
                 stage=stage,
                 sampling_plan=self.sampling_plan,
+                projections=({} if options.get("fused") is True else self.projections),
                 num_workers=(stage_num_workers or num_workers),
-                worker_id=(worker_id
-                           if stage_worker_id is None else stage_worker_id),
+                worker_id=(worker_id if stage_worker_id is None else stage_worker_id),
                 shuffle=self.shuffle,
                 epoch=base_epoch + epoch_offset,
                 batch_size=self.batch_size,
                 drop_last=self.drop_last,
                 group_by_timestamp=self.group_by_timestamp,
-                **{**iter_options, **stage_options},
+                **options,
             )
             return iterator, int(num_samples)
 
@@ -2121,6 +2190,8 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             manifest_path=self.task_manifest.runtime_manifest_path,
             stage=rhs_open_stage,
             sampling_plan=self.sampling_plan,
+            # NodeRange RHS collates through ``_to_hetero`` (attach_pkeys=True).
+            projections=self._feature_projection(attach_pkeys=True),
             batch_size=batch_size,
             shuffle=False,
             drop_last=False,
@@ -2346,6 +2417,9 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             manifest_path=self.task_manifest.runtime_manifest_path,
             stage=stages,
             sampling_plan=self.sampling_plan,
+            # Train collates through ``_to_hetero_train`` (attach_pkeys=False);
+            # eval/test/predict through ``_to_hetero`` (attach_pkeys=True).
+            projections=self._feature_projection(attach_pkeys=not is_train),
             batch_size=batch_size,
             shuffle=(is_train and self.shuffle_train),
             drop_last=(is_train and self.drop_last_train),
@@ -2360,9 +2434,11 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             dataloader_num_workers=loader_num_workers,
             group_by_timestamp=group_by_timestamp,
             min_steps_per_epoch=self.min_steps_per_epoch,
-            max_steps_per_epoch=(self.max_steps_per_epoch
-                                 if self.max_steps_per_epoch is not None else
-                                 None),
+            max_steps_per_epoch=(
+                self.max_steps_per_epoch
+                if self.max_steps_per_epoch is not None
+                else None
+            ),
             stage_batch_targets=stage_batch_targets,
             stage_num_seeds=stage_num_seeds,
             stage_runtime_options=stage_runtime_options,
@@ -2597,6 +2673,54 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             self._pk_col_dict, self._time_col_dict = (
                 self._load_index_pk_and_time_cols())
         return self._time_col_dict
+
+    def _feature_projection(self, *, attach_pkeys: bool) -> dict[str, list[str]]:
+        """Select encoder inputs, node times, and optional primary keys.
+
+        Args:
+            attach_pkeys: Include primary keys for evaluation and prediction.
+
+        Returns:
+            Columns by real index node type. An empty list skips feature decoding
+            while preserving topology. Unknown index metadata leaves types
+            unfiltered. Time columns from both metadata sources are retained.
+        """
+        nodes_meta = (self._feature_schema or {}).get("node_types") or {}
+        if not isinstance(nodes_meta, Mapping) or not nodes_meta:
+            return {}
+        index_node_types = {
+            str(entry["name"])
+            for entry in self._load_index_node_types()
+            if isinstance(entry, Mapping) and entry.get("name")
+        }
+        pk_col_dict = self.pk_col_dict
+        time_col_dict = self.time_col_dict
+        mapper_bank = self.mapper_bank or {}
+        projection: dict[str, list[str]] = {}
+        for namespace, meta in nodes_meta.items():
+            if not isinstance(meta, Mapping):
+                continue
+            # Forecasting adds a synthetic train_table schema entry that is not
+            # an index node type. Index metadata lists the actual node types,
+            # so membership excludes requests the engine cannot match. An empty
+            # set means metadata is unavailable; keep requests unfiltered then
+            # because omitting a real type would make the engine decode it all.
+            if index_node_types and namespace not in index_node_types:
+                continue
+            mapper_key = meta.get("mapper_key")
+            mappers = mapper_bank.get(mapper_key, {}) if mapper_key is not None else {}
+            needed = dict.fromkeys(mappers)
+            extra_columns = [
+                time_col_dict.get(namespace),
+                meta.get("time_column"),
+            ]
+            if attach_pkeys:
+                extra_columns.append(pk_col_dict.get(namespace))
+            for column in extra_columns:
+                if isinstance(column, str) and column:
+                    needed[column] = None
+            projection[namespace] = list(needed)
+        return projection
 
     @property
     def index_np_time_unit(self) -> str:
@@ -2867,6 +2991,8 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             manifest_path=self.task_manifest.runtime_manifest_path,
             stage=runtime_stage,
             sampling_plan=self.sampling_plan,
+            # Selected replay collates through ``_to_hetero`` (attach_pkeys=True).
+            projections=self._feature_projection(attach_pkeys=True),
             batch_size=batch_size,
             shuffle=False,
             drop_last=False,

@@ -5,6 +5,7 @@
 """Build the kumo-data-science skill package for one host and check that it resolves.
 
     python3 agent-skills/scripts/package_skill.py coco             # build into agent-skills/dist/
+    python3 agent-skills/scripts/package_skill.py generic          # Claude Code, Codex, other agents
     python3 agent-skills/scripts/package_skill.py coco --out DIR   # build somewhere else
     python3 agent-skills/scripts/package_skill.py --check          # build every host in a temp dir
 
@@ -49,6 +50,11 @@ HOSTS: dict[str, dict] = {
                  hosts=['snowflake-coco/adapter.md', 'snowflake-coco/runtime.md',
                         'snowflake-coco/ml_job.md'],
                  capability=True),
+    # A coding agent outside any data platform. The package root holds the one skill directory,
+    # ready to copy into the agent's skills directory.
+    'generic': dict(prefix='skills',
+                    hosts=['generic/adapter.md', 'generic/runtime.md'],
+                    capability=True),
 }
 
 MARKER = re.compile(r'SKILL-BUILD: [^`*\s]+')

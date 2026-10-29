@@ -103,6 +103,12 @@ class BaseColumn(CastMixin, ConfigMixin, ConnectorMixin, TableMixin):
         return self._name
 
     @property
+    def qualified_name(self) -> str:
+        """Return the column name qualified by its table when available."""
+        return (f"{get_table_name(self.table_name)}.{self.name}"
+                if self.has_table else self.name)
+
+    @property
     def pandas(self):
         r"""Returns a :class:`pandas` view to access the data of the underlying
         :obj:`data_source`:
@@ -646,9 +652,12 @@ class EncoderGenerator:
         cls,
         col: Column,
         stats: Dict[ColStatType, Stats],
+        *,
+        table_name: str | None = None,
     ) -> Encoder:
         return encoder_selection.select_encoder(
-            col.name,
+            (f"{table_name}.{col.name}"
+             if table_name is not None else col.qualified_name),
             col.dtype,
             col.stype,
             cls._shared_stats(stats),
@@ -661,7 +670,7 @@ class EncoderGenerator:
         stats: Dict[ColStatType, Stats],
     ) -> Encoder:
         return encoder_selection.select_numerical_encoder(
-            cls._shared_stats(stats))
+            cls._shared_stats(stats), column_name=col.qualified_name)
 
     @classmethod
     def get_categorical_encoder(
@@ -670,7 +679,7 @@ class EncoderGenerator:
         stats: Dict[ColStatType, Stats],
     ) -> Encoder:
         return encoder_selection.select_categorical_encoder(
-            col.name,
+            col.qualified_name,
             col.dtype,
             cls._shared_stats(stats),
         )
@@ -682,7 +691,7 @@ class EncoderGenerator:
         stats: Dict[ColStatType, Stats],
     ) -> Encoder:
         return encoder_selection.select_multicategorical_encoder(
-            col.name,
+            col.qualified_name,
             cls._shared_stats(stats),
         )
 
@@ -693,7 +702,7 @@ class EncoderGenerator:
         stats: Dict[ColStatType, Stats],
     ) -> Encoder:
         return encoder_selection.select_id_encoder(
-            col.name,
+            col.qualified_name,
             col.dtype,
             cls._shared_stats(stats),
         )
@@ -712,7 +721,7 @@ class EncoderGenerator:
         stats: Dict[ColStatType, Stats],
     ) -> Encoder:
         return encoder_selection.select_text_encoder(
-            col.name,
+            col.qualified_name,
             cls._shared_stats(stats),
         )
 
@@ -733,6 +742,7 @@ class EncoderGenerator:
         return encoder_selection.select_sequence_encoder(
             col.dtype,
             cls._shared_stats(stats),
+            column_name=col.qualified_name,
         )
 
     @classmethod
