@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import runpy
+import shutil
 import sys
 import tempfile
 import unittest
@@ -108,6 +109,47 @@ class NightlyCompareTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify({}, {}, {})
 
+    def test_fixed_recipe_requires_completed_epochs_or_recorded_early_stop(
+            self):
+        verify = self.function('verify_recipe_work')
+        plan = dict(optimization=dict(max_epochs=10, min_steps_per_epoch=20,
+                                      max_steps_per_epoch=20))
+        for batches, epoch, stopped in [(200, 10, False), (200, 10, True),
+                                        (80, 4, True)]:
+            verify(
+                dict(training_work=[
+                    dict(completed_batches=batches, current_epoch=epoch,
+                         early_stopped=stopped)
+                ]), plan)
+        for batches, epoch, stopped in [(199, 10, False), (79, 4, True),
+                                        (80, 4, False), (220, 11, True),
+                                        (20, True, True)]:
+            with self.subTest(batches=batches,
+                              epoch=epoch), self.assertRaises(ValueError):
+                verify(
+                    dict(training_work=[
+                        dict(completed_batches=batches, current_epoch=epoch,
+                             early_stopped=stopped)
+                    ]), plan)
+
+    def test_independent_cuda_ledger_must_match_reported_training_work(self):
+        verify = self.function('verify_fit_ledger')
+        report = dict(
+            physical_fits=1, runs=[
+                dict(training_work=[
+                    dict(optimizer_steps=200, completed_batches=200)
+                ])
+            ])
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            save(root / 'fits.json', [
+                dict(status='PASS', device='cuda:0', steps=199,
+                     cuda_batches=199)
+            ])
+            save(root / 'cuda-batches.json', dict(training=199, prediction=1))
+            with self.assertRaises(ValueError):
+                verify(root, report)
+
     def test_quality_drops_report_without_a_floor_or_gate(self):
         compare = self.function('quality_difference')
         self.assertEqual(
@@ -178,6 +220,403 @@ class NightlyCompareTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 verify(changed)
 
+    def source_bridge_case(self, root):
+        """Metadata-only source review; this fixture does not prove a repair."""
+        import wheel_gpu_learning as gpu
+
+        row, directory = self.multiclass_case(root)
+        helpers = root / 'producer/helpers'
+        helpers.mkdir(parents=True)
+        names = (*runpy.run_path(str(
+            MODULES / 'wheel_task_learning.py'))['SOURCES'],
+                 'wheel_gpu_learning.py', 'wheel_scale_data.py',
+                 'wheel_scale_learning.py', 'wheel_measurements.py')
+        for name in names:
+            shutil.copyfile(MODULES / name, helpers / name)
+        before = helpers / 'wheel_scale_data.py'
+        before.write_bytes(before.read_bytes() + b'\n# Frozen test producer.\n')
+        files = {'helpers/' + name: digest(helpers / name) for name in names}
+        save(root / 'producer/manifest.json', {'files': files})
+        producer = runpy.run_path(str(helpers / 'wheel_gpu_learning.py'))
+        report = json.loads((root / 'nightly-result.json').read_text())
+        report.update(
+            version='1.0.0', wheel_sha256=APPROVED_SHA,
+            gpu_source_sha256=producer['source_identity'](prepared=True),
+            profiles={'multiclass': {
+                'fixed': 1
+            }})
+        report['configuration'].update(
+            gpu='NVIDIA RTX PRO 6000 Blackwell Server Edition',
+            gpu_memory_bytes=96 * 1024**3, cuda='13.0', torch='2.14.1+cu130',
+            threads=4)
+        save(root / 'nightly-result.json', report)
+        old, new = digest(before), digest(MODULES / 'wheel_scale_data.py')
+        stages = {
+            stage: dict(
+                seeds=1, retained_positive_count=1, masked_retained_positives=0,
+                native_exclusion_count=0, visible_fact_count=1,
+                native_positives_sha256='1' * 64,
+                native_exclusions_sha256='2' * 64,
+                visible_fact_pk_sha256='3' * 64,
+                pseudo_options=dict(pseudo_seed_time=cutoff,
+                                    disable_pseudo_time=False))
+            for stage, cutoff in [('train', 1), ('val', 1), ('test', 2)]
+        }
+        detailed = dict(
+            status='PASS_TINY_PRODUCER_FREEZE_LOAD_NATIVE', helper_sha256=new,
+            producer_freeze_load_consumption=True,
+            old_v3_frozen_and_seals_unchanged=True,
+            new_v4_frozen_and_seals_unchanged=True, engine_fit_calls=0,
+            core_fit_calls=0, lightning_fit_calls=0, prediction_calls=0,
+            final_seal_unchanged=True, owner_source_unchanged=True,
+            producer_helpers_unchanged=True, arms={
+                arm: dict(consumption=stages,
+                          stage_sha256={stage: '4' * 64
+                                        for stage in stages})
+                for arm in ('normal', 'control0')
+            })
+        detailed['bridges'] = {
+            arm: dict(old_stage_sha256={stage: '4' * 64
+                                        for stage in stages},
+                      new_stage_sha256={stage: '4' * 64
+                                        for stage in stages},
+                      final_rows_sha256='5' * 64, final_rows_bytes_equal=True,
+                      identity_unchanged=True, requested_plan_unchanged=True)
+            for arm in ('normal', 'control0')
+        }
+        detailed['frozen_descriptors'] = {
+            arm: dict(files={'fact_pseudo_time.bin': '6' * 64})
+            for arm in ('normal', 'control0')
+        }
+        save(root / 'review/native-result.json', detailed)
+        source = {
+            'wheel_scale_data.py': dict(sha256=new, bytes=1),
+            'full_producer_probe.py': dict(sha256='e' * 64, bytes=1)
+        }
+        save(root / 'review/native-source.json', {'files': source})
+        files = {'source/' + name: {**value} for name, value in source.items()}
+        files['output/result.json'] = {
+            'sha256': digest(root / 'review/native-result.json'),
+            'bytes': (root / 'review/native-result.json').stat().st_size
+        }
+        save(root / 'review/native-files.json', {'files': files})
+        proof = dict(
+            format='nightly-static-v4-full-roundtrip-v1', status='PASS',
+            old_data_helper_sha256=old, new_data_helper_sha256=new,
+            full_roundtrip=True, old_v3_frozen_and_seals_unchanged=True,
+            model_fits=0, predictions=0,
+            detailed_result_sha256=digest(root / 'review/native-result.json'),
+            source_manifest_sha256=digest(root / 'review/native-source.json'),
+            file_manifest_sha256=digest(root / 'review/native-files.json'))
+        save(root / 'review/native.json', proof)
+        required = ('manifest.json', 'tt_ingest_spec.json', 'stats.json',
+                    'split_stats.json', 'train_table_col_stats.json',
+                    'tt.parquet/part-00000.parquet',
+                    'train_seeds/part-00000.parquet',
+                    'val_seeds/part-00000.parquet',
+                    'test_seeds/part-00000.parquet')
+        file_map = {name: 'a' * 64 for name in required}
+        tasks = ('binary', 'multiclass', 'multilabel', 'multilabel_ranking',
+                 'regression', 'forecasting')
+        proof = dict(
+            status='PASS_NONLINK_V3_EQUIVALENCE', before_helper_sha256=old,
+            after_helper_sha256=new, source_archive_sha256='c' * 64, cases=[
+                dict(task=task, condition=arm, descriptor_sha256='d' * 64,
+                     manifest_version=3,
+                     spec_schema='diskgraph.tt_ingest_spec.v3',
+                     before_checker_passed=True, after_checker_passed=True,
+                     before_files=file_map, after_files=file_map)
+                for task in tasks for arm in ('normal', 'seed-0')
+            ])
+        save(root / 'review/v3.json', proof)
+        review = dict(
+            kind='reviewed_static_carrier_reference_source_v1',
+            status='APPROVED_REFERENCE_ONLY', before_helper_sha256=old,
+            after_helper_sha256=new, proofs={
+                name: dict(path='review/' + name + '.json',
+                           sha256=digest(root / 'review' / (name + '.json')))
+                for name in ('native', 'v3')
+            })
+        review['proofs']['native'].update({
+            name:
+            dict(path='review/native-' + name + '.json',
+                 sha256=digest(root / 'review' / ('native-' + name + '.json')))
+            for name in ('result', 'source', 'files')
+        })
+        save(root / 'review/review.json', review)
+        bundle = (directory /
+                  'scratch/trainers/trainer/runs/learnable/published-model')
+        descriptor = dict(
+            path='nightly-result.json', reference_source_bridge=dict(
+                review='review/review.json',
+                producer_packet='producer/manifest.json',
+                producer_helpers='producer/helpers',
+                report_sha256=digest(root / 'nightly-result.json')), artifacts={
+                    'multiclass-0-learnable':
+                    dict(directory=directory.name,
+                         bundle=bundle.relative_to(root).as_posix())
+                })
+        self.assertNotEqual(report['gpu_source_sha256'],
+                            gpu.source_identity(prepared=True))
+        return report, descriptor
+
+    def test_reviewed_reference_keeps_actual_producer_source_and_raw_bytes(
+            self):
+        verify = self.function('validate_reference_report')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            report, descriptor = self.source_bridge_case(root)
+            original = (root / descriptor['path']).read_bytes()
+            with self.assertRaisesRegex(ValueError, 'source differs'):
+                self.function('validate_report')(report)
+            diagnostic = verify(root, descriptor, report)
+            self.assertEqual(diagnostic['producer_gpu_source_sha256'],
+                             report['gpu_source_sha256'])
+            self.assertNotEqual(diagnostic['validator_gpu_source_sha256'],
+                                report['gpu_source_sha256'])
+            self.assertEqual(diagnostic['new_fits'], 0)
+            self.assertEqual((root / descriptor['path']).read_bytes(), original)
+            self.assertEqual(json.loads(original), report)
+
+    def test_manual_canonical_builder_proof_cannot_approve_source_bridge(self):
+        verify = self.function('validate_reference_report')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            report, descriptor = self.source_bridge_case(root)
+            manual = dict(status='PASS_NATIVE_SEMANTIC_DIAGNOSTIC',
+                          engine_fit_calls=0, core_fit_calls=0,
+                          lightning_fit_calls=0, prediction_calls=0,
+                          final_seal_unchanged=True,
+                          owner_source_unchanged=True)
+            save(root / 'review/native.json', manual)
+            review = json.loads((root / 'review/review.json').read_text())
+            review['proofs']['native']['sha256'] = digest(root /
+                                                          'review/native.json')
+            save(root / 'review/review.json', review)
+            with self.assertRaises(ValueError):
+                verify(root, descriptor, report)
+
+    def test_full_helper_proof_binds_source_stages_and_zero_model_work(self):
+        verify = self.function('validate_reference_report')
+        for change in ('helper', 'fit', 'freeze', 'stage', 'cutoff', 'mask',
+                       'rows', 'plan', 'frozen_descriptor', 'result_binding',
+                       'source_binding', 'file_map'):
+            with self.subTest(
+                    change=change), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                report, descriptor = self.source_bridge_case(root)
+                review_path = root / 'review/review.json'
+                review = json.loads(review_path.read_text())
+                summary = json.loads((root / 'review/native.json').read_text())
+                entry = review['proofs']['native']
+                name = 'source' if change == 'source_binding' else (
+                    'files' if change == 'file_map' else 'result')
+                path = root / entry[name]['path']
+                proof = json.loads(path.read_text())
+                if change == 'source_binding':
+                    proof['files']['wheel_scale_data.py']['sha256'] = '0' * 64
+                elif change == 'file_map':
+                    proof['files']['output/result.json']['sha256'] = '0' * 64
+                elif change == 'helper':
+                    proof['helper_sha256'] = '0' * 64
+                elif change == 'fit':
+                    proof['core_fit_calls'] = 1
+                elif change == 'freeze':
+                    proof['new_v4_frozen_and_seals_unchanged'] = False
+                elif change == 'stage':
+                    del proof['arms']['control0']['consumption']['val']
+                elif change == 'cutoff':
+                    proof['arms']['normal']['consumption']['test'][
+                        'pseudo_options']['pseudo_seed_time'] = 3
+                elif change == 'mask':
+                    proof['arms']['normal']['consumption']['val'][
+                        'masked_retained_positives'] = 1
+                elif change == 'rows':
+                    proof['bridges']['normal']['new_stage_sha256'][
+                        'train'] = '7' * 64
+                elif change == 'plan':
+                    proof['bridges']['control0'][
+                        'requested_plan_unchanged'] = False
+                elif change == 'frozen_descriptor':
+                    del proof['frozen_descriptors']['control0']
+                else:
+                    summary['detailed_result_sha256'] = '0' * 64
+                save(path, proof)
+                if change != 'result_binding':
+                    entry[name]['sha256'] = digest(path)
+                    field = {
+                        'result': 'detailed_result_sha256',
+                        'source': 'source_manifest_sha256',
+                        'files': 'file_manifest_sha256'
+                    }[name]
+                    summary[field] = digest(path)
+                    if name == 'result':
+                        files_path = root / 'review/native-files.json'
+                        files = json.loads(files_path.read_text())
+                        files['files']['output/result.json']['sha256'] = digest(
+                            path)
+                        files['files']['output/result.json'][
+                            'bytes'] = path.stat().st_size
+                        save(files_path, files)
+                        entry['files']['sha256'] = digest(files_path)
+                        summary['file_manifest_sha256'] = digest(files_path)
+                save(root / 'review/native.json', summary)
+                entry['sha256'] = digest(root / 'review/native.json')
+                save(review_path, review)
+                with self.assertRaises(ValueError):
+                    verify(root, descriptor, report)
+
+    def test_reference_bridge_rejects_unreviewed_or_changed_evidence(self):
+        verify = self.function('validate_reference_report')
+        for change in ('after', 'before', 'missing_proof', 'failed_proof',
+                       'v3_roster', 'v3_files', 'v3_archive', 'v3_descriptor',
+                       'v3_missing_stage', 'producer', 'metric', 'report',
+                       'link', 'failed', 'seed'):
+            with self.subTest(
+                    change=change), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                report, descriptor = self.source_bridge_case(root)
+                review = json.loads((root / 'review/review.json').read_text())
+                if change in ('after', 'before'):
+                    review[change + '_helper_sha256'] = '0' * 64
+                elif change == 'missing_proof':
+                    (root / 'review/native.json').unlink()
+                elif change.startswith('v3_') or change == 'failed_proof':
+                    name = 'native' if change == 'failed_proof' else 'v3'
+                    proof = json.loads(
+                        (root / 'review' / (name + '.json')).read_text())
+                    if change == 'failed_proof':
+                        proof['status'] = 'FAIL'
+                    elif change == 'v3_roster':
+                        proof['cases'].pop()
+                    elif change == 'v3_archive':
+                        del proof['source_archive_sha256']
+                    elif change == 'v3_descriptor':
+                        del proof['cases'][0]['descriptor_sha256']
+                    elif change == 'v3_missing_stage':
+                        for field in ('before_files', 'after_files'):
+                            del proof['cases'][0][field][
+                                'test_seeds/part-00000.parquet']
+                    else:
+                        proof['cases'][0]['after_files'][
+                            'stats.json'] = 'b' * 64
+                    save(root / 'review' / (name + '.json'), proof)
+                    review['proofs'][name]['sha256'] = digest(root / 'review' /
+                                                              (name + '.json'))
+                elif change in ('producer', 'metric'):
+                    name = ('wheel_scale_data.py' if change == 'producer' else
+                            'wheel_measurements.py')
+                    path = root / 'producer/helpers' / name
+                    path.write_bytes(path.read_bytes() + b'\n# changed\n')
+                    if change == 'metric':
+                        packet = json.loads(
+                            (root / 'producer/manifest.json').read_text())
+                        packet['files']['helpers/' + name] = digest(path)
+                        save(root / 'producer/manifest.json', packet)
+                else:
+                    if change == 'report':
+                        report['gpu_source_sha256'] = '0' * 64
+                    elif change == 'link':
+                        report['runs'][0]['task'] = 'static_link'
+                    elif change == 'failed':
+                        report['status'] = 'FAIL'
+                    else:
+                        report['runs'][0]['seed'] = False
+                    save(root / descriptor['path'], report)
+                    descriptor['reference_source_bridge'][
+                        'report_sha256'] = digest(root / descriptor['path'])
+                save(root / 'review/review.json', review)
+                with self.assertRaises((ValueError, FileNotFoundError)):
+                    verify(root, descriptor, report)
+
+    def test_candidate_rejects_reference_source_bridge_before_validation(self):
+        collect = self.function('collect_reports')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            _, descriptor = self.source_bridge_case(root)
+            with self.assertRaisesRegex(ValueError, 'candidate.*source bridge'):
+                collect(root, [descriptor])
+
+    def test_bridged_reference_still_checks_independent_ledger(self):
+        collect = self.function('collect_reports')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            _, descriptor = self.source_bridge_case(root)
+            save(
+                root / 'fits.json',
+                [dict(status='PASS', device='cuda:0', steps=1, cuda_batches=1)])
+            with self.assertRaisesRegex(ValueError, 'Independent CUDA work'):
+                collect(root, [descriptor], legacy_allowed=True)
+
+    def test_legacy_source_review_keeps_original_row_and_validation_envelope(
+            self):
+        legacy_report = self.function('legacy_report')
+        from wheel_task_checks import fingerprint
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            report, descriptor = self.source_bridge_case(root)
+            row = report['runs'][0]
+            save(root / 'original-row.json', row)
+            dependencies = {'torch': '2.14.1+cu130'}
+            save(root / 'dependencies.json', dependencies)
+            environment = dict(version='1.0.0', wheel_sha256=APPROVED_SHA,
+                               gpu=report['configuration']['gpu'], cuda='13.0',
+                               torch='2.14.1+cu130',
+                               dependencies_sha256=fingerprint(dependencies))
+            state = dict(
+                status='PART_MEASURED', trial='R1', task='multiclass',
+                condition='learnable', environment=environment,
+                source_packet_sha256=digest(root / 'producer/manifest.json'),
+                results=[
+                    dict(seed=0, fit_id=row['fit_id'], score=row['score'],
+                         baseline_score=row['baseline_score'],
+                         result_sha256=digest(root / 'original-row.json'),
+                         frozen_control=dict(descriptor_sha256='d' * 64))
+                ])
+            save(root / 'state.json', state)
+            packet = json.loads((root / 'producer/manifest.json').read_text())
+            model = dict(
+                task='multiclass', environment=environment,
+                frozen_normal_descriptor_sha256='d' * 64,
+                selected_result={'sha256': digest(root / 'original-row.json')},
+                source_state={'sha256': digest(root / 'state.json')},
+                actual_launch_worker_packet={
+                    'sha256': digest(root / 'producer/manifest.json')
+                }, source_profile={'fixed': 1}, helper_comparison=[
+                    dict(file=Path(name).name, source={'sha256': value},
+                         current={'sha256': value})
+                    for name, value in packet['files'].items()
+                ])
+            save(
+                root / 'compatibility.json',
+                dict(status='PASS_SELECTED_SOURCE_AND_PLAN_COMPATIBILITY',
+                     models=[model]))
+            descriptor.update(
+                path='original-row.json', legacy=dict(
+                    compatibility='compatibility.json',
+                    producer_state='state.json',
+                    producer_packet='producer/manifest.json',
+                    dependencies='dependencies.json',
+                    configuration=report['configuration'],
+                    validator_source_sha256=report['gpu_source_sha256']))
+            descriptor['reference_source_bridge']['report_sha256'] = digest(
+                root / 'original-row.json')
+            original = (root / 'original-row.json').read_bytes()
+            envelope, diagnostic = legacy_report(root, descriptor)
+            self.assertEqual(envelope['envelope_kind'],
+                             'legacy_validation_only')
+            self.assertEqual(envelope['runs'], [row])
+            self.assertEqual(diagnostic['new_fits'], 0)
+            self.assertEqual(
+                diagnostic['producer_gpu_source_sha256_from_frozen_files'],
+                report['gpu_source_sha256'])
+            self.assertEqual((root / 'original-row.json').read_bytes(),
+                             original)
+            del descriptor['reference_source_bridge']
+            with self.assertRaises(ValueError):
+                legacy_report(root, descriptor)
+
     def multiclass_case(self, root, arm='learnable'):
         import pandas as pd
         import torch
@@ -198,6 +637,16 @@ class NightlyCompareTests(unittest.TestCase):
         directory = root / f'multiclass-0-{arm}'
         directory.mkdir(parents=True)
         plan = learning.make_plan('multiclass', 0).as_json()
+        epochs = plan['optimization']['max_epochs']
+        batches = epochs * plan['optimization']['max_steps_per_epoch']
+        row['training_work'][0].update(completed_batches=batches,
+                                       completed_examples=batches * 64,
+                                       optimizer_steps=batches,
+                                       current_epoch=epochs)
+        row['training_window'].update(completed_batches=batches,
+                                      completed_examples=batches * 64,
+                                      optimizer_steps=batches,
+                                      batch_examples=[64] * batches)
         row['plan_sha256'] = fingerprint(plan)
         for name in ('requested-plan', 'selected-model-plan',
                      'resolved_model_plan'):
@@ -277,10 +726,10 @@ class NightlyCompareTests(unittest.TestCase):
                       gpu_source_sha256=gpu.source_identity(prepared=True))
         save(root / 'nightly-result.json', report)
         save(root / 'fits.json', [
-            dict(status='PASS', device='cuda:0', steps=1, cuda_batches=1,
-                 metadata_test_only=True)
+            dict(status='PASS', device='cuda:0', steps=batches,
+                 cuda_batches=batches, metadata_test_only=True)
         ])
-        save(root / 'cuda-batches.json', dict(training=1, prediction=4))
+        save(root / 'cuda-batches.json', dict(training=batches, prediction=4))
         return row, directory
 
     def test_pack_preserves_real_frames_and_bundle_but_omits_native_cache(self):

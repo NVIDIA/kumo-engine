@@ -28,6 +28,67 @@ class WheelGpuTest(unittest.TestCase):
             self.fail('The GPU execution entry point is missing')
         return runpy.run_path(str(WORKER))
 
+    def test_static_staging_hashes_require_native_v4_sidecar_contract(self):
+        worker = runpy.run_path(str(WORKER.with_name('wheel_scale_data.py')))
+        verify = worker['_control_staging_hashes']
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            payload = b'unchanged native sidecar bytes'
+            sidecar = root / 'fact_pseudo_time.bin'
+            sidecar.write_bytes(payload)
+            for name in ('tt.parquet', 'stats.json', 'split_stats.json',
+                         'train_table_col_stats.json'):
+                (root / name).write_text('{}')
+            manifest = dict(
+                version=4, train_table=dict(path='tt.parquet'),
+                fact_pseudo_time=dict(path='fact_pseudo_time.bin',
+                                      format='tt_fact_pseudo_time_v1',
+                                      node_type='purchases'),
+                checksums=dict(fact_pseudo_time_sha256=hashlib.sha256(
+                    payload).hexdigest()))
+            spec = dict(
+                schema_version='diskgraph.tt_ingest_spec.v3', is_temporal=False,
+                fact_pseudo_time=dict(table='purchases',
+                                      entity_col='customer_id',
+                                      target_col='merchant_id'),
+                split_stages=[
+                    dict(key=stage) for stage in ('train', 'val', 'test')
+                ])
+            (root / 'manifest.json').write_text(json.dumps(manifest))
+            (root / 'tt_ingest_spec.json').write_text(json.dumps(spec))
+            original = verify(root, link=True)
+            self.assertEqual(original['fact_pseudo_time.bin'],
+                             hashlib.sha256(payload).hexdigest())
+            with self.assertRaises(ValueError):
+                verify(root)
+            for fault in ('missing', 'changed', 'format', 'node_type',
+                          'temporal', 'escape'):
+                with self.subTest(fault=fault):
+                    changed, changed_spec = copy.deepcopy(
+                        manifest), copy.deepcopy(spec)
+                    if fault == 'missing':
+                        sidecar.unlink()
+                    elif fault == 'changed':
+                        sidecar.write_bytes(payload + b'changed')
+                    elif fault == 'temporal':
+                        changed_spec['is_temporal'] = True
+                    elif fault == 'escape':
+                        changed['fact_pseudo_time'][
+                            'path'] = '../fact_pseudo_time.bin'
+                    else:
+                        changed['fact_pseudo_time'][fault] = 'wrong'
+                    (root / 'manifest.json').write_text(json.dumps(changed))
+                    (root / 'tt_ingest_spec.json').write_text(
+                        json.dumps(changed_spec))
+                    with self.assertRaises((ValueError, OSError)):
+                        verify(root, link=True)
+                    sidecar.write_bytes(payload)
+            manifest = dict(version=3, train_table=dict(path='tt.parquet'))
+            spec.pop('fact_pseudo_time')
+            (root / 'manifest.json').write_text(json.dumps(manifest))
+            (root / 'tt_ingest_spec.json').write_text(json.dumps(spec))
+            self.assertIn('train_table_col_stats.json', verify(root))
+
     @unittest.skipUnless(importlib.util.find_spec('torch'),
                          'Requires the checkpoint runtime')
     def test_reloaded_weights_and_checkpoint_match_exactly(self):

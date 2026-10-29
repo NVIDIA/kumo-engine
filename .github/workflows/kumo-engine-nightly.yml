@@ -372,6 +372,7 @@ jobs:
             ${{ env.RUN_ROOT }}/correctness/coverage.json
             ${{ env.RUN_ROOT }}/correctness/*/*.json
             ${{ env.RUN_ROOT }}/correctness/*/*.xml
+            ${{ env.RUN_ROOT }}/correctness/*/pytest
             ${{ env.RUN_ROOT }}/correctness/install/workflow/*.json
           if-no-files-found: error
           compression-level: 0

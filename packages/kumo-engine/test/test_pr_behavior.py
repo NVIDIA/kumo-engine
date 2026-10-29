@@ -45,6 +45,73 @@ def _hash_files(root):
     }
 
 
+def verify_remapped_state(module, expected, catalog, new_key):
+    import torch
+    from kumo_core.train.mapping import TTNG_RHS_PRIMARY_KEY_INDEX_NAME
+
+    verify_extra = runpy.run_path(
+        str(Path(__file__).with_name(
+            'wheel_gpu_learning.py')))['verify_checkpoint_extra_state']
+    actual = module.state_dict()
+    assert actual.keys() == expected.keys()
+    keys = [
+        key for key in expected
+        if 'rhs_embedding.' in key and key.endswith('lookup_embedding.weight')
+    ]
+    assert len(keys) == 1, 'A real learned RHS lookup is required'
+    weight_key = keys[0]
+    prefix = weight_key.removesuffix('weight')
+    extra_key, mask_key = prefix + '_extra_state', prefix + 'mask'
+    old_map, new_map = (state[extra_key]['index_map']
+                        for state in (expected, actual))
+    for mapping in (old_map, new_map):
+        assert mapping.index.name == TTNG_RHS_PRIMARY_KEY_INDEX_NAME
+        assert mapping.index.is_unique and not mapping.index.hasnans
+        assert list(mapping.columns) == ['arange'
+                                         ] and mapping['arange'].is_unique
+    assert set(new_map.index) == set(catalog) == set(old_map.index) | {new_key}
+    assert new_key not in old_map.index
+    weight = actual[weight_key]
+    original = expected[weight_key]
+    assert original.dtype == weight.dtype and original.shape[
+        1:] == weight.shape[1:]
+    old_ids = torch.tensor(old_map['arange'].tolist(), device=original.device)
+    new_ids = torch.tensor(new_map.loc[old_map.index, 'arange'].tolist(),
+                           device=weight.device)
+    assert torch.equal(weight[new_ids].detach().cpu(),
+                       original[old_ids].cpu()), 'Old RHS weights changed'
+    # Kumo restores CPU storage before Lightning places the model on its device.
+    values = original if sorted(old_ids.tolist()) == list(range(
+        len(original))) else original[old_ids]
+    mean = values.mean(dim=0)
+    assert torch.equal(
+        weight[int(new_map.loc[new_key, 'arange'])].detach().cpu(),
+        mean.cpu()), 'New RHS weight is not the existing mean initialization'
+    mask = torch.ones(weight.shape[0], device=weight.device, dtype=torch.bool)
+    mask[new_ids] = False
+    assert torch.equal(actual[mask_key],
+                       mask), 'New-key or sparse lookup mask changed'
+    for key in expected.keys() - {weight_key, mask_key, extra_key}:
+        left, right = expected[key], actual[key]
+        if isinstance(left, torch.Tensor):
+            assert isinstance(right, torch.Tensor) and left.dtype == right.dtype
+            assert left.shape == right.shape and torch.equal(
+                left.cpu(),
+                right.detach().cpu()), key
+        else:
+            verify_extra(left, right)
+    lookup = module.rhs_embedding.lookup_embedding
+    return dict(
+        module=f'{type(module).__module__}.{type(module).__name__}',
+        lookup=f'{type(lookup).__module__}.{type(lookup).__name__}',
+        lookup_mode=module.rhs_embedding.emb_mode.value,
+        device=str(weight.device), old_entities_preserved=len(old_map),
+        new_entities=1, reindexed_entities=int(
+            (old_map['arange'] != new_map.loc[old_map.index, 'arange']).sum()),
+        checkpoint_state_entries=len(expected),
+        remapped_state_entries=[weight_key, mask_key, extra_key])
+
+
 def _link_fixture(tmp_path_factory):
     helpers = runpy.run_path(
         str(Path(__file__).with_name('test_prediction_output_columns.py')))
@@ -114,6 +181,8 @@ def test_retained_tables_and_model_predict_in_fresh_process(pr_link, tmp_path):
     from importlib import metadata
 
     (_, _, root), (trainer, query, _) = pr_link
+    source = dict(data=_hash_files(root / 'data'),
+                  bundle=_hash_files(trainer._training_result.bundle_dir))
     data = tmp_path / 'retained-data'
     bundle = tmp_path / 'retained-model'
     shutil.copytree(root / 'data', data)
@@ -136,11 +205,19 @@ def test_retained_tables_and_model_predict_in_fresh_process(pr_link, tmp_path):
     assert result['status'] == 'PASS' and result['fits_started'] == 0
     assert result['requested_accelerator'] == trainer._accelerator
     assert result['prediction_batches'] > 0
+    assert result['snapshot_id'] != result['training_snapshot_id']
+    assert result['entities'] == 51 and result['catalog'] == 21
+    assert len(result['state_checks']) == 2
+    assert all(
+        check['old_entities_preserved'] == 20 and check['new_entities'] == 1
+        for check in result['state_checks'])
     if trainer._accelerator == 'gpu':
         assert result['cuda_prediction_batches'] == result['prediction_batches']
         assert set(result['observed_devices']) == {'cuda:0'}
     assert _hash_files(data) == original['data']
     assert _hash_files(bundle) == original['bundle']
+    assert _hash_files(root / 'data') == source['data']
+    assert _hash_files(trainer._training_result.bundle_dir) == source['bundle']
 
 
 def _predict_retained(request):
@@ -148,12 +225,15 @@ def _predict_retained(request):
 
     import pandas as pd
     import torch
+    from kumo_core.train.checkpoint import load_kumo_checkpoint
     from kumo_core.train.trainer import Trainer as CoreTrainer
     from kumoapi.graph import Edge
+    from kumoapi.jobs import MetadataField
     from kumoapi.typing import Stype
     from pytorch_lightning.callbacks import Callback
 
     import kumo.engine as kumo
+    from kumo.engine.trainer._spec import read_bundle_artifact_paths
 
     options = json.loads(request.read_text())
     output = Path(options['output'])
@@ -163,13 +243,17 @@ def _predict_retained(request):
             not Path(kumo.__file__).resolve().is_relative_to(Path(sys.prefix))):
         raise ValueError('Require the selected installed wheel')
     accelerator = options['accelerator']
-    expected_device = {'cpu': 'cpu', 'gpu': 'cuda', 'mps': 'mps',
-                       'auto': None}[accelerator]
+    expected_device = {
+        'cpu': 'cpu',
+        'gpu': 'cuda',
+        'mps': 'mps',
+        'auto': None
+    }[accelerator]
     if expected_device == 'cuda' and not torch.cuda.is_available():
         raise ValueError('CUDA is unavailable for requested GPU')
     result = dict(status='RUNNING', fits_started=0, prediction_batches=0,
                   cuda_prediction_batches=0, requested_accelerator=accelerator,
-                  observed_devices=[],
+                  observed_devices=[], state_checks=[],
                   installed_import=kumo.__file__, version=kumo.__version__)
 
     def forbidden_fit(*args, **kwargs):
@@ -177,6 +261,20 @@ def _predict_retained(request):
         raise AssertionError('The retained-model check must not train')
 
     class Proof(Callback):
+        def on_predict_start(self, trainer, module):
+            result['state_checks'].append(
+                dict(
+                    phase='post_restore',
+                    **verify_remapped_state(module, expected_state, catalog,
+                                            new_item)))
+
+        def on_predict_end(self, trainer, module):
+            result['state_checks'].append(
+                dict(
+                    phase='post_prediction',
+                    **verify_remapped_state(module, expected_state, catalog,
+                                            new_item)))
+
         def on_predict_batch_end(self, trainer, module, values, batch,
                                  batch_idx, dataloader_idx=0):
             logits = (values.get('logits', values.get('score')) if isinstance(
@@ -189,7 +287,8 @@ def _predict_retained(request):
                     or any(not isinstance(value, torch.Tensor)
                            or not value.numel() or value.device != device
                            for value in tensors)):
-                raise AssertionError('Missing prediction work on selected device')
+                raise AssertionError(
+                    'Missing prediction work on selected device')
             if device.type == 'cuda':
                 torch.cuda.synchronize()
                 result['cuda_prediction_batches'] += 1
@@ -205,7 +304,28 @@ def _predict_retained(request):
     CoreTrainer.fit = forbidden_fit
     kumo.Trainer.fit = forbidden_fit
     CoreTrainer.create_pl_trainer = create
-    data = Path(options['data'])
+    bundle = Path(options['bundle'])
+    source_data = Path(options['data'])
+    original = dict(data=_hash_files(source_data), bundle=_hash_files(bundle))
+    spec = json.loads((bundle / 'training-spec.json').read_text())
+    assert spec['predictive_query'] == options['query']
+    checkpoint = Path(read_bundle_artifact_paths(bundle)['selected_checkpoint'])
+    expected_state = load_kumo_checkpoint(str(checkpoint),
+                                          map_location='cpu')['state_dict']
+    result['checkpoint_sha256'] = hashlib.sha256(
+        checkpoint.read_bytes()).hexdigest()
+    data = output / 'data'
+    shutil.copytree(source_data, data)
+    entities_frame = pd.read_parquet(data / 'ents.parquet')
+    items_frame = pd.read_parquet(data / 'items.parquet')
+    assert len(entities_frame) == 50 and len(items_frame) == 20
+    new_entity, new_item = int(entities_frame.ID.max()) + 1, int(
+        items_frame.IID.max()) + 1
+    pd.concat(
+        [entities_frame, pd.DataFrame({'ID': [new_entity]})],
+        ignore_index=True).to_parquet(data / 'ents.parquet', index=False)
+    pd.concat([items_frame, pd.DataFrame({'IID': [new_item]})],
+              ignore_index=True).to_parquet(data / 'items.parquet', index=False)
     kumo.configure(scratch_dir=output / 'scratch')
     connector = kumo.FileConnector(root_dir=str(data))
     entities = kumo.Table.from_source_table(connector['ents.parquet'],
@@ -221,19 +341,37 @@ def _predict_retained(request):
         [Edge('events', 'ENT_ID', 'ents'),
          Edge('events', 'ITEM_ID', 'items')])
     snapshot = graph.snapshot()
-    model = kumo.Trainer.load(Path(options['bundle']), accelerator=accelerator)
+    assert snapshot.id != spec['snapshot_id']
+    model = kumo.Trainer.load(bundle, accelerator=accelerator)
     query = kumo.PredictiveQuery(graph, options['query'])
+    anchor = pd.Timestamp('2024-03-01')
     table = query.generate_prediction_table(
-        snapshot, plan=model.training_table_generation_plan)
-    frame = model.predict(table, snapshot=snapshot,
-                          num_classes_to_return=3).frame
+        snapshot, prediction_time=anchor.to_pydatetime(),
+        plan=model.training_table_generation_plan)
     ids = pd.read_parquet(data / 'ents.parquet')['ID'].tolist()
     catalog = pd.read_parquet(data / 'items.parquet')['IID'].tolist()
-    result.update(verify_recommendations(frame, ids, catalog, 3))
+    staged = pd.read_parquet(table.table_path)
+    assert staged.ENTITY1.is_unique and set(staged.ENTITY1) == set(ids)
+    assert (pd.to_datetime(staged.TIMESTAMP) == anchor).all()
+    staged.to_parquet(output / 'prediction-inputs.parquet', index=False)
+    config = kumo.PredictionOutputConfig(
+        kumo.FileConnector(root_dir=str(output / 'exports')),
+        output_paths={'predictions': 'predictions'},
+        extra_fields=[MetadataField.ANCHOR_TIMESTAMP])
+    frame = model.predict(table, snapshot=snapshot, output_config=config,
+                          num_classes_to_return=len(catalog)).frame
+    result.update(verify_recommendations(frame, ids, catalog, len(catalog)))
+    assert (pd.to_datetime(frame.ANCHOR_TIMESTAMP) == anchor).all()
     if not result['prediction_batches']:
         raise AssertionError('No prediction batches completed')
+    assert len(result['state_checks']) == 2
+    assert _hash_files(source_data) == original['data']
+    assert _hash_files(bundle) == original['bundle']
     frame.to_parquet(output / 'predictions.parquet', index=False)
-    result.update(status='PASS', snapshot_id=snapshot.id)
+    result.update(status='PASS', snapshot_id=snapshot.id,
+                  training_snapshot_id=spec['snapshot_id'],
+                  new_entity=new_entity, new_item=new_item, anchor=str(anchor),
+                  source_unchanged=True, bundle_unchanged=True)
     (output / 'result.json').write_text(json.dumps(result, indent=2))
 
 
@@ -277,12 +415,78 @@ def test_retained_gpu_request_rejects_unavailable_cuda(tmp_path, monkeypatch):
 
     request = tmp_path / 'request.json'
     request.write_text(
-        json.dumps(dict(output=str(tmp_path / 'child'),
-                        version=metadata.version('kumo-engine'),
-                        accelerator='gpu')))
+        json.dumps(
+            dict(output=str(tmp_path / 'child'),
+                 version=metadata.version('kumo-engine'), accelerator='gpu')))
     monkeypatch.setattr(torch.cuda, 'is_available', lambda: False)
-    with pytest.raises(ValueError, match='CUDA is unavailable for requested GPU'):
+    with pytest.raises(ValueError,
+                       match='CUDA is unavailable for requested GPU'):
         _predict_retained(request)
+
+
+def test_backfill_helper_requires_old_weights_new_mean_and_other_parameters():
+    import copy
+
+    import pandas as pd
+    import pytest
+    import torch
+    from kumo_core.modeling.retrieval.rhs_embedding import RHSEmbedding
+    from kumo_core.train.mapping import TTNG_RHS_PRIMARY_KEY_INDEX_NAME
+
+    # Real lookup modules exercise the checker without training a model.
+    module = torch.nn.Module()
+    index = pd.Index([10, 20, 30], name=TTNG_RHS_PRIMARY_KEY_INDEX_NAME)
+    module.rhs_embedding = RHSEmbedding(
+        'lookup', 5, 2, index_map=pd.DataFrame({'arange': [0, 2, 4]},
+                                               index=index))
+    module.other = torch.nn.Linear(2, 1)
+    with torch.no_grad():
+        module.rhs_embedding.lookup_embedding.weight.copy_(
+            torch.arange(10).reshape(5, 2))
+    expected = copy.deepcopy(module.state_dict())
+    new_map = pd.DataFrame({'arange': [2, 0, 6, 1]},
+                           index=pd.Index([10, 20, 30, 40],
+                                          name=TTNG_RHS_PRIMARY_KEY_INDEX_NAME))
+    module.rhs_embedding.num_nodes = 7
+    module.rhs_embedding.order_by(new_map)
+    report = verify_remapped_state(module, expected, [10, 20, 30, 40], 40)
+    assert report['old_entities_preserved'] == 3 and report['new_entities'] == 1
+    assert report['reindexed_entities'] == 3
+    for name, index in [('rhs_embedding.lookup_embedding.weight', (2, 0)),
+                        ('rhs_embedding.lookup_embedding.weight', (1, 0)),
+                        ('other.weight', (0, 0))]:
+        changed = copy.deepcopy(module)
+        with torch.no_grad():
+            dict(changed.named_parameters())[name][index] += 1
+        with pytest.raises(AssertionError):
+            verify_remapped_state(changed, expected, [10, 20, 30, 40], 40)
+    assert torch.equal(expected['rhs_embedding.lookup_embedding.weight'],
+                       torch.arange(10).reshape(5, 2))
+
+
+def test_backfill_helper_does_not_reorder_dense_mean_reduction():
+    import copy
+
+    import pandas as pd
+    import torch
+    from kumo_core.modeling.retrieval.rhs_embedding import RHSEmbedding
+    from kumo_core.train.mapping import TTNG_RHS_PRIMARY_KEY_INDEX_NAME
+
+    module = torch.nn.Module()
+    index = pd.Index([10, 20, 30], name=TTNG_RHS_PRIMARY_KEY_INDEX_NAME)
+    module.rhs_embedding = RHSEmbedding(
+        'lookup', 3, 1, index_map=pd.DataFrame({'arange': [2, 0, 1]},
+                                               index=index))
+    with torch.no_grad():
+        module.rhs_embedding.lookup_embedding.weight.copy_(
+            torch.tensor([[1e20], [-1e20], [3.]]))
+    expected = copy.deepcopy(module.state_dict())
+    module.rhs_embedding.num_nodes = 4
+    module.rhs_embedding.order_by(
+        pd.DataFrame({'arange': [2, 0, 1, 3]},
+                     index=pd.Index([10, 20, 30, 40],
+                                    name=TTNG_RHS_PRIMARY_KEY_INDEX_NAME)))
+    verify_remapped_state(module, expected, [10, 20, 30, 40], 40)
 
 
 if __name__ == '__main__':

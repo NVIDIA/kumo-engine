@@ -15,6 +15,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 
 DELIVERY_FILTER = ' WHERE COUNT(orders.*, -90, 0, days) > 0'
 CASES = {
@@ -300,7 +301,10 @@ def _verify_link_resolution(prepared, table, rows, tt_id, output_dir,
                             entity_table, entity_key, target_table, target_key):
     import diskgraph
     import pyarrow as pa
-    from kumo_core.diskgraph.lightning_data import _index_np_time_unit
+    from kumo_core.diskgraph.lightning_data import (
+        DiskgraphLightningDataModule,
+        _index_np_time_unit,
+    )
     from kumo_core.diskgraph.runtime_adapter import engine_int64_to_ns
 
     case = prepared['case']
@@ -348,17 +352,22 @@ def _verify_link_resolution(prepared, table, rows, tt_id, output_dir,
         for row in rows
     } if static else {}
     for split, stage in enumerate(('train', 'val', 'test')):
-        iterator, _ = runtime.iter(stage=stage, sampling_plan={'layers': []},
-                                   num_workers=1, worker_id=0, shuffle=False,
-                                   epoch=0, batch_size=512,
-                                   entity_node_type=entity_table,
-                                   target_node_type=target_table)
+        iterator, _ = runtime.iter(
+            stage=stage, sampling_plan={'layers': []}, num_workers=1,
+            worker_id=0, shuffle=False, epoch=0, batch_size=512,
+            entity_node_type=entity_table, target_node_type=target_table,
+            **DiskgraphLightningDataModule._pseudo_time_options(
+                SimpleNamespace(_task_type=CASES[case]['task_type']), stage))
         for batch in iterator:
             task = batch['task']
             anchors = ([None] * len(task['seed_node_ids']) if static else
                        engine_int64_to_ns(task['seed_timestamps'], unit).cast(
                            pa.timestamp('ns')).to_pylist())
             targets = task['lp_pos_rhs_global'].to_pylist()
+            masks = task['lp_pos_mask'].to_pylist()
+            if len(masks) != len(targets) or any(value is not False
+                                                 for value in masks):
+                raise ValueError('Native link positives are missing or masked')
             offset = 0
             excluded = task.get('lp_exclude_rhs_global')
             excluded = [] if excluded is None else excluded.to_pylist()
@@ -421,6 +430,12 @@ def _link_control(prepared, rows_path, rows, output_dir):
     if (case not in ('static_link', 'temporal_link') or len(rhs) != 1
             or normal.query != CASES[case]['query']):
         raise ValueError('Audited future targets require a temporal-link table')
+    fact = metadata.get('fact_pseudo_time')
+    if case == 'static_link' and (not isinstance(
+            fact, dict) or set(fact) != {'table', 'entity_col', 'target_col'}
+                                  or any(not isinstance(value, str) or not value
+                                         for value in fact.values())):
+        raise ValueError('Static link replay requires canonical fact metadata')
     entity, target = metadata['entity_table'], rhs[0]['dst_table']
     definition = prepared['graph']._named_tables[target].definition
     if case == 'temporal_link':
@@ -457,7 +472,8 @@ def _link_control(prepared, rows_path, rows, output_dir):
             target_stype=getattr(stype, 'value', stype)),
         target_entity_table=target, task_type=CASES[case]['task_type'],
         lp_rhs_is_temporal=metadata['lp_rhs_is_temporal'],
-        allow_new_target_entities=True, ingest_on_error='abort')
+        fact_pseudo_time=fact, allow_new_target_entities=True,
+        ingest_on_error='abort')
     native_manifest = json.loads(
         (Path(result['staging_dir']) / 'manifest.json').read_text())
     if native_manifest.get('split_kind') != family:
@@ -1428,12 +1444,26 @@ def _control_staging_hashes(root, *, link=False):
     manifest, spec = [
         json.loads((root / name).read_text()) for name in required[:2]
     ]
-    if (manifest['version'] != 3
+    version = manifest['version']
+    if (version not in ((3, 4) if link else (3, ))
             or manifest['train_table']['path'] != 'tt.parquet'
             or spec['schema_version'] != 'diskgraph.tt_ingest_spec.v3'
             or {stage['key']
                 for stage in spec['split_stages']} != {'train', 'val', 'test'}):
         raise ValueError('Unexpected frozen control artifact contract')
+    if version == 4:
+        fact = spec.get('fact_pseudo_time')
+        if (spec.get('is_temporal') is not False or not isinstance(fact, dict)
+                or set(fact) != {'table', 'entity_col', 'target_col'}
+                or any(not isinstance(value, str) or not value
+                       for value in fact.values())
+                or manifest.get('fact_pseudo_time') != dict(
+                    path='fact_pseudo_time.bin',
+                    format='tt_fact_pseudo_time_v1', node_type=fact['table'])
+                or 'fact_pseudo_time.bin' not in hashes
+                or manifest.get('checksums', {}).get('fact_pseudo_time_sha256')
+                != hashes['fact_pseudo_time.bin']):
+            raise ValueError('Invalid static link fact sidecar contract')
 
     def paths(value):
         if isinstance(value, dict):

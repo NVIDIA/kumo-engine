@@ -21,6 +21,7 @@ from urllib.parse import unquote, urlsplit
 MODULES = Path(__file__).resolve().parents[1] / 'test'
 sys.path.insert(0, str(MODULES))
 NIGHTLY = runpy.run_path(str(Path(__file__).with_name('nightly_check.py')))
+verify_recipe_work = NIGHTLY['verify_recipe_work']
 REFERENCE = {
     'version':
     '1.0.0',
@@ -37,6 +38,8 @@ RAW_JSON = ('result', 'device', 'measurements', *PLANS, 'metadata',
 RUNTIME = ('device', 'gpu', 'gpu_memory_bytes', 'cuda', 'torch', 'threads')
 DELTA_FIELDS = ('repeat_max_abs_difference', 'partial_max_abs_difference',
                 'reload_max_abs_difference')
+NONLINK_TASKS = ('binary', 'multiclass', 'multilabel', 'multilabel_ranking',
+                 'regression', 'forecasting')
 
 
 def read(path):
@@ -119,6 +122,11 @@ def validate_report(report):
 
     expected = report.get('expected_runs')
     gpu.verify_prepared_report(report, expected_runs=expected)
+    verify_report_counts(report)
+
+
+def verify_report_counts(report):
+    expected = report.get('expected_runs')
     actual = [[row['task'], row['seed'], row['case']] for row in report['runs']]
     if (report.get('completed_runs') != actual or expected != actual
             or type(report.get('physical_fits')) is not int
@@ -126,17 +134,271 @@ def validate_report(report):
         raise ValueError('Completed cases or physical fit counts differ')
 
 
+def prepared_source_hashes(directory):
+    names = (*runpy.run_path(str(
+        MODULES / 'wheel_task_learning.py'))['SOURCES'],
+             'wheel_gpu_learning.py', 'wheel_scale_data.py',
+             'wheel_scale_learning.py', 'wheel_measurements.py')
+    return {name: digest(confined(directory, name)) for name in names}
+
+
+def verify_static_roundtrip(root, native_entry, before_sha256, after):
+    """Check the raw helper/freeze/load proof without approving references."""
+    path = confined(root, native_entry['path'])
+    if digest(path) != native_entry.get('sha256'):
+        raise ValueError('The full helper proof summary changed')
+    native = read(path)
+    if (native.get('format') != 'nightly-static-v4-full-roundtrip-v1'
+            or native.get('status') != 'PASS'
+            or native.get('old_data_helper_sha256') != before_sha256
+            or native.get('new_data_helper_sha256') != after
+            or native.get('full_roundtrip') is not True
+            or native.get('old_v3_frozen_and_seals_unchanged') is not True
+            or any(
+                type(native.get(name)) is not int or native[name] != 0
+                for name in ('model_fits', 'predictions'))):
+        raise ValueError('The complete helper freeze/load proof is required')
+    details = {}
+    for name, field in [('result', 'detailed_result_sha256'),
+                        ('source', 'source_manifest_sha256'),
+                        ('files', 'file_manifest_sha256')]:
+        entry = native_entry.get(name, {})
+        if native.get(field) != entry.get('sha256') or not entry.get('path'):
+            raise ValueError('The native proof evidence binding differs')
+        evidence = confined(root, entry['path'])
+        if digest(evidence) != entry['sha256']:
+            raise ValueError('The native proof evidence changed')
+        details[name] = read(evidence)
+    result = details['result']
+    source_files, raw_files = (details[name].get('files', {})
+                               for name in ('source', 'files'))
+    if (not isinstance(source_files, dict) or not source_files
+            or not isinstance(raw_files, dict)):
+        raise ValueError('The actual native proof source/file map is missing')
+    for name, metadata in source_files.items():
+        actual = raw_files.get('source/' + name, {})
+        if (not isinstance(metadata, dict)
+                or not isinstance(metadata.get('sha256'), str)
+                or not re.fullmatch('[0-9a-f]{64}', metadata['sha256'])
+                or type(metadata.get('bytes')) is not int
+                or metadata['bytes'] < 0 or any(
+                    actual.get(field) != metadata[field]
+                    for field in ('sha256', 'bytes'))):
+            raise ValueError('The actual native proof source/file map differs')
+    if (not any(
+            name.endswith('full_producer_probe.py')
+            for name in source_files) or not any(
+                name.endswith('wheel_scale_data.py')
+                and metadata['sha256'] == after
+                for name, metadata in source_files.items())
+            or raw_files.get('output/result.json', {}).get('sha256') !=
+            native['detailed_result_sha256']
+            or raw_files.get('output/result.json', {}).get('bytes') != confined(
+                root, native_entry['result']['path']).stat().st_size):
+        raise ValueError('The actual native proof source/file map differs')
+    if (result.get('status') != 'PASS_TINY_PRODUCER_FREEZE_LOAD_NATIVE'
+            or result.get('helper_sha256') != after or any(
+                result.get(name) is not True
+                for name in ('producer_freeze_load_consumption',
+                             'old_v3_frozen_and_seals_unchanged',
+                             'new_v4_frozen_and_seals_unchanged',
+                             'final_seal_unchanged', 'owner_source_unchanged',
+                             'producer_helpers_unchanged'))
+            or any(
+                type(result.get(name)) is not int or result[name] != 0
+                for name in ('engine_fit_calls', 'core_fit_calls',
+                             'lightning_fit_calls', 'prediction_calls'))
+            or any(
+                set(result.get(name, {})) != {'normal', 'control0'}
+                for name in ('arms', 'bridges', 'frozen_descriptors'))):
+        raise ValueError('The actual helper freeze/load consumer proof differs')
+    for name, arm in result['arms'].items():
+        bridge = result['bridges'][name]
+        files = result['frozen_descriptors'][name].get('files', {})
+        if (bridge.get('old_stage_sha256') != arm.get('stage_sha256')
+                or bridge.get('new_stage_sha256') != arm.get('stage_sha256')
+                or any(
+                    bridge.get(field) is not True
+                    for field in ('final_rows_bytes_equal',
+                                  'identity_unchanged',
+                                  'requested_plan_unchanged'))
+                or not isinstance(bridge.get('final_rows_sha256'), str)
+                or not re.fullmatch('[0-9a-f]{64}', bridge['final_rows_sha256'])
+                or not isinstance(files, dict)
+                or 'fact_pseudo_time.bin' not in files
+                or any(not isinstance(value, str)
+                       or not re.fullmatch('[0-9a-f]{64}', value)
+                       for value in files.values())):
+            raise ValueError(
+                'The retained rows, plans or frozen carrier differ')
+        if (set(arm.get('consumption', {})) != {'train', 'val', 'test'} or
+                set(arm.get('stage_sha256', {})) != {'train', 'val', 'test'}):
+            raise ValueError('The actual helper consumer stages are incomplete')
+        for stage, cutoff in [('train', 1), ('val', 1), ('test', 2)]:
+            consumed = arm['consumption'][stage]
+            options = consumed.get('pseudo_options', {})
+            if (type(options.get('pseudo_seed_time')) is not int
+                    or options['pseudo_seed_time'] != cutoff
+                    or options.get('disable_pseudo_time') is not False or any(
+                        type(consumed.get(name)) is not int
+                        or consumed[name] <= 0
+                        for name in ('seeds', 'retained_positive_count')) or
+                    type(consumed.get('masked_retained_positives')) is not int
+                    or consumed['masked_retained_positives'] != 0 or any(
+                        type(consumed.get(name)) is not int
+                        or consumed[name] < 0
+                        for name in ('native_exclusion_count',
+                                     'visible_fact_count'))
+                    or any(not isinstance(value, str)
+                           or not re.fullmatch('[0-9a-f]{64}', value)
+                           for value in [
+                               arm['stage_sha256'][stage], *[
+                                   consumed.get(name)
+                                   for name in ('native_positives_sha256',
+                                                'native_exclusions_sha256',
+                                                'visible_fact_pk_sha256')
+                               ]
+                           ])):
+                raise ValueError(
+                    'The native labels or real cutoff proof differs')
+    return {
+        name: native_entry[name]['sha256']
+        for name in ('result', 'source', 'files')
+    }
+
+
+def reference_source_review(root, descriptor, rows, before_sha256):
+    """Require one exact reviewed repair and all twelve retained V3 cases."""
+    bridge = descriptor['reference_source_bridge']
+    path = confined(root, descriptor['path'])
+    review_path = confined(root, bridge['review'])
+    review = read(review_path)
+    after = digest(MODULES / 'wheel_scale_data.py')
+    if (not rows or any(
+            row.get('task') not in NONLINK_TASKS or type(row.get('seed'))
+            is not int or row['seed'] != 0 or row.get('case') not in
+        ('learnable', 'independent') or row.get('status') != 'MEASURED'
+            for row in rows) or bridge.get('report_sha256') != digest(path) or
+            review.get('kind') != 'reviewed_static_carrier_reference_source_v1'
+            or review.get('status') != 'APPROVED_REFERENCE_ONLY'
+            or review.get('before_helper_sha256') != before_sha256
+            or review.get('after_helper_sha256') != after
+            or before_sha256 == after):
+        raise ValueError('The exact non-link reference source review differs')
+    proofs = {}
+    if set(review.get('proofs', {})) != {'native', 'v3'}:
+        raise ValueError(
+            'Both native and retained V3 source proofs are required')
+    for name, entry in review['proofs'].items():
+        proof_path = confined(root, entry['path'])
+        if digest(proof_path) != entry.get('sha256'):
+            raise ValueError('A reviewed source proof changed')
+        proofs[name] = read(proof_path)
+    v3 = proofs['v3']
+    native_evidence = verify_static_roundtrip(root, review['proofs']['native'],
+                                              before_sha256, after)
+    cases = v3.get('cases', [])
+    expected = {(task, arm)
+                for task in NONLINK_TASKS for arm in ('normal', 'seed-0')}
+    required = {
+        'manifest.json', 'tt_ingest_spec.json', 'stats.json',
+        'split_stats.json', 'train_table_col_stats.json'
+    }
+    if (v3.get('status') != 'PASS_NONLINK_V3_EQUIVALENCE'
+            or v3.get('before_helper_sha256') != before_sha256
+            or v3.get('after_helper_sha256') != after or len(cases) != 12
+            or not isinstance(v3.get('source_archive_sha256'), str)
+            or not re.fullmatch('[0-9a-f]{64}', v3['source_archive_sha256'])
+            or {(case.get('task'), case.get('condition'))
+                for case in cases} != expected):
+        raise ValueError('The retained non-link V3 proof roster differs')
+    for case in cases:
+        files = case.get('before_files', {})
+        if (type(case.get('manifest_version')) is not int
+                or case['manifest_version'] != 3
+                or case.get('spec_schema') != 'diskgraph.tt_ingest_spec.v3'
+                or case.get('before_checker_passed') is not True
+                or case.get('after_checker_passed') is not True
+                or not isinstance(case.get('descriptor_sha256'), str)
+                or not re.fullmatch('[0-9a-f]{64}', case['descriptor_sha256'])
+                or not isinstance(files, dict) or not required <= set(files)
+                or any(not any(name.startswith(prefix + '/') for name in files)
+                       for prefix in ('tt.parquet', 'train_seeds', 'val_seeds',
+                                      'test_seeds'))
+                or any(not isinstance(value, str)
+                       or not re.fullmatch('[0-9a-f]{64}', value)
+                       for value in files.values())
+                or files != case.get('after_files')):
+            raise ValueError(
+                'A retained V3 source file map or contract differs')
+    return dict(
+        kind='reviewed_reference_source', raw_report_sha256=digest(path),
+        review_sha256=digest(review_path), before_helper_sha256=before_sha256,
+        after_helper_sha256=after, proof_sha256={
+            name: entry['sha256']
+            for name, entry in review['proofs'].items()
+        }, native_evidence_sha256=native_evidence, new_fits=0)
+
+
+def validate_reference_report(root, descriptor, report):
+    """Validate an unchanged reference through its manifested real producer."""
+    import wheel_gpu_learning as gpu
+
+    bridge = descriptor['reference_source_bridge']
+    if ({name: report.get(name)
+         for name in REFERENCE} != REFERENCE
+            or report != read(confined(root, descriptor['path']))):
+        raise ValueError(
+            'A source bridge requires the unchanged approved report')
+    packet_path = confined(root, bridge['producer_packet'])
+    helpers = confined(root, bridge['producer_helpers'])
+    packet = read(packet_path)
+    if not helpers.resolve().is_relative_to(packet_path.parent.resolve()):
+        raise ValueError('Producer helpers must belong to the actual packet')
+    for name, expected in packet['files'].items():
+        if digest(confined(packet_path.parent, name)) != expected:
+            raise ValueError('A manifested producer source changed')
+    sources = prepared_source_hashes(helpers)
+    current = prepared_source_hashes(MODULES)
+    for name, value in sources.items():
+        relative = (helpers / name).relative_to(packet_path.parent).as_posix()
+        if (packet['files'].get(relative) != value
+                or name != 'wheel_scale_data.py' and value != current[name]):
+            raise ValueError('A reference verifier or learning helper changed')
+    diagnostic = reference_source_review(root, descriptor,
+                                         report.get('runs', []),
+                                         sources['wheel_scale_data.py'])
+    producer = runpy.run_path(str(helpers / 'wheel_gpu_learning.py'))
+    producer['verify_prepared_report'](
+        report, expected_runs=report.get('expected_runs'))
+    verify_report_counts(report)
+    diagnostic.update(
+        producer_packet_sha256=digest(packet_path),
+        producer_gpu_source_sha256=producer['source_identity'](prepared=True),
+        validator_gpu_source_sha256=gpu.source_identity(prepared=True))
+    return diagnostic
+
+
 def verify_fit_ledger(directory, report):
     ledger = read(confined(directory, 'fits.json'))
     NIGHTLY['PR']['verify_fits'](ledger)
-    if len(ledger) != report['physical_fits']:
+    if len(ledger) != report['physical_fits'] or len(ledger) != len(
+            report['runs']):
         raise ValueError('The physical fit ledger differs')
+    for fit, row in zip(ledger, report['runs'], strict=True):
+        work = row['training_work'][0]
+        if (fit['steps'] != work['optimizer_steps']
+                or fit['cuda_batches'] != work['completed_batches']):
+            raise ValueError(
+                'Independent CUDA work differs from reported training')
     batches = read(confined(directory, 'cuda-batches.json'))
     if any(
             type(batches.get(stage)) is not int or batches[stage] <= 0
             for stage in ('training', 'prediction')):
         raise ValueError(
             'Completed training and prediction CUDA work is missing')
+    if batches['training'] != sum(fit['cuda_batches'] for fit in ledger):
+        raise ValueError('CUDA training totals differ from the fit ledger')
 
 
 def dependency_changes(reference, candidate, declared):
@@ -287,7 +549,9 @@ def validate_artifacts(root, row, artifact):
     selected = read(directory / 'selected-model-plan.json')
     if fingerprint(selected) != row['plan_sha256']:
         raise ValueError('Selected model plan fingerprint differs')
-    binary.verify_plan(read(directory / 'requested-plan.json'), selected)
+    requested = read(directory / 'requested-plan.json')
+    binary.verify_plan(requested, selected)
+    verify_recipe_work(row, requested)
     learning.verify_runtime(row['task'],
                             read(directory / 'runtime_manifest.json'),
                             read(directory / 'feature_schema.json'),
@@ -461,6 +725,21 @@ def legacy_report(root, descriptor):
 
     row = read(confined(root, descriptor['path']))
     legacy = descriptor['legacy']
+    review = None
+    validator_sources = prepared_source_hashes(MODULES)
+    if 'reference_source_bridge' in descriptor:
+        bridge = descriptor['reference_source_bridge']
+        if (bridge.get('producer_packet') != legacy['producer_packet']
+                or bridge.get('producer_helpers') != str(
+                    PurePosixPath(legacy['producer_packet']).parent /
+                    'helpers')):
+            raise ValueError('The legacy bridge names a different producer')
+        before = digest(
+            confined(root, bridge['producer_helpers']) / 'wheel_scale_data.py')
+        review = reference_source_review(root, descriptor, [row], before)
+        validator_sources['wheel_scale_data.py'] = before
+    previous_validator = hashlib.sha256(
+        json.dumps(validator_sources, sort_keys=True).encode()).hexdigest()
     compatibility = read(confined(root, legacy['compatibility']))
     models = [
         model for model in compatibility.get('models', [])
@@ -471,8 +750,8 @@ def legacy_report(root, descriptor):
             or row.get('task') not in ('binary', 'multiclass')
             or row.get('case') != 'learnable'
             or type(row.get('seed')) is not int or row['seed'] != 0
-            or len(models) != 1 or legacy.get('validator_source_sha256') !=
-            gpu.source_identity(prepared=True)):
+            or len(models) != 1 or legacy.get('validator_source_sha256')
+            not in (gpu.source_identity(prepared=True), previous_validator)):
         raise ValueError('The legacy source bridge is missing or differs')
     model = models[0]
     state_path, packet_path = (confined(root, legacy[name])
@@ -506,6 +785,10 @@ def legacy_report(root, descriptor):
             raise ValueError(
                 'The compatibility receipt names different producer sources')
         if digest(MODULES / name) == compared['current']['sha256']:
+            continue
+        if (name == 'wheel_scale_data.py' and review is not None and
+                compared['source']['sha256'] == compared['current']['sha256'] ==
+                review['before_helper_sha256']):
             continue
         if name != 'wheel_gpu_learning.py':
             raise ValueError('A legacy learning or metric helper changed')
@@ -546,6 +829,8 @@ def legacy_report(root, descriptor):
     }
     diagnostic['producer_gpu_source_sha256_from_frozen_files'] = fingerprint(
         source_hashes)
+    if review is not None:
+        diagnostic['reference_source_bridge'] = review
     report['envelope_kind'] = 'legacy_validation_only'
     return report, diagnostic
 
@@ -553,6 +838,9 @@ def legacy_report(root, descriptor):
 def collect_reports(root, descriptors, *, legacy_allowed=False):
     rows, records, runtimes, dependencies, wheels, bridges = [], {}, [], [], [], []
     for descriptor in descriptors:
+        if not legacy_allowed and 'reference_source_bridge' in descriptor:
+            raise ValueError('A candidate cannot use a reference source bridge')
+        producer_validated = False
         if 'legacy' in descriptor:
             if not legacy_allowed:
                 raise ValueError(
@@ -562,8 +850,16 @@ def collect_reports(root, descriptors, *, legacy_allowed=False):
         else:
             path = confined(root, descriptor['path'])
             report = read(path)
+            if not legacy_allowed and 'reference_source_bridge' in report:
+                raise ValueError(
+                    'A candidate cannot use a reference source bridge')
             verify_fit_ledger(path.parent, report)
-        validate_report(report)
+            if 'reference_source_bridge' in descriptor:
+                bridges.append(
+                    validate_reference_report(root, descriptor, report))
+                producer_validated = True
+        if not producer_validated:
+            validate_report(report)
         runtime = runtime_profile(report)
         runtimes.append(runtime)
         dependencies.append(report.get('dependencies'))
@@ -625,13 +921,18 @@ def compare(candidate_paths, reference_root, reference_sha256, output):
         comparisons.append(
             dict(case=name, metric=record['row']['metric'],
                  **quality_difference(record['row'], baseline['row'])))
-    result = dict(status='MEASURED', cases=16, quality_policy='report_only',
-                  release_approved=False,
-                  reference_manifest_sha256=reference_sha256,
-                  reference=reference['wheel'], candidate=candidate['wheel'],
-                  runtime=reference['runtime'],
-                  declared_dependency_changes=changes,
-                  legacy_bridges=reference['bridges'], comparisons=comparisons)
+    result = dict(
+        status='MEASURED', cases=16, quality_policy='report_only',
+        release_approved=False, reference_manifest_sha256=reference_sha256,
+        reference=reference['wheel'], candidate=candidate['wheel'],
+        runtime=reference['runtime'], declared_dependency_changes=changes,
+        legacy_bridges=[
+            item for item in reference['bridges']
+            if item['kind'] == 'validation_only'
+        ], reference_source_bridges=[
+            item for item in reference['bridges']
+            if item['kind'] == 'reviewed_reference_source'
+        ], comparisons=comparisons)
     output.mkdir(parents=True, exist_ok=False)
     save(output / 'comparison.json', result)
     return result

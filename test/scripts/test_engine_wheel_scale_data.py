@@ -170,6 +170,8 @@ class ScaleDataTest(unittest.TestCase):
         metadata = json.loads(spec.read_text())
         metadata.update(
             entity_table='customers', entity_column='customer_id',
+            fact_pseudo_time=dict(table='purchases', entity_col='customer_id',
+                                  target_col='merchant_id'),
             lp_rhs_is_temporal=False, lp_resolution=[
                 dict(src_col='TARGET1', kind='list', dst_table='merchants')
             ])
@@ -187,7 +189,7 @@ class ScaleDataTest(unittest.TestCase):
         native.mkdir()
         (native / 'manifest.json').write_text(
             json.dumps(dict(split_kind='CustomLinkSplit')))
-        calls = []
+        calls, native_calls = [], []
 
         def build(config, family, cls):
             calls.append((config, family))
@@ -197,6 +199,7 @@ class ScaleDataTest(unittest.TestCase):
             raise ValueError('Public Core cannot parse CustomLinkSplit')
 
         def native_build(**kwargs):
+            native_calls.append(kwargs)
             return dict(staging_dir=str(native),
                         tt_parquet_path=str(native / 'tt.parquet'))
 
@@ -215,6 +218,14 @@ class ScaleDataTest(unittest.TestCase):
             result = worker['_link_control'](normal, self.data / 'rows.parquet',
                                              normal['rows'],
                                              self.data / 'replay')
+            self.assertEqual(native_calls[0].get('fact_pseudo_time'),
+                             metadata['fact_pseudo_time'])
+            del metadata['fact_pseudo_time']
+            spec.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, 'fact'):
+                worker['_link_control'](normal, self.data / 'rows.parquet',
+                                        normal['rows'], self.data / 'replay')
+            self.assertEqual(len(native_calls), 1)
         self.assertEqual(
             calls, [(dict(split_column='LINK_STAGE', manual_train_values=['0'],
                           manual_val_values=['1'],
@@ -223,6 +234,7 @@ class ScaleDataTest(unittest.TestCase):
 
     def test_static_native_resolution_has_no_temporal_seed_timestamps(self):
         worker = self.worker()
+        options, mask = [], [False]
         rows = [
             dict(SPLIT=stage, ENTITY1=50, TIMESTAMP=ANCHOR,
                  TARGET1=[10 * (stage + 1)],
@@ -239,11 +251,12 @@ class ScaleDataTest(unittest.TestCase):
             return [dict(type='feature', batch=pa.record_batch({key: values}))]
 
         def native_iter(**kwargs):
+            options.append(kwargs.get('core_stage_receipt'))
             stage = ('train', 'val', 'test').index(kwargs['stage'])
             task = dict(
                 seed_node_ids=pa.array([0]),
                 lp_pos_rhs_global=pa.array([stage]),
-                lp_pos_counts=pa.array([1]),
+                lp_pos_counts=pa.array([1]), lp_pos_mask=pa.array(mask),
                 lp_exclude_rhs_global=pa.array(list(range(stage)),
                                                type=pa.int64()),
                 lp_exclude_counts=pa.array([stage]))
@@ -266,7 +279,11 @@ class ScaleDataTest(unittest.TestCase):
                 SimpleNamespace(fetch_features=features),
                 RuntimeIndex=lambda *a, **k: SimpleNamespace(iter=native_iter)),
             'kumo_core.diskgraph.lightning_data':
-            SimpleNamespace(_index_np_time_unit=temporal_only),
+            SimpleNamespace(
+                _index_np_time_unit=temporal_only,
+                DiskgraphLightningDataModule=SimpleNamespace(
+                    _pseudo_time_options=lambda _, stage: dict(
+                        core_stage_receipt=stage))),
             'kumo_core.diskgraph.runtime_adapter':
             SimpleNamespace(engine_int64_to_ns=temporal_only)
         }
@@ -279,6 +296,15 @@ class ScaleDataTest(unittest.TestCase):
                 prepared, SimpleNamespace(staging_dir=self.data), rows,
                 'native-proof', self.data, 'customers', 'customer_id',
                 'merchants', 'merchant_id')
+            self.assertEqual(options, ['train', 'val', 'test'])
+            for invalid in ([True], []):
+                mask[:] = invalid
+                with self.subTest(mask=invalid), self.assertRaisesRegex(
+                        ValueError, 'positive'):
+                    worker['_verify_link_resolution'](
+                        prepared, SimpleNamespace(staging_dir=self.data), rows,
+                        'native-proof', self.data, 'customers', 'customer_id',
+                        'merchants', 'merchant_id')
 
     def isolation_context(self, worker, case='regression'):
         normal, _ = self.frozen_context(

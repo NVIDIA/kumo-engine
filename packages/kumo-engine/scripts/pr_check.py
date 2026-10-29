@@ -309,6 +309,7 @@ def run_phase(args):
                       if args.phase == 'example' else nullcontext()):
                     code = pytest.main([
                         '-q', '-c', '/dev/null', '--import-mode=importlib',
+                        '--basetemp', str(output / 'pytest'),
                         '--confcutdir',
                         str(modules), '--junitxml',
                         str(output / 'tests.xml'),

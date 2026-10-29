@@ -5,6 +5,7 @@
 import json
 from collections import Counter
 from functools import partial
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -93,6 +94,18 @@ def _rows(table, columns):
         for row in zip(*values))
 
 
+def verify_weighted_roundtrip(weighted, stages):
+    columns = ['ENTITY1', 'TIMESTAMP', 'TARGET1', 'WEIGHT']
+    assert set(stages) == set(SPLITS)
+    for name, split in SPLITS.items():
+        expected = weighted.filter(
+            pa.array(
+                [value == split for value in weighted['SPLIT'].to_pylist()]))
+        assert all(stages[name].schema.field(column).type ==
+                   expected.schema.field(column).type for column in columns)
+        assert _rows(stages[name], columns) == _rows(expected, columns)
+
+
 def _export(graph, query, name):
     graph, snapshot, connector, out = graph
     pquery = kumo.PredictiveQuery(graph=graph, query=query)
@@ -114,12 +127,15 @@ def test_node_export_roundtrip(graph, name, query):
     columns = ['ENTITY1', 'TIMESTAMP', 'TARGET1']
     assert exported.schema.names == columns + ['SPLIT']
     assert exported.schema.types == [
-        pa.int64(), pa.timestamp('ns'), pa.bool_(), pa.int64()
+        pa.int64(), pa.timestamp('ns'),
+        pa.bool_(), pa.int64()
     ]
     expected = Counter()
     for key, seed in seeds.items():
-        expected += _rows(seed.append_column('SPLIT', pa.array(
-            [SPLITS[key]] * len(seed), pa.int64())), exported.schema.names)
+        expected += _rows(
+            seed.append_column('SPLIT',
+                               pa.array([SPLITS[key]] * len(seed), pa.int64())),
+            exported.schema.names)
     assert _rows(exported, exported.schema.names) == expected
     for key, split in SPLITS.items():
         assert exported['SPLIT'].to_pylist().count(split) == counts[key]
@@ -129,15 +145,21 @@ def test_node_export_roundtrip(graph, name, query):
     frame.to_parquet(out / f'{name}_w.parquet')
     reimported = kumo.TrainingTable.from_source_table(
         connector[f'{name}_w.parquet'],
-        TrainingTableSpec(weight_col='WEIGHT', split_col='SPLIT'),
-        pq=pquery, snapshot=snapshot)
-    assert _seeds(reimported)[1] == counts
+        TrainingTableSpec(weight_col='WEIGHT', split_col='SPLIT'), pq=pquery,
+        snapshot=snapshot)
+    imported, imported_counts = _seeds(reimported)
+    assert imported_counts == counts
+    verify_weighted_roundtrip(pa.Table.from_pandas(frame, preserve_index=False),
+                              imported)
 
     plan = ModelPlan()
     plan.training_job.disable_explain = True
     plan.optimization.max_epochs = 1
     plan.optimization.max_steps_per_epoch = 2
-    kumo.Trainer(model_plan=plan).fit(reimported, snapshot=snapshot)
+    result = kumo.Trainer(model_plan=plan).fit(reimported, snapshot=snapshot)
+    selected = json.loads(
+        Path(result.artifact_paths['trainer_config']).read_text())
+    assert selected['weight_mode'] == 'weighted_loss'
 
 
 def test_link_export_roundtrip(graph):
@@ -292,3 +314,26 @@ def test_custom_training_table_declares_integer_timestamp_unit(graph, unit,
     for stage in seeds:
         columns = ['ENTITY1', 'TIMESTAMP', 'TARGET1']
         assert _rows(seeds[stage], columns) == _rows(original_seeds[stage], columns)
+
+
+def test_weighted_roundtrip_helper_rejects_lost_weights_and_moved_rows():
+    weighted = pa.table(
+        dict(ENTITY1=[1, 2, 3], TIMESTAMP=[10, 20, 30],
+             TARGET1=[True, False, True], WEIGHT=[1., 2., 3.], SPLIT=[0, 1, 2]))
+    stages = {
+        name: weighted.slice(split, 1).drop(['SPLIT'])
+        for name, split in SPLITS.items()
+    }
+    verify_weighted_roundtrip(weighted, stages)
+    changed = dict(stages)
+    changed['val'] = changed['val'].set_column(3, 'WEIGHT', pa.array([1.]))
+    with pytest.raises(AssertionError):
+        verify_weighted_roundtrip(weighted, changed)
+    changed = dict(stages)
+    changed['val'] = changed['val'].set_column(3, 'WEIGHT',
+                                               pa.array([2], pa.int64()))
+    with pytest.raises(AssertionError):
+        verify_weighted_roundtrip(weighted, changed)
+    changed = dict(stages, train=stages['val'], val=stages['train'])
+    with pytest.raises(AssertionError):
+        verify_weighted_roundtrip(weighted, changed)

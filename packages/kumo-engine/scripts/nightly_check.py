@@ -42,6 +42,26 @@ def verify_archive(wheel, expected_sha256):
         raise ValueError('The selected wheel fingerprint differs')
 
 
+def verify_recipe_work(row, requested):
+    optimization = requested['optimization']
+    epochs, minimum, maximum = [
+        optimization[name]
+        for name in ('max_epochs', 'min_steps_per_epoch', 'max_steps_per_epoch')
+    ]
+    if (any(
+            type(value) is not int or value < 1
+            for value in (epochs, minimum, maximum)) or minimum != maximum):
+        raise ValueError('Nightly needs a fixed positive training recipe')
+    work = row['training_work'][0]
+    epoch, stopped = work.get('current_epoch'), work.get('early_stopped')
+    if (type(epoch) is not int or not 1 <= epoch <= epochs
+            or type(stopped) is not bool
+            or work['completed_batches'] != epoch * maximum
+            or not stopped and epoch != epochs):
+        raise ValueError(
+            'The fixed training recipe did not complete or stop normally')
+
+
 def gpu_properties(properties):
     identifier = str(properties.uuid)
     try:
@@ -191,6 +211,10 @@ def run(args):
                     data.verify_final_isolation(prepared)
                     row = learning.run_case(prepared, task, 0, independent,
                                             output / name)
+                    verify_recipe_work(
+                        row,
+                        json.loads((output / name /
+                                    'requested-plan.json').read_text()))
                     data.verify_final_isolation(prepared)
                     report['runs'].append(row)
                     report['completed_runs'].append((task, 0, row['case']))
