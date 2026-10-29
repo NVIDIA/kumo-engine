@@ -16,7 +16,13 @@ from kumo.engine._manifest import (
     Manifest,
     ModelManifest,
     ModelParents,
+    OutputDestination,
+    PredictionManifest,
+    PredictionOutput,
+    PredictionParents,
+    PredictionTableRecord,
     Record,
+    RunScoring,
     SnapshotManifest,
     SnapshotParents,
     SourceTableEntry,
@@ -127,4 +133,47 @@ def test_a_new_kind_and_asset_reach_tags_and_datasets(tmp_path):
                            'version': '7', 'version_kind': 'exact'},
                 {'ID': {'stype': 'ID', 'dtype': 'int64'}}, {'rows': 3},
                 'training'),
+    ]
+
+
+def test_a_prediction_run_reads_its_snapshot_and_writes_its_outputs():
+    orders = SourceTableEntry(connector='S3', location='s3://data/orders',
+                              version='7', version_kind='exact')
+    run = PredictionManifest(
+        id='p', location='s3://root/predictions/p',
+        parents=PredictionParents(
+            model=ModelManifest(id='m', location='s3://root/models/m'),
+            snapshot=SnapshotManifest(
+                id='g@d', parents=SnapshotParents(
+                    source_tables={'orders': orders}))),
+        prediction_table=PredictionTableRecord(
+            query_sha256='q', source='pql', anchors=[], rows=2),
+        scoring=RunScoring(
+            binary_classification_threshold=None, threshold_source='none',
+            num_classes_to_return=None, count_source='none',
+            num_workers=None),
+        outputs=[
+            PredictionOutput(artifact='predictions',
+                             destination=OutputDestination(
+                                 connector='S3', location='s3://out/p')),
+            PredictionOutput(artifact='embeddings',
+                             destination=OutputDestination(
+                                 connector='SNOWFLAKE',
+                                 location='"DB"."S"."EMB"')),
+        ], status='succeeded', timings=None, stats=None)
+
+    assert artifact_summaries(run, 'scoring') == [
+        Tag('kumo.prediction_uri', 's3://root/predictions/p'),
+        Tag('kumo.bundle_uri', 's3://root/models/m'),
+        Tag('kumo.output_uri', 's3://out/p'),
+        Tag('kumo.output_table', '"DB"."S"."EMB"'),
+        Dataset('orders', {'connector': 'S3', 'location': 's3://data/orders',
+                           'version': '7', 'version_kind': 'exact'}, {}, {},
+                'scoring'),
+        Dataset('predictions', {'connector': 'S3', 'location': 's3://out/p',
+                                'version': None, 'version_kind': None},
+                {}, {}, 'output'),
+        Dataset('embeddings', {'connector': 'SNOWFLAKE',
+                               'location': '"DB"."S"."EMB"', 'version': None,
+                               'version_kind': None}, {}, {}, 'output'),
     ]

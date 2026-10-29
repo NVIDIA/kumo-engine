@@ -92,7 +92,7 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
         if settings is not None:
             if error is None and settings.wants('prediction'):
                 try:
-                    store(result, manifest, settings)
+                    manifest = store(result, manifest, settings)
                 except Exception as failure:
                     unstored = failure
             untracked = track_prediction(manifest, settings.tracking,
@@ -105,9 +105,10 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
 
 
 def store(result: Any, manifest: Optional[PredictionManifest],
-          settings: Any) -> None:
+          settings: Any) -> Optional[PredictionManifest]:
     r"""Copy the run's outputs and manifest to
-    ``<root>/predictions/<id>/<artifact>/``."""
+    ``<root>/predictions/<id>/<artifact>/``; returns the manifest, which
+    records where."""
     from kumo_core.train.artifact_manifest import load_prediction_selection
 
     from kumo.engine.trainer.output_config import PredictionOutputConfig
@@ -118,6 +119,8 @@ def store(result: Any, manifest: Optional[PredictionManifest],
         names = [item.artifact_type.value.lower()
                  for item in selection.artifacts]
         base = f'predictions/{result.id}'
+        manifest = settings.locate(result._manifest_path, PredictionManifest,
+                                   base) or manifest
         result._export(
             PredictionOutputConfig(settings.root.connector, output_paths={
                 name: settings.root.location(f'{base}/{name}/')
@@ -126,6 +129,7 @@ def store(result: Any, manifest: Optional[PredictionManifest],
     except Exception as error:
         raise RuntimeError(f"Could not store prediction run {result.id} in "
                            f"the artifact root: {error}") from error
+    return manifest
 
 
 def write(result: Any, manifest: PredictionManifest) -> None:
