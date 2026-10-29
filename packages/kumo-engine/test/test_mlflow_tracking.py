@@ -448,3 +448,37 @@ def test_link_prediction_metric_names_are_logged(tracking_uri):
         'test_map_at_10': 0.5,
         'val_precision_at_10': 0.25
     }
+
+
+def test_system_metrics_skip_a_failed_log_and_stop_after_repeated_ones(
+        monkeypatch, caplog):
+    import logging
+
+    from kumo.engine.integrations import mlflow as integration
+
+    class Monitor:
+        def collect_metrics(self):
+            pass
+
+        def aggregate_metrics(self):
+            return {'cpu': 1.0}
+
+        def clear_metrics(self):
+            pass
+
+    calls = []
+
+    def log(metrics, step):
+        calls.append(step)
+        if step == 0 or step >= 2:
+            raise ConnectionError('blip')
+
+    monkeypatch.setattr(integration, '_metric_monitors', lambda: [Monitor()])
+    caplog.set_level(logging.INFO, integration.logger.name)
+    with integration._SystemMetrics(log, interval=0.001) as metrics:
+        metrics._thread.join(10)
+
+    assert calls == list(range(2 + integration._SYSTEM_METRICS_FAILURES))
+    assert caplog.text.count('Could not log system metrics') == 1
+    assert 'ConnectionError: blip' in caplog.text
+    assert 'stopped after 6 failed logs in a row' in caplog.text
