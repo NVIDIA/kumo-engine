@@ -116,7 +116,7 @@ with kumo.mlops(cfg):
 trainer.fit(table, snapshot=snapshot, mlops=cfg)
 ```
 
-- **`artifact_root`** (required): a URI (`s3://`, `gs://`, `file://`, or a local path, including `/Volumes/...` on a Databricks cluster) or a `(connector, path)` pair for a store a URI cannot reach: a volume through a `DatabricksConnector` (`"/Volumes/<catalog>/<schema>/<volume>/kumo"`) or a named stage through a `SnowflakeConnector` (`"@DB.SCHEMA.STAGE/kumo"`).
+- **`artifact_root`** (required): a URI (`s3://`, `gs://`, `file://`, or a local path, including `/Volumes/...` on a Databricks cluster) or a `(connector, path)` pair for a store a URI cannot reach: a volume through a `DatabricksConnector` (`"/Volumes/<catalog>/<schema>/<volume>/kumo"`) or a named stage through a `SnowflakeConnector` (`"@DB.SCHEMA.STAGE/kumo"`). The connector's `root_dir` must contain the path; `kumo.MLOps` raises otherwise, so a data connector rooted at `s3://<bucket>/data` cannot hold `s3://<bucket>/artifacts`.
 - **`tracking`**: `MlflowTracking` or `SnowflakeTracking` (below), or your own [`Tracking`](#custom-trackers).
 - **`registry`**: a `ModelRegistryLocation(name, alias=...)`; every fit registers its model there, in the tracker's registry.
 - **`store`**: the artifact kinds stored when produced: `snapshot`, `training_table`, `model` and `prediction` (default: all).
@@ -187,6 +187,7 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 `MlflowTracking(experiment_name=None, run_name=None, log_system_metrics=True, tags=None, log_model=False, *, target=None)`:
 - With no `target`, it records where MLflow's own configuration points (`MLFLOW_TRACKING_URI`, `mlflow.set_tracking_uri`; automatic on Databricks). `target` names another server with its credentials: a `DatabricksConnector`, a `SageMakerMLflow(arn)`, or a tracking URI. With a `target`, `experiment_name` is required to record runs.
 - `log_model=True` logs the model on the fit run without registering it; `MLOps(registry=)` implies it.
+- Building `kumo.MLOps` creates a missing experiment; if MLflow refuses (on Databricks, the experiment's folder must exist), it raises and says so.
 
 `SnowflakeTracking(source, *, experiment_name, database=None, schema_name=None, run_name=None, tags=None, native_model_lineage=False, serving_options=None)`:
 - `source` is a `SnowflakeConnector`, whose identity opens the session and whose Snowflake Model Registry `MLOps(registry=)` registers in, or a Snowpark session, which tracks only.
@@ -290,7 +291,8 @@ run.id, run.bundle_id, run.snapshot_id, run.scored_rows, run.skipped_rows
 A model registered through `MlflowTracking` is an MLflow pyfunc: it serves with `mlflow.pyfunc.load_model(uri)`, `spark_udf` and Model Serving.
 
 ```python
-model = mlflow.pyfunc.load_model("models:/main.ml.users_churn@champion")
+with cfg.tracking.client():        # MLflow's own calls reach the tracker's server, as its identity
+    model = mlflow.pyfunc.load_model("models:/main.ml.users_churn@champion")
 scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
     "snapshot": cfg.snapshot_uri(snapshot),        # "/Volumes/main/ml/kumo/snapshots/<graph id>/<data version>"
     "prediction_time": "2024-06-01"})              # temporal queries need it, or a TIMESTAMP column
