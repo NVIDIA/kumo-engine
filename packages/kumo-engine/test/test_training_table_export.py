@@ -336,7 +336,7 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
         (directory / '_provenance.json').read_bytes()) == manifest.to_dict()
 
     reloaded = kumo.TrainingTable.load_from_connector(
-        connector, path='lineage', pq=pquery, snapshot=snapshot)
+        connector, path='lineage', pquery=pquery, snapshot=snapshot)
     manifest = reloaded.manifest
     assert reloaded.id != table.id
     assert manifest.parents.source_table == SourceTableEntry(
@@ -457,7 +457,7 @@ def test_a_mlops_block_stores_each_table_once_under_the_root(graph, tmp_path):
     assert json.loads((stored / '_provenance.json').read_text())['id'] == (
         table.id)
     reloaded = kumo.TrainingTable.load_from_connector(
-        cfg, path=f'training_tables/{table.id}', pq=pquery, snapshot=snapshot)
+        cfg, path=f'training_tables/{table.id}', pquery=pquery, snapshot=snapshot)
     assert _seeds(reloaded)[1] == _seeds(table)[1]
     off = pquery.generate_training_table(
         snapshot, mlops=kumo.MLOps(artifact_root=str(tmp_path / 'other'),

@@ -50,7 +50,7 @@ Every artifact has one way out, `<artifact>.export(<Kind>OutputConfig(...))`, an
 | Artifact | Export | Load |
 |---|---|---|
 | Snapshot | `snapshot.export(SnapshotOutputConfig(connector, path))`, returns the location | `GraphSnapshot.load_from_connector(connector, path=location)`, or `(cfg, id=snapshot_id)` |
-| Training table | `table.export(TrainingTableOutputConfig(connector, name))` | `TrainingTable.load_from_connector(connector, path=name, pq=pq, snapshot=snapshot)`, or `(cfg, path=f"training_tables/{id}", ...)` |
+| Training table | `table.export(TrainingTableOutputConfig(connector, name))` | `TrainingTable.load_from_connector(connector, path=name, pquery=pquery, snapshot=snapshot)`, or `(cfg, path=f"training_tables/{id}", ...)` |
 | Model | `result.export(ModelOutputConfig(connector, path=... or location=...))` | `Trainer.load_from_connector(connector, path=... or location=...)`, or `(cfg, path=f"models/{id}")` |
 
 `fit(export_config=...)` is shorthand for fitting, then exporting. Loading needs a file destination (S3, GCS, local files, a volume or stage). Exporting again to a destination that already holds a complete copy of the same artifact reuses it (logged at info) instead of uploading again.
@@ -71,7 +71,7 @@ A generated or caller-supplied training table carries `_provenance.json` in its 
 - the snapshot it was generated from (that snapshot's manifest, embedded);
 - for `TrainingTable.from_source_table`, the source table's connector, location and version.
 
-`TrainingTable.id` is deterministic: the same snapshot, query, plan, split seed and engine build give the same id. A caller-supplied source without a version gets a random id. An export to files (`TrainingTable.export`) writes the manifest next to the Parquet parts. `TrainingTable.load_from_connector(connector, path=..., pq=..., snapshot=...)` materializes an export again.
+`TrainingTable.id` is deterministic: the same snapshot, query, plan, split seed and engine build give the same id. A caller-supplied source without a version gets a random id. An export to files (`TrainingTable.export`) writes the manifest next to the Parquet parts. `TrainingTable.load_from_connector(connector, path=..., pquery=..., snapshot=...)` materializes an export again.
 
 With MLOps on, each table is stored once under `<root>/training_tables/<id>/`.
 

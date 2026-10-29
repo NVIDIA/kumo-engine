@@ -121,7 +121,7 @@ class TrainingTable:
 
     @classmethod
     def load_from_connector(cls, connector: Any, *, path: str,
-                            pq: "PredictiveQuery",  # noqa: F821
+                            pquery: "PredictiveQuery",  # noqa: F821
                             snapshot: GraphSnapshot) -> "TrainingTable":
         r"""Materialize a table written by :meth:`export` (a directory with a
         ``SPLIT`` column) against ``snapshot``, as :meth:`from_source_table`
@@ -132,7 +132,7 @@ class TrainingTable:
         connector, path = on_root(connector, path)
         return cls.from_source_table(connector[path],
                                      TrainingTableSpec(split_col='SPLIT'),
-                                     pq=pq, snapshot=snapshot)
+                                     pq=pquery, snapshot=snapshot)
 
     def _store(self, settings: Any) -> None:
         from pyarrow.fs import FileType
