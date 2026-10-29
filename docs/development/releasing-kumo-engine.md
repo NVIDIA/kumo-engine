@@ -106,9 +106,10 @@ platform's `release-version`.
    - builds the wheels with `--release`, so the version is exactly the tag's;
    - resolves the x86_64 wheel against PyPI, alone and with each extra, on
      every Python version it claims, and stops if any fails;
-   - runs `wheel-smoke` on the finished x86_64 wheel with Python 3.12 and CPU
-     execution. Installation, training, prediction, and model reload must pass
-     before attachment or publication. See the [test criteria](testing.md#finished-kumo-engine-wheel);
+   - runs the shared eight-task GPU check on the finished x86_64 wheel with
+     Python 3.12. Installation, CUDA training, prediction, and model reload must
+     pass before attachment or publication. The GPU job downloads this build's
+     wheel without rebuilding it. See the [test criteria](testing.md#finished-kumo-engine-wheel);
    - attaches the x86_64 and ARM64 wheels to the GitHub release.
 5. **Approve the publication.** The `kitmaker` job waits for approval on the
    `kumo-engine-release` environment. It then checks that the Portal project

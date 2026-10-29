@@ -29,46 +29,32 @@ It builds its prerequisites and runs without cloud credentials. The
 
 ## Finished Kumo Engine wheel
 
-The wheel test runs after every manual or release build on Linux x64, Python 3.12, CPU.
-Failure blocks release attachment and Kitmaker publication. The limit is 20 minutes.
-It installs in a fresh environment outside the checkout, uses PyPI, and ignores
-host pip settings. CUDA libraries still install, but no GPU is required.
+After each manual or release build, `wheel-smoke` downloads the finished x86_64
+wheel from that run. It uses Python 3.12 and an existing T4 GPU runner. It does
+not rebuild the wheel on the GPU. Failure blocks release attachment and Kitmaker
+publication. The GPU job has a 22-minute limit.
 
-From the repository root, use a new output directory:
+The job uses the same [GPU runner](../../packages/kumo-engine/test/wheel_gpu_smoke.py)
+and [setup action](../../.github/actions/engine-gpu-smoke/action.yml) as the PR
+check. The action installs the selected wheel in a fresh environment outside the
+checkout. It uses public PyPI and ignores host pip settings. The installed version
+and SHA-256 (file fingerprint) must match the downloaded wheel. Dependencies must
+pass `pip check`.
 
-```bash
-python3.12 packages/kumo-engine/scripts/smoke_wheel.py /absolute/path/to/kumo_engine-SELECTED.whl \
-  --output-dir /absolute/path/to/new-evidence
-```
+The eight task types each train one model with seed zero, predict, and reload the
+saved model on CUDA. Outputs must be finite and complete. Restored model weights
+must match exactly. Prediction comparisons use the shared runner's GPU limits.
+Learning-quality scores remain informational.
 
-Exit code zero requires all of these results:
+Prepared PR 172 inputs come from the S3 object and checksum in the
+[input manifest](../../packages/kumo-engine/test/pr172/inputs.json). The workflow
+uses its existing AWS test role. It does not read a private GitHub repository.
+The job preserves GPU results and logs in the `kumo-engine-wheel-smoke-*` artifact.
 
-- The installed version and SHA-256 (file fingerprint) match the selected wheel. Dependencies pass `pip check`.
-- The graph has 50 entities, 3,000 events, and 6,000 directed edges.
-- Training completes. Prediction returns each of the 50 entity IDs once. Probabilities are finite, within
-  `[0, 1]`, and sum to one. Labels match the `> 0.5` probability threshold.
-- Reloaded IDs and labels match. Probability differences satisfy
-  `abs(a-b) <= 1e-6 + 1e-5 * abs(b)`.
-
-[Settings and the approved reference](../../packages/kumo-engine/test/wheel_workflow.json)
-fix the data, query, seed `0`, and one epoch with two steps per trial and refit.
-This checks workflow correctness. Learning quality, speed limits, and other
-platforms need separate tests.
-
-CI saves `summary.json`, `workflow-result.json`, settings, installation and
-dependency reports, model configuration, graph statistics, predictions, and logs
-after success or failure.
-
-Add `--reference` to require the approved wheel and dependency versions.
-PRs test both modes against the approved release. To replace the reference,
-first pass the ordinary test and save its evidence. Obtain the release owner's
-approval. Update the settings file. Repeat with `--reference`.
-
-Run the runner tests without engine dependencies:
-
-```bash
-python3.12 -m unittest discover -s test/scripts -p test_engine_wheel_smoke.py
-```
+To test a new wheel without publication, run Kumo Engine - Build and publish
+wheel manually at the selected commit. To test an existing release, run
+Kumo Engine - Wheel smoke and set `release_tag` to its `kumo-engine-v<version>`
+tag. Candidate PR feedback runs separately through the trusted PR GPU workflow.
 
 ## Report evidence
 

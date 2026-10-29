@@ -10,7 +10,7 @@
 #   2. Create and publish a GitHub release tagged `kumo-engine-v<version>`.
 #   3. This workflow builds the wheels at that tag and attaches them to the
 #      release once `check-requirements` resolves each Python version/extra
-#      and `wheel-smoke` installs, trains, predicts, and reloads on x64 CPU.
+#      and `wheel-smoke` tests that finished wheel on all eight GPU task types.
 #   4. Once the `kumo-engine-release` environment approves it, `kitmaker`
 #      publishes the attached x86_64 wheel to PyPI and pypi.nvidia.com through
 #      Kitmaker (scripts/kitmaker_release.py).
@@ -145,6 +145,9 @@ jobs:
 
   wheel-smoke:
     needs: [build]
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/kumo-engine-wheel-smoke.yml
     with:
       wheel_artifact: kumo-engine-wheel-x86_64-${{ github.sha }}
