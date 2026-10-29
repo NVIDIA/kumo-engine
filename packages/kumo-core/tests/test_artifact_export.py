@@ -138,6 +138,21 @@ def test_file_metadata_uses_hosted_batch_bound_and_preserves_source(tmp_path):
     assert source.read_bytes() == before
 
 
+def test_stamped_columns_keep_the_source_types(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from kumo_core.artifact_export import prepared_artifact_file
+
+    source = tmp_path / 'scores.parquet'
+    schema = pa.schema([('ENTITY', pa.int64()), ('TARGET_PRED', pa.bool_()),
+                        ('ANCHOR', pa.timestamp('ns', tz='UTC'))])
+    pq.write_table(pa.table([[1, 2], [None, None], [None, 0]], schema=schema),
+                   source)
+    with prepared_artifact_file(str(source), {'BUNDLE_ID': 'b'}) as staged:
+        assert pq.read_schema(staged) == schema.append(
+            pa.field('BUNDLE_ID', pa.string()))
+
+
 @pytest.mark.parametrize('existing_empty', [False, True])
 def test_multipart_failure_and_failed_recopy_remain_retryable(
         tmp_path, monkeypatch, existing_empty):
