@@ -101,8 +101,7 @@ def _tooltip(text: str, row: str = '', table: str = '',
             f'data-kumo-tip="{attr}"><title>{text}</title>')
 
 
-def _preview(table: Table, count: int,
-             columns: Sequence[str]) -> dict[str, str]:
+def _preview(table: Table, columns: Sequence[str]) -> dict[str, str]:
     import pandas as pd
     from kumo_core.sources.preview import sample_dataframe
 
@@ -134,7 +133,7 @@ def _preview(table: Table, count: int,
                 label = short.repr(value)
                 labels.append(label if len(label) <= 160 else label[:157] +
                               '...')
-                if len(labels) == count:
+                if len(labels) == 6:
                     break
             fallback[column] = (
                 '\nSample values:\n' + '\n'.join(labels) if labels else
@@ -146,14 +145,14 @@ def _preview(table: Table, count: int,
 
 
 def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
-           show_cols: bool, sample_rows: int = 0, layout: str = 'auto') -> SVG:
+           show_cols: bool, show_samples: bool = False, layout: str = 'auto') -> SVG:
     from kumo.engine._visualization_layout import build_layouts, choose_layout
 
     if not isinstance(layout, str) or layout not in (
             'auto', 'standard', 'compact'):
         raise ValueError('layout must be auto, standard, or compact.')
-    if type(sample_rows) is not int or not 0 <= sample_rows <= 3:
-        raise ValueError('sample_rows must be an integer from 0 to 3.')
+    if type(show_samples) is not bool:
+        raise ValueError('show_samples must be True or False.')
     if len(tables) > 30:
         raise ValueError('Graph visualization supports at most 30 tables; '
                          'select a smaller graph to visualize.')
@@ -398,8 +397,8 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         x, y = geometry['positions'][name]
         title, header, rows, ports, footer, card_height = cards[name]
         definition = definitions[name]
-        preview = (_preview(tables[name], sample_rows, [row[0] for row in rows])
-                   if sample_rows and rows else {})
+        preview = (_preview(tables[name], [row[0] for row in rows])
+                   if show_samples and rows else {})
         outgoing = [e for e in edges if e.src_table == name]
         connected = sorted(neighbors[name])
         summary = (f'{name}\n{len(definition.cols)} '

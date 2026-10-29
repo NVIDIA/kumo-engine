@@ -198,7 +198,7 @@ def test_visualize_exports_escaped_svg_without_source_access(
                          side_effect=AssertionError('inference started')), \
             patch.object(Graph, 'snapshot',
                          side_effect=AssertionError('snapshot started')):
-        svg = graph.visualize(destination)
+        svg = graph.visualize(destination, show_samples=False)
     assert isinstance(svg, str)
     assert svg._repr_svg_() == svg
     assert destination.read_text(encoding='utf-8') == svg
@@ -424,7 +424,7 @@ def test_visualize_rejects_invalid_layout_before_source_access(layout):
     with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
                       side_effect=AssertionError('source accessed')):
         with pytest.raises(ValueError, match='layout must be'):
-            Graph(_s3_tables()).visualize(layout=layout, sample_rows=3)
+            Graph(_s3_tables()).visualize(layout=layout, show_samples=True)
 
 
 def test_visualize_layouts_preserve_schema_and_export_selection(tmp_path):
@@ -458,10 +458,12 @@ def test_visualize_layouts_preserve_schema_and_export_selection(tmp_path):
     assert schemas[0] == schemas[1]
 
 
-@pytest.mark.parametrize('sample_rows', [-1, 4, 1.5, True, None])
-def test_visualize_rejects_invalid_sample_count(sample_rows):
-    with pytest.raises(ValueError, match='sample_rows'):
-        Graph(_s3_tables()).visualize(sample_rows=sample_rows)
+@pytest.mark.parametrize('show_samples', [0, 1, 6, 'true', None])
+def test_visualize_rejects_invalid_show_samples(show_samples):
+    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
+                      side_effect=AssertionError('source accessed')):
+        with pytest.raises(ValueError, match='show_samples'):
+            Graph(_s3_tables()).visualize(show_samples=show_samples)
 
 
 @pytest.mark.parametrize(
@@ -480,9 +482,11 @@ def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
                     sql=sql)))
     secret = '<script>alert("private sample")</script>'
     frame = pd.DataFrame({
-        'id': [secret, None, ['alpha', 'beta'], 'later non-null'],
-        'event_id': ['x' * 1000, None, 'third', 'later non-null'],
-        'user_id': [1, 2, 3, 4],
+        'id': [secret, None, ['alpha', 'beta'], 'later non-null',
+               'fourth', 'fifth', 'sixth', 'outside cap'],
+        'event_id': ['x' * 1000, None, 'third', 'later non-null',
+                     'fourth', 'fifth', 'sixth', 'outside cap'],
+        'user_id': list(range(1, 9)),
     })
     if outcome == 'nulls':
         frame = pd.DataFrame({
@@ -514,7 +518,7 @@ def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
     with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
                       return_value=backend), patch.object(
                           Graph, 'snapshot', side_effect=AssertionError):
-        svg = Graph(tables).visualize(destination, sample_rows=3,
+        svg = Graph(tables).visualize(destination, show_samples=True,
                                       show_cols=True)
         html = svg._repr_html_()
         if outcome == 'values':
@@ -539,7 +543,12 @@ def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
     if outcome in ('values', 'sql'):
         assert secret in details and '\nnull' not in details
         assert "['alpha', 'beta']" in details
-        assert 'later non-null' in details
+        assert 'later non-null' in details and 'sixth' in details
+        assert 'outside cap' not in details
+        for tip in tips:
+            if 'Sample values:\n' in tip.get('data-kumo-tip'):
+                assert len(tip.get('data-kumo-tip').split(
+                    'Sample values:\n')[1].splitlines()) == 6
         assert 'x' * 121 not in details
     elif outcome == 'collision':
         rows = [tip for tip in tips if tip.get('data-kumo-row')]
@@ -558,8 +567,7 @@ def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
         assert 'Sample values: unavailable' in details
 
 
-@pytest.mark.parametrize('count', [1, 3])
-def test_visualize_samples_bound_preview_and_select_columns_independently(count):
+def test_visualize_samples_bound_preview_and_select_columns_independently():
     import pandas as pd
 
     from kumo.engine._visualization import _preview
@@ -568,15 +576,16 @@ def test_visualize_samples_bound_preview_and_select_columns_independently(count)
     backend = Mock()
     backend.get_sample.return_value.sample_rows = pd.DataFrame({
         'id': [None] * 29 + ['last allowed', 'outside preview'],
-        'other': ['first', None, 'second', 'third'] + [None] * 27,
+        'other': ['first', None, 'second', 'third', 'fourth', 'fifth',
+                  'sixth', 'outside cap'] + [None] * 23,
     }).to_json(orient='table')
     with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
                       return_value=backend):
-        preview = _preview(table, count, ['id', 'other'])
+        preview = _preview(table, ['id', 'other'])
     assert preview['id'] == "\nSample values:\n'last allowed'"
     assert preview['other'].splitlines()[2:] == [
-        "'first'", "'second'", "'third'"
-    ][:count]
+        "'first'", "'second'", "'third'", "'fourth'", "'fifth'", "'sixth'"
+    ]
 
 
 @pytest.mark.parametrize('count', [30, 31])
@@ -587,7 +596,7 @@ def test_visualize_table_cap_precedes_source_access(count):
                       new_callable=PropertyMock) as backend:
         if count == 31:
             with pytest.raises(ValueError, match='at most 30 tables'):
-                graph.visualize(sample_rows=3)
+                graph.visualize(show_samples=True)
         else:
             root = ElementTree.fromstring(graph.visualize())
             assert len(root.findall(

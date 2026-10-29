@@ -347,7 +347,7 @@ class Graph:
         self.native_graph
 
     def visualize(self, path: str | Path | None = None, *,
-                  show_cols: bool = False, sample_rows: int = 0,
+                  show_cols: bool = False, show_samples: bool = False,
                   layout: str = 'auto') -> SVG:
         """Display pannable table relationships in notebooks and return SVG.
 
@@ -357,9 +357,10 @@ class Graph:
                 Primary keys, foreign keys, and the declared time column (TS)
                 are always included, even above this limit. False shows only
                 these columns.
-            sample_rows: Show 1 to 3 non-null examples per column in HTML
-                tooltips, selected from up to 30 preview rows per table.
-                Zero (default) reads no source data. Previews may
+            show_samples: Show up to six non-null examples per column in HTML
+                tooltips, in two columns and up to three rows, selected from
+                up to 30 preview rows per table. False (default) reads no
+                source data. Previews may
                 run warehouse queries and incur costs; returned row limits
                 do not bound bytes scanned. Unavailable previews are labeled.
                 Samples become part of saved notebook HTML, never SVG exports.
@@ -378,7 +379,7 @@ class Graph:
         from kumo.engine._visualization import render
 
         svg = render(self._named_tables, self.edges, show_cols=show_cols,
-                     sample_rows=sample_rows, layout=layout)
+                     show_samples=show_samples, layout=layout)
         if path is not None:
             Path(path).write_text(svg, encoding='utf-8')
         return svg

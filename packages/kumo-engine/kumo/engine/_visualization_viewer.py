@@ -66,7 +66,7 @@ padding:7px 10px}
 .kumo-graph .kumo-tip-name{font-size:17px;font-weight:700;color:$accent}
 .kumo-graph .kumo-tip-body{padding:7px 10px}
 .kumo-graph .kumo-tip-badges{display:flex;flex-wrap:wrap;gap:5px}
-.kumo-graph .kumo-tip-samples{display:flex;gap:5px}
+.kumo-graph .kumo-tip-samples{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}
 .kumo-graph .kumo-tip-badge{background:#f2f4ef;border:1px solid #e1e6db;
 border-radius:7px;corner-shape:squircle;padding:2px 6px;color:#536247}
 .kumo-graph .kumo-tip-key{background:#ecf4df;border-color:#d1e2b7;color:#487014}
@@ -78,10 +78,11 @@ grid-auto-flow:column;grid-template-columns:minmax(0,1fr)}
 .kumo-graph .kumo-tip-connection{color:#455239;font-weight:500;min-width:0;
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kumo-graph .kumo-tip-label{color:#7a8470;margin:5px 0 3px}
-.kumo-graph .kumo-tip-sample{flex:1;min-width:0;max-width:100%;white-space:nowrap;
+.kumo-graph .kumo-tip-sample{min-width:0;max-width:100%;white-space:nowrap;
 overflow:hidden;text-overflow:ellipsis;background:#f5f7f2;border-radius:7px;corner-shape:squircle;
 padding:2px 6px;color:#455239;
 font:16px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
+.kumo-graph .kumo-tip-sample:only-child{grid-column:1/-1}
 .kumo-graph [data-kumo-tip]{outline:none;cursor:default}
 .kumo-graph .kumo-row-light{fill:#edf6df;stroke:#9bc958;stroke-width:1;
 opacity:0;pointer-events:none;transition:opacity 140ms ease}
@@ -141,7 +142,7 @@ body.append(element('ref','↗ '+ref.slice(12)));
 const index=lines.findIndex(x=>x.startsWith('Sample values:'));
 if(index>=0){body.append(element('label','Sample values'));
 const status=lines[index].slice(14).trim(), samples=element('samples','');
-for(let value of status?[status]:lines.slice(index+1,index+4)){
+for(let value of status?[status]:lines.slice(index+1,index+7)){
 value=value.replace(/^'|'$/g,'');
 samples.append(element('sample',
 value.length>90?value.slice(0,87)+'…':value))}body.append(samples)}
@@ -373,7 +374,8 @@ svg.querySelectorAll(':scope>rect').forEach(rect=>{
 rect.setAttribute('width',layoutWidth);rect.setAttribute('height',layoutHeight)});
 selected=name;host.dataset.layout=name;
 };
-const inlineHeight=()=>Math.min(720,Math.max(240,layoutHeight+32));
+const minHeight=svg.querySelector('[data-kumo-tip*="Sample values:"]')?320:240;
+const inlineHeight=()=>Math.min(720,Math.max(minHeight,layoutHeight+32));
 const fitScale=()=>{
 const side=348;
 const padding=view.clientWidth>=side*2+320?side:16;

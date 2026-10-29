@@ -122,7 +122,8 @@ Hover or focus a header or column for details.
 Interactive output requires trusted HTML; fullscreen also needs permission from the notebook host.
 SVG exports contain the initial arrangement and native tooltips.
 
-`sample_rows=1`, `2`, or `3` shows up to that many non-null examples per visible column, sampled independently from up to 30 preview rows per table.
+`show_samples=True` shows up to six non-null examples per visible column in two columns and up to three rows, sampled independently from up to 30 preview rows per table.
+The default `show_samples=False` hides samples and reads no source data.
 Previews can run warehouse queries and incur costs; the row limit does not bound bytes scanned.
 Unavailable or empty previews are labeled.
 Sample values are saved in notebook HTML, but never included in SVG text or exports.
