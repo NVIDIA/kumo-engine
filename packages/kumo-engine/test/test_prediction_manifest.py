@@ -182,8 +182,10 @@ def test_mlops_stores_the_run_after_its_export(graph, classifier, tmp_path):
 
 
 def test_mlops_runs_record_their_exact_score_counts(graph, classifier,
-                                                    tmp_path):
+                                                    tmp_path, monkeypatch):
+    from kumo_core.prediction_counts import psi
     from kumo_core.score_counts import PROBABILITY_EDGES, Counts
+    from kumo_core.summaries import Histogram, Scalar
 
     _, snapshot = graph
     trainer, table = classifier
@@ -191,19 +193,37 @@ def test_mlops_runs_record_their_exact_score_counts(graph, classifier,
                             binary_classification_threshold=0.4)
     assert plain.manifest.stats['predictions'].counts is None
 
-    result = trainer.predict(table, snapshot=snapshot,
-                             binary_classification_threshold=0.4,
-                             mlops=kumo.MLOps(str(tmp_path / 'root')))
+    def histogram(values):
+        return np.bincount(np.searchsorted(PROBABILITY_EDGES, values, 'right'),
+                           minlength=102)
+
+    holdout = trainer.result.holdout_df()['True_PROB'].to_numpy()
+    baseline = Counts({'score': PROBABILITY_EDGES})
+    baseline.histogram('True_PROB', 'score', holdout)
+    monkeypatch.setattr('kumo.engine.trainer._provenance.holdout_counts',
+                        lambda model: baseline)
+    recorder = _Recorder()
+    result = trainer.predict(
+        table, snapshot=snapshot, binary_classification_threshold=0.4,
+        mlops=kumo.MLOps(str(tmp_path / 'root'), tracking=recorder))
     counts = Counts.from_dict(result.manifest.stats['predictions'].counts)
     frame = result.frame
     for column in ('False_PROB', 'True_PROB'):
         values = frame[column].to_numpy()
-        assert counts.arrays[column].tolist() == np.bincount(
-            np.searchsorted(PROBABILITY_EDGES, values, side='right'),
-            minlength=102).tolist()
+        assert counts.arrays[column].tolist() == histogram(values).tolist()
         assert counts.arrays[f'{column}/sum'] == pytest.approx(values.sum())
         assert counts.extents[column] == (values.min(), values.max())
     assert counts.arrays['predicted_positive'] == frame['TARGET_PRED'].sum()
+
+    logged = {summary.name: summary
+              for summary in recorder.records[0].summaries}
+    assert logged['pred/True_PROB/hist'] == Histogram(
+        'pred/True_PROB/hist', PROBABILITY_EDGES,
+        tuple(histogram(frame['True_PROB']).tolist()))
+    assert logged['pred/positive_rate'] == Scalar(
+        'pred/positive_rate', frame['TARGET_PRED'].mean())
+    assert logged['drift/score_psi'].value == pytest.approx(
+        psi(histogram(frame['True_PROB']), histogram(holdout)))
 
 
 @pytest.mark.parametrize('on_error', ['warn', 'raise'])
@@ -459,5 +479,6 @@ def test_tracking_records_the_run_and_never_changes_it(graph, classifier,
 
     for result in (tracked, failed):
         pd.testing.assert_frame_equal(result.frame, untracked.frame)
-    assert recorder.records == [prediction_record(tracked.manifest)]
+    assert recorder.records == [
+        prediction_record(tracked.manifest, model=trainer.result)]
     assert 'tracker down' in caplog.text
