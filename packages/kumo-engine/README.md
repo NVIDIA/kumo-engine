@@ -120,7 +120,8 @@ Graphs are limited to 30 tables and require valid declared schemas without self-
 
 `layout="auto"` chooses Standard or Compact from graph structure; either is also selectable in the notebook.
 Drag to pan, use the controls or Ctrl/Cmd+wheel to zoom, and choose Fit to reset the view.
-Hover or focus a header or column for details.
+Hover or focus a header or column for details without moving the graph.
+The notebook view follows the browser’s light or dark appearance; SVG and PDF exports use the light palette.
 Interactive output requires trusted HTML; fullscreen also needs permission from the notebook host.
 SVG exports contain the initial arrangement and native tooltips.
 Use the download button to save the entire selected layout as a PDF on your computer.

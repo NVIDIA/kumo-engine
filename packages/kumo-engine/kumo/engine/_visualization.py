@@ -438,7 +438,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         f'<rect width="{width}" height="{height}" fill="url(#{uid}-grid)"/>'
     ]
     if not names:
-        svg.append('<text x="24" y="60" font-size="16" fill="#606060">'
+        svg.append('<text class="kumo-muted" x="24" y="60" font-size="16" fill="#606060">'
                    'No tables</text>')
     for index, edge in enumerate(edges):
         path = geometry['paths'][index]
@@ -476,16 +476,15 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                    f'transform="translate({x} {y})">'
                    f'<defs><clipPath id="{clip}"><path d="{shape}"/>'
                    '</clipPath></defs>'
-                   f'<path d="{shape}" fill="{THEME["background"]}" stroke="{THEME["card_border"]}"/>')
+                   f'<path class="kumo-card" d="{shape}" fill="{THEME["card_background"]}" stroke="{THEME["card_border"]}"/>')
         svg.append(_tooltip(summary, table=name, connected_tables=connected))
         svg.append(f'<path class="kumo-surface" '
                    f'd="{_squircle(card_width, header, square_bottom=True)}" '
-                   f'clip-path="url(#{clip})" fill="{THEME["header_background"]}" '
-                   f'stroke="{THEME["header_border"]}"/>')
+                   f'clip-path="url(#{clip})" fill="{THEME["header_background"]}"/>')
         for i, line in enumerate(title):
-            svg.append('<text xml:space="preserve" '
+            svg.append('<text class="kumo-card-name" xml:space="preserve" '
                        f'x="16" y="{26 + 22 * i}" font-size="17" '
-                       f'font-weight="700" fill="{THEME["accent"]}">{escape(line)}'
+                       f'font-weight="700" fill="{THEME["heading"]}">{escape(line)}'
                        '</text>')
         svg.append('</g>')
         for row_index, (column, lines, ry, rh) in enumerate(rows):
@@ -503,24 +502,25 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                 samples[metadata] = _tooltip(detail + preview[column], row,
                                              name, column)
             svg.append(metadata)
-            fill = '#f7f7f7' if role else 'transparent'
-            svg.append(f'<path class="kumo-surface" '
+            fill = THEME['role_background'] if role else 'transparent'
+            cls = 'kumo-surface kumo-key-surface' if role else 'kumo-surface'
+            svg.append(f'<path class="{cls}" '
                        f'transform="translate(10 {ry + 2})" '
                        f'd="{_squircle(card_width - 20, rh - 4, 7)}" '
                        f'fill="{fill}"/>')
             for i, line in enumerate(lines):
-                svg.append('<text xml:space="preserve" '
+                svg.append('<text class="kumo-column-name" xml:space="preserve" '
                            f'x="18" y="{ry + 21 + 20 * i}" '
                            f'font-size="16" fill="{THEME["foreground"]}">{escape(line)}'
                            '</text>')
             if role:
-                svg.append(f'<text x="{card_width - 18}" '
+                svg.append(f'<text class="kumo-role" x="{card_width - 18}" '
                            f'y="{ry + rh / 2 + 4}" text-anchor="end" '
                            f'font-size="10" font-weight="700" '
                            f'fill="{THEME["accent"]}">{role}</text>')
             svg.append('</g>')
         if footer:
-            svg.append(f'<text x="18" y="{card_height - 14}" font-size="12" '
+            svg.append(f'<text class="kumo-muted" x="18" y="{card_height - 14}" font-size="12" '
                        f'fill="{THEME["muted"]}">{footer}</text>')
         svg.append('</g>')
     for x, y in geometry['handles']:

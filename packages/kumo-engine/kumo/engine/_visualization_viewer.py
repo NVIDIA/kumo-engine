@@ -5,7 +5,7 @@
 
 from string import Template
 
-from kumo.engine._widget import THEME, button, render_widget
+from kumo.engine._widget import CSS_THEME, button, render_widget
 
 _STYLE = Template(r"""
 .kumo-graph{container:kumo-graph/inline-size;padding:16px}
@@ -33,7 +33,7 @@ box-shadow:$chrome_shadow}
 @container kumo-graph (max-width:340px){.kumo-graph-actions{gap:2px}}
 .kumo-graph-layout input:focus-visible+span{
 outline:2px solid $focus;outline-offset:2px}
-.kumo-graph-scale{min-width:44px;text-align:center;color:#666;
+.kumo-graph-scale{min-width:44px;text-align:center;color:$muted;
 font:12px $font;font-variant-numeric:tabular-nums}
 .kumo-graph .kumo-graph-exit{display:none}
 .kumo-graph:fullscreen .kumo-graph-enter{display:none}
@@ -48,44 +48,42 @@ transparent .8px) 0 0/16px 16px}
 .kumo-graph-view[data-dragging],.kumo-graph-view[data-dragging] *{cursor:grabbing}
 .kumo-graph-view svg{display:block;flex:none;max-width:none!important;
 max-height:none!important}
-.kumo-graph-status{font-size:13px;color:#666;padding:6px 0}
+.kumo-graph-status{font-size:13px;color:$muted;padding:6px 0}
 .kumo-graph-view svg>rect{fill:transparent}
 .kumo-graph-tooltip{position:absolute;top:0;left:0;z-index:10;
 box-sizing:border-box;
-width:320px;max-width:calc(100% - 16px);border:1px solid #cbd8ba;
-border-radius:18px;corner-shape:squircle;background:$background;color:$foreground;
-box-shadow:0 5px 18px #24331416,0 1px 3px #2433140a;
+width:320px;max-width:calc(100% - 16px);border:1px solid $tooltip_border;
+border-radius:18px;corner-shape:squircle;background:$tooltip_background;color:$foreground;
+box-shadow:$tooltip_shadow;
 font:16px/1.4 $font;overflow-wrap:anywhere;
 overflow:hidden;pointer-events:none;opacity:0;visibility:hidden;
-transform:translateY(4px);transition:opacity 140ms ease,transform 140ms ease,
-visibility 140ms ease}
-.kumo-graph-tooltip[data-open]{opacity:1;visibility:visible;
-transform:translateY(0)}
+transition:opacity 140ms ease,visibility 140ms ease}
+.kumo-graph-tooltip[data-open]{opacity:1;visibility:visible}
 .kumo-graph .kumo-tip-head{background:$header_background;border-bottom:1px solid $tooltip_header_border;
 padding:7px 10px}
-.kumo-graph .kumo-tip-context{color:#6a7a58;font-size:16px;margin-bottom:2px}
-.kumo-graph .kumo-tip-name{font-size:17px;font-weight:700;color:$accent}
+.kumo-graph .kumo-tip-context{color:$muted;font-size:16px;margin-bottom:2px}
+.kumo-graph .kumo-tip-name{font-size:17px;font-weight:700;color:$heading}
 .kumo-graph .kumo-tip-body{padding:7px 10px}
 .kumo-graph .kumo-tip-badges{display:flex;flex-wrap:wrap;gap:5px}
 .kumo-graph .kumo-tip-samples{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}
-.kumo-graph .kumo-tip-badge{background:#f2f4ef;border:1px solid #e1e6db;
-border-radius:7px;corner-shape:squircle;padding:2px 6px;color:#536247}
-.kumo-graph .kumo-tip-key{background:#ecf4df;border-color:#d1e2b7;color:#487014}
-.kumo-graph .kumo-tip-type{color:#536247}
-.kumo-graph .kumo-tip-ref{padding-top:5px;color:#5b6751}
+.kumo-graph .kumo-tip-badge{background:$surface;border:1px solid $surface_border;
+border-radius:7px;corner-shape:squircle;padding:2px 6px;color:$muted}
+.kumo-graph .kumo-tip-key{background:$row_highlight;border-color:transparent;color:$accent}
+.kumo-graph .kumo-tip-type{color:$muted}
+.kumo-graph .kumo-tip-ref{padding-top:5px;color:$muted}
 .kumo-graph .kumo-tip-connections{list-style:none;padding:0;margin:0;display:grid;gap:4px 10px;
 grid-auto-flow:column;grid-template-columns:minmax(0,1fr)}
 .kumo-graph .kumo-tip-connections[data-columns="2"]{grid-template-columns:repeat(2,minmax(0,1fr))}
-.kumo-graph .kumo-tip-connection{color:#455239;font-weight:500;min-width:0;
+.kumo-graph .kumo-tip-connection{color:$foreground;font-weight:500;min-width:0;
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.kumo-graph .kumo-tip-label{color:#7a8470;margin:5px 0 3px}
+.kumo-graph .kumo-tip-label{color:$muted;margin:5px 0 3px}
 .kumo-graph .kumo-tip-sample{min-width:0;max-width:100%;white-space:nowrap;
-overflow:hidden;text-overflow:ellipsis;background:#f5f7f2;border-radius:7px;corner-shape:squircle;
-padding:2px 6px;color:#455239;
+overflow:hidden;text-overflow:ellipsis;background:$surface;border-radius:7px;corner-shape:squircle;
+padding:2px 6px;color:$foreground;
 font:16px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
 .kumo-graph .kumo-tip-sample:only-child{grid-column:1/-1}
 .kumo-graph [data-kumo-tip]{outline:none;cursor:default}
-.kumo-graph .kumo-row-light{fill:#edf6df;stroke:#9bc958;stroke-width:1;
+.kumo-graph .kumo-row-light{fill:$row_highlight;stroke:none;
 opacity:0;pointer-events:none;transition:opacity 140ms ease}
 .kumo-graph .kumo-active .kumo-row-light{opacity:1}
 .kumo-graph [data-kumo-tip]:focus-visible .kumo-row-light{
@@ -97,29 +95,34 @@ filter:drop-shadow(0 0 2px $focus)}
 .kumo-graph .kumo-edge{transition:stroke 140ms ease,stroke-width 140ms ease,
 opacity 140ms ease}
 .kumo-graph.kumo-links-focused .kumo-edge:not(.kumo-edge-active){opacity:.35}
-.kumo-graph .kumo-edge-active{stroke:#6e9947;stroke-width:1.8}
+.kumo-graph .kumo-edge-active{stroke-width:1.8}
 @media(prefers-reduced-motion:reduce){.kumo-graph-tooltip,
 .kumo-graph .kumo-row-light,
 .kumo-graph .kumo-edge{transition:none}}
 
-.kumo-graph .kumo-edge{vector-effect:non-scaling-stroke}
-""").substitute(THEME)
+.kumo-graph .kumo-edge{vector-effect:non-scaling-stroke;stroke:$edge}
+.kumo-graph .kumo-edge-active{stroke:$edge_active}
+.kumo-graph .kumo-card{fill:$card_background;stroke:$card_border}
+.kumo-graph [data-kumo-row=""]>.kumo-surface{fill:$header_background;stroke:none}
+.kumo-graph .kumo-key-surface{fill:$role_background}
+.kumo-graph .kumo-card-name{fill:$heading}
+.kumo-graph .kumo-column-name{fill:$foreground}
+.kumo-graph .kumo-role{fill:$accent}
+.kumo-graph .kumo-muted,.kumo-graph-handles circle{fill:$muted}
+.kumo-graph .kumo-active>.kumo-row-light{fill:$row_highlight}
+""").substitute(CSS_THEME)
 
 _HOVER = r"""
 const tip=document.createElement('div');
 tip.className='kumo-graph-tooltip';tip.role='tooltip';
 tip.id='kumo-tip-'+Math.random().toString(36).slice(2);host.append(tip);
-let active=null, card=null, timer, placement=null, hoverLock=null, pointer=null;
-let panTimer=null,panFrame=0,dwellPoint=null;
-const HOVER_DWELL=200,PAN_DURATION=250;
+let active=null, card=null, timer, placement=null;
 const firstCard=svg.querySelector(':scope>[data-kumo-card]');
 const element=(cls,text)=>{const n=document.createElement('div');
 n.className='kumo-tip-'+cls;n.textContent=text;return n};
 const cancelHide=()=>{clearTimeout(timer);timer=null};
-const cancelPan=()=>{clearTimeout(panTimer);panTimer=null;
-cancelAnimationFrame(panFrame);panFrame=0};
-const hide=()=>{cancelHide();cancelPan();tip.removeAttribute('data-open');
-placement=hoverLock=null;
+const hide=()=>{cancelHide();tip.removeAttribute('data-open');
+placement=null;
 if(host.classList.contains('kumo-links-focused'))
 edges.forEach(edge=>svg.insertBefore(edge.parentElement,firstCard));
 host.classList.remove('kumo-links-focused');
@@ -262,7 +265,7 @@ let boundary=side==='left'?c.left:c.right;
 for(const e of leftmost!==rightmost?edges:relevant){const r=extent(e);if(!r)continue;
 boundary=side==='left'?Math.min(boundary,r[0]):Math.max(boundary,r[1])}
 return{side,offset:(boundary-(side==='left'?c.left:c.right))/b.sx}};
-const place=(allowPan=false)=>{
+const place=(clearRoutes=false)=>{
 if(!active||!placement)return;
 const b=viewport(),a=active.getBoundingClientRect(),c=card.getBoundingClientRect();
 if(b.right<=b.left||b.bottom<=b.top){hide();return}
@@ -272,10 +275,8 @@ layoutConnections(b.sx);
 const t=tip.getBoundingClientRect(),left=placement.side==='left';
 let x=(left?c.left-t.width-12*b.sx:c.right+12*b.sx)+placement.offset*b.sx;
 const y=Math.max(b.top,Math.min(a.top,b.bottom-t.height));
-if(allowPan){
-const clamp=(v,lo,hi)=>Math.max(lo,Math.min(v,hi));
-if(active.dataset.kumoRow){
-// Compare the final popup with only route portions visible before the one pan.
+if(clearRoutes&&active.dataset.kumoRow){
+// Keep the popup clear of the visible highlighted routes.
 const band={...b,top:Math.max(b.top,y-2),bottom:Math.min(b.bottom,y+t.height+2)};
 const spans=[];
 if(band.top<band.bottom)for(const edge of edges)
@@ -285,21 +286,12 @@ const adjacent=x;
 for(const span of spans)if(x<span[1]&&x+t.width>span[0])
 x=left?span[0]-t.width-12*b.sx:span[1]+12*b.sx;
 placement.offset+=(x-adjacent)/b.sx}
-const dx=clamp(clamp(x<b.left?b.left-x:x+t.width>b.right?b.right-x-t.width:0,
--(b.right-b.left),b.right-b.left),b.left+Math.min(24*b.sx,a.width/2)-a.right,
-b.right-Math.min(24*b.sx,a.width/2)-a.left);
-if(allowPan===true&&Math.abs(dx)>.5){hoverLock=pointer?{...pointer}:{};
-panBy(dx/b.sx,0,true);return}}
 if(!intersects(a,b)){hide();return}
 const raw=x;x=Math.max(b.left,Math.min(x,b.right-t.width));
 tip.dataset.side=placement.side;tip.dataset.clamped=String(x!==raw||y!==a.top);
 tip.style.left=(x-b.h.left)/b.sx+'px';tip.style.top=(y-b.h.top)/b.sy+'px'};
-const schedulePan=()=>{clearTimeout(panTimer);dwellPoint=pointer?{...pointer}:null;
-panTimer=setTimeout(()=>{panTimer=null;
-if(active&&!drag&&!hoverLock){placement.pending=false;place(true)}},HOVER_DWELL)};
-const show=(el,event)=>{if(drag||hoverLock)return;
-cancelHide();if(active===el){if(!panTimer&&placement?.pending)schedulePan();return}
-if(event&&Number.isFinite(event.clientX))pointer={x:event.clientX,y:event.clientY};
+const show=el=>{if(drag)return;
+cancelHide();if(active===el)return;
 hide();active=el;card=el.parentElement;
 el.classList.add('kumo-active');
 content(el);el.setAttribute('aria-describedby',tip.id);
@@ -311,36 +303,23 @@ const dst=d.dstTable===table?d.dstColumn===column:false;
 edge.classList.toggle('kumo-edge-active',src||dst);
 if(src||dst){svg.insertBefore(edge.parentElement,firstCard);
 host.classList.add('kumo-links-focused')}})}
-placement=classify();placement.pending=true;tip.setAttribute('data-open','');place('prepare');
-if(active)schedulePan()};
-const scheduleHide=()=>{if(hoverLock)return;
-clearTimeout(panTimer);panTimer=null;if(timer)return;timer=setTimeout(()=>{timer=null;
-if(!hoverLock&&active!==document.activeElement)hide()},150)};
+placement=classify();place(true);
+if(active)tip.setAttribute('data-open','')};
+const scheduleHide=()=>{if(timer)return;timer=setTimeout(()=>{timer=null;
+if(active!==document.activeElement)hide()},150)};
 view.querySelectorAll('title').forEach(el=>el.remove());
 view.querySelectorAll('[data-kumo-tip]').forEach(el=>{
 const light=el.querySelector('.kumo-surface').cloneNode();
 light.classList.add('kumo-row-light');light.removeAttribute('fill');
 light.removeAttribute('stroke');el.insertBefore(light,el.querySelector('text'));
-el.addEventListener('pointerenter',e=>{if(e.pointerType!=='touch')show(el,e)},{signal});
+el.addEventListener('pointerenter',e=>{if(e.pointerType!=='touch')show(el)},{signal});
 el.addEventListener('pointerleave',scheduleHide,{signal});
-el.addEventListener('focus',()=>{hoverLock=null;show(el)},{signal});
+el.addEventListener('focus',()=>show(el),{signal});
 el.addEventListener('blur',scheduleHide,{signal})});
-host.addEventListener('pointerleave',()=>{cancelPan();hoverLock=null;scheduleHide()},{signal});
+host.addEventListener('pointerleave',scheduleHide,{signal});
 document.addEventListener('pointerout',e=>{
-if(!e.relatedTarget){cancelPan();hoverLock=null;scheduleHide()}
+if(!e.relatedTarget)scheduleHide()
 },{signal});
-document.addEventListener('pointermove',e=>{
-pointer={x:e.clientX,y:e.clientY};if(drag||!active)return;
-if(hoverLock&&Math.hypot(pointer.x-hoverLock.x,pointer.y-hoverLock.y)<=4)return;
-if(panFrame){cancelPan();placement.pending=true}
-hoverLock=null;const hit=document.elementFromPoint(e.clientX,e.clientY);
-const next=hit?.closest('[data-kumo-tip]');
-if(next&&view.contains(next)){
-if(next===active&&panTimer&&dwellPoint&&
-Math.hypot(pointer.x-dwellPoint.x,pointer.y-dwellPoint.y)>4)schedulePan();
-show(next,e);return}
-scheduleHide();
-},{capture:true,signal});
 
 """
 
@@ -377,7 +356,7 @@ const handles=document.createElementNS(svg.namespaceURI,'g');
 handles.setAttribute('class','kumo-graph-handles');
 for(const [x,y] of layout.handles){
 const circle=document.createElementNS(svg.namespaceURI,'circle');
-for(const [key,value] of Object.entries({cx:x,cy:y,r:4,fill:'__MUTED_COLOR__'}))
+for(const [key,value] of Object.entries({cx:x,cy:y,r:4,fill:'var(--kumo-muted)'}))
 circle.setAttribute(key,value);handles.append(circle)}
 svg.append(handles);layoutWidth=layout.width;layoutHeight=layout.height;
 svg.setAttribute('viewBox',`0 0 ${layoutWidth} ${layoutHeight}`);
@@ -400,22 +379,11 @@ scene.style.transform=`translate(${panX}px,${panY}px)`;
 view.style.backgroundSize=`${16*scale}px ${16*scale}px`;
 view.style.backgroundPosition=`${panX}px ${panY}px`;
 view.style.backgroundImage=`radial-gradient(circle at ${scale}px ${scale}px,
-__GRID_COLOR__ ${.7*scale}px,transparent ${.8*scale}px)`;
+var(--kumo-grid) ${.7*scale}px,transparent ${.8*scale}px)`;
 label.textContent=Math.round(scale*100)+'%';host.dataset.scale=String(scale);
 };
-const panBy=(dx,dy,animate=false)=>{fitted=false;
-if(!animate){panX+=dx;panY+=dy;resizeScene();return}
-const x=panX,start=performance.now();
-const duration=matchMedia('(prefers-reduced-motion:reduce)').matches?0:PAN_DURATION;
-const step=now=>{
-if(!active||signal.aborted){panFrame=0;return}
-if(view.clientWidth!==viewWidth||view.clientHeight!==viewHeight){hide();resizeScene();return}
-const t=duration?Math.min(1,(now-start)/duration):1,k=t*t*(3-2*t);
-panX=x+dx*k;resizeScene();place();
-if(!active){panFrame=0;return}
-if(t<1)panFrame=requestAnimationFrame(step);
-else{panFrame=0;hoverLock=pointer?{...pointer}:{}}};
-panFrame=requestAnimationFrame(step)};
+const panBy=(dx,dy)=>{fitted=false;
+panX+=dx;panY+=dy;resizeScene()};
 const fit=()=>{
 hide();fitted=true;scale=fitScale();
 panX=(view.clientWidth-layoutWidth*scale)/2;
@@ -497,7 +465,7 @@ inlineCamera=null;enter.focus({preventScroll:true});
 }
 },{signal});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')hide()},{signal});
-document.addEventListener('scroll',()=>{cancelPan();hoverLock=null;place()},{capture:true,signal});
+document.addEventListener('scroll',()=>place(),{capture:true,signal});
 window.addEventListener('resize',hide,{signal});
 const resizeObserver=new ResizeObserver(()=>{
 if(signal.aborted)return;
@@ -512,8 +480,7 @@ stopDrag();hide();cancelAnimationFrame(resizeFrame);resizeObserver.disconnect();
 });
 view.style.height=inlineHeight()+'px';host.dataset.layout=selected;
 fit();resizeObserver.observe(view);controls.forEach(el=>el.disabled=false);
-""".replace('__GRID_COLOR__', THEME['grid']).replace(
-    '__MUTED_COLOR__', THEME['muted'])
+"""
 
 
 _DOWNLOAD = r"""
