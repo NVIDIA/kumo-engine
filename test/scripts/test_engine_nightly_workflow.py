@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -173,6 +174,7 @@ def test_trusted_push_includes_nightly_runtime_and_comparison_dependencies():
         'test/scripts/test_engine_nightly_workflow.py',
         'packages/kumo-engine/scripts/nightly_check.py',
         'packages/kumo-engine/scripts/nightly_compare.py',
+        'packages/kumo-engine/scripts/pr_check.py',
         'test/scripts/test_engine_nightly_runtime.py',
         'test/scripts/test_engine_nightly_compare.py',
         'packages/kumo-engine/test/wheel_gpu_learning.py',
@@ -241,3 +243,57 @@ except BlockingIOError:
             capture_output=True, text=True)
     assert completed.returncode != 0
     assert not run_root.exists()
+
+
+def test_required_job_accepts_success_and_rejects_actual_unmet_jobs(tmp_path):
+    command = workflow()['jobs']['required']['steps'][0]['run']
+    results = {
+        name: dict(result='success')
+        for name in ('configure', 'build', 'gpu', 'compare')
+    }
+    for failed in (None, 'gpu', 'compare'):
+        changed = {name: dict(value) for name, value in results.items()}
+        if failed is not None:
+            changed[failed]['result'] = 'failure'
+        completed = subprocess.run(['bash', '-e', '-c', command], env=dict(
+            os.environ, RESULTS=json.dumps(changed),
+            GITHUB_STEP_SUMMARY=str(tmp_path / 'summary')), capture_output=True,
+                                   text=True)
+        assert (completed.returncode == 0) is (failed is None), completed.stderr
+
+
+@pytest.mark.parametrize('missing_marker', [False, True])
+def test_coverage_requires_three_phases_and_checked_b7(tmp_path,
+                                                       missing_marker):
+    fixtures = runpy.run_path(
+        str(Path(__file__).with_name('test_engine_nightly_runtime.py')))
+    pr = runpy.run_path(str(ROOT / 'packages/kumo-engine/scripts/pr_check.py'))
+    assert callable(pr.get('verify_b7')), 'Missing required B7 check'
+    root = tmp_path / 'run'
+    correctness = root / 'correctness'
+    fixtures['b7_evidence'](correctness / 'behavior')
+    for phase in ('install', 'example', 'behavior'):
+        directory = correctness / phase
+        directory.mkdir(exist_ok=True)
+        report = dict(status='PASS', physical_fits=1)
+        if phase == 'behavior' and not missing_marker:
+            report['b7'] = pr['verify_b7'](directory, 'candidate-test')
+        (directory / 'result.json').write_text(json.dumps(report))
+        (directory / 'fits.json').write_text(
+            json.dumps(
+                [dict(status='PASS', device='cuda:0', steps=1,
+                      cuda_batches=1)]))
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    (workspace / 'harness').symlink_to(ROOT, target_is_directory=True)
+    completed = subprocess.run(
+        ['bash', '-e', '-c', step('gpu', 'coverage')['run']],
+        env=dict(os.environ, RUN_ROOT=str(root),
+                 GITHUB_WORKSPACE=str(workspace),
+                 CANDIDATE_VERSION='candidate-test'), capture_output=True,
+        text=True)
+    assert (completed.returncode == 0) is (not missing_marker), completed.stderr
+    assert json.loads(
+        (correctness /
+         'coverage.json').read_text())['status'] == ('FAIL' if missing_marker
+                                                     else 'PASS')

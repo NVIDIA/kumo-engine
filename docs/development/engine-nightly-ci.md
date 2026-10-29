@@ -9,7 +9,7 @@ The schedule is fixed at 10:00 UTC, which is 03:00 PDT and 02:00 PST. A manual
 run accepts `product_ref`, with `main` as the default. GitHub requires the
 [manual workflow](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)
 to exist on the default branch. Trusted copied PR branches also run when the
-nightly workflow, guide, runtime, comparator, shared GPU helper, or their
+nightly workflow, guide, runtime, comparator, PR helpers, shared GPU helper, or their
 contract tests change.
 
 ## Source and wheel identity
@@ -65,9 +65,11 @@ does not call the PR worker that performs another eight primary fits.
 Pytest and its test tools use a separate target directory. Each correctness
 phase appends that directory after the locked runtime packages. Its install
 receipt is retained separately. The measured runtime stays unchanged.
-Current behavior coverage is incomplete for B7 model reuse: weights, new
-entities, backfill, and compatible graphs. The final required status reports
-that gap and fails. This draft does not claim complete nightly qualification.
+The behavior phase requires passing weighted export tests and a retained-model
+child receipt. The receipt must show CUDA predictions on a different compatible
+graph, new entities and item backfill, unchanged learned state and source files,
+and no child refit. Missing or invalid evidence fails the job. The coverage step
+rechecks that receipt and all three phase ledgers before the job can pass.
 
 The comparison job runs no fits. It uses a fresh environment with the same
 wheel and dependency profile. Its environment setup, CUDA checks, and report

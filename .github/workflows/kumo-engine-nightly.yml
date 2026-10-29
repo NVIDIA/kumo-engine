@@ -22,6 +22,7 @@ on:  # yamllint disable-line rule:truthy
       - test/scripts/test_engine_nightly_workflow.py
       - packages/kumo-engine/scripts/nightly_check.py
       - packages/kumo-engine/scripts/nightly_compare.py
+      - packages/kumo-engine/scripts/pr_check.py
       - test/scripts/test_engine_nightly_runtime.py
       - test/scripts/test_engine_nightly_compare.py
       - packages/kumo-engine/test/wheel_gpu_learning.py
@@ -331,22 +332,21 @@ jobs:
             "$GITHUB_WORKSPACE/harness/packages/kumo-engine/scripts/pr_check.py" phase \
             --phase behavior --version "$CANDIDATE_VERSION" --output "$RUN_ROOT/correctness/behavior" \
             2>&1 | tee "$RUN_ROOT/logs/behavior.log"
-      - name: Record extra fit counts and the open behavior scope
+      - name: Require completed installation, example and B7 behavior evidence
+        id: coverage
         if: always() && matrix.shard == 'node' && steps.inputs.outcome == 'success'
         run: |
           python - <<'PY'
-          import json, os
+          import os, runpy
           from pathlib import Path
           root = Path(os.environ['RUN_ROOT']) / 'correctness'
-          phases = {}
-          for name in ('install', 'example', 'behavior'):
-              result, fits = root / name / 'result.json', root / name / 'fits.json'
-              phases[name] = dict(status=json.loads(result.read_text())['status'] if result.is_file() else 'MISSING',
-                                  physical_fits=len(json.loads(fits.read_text())) if fits.is_file() else 0)
-          coverage = dict(status='INCOMPLETE', phases=phases,
-                          additional_physical_fits=sum(p['physical_fits'] for p in phases.values()),
-                          missing_required_scope=['B7: weights, new entities, backfill, compatible graphs'])
-          (root / 'coverage.json').write_text(json.dumps(coverage, indent=2) + '\n')
+          helpers = runpy.run_path(str(Path(os.environ['GITHUB_WORKSPACE']) / 'harness/packages/kumo-engine/scripts/pr_check.py'))
+          try:
+              coverage = helpers['correctness_coverage'](root, os.environ['CANDIDATE_VERSION'])
+          except Exception as error:
+              helpers['save'](root / 'coverage.json', dict(status='FAIL', error=f'{type(error).__name__}: {error}'))
+              raise
+          helpers['save'](root / 'coverage.json', coverage)
           PY
       - name: Pack portable primary evidence without native scratch caches
         id: pack
@@ -492,7 +492,7 @@ jobs:
     if: always()
     runs-on: ubuntu-22.04
     steps:
-      - name: Report required jobs and unfinished behavior coverage
+      - name: Report required nightly results
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
@@ -503,8 +503,7 @@ jobs:
               stream.write('Primary roster: 16 seed-zero normal/scrambled fits. Quality scores report only.\n\n')
               for name, result in results.items():
                   stream.write(f'{name}: {result["result"]}\n\n')
-              stream.write('Required behavior coverage remains incomplete: B7 weights, new entities, backfill and compatible graphs. Extra install/example/behavior fits are recorded separately.\n')
+              stream.write('The node shard requires passing installation, example and checked B7 behavior evidence. Extra fits are recorded separately.\n')
           if any(row['result'] != 'success' for row in results.values()):
               raise SystemExit('A required nightly job failed, was skipped or was cancelled')
-          raise SystemExit('Required B7 behavior coverage is incomplete; do not treat this run as complete nightly qualification')
           PY

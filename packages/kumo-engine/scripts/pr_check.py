@@ -113,6 +113,109 @@ def verify_fits(rows):
         raise ValueError('Every fit requires completed CUDA optimizer updates')
 
 
+def verify_b7(output, version):
+    paths = list(
+        output.glob('pytest/test_retained_tables_and_model*/child/result.json'))
+    if len(paths) != 1 or paths[0].is_symlink():
+        raise ValueError('Require one retained-model B7 child receipt')
+    path = paths[0]
+    child = json.loads(path.read_text())
+    counts = ('prediction_batches', 'cuda_prediction_batches', 'entities',
+              'catalog', 'requested', 'returned_per_entity', 'rows',
+              'new_entity', 'new_item')
+    states = child.get('state_checks', [])
+    if (child.get('status') != 'PASS' or child.get('version') != version
+            or child.get('requested_accelerator') != 'gpu'
+            or type(child.get('fits_started')) is not int
+            or child['fits_started'] != 0 or any(
+                type(child.get(name)) is not int or child[name] <= 0
+                for name in counts)
+            or child['cuda_prediction_batches'] != child['prediction_batches']
+            or child.get('observed_devices') !=
+        ['cuda:0'] * child['prediction_batches']
+            or child['requested'] != child['catalog']
+            or child['returned_per_entity'] != child['catalog']
+            or child['rows'] != child['entities'] * child['catalog']
+            or child['entities'] != child['new_entity'] + 1
+            or child['catalog'] != child['new_item'] + 1 or any(
+                child.get(name) is not True
+                for name in ('source_unchanged', 'bundle_unchanged')) or
+            any(not isinstance(child.get(name), str) or not child[name]
+                for name in ('snapshot_id', 'training_snapshot_id', 'anchor'))
+            or child['snapshot_id'] == child['training_snapshot_id'] or
+            not re.fullmatch('[0-9a-f]{64}', child.get('checkpoint_sha256', ''))
+            or [state.get('phase')
+                for state in states] != ['post_restore', 'post_prediction']):
+        raise ValueError('B7 lacks complete unchanged-state CUDA model reuse')
+    before, after = [{
+        key: value
+        for key, value in state.items() if key != 'phase'
+    } for state in states]
+    remapped = before.get('remapped_state_entries', [])
+    if (before != after or before.get('device') != 'cuda:0'
+            or before.get('lookup_mode') != 'lookup'
+            or any(not isinstance(before.get(name), str) or not before[name]
+                   for name in ('module', 'lookup'))
+            or any(
+                type(before.get(name)) is not int
+                for name in ('old_entities_preserved', 'new_entities',
+                             'reindexed_entities', 'checkpoint_state_entries'))
+            or before['old_entities_preserved'] != child['catalog'] - 1
+            or before['new_entities'] != 1 or not 0 <=
+            before['reindexed_entities'] <= before['old_entities_preserved']
+            or before['checkpoint_state_entries'] <= 3
+            or len(set(remapped)) != 3 or not remapped or remapped != [
+                remapped[0].removesuffix('weight') + suffix
+                for suffix in ('weight', 'mask', '_extra_state')
+            ] or 'rhs_embedding.' not in remapped[0]
+            or not remapped[0].endswith('lookup_embedding.weight')):
+        raise ValueError(
+            'B7 restored and post-prediction state evidence differs')
+    xml = output / 'tests.xml'
+    tree = ET.parse(xml)
+    cases = list(tree.iter('testcase'))
+    required = [
+        ('test_pr_behavior',
+         'test_retained_tables_and_model_predict_in_fresh_process'),
+        ('test_training_table_export', 'test_node_export_roundtrip[temporal-'),
+        ('test_training_table_export', 'test_node_export_roundtrip[static-')
+    ]
+    if (any(
+            case.find(tag) is not None for case in cases
+            for tag in ('failure', 'error', 'skipped')) or any(
+                int(suite.get(name, 0)) for suite in tree.iter('testsuite')
+                for name in ('failures', 'errors', 'skipped')) or any(
+                    sum(
+                        case.get('classname', '').split('.')[-1] == module
+                        and case.get('name', '').startswith(name)
+                        for case in cases) != 1 for module, name in required)):
+        raise ValueError(
+            'B7 requires passing retained-model and weighted export tests')
+    return dict(status='PASS', version=version,
+                child=path.relative_to(output).as_posix(),
+                child_sha256=digest(path), junit_sha256=digest(xml))
+
+
+def correctness_coverage(root, version):
+    phases = {}
+    for name in ('install', 'example', 'behavior'):
+        report = json.loads((root / name / 'result.json').read_text())
+        fits = json.loads((root / name / 'fits.json').read_text())
+        verify_fits(fits)
+        if (report.get('status') != 'PASS'
+                or type(report.get('physical_fits')) is not int
+                or report['physical_fits'] != len(fits)):
+            raise ValueError(f'Required {name} evidence failed or differs')
+        if name == 'behavior' and report.get('b7') != verify_b7(
+                root / name, version):
+            raise ValueError('The required B7 marker is missing or differs')
+        phases[name] = dict(status='PASS', physical_fits=len(fits))
+    return dict(
+        status='PASS', phases=phases, b7='PASS',
+        additional_physical_fits=sum(phase['physical_fits']
+                                     for phase in phases.values()))
+
+
 def verify_quickstart_predictions(frame, ids):
     import numpy as np
 
@@ -325,6 +428,8 @@ def run_phase(args):
                     raise ValueError(
                         'Selected behavior checks cannot be empty or skipped')
             verify_fits(fits)
+            if args.phase == 'behavior':
+                report['b7'] = verify_b7(output, args.version)
             report.update(status='PASS', physical_fits=len(fits))
     except BaseException as error:
         report.update(status='FAIL', error=f'{type(error).__name__}: {error}',

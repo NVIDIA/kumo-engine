@@ -25,6 +25,39 @@ def worker():
     return runpy.run_path(str(MODULES / 'wheel_gpu_learning.py'))
 
 
+def b7_evidence(output, version='candidate-test'):
+    child = output / 'pytest/test_retained_tables_and_model0/child/result.json'
+    child.parent.mkdir(parents=True, exist_ok=True)
+    state = dict(
+        module='actual.module', lookup='actual.lookup', lookup_mode='lookup',
+        device='cuda:0', old_entities_preserved=20, new_entities=1,
+        reindexed_entities=0, checkpoint_state_entries=79,
+        remapped_state_entries=[
+            'rhs_embedding.lookup_embedding.' + name
+            for name in ('weight', 'mask', '_extra_state')
+        ])
+    receipt = dict(
+        status='PASS', version=version, fits_started=0,
+        requested_accelerator='gpu', prediction_batches=2,
+        cuda_prediction_batches=2, observed_devices=['cuda:0'] * 2,
+        state_checks=[
+            dict(state, phase=phase)
+            for phase in ('post_restore', 'post_prediction')
+        ], checkpoint_sha256='a' * 64, entities=51, catalog=21, requested=21,
+        returned_per_entity=21, rows=1071, snapshot_id='new',
+        training_snapshot_id='old', new_entity=50, new_item=20,
+        anchor='2024-03-01 00:00:00', source_unchanged=True,
+        bundle_unchanged=True)
+    child.write_text(json.dumps(receipt))
+    (output / 'tests.xml'
+     ).write_text('''<testsuite tests="3" failures="0" errors="0" skipped="0">
+<testcase classname="test_pr_behavior" name="test_retained_tables_and_model_predict_in_fresh_process"/>
+<testcase classname="test_training_table_export" name="test_node_export_roundtrip[temporal-query]"/>
+<testcase classname="test_training_table_export" name="test_node_export_roundtrip[static-query]"/>
+</testsuite>''')
+    return child, receipt
+
+
 def metadata_row(task, case):
     import wheel_scale_data as data
     import wheel_scale_learning as learning
@@ -70,6 +103,84 @@ def metadata_row(task, case):
 
 
 class NightlyRuntimeTests(unittest.TestCase):
+    def test_b7_requires_actual_child_state_cuda_version_and_weight_tests(self):
+        pr = runpy.run_path(str(SCRIPT.with_name('pr_check.py')))
+        self.assertTrue(callable(pr.get('verify_b7')),
+                        'Missing required B7 evidence check')
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder)
+            child, original = b7_evidence(output)
+            marker = pr['verify_b7'](output, 'candidate-test')
+            self.assertEqual(marker['status'], 'PASS')
+            self.assertEqual(marker['child_sha256'],
+                             hashlib.sha256(child.read_bytes()).hexdigest())
+            for change in ('missing', 'status', 'version', 'cpu', 'refit',
+                           'bool_refit', 'no_cuda', 'incomplete', 'source',
+                           'bundle', 'snapshot', 'state'):
+                altered = copy.deepcopy(original)
+                if change == 'missing':
+                    child.unlink()
+                elif change in ('status', 'version'):
+                    altered[change] = 'wrong'
+                elif change == 'cpu':
+                    altered['observed_devices'][0] = 'cpu'
+                elif change in ('refit', 'bool_refit'):
+                    altered['fits_started'] = 1 if change == 'refit' else False
+                elif change == 'no_cuda':
+                    altered['cuda_prediction_batches'] = 0
+                elif change == 'incomplete':
+                    altered['rows'] -= 1
+                elif change in ('source', 'bundle'):
+                    altered[change + '_unchanged'] = False
+                elif change == 'snapshot':
+                    altered['snapshot_id'] = altered['training_snapshot_id']
+                else:
+                    altered['state_checks'][1]['checkpoint_state_entries'] -= 1
+                if change != 'missing':
+                    child.write_text(json.dumps(altered))
+                with self.subTest(change=change), self.assertRaises(
+                    (ValueError, OSError)):
+                    pr['verify_b7'](output, 'candidate-test')
+                child.write_text(json.dumps(original))
+            xml = output / 'tests.xml'
+            xml.write_text(xml.read_text().replace('temporal-query',
+                                                   'missing-query'))
+            with self.assertRaises(ValueError):
+                pr['verify_b7'](output, 'candidate-test')
+
+    def test_correctness_coverage_requires_all_phases_and_rechecked_b7(self):
+        pr = runpy.run_path(str(SCRIPT.with_name('pr_check.py')))
+        self.assertTrue(callable(pr.get('correctness_coverage')),
+                        'Missing required correctness check')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            child, receipt = b7_evidence(root / 'behavior')
+            for phase, count in [('install', 2), ('example', 3),
+                                 ('behavior', 1)]:
+                directory = root / phase
+                directory.mkdir(exist_ok=True)
+                result = dict(status='PASS', physical_fits=count)
+                if phase == 'behavior':
+                    result['b7'] = pr['verify_b7'](directory, 'candidate-test')
+                (directory / 'result.json').write_text(json.dumps(result))
+                (directory / 'fits.json').write_text(
+                    json.dumps([
+                        dict(status='PASS', device='cuda:0', steps=2,
+                             cuda_batches=2) for _ in range(count)
+                    ]))
+            self.assertEqual(
+                pr['correctness_coverage'](
+                    root, 'candidate-test')['additional_physical_fits'], 6)
+            receipt['bundle_unchanged'] = False
+            child.write_text(json.dumps(receipt))
+            with self.assertRaises(ValueError):
+                pr['correctness_coverage'](root, 'candidate-test')
+            b7_evidence(root / 'behavior')
+            (root / 'install/result.json').write_text(
+                json.dumps(dict(status='FAIL', physical_fits=2)))
+            with self.assertRaises(ValueError):
+                pr['correctness_coverage'](root, 'candidate-test')
+
     def function(self, name):
         result = runpy.run_path(str(SCRIPT)).get(name)
         self.assertTrue(callable(result), 'Missing nightly contract: ' + name)
