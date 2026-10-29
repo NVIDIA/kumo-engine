@@ -15,6 +15,66 @@ SCRIPT = Path(__file__).resolve(
 ).parents[2] / 'packages/kumo-engine/scripts/weekly_check.py'
 
 
+@pytest.mark.parametrize('required', [False, True])
+def test_worker_runtime_bridge_preserves_old_signatures_and_passes_existing_receipt(
+        required):
+    import runpy
+    code = runpy.run_path(str(SCRIPT))
+    calls = []
+
+    def legacy(spec, output):
+        calls.append((spec, output))
+        return 'old'
+
+    def selected(spec, output, *, verified_runtime):
+        calls.append((spec, output, verified_runtime))
+        return 'new'
+
+    worker = dict(run_case=selected if required else legacy,
+                  VERIFIED_RUNTIME_REQUIRED=required)
+    install = dict(version='candidate', installed_members_verified=50)
+    spec = runtime_spec() if required else {'case': 'Q13'}
+    result = code['call_case_worker'](worker, spec, Path('/output'),
+                                      installation=install, version='candidate',
+                                      expected_prefix=Path('/venv'))
+    assert result == ('new' if required else 'old')
+    if required:
+        assert calls[0][2] == dict(version='candidate', expected_prefix='/venv',
+                                   installation=install)
+    else:
+        assert calls == [({'case': 'Q13'}, Path('/output'))]
+
+
+def runtime_spec():
+    root = SCRIPT.parent.parent
+    files = [
+        SCRIPT,
+        SCRIPT.with_name('pr_check.py'), *sorted(
+            (root / 'test').glob('wheel_*.py'))
+    ]
+    return dict(
+        worker=dict(helper_root='/declared/runtime/test'), inputs={
+            str(Path('/declared/runtime') / path.relative_to(root)):
+            hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in files
+        })
+
+
+def test_worker_bridge_rejects_changed_runtime_sibling_before_model_calls():
+    import runpy
+    code = runpy.run_path(str(SCRIPT))
+    spec = runtime_spec()
+    calls = []
+    spec['inputs']['/declared/runtime/test/wheel_learning.py'] = 'f' * 64
+    worker = dict(VERIFIED_RUNTIME_REQUIRED=True,
+                  run_case=lambda *args, **kwargs: calls.append('model'))
+    with pytest.raises(ValueError, match='runtime source'):
+        code['call_case_worker'](worker, spec, Path('/output'), installation={},
+                                 version='candidate',
+                                 expected_prefix=Path('/venv'))
+    assert calls == []
+
+
 def hardware():
     return dict(instance_id='i-0123456789abcdef0',
                 gpu_uuid='GPU-00000000-0000-4000-8000-000000000001',
@@ -600,12 +660,14 @@ def test_training_critical_path_uses_only_actual_fit_timestamps():
     assert api['training_critical_path']([rows[0], {}]) is None
 
 
-def test_eleven_models_do_not_claim_complete_weekly_ancillary_coverage(tmp_path):
+def test_eleven_models_do_not_claim_complete_weekly_ancillary_coverage(
+        tmp_path):
     value, paths = complete_evidence(tmp_path)
     report = weekly()['collect'](value, paths, tmp_path / 'bundle', 'reference')
     assert report['primary_block_complete'] is True
     assert report['weekly_milestone_complete'] is False
-    assert report['ancillary_checks']['B6']['status'] == 'MEASURED_FROM_PRIMARY_MODELS'
+    assert report['ancillary_checks']['B6'][
+        'status'] == 'MEASURED_FROM_PRIMARY_MODELS'
     assert report['ancillary_checks']['P1']['status'] == 'MISSING'
     assert report['ancillary_checks']['P1']['required_cpu_operations'] == 5
     assert report['ancillary_checks']['B9']['status'] == 'MISSING'

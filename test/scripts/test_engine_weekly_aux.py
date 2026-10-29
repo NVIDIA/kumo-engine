@@ -19,6 +19,28 @@ def api():
     return runpy.run_path(str(SCRIPT))
 
 
+@pytest.mark.parametrize('changed', [None, 'missing', 'unbound', 'changed'])
+def test_b9_binds_separate_reader_before_model_calls(tmp_path, changed):
+    reader = tmp_path / 'reader.py'
+    reader.write_text(
+        'def ordered_batches(*args, **kwargs):\n    return iter(())\n')
+    sha = hashlib.sha256(reader.read_bytes()).hexdigest()
+    spec = dict(
+        worker=dict(prediction_reader=dict(path=str(reader), sha256=sha)),
+        inputs={str(reader): sha})
+    if changed == 'missing':
+        del spec['worker']['prediction_reader']
+    elif changed == 'unbound':
+        spec['inputs'].clear()
+    elif changed == 'changed':
+        reader.write_text('# changed')
+    if changed:
+        with pytest.raises(ValueError):
+            api()['b9_prediction_reader'](spec)
+    else:
+        assert list(api()['b9_prediction_reader'](spec).ordered_batches()) == []
+
+
 def fingerprint(value):
     return hashlib.sha256(
         json.dumps(value, sort_keys=True,

@@ -399,6 +399,14 @@ def load_module(name, record):
     return current
 
 
+def b9_prediction_reader(spec):
+    record = spec.get('worker', {}).get('prediction_reader')
+    if (not isinstance(record, dict) or set(record) != {'path', 'sha256'}
+            or spec.get('inputs', {}).get(record['path']) != record['sha256']):
+        raise ValueError('Freeze the separate B9 prediction reader source')
+    return load_module('weekly_prediction_reader', record)
+
+
 def load_spec(path, expected):
     spec = read(pinned(path, expected))
     if (spec.get('schema') != 1 or spec.get('check') not in ('P1', 'B9')
@@ -467,6 +475,7 @@ def load_spec(path, expected):
                spec['worker']['b9_helper']['sha256'])
         pinned(spec['worker']['model_helper']['path'],
                spec['worker']['model_helper']['sha256'])
+        b9_prediction_reader(spec)
     return spec
 
 
@@ -857,6 +866,7 @@ def execute_b9(spec, output):
             'The retained model differs from the approved auxiliary workload')
     WEEKLY['verify_case_inputs'](primary)
     worker = primary['worker']
+    reader = b9_prediction_reader(spec)
     helper = load_module('weekly_model_helper', spec['worker']['model_helper'])
     if digest(helper.__file__) != worker['sha256']:
         raise ValueError('The retained case used a different model helper')
@@ -947,7 +957,7 @@ def execute_b9(spec, output):
                 batches = (learning.normalize_prediction_time(
                     'weekly', batch, truth,
                     retained['result']['entity_time_column'],
-                    require_anchor=True) for batch in learning.ordered_batches(
+                    require_anchor=True) for batch in reader.ordered_batches(
                         predictions.files, destination / 'sort'))
                 values = learning.ranked_from_batches(batches, truth, limit)
             devices = [

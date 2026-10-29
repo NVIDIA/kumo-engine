@@ -473,6 +473,29 @@ def training_critical_path(rows):
     return (max(ends) - min(starts)).total_seconds() if rows else None
 
 
+def call_case_worker(worker, spec, output, *, installation, version,
+                     expected_prefix):
+    if worker.get('VERIFIED_RUNTIME_REQUIRED') is True:
+        declared = Path(spec['worker']['helper_root']).resolve().parent
+        actual = Path(__file__).resolve().parent.parent
+        sources = {
+            Path(path).relative_to(declared).as_posix(): sha
+            for path, sha in spec['inputs'].items()
+            if Path(path).is_relative_to(declared)
+        }
+        if (not {'scripts/weekly_check.py', 'scripts/pr_check.py'
+                 } <= sources.keys()
+                or not any(name.startswith('test/') for name in sources)
+                or any(not (actual / name).is_file() or (
+                    actual / name).is_symlink() or digest(actual / name) != sha
+                       for name, sha in sources.items())):
+            raise ValueError('The executing runtime source context differs')
+        return worker['run_case'](spec, output, verified_runtime=dict(
+            version=version, expected_prefix=str(expected_prefix.resolve()),
+            installation=copy.deepcopy(installation)))
+    return worker['run_case'](spec, output)
+
+
 def run(args, manifest):
     [spec] = [row for row in manifest['cases'] if row['id'] == args.case]
     output = args.output.resolve()
@@ -556,7 +579,11 @@ def run(args, manifest):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'test'))
         with helpers['count_fits'](fits) as physical:
             worker = runpy.run_path(spec['worker']['path'])
-            row = worker['run_case'](copy.deepcopy(spec), output / 'worker')
+            row = call_case_worker(worker, copy.deepcopy(spec),
+                                   output / 'worker',
+                                   installation=report['installation'],
+                                   version=args.version,
+                                   expected_prefix=args.expected_prefix)
             save(output / 'result.json', row)
         if len(physical) != 1:
             raise ValueError(
