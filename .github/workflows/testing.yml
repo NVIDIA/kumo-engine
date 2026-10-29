@@ -8,6 +8,7 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - main
+      - "pull-request/[0-9]+"
     paths-ignore: ["ui/**", "tools/**"]
   pull_request:
   merge_group:
@@ -62,7 +63,7 @@ env:
   STORE_DURATIONS: ${{ inputs.store_durations == true }}
   # True for push-to-main runs and for manual dispatch/call with full_test=true
   # (unless store_durations is also set, which forces minimal mode).
-  RUN_FULL_TEST: ${{ github.event_name == 'push' || (inputs.full_test == true && inputs.store_durations != true) }}
+  RUN_FULL_TEST: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (inputs.full_test == true && inputs.store_durations != true) }}
   # True when pytest must run even if only_changed says no pytest-affecting
   # files changed. Currently only durations-recording runs set this — they
   # need the full matrix of tests to actually execute to produce a complete
@@ -70,14 +71,22 @@ env:
   FORCE_RUN_TESTS: ${{ inputs.store_durations == true }}
 
 jobs:
+  credentials:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/_credentials-gate.yml
+
   diskgraph-wheel:
+    needs: [credentials]
+    if: ${{ needs.credentials.outputs.run == 'true' || !startsWith(github.ref, 'refs/heads/pull-request/') }}
     permissions:
       contents: read
     uses: ./.github/workflows/_diskgraph-wheel.yml
 
   pytest:
-    needs: [diskgraph-wheel]
-    if: ${{ !cancelled() }}
+    needs: [diskgraph-wheel, credentials]
+    if: ${{ !cancelled() && needs.credentials.outputs.run == 'true' }}
     runs-on: ubuntu-24.04
     continue-on-error: true
     environment:
@@ -168,6 +177,12 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 40
 
+      - name: Fetch the pull request's merge base
+        if: needs.credentials.outputs.base != ''
+        env:
+          BASE: ${{ needs.credentials.outputs.base }}
+        run: git fetch --no-tags --depth=1 origin "$BASE"
+
       - name: Set up Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
@@ -188,6 +203,7 @@ jobs:
         id: non-pytest-changes
         uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
         with:
+          base_sha: ${{ needs.credentials.outputs.base }}
           files: |
             ui/**
             CHANGELOG.md
@@ -343,6 +359,7 @@ jobs:
           if-no-files-found: ignore
 
   diskgraph-rust:
+    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') }}
     permissions:
       contents: read
     env:
@@ -385,6 +402,7 @@ jobs:
       - run: cargo test --locked --workspace
 
   diskgraph-clippy:
+    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') }}
     permissions:
       contents: read
     env:
@@ -423,7 +441,7 @@ jobs:
 
   diskgraph-python:
     needs: [diskgraph-wheel]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && !startsWith(github.ref, 'refs/heads/pull-request/') }}
     permissions:
       contents: read
     env:
@@ -504,7 +522,7 @@ jobs:
     # version. Run the DiskGraph and kumo-core suites at both ends instead.
     name: pyarrow-range (pyarrow${{ matrix.pyarrow }})
     needs: [diskgraph-wheel]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && !startsWith(github.ref, 'refs/heads/pull-request/') }}
     permissions:
       contents: read
     env:
@@ -581,7 +599,7 @@ jobs:
     # The repository's primary interpreter runs every package suite and
     # consumer check.
     needs: [diskgraph-wheel]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && !startsWith(github.ref, 'refs/heads/pull-request/') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -857,6 +875,7 @@ jobs:
           retention-days: 1
 
   pql-public:
+    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') }}
     permissions:
       contents: read
     env:

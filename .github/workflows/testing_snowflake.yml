@@ -8,6 +8,7 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - main
+      - "pull-request/[0-9]+"
     paths-ignore: ["ui/**", "tools/**"]
   pull_request:
   merge_group:
@@ -38,7 +39,15 @@ env:
   GITHUB_RUN_ID: ${{secrets.GITHUB_RUN_ID}}
 
 jobs:
+  credentials:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/_credentials-gate.yml
+
   pytest:
+    needs: [credentials]
+    if: needs.credentials.outputs.run == 'true'
     environment:
       name: gha-kumo-workflow-tests
       # This job uses environment-scoped OIDC; it does not deploy an application.
@@ -153,10 +162,17 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 40
 
+      - name: Fetch the pull request's merge base
+        if: needs.credentials.outputs.base != ''
+        env:
+          BASE: ${{ needs.credentials.outputs.base }}
+        run: git fetch --no-tags --depth=1 origin "$BASE"
+
       - name: Get any data backend related changes
         id: data-backend-files-changed
         uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
         with:
+          base_sha: ${{ needs.credentials.outputs.base }}
           files: |
             ${{ matrix.files_changed }}
 
@@ -192,7 +208,7 @@ jobs:
       # coverage.py also has additional nice features that may be useful in the
       # future for better coverage reports.
       - name: Run minimal test suite
-        if: steps.data-backend-files-changed.outputs.any_changed == 'true' && github.event_name != 'push' && inputs.full_test != true && steps.only-ui-files-changed.outputs.only_changed != 'true' && steps.only-rest-files-changed.outputs.only_changed != 'true'
+        if: steps.data-backend-files-changed.outputs.any_changed == 'true' && (github.event_name != 'push' || github.ref != 'refs/heads/main') && inputs.full_test != true && steps.only-ui-files-changed.outputs.only_changed != 'true' && steps.only-rest-files-changed.outputs.only_changed != 'true'
         timeout-minutes: 120
         run: |
           set -o pipefail
@@ -208,7 +224,7 @@ jobs:
           DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Run full test suite
-        if: steps.data-backend-files-changed.outputs.any_changed == 'true' && (github.event_name == 'push' || inputs.full_test == true) && steps.only-ui-files-changed.outputs.only_changed != 'true' && steps.only-rest-files-changed.outputs.only_changed != 'true'
+        if: steps.data-backend-files-changed.outputs.any_changed == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.full_test == true) && steps.only-ui-files-changed.outputs.only_changed != 'true' && steps.only-rest-files-changed.outputs.only_changed != 'true'
         timeout-minutes: 120
         run: |
           set -o pipefail
