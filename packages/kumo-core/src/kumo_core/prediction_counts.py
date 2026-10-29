@@ -160,7 +160,13 @@ def quantiles(histogram: np.ndarray, edges: Sequence[float], low: float,
     quantile."""
     bounds = np.clip([low, *edges, high], low, high)
     cdf = np.concatenate([[0.0], np.cumsum(histogram)]) / histogram.sum()
-    return np.interp(np.array(QUANTILES) / 100, cdf, bounds).tolist()
+    levels = np.array(QUANTILES) / 100
+    reached = np.clip(np.searchsorted(cdf, levels), 1, len(cdf) - 1)
+    below, above = cdf[reached - 1], cdf[reached]
+    step = np.divide(levels - below, above - below, out=np.ones_like(levels),
+                     where=above > below)
+    return (bounds[reached - 1] + step *
+            (bounds[reached] - bounds[reached - 1])).tolist()
 
 
 def psi(actual: np.ndarray, expected: np.ndarray) -> float:

@@ -47,10 +47,11 @@ def _check_column(logged, prefix, values, edges):
     assert logged[f'{prefix}/mean'].value == pytest.approx(values.mean())
     assert logged[f'{prefix}/min'] == Scalar(f'{prefix}/min', values.min())
     assert logged[f'{prefix}/max'] == Scalar(f'{prefix}/max', values.max())
-    bounds = np.array([values.min(), *edges, values.max()])
+    edges = np.array(edges)
     for q in QUANTILES:
         exact = np.quantile(values, q / 100, method='inverted_cdf')
-        low, high = bounds[bounds <= exact].max(), bounds[bounds >= exact].min()
+        low = max([values.min(), *edges[edges <= exact]])
+        high = min([values.max(), *edges[edges > exact]])
         assert low <= logged[f'{prefix}/q{q:02d}'].value <= high
 
 
@@ -185,3 +186,17 @@ def test_forecasts_count_each_kept_horizon_on_the_target_bins(steps):
         assert logged[f'pred/h{h + 1}/hist'].counts == _brute_histogram(
             values[horizon == h], edges)
     _check_column(logged, 'pred', values, edges)
+
+
+def test_a_quantile_at_a_bin_edge_stays_in_the_bin_that_reaches_it():
+    values = np.array([0.105] * 99 + [0.505])
+    counts = Counts({'score': PROBABILITY_EDGES})
+    count_predictions(counts, TaskType.BINARY_CLASSIFICATION,
+                      prob=np.stack([1 - values, values], axis=1),
+                      pred=values > 0.5, target_pred=None,
+                      columns=['False_PROB', 'True_PROB'])
+
+    logged = _by_name(prediction_summaries(counts, threshold=None,
+                                           baseline=None))
+    _check_column(logged, 'pred/True_PROB', values, PROBABILITY_EDGES)
+    assert logged['pred/True_PROB/q99'].value == pytest.approx(0.11)
