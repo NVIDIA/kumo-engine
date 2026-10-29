@@ -4,6 +4,7 @@
 """SVG rendering of declared table relationships."""
 
 import json
+from datetime import date
 from html import escape
 from reprlib import Repr
 from typing import Mapping, Sequence
@@ -130,7 +131,8 @@ def _preview(table: Table, columns: Sequence[str]) -> dict[str, str]:
                         or isinstance(value, float) and value != value)
                 if null:
                     continue
-                label = short.repr(value)
+                label = (str(value) if isinstance(value, date) else
+                         short.repr(value))
                 labels.append(label if len(label) <= 160 else label[:157] +
                               '...')
                 if len(labels) == 6:

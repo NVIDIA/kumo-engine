@@ -481,12 +481,20 @@ def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
                     connector_id=tables[0].connector.id, table='users',
                     sql=sql)))
     secret = '<script>alert("private sample")</script>'
+    definition = tables[0].definition
+    assert definition is not None
+    tables[0] = replace(tables[0], definition=replace(
+        definition, cols=[
+            *definition.cols,
+            Column('created_at', Stype.timestamp, Dtype.date)]))
     frame = pd.DataFrame({
         'id': [secret, None, ['alpha', 'beta'], 'later non-null',
                'fourth', 'fifth', 'sixth', 'outside cap'],
         'event_id': ['x' * 1000, None, 'third', 'later non-null',
                      'fourth', 'fifth', 'sixth', 'outside cap'],
         'user_id': list(range(1, 9)),
+        'created_at': pd.date_range('2026-10-01 09:00:00.123', periods=8,
+                                    tz='UTC'),
     })
     if outcome == 'nulls':
         frame = pd.DataFrame({
@@ -541,6 +549,8 @@ def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
         './/{http://www.w3.org/2000/svg}g[@data-kumo-tip]')
     details = '\n'.join(tip.get('data-kumo-tip') for tip in tips)
     if outcome in ('values', 'sql'):
+        assert '2026-10-01 09:00:00.123000+00:00' in details
+        assert 'Timestamp(' not in details
         assert secret in details and '\nnull' not in details
         assert "['alpha', 'beta']" in details
         assert 'later non-null' in details and 'sixth' in details
