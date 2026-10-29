@@ -98,8 +98,14 @@ _io_base: list[int] = []
 _io_wanted: list[int] = []
 
 
-def _source_version(path: str, entries: Sequence[Any]) -> str:
+def _source_version(path: str, entries: Sequence[Any],
+                    identity: ObjectIdentity | None = None) -> str:
     if len(entries) == 1 and entries[0].path.rstrip("/") == path.rstrip("/"):
+        if identity is not None:
+            # The provider's version or entity tag; a second-resolution
+            # modification time cannot tell same-second rewrites apart.
+            token, version, *_ = (*identity(entries[0].path), "")
+            return SourceVersion(version or token.strip('"'), "exact")
         latest = entries[0].mtime
         return (SourceVersion(epoch_second(latest), "timestamp")
                 if latest is not None else SourceVersion("-1"))
@@ -161,7 +167,7 @@ class ObjectStoreSourceReader:
                 exact=self.file_format is not None or not table)
             entries = ([info] if info.type is FileType.File else
                        self._objects(table, info.path, include_hidden=True))
-        return _source_version(info.path, entries)
+        return _source_version(info.path, entries, self.object_identity)
 
     def resolve(self, table: str) -> tuple[str, str]:
         """An explicit format addresses an exact path; discovery infers both."""
@@ -327,7 +333,8 @@ class ObjectStoreSourceReader:
                               include_hidden=not transform)
         # Stamp the same metadata listing the read consumes, before fetching
         # any files; later additions must not be stamped onto this output.
-        stamped = version or _source_version(path, found)
+        stamped = version or _source_version(path, found,
+                                             self.object_identity)
         source_bytes = (sum(entry.size for entry in found) if all(
             entry.size is not None and entry.size >= 0
             for entry in found) else None)
