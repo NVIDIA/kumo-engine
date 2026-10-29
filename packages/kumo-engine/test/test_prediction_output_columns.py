@@ -325,3 +325,39 @@ def test_multilabel_thresholds_preserve_scores(tmp_path, num_workers):
                                 binary_classification_threshold=threshold)
     finally:
         kumo.configure(scratch_dir=previous)
+
+
+def test_mlops_counts_forecast_horizons_and_recommended_items(
+        graph, forecast, link, tmp_path):
+    from kumo_core.score_counts import Counts
+
+    _, snapshot, _ = graph
+    mlops = kumo.MLOps(str(tmp_path / 'root'))
+
+    def counted(fitted, **options):
+        trainer, _, table = fitted
+        run = trainer.predict(table, snapshot=snapshot, mlops=mlops,
+                              **options)
+        return (Counts.from_dict(run.manifest.stats['predictions'].counts),
+                run.frame)
+
+    counts, frame = counted(forecast)
+    edges = np.array(counts.edges['target'])
+    frame = frame.sort_values(['ENTITY', 'TIMESTAMP'])
+    horizon = frame.groupby('ENTITY').cumcount().to_numpy()
+    values = frame['TARGET_PRED'].to_numpy(dtype=np.float64)
+    for h in range(3):
+        assert counts.arrays[f'TARGET_PRED_h{h + 1}'].tolist() == np.bincount(
+            np.searchsorted(edges, values[horizon == h], 'right'),
+            minlength=edges.size + 1).tolist()
+
+    counts, frame = counted(link, num_classes_to_return=3)
+    per_item = frame['CLASS'].value_counts().reindex(range(20), fill_value=0)
+    log2 = np.array(counts.edges['recommendations'])
+    assert counts.arrays['item_frequency'].tolist() == np.bincount(
+        np.searchsorted(log2, per_item.to_numpy(), 'right'),
+        minlength=log2.size + 1).tolist()
+    assert (float(counts.arrays['catalogue']),
+            float(counts.arrays['items_recommended']),
+            float(counts.arrays['recommendations'])) == (
+                20, (per_item > 0).sum(), len(frame))

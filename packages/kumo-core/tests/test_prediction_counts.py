@@ -9,7 +9,11 @@ from kumo_core.prediction_counts import (
     MAX_CLASS_HISTOGRAMS,
     QUANTILES,
     count_predictions,
+    count_recommendations,
+    item_counts,
+    load_counts,
     prediction_summaries,
+    save_counts,
 )
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts, merged
 from kumo_core.summaries import Histogram, Scalar, Series, Table
@@ -227,3 +231,30 @@ def test_multilabel_counts_each_labels_predicted_rows():
             if name.startswith('pred/label/')} == {
         f'pred/label/l{index}/share': positives[index] / 300
         for index in top}
+
+
+def test_recommendations_count_items_exactly_across_saved_workers(tmp_path):
+    rng = np.random.default_rng(6)
+    catalogue = 1000
+    items = np.minimum(rng.zipf(1.5, size=(500, 5)) - 1, catalogue)
+    items[::7, -1] = -1
+    parts = []
+    for worker, rows in enumerate(np.array_split(np.arange(500), 3)):
+        counts = Counts({})
+        for batch in np.array_split(rows, 4):
+            count_recommendations(counts, items[batch], catalogue)
+        save_counts(counts, tmp_path / f'{worker}.json')
+        parts.append(load_counts(tmp_path / f'{worker}.json'))
+    assert {path.suffix for path in tmp_path.iterdir()} == {'.json', '.npy'}
+
+    logged = _by_name(prediction_summaries(item_counts(merged(parts)),
+                                           threshold=None, baseline=None))
+    valid = items[(items >= 0) & (items < catalogue)]
+    per_item = np.bincount(valid, minlength=catalogue)
+    edges = tuple(2.0**power for power in range(
+        int(np.log2(per_item.max())) + 1))
+    assert logged['pred/item_frequency/hist'] == Histogram(
+        'pred/item_frequency/hist', edges, _brute_histogram(per_item, edges))
+    assert logged['pred/item_coverage'].value == np.unique(valid).size / 1000
+    assert logged['pred/top1pct_share'].value == pytest.approx(
+        np.sort(per_item)[-10:].sum() / valid.size)
