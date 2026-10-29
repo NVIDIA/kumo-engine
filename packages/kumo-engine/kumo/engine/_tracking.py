@@ -124,13 +124,28 @@ def _text(value: Any) -> Optional[str]:
     return None if value is None else str(value)
 
 
+def logged_name(name: str) -> str:
+    r"""A metric's name in a tracker: ``val_auroc`` is ``val/auroc`` and a
+    trial's ``best_val_auroc`` is ``val/best_auroc``, so charts group by
+    split."""
+    best = name.startswith('best_')
+    split, _, metric = name.removeprefix('best_').partition('_')
+    if split not in ('train', 'val', 'test') or not metric:
+        return name
+    return f"{split}/{'best_' if best else ''}{metric}"
+
+
+def logged_names(metrics: Mapping[str, Any]) -> Dict[str, Any]:
+    return {logged_name(name): value for name, value in metrics.items()}
+
+
 def run_record(spec: RunSpec) -> RunRecord:
     params = {key: _param_value(value) for key, value in spec.params.items()}
     return RunRecord(
         name=spec.name,
         params=params,
-        metrics=_finite_floats(spec.metrics),
-        steps={name: tuple(history)
+        metrics=logged_names(_finite_floats(spec.metrics)),
+        steps={logged_name(name): tuple(history)
                for name, history in spec.steps.items()},
         tags={
             **_user_tags(spec.tags, params),
@@ -293,8 +308,10 @@ class TrackingSession:
             })
         events.append(event)
         record = run_record(trial_spec(events))
+        logged = dataclasses.replace(event,
+                                     metrics=logged_names(event.metrics))
         self._submit(lambda: self._call(
-            lambda tracker: tracker.on_trial(record, event)))
+            lambda tracker: tracker.on_trial(record, logged)))
 
     def log_model(
         self,

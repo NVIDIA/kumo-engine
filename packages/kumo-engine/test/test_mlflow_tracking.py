@@ -21,7 +21,7 @@ from test_tracking_contract import CONTEXT, join_tracking_threads, replay
 
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
-from kumo.engine._tracking import run_record
+from kumo.engine._tracking import logged_names, run_record
 from kumo.engine.trainer._run_spec import fit_spec
 
 mlflow = pytest.importorskip('mlflow')
@@ -134,7 +134,8 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
         for name, value in parent.data.metrics.items()
         if not name.startswith('system/')
     }
-    assert metrics == {**result.metrics, 'seconds': metrics['seconds']}
+    assert metrics == {**logged_names(result.metrics),
+                       'seconds': metrics['seconds']}
     assert 'off for the rest of this run' not in caplog.text
     ents, = parent.inputs.dataset_inputs
     assert (ents.dataset.name, ents.dataset.source_type) == ('ents', 'local')
@@ -147,9 +148,9 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     for child in children:
         assert child.info.status == 'FINISHED'
         assert child.data.tags['kumo.status'] == 'succeeded'
-        assert {'best_val_mae', 'seconds',
-                'val_mae'} <= set(child.data.metrics)
-        history = client.get_metric_history(child.info.run_id, 'val_mae')
+        assert {'val/best_mae', 'seconds',
+                'val/mae'} <= set(child.data.metrics)
+        history = client.get_metric_history(child.info.run_id, 'val/mae')
         assert sorted(metric.step for metric in history) == [1, 2]
 
 
