@@ -62,8 +62,7 @@ def test_predict_says_what_differs_from_the_training_graph(
                        r"With on_error='raise'"):
         trainer.predict(_other(snapshot, dropped), mlops=strict,
                         binary_classification_threshold=.5)
-    with warnings.catch_warnings():
-        warnings.filterwarnings('error', message='Snapshot .* was taken')
+    with pytest.warns(UserWarning, match='The schema is the same'):
         _predict(trainer, _other(snapshot, _moved), monkeypatch, mlops=strict)
 
     monkeypatch.setattr(trainer, '_graph_config', None)
