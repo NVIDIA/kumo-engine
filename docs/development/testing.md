@@ -31,6 +31,10 @@ The [Engine PR check](engine-pr-ci.md) builds the candidate wheel and runs eight
 small task checks on CUDA. It reports learning scores without a quality gate.
 Its complete timing still requires a finished CI run and all required results.
 
+The [Engine nightly check](engine-nightly-ci.md) compares sixteen large-profile
+GPU fits with a saved reference. Its guide lists the remaining access and
+behavior coverage requirements.
+
 ## Report evidence
 
 Record the command, environment, result, and any untested dependency. Keep
