@@ -833,3 +833,96 @@ def test_rows_below_clock_floor_use_their_real_time(
     else:
         assert len(ids) == 1 and ids[0] in expected
     assert lengths == [len(ids)]
+
+
+CLOCK_PARAMS = [(bits, anchor) for bits in (8, 16, 32) for anchor in (0, 1_700_000_000)]
+
+
+def _clock_graph(history_graph, tmp_path, bits, anchor, times):
+    config = copy.deepcopy(history_graph[4])
+    orders = pa.table(
+        {
+            "id": list(range(1, len(times) + 1)),
+            "owner": [1] * len(times),
+            "time": pa.array(times, type=pa.timestamp("s")),
+            "value": [10.0 * (i + 1) for i in range(len(times))],
+        }
+    )
+    path = tmp_path / "orders.parquet"
+    pq.write_table(orders, path)
+    config["tables"][1]["columns"] = [
+        column
+        for column in config["tables"][1]["columns"]
+        if column["name"] not in {"other_time", "null_int"}
+    ]
+    config["tables"][1]["source"]["paths"] = [str(path)]
+    config["tables"][1]["fkeys"][0]["reverse"]["time"].update(
+        bitwidth=bits, anchor_time=anchor, unit="s"
+    )
+    diskgraph.ingest(
+        json.dumps(config),
+        str(tmp_path / "index"),
+        col_stats=False,
+        context_threads=2,
+        encode_threads=2,
+        pk_map_threads=2,
+        edges_map_threads=2,
+        index_threads=2,
+    )
+    return diskgraph.SamplerEngine(str(tmp_path / "index"))
+
+
+@pytest.fixture(params=CLOCK_PARAMS)
+def ceiling_endpoint_graph(history_graph, tmp_path, request):
+    bits, anchor = request.param
+    ceiling = anchor + (1 << (bits - 1)) - 1
+    # Rows 3 and 4 are clipped into the ceiling code that row 2 holds exactly.
+    times = [ceiling - 10, ceiling, ceiling + 1, ceiling + 200]
+    engine = _clock_graph(history_graph, tmp_path, bits, anchor, times)
+    return engine, ceiling, history_graph
+
+
+@pytest.fixture(params=CLOCK_PARAMS)
+def floor_endpoint_graph(history_graph, tmp_path, request):
+    bits, anchor = request.param
+    floor = anchor - (1 << (bits - 1)) + 1
+    # Row 1 is clipped into the NULL code below the lowest exact time.
+    times = [floor - 1, floor, floor + 10]
+    engine = _clock_graph(history_graph, tmp_path, bits, anchor, times)
+    return engine, floor, history_graph
+
+
+def _assert_window(graph, lower, upper, expected):
+    engine, edge, original = graph
+    for limit in (None, 1):
+        plan = _window_plan(original, start=lower - upper, limit=limit)
+        ids, lengths = _ids_and_lengths(engine, plan, edge + upper)
+        want = expected if limit is None else expected[-1:]
+        assert (ids, lengths) == (want, [len(want)]), (lower, upper, limit)
+
+
+@pytest.mark.parametrize(
+    ("lower", "upper", "expected"),
+    [
+        (-11, -10, [1]),
+        (-10, 0, [2]),
+        (0, 1, [3]),
+        (1, 200, [4]),
+        (-10, 1, [2, 3]),
+        (0, 200, [3, 4]),
+    ],
+)
+def test_window_endpoints_at_clipped_clock_ceiling(
+    ceiling_endpoint_graph, lower, upper, expected
+):
+    _assert_window(ceiling_endpoint_graph, lower, upper, expected)
+
+
+@pytest.mark.parametrize(
+    ("lower", "upper", "expected"),
+    [(-2, -1, [1]), (-1, 0, [2]), (0, 10, [3]), (-2, 0, [1, 2])],
+)
+def test_window_endpoints_at_clipped_clock_floor(
+    floor_endpoint_graph, lower, upper, expected
+):
+    _assert_window(floor_endpoint_graph, lower, upper, expected)
