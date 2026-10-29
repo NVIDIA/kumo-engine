@@ -1,40 +1,23 @@
 # Small PR172 fixtures
 
-The committed archive contains the fixed synthetic inputs used by the eight
-PR task checks. It contains 556,127 adtech rows, 1,442,968 delivery rows, and
-74,416 commerce rows. These are source table rows across all tables in each
-family. The task adapters derive their training and prediction rows from them.
+The GPU smoke action downloads the versioned S3 bundle recorded in
+`inputs.json`. Its SHA-256 pins the complete compressed archive. The action
+checks that hash before extraction and uses the repository's existing AWS role.
+No private GitHub repository or fixture-access token is required.
 
-Preparation reads local files only. It needs no token, private repository,
-generator, or download. Run it with the candidate environment, which already
-contains PyArrow:
+The bundle retains the same 29 files from the approved generate-once inputs:
+23 Parquet table files, three manifests, and three validation stamps. It adds
+`graphs.json` with public table, column, key, time, type, and edge metadata.
+The tables contain 556,127 adtech rows, 1,442,968 delivery rows, and 74,416 commerce
+rows across their respective graph families. The original 29 files remain
+byte-identical. No generator source, hidden answers, or model outputs are included.
 
-```sh
-python packages/kumo-engine/test/pr172/prepare.py --output-dir /path/to/pr-inputs
-```
+The extracted root contains `adtech/pr`, `delivery/pr`, `commerce/pr`, and
+`graphs.json`. The standalone runner reads those paths with public Engine APIs.
+It uses native static-link splitting for smoke coverage. The previous quality
+control payload and source projection are not part of this check.
 
-The result reports `data_root` for the extracted data and `source_root` for
-the committed graph builder in this directory. Preparation trains no models.
-It sets no learning score threshold. To check the complete archive without
-keeping extracted data, use `--check` instead of `--output-dir`.
-
-`fixtures.json` records the compressed archive hash and every retained file's
-size and hash. Extraction rejects changed bytes, unsafe paths, duplicate
-members, links, and unexpected files. It verifies the original manifests and
-validation stamps, exact table counts, and actual Parquet row counts. Reuse
-of extracted data repeats these checks. A partial or modified directory fails
-without replacing it.
-
-The archive keeps 23 table Parquet files, three original manifests, and three
-original validation stamps. It excludes hidden generator state, private
-Python source, generation logs, and machine paths. The retained table bytes
-match the measured inputs exactly. The original validator ran before this
-archive was made. Its retained stamp is historical evidence, while the loader
-independently checks the files and row counts used by the PR worker.
-
-`provenance.json` and `config.json` retain the original generator revision,
-source fingerprints, configuration, and expected counts for audit. These
-records do not create a dependency on the original source repository at run
-time. A fixture change requires updating the archive, integrity metadata,
-and provenance together. Keep generated training outputs and model bundles
-outside this directory.
+A fixture update requires a new versioned S3 object and an updated manifest
+hash. Keep the frozen reports from previous runs unchanged. The
+[Engine PR guide](../../../../docs/development/engine-pr-ci.md) describes
+normal runs, numeric qualification, and local feedback.

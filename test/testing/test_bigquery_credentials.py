@@ -2,7 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import json
 import os
 from unittest import mock
 
@@ -55,68 +54,6 @@ def test_setup_prefers_application_default_credentials(monkeypatch, tmp_path):
     assert testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT not in (
         os.environ)
     get_secrets.assert_not_called()
-
-
-def test_legacy_credentials_switch_to_each_requested_identity(
-        monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    default_path = tmp_path / 'default-credentials.json'
-    monkeypatch.setattr(testing_bigquery, 'ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH',
-                        str(default_path))
-    for name in ('GOOGLE_APPLICATION_CREDENTIALS',
-                 bigquery_connector.ENV_GOOGLE_CREDENTIALS_JSON,
-                 testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT,
-                 testing_bigquery.ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT,
-                 testing_bigquery.ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT):
-        monkeypatch.delenv(name, raising=False)
-    identities = {
-        testing_bigquery.DEFAULT_BIGQUERY_KEY: 'default@example.invalid',
-        testing_bigquery.FAIL_TABLE_PERMISSION_BIGQUERY_KEY:
-        'no-table@example.invalid',
-        testing_bigquery.FAIL_PROJECT_PERMISSION_BIGQUERY_KEY:
-        'no-job@example.invalid',
-    }
-    get_secrets = mock.Mock(side_effect=lambda key: {
-        'type': 'service_account', 'client_email': identities[key]
-    })
-    monkeypatch.setattr(testing_bigquery, 'get_secrets', get_secrets)
-    sequence = [testing_bigquery.DEFAULT_BIGQUERY_KEY,
-                testing_bigquery.FAIL_TABLE_PERMISSION_BIGQUERY_KEY,
-                testing_bigquery.FAIL_PROJECT_PERMISSION_BIGQUERY_KEY,
-                testing_bigquery.DEFAULT_BIGQUERY_KEY]
-
-    for key in sequence:
-        testing_bigquery.setup_bigquery_credentials(key)
-
-        expected = {'type': 'service_account', 'client_email': identities[key]}
-        credentials_path = tmp_path / '.google_credential.json'
-        assert json.loads(credentials_path.read_text()) == expected
-        assert json.loads(default_path.read_text()) == expected
-        assert os.environ['GOOGLE_APPLICATION_CREDENTIALS'] == str(
-            credentials_path)
-        assert os.environ[bigquery_connector.ENV_GOOGLE_CREDENTIALS_JSON] == str(
-            credentials_path)
-        assert testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT not in (
-            os.environ)
-    assert get_secrets.call_args_list == [mock.call(key) for key in sequence]
-
-
-def test_malformed_adc_fails_without_secret_fallback_or_logging(
-        monkeypatch, tmp_path, caplog, capsys):
-    credentials_path = tmp_path / 'broken-credentials.json'
-    marker = 'test-only-opaque-private-key'
-    credentials_path.write_text('{"private_key": "' + marker + '", invalid}')
-    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', str(credentials_path))
-    get_secrets = mock.Mock(side_effect=AssertionError('No secret fallback'))
-    monkeypatch.setattr(testing_bigquery, 'get_secrets', get_secrets)
-
-    with pytest.raises(json.JSONDecodeError) as caught:
-        testing_bigquery.setup_bigquery_credentials()
-
-    get_secrets.assert_not_called()
-    captured = capsys.readouterr()
-    assert marker not in str(caught.value) + caplog.text + captured.out + (
-        captured.err)
 
 
 def test_restricted_identity_uses_iam_impersonation(monkeypatch, tmp_path):

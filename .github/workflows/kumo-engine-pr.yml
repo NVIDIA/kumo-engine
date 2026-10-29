@@ -4,90 +4,44 @@
 
 name: Kumo Engine PR
 
-# Follow the existing trusted GPU route. copy-pr-bot copies approved PR heads
-# to these branches; NVIDIA GPU runners do not accept pull_request jobs.
+# NVIDIA admits GPU work through the existing trusted copied-PR branches.
 on:  # yamllint disable-line rule:truthy
   push:
     branches: ["pull-request/[0-9]+"]
+    paths-ignore: ["docs/**", "**/*.md"]
   workflow_dispatch:
     inputs:
       pr_number:
-        description: PR whose current head is checked out by this run
+        description: Pull request whose current head is tested
         required: true
         type: string
+      qualify:
+        description: Measure GPU prediction variation without qualifying a pass
+        type: boolean
+        default: false
+      repetitions:
+        description: Complete eight-task repetitions for qualification
+        type: choice
+        options: ["1", "3"]
+        default: "1"
 
 permissions:
   contents: read
+  pull-requests: read
+  id-token: write
 
 concurrency:
-  group: engine-pr-${{ github.ref }}
-  cancel-in-progress: true
+  group: engine-pr-${{ github.ref }}-${{ inputs.qualify && 'qualification' || 'check' }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
-  changes:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      learning: ${{ steps.select.outputs.learning }}
-      install: ${{ steps.select.outputs.install }}
-      example: ${{ steps.select.outputs.example }}
-      behavior: ${{ steps.select.outputs.behavior }}
-      source: ${{ steps.select.outputs.source }}
-      gpu: ${{ steps.select.outputs.gpu }}
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Select checks for the exact PR head
-        id: select
-        env:
-          GH_TOKEN: ${{ github.token }}
-          INPUT_PR: ${{ inputs.pr_number }}
-        run: |
-          set -euo pipefail
-          pr="${INPUT_PR:-${GITHUB_REF_NAME#pull-request/}}"
-          [[ "$pr" =~ ^[1-9][0-9]*$ ]]
-          mkdir -p "$RUNNER_TEMP/pr-selection"
-          gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" > "$RUNNER_TEMP/pr-selection/pr.json"
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$pr/files?per_page=100" \
-            > "$RUNNER_TEMP/pr-selection/file-pages.json"
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          root = Path(os.environ['RUNNER_TEMP']) / 'pr-selection'
-          pages = json.loads((root / 'file-pages.json').read_text())
-          if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
-              raise SystemExit('Malformed paginated changed-file inventory')
-          (root / 'files.json').write_text(json.dumps([row for page in pages for row in page]))
-          PY
-          python3 .github/scripts/engine-pr-check.py select \
-            --files-json "$RUNNER_TEMP/pr-selection/files.json" \
-            --pr-json "$RUNNER_TEMP/pr-selection/pr.json" \
-            --revision "$GITHUB_SHA" --output "$RUNNER_TEMP/pr-selection/selection.json"
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, os
-          from pathlib import Path
-          selected = json.loads((Path(os.environ['RUNNER_TEMP']) / 'pr-selection/selection.json').read_text())
-          for name in ('learning', 'install', 'example', 'behavior', 'source'):
-              print(f'{name}={str(selected[name]).lower()}')
-          print('gpu=' + str(any(selected[k] for k in ('learning', 'install', 'example', 'behavior'))).lower())
-          PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
-        with:
-          name: engine-pr-selection-${{ github.sha }}
-          path: ${{ runner.temp }}/pr-selection
-          if-no-files-found: error
-
-  build:
-    needs: changes
-    if: needs.changes.outputs.gpu == 'true'
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
+  gpu:
+    name: ${{ inputs.qualify && 'Engine GPU qualification' || 'kumo-engine-pr-ci' }}
+    runs-on: linux-amd64-gpu-t4-latest-1
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    timeout-minutes: ${{ inputs.qualify && 50 || 22 }}
     env:
       CARGO_BUILD_JOBS: '4'
     steps:
@@ -95,6 +49,15 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Require the current candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PR: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          pr="${INPUT_PR:-${GITHUB_REF_NAME#pull-request/}}"
+          [[ "$pr" =~ ^[1-9][0-9]*$ ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .head.sha)" = "$GITHUB_SHA"
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
@@ -107,178 +70,24 @@ jobs:
           prefix-key: engine-pr-zig-workspace-v2
           key: py312-glibc234-${{ hashFiles('packages/diskgraph/**', 'packages/kumo-engine/scripts/build_wheel.sh') }}
           cache-workspace-crates: true
-      - name: Prepare wheel builder
-        run: python -m pip --isolated install ziglang
-      - name: Build and fingerprint this revision
+      - name: Build the candidate wheel
         run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/pr-wheel"
-          python packages/kumo-engine/scripts/pr_check.py source \
-            --revision "$GITHUB_SHA" --output "$RUNNER_TEMP/pr-wheel/source.json"
+          python -m pip --isolated install ziglang
           packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/pr-wheel"
-          python packages/kumo-engine/scripts/pr_check.py record-build \
-            --source "$RUNNER_TEMP/pr-wheel/source.json" \
-            --wheel-dir "$RUNNER_TEMP/pr-wheel" --output "$RUNNER_TEMP/pr-wheel/build.json"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
+      - uses: ./.github/actions/engine-gpu-smoke
         with:
-          name: engine-pr-wheel-${{ github.sha }}
-          path: ${{ runner.temp }}/pr-wheel
-          if-no-files-found: error
-          compression-level: 0
-
-  source:
-    needs: changes
-    if: needs.changes.outputs.source == 'true'
-    runs-on: ubuntu-22.04
-    timeout-minutes: 35
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
-      - name: Install model-free harness test dependencies
-        run: python -m pip --isolated install ./packages/kumo-api pytest numpy pandas pyarrow duckdb scikit-learn pyyaml
-      - name: Test selection, artifact guards and task helpers
-        env:
-          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-        run: |
-          mkdir -p "$RUNNER_TEMP/pr-source"
-          python -I -m pytest -q -c test/scripts/agent-local.ini --confcutdir test/scripts \
-            --junitxml "$RUNNER_TEMP/pr-source/tests.xml" \
-            test/scripts/test_engine_pr_*.py \
-            test/scripts/test_engine_agent_local.py \
-            test/scripts/test_engine_wheel_gpu.py \
-            test/scripts/test_engine_wheel_scale_data.py \
-            test/scripts/test_engine_wheel_scale_learning.py \
-            test/scripts/test_engine_wheel_node_tasks.py \
-            test/scripts/test_engine_wheel_temporal_tasks.py \
-            test/scripts/test_engine_wheel_task_checks.py \
-            test/scripts/test_engine_wheel_tasks.py \
-            test/scripts/test_engine_wheel_measurements.py
-      - name: Require the existing source workflow at this revision
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python .github/scripts/engine-pr-owner-source.py \
-            --repository "$GITHUB_REPOSITORY" --revision "$GITHUB_SHA" \
-            --output "$RUNNER_TEMP/pr-source/owner-source.json" --timeout-seconds 1800
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
-        with:
-          name: engine-pr-source-${{ github.sha }}
-          path: ${{ runner.temp }}/pr-source
-          if-no-files-found: error
-
-  gpu:
-    needs: [changes, build]
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
-    # This is the existing registered GPU label. A repository can select an
-    # admitted RTX runner with this variable; no runner is provisioned here.
-    runs-on: ${{ vars.KUMO_ENGINE_PR_GPU_RUNNER || 'linux-amd64-gpu-t4-latest-1' }}
-    timeout-minutes: 20
-    env:
-      CUDA_VISIBLE_DEVICES: '0'
-      KUMO_ACCELERATOR: gpu
-      OMP_NUM_THREADS: '4'
-      MKL_NUM_THREADS: '4'
-      OPENBLAS_NUM_THREADS: '4'
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      PYTHONDONTWRITEBYTECODE: '1'
-      PIP_CONFIG_FILE: /dev/null
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: engine-pr-wheel-${{ github.sha }}
-          path: ${{ runner.temp }}/pr-wheel
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: engine-pr-selection-${{ github.sha }}
-          path: ${{ runner.temp }}/pr-selection
-      - name: Install the candidate in a fresh environment
-        run: |
-          set -euo pipefail
-          python -m venv "$RUNNER_TEMP/pr-candidate"
-          "$RUNNER_TEMP/pr-candidate/bin/python" -I -m pip --isolated install \
-            --index-url https://pypi.org/simple --report "$RUNNER_TEMP/pr-wheel/install.json" \
-            "$RUNNER_TEMP"/pr-wheel/*.whl pytest duckdb==1.5.5
-      - name: Verify bundled synthetic inputs
-        if: needs.changes.outputs.learning == 'true'
-        run: |
-          "$RUNNER_TEMP/pr-candidate/bin/python" -I packages/kumo-engine/test/pr172/prepare.py \
-            --output-dir "$RUNNER_TEMP/pr-inputs"
-      - name: Execute all selected checks
-        run: |
-          "$RUNNER_TEMP/pr-candidate/bin/python" -I packages/kumo-engine/scripts/pr_check.py run \
-            --selection "$RUNNER_TEMP/pr-selection/selection.json" \
-            --build "$RUNNER_TEMP/pr-wheel/build.json" --wheel-dir "$RUNNER_TEMP/pr-wheel" \
-            --data "$RUNNER_TEMP/pr-inputs/data" --scale-source "$GITHUB_WORKSPACE/packages/kumo-engine/test/pr172" \
-            --output "$RUNNER_TEMP/pr-evidence"
-      - name: Preserve result and failed-run evidence
+          wheel-path: ${{ runner.temp }}/pr-wheel/*.whl
+          repetitions: ${{ inputs.qualify && inputs.repetitions || '1' }}
+          qualify: ${{ inputs.qualify || 'false' }}
+      - name: Retain the tested wheel and task results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: engine-pr-gpu-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/pr-evidence
-            ${{ runner.temp }}/pr-wheel/build.json
-            ${{ runner.temp }}/pr-wheel/install.json
-            ${{ runner.temp }}/pr-selection/selection.json
-            ${{ runner.temp }}/pr-inputs/pr172-inputs.json
-            ${{ runner.temp }}/pr-inputs/*.log
+            ${{ runner.temp }}/pr-wheel/*.whl
+            ${{ runner.temp }}/engine-gpu-smoke/summary.json
+            ${{ runner.temp }}/engine-gpu-smoke/wheel.json
+          compression-level: 0
           if-no-files-found: error
           retention-days: 14
-
-  required:
-    name: kumo-engine-pr-ci
-    needs: [changes, build, source, gpu]
-    if: always()
-    runs-on: ubuntu-22.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: engine-pr-selection-${{ github.sha }}
-          path: ${{ runner.temp }}/pr-selection
-      - name: Require every selected result
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          root = Path(os.environ['RUNNER_TEMP'])
-          receipt = json.loads((root / 'pr-selection/selection.json').read_text())
-          if receipt['revision'] != os.environ['GITHUB_SHA']:
-              raise SystemExit('Selection revision differs from workflow revision')
-          (root / 'needs.json').write_text(os.environ['NEEDS_JSON'])
-          PY
-          python3 .github/scripts/engine-pr-check.py gate \
-            --selection "$RUNNER_TEMP/pr-selection/selection.json" \
-            --needs-json "$RUNNER_TEMP/needs.json" --output "$RUNNER_TEMP/gate.json"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
-        with:
-          name: engine-pr-gate-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/gate.json
-            ${{ runner.temp }}/needs.json
-          if-no-files-found: error
