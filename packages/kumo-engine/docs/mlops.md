@@ -137,7 +137,7 @@ run = kumo.PredictionResult.load_from_connector(cfg, path=f"predictions/{run_id}
 table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{table_id}", pq=pquery, snapshot=snapshot)
 ```
 
-`location=` loads the version an alias (or `version=`) names from the tracker's registry, one way on every platform. A loaded model is a `Trainer`; its `result` is the `TrainingResult` (`.id`, `.manifest`, `.metrics`, `.scoring_defaults`, `.holdout_df()`).
+`location=` loads the version an alias (or `version=`) names from the tracker's registry, one way on every platform. A loaded model is a `Trainer`; its `result` is the `TrainingResult` (`.id`, `.manifest`, `.metrics`, `.scoring_defaults`, `.holdout_df()`, `.holdout_evaluation()`).
 
 ## Train and register
 
@@ -227,7 +227,7 @@ scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
 
 ## Monitor
 
-`score_drift` compares a run's scores with the model's holdout and a previous run; `evaluate` scores a run once its outcomes are in a newer snapshot. With tracking on, each call logs a monitoring run named `drift-<prediction id>` or `evaluate-<prediction id>`, tagged `kumo.kind=monitoring`, `kumo.monitors=<prediction id>` and `kumo.bundle_id`.
+`score_drift` compares a run's scores with the model's holdout and a previous run; `evaluate` scores a run once its outcomes are in a newer snapshot. With tracking on, each call logs a monitoring run named `drift-<prediction id>` or `evaluate-<prediction id>`, tagged `kumo.kind=monitoring`, `kumo.monitors=<prediction id>` and `kumo.bundle_id`; on MLflow the prediction run also gets `kumo.monitored=<monitoring run id>`.
 
 ```python
 with kumo.mlops(cfg):
@@ -269,7 +269,7 @@ latest, *earlier = sorted((kumo.PredictionResult.load_from_connector(cfg, path=f
 
 Both platforms monitor the evaluated rows exported to a table; neither monitors link prediction or ranking outputs.
 
-**Databricks (Data Quality Monitoring, inference log; databricks-sdk ≥ 0.68).** The classification monitor reads `TARGET_PRED`, so the run needs a threshold (passed or stored):
+**Databricks (Data Quality Monitoring, inference log; the `databricks` extra installs a databricks-sdk with this API).** The classification monitor reads `TARGET_PRED`, so the run needs a threshold (passed or stored):
 
 ```python
 from databricks.sdk import WorkspaceClient
@@ -287,7 +287,12 @@ w.data_quality.create_monitor(monitor=Monitor(object_type="table", object_id=tab
             timestamp_column="EVALUATED_AT", granularities=[AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY]))))
 ```
 
-**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` to a Snowflake table writes `TARGET` as a number and `EVALUATED_AT` as `TIMESTAMP_NTZ`, as the monitor needs; the baseline is `result.holdout_df().astype({"TARGET": int}).assign(EVALUATED_AT=pd.Timestamp.now())` written with `session.write_pandas`:
+**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` to a Snowflake table writes `TARGET` as a number and `EVALUATED_AT` as `TIMESTAMP_NTZ`, as the monitor needs. The baseline is the model's holdout as evaluated rows, `result.holdout_evaluation()`, exported the same way, so its columns and types are the source's; pass the threshold the scored runs use, if they were not scored with the stored one:
+
+```python
+evaluation.export(kumo.PredictionOutputConfig(sf, path="churn_evaluated"))
+champion.result.holdout_evaluation().export(kumo.PredictionOutputConfig(sf, path="churn_holdout_evaluated"))
+```
 
 ```sql
 CREATE MODEL MONITOR churn_monitor WITH MODEL=churn_gnn VERSION=<version> FUNCTION=predict
