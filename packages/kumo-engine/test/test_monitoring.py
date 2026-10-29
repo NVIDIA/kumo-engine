@@ -685,7 +685,31 @@ def test_feature_drift_explains_what_it_cannot_compare(shifted):
 
     reasons = {}
     assert _compare(_encoding(root, ['AGE']), None, None, reasons) == {}
-    assert 'no column statistics' in reasons['features']
+    assert reasons['features'].startswith(
+        "no column statistics for the training and scoring snapshot: the "
+        "model's manifest and the run's manifest name no snapshot; pass ")
+
+
+def test_feature_drift_reads_the_training_snapshot_of_a_derived_model(
+        shifted):
+    from kumo.engine._manifest import (
+        ModelParents,
+        TrainingTableManifest,
+        TrainingTableParents,
+    )
+
+    before, after, root = shifted
+    trained = kumo.ModelManifest(id='m', parents=ModelParents(
+        training_table=TrainingTableManifest(
+            id='tt', parents=TrainingTableParents(
+                snapshot=kumo.SnapshotManifest(id=before.id)))))
+    trainer = _encoding(root, ['AGE'])
+    trainer.result.manifest = kumo.ModelManifest(
+        id='d', parents=ModelParents(derived_from=trained))
+    reasons = {}
+    features = _compare(trainer, after, None, reasons)
+    assert reasons == {}
+    assert features['users']['AGE']['standardized_mean_shift'] > 2
 
 
 def test_feature_metrics_stay_far_below_a_run_limit():
