@@ -13,6 +13,7 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -384,6 +385,47 @@ class WheelScaleLearningTest(unittest.TestCase):
         result = baseline(truth)
         self.assertEqual(result['ranked_ids'], [[2, 3, 4, 5, 6]])
         self.assertEqual(result['ranked_scores'], [[7, 7, 7, 7, 6]])
+
+    def test_ranked_scores_use_public_mean_recall_for_model_and_baseline(self):
+        score = self.worker()['ranked_task_score']
+        with patch.dict(sys.modules, {'scalebench': None,
+                                      'scalebench.metrics': None}):
+            for task, k, expected, baseline_expected in (
+                    ('static_link', 5, 5 / 22, 2 / 11),
+                    ('temporal_link', 10, 31 / 44, 9 / 22)):
+                with self.subTest(task=task):
+                    row = dict(
+                        task=task, metric=f'recall@{k}',
+                        target_format='ranked_link_v1', entity_ids=[10, 20],
+                        catalog=list(range(12)),
+                        target_ids=[list(range(11)), [10, 11]],
+                        excluded_ids=[[], []],
+                        ranked_ids=[list(range(k)), list(range(1, k + 1))],
+                        ranked_scores=[list(range(k, 0, -1))] * 2,
+                        baseline_ranked_ids=[list(range(12 - k, 12)),
+                                             list(range(k))],
+                        baseline_ranked_scores=[list(range(k, 0, -1))] * 2)
+                    self.assertAlmostEqual(score(row), expected)
+                    self.assertAlmostEqual(score(row, baseline=True),
+                                           baseline_expected)
+
+    def test_public_ranked_scoring_keeps_coordinate_and_exclusion_checks(self):
+        score = self.worker()['ranked_task_score']
+        row = dict(task='static_link', metric='recall@5',
+                   target_format='ranked_link_v1', entity_ids=[7],
+                   catalog=list(range(7)), target_ids=[[0, 6]],
+                   excluded_ids=[[]], ranked_ids=[[0, 1, 2, 3, 4]],
+                   ranked_scores=[[5, 4, 3, 2, 1]])
+        for values in (
+                dict(ranked_ids=[]),
+                dict(ranked_ids=[[0, 1, 2, 3, 3]]),
+                dict(ranked_scores=[[float('nan')] * 5]),
+                dict(excluded_ids=[[0]])):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                score(dict(row, **values))
+        with self.assertRaises(ValueError):
+            score(dict(row, baseline_ranked_ids=[[0, 1, 2, 3]],
+                       baseline_ranked_scores=[[4, 3, 2, 1]]), baseline=True)
 
     def test_recall_ten_counts_ranks_eight_and_ten_and_needs_full_catalog(self):
         checks = runpy.run_path(str(ROOT / 'wheel_task_checks.py'))

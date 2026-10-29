@@ -79,19 +79,25 @@
     "pyarrow": "18.1.0",
     "duckdb": "1.5.5"
   },
-  "source_license": "Redistribution permission was not established for the upstream source snapshot. Source files are acquired at runtime and are not committed here.",
-  "generation_scope": "Only three small synthetic PR profiles. No model fitting or cached quality limits.",
+  "source_license": "No upstream Python source is redistributed or executed by this fixture loader.",
+  "generation_scope": "Historical three-profile generation provenance. Current PR preparation extracts the fixed synthetic archive and trains no models.",
   "generated_profiles_sha256": {
     "profiles/adtech.placeholder.json": "fca1d47caa976acdc735c7e0cb375bc669f1405f9c6c78382c289d0281041dc5",
     "profiles/delivery.placeholder.json": "eece691e4d8a3addac23a3831576028bb086dfb14f27cfb32a11e0aaa0c90c45",
     "profiles/commerce.placeholder.json": "85ed11cb4b3140d2d6b626194ae48778e153dc479b32bdaca9561fa5fabfb951"
   },
-  "acquisition": "Check out the exact source_revision with a token authorized for the upstream repository. Pass its scale-bench directory to prepare.py. Upstream source files are not part of this public change.",
+  "acquisition": "The synthetic files are committed in small-pr172-data.tar.gz. The source repository/revision/hashes above record historical generation provenance only.",
   "input_validation": {
     "profile_tol": 1.0,
     "max_tenure_rate_ratio": 3,
     "max_end_density_ratio": 3,
     "row_sample": 20000,
     "purpose": "Reuse the recorded small-profile structural validator settings. These do not set a model-quality gate. Exact expected table counts and source hashes remain strict."
-  }
+  },
+  "fixture_bundle": {
+    "integrity_file": "fixtures.json",
+    "integrity_sha256": "53a9f56a2dc1d86febd0492b14085094bf70c99e43535a476ce24cc2fd2eebd2",
+    "scope": "The exact approved small synthetic table bytes, manifests, and validation stamps. Hidden generator state, private source, logs and runtime paths are excluded."
+  },
+  "runtime": "Offline bundled fixture extraction only. No token, private checkout, generator, or source download is required."
 }

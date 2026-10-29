@@ -104,6 +104,9 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: packages/diskgraph
+          prefix-key: engine-pr-zig-workspace-v2
+          key: py312-glibc234-${{ hashFiles('packages/diskgraph/**', 'packages/kumo-engine/scripts/build_wheel.sh') }}
+          cache-workspace-crates: true
       - name: Prepare wheel builder
         run: python -m pip --isolated install ziglang
       - name: Build and fingerprint this revision
@@ -204,44 +207,6 @@ jobs:
         with:
           name: engine-pr-selection-${{ github.sha }}
           path: ${{ runner.temp }}/pr-selection
-      - name: Require access to the pinned synthetic generators
-        if: needs.changes.outputs.learning == 'true'
-        env:
-          SOURCE_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          configured = bool(os.environ.get('SOURCE_TOKEN'))
-          root = Path(os.environ['RUNNER_TEMP']) / 'pr-preflight'
-          root.mkdir(parents=True, exist_ok=True)
-          receipt = dict(status='CONFIGURED' if configured else 'FAIL',
-                         revision=os.environ['GITHUB_SHA'],
-                         stage='generator_token_configuration',
-                         token_configured=configured, source_checkout_verified=False,
-                         physical_fits=0)
-          (root / 'source-token.json').write_text(json.dumps(receipt, indent=2) + '\n')
-          if not configured:
-              raise SystemExit('::error::KUMO_GITHUB_BOT_TOKEN needs read access to the pinned PR172 source.')
-          PY
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        if: needs.changes.outputs.learning == 'true'
-        with:
-          repository: kumo-ai/kumo-stress-tests
-          ref: 1a5abd594310754e0088786240149d920982d544
-          token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
-          path: _pr172_source
-          persist-credentials: false
-      - name: Generate and verify the small synthetic inputs
-        if: needs.changes.outputs.learning == 'true'
-        run: |
-          set -euo pipefail
-          python -m venv "$RUNNER_TEMP/pr-generator"
-          "$RUNNER_TEMP/pr-generator/bin/python" -I -m pip --isolated install \
-            --index-url https://pypi.org/simple numpy==2.2.6 scipy==1.15.3 pyarrow==18.1.0 duckdb==1.5.5
-          "$RUNNER_TEMP/pr-generator/bin/python" -I packages/kumo-engine/test/pr172/prepare.py \
-            --source-dir "$GITHUB_WORKSPACE/_pr172_source/scale-bench" \
-            --output-dir "$RUNNER_TEMP/pr-inputs"
       - name: Install the candidate in a fresh environment
         run: |
           set -euo pipefail
@@ -249,12 +214,17 @@ jobs:
           "$RUNNER_TEMP/pr-candidate/bin/python" -I -m pip --isolated install \
             --index-url https://pypi.org/simple --report "$RUNNER_TEMP/pr-wheel/install.json" \
             "$RUNNER_TEMP"/pr-wheel/*.whl pytest duckdb==1.5.5
+      - name: Verify bundled synthetic inputs
+        if: needs.changes.outputs.learning == 'true'
+        run: |
+          "$RUNNER_TEMP/pr-candidate/bin/python" -I packages/kumo-engine/test/pr172/prepare.py \
+            --output-dir "$RUNNER_TEMP/pr-inputs"
       - name: Execute all selected checks
         run: |
           "$RUNNER_TEMP/pr-candidate/bin/python" -I packages/kumo-engine/scripts/pr_check.py run \
             --selection "$RUNNER_TEMP/pr-selection/selection.json" \
             --build "$RUNNER_TEMP/pr-wheel/build.json" --wheel-dir "$RUNNER_TEMP/pr-wheel" \
-            --data "$RUNNER_TEMP/pr-inputs/data" --scale-source "$RUNNER_TEMP/pr-inputs/source" \
+            --data "$RUNNER_TEMP/pr-inputs/data" --scale-source "$GITHUB_WORKSPACE/packages/kumo-engine/test/pr172" \
             --output "$RUNNER_TEMP/pr-evidence"
       - name: Preserve result and failed-run evidence
         if: always()
@@ -262,9 +232,10 @@ jobs:
         with:
           name: engine-pr-gpu-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/pr-preflight
             ${{ runner.temp }}/pr-evidence
+            ${{ runner.temp }}/pr-wheel/build.json
             ${{ runner.temp }}/pr-wheel/install.json
+            ${{ runner.temp }}/pr-selection/selection.json
             ${{ runner.temp }}/pr-inputs/pr172-inputs.json
             ${{ runner.temp }}/pr-inputs/*.log
           if-no-files-found: error

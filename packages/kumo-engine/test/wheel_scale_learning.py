@@ -35,8 +35,8 @@ from wheel_scale_data import CASES
 from wheel_task_checks import (
     _integer_ranked_ids,
     fingerprint,
+    ranked_link_score,
     score,
-    validate_ranked_link,
     verify_predictions,
 )
 
@@ -241,21 +241,10 @@ def ranked_baseline(truth):
 
 
 def ranked_task_score(row, *, baseline=False):
-    from scalebench.metrics import ranking
-
     if baseline:
         row = dict(row, ranked_ids=row['baseline_ranked_ids'],
                    ranked_scores=row['baseline_ranked_scores'])
-    validate_ranked_link(row)
-    lengths = [len(items) for items in row['ranked_ids']]
-    result = ranking(row['entity_ids'], row['target_ids'],
-                     np.repeat(row['entity_ids'], lengths),
-                     [item for items in row['ranked_ids'] for item in items],
-                     [rank for length in lengths for rank in range(length)],
-                     k=int(row['metric'].split('@')[1]))
-    if result['n_with_predictions'] != len(row['entity_ids']):
-        raise ValueError('Ranked scoring has missing prediction entities')
-    return result[row['metric']]
+    return ranked_link_score(row)
 
 
 def subset_truth(truth, selected_ids, positions):

@@ -4,11 +4,11 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -58,30 +58,28 @@ print(json.dumps({files!r} if any('/files?' in a for a in sys.argv) else {metada
                 }
 
 
-@pytest.mark.parametrize('token', ['', 'test-only-opaque-credential'])
-def test_generator_token_preflight_preserves_failure_without_exposing_secret(
-        tmp_path, token):
+def test_bundled_input_step_runs_without_private_repository_access(tmp_path):
     workflow = yaml.safe_load(
         (ROOT / '.github/workflows/kumo-engine-pr.yml').read_text())
-    step = next(
-        s for s in workflow['jobs']['gpu']['steps']
-        if s.get('name') == 'Require access to the pinned synthetic generators')
+    step = next(s for s in workflow['jobs']['gpu']['steps']
+                if s.get('name') == 'Verify bundled synthetic inputs')
+    candidate = tmp_path / 'pr-candidate/bin'
+    candidate.mkdir(parents=True)
+    python = candidate / 'python'
+    python.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) +
+                      ' "$@"\n')
+    python.chmod(0o755)
     completed = subprocess.run(['bash', '-e', '-c', step['run']], cwd=ROOT,
-                               env=dict(os.environ, SOURCE_TOKEN=token,
-                                        RUNNER_TEMP=str(tmp_path),
-                                        GITHUB_SHA='a' * 40),
+                               env=dict(os.environ, SOURCE_TOKEN='',
+                                        KUMO_GITHUB_BOT_TOKEN='', GH_TOKEN='',
+                                        GITHUB_TOKEN='',
+                                        RUNNER_TEMP=str(tmp_path)),
                                capture_output=True, text=True)
-    receipt_path = tmp_path / 'pr-preflight/source-token.json'
-    assert receipt_path.exists(), completed.stdout + completed.stderr
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    receipt_path = tmp_path / 'pr-inputs/pr172-inputs.json'
     receipt = json.loads(receipt_path.read_text())
-    assert receipt['revision'] == 'a' * 40
-    assert receipt['token_configured'] is bool(token)
-    assert receipt['physical_fits'] == 0
-    assert receipt['source_checkout_verified'] is False
-    assert (completed.returncode == 0) is bool(token)
-    if token:
-        assert token not in receipt_path.read_text()
-        assert token not in completed.stdout + completed.stderr
-    else:
-        assert receipt['status'] == 'FAIL'
-        assert 'KUMO_GITHUB_BOT_TOKEN' in completed.stdout + completed.stderr
+    assert set(receipt['manifest_sha256']) == {'adtech', 'delivery', 'commerce'}
+    assert Path(receipt['data_root']).is_relative_to(tmp_path)
+    assert Path(
+        receipt['source_root']) == ROOT / 'packages/kumo-engine/test/pr172'
+    assert (Path(receipt['source_root']) / 'kumo/build_graph.py').is_file()

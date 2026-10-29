@@ -52,6 +52,10 @@ def _configure_application_default_credentials(
     credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
     if not credentials_path or not os.path.exists(credentials_path):
         return False
+    with open(credentials_path) as credentials_file:
+        if json.load(credentials_file).get('type') == 'service_account':
+            # Legacy keys must follow the requested test identity.
+            return False
 
     impersonation_env = _IMPERSONATION_ENV_BY_KEY.get(service_account_key)
     if impersonation_env is None:
@@ -85,8 +89,8 @@ def setup_bigquery_credentials(service_account_key: Optional[str] = None):
 
     try:
         # Get the GCloud secrets from AWS secrets manager and store it in the
-        # default file. This remains a local/deployment fallback; CI supplies
-        # ADC above and never reaches this path.
+        # default file. Keyless CI uses ADC above; legacy environments use
+        # the named key for each test identity.
         secrets = get_secrets(service_account_key)
         file_path = os.path.join(os.getcwd(), ".google_credential.json")
         with open(file_path, 'w') as f:

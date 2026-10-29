@@ -902,10 +902,12 @@ def prepare_profile(profile_dir, scale_bench_dir, case, output_dir, *,
     manifest = read_profile(profile_dir, case)
     profile_dir, scale_bench_dir = Path(profile_dir).resolve(), Path(
         scale_bench_dir).resolve()
-    source_files = [
-        scale_bench_dir / 'kumo/build_graph.py', *sorted(
-            (scale_bench_dir / 'scalebench').glob('*.py'))
-    ]
+    source_files = [scale_bench_dir / 'kumo/build_graph.py']
+    public_graphs = scale_bench_dir / 'graphs.json'
+    if public_graphs.is_file():
+        source_files.append(public_graphs)
+    else:
+        source_files.extend(sorted((scale_bench_dir / 'scalebench').glob('*.py')))
     source_hash = hashlib.sha256(b''.join(
         str(path.relative_to(scale_bench_dir)).encode() + path.read_bytes()
         for path in source_files)).hexdigest()

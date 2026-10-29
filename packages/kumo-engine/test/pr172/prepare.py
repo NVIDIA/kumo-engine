@@ -2,16 +2,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Generate and check the fixed small PR172 profiles from pinned source."""
+"""Extract and check the committed small synthetic PR172 fixtures offline."""
 
 import argparse
 import hashlib
-import importlib.metadata
 import json
-import os
 import shutil
-import subprocess
-import sys
+import tarfile
+import tempfile
 import time
 from pathlib import Path
 
@@ -23,38 +21,60 @@ def sha(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def verify_source(source, record, *, exact=False):
-    source = source.resolve()
-    if exact:
-        expected = (set(record['copied_files_sha256'])
-                    | set(record['generated_profiles_sha256']))
-        actual = {
-            str(path.relative_to(source))
-            for path in source.rglob('*')
-            if path.is_file() and path.suffix in ('.py', '.json', '.txt')
-        }
-        if expected != actual:
-            raise ValueError('source inventory differs')
-    for name, digest in record['copied_files_sha256'].items():
-        path = (source / name).resolve()
-        if (not path.is_relative_to(source) or not path.is_file()
-                or sha(path) != digest):
-            raise ValueError(f'source fingerprint differs: {name}')
-    return record
+def safe_member(member):
+    if (member.type != tarfile.REGTYPE or member.name.startswith('/')
+            or '\\' in member.name
+            or any(part in ('', '.', '..') for part in member.name.split('/'))):
+        raise ValueError(f'Unsafe archive member: {member.name}')
 
 
-def verify_profiles(source, record):
-    for name, digest in record['generated_profiles_sha256'].items():
-        if sha(source / name) != digest:
-            raise ValueError(f'generated profile fingerprint differs: {name}')
+def extract_archive(archive, destination, integrity):
+    expected = integrity['archive']
+    if archive.stat().st_size != expected['bytes'] or sha(archive) != expected['sha256']:
+        raise ValueError('Bundled archive fingerprint differs')
+    with tarfile.open(archive, 'r:gz') as stream:
+        members = stream.getmembers()
+        names = [member.name for member in members]
+        for member in members:
+            safe_member(member)
+        if len(names) != len(set(names)):
+            raise ValueError('Duplicate archive member')
+        if set(names) != set(integrity['files']):
+            raise ValueError('Bundled archive inventory differs')
+        for member in members:
+            if member.size != integrity['files'][member.name]['bytes']:
+                raise ValueError(f'Bundled fixture fingerprint differs: {member.name}')
+        destination.mkdir(parents=True, exist_ok=False)
+        for member in members:
+            target = destination / member.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with stream.extractfile(member) as source, target.open('xb') as output:
+                shutil.copyfileobj(source, output)
+            if sha(target) != integrity['files'][member.name]['sha256']:
+                raise ValueError(f'Bundled fixture fingerprint differs: {member.name}')
+
+
+def verify_files(root, integrity):
+    if root.is_symlink():
+        raise ValueError('Bundled fixture fingerprint differs: linked data root')
+    actual = {str(p.relative_to(root)) for p in root.rglob('*') if p.is_file()}
+    if actual != set(integrity['files']):
+        raise ValueError('Bundled fixture inventory differs')
+    for name, expected in integrity['files'].items():
+        path = root / name
+        if (path.is_symlink() or not path.resolve().is_relative_to(root.resolve())
+                or path.stat().st_size != expected['bytes']
+                or sha(path) != expected['sha256']):
+            raise ValueError(f'Bundled fixture fingerprint differs: {name}')
 
 
 def validate_dataset(root, profiles):
+    import pyarrow.parquet as pq
+
     hashes = {}
     for graph, expected in profiles.items():
         directory = root / graph / 'pr'
-        manifest_path = directory / 'manifest.json'
-        content = manifest_path.read_bytes()
+        content = (directory / 'manifest.json').read_bytes()
         manifest = json.loads(content)
         stamp = json.loads((directory / '_VALIDATED.json').read_text())
         digest = hashlib.sha256(content).hexdigest()
@@ -67,9 +87,9 @@ def validate_dataset(root, profiles):
                 or manifest.get('seed') != 20261009
                 or manifest.get('shards') != expected['shards']
                 or manifest.get('shard_entities') != expected['shard_entities']
-                or
-            {k: v['rows']
-             for k, v in manifest['tables'].items()} != expected['rows']):
+                or {k: v['rows'] for k, v in manifest['tables'].items()}
+                != expected['rows']
+                or manifest.get('total_rows') != sum(expected['rows'].values())):
             raise ValueError(f'generated profile differs: {graph}')
         for key in ('config_hash', 'profile_digest'):
             if key in expected and manifest.get(key) != expected[key]:
@@ -77,123 +97,89 @@ def validate_dataset(root, profiles):
         listed = {(root / entry['path']).resolve()
                   for table in manifest['tables'].values()
                   for entry in table['files']}
-        actual = {
-            path.resolve()
-            for path in directory.rglob('*.parquet') if not any(
-                part.startswith('_')
-                for part in path.relative_to(directory).parts)
-        }
+        actual = {path.resolve() for path in directory.rglob('*.parquet')}
         if actual != listed:
             raise ValueError(f'table inventory differs: {graph}')
         for table in manifest['tables'].values():
+            total = 0
             for entry in table['files']:
                 path = (root / entry['path']).resolve()
                 if (not path.is_relative_to(directory.resolve())
-                        or not path.is_file()
+                        or path.is_symlink() or not path.is_file()
                         or path.stat().st_size != entry['bytes']
                         or sha(path) != entry['sha256']):
                     raise ValueError(f'table fingerprint differs: {graph}')
+                rows = pq.read_metadata(path).num_rows
+                if rows != entry['rows']:
+                    raise ValueError(f'Parquet row count differs: {graph}')
+                total += rows
+            if total != table['rows']:
+                raise ValueError(f'Parquet row count differs: {graph}')
         hashes[graph] = digest
     return hashes
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source-dir', type=Path, required=True,
-                        help='Pinned upstream scale-bench directory')
-    parser.add_argument('--output-dir', type=Path)
-    parser.add_argument('--workers', type=int, default=2)
-    parser.add_argument('--check', action='store_true',
-                        help='Check committed source fingerprints only')
-    args = parser.parse_args()
+def prepare_data(output):
     provenance = json.loads((ROOT / 'provenance.json').read_text())
     if sha(ROOT / 'config.json') != provenance['config_sha256']:
-        raise ValueError('source fingerprint differs: config.json')
-    upstream = args.source_dir.resolve()
-    verify_source(upstream, provenance)
-    if args.check:
-        print(json.dumps({'source_check': 'PASS'}))
-        return
-    if args.output_dir is None or args.workers < 1:
-        parser.error('--output-dir and positive --workers are required')
-    output = args.output_dir.resolve()
-    if sys.version_info[:2] != (3, 12):
-        raise ValueError('Use Python 3.12 for the frozen generator')
-    for package, version in provenance['dependencies'].items():
-        if importlib.metadata.version(package) != version:
-            raise ValueError(f'generator dependency differs: {package}')
-    if output.exists():
-        # A complete checked cache is reusable. Partial output is preserved.
-        receipt = json.loads((output / 'pr172-inputs.json').read_text())
-        if (receipt['data_root'] != str(output / 'data')
-                or receipt['source_root'] != str(output / 'source') or
-                receipt['provenance_sha256'] != sha(ROOT / 'provenance.json')):
-            raise ValueError('cached generator provenance differs')
-        verify_source(output / 'source', provenance, exact=True)
-        verify_profiles(output / 'source', provenance)
-        if receipt['manifest_sha256'] != validate_dataset(
-                output / 'data', provenance['expected_profiles']):
-            raise ValueError('cached data manifest differs')
-        print(json.dumps(receipt))
-        return
-    output.mkdir(parents=True)
-    source = output / 'source'
+        raise ValueError('Fixture configuration fingerprint differs')
+    metadata = ROOT / provenance['fixture_bundle']['integrity_file']
+    if sha(metadata) != provenance['fixture_bundle']['integrity_sha256']:
+        raise ValueError('Fixture integrity metadata fingerprint differs')
+    integrity = json.loads(metadata.read_text())
+    archive = ROOT / integrity['archive']['filename']
+    if archive.parent != ROOT or archive.name != 'small-pr172-data.tar.gz':
+        raise ValueError('Invalid bundled archive name')
+    output = output.resolve()
     data = output / 'data'
-    for name in provenance['copied_files_sha256']:
-        destination = source / name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(upstream / name, destination)
-    environment = {
-        k: v
-        for k, v in os.environ.items()
-        if k not in ('PYTHONPATH', 'PYTHONHOME', 'SCALEBENCH_GRAPHS')
-    }
-    environment['PYTHONPATH'] = str(source)
-    environment['PYTHONDONTWRITEBYTECODE'] = '1'
+    cache = output.exists()
     started = time.monotonic()
-    subprocess.run([
-        sys.executable,
-        str(source / 'profiles/make_placeholders.py'),
-        *provenance['expected_profiles']
-    ], cwd=source, env=environment, check=True)
-    verify_profiles(source, provenance)
-    for graph, profile in provenance['expected_profiles'].items():
-        commands = [
-            [
-                sys.executable, '-m', 'scalebench.generate', 'run', '--graph',
-                graph, '--rung', 'pr', '--shards',
-                str(profile['shards']), '--workers',
-                str(args.workers), '--root',
-                str(data), '--config',
-                str(ROOT / 'config.json')
-            ],
-            [
-                sys.executable, '-m', 'scalebench.validate', 'check', '--graph',
-                graph, '--rung', 'pr', '--root',
-                str(data), '--workers',
-                str(args.workers), '--duck-mem', '2GB', '--checksums',
-                '--row-sample', '20000', '--profile-tol', '1.0',
-                '--max-tenure-rate-ratio', '3', '--max-end-density-ratio', '3'
-            ],
-        ]
-        for index, command in enumerate(commands):
-            with (output / f'{graph}-{index}.log').open('w') as stream:
-                subprocess.run(command, cwd=source, env=environment,
-                               stdout=stream, stderr=subprocess.STDOUT,
-                               check=True)
-    verify_source(source, provenance, exact=True)
-    verify_profiles(source, provenance)
-    result = {
-        'data_root': str(data),
-        'source_root': str(source),
-        'provenance_sha256': sha(ROOT / 'provenance.json'),
-        'manifest_sha256': validate_dataset(data,
-                                            provenance['expected_profiles']),
-        'generation_seconds': time.monotonic() - started
-    }
-    (output /
-     'pr172-inputs.json').write_text(json.dumps(result, indent=2) + '\n')
-    print(json.dumps(result))
+    if cache:
+        # A checked complete cache is reusable. Partial output stays visible.
+        try:
+            receipt = json.loads((output / 'pr172-inputs.json').read_text())
+        except (OSError, ValueError) as error:
+            raise ValueError('Missing or invalid cached preparation receipt') from error
+        if archive.stat().st_size != integrity['archive']['bytes'] or sha(archive) != integrity['archive']['sha256']:
+            raise ValueError('Bundled archive fingerprint differs')
+    else:
+        output.mkdir(parents=True)
+        extract_archive(archive, data, integrity)
+    verify_files(data, integrity)
+    hashes = validate_dataset(data, provenance['expected_profiles'])
+    result = dict(data_root=str(data), source_root=str(ROOT),
+                  provenance_sha256=sha(ROOT / 'provenance.json'),
+                  archive_sha256=integrity['archive']['sha256'],
+                  manifest_sha256=hashes, cache_reused=cache,
+                  rows={graph: sum(profile['rows'].values())
+                        for graph, profile in provenance['expected_profiles'].items()},
+                  preparation_seconds=time.monotonic() - started)
+    if cache:
+        identity = ('data_root', 'source_root', 'provenance_sha256',
+                    'archive_sha256', 'manifest_sha256', 'rows')
+        if (not isinstance(receipt, dict)
+                or any(receipt.get(key) != result[key] for key in identity)):
+            raise ValueError('Mismatched cached preparation receipt')
+    else:
+        (output / 'pr172-inputs.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--check', action='store_true',
+                        help='Extract and check the bundled fixtures in temporary storage')
+    args = parser.parse_args()
+    if args.check:
+        with tempfile.TemporaryDirectory(prefix='kumo-pr172-check-') as directory:
+            result = prepare_data(Path(directory) / 'inputs')
+        print(json.dumps(dict(fixture_check='PASS', rows=result['rows'],
+                              archive_sha256=result['archive_sha256'])))
+    else:
+        if args.output_dir is None:
+            parser.error('--output-dir is required')
+        print(json.dumps(prepare_data(args.output_dir)))
 
 
 if __name__ == '__main__':

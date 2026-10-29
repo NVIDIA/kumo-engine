@@ -51,13 +51,16 @@ installed runtime member against the archive and runs `pip check`. Dependency
 versions and the actual GPU model are retained with the results.
 
 The small inputs contain 556,127 adtech rows, 1,442,968 delivery rows, and 74,416
-commerce rows. Their generator configuration, source hashes, and expected
-counts are in `packages/kumo-engine/test/pr172/`. CI acquires the pinned source
-with the existing `KUMO_GITHUB_BOT_TOKEN`. That token needs read access to the
-source repository. Private source is neither committed nor uploaded in result
-artifacts. Generator output and file hashes are checked before training.
-The token preflight preserves a configuration receipt without its value. A
-missing token fails before training and still produces a result artifact.
+commerce rows. They were generated once from the recorded PR172 revision.
+The committed archive is 13,834,517 bytes. It preserves the exact approved
+table bytes, manifests, and validation stamps. CI checks archive and file
+hashes, inventory, and actual Parquet row counts before training. It uses
+local queries and graph definitions. It reads no private repository and
+requires no fixture-access token. No private generator code is included.
+
+The graph adapter uses public Engine APIs and fixed table, column, type, key,
+time, delimiter, and edge metadata. Its full graph configurations and all
+eight resolved query types match the retained generator's definitions.
 
 The GPU runner defaults to the repository's existing
 `linux-amd64-gpu-t4-latest-1` label. `KUMO_ENGINE_PR_GPU_RUNNER` can select an
@@ -72,13 +75,19 @@ queues, installation, generation, selected checks, reporting, and uploads.
 Per-job timeouts are execution bounds. They do not prove the complete target.
 The recorded manual trial and worker timings do not replace a GitHub run.
 
+The Rust cache includes workspace crates and keys them to the native sources
+and bundle builder. A miss still builds from source. Every run retains the
+exact-source and glibc checks. Cache improvements need runtime measurement.
+
 The [recorded attempt at `4a508a93`](https://github.com/NVIDIA/kumo-engine/actions/runs/40924279550)
 took 25 minutes 56 seconds and failed before any primary fit. Its exact wheel
-build passed in 13 minutes 15 seconds. The GPU job lacked the generator token.
-The owner source suite also failed its BigQuery authentication setup and a
-shared test's unconditional CUDA check. This is a failed measurement, not a
-passing runtime estimate. The current control jobs use Ubuntu 22. The existing
-owner workflow retains its own runners and waiting time.
+build passed in 13 minutes 15 seconds. The GPU job lacked the generator token
+required by that earlier implementation. Committed fixtures remove that
+dependency. The owner source suite also failed its credential selection and
+a shared test's unconditional CUDA check. Both paths have focused fixes.
+This is a failed measurement, not a passing runtime estimate. The current
+control jobs use Ubuntu 22. The existing owner workflow retains its own runners
+and waiting time.
 
 After a run finishes, download its run metadata and the complete job inventory,
 including all pages for its recorded attempt. Then audit that run:

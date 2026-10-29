@@ -1,0 +1,1000 @@
+{
+  "adtech": {
+    "default_task": "user_converts",
+    "tasks": [
+      "user_converts"
+    ],
+    "tables": {
+      "users": {
+        "cols": [
+          {
+            "name": "user_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "signup_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "geo",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "os",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "age_bucket",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "language",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "opted_in",
+            "stype": "categorical",
+            "dtype": "bool"
+          }
+        ],
+        "pkey": "user_id",
+        "time_col": "signup_time"
+      },
+      "interests": {
+        "cols": [
+          {
+            "name": "interest_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "topic",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "audience_size",
+            "stype": "numerical",
+            "dtype": "int64"
+          }
+        ],
+        "pkey": "interest_id"
+      },
+      "user_interests": {
+        "cols": [
+          {
+            "name": "created_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "user_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "interest_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "affinity",
+            "stype": "numerical",
+            "dtype": "float64"
+          }
+        ],
+        "time_col": "created_time"
+      },
+      "advertisers": {
+        "cols": [
+          {
+            "name": "advertiser_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "created_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "vertical",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "country",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "account_tier",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "is_verified",
+            "stype": "categorical",
+            "dtype": "bool"
+          }
+        ],
+        "pkey": "advertiser_id",
+        "time_col": "created_time"
+      },
+      "campaigns": {
+        "cols": [
+          {
+            "name": "campaign_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "start_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "advertiser_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "objective",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "budget_tier",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "bid_strategy",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "daily_budget",
+            "stype": "numerical",
+            "dtype": "float64"
+          }
+        ],
+        "pkey": "campaign_id",
+        "time_col": "start_time"
+      },
+      "ads": {
+        "cols": [
+          {
+            "name": "ad_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "created_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "campaign_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "format",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "creative_size",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "call_to_action",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "segments",
+            "stype": "multicategorical",
+            "dtype": "string",
+            "multicategorical_delimiter": "|"
+          },
+          {
+            "name": "quality_score",
+            "stype": "numerical",
+            "dtype": "float64"
+          }
+        ],
+        "pkey": "ad_id",
+        "time_col": "created_time"
+      },
+      "impressions": {
+        "cols": [
+          {
+            "name": "impression_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "user_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "ad_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "placement",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "position",
+            "stype": "numerical",
+            "dtype": "int64"
+          },
+          {
+            "name": "viewability",
+            "stype": "numerical",
+            "dtype": "float64"
+          }
+        ],
+        "time_col": "impression_time"
+      },
+      "clicks": {
+        "cols": [
+          {
+            "name": "click_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "click_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "user_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "ad_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "dwell_seconds",
+            "stype": "numerical",
+            "dtype": "float64"
+          }
+        ],
+        "pkey": "click_id",
+        "time_col": "click_time"
+      },
+      "conversions": {
+        "cols": [
+          {
+            "name": "conversion_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "conversion_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "user_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "ad_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "conversion_type",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "value",
+            "stype": "numerical",
+            "dtype": "float64"
+          }
+        ],
+        "pkey": "conversion_id",
+        "time_col": "conversion_time"
+      }
+    },
+    "edges": [
+      {
+        "src_table": "user_interests",
+        "fkey": "user_id",
+        "dst_table": "users"
+      },
+      {
+        "src_table": "user_interests",
+        "fkey": "interest_id",
+        "dst_table": "interests"
+      },
+      {
+        "src_table": "campaigns",
+        "fkey": "advertiser_id",
+        "dst_table": "advertisers"
+      },
+      {
+        "src_table": "ads",
+        "fkey": "campaign_id",
+        "dst_table": "campaigns"
+      },
+      {
+        "src_table": "impressions",
+        "fkey": "user_id",
+        "dst_table": "users"
+      },
+      {
+        "src_table": "impressions",
+        "fkey": "ad_id",
+        "dst_table": "ads"
+      },
+      {
+        "src_table": "clicks",
+        "fkey": "user_id",
+        "dst_table": "users"
+      },
+      {
+        "src_table": "clicks",
+        "fkey": "ad_id",
+        "dst_table": "ads"
+      },
+      {
+        "src_table": "conversions",
+        "fkey": "user_id",
+        "dst_table": "users"
+      },
+      {
+        "src_table": "conversions",
+        "fkey": "ad_id",
+        "dst_table": "ads"
+      }
+    ]
+  },
+  "delivery": {
+    "default_task": "daypart",
+    "tasks": [
+      "daypart",
+      "orders_30d"
+    ],
+    "tables": {
+      "users": {
+        "cols": [
+          {
+            "name": "user_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "signup_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "home_zone",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "platform",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "membership_tier",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "age_band",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "marketing_opt_in",
+            "stype": "categorical",
+            "dtype": "bool"
+          }
+        ],
+        "pkey": "user_id",
+        "time_col": "signup_time"
+      },
+      "regions": {
+        "cols": [
+          {
+            "name": "region_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "density_tier",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "climate_zone",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "base_delivery_fee",
+            "stype": "numerical",
+            "dtype": "float64"
+          }
+        ],
+        "pkey": "region_id"
+      },
+      "store_groups": {
+        "cols": [
+          {
+            "name": "store_group_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "region_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "cuisine",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "price_tier",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "is_franchise",
+            "stype": "categorical",
+            "dtype": "bool"
+          }
+        ],
+        "pkey": "store_group_id"
+      },
+      "stores": {
+        "cols": [
+          {
+            "name": "store_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "opened_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "store_group_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "rating",
+            "stype": "numerical",
+            "dtype": "float64"
+          },
+          {
+            "name": "delivery_radius_km",
+            "stype": "numerical",
+            "dtype": "float64"
+          },
+          {
+            "name": "prep_minutes",
+            "stype": "numerical",
+            "dtype": "int64"
+          },
+          {
+            "name": "cuisine_tags",
+            "stype": "multicategorical",
+            "dtype": "string",
+            "multicategorical_delimiter": "|"
+          }
+        ],
+        "pkey": "store_id",
+        "time_col": "opened_time"
+      },
+      "orders": {
+        "cols": [
+          {
+            "name": "order_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "order_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "user_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "store_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "daypart",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "item_count",
+            "stype": "numerical",
+            "dtype": "int64"
+          },
+          {
+            "name": "subtotal",
+            "stype": "numerical",
+            "dtype": "float64"
+          },
+          {
+            "name": "tip",
+            "stype": "numerical",
+            "dtype": "float64"
+          },
+          {
+            "name": "delivery_minutes",
+            "stype": "numerical",
+            "dtype": "int64"
+          },
+          {
+            "name": "promo_applied",
+            "stype": "categorical",
+            "dtype": "bool"
+          }
+        ],
+        "pkey": "order_id",
+        "time_col": "order_time"
+      },
+      "order_items": {
+        "cols": [
+          {
+            "name": "order_item_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "item_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "order_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "item_category",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "quantity",
+            "stype": "numerical",
+            "dtype": "int64"
+          },
+          {
+            "name": "unit_price",
+            "stype": "numerical",
+            "dtype": "float64"
+          },
+          {
+            "name": "modifiers",
+            "stype": "multicategorical",
+            "dtype": "string",
+            "multicategorical_delimiter": "|"
+          }
+        ],
+        "pkey": "order_item_id",
+        "time_col": "item_time"
+      },
+      "store_impressions": {
+        "cols": [
+          {
+            "name": "impression_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "user_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "store_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "position",
+            "stype": "numerical",
+            "dtype": "int64"
+          },
+          {
+            "name": "clicked",
+            "stype": "categorical",
+            "dtype": "bool"
+          },
+          {
+            "name": "surface",
+            "stype": "categorical",
+            "dtype": "string"
+          }
+        ],
+        "time_col": "impression_time"
+      }
+    },
+    "edges": [
+      {
+        "src_table": "store_groups",
+        "fkey": "region_id",
+        "dst_table": "regions"
+      },
+      {
+        "src_table": "stores",
+        "fkey": "store_group_id",
+        "dst_table": "store_groups"
+      },
+      {
+        "src_table": "orders",
+        "fkey": "user_id",
+        "dst_table": "users"
+      },
+      {
+        "src_table": "orders",
+        "fkey": "store_id",
+        "dst_table": "stores"
+      },
+      {
+        "src_table": "order_items",
+        "fkey": "order_id",
+        "dst_table": "orders"
+      },
+      {
+        "src_table": "store_impressions",
+        "fkey": "user_id",
+        "dst_table": "users"
+      },
+      {
+        "src_table": "store_impressions",
+        "fkey": "store_id",
+        "dst_table": "stores"
+      }
+    ]
+  },
+  "commerce": {
+    "default_task": "next_merchants",
+    "tasks": [
+      "next_merchants"
+    ],
+    "tables": {
+      "customers": {
+        "cols": [
+          {
+            "name": "customer_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "signup_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "region",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "city",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "membership",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "platform",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "marketing_opt_in",
+            "stype": "categorical",
+            "dtype": "bool"
+          }
+        ],
+        "pkey": "customer_id",
+        "time_col": "signup_time"
+      },
+      "merchants": {
+        "cols": [
+          {
+            "name": "merchant_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "created_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "region",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "primary_category",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "tags",
+            "stype": "multicategorical",
+            "dtype": "string",
+            "multicategorical_delimiter": "|"
+          },
+          {
+            "name": "price_tier",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "is_partner",
+            "stype": "categorical",
+            "dtype": "bool"
+          },
+          {
+            "name": "avg_rating",
+            "stype": "numerical",
+            "dtype": "float64"
+          }
+        ],
+        "pkey": "merchant_id",
+        "time_col": "created_time"
+      },
+      "purchases": {
+        "cols": [
+          {
+            "name": "purchase_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "purchase_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "customer_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "merchant_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "channel",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "fulfillment",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "item_count",
+            "stype": "numerical",
+            "dtype": "int64"
+          },
+          {
+            "name": "subtotal",
+            "stype": "numerical",
+            "dtype": "float64"
+          },
+          {
+            "name": "fees",
+            "stype": "numerical",
+            "dtype": "float64"
+          },
+          {
+            "name": "tip",
+            "stype": "numerical",
+            "dtype": "float64"
+          },
+          {
+            "name": "is_first_purchase",
+            "stype": "categorical",
+            "dtype": "bool"
+          },
+          {
+            "name": "rating",
+            "stype": "numerical",
+            "dtype": "int64"
+          }
+        ],
+        "pkey": "purchase_id",
+        "time_col": "purchase_time"
+      },
+      "merchant_views": {
+        "cols": [
+          {
+            "name": "view_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "customer_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "merchant_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "source",
+            "stype": "categorical",
+            "dtype": "string"
+          }
+        ],
+        "time_col": "view_time"
+      },
+      "searches": {
+        "cols": [
+          {
+            "name": "search_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "customer_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "query_term",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "category",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "result_page",
+            "stype": "numerical",
+            "dtype": "int64"
+          }
+        ],
+        "time_col": "search_time"
+      },
+      "favorites": {
+        "cols": [
+          {
+            "name": "created_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "customer_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "merchant_id",
+            "stype": "ID",
+            "dtype": "int64"
+          }
+        ],
+        "time_col": "created_time"
+      },
+      "reviews": {
+        "cols": [
+          {
+            "name": "review_time",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "customer_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "merchant_id",
+            "stype": "ID",
+            "dtype": "int64"
+          },
+          {
+            "name": "stars",
+            "stype": "numerical",
+            "dtype": "int64"
+          }
+        ],
+        "time_col": "review_time"
+      }
+    },
+    "edges": [
+      {
+        "src_table": "purchases",
+        "fkey": "customer_id",
+        "dst_table": "customers"
+      },
+      {
+        "src_table": "purchases",
+        "fkey": "merchant_id",
+        "dst_table": "merchants"
+      },
+      {
+        "src_table": "merchant_views",
+        "fkey": "customer_id",
+        "dst_table": "customers"
+      },
+      {
+        "src_table": "merchant_views",
+        "fkey": "merchant_id",
+        "dst_table": "merchants"
+      },
+      {
+        "src_table": "searches",
+        "fkey": "customer_id",
+        "dst_table": "customers"
+      },
+      {
+        "src_table": "favorites",
+        "fkey": "customer_id",
+        "dst_table": "customers"
+      },
+      {
+        "src_table": "favorites",
+        "fkey": "merchant_id",
+        "dst_table": "merchants"
+      },
+      {
+        "src_table": "reviews",
+        "fkey": "customer_id",
+        "dst_table": "customers"
+      },
+      {
+        "src_table": "reviews",
+        "fkey": "merchant_id",
+        "dst_table": "merchants"
+      }
+    ]
+  }
+}
