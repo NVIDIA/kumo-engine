@@ -782,7 +782,7 @@ class Trainer:
             lambda: fitted_spec(
                 cast(RunSpec, session.spec), result, seconds, alias, (
                     *snapshot_summaries(Path(snapshot.index_path),
-                                        'training'),
+                                        snapshot.graph_config, 'training'),
                     *table_source(train_table.manifest),
                     *split_summaries(train_table.staging_dir))), error)
         raise_on_error(settings, session.error or error,
