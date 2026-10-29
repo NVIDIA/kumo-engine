@@ -349,15 +349,17 @@ class MlflowTracking:
                 experiment_id = (experiment.experiment_id if experiment else
                                  client.create_experiment(
                                      self.experiment_name))
-            parent = {} if self._outer is None else {
-                'mlflow.parentRunId': self._outer
-            }
+            tags = dict(record.tags)
+            if self._outer is not None:
+                tags['mlflow.parentRunId'] = self._outer
+            if record.description is not None:
+                tags['mlflow.note.content'] = record.description
             run = client.create_run(
                 experiment_id or '0',
                 run_name=(self.run_name if self.run_name
                           and record.tags.get('kumo.kind') == 'fit' else
                           record.name),
-                tags=context.resolve_tags({**record.tags, **parent}))
+                tags=context.resolve_tags(tags))
         self._parent = self.run_id = run.info.run_id
         self._experiment_id = run.info.experiment_id
         if self.log_system_metrics and record.tags.get('kumo.kind') == 'fit':

@@ -24,11 +24,13 @@ from kumo_core.summaries import (
     Series,
     Table,
 )
+from kumoapi.plugin import PublishedModel
 
 from kumo.engine._manifest import (
     ArtifactStats,
     PredictionManifest,
     PredictionParents,
+    TrackingRef,
     stub,
 )
 from kumo.engine._tracking import (
@@ -307,7 +309,8 @@ def mlflow_adapter(tmp_path, monkeypatch):
             [e.experiment_id for e in client.search_experiments()])
         kumo_ids = {
             r.info.run_id:
-            FIT if r.data.tags['kumo.kind'] == 'fit' else r.info.run_name
+            FIT if r.data.tags['kumo.kind'] == 'fit' else
+            r.data.tags.get('kumo.prediction_id', r.info.run_name)
             for r in runs
         }
 
@@ -589,7 +592,7 @@ def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch, caplog):
 def test_prediction_record_of_the_recorded_run():
     record = prediction_record(PREDICTION_MANIFEST)
 
-    assert record.name == PREDICTION_RUN
+    assert record.name == 'predict-20261021-0000'
     assert record.params == {
         'anchors': '["2024-04-29T00:00:00+00:00"]',
         'binary_classification_threshold': '0.4',
@@ -604,7 +607,9 @@ def test_prediction_record_of_the_recorded_run():
         Scalar('pred/positive_rate', 0.62))
     assert record.tags == {'kumo.kind': 'prediction',
                            'kumo.prediction_id': PREDICTION_RUN,
-                           'kumo.bundle_id': BUNDLE}
+                           'kumo.bundle_id': BUNDLE,
+                           'kumo.snapshot_id': 'g@d'}
+    assert record.description.startswith('Scores of unlabelled rows')
     assert record.inputs == INPUTS
     assert json.loads(record.artifacts[PROVENANCE_FILE]) == (
         PREDICTION_MANIFEST.to_dict())
@@ -630,6 +635,22 @@ def test_prediction_record_of_a_partial_manifest():
                                 Scalar('data/embeddings/rows', 150))
     assert record.inputs == {}
     assert record.tags['kumo.error'] == 'RuntimeError: disk full'
+
+
+def test_prediction_run_is_named_and_tagged_after_its_registered_model():
+    model = SimpleNamespace(
+        registered_model=PublishedModel('churn', '3', 'models:/churn/3'),
+        registered_alias='champion',
+        manifest=SimpleNamespace(holdout=None, tracking=TrackingRef(
+            platform='mlflow', run_id='r1', url='https://mlflow/#/runs/r1')))
+    record = prediction_record(PREDICTION_MANIFEST, model=model)
+
+    assert record.name == 'predict-churn-v3-20261021-0000'
+    assert record.tags.items() >= {
+        'kumo.model_name': 'churn', 'kumo.model_version': '3',
+        'kumo.model_alias': 'champion', 'kumo.fit_run_id': 'r1'}.items()
+    assert record.description.endswith(
+        'Fit run: [r1](https://mlflow/#/runs/r1).')
 
 
 def test_adapter_records_the_same_prediction_run(adapter):

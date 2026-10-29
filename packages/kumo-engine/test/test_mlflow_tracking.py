@@ -483,8 +483,10 @@ def test_prediction_run_nests_under_the_active_run(tracking_uri):
     assert nested.data.tags['mlflow.parentRunId'] == outer.info.run_id
     assert 'mlflow.parentRunId' not in top.data.tags
     assert client.get_experiment(top.info.experiment_id).name == 'scores'
-    assert (top.info.run_name, top.info.status) == ('trainer-predict-2',
+    assert (top.info.run_name, top.info.status) == ('predict-20261021-0000',
                                                     'FINISHED')
+    assert top.data.tags['mlflow.note.content'].startswith(
+        'Scores of unlabelled rows')
 
 
 def test_link_prediction_metric_names_are_logged(tracking_uri):
