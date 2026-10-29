@@ -139,6 +139,28 @@ def test_an_aws_access_key_signs_sagemaker_calls_and_uploads(
     assert isinstance(session, boto3.Session)
 
 
+def test_your_own_mlflow_calls_reach_the_trackers_server_as_its_identity(
+        monkeypatch, tracking_uri, tmp_path):
+    plugin = pytest.importorskip('sagemaker_mlflow.session')
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    monkeypatch.setattr(MlflowTracking, '_require_experiment', lambda _: 0)
+    tracking = MlflowTracking('e', target=SageMakerMLflow(
+        ARN, S3Identity(access_key_id='AKIA', secret_access_key='s')))
+    with tracking.client() as client:
+        assert client._tracking_client.tracking_uri == ARN
+        assert mlflow.get_tracking_uri() == ARN
+        assert plugin._get_current_session().get_credentials(
+        ).access_key == 'AKIA'
+    assert mlflow.get_tracking_uri() == tracking_uri
+
+    other = f'sqlite:///{tmp_path / "other.db"}'
+    with MlflowTracking('e', target=other).client() as client:
+        assert mlflow.get_tracking_uri() == other
+        assert client._tracking_client.tracking_uri == other
+    assert mlflow.get_tracking_uri() == tracking_uri
+
+
 def test_explicit_calls_take_turns(monkeypatch):
     target = target_module.Target('databricks', 'databricks-uc',
                                   swap=lambda: target_module.environ(
