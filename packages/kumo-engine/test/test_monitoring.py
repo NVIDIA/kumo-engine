@@ -284,6 +284,32 @@ def test_evaluation_appends_to_a_table_with_its_ids(snapshots, classifier):
                                        'BUNDLE_ID': trainer.result.id}
 
 
+def test_a_snowflake_table_gets_the_types_model_monitor_needs(
+        snapshots, classifier, monkeypatch):
+    import pyarrow as pa
+    import pyarrow.parquet as parquet
+
+    from kumo.engine.trainer.output_config import PredictionOutputConfig
+
+    trainer, run = classifier
+    result = trainer.evaluate(run, labels_snapshot=snapshots.after)
+    written = []
+    sink = SimpleNamespace(write_files=lambda connector, table, files, mode,
+                           **_: written.extend(
+                               parquet.read_table(f) for f in files))
+    monkeypatch.setattr(kumo.SnowflakeConnector, 'sink_backend', sink)
+    connector = kumo.SnowflakeConnector(warehouse='WH', database='ML',
+                                        schema_name='S')
+    result.export(PredictionOutputConfig(connector, path='EVALUATED'))
+    schema = pa.concat_tables(written).schema
+    assert schema.field('TARGET').type == pa.int8()
+    assert schema.field('EVALUATED_AT').type == pa.timestamp('ns')
+    original = pd.read_parquet(result.actuals)
+    assert original.TARGET.dtype == bool
+    assert pa.concat_tables(written).column('TARGET').to_pylist() == (
+        original.TARGET.astype(int).tolist())
+
+
 def _join(tmp_path, task, predictions, labels):
     import json
 
@@ -584,6 +610,7 @@ def shifted(tmp_path_factory):
             'ID': np.arange(400),
             'AGE': rng.normal(mean, 5.0, 400),
             'PLAN': rng.choice(['free', 'pro', 'team'], 400, p=plans),
+            'BIO': rng.choice(['likes red shoes', 'reads books'], 400),
         }).to_parquet(data / 'users.parquet')
 
     connector = kumo.FileConnector(root_dir=str(data))
@@ -592,6 +619,7 @@ def shifted(tmp_path_factory):
         'users': kumo.Table.from_source_table(
             connector['users.parquet'], primary_key='ID').infer_metadata()
         .with_column('PLAN', stype=Stype.categorical)
+        .with_column('BIO', stype=Stype.text)
     }, edges=[])
     before = graph.snapshot()
     time.sleep(1.1)
@@ -648,10 +676,12 @@ def test_feature_drift_detects_a_numeric_and_a_categorical_shift(shifted):
 def test_feature_drift_explains_what_it_cannot_compare(shifted):
     before, after, root = shifted
     reasons = {}
-    features = _compare(_encoding(root, ['AGE', 'GONE']), after, before,
-                        reasons)
+    features = _compare(_encoding(root, ['AGE', 'BIO', 'GONE']), after,
+                        before, reasons)
     assert list(features['users']) == ['AGE']
-    assert 'users.GONE' in reasons['features']
+    assert reasons['features'] == (
+        'column statistics missing on a side for users.GONE; no drift '
+        'statistics for the type of users.BIO (text)')
 
     reasons = {}
     assert _compare(_encoding(root, ['AGE']), None, None, reasons) == {}

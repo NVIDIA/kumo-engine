@@ -235,18 +235,28 @@ with kumo.mlops(cfg):
 ```
 
 - Inside a block, the training and scoring snapshots come from the manifests and the artifact root (only their column statistics are fetched); outside one, pass `snapshot=` and `training_snapshot=`. Missing inputs leave a field `None` with a `reasons` entry.
-- `evaluate` returns the metrics the fit reports (`auroc`/`ap`, `mae`/`rmse`, `acc`, `map@k`), `matured=False` while the label window is still open, and `actuals`, the evaluated rows. `evaluation.export(PredictionOutputConfig(...))` writes them to a table or directory for a warehouse monitor.
+- `evaluate` returns the metrics the fit reports (`auroc`/`ap`, `mae`/`rmse`, `acc`, `map@k`), `matured=False` while the label window is still open, and `actuals`, a local Parquet directory of the evaluated rows (`pd.read_parquet(evaluation.actuals)`). `evaluation.export(PredictionOutputConfig(...))` writes them to a table or directory for a warehouse monitor.
 
 A later job finds the champion's runs by tag and reads them from the root:
 
 ```python
 champion = kumo.Trainer.load_from_connector(cfg, location=kumo.ModelRegistryLocation("users-churn", alias="champion"))
-runs = mlflow.search_runs(experiment_names=["churn"], order_by=["attributes.start_time DESC"], max_results=2,
-                          filter_string=f"tags.`kumo.kind` = 'prediction' AND tags.`kumo.bundle_id` = '{champion.result.id}'")
+with cfg.tracking.client():                       # the tracker's MLflow server, as its identity
+    runs = mlflow.search_runs(experiment_names=["churn"], order_by=["attributes.start_time DESC"], max_results=2,
+                              filter_string=f"tags.`kumo.kind` = 'prediction' AND tags.`kumo.bundle_id` = '{champion.result.id}'")
 latest, *earlier = [kumo.PredictionResult.load_from_connector(cfg, path=f"predictions/{prediction_id}")
                     for prediction_id in runs["tags.kumo.prediction_id"]]
 with kumo.mlops(cfg):
     drift = champion.score_drift(latest, previous=earlier[0] if earlier else None)
+```
+
+Snowflake runs have no tags, so read the ids from a table the runs wrote instead:
+
+```python
+ids = [row[0] for row in sf.session().sql(
+    f"SELECT DISTINCT PREDICTION_ID FROM CHURN_SCORES WHERE BUNDLE_ID = '{champion.result.id}'").collect()]
+latest, *earlier = sorted((kumo.PredictionResult.load_from_connector(cfg, path=f"predictions/{prediction_id}")
+                           for prediction_id in ids), key=lambda run: run.manifest.created_at, reverse=True)
 ```
 
 `load_from_connector` needs the run's `_SUCCESS` marker and fetches only its `_provenance.json`; the Parquet parts download when `evaluate` (or `files`) first reads them.
@@ -269,7 +279,7 @@ w.data_quality.create_monitor(monitor=Monitor(object_type="table", object_id=tab
             timestamp_column="EVALUATED_AT", granularities=[AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY]))))
 ```
 
-**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered; the baseline is `result.holdout_df().assign(EVALUATED_AT=pd.Timestamp.now())` written with `session.write_pandas`:
+**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` to a Snowflake table writes `TARGET` as a number and `EVALUATED_AT` as `TIMESTAMP_NTZ`, as the monitor needs; the baseline is `result.holdout_df().astype({"TARGET": int}).assign(EVALUATED_AT=pd.Timestamp.now())` written with `session.write_pandas`:
 
 ```sql
 CREATE MODEL MONITOR churn_monitor WITH MODEL=churn_gnn VERSION=v3 FUNCTION=predict
@@ -384,7 +394,7 @@ A text column `infer_metadata()` reads as categorical (short values from a small
 | `ks` | largest gap between the two CDFs | ≤ 0.02 + 2× the sketch's rank error |
 | `wasserstein` | mean absolute gap between the quantile functions, in score units | ≤ 0.01 × (sum of both score ranges) + sketch error |
 
-The statistics are read off the recorded percentile curves (min, q01..q99, max), with no pass over the data. `DriftReport.features` compares, per column the model encodes (by its stype in the model plan), the statistics DiskGraph wrote when both snapshots were built: numeric deltas of mean, std, min, max, quartiles, skewness, kurtosis, null rate and distinct count plus `standardized_mean_shift`; categorical null rate, distinct count, PSI and Jensen-Shannon divergence (`category_counts_capped` flags truncated counts); timestamp min and max shift. These are whole-snapshot statistics, so a slow change in a large event table is diluted. A tracked monitoring run logs the top ten columns by standardized shift and by PSI and the full comparison as `feature_drift.json`.
+The statistics are read off the recorded percentile curves (min, q01..q99, max), with no pass over the data. `DriftReport.features` compares, per column the model encodes (by its stype in the model plan), the statistics DiskGraph wrote when both snapshots were built: numeric deltas of mean, std, min, max, quartiles, skewness, kurtosis, null rate and distinct count plus `standardized_mean_shift`; categorical null rate, distinct count, PSI and Jensen-Shannon divergence (`category_counts_capped` flags truncated counts); timestamp min and max shift. Other columns, such as text, are not compared and are named in `reasons["features"]`. These are whole-snapshot statistics, so a slow change in a large event table is diluted. A tracked monitoring run logs the top ten columns by standardized shift and by PSI and the full comparison as `feature_drift.json`.
 
 ### Warehouse monitor columns
 

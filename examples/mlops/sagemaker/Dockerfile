@@ -12,10 +12,10 @@ ARG TORCH=cu126
 COPY *.whl /wheels/
 # The engine wheel is installed by path: PyPI's unrelated "kumo-engine" would
 # win over a dev build. Once kumo-engine is on the index, install
-# "kumo-engine[mlflow,sagemaker]" instead and drop the wheels.
+# "kumo-engine[mlflow,sagemaker,text]" instead and drop the wheels.
 RUN pip install --no-cache-dir --find-links /wheels \
       --extra-index-url "https://download.pytorch.org/whl/${TORCH}" \
-      "$(ls /wheels/kumo_engine-*.whl)[mlflow,sagemaker]" \
+      "$(ls /wheels/kumo_engine-*.whl)[mlflow,sagemaker,text]" \
       "torch==2.12.0+${TORCH}" \
  && python -c "import kumo.engine, torch; print(kumo.engine.__version__, torch.__version__)" \
  && rm -rf /wheels
