@@ -219,8 +219,7 @@ def install_skills(
             return [str(_copy(pkg, Path(path)))]
     if agent is None:
         return [
-            target for name in _detect()
-            for target in install_skills(
+            target for name in _detect() for target in install_skills(
                 name, scope=scope, session=session, workspace=workspace,
                 extension=extension, stage=stage, client=client)
         ]
@@ -308,9 +307,9 @@ def _put(session: Any, pkg: Path, root: str) -> None:
     for p in _files(pkg):
         rel = p.relative_to(pkg).parent.as_posix()
         dest = root if rel == '.' else f'{root}/{rel}'
-        session.sql(f"PUT '{_lit('file://' + p.as_posix())}' "
-                    f"'{_lit(dest)}/' AUTO_COMPRESS=FALSE OVERWRITE=TRUE"
-                    ).collect()
+        session.sql(
+            f"PUT '{_lit('file://' + p.as_posix())}' "
+            f"'{_lit(dest)}/' AUTO_COMPRESS=FALSE OVERWRITE=TRUE").collect()
 
 
 def _lit(text: str) -> str:
@@ -350,8 +349,8 @@ def _install_coco_workspace(pkg: Path, session: Any, workspace: str) -> str:
     ws = _workspace_name(session, workspace)
     versions = _rows(session, f'SHOW VERSIONS IN WORKSPACE {ws}')
     if not any(str(v.get('is_live')).lower() == 'true' for v in versions):
-        session.sql(f'ALTER WORKSPACE {ws} ADD LIVE VERSION FROM LAST'
-                    ).collect()
+        session.sql(
+            f'ALTER WORKSPACE {ws} ADD LIVE VERSION FROM LAST').collect()
     live = f'snow://workspace/{ws}/versions/live/'
     rel_root = f'.snowflake/cortex/skills/{SKILL}'
     root = live + rel_root
@@ -381,8 +380,9 @@ def _install_coco_workspace(pkg: Path, session: Any, workspace: str) -> str:
         # REMOVE matches by prefix: a folder is named with its slash, and a
         # file is skipped if it is a prefix of a shipped one.
         target = top + '/' if top != rel else top
-        if any(target.startswith(r) for r in removed) or any(
-                f != target and f.startswith(target) for f in shipped_files):
+        if any(target.startswith(r)
+               for r in removed) or any(f != target and f.startswith(target)
+                                        for f in shipped_files):
             continue
         session.sql(f"REMOVE '{_lit(root)}/{_lit(target)}'").collect()
         removed.append(target)
