@@ -2119,16 +2119,21 @@ class Trainer(PortableConfigMixin):
         from kumo_core.evaluation_counts import evaluation_counts
 
         task_type = self.task.task_type
-        if task_type != TaskType.REGRESSION:
+        if task_type not in (TaskType.REGRESSION, TaskType.FORECASTING):
             return evaluation_counts(task_type, prob=outputs.get('prob'),
+                                     pred=outputs.get('pred'),
                                      target=outputs['target'],
                                      threshold=threshold)
         column = self.encoders.target.col_name
         target = df[column].to_numpy(dtype=float)
         if len(edges) < 2:
             edges = sorted(set(np.quantile(target, np.linspace(0, 1, 51))))
+        # A forecast's rows are exploded in horizon order under its index.
+        horizon = (df.groupby(level=0).cumcount()
+                   if task_type == TaskType.FORECASTING else None)
         return evaluation_counts(task_type, pred=df[f'{column}_PRED'],
-                                 target=target, target_edges=edges)
+                                 target=target, target_edges=edges,
+                                 horizon=horizon)
 
     @trace()
     def validate(
