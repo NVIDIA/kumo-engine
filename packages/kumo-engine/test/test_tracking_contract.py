@@ -267,9 +267,11 @@ def gaps(expected: Dict[str, RunRecord], observed: Dict[str, Observed],
             differ('name', adapter.run_name(seen.name),
                    adapter.run_name(record.name))
         differ('params', dict(seen.params), dict(kept_params(record.params)))
-        differ('metrics', {k: seen.metrics.get(k) for k in record.metrics},
-               dict(record.metrics))
-        names = set(record.metrics)
+        metrics = {**record.metrics, **{
+            summary.name: summary.value for summary in record.summaries
+            if isinstance(summary, Scalar)}}
+        differ('metrics', {k: seen.metrics.get(k) for k in metrics}, metrics)
+        names = set(metrics)
         if adapter.step_metrics:
             names |= set(record.steps)
             differ('steps', {k: seen.steps.get(k) for k in record.steps},
@@ -594,16 +596,12 @@ def test_prediction_record_of_the_recorded_run():
         'threshold_source': 'argument',
         'count_source': 'none',
     }
-    assert record.metrics == {
-        'prediction_table.rows': 50.0,
-        'predictions.rows': 50.0,
-        'predictions.True_PROB.count': 50.0,
-        **{
-            f'predictions.True_PROB.q{q:02d}': q / 100
-            for q in (1, 5, 25, 50, 75, 95, 99)
-        },
-        'predictions.predicted_positive_rate': 0.62,
-    }
+    assert record.metrics == {}
+    assert record.summaries == (
+        Scalar('data/rows', 50), Scalar('data/predictions/rows', 50),
+        *(Scalar(f'pred/True_PROB/q{q:02d}', q / 100)
+          for q in (1, 5, 25, 50, 75, 95, 99)),
+        Scalar('pred/positive_rate', 0.62))
     assert record.tags == {'kumo.kind': 'prediction',
                            'kumo.prediction_id': PREDICTION_RUN,
                            'kumo.bundle_id': BUNDLE}
@@ -620,15 +618,16 @@ def test_prediction_record_of_a_partial_manifest():
                 scoring=replace(PREDICTION_MANIFEST.scoring,
                                 num_classes_to_return=3),
                 stats={'predictions': ArtifactStats(rows=150, columns={
-                    'top_score': {'count': 150, 'percentiles': []}}),
+                    'top_score': {'count': 150, 'percentiles': []}},
+                    predicted_positive_rate=0.5),
                        'embeddings': ArtifactStats(rows=150)}),
         RuntimeError('disk full'))
 
     assert record.params['num_classes_to_return'] == '3'
-    assert record.metrics == {'prediction_table.rows': 50.0,
-                              'predictions.rows': 150.0,
-                              'predictions.top_score.count': 150.0,
-                              'embeddings.rows': 150.0}
+    assert record.summaries == (Scalar('data/rows', 50),
+                                Scalar('data/predictions/rows', 150),
+                                Scalar('pred/positive_rate', 0.5),
+                                Scalar('data/embeddings/rows', 150))
     assert record.inputs == {}
     assert record.tags['kumo.error'] == 'RuntimeError: disk full'
 

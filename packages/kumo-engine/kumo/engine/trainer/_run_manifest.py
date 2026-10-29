@@ -61,11 +61,11 @@ def start(*, result: Any, trainer: Any, snapshot: Any, prediction_table: Any,
 
 
 def finish(result: Any, manifest: Optional[PredictionManifest],
-           output_config: Any, settings: Any) -> None:
+           output_config: Any, settings: Any, model: Any = None) -> None:
     r"""Export to ``output_config``, record the run (with the outputs
     written, even if the export fails), store it in the artifact root and
-    track it; a storing or tracking failure raises last under
-    ``on_error='raise'``."""
+    track it as a run of ``model``, a `TrainingResult`; a storing or
+    tracking failure raises last under ``on_error='raise'``."""
     from kumo.engine._mlops import raise_on_error
     from kumo.engine._tracking import track_prediction
 
@@ -97,7 +97,7 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
                 except Exception as failure:
                     unstored = failure
             untracked = track_prediction(manifest, settings.tracking,
-                                         error or unstored)
+                                         error or unstored, model)
     untracked = unstored or untracked
     if untracked is not None:
         raise_on_error(settings, untracked,

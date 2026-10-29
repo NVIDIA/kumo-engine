@@ -228,27 +228,17 @@ def trial_spec(events: Sequence[Event]) -> RunSpec:
 
 
 def prediction_record(manifest: 'PredictionManifest',
-                      error: Optional[BaseException] = None) -> RunRecord:
+                      error: Optional[BaseException] = None,
+                      model: Any = None) -> RunRecord:
     r"""A prediction run's record, from its manifest: scoring options as
-    params, row counts and score percentiles as metrics, the scoring
+    params, row counts and score summaries (with drift against the holdout
+    of ``model``, the `TrainingResult` that scored), the scoring
     snapshot's source tables as inputs, pointer tags (``kumo.error`` when
     ``error`` ended the run), and the manifest as an artifact."""
+    from kumo.engine.trainer._provenance import holdout_counts
+
     table = manifest.prediction_table
     params = {**manifest.scoring.to_dict(), 'anchors': table.anchors}
-    metrics: Dict[str, Any] = {'prediction_table.rows': table.rows}
-    if table.skipped_rows is not None:
-        metrics['predictions.skipped_rows'] = table.skipped_rows
-        metrics['predictions.skipped_fraction'] = (
-            table.skipped_rows / table.requested_rows
-            if table.requested_rows else 0.0)
-    for artifact, stats in (manifest.stats or {}).items():
-        flat = stats.to_dict()
-        flat.update(flat.pop('columns', None) or {})
-        for key, value in _flatten(flat, f'{artifact}.'):
-            if key.endswith('.percentiles'):
-                metrics.update(_logged_percentiles(key, value))
-            else:
-                metrics[key] = value
     return run_record(
         RunSpec(
             kind='prediction',
@@ -256,11 +246,6 @@ def prediction_record(manifest: 'PredictionManifest',
             params={
                 key: value
                 for key, value in params.items() if value is not None
-            },
-            metrics={
-                key: value
-                for key, value in metrics.items() if isinstance(
-                    value, (int, float)) and not isinstance(value, bool)
             },
             parents={
                 'bundle_id': manifest.parents.model.id,
@@ -272,8 +257,53 @@ def prediction_record(manifest: 'PredictionManifest',
                            default=str)
             },
             inputs=fit_inputs(manifest),
+            summaries=_prediction_summaries(
+                manifest, holdout_counts(getattr(model, 'manifest', None))),
             error=None if error is None else format_error(error),
         ))
+
+
+def _prediction_summaries(manifest: 'PredictionManifest',
+                          baseline: Any) -> List['Summary']:
+    r"""``data/rows``, ``data/skipped_rows``, ``data/skipped_fraction`` and
+    each artifact's ``data/<artifact>/rows``; the scores' ``pred/``
+    summaries from their exact counts, else their DiskGraph statistics."""
+    from kumo_core.prediction_counts import (
+        prediction_summaries,
+        summary_prefix,
+    )
+    from kumo_core.score_counts import Counts
+    from kumo_core.summaries import Scalar
+
+    table = manifest.prediction_table
+    values: Dict[str, Any] = {'data/rows': table.rows}
+    if table.skipped_rows is not None:
+        values['data/skipped_rows'] = table.skipped_rows
+        values['data/skipped_fraction'] = (
+            table.skipped_rows / table.requested_rows
+            if table.requested_rows else 0.0)
+    counted: List['Summary'] = []
+    for artifact, stats in (manifest.stats or {}).items():
+        values[f'data/{artifact}/rows'] = stats.rows
+        for column, summary in (stats.columns or {}).items():
+            prefix = summary_prefix(column)
+            values.update({f'{prefix}/{key}': summary.get(key)
+                           for key in ('mean', 'min', 'max')})
+            values.update(_logged_percentiles(f'{prefix}/percentiles',
+                                              summary.get('percentiles')))
+        if stats.predicted_positive_rate is not None:
+            values['pred/positive_rate'] = stats.predicted_positive_rate
+        if stats.counts is not None:
+            counted += prediction_summaries(
+                Counts.from_dict(stats.counts),
+                threshold=manifest.scoring.binary_classification_threshold,
+                baseline=baseline)
+    scalars = [
+        Scalar(name, value) for name, value in values.items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    return list({summary.name: summary
+                 for summary in (*scalars, *counted)}.values())
 
 
 def record_failure(record: RunRecord) -> Optional[Exception]:
@@ -284,15 +314,17 @@ def record_failure(record: RunRecord) -> Optional[Exception]:
 
 def track_prediction(
         manifest: Optional['PredictionManifest'], tracking: Any,
-        error: Optional[BaseException] = None) -> Optional[Exception]:
-    r"""Record a prediction run in ``tracking``, failed if ``error`` ended
-    it; returns the tracking failure instead of raising it."""
+        error: Optional[BaseException] = None,
+        model: Any = None) -> Optional[Exception]:
+    r"""Record a prediction run of ``model`` in ``tracking``, failed if
+    ``error`` ended it; returns the tracking failure instead of raising
+    it."""
     if getattr(tracking, 'log_prediction_run', None) is None:
         return None
     try:
         if manifest is None:
             raise ValueError('the run has no prediction manifest')
-        record = prediction_record(manifest, error)
+        record = prediction_record(manifest, error, model)
     except Exception as failure:
         logger.warning('Experiment tracking failed: %s; the prediction run '
                        'is not tracked', full_error(failure), exc_info=_debug())
@@ -301,13 +333,12 @@ def track_prediction(
 
 
 def _logged_percentiles(key: str, values: Any) -> Dict[str, Any]:
+    from kumo_core.prediction_counts import QUANTILES
+
     if not isinstance(values, list) or len(values) != 99:
         return {}
     column = key[:-len('percentiles')]
-    return {
-        f'{column}q{q:02d}': values[q - 1]
-        for q in (1, 5, 25, 50, 75, 95, 99)
-    }
+    return {f'{column}q{q:02d}': values[q - 1] for q in QUANTILES}
 
 
 class Tracking(Protocol):

@@ -1702,7 +1702,8 @@ class Trainer:
                                             num_classes_to_return, 'query'),
                 num_workers=num_workers,
             ), started_at=started_at.isoformat(timespec='seconds'))
-        _run_manifest.finish(result, manifest, output_config, settings)
+        _run_manifest.finish(result, manifest, output_config, settings,
+                             training_result)
         return result
 
     def evaluate(self, run: PredictionResult, *,
