@@ -348,6 +348,9 @@ def test_load_from_connector_fetches_then_uses_local_loader(
     assert loaded._training_result is not None
     assert loaded._training_result.bundle_dir != bundle.resolve()
     assert loaded._training_result.bundle_dir.name == 'fetched-model'
+    assert loaded.result.registered_model == PublishedModel(
+        name='CHURN_GNN', version='V1', uri='fake://CHURN_GNN@latest')
+    assert loaded.result.registered_alias is None
 
 
 def test_local_bundle_reloads_in_a_fresh_process(tmp_path: Path) -> None:

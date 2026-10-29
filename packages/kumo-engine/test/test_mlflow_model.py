@@ -108,6 +108,10 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     champion = kumo.Trainer.load_from_connector(
         cfg, location=kumo.ModelRegistryLocation('m', alias='champion'))
     assert champion.result.id == result.id
+    assert champion.result.registered_model == PublishedModel(
+        'm', str(version.version), f'models:/m/{version.version}')
+    assert (champion.result.registered_alias,
+            result.registered_alias) == ('champion', 'champion')
     assert champion.export(cfg).version == str(version.version)
     client = mlflow.MlflowClient()
     assert len(client.search_model_versions("name = 'm'")) == 1
