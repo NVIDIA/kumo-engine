@@ -134,7 +134,11 @@ def _require_writable(root: _Root) -> None:
         except FileNotFoundError:  # a store with directories, before first use
             filesystem.create_dir(posixpath.dirname(probe), recursive=True)
             filesystem.open_output_stream(probe).close()
-        filesystem.delete_file(probe)
+        delete = getattr(root.connector.sink_backend, 'delete_file', None)
+        if delete is None:
+            filesystem.delete_file(probe)
+        else:
+            delete(root.connector, probe)
     except Exception as error:
         raise PermissionError(
             f'kumo.MLOps cannot write under artifact_root '
