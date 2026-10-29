@@ -1,13 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Upsert a SageMaker Pipeline (SDK v2) that fits and scores with kumo-engine;
-see README.md."""
+"""Upsert a SageMaker Pipeline (SageMaker Python SDK v3) that fits and scores
+with kumo-engine; see README.md."""
 
 import argparse
 from typing import Any, Optional, Sequence
 
-TRAIN_CODE = '/opt/ml/input/data/code'
 PROCESS_CODE = '/opt/ml/processing/input/code'
 
 
@@ -28,14 +27,24 @@ def build_pipeline(
     table_prefix: str = '',
     on_error: str = 'raise',
 ) -> Any:
-    from sagemaker.estimator import Estimator
-    from sagemaker.inputs import TrainingInput
-    from sagemaker.processing import ProcessingInput, Processor
-    from sagemaker.workflow.pipeline import Pipeline
-    from sagemaker.workflow.pipeline_context import PipelineSession
-    from sagemaker.workflow.steps import ProcessingStep, TrainingStep
+    from sagemaker.core.processing import (
+        ProcessingInput,
+        ProcessingS3Input,
+        Processor,
+    )
+    from sagemaker.core.workflow.pipeline_context import PipelineSession
+    from sagemaker.mlops.workflow.pipeline import Pipeline
+    from sagemaker.mlops.workflow.steps import ProcessingStep, TrainingStep
+    from sagemaker.train.configs import Compute, OutputDataConfig, SourceCode
+    from sagemaker.train.model_trainer import ModelTrainer
 
-    session = PipelineSession()
+    # The SDK uploads its training-container drivers next to the artifacts,
+    # where the role already has rights, not to a default bucket.
+    bucket, _, prefix = artifact_root.removeprefix('s3://').rstrip(
+        '/').partition('/')
+    session = PipelineSession(
+        default_bucket=bucket,
+        default_bucket_prefix='/'.join(filter(None, [prefix, 'sagemaker'])))
     env = {
         'MLFLOW_TRACKING_URI': tracking_arn,
         'MLFLOW_EXPERIMENT_NAME': experiment,
@@ -46,21 +55,19 @@ def build_pipeline(
         alias, f'--table-prefix={table_prefix}', '--on-error', on_error
     ]
 
-    estimator = Estimator(
-        image_uri=image,
+    trainer = ModelTrainer(
+        training_image=image,
         role=role,
-        instance_count=1,
-        instance_type=fit_instance_type,
-        container_entry_point=['python', f'{TRAIN_CODE}/fit_job.py'],
-        container_arguments=[*flags, '--scratch-dir', '/tmp/kumo'],
+        compute=Compute(instance_type=fit_instance_type, instance_count=1),
+        source_code=SourceCode(
+            source_dir=code, command='python fit_job.py',
+            args=[*flags, '--scratch-dir', '/tmp/kumo']),
         environment=env,
-        output_path=f'{artifact_root.rstrip("/")}/sagemaker-output',
+        output_data_config=OutputDataConfig(
+            s3_output_path=f'{artifact_root.rstrip("/")}/sagemaker-output'),
         sagemaker_session=session,
     )
-    fit = TrainingStep(
-        name='Fit',
-        step_args=estimator.fit(inputs={'code': TrainingInput(code)}),
-    )
+    fit = TrainingStep(name='Fit', step_args=trainer.train())
 
     processor = Processor(
         role=role,
@@ -74,7 +81,10 @@ def build_pipeline(
     predict = ProcessingStep(
         name='Predict',
         step_args=processor.run(
-            inputs=[ProcessingInput(source=code, destination=PROCESS_CODE)],
+            inputs=[ProcessingInput(
+                input_name='code', s3_input=ProcessingS3Input(
+                    s3_uri=code, s3_data_type='S3Prefix',
+                    local_path=PROCESS_CODE, s3_input_mode='File'))],
             arguments=[
                 *flags, '--scratch-dir', '/opt/ml/processing/scratch'
             ],

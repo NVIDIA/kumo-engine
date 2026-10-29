@@ -42,7 +42,7 @@ with a `PipelineSchedule` trigger (`pipeline.put_triggers`).
    docker push <account>.dkr.ecr.<region>.amazonaws.com/kumo-engine-sagemaker:<tag>
    ```
 2. Upload the code channel: `aws s3 sync examples/mlops s3://<bucket>/kumo/code/`.
-3. With the SageMaker Python SDK v2 (`pip install 'sagemaker<3'`):
+3. With the SageMaker Python SDK v3 (`pip install sagemaker`, Python 3.10 or later):
    ```bash
    python examples/mlops/sagemaker/pipeline.py --role <role-arn> \
      --image <account>.dkr.ecr.<region>.amazonaws.com/<image>:<tag> \
@@ -52,18 +52,23 @@ with a `PipelineSchedule` trigger (`pipeline.put_triggers`).
      --fit-instance-type ml.g5.xlarge --score-instance-type ml.g5.xlarge \
      --start
    ```
-   SDK v2 reads the region only from `AWS_DEFAULT_REGION` (or the AWS
-   config file), not `AWS_REGION`.
+   The SDK reads the region from `AWS_DEFAULT_REGION` (or the AWS config
+   file). The Training step runs `fit_job.py` through the SDK's
+   training-container drivers, which it uploads under
+   `<artifact root>/sagemaker/`; the Processing step runs `score_job.py`
+   directly.
    The name (`--name`, default `kumo-engine-users-churn`) may not contain
    `-aws-`: SageMaker reserves that token, and the execution then fails with
    no steps (`The token -aws- is reserved`).
-   SDK v3 replaced `Estimator` with `ModelTrainer` and moved the workflow
-   classes (`sagemaker.mlops.workflow.*`); this script is not ported.
 
 ## Privileges
 
 - **Caller:** `sagemaker:CreatePipeline`, `UpdatePipeline`,
-  `StartPipelineExecution`, and `iam:PassRole` on `<role-arn>`.
+  `StartPipelineExecution`, and `iam:PassRole` on `<role-arn>`; S3 write under
+  `<artifact root>/sagemaker/` and `s3:ListAllMyBuckets` or `s3:ListBucket` on
+  the bucket (the SDK checks the bucket before uploading its drivers).
+  `iam:SimulatePrincipalPolicy` lets the SDK check the role first; without it
+  the SDK warns and continues.
 - **Execution role** (`--role` also runs the steps): `sagemaker:CreateTrainingJob`,
   `DescribeTrainingJob`, `StopTrainingJob`, `CreateProcessingJob`,
   `DescribeProcessingJob`, `StopProcessingJob` and `AddTags`; `iam:PassRole`
