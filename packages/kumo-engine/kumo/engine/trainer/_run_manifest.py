@@ -95,7 +95,8 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
                     store(result, manifest, settings)
                 except Exception as failure:
                     unstored = failure
-            untracked = track_prediction(manifest, settings.tracking, error)
+            untracked = track_prediction(manifest, settings.tracking,
+                                         error or unstored)
     untracked = unstored or untracked
     if untracked is not None:
         raise_on_error(settings, untracked,

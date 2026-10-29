@@ -22,6 +22,33 @@ from kumo.engine._manifest import PredictionManifest
 _EVALUATION_FILE = '_evaluation.json'
 
 
+def _for_model_monitor(files: Any, directory: Path) -> list:
+    r"""``files`` with the types Snowflake Model Monitor accepts: a boolean
+    ``TARGET`` as 0/1 and timestamps without a time zone (UTC), which load as
+    NUMBER and TIMESTAMP_NTZ."""
+    import pyarrow as pa
+    import pyarrow.parquet as parquet
+
+    def monitored(field: Any) -> Any:
+        if field.name == 'TARGET' and pa.types.is_boolean(field.type):
+            return field.with_type(pa.int8())
+        if pa.types.is_timestamp(field.type) and field.type.tz is not None:
+            return field.with_type(pa.timestamp(field.type.unit))
+        return field
+
+    typed = []
+    for path in files:
+        source = parquet.ParquetFile(path)
+        schema = pa.schema([monitored(field) for field in source.schema_arrow])
+        target = str(directory / Path(path).name)
+        with parquet.ParquetWriter(target, schema) as writer:
+            for batch in source.iter_batches():
+                writer.write_table(
+                    pa.Table.from_batches([batch]).cast(schema))
+        typed.append(target)
+    return typed
+
+
 @dataclass(frozen=True)
 class EvaluationResult:
     """Metrics of a prediction run against labels from a newer snapshot.
@@ -53,7 +80,15 @@ class EvaluationResult:
         r"""Copy the evaluated rows to ``output_config``'s predictions
         destination (a `PredictionOutputConfig`), e.g. a table to monitor.
         A Parquet directory also gets ``_evaluation.json``, the other fields,
-        for `load_from_connector`."""
+        for `load_from_connector`. A Snowflake table gets the types Model
+        Monitor needs: ``TARGET`` as a number and TIMESTAMP_NTZ times."""
+        import tempfile
+
+        from kumo.engine._scratch import get_scratch_dir
+        from kumo.engine.connector import (
+            SnowflakeConnector,
+            is_file_destination,
+        )
         from kumo.engine.trainer.trainer import _holds_parquet
 
         if self.actuals is None:
@@ -74,9 +109,16 @@ class EvaluationResult:
             extra['sidecars'] = {
                 _EVALUATION_FILE: json.dumps(fields, sort_keys=True).encode()
             }
-        output_config._write(destination, files,
-                             export_id=f'{self.prediction_id}-evaluation-'
-                             f'{Path(self.actuals).name}-{written}', **extra)
+        get_scratch_dir().mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=get_scratch_dir()) as typed:
+            if isinstance(output_config.connector, SnowflakeConnector
+                          ) and not is_file_destination(
+                              output_config.connector, destination):
+                files = _for_model_monitor(files, Path(typed))
+            output_config._write(destination, files,
+                                 export_id=f'{self.prediction_id}-evaluation-'
+                                 f'{Path(self.actuals).name}-{written}',
+                                 **extra)
 
     @classmethod
     def load_from_connector(cls, connector: Any, *,
@@ -604,7 +646,7 @@ def _features(trainer: Any, sides: Mapping[str, Mapping[str, Any]],
             reasons['features'] = 'the model records no encoded columns'
             return {}
         features: Dict[str, Dict[str, Any]] = {}
-        absent = []
+        absent, uncompared = [], []
         for table, columns in sorted(used.items()):
             for column in sorted(columns):
                 old = (before.get(table) or {}).get(column)
@@ -613,11 +655,20 @@ def _features(trainer: Any, sides: Mapping[str, Mapping[str, Any]],
                     absent.append(f'{table}.{column}')
                     continue
                 change = _column_change(old, new)
-                if change is not None:
+                if change is None:
+                    uncompared.append(
+                        f"{table}.{column} ({new.get('semantic_type')})")
+                else:
                     features.setdefault(table, {})[column] = change
+        notes = []
         if absent:
-            reasons['features'] = ('column statistics missing on a side for '
-                                   + ', '.join(absent))
+            notes.append('column statistics missing on a side for ' +
+                         ', '.join(absent))
+        if uncompared:
+            notes.append('no drift statistics for the type of ' +
+                         ', '.join(uncompared))
+        if notes:
+            reasons['features'] = '; '.join(notes)
         return features
     except Exception as error:
         reasons['features'] = f'feature statistics failed: {error}'
