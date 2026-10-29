@@ -200,7 +200,7 @@ A model registered through `MlflowTracking` is an MLflow pyfunc: it serves with 
 ```python
 model = mlflow.pyfunc.load_model("models:/main.ml.users_churn@champion")
 scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
-    "snapshot": "/Volumes/main/ml/kumo/snapshots/<graph id>/<data version>",
+    "snapshot": cfg.snapshot_uri(snapshot),        # "/Volumes/main/ml/kumo/snapshots/<graph id>/<data version>"
     "prediction_time": "2024-06-01"})              # temporal queries
 ```
 

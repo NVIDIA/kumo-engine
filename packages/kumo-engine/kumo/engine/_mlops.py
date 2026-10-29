@@ -148,6 +148,11 @@ class MLOps:
                 '...).')
         check_model_location(ModelOutputConfig(connector, location=registry))
 
+    def snapshot_uri(self, snapshot: Any) -> str:
+        r"""Where a `GraphSnapshot`, or a snapshot id, is stored under this
+        artifact root, e.g. for the pyfunc's ``snapshot`` param."""
+        return self.root.uri(snapshot_path(snapshot))
+
     def wants(self, kind: str) -> bool:
         r"""Whether artifacts of ``kind`` are stored under the root."""
         return kind in self.kinds

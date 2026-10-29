@@ -75,6 +75,9 @@ def test_a_root_is_a_uri_or_a_connector_and_path(tmp_path):
     assert pair.root.location('models/m') == 'volume/kumo/models/m'
     assert pair.wants('model') and not pair.wants('snapshot')
     assert not kumo.MLOps(artifact_root=str(tmp_path), store=False).kinds
+    assert uri.snapshot_uri('ab12@cd34') == f'{tmp_path}/snapshots/ab12/cd34'
+    assert kumo.MLOps('s3://bucket/kumo').snapshot_uri(
+        SimpleNamespace(id='ab12@cd34')) == 's3://bucket/kumo/snapshots/ab12/cd34'
 
 
 def test_a_connector_root_outside_its_root_dir_fails_when_built():
