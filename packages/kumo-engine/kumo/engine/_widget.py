@@ -24,16 +24,16 @@ THEME = MappingProxyType({
     'tooltip_shadow': '0 8px 28px #00000018,0 1px 4px #0000000a',
 })
 _DARK = {
-    'foreground': '#e2e5e8', 'muted': '#a0a8b0', 'accent': '#a3d85b',
-    'heading': '#f0f2f3', 'header_background': '#292e33',
-    'tooltip_header_border': '#3a4148', 'grid': '#292e33',
-    'edge': '#69737d', 'edge_active': '#a3d85b', 'focus': '#a3d85b',
-    'card_border': '#3f474f', 'card_background': '#202428',
-    'role_background': '#272d32', 'surface': '#2a3036',
-    'surface_border': '#3b434b', 'row_highlight': '#36452c',
-    'chrome_hover': '#343c43', 'chrome_foreground': '#bdc5cd',
-    'background': '#15181b', 'tooltip_background': '#242a2f',
-    'tooltip_border': '#4c565f',
+    'foreground': '#f2f5f7', 'muted': '#c1cad2', 'accent': '#b2e36b',
+    'heading': '#ffffff', 'header_background': '#3b464f',
+    'tooltip_header_border': '#56636f', 'grid': '#262e35',
+    'edge': '#94a2af', 'edge_active': '#b2e36b', 'focus': '#d6e0e8',
+    'card_border': '#56636f', 'card_background': '#272e35',
+    'role_background': '#333d46', 'surface': '#35404a',
+    'surface_border': '#53616d', 'row_highlight': '#485661',
+    'chrome_hover': '#3b464f', 'chrome_foreground': '#d7dee5',
+    'background': '#111416', 'tooltip_background': '#293139',
+    'tooltip_border': '#71808d',
 }
 CSS_THEME = {key: f'var(--kumo-{key.replace("_", "-")})'
              for key in THEME if key != 'font'} | {'font': THEME['font']}
