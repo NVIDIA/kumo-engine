@@ -310,35 +310,41 @@ def test_a_snowflake_table_gets_the_types_model_monitor_needs(
         original.TARGET.astype(int).tolist())
 
 
-def test_the_holdout_baseline_exports_the_evaluated_rows_shape(
-        snapshots, classifier, monkeypatch):
+@pytest.mark.parametrize('threshold', [0.5, None])
+def test_the_holdout_baseline_loads_with_the_evaluated_rows_types(
+        snapshots, classifier, monkeypatch, threshold):
+    import pyarrow as pa
     import pyarrow.parquet as parquet
+    from kumo_core.artifact_export import prepared_artifact_file
 
     from kumo.engine.trainer.output_config import PredictionOutputConfig
 
-    trainer, run = classifier
-    exports = []
-    sink = SimpleNamespace(write_files=lambda connector, table, files, mode,
-                           **kwargs: exports.append((
-                               [(field.name, field.type) for field in
-                                parquet.read_schema(files[0])],
-                               sorted(kwargs['extra_columns']))))
-    monkeypatch.setattr(kumo.SnowflakeConnector, 'sink_backend', sink)
+    def write_files(connector, table, files, mode, extra_columns, **_):
+        with prepared_artifact_file(files[0], extra_columns) as loaded:
+            loads[table] = parquet.read_schema(loaded).remove_metadata()
+
+    loads = {}
+    monkeypatch.setattr(kumo.SnowflakeConnector, 'sink_backend',
+                        SimpleNamespace(write_files=write_files))
     connector = kumo.SnowflakeConnector(warehouse='WH', database='ML',
                                         schema_name='S')
+    trainer, _ = classifier
+    run = trainer.predict(snapshots.before,
+                          binary_classification_threshold=threshold)
     trainer.evaluate(run, labels_snapshot=snapshots.after).export(
         PredictionOutputConfig(connector, path='EVALUATED'))
     baseline = trainer.result.holdout_evaluation(
-        binary_classification_threshold=0.5)
+        binary_classification_threshold=threshold)
     baseline.export(PredictionOutputConfig(connector, path='BASELINE'))
-    assert exports[0] == exports[1]
+    assert loads['EVALUATED'] == loads['BASELINE']
+    assert loads['BASELINE'].field('TARGET_PRED').type == pa.bool_()
 
     rows = pd.read_parquet(baseline.actuals)
     holdout = trainer.result.holdout_df()
-    assert rows.TARGET_PRED.tolist() == (holdout.True_PROB > 0.5).tolist()
     assert rows.TARGET.tolist() == holdout.TARGET.tolist()
-    unthresholded = trainer.result.holdout_evaluation()
-    assert pd.read_parquet(unthresholded.actuals).TARGET_PRED.isna().all()
+    assert rows.TARGET_PRED.tolist() == (
+        (holdout.True_PROB > threshold).tolist() if threshold else
+        [pd.NA] * len(holdout))
 
 
 def _join(tmp_path, task, predictions, labels):
