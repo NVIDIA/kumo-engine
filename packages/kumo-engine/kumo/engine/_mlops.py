@@ -9,7 +9,8 @@ import os
 import posixpath
 import re
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import (
     Any,
     FrozenSet,
@@ -18,12 +19,13 @@ from typing import (
     Literal,
     Optional,
     Tuple,
+    Type,
     Union,
 )
 
 from kumoapi.plugin import ModelRegistryLocation, check_model_alias
 
-from kumo.engine._manifest import KINDS
+from kumo.engine._manifest import KINDS, M, read_manifest, write_manifest
 
 
 @dataclass(frozen=True)
@@ -156,6 +158,17 @@ class MLOps:
     def wants(self, kind: str) -> bool:
         r"""Whether artifacts of ``kind`` are stored under the root."""
         return kind in self.kinds
+
+    def locate(self, path: Path, kind: Type[M], relative: str) -> Optional[M]:
+        r"""Records in the manifest at ``path`` that its artifact is stored
+        at ``relative`` under the root, before it is copied there; returns
+        the manifest, if there is one."""
+        location = self.root.uri(relative)
+        manifest = read_manifest(path, kind)
+        if manifest is not None and manifest.location != location:
+            manifest = replace(manifest, location=location)
+            write_manifest(path, manifest)
+        return manifest
 
 
 def _require_within_root(connector: Any, path: str) -> None:
