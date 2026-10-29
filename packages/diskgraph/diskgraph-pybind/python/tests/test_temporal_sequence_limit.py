@@ -28,6 +28,7 @@ def history_graph(tmp_path_factory):
             "time": pa.array(times, type=pa.timestamp("s")),
             "other_time": pa.array(times[::-1], type=pa.timestamp("s")),
             "value": [None if i % 7 == 0 else float(i) for i in range(100)],
+            "null_int": pa.array([None] * 100, type=pa.int64()),
         }
     )
     pq.write_table(orders, root / "orders.parquet")
@@ -53,6 +54,7 @@ def history_graph(tmp_path_factory):
                         ("time", "timestamp"),
                         ("other_time", "timestamp"),
                         ("value", "float64"),
+                        ("null_int", "int64"),
                     ]
                 ],
                 "fkeys": [
@@ -126,6 +128,103 @@ def query(history_graph, plan, output_format="inspectable"):
     )
 
 
+@pytest.mark.parametrize("output_format", ["inspectable", "model"])
+def test_integer_sum_uses_integer_output_even_for_empty_history(
+    history_graph, output_format
+):
+    plan = plan_for(history_graph)
+    plan["sequences"] = []
+    plan["frames"][0]["columns"].append("owner")
+    plan["frames"][0]["columns"].append("null_int")
+    plan["aggregates"] = [
+        {
+            "name": "total",
+            "frame": "f",
+            "operation": "sum",
+            "column": "owner",
+            "sum_type": "int64",
+        },
+        {
+            "name": "grouped_total",
+            "frame": "f",
+            "groups": [
+                {
+                    "keys": ["owner"],
+                    "values": [
+                        {
+                            "name": "subtotal",
+                            "operation": "sum",
+                            "column": "owner",
+                            "sum_type": "int64",
+                        }
+                    ],
+                }
+            ],
+            "operation": "sum",
+            "column": "subtotal",
+            "sum_type": "int64",
+        },
+        {
+            "name": "grouped_count",
+            "frame": "f",
+            "groups": [
+                {"keys": ["owner"], "values": [{"name": "n", "operation": "count"}]}
+            ],
+            "operation": "sum",
+            "column": "n",
+            "sum_type": "int64",
+        },
+        {
+            "name": "null_total",
+            "frame": "f",
+            "operation": "sum",
+            "column": "null_int",
+            "sum_type": "int64",
+        },
+    ]
+    actual = {
+        item["name"]: item["values"]
+        for item in query(history_graph, plan, output_format)["aggregates"]
+    }
+    expected = []
+    for owner, cutoff in [(1, 10), (2, 10), (3, 8), (1, 5)]:
+        expected.append(
+            sum(
+                row["owner"]
+                for row in history_graph[1]
+                if row["owner"] == owner
+                and 1_700_000_000 + cutoff - 8
+                < row["time"].replace(tzinfo=UTC).timestamp()
+                <= 1_700_000_000 + cutoff
+            )
+        )
+    for name in ("total", "grouped_total", "grouped_count"):
+        values = actual[name]
+        if output_format == "model":
+            assert values.type == pa.int64()
+            values = values.to_pylist()
+        if name == "grouped_count":
+            assert values == [
+                sum(
+                    row["owner"] == owner
+                    and 1_700_000_000 + cutoff - 8
+                    < row["time"].replace(tzinfo=UTC).timestamp()
+                    <= 1_700_000_000 + cutoff
+                    for row in history_graph[1]
+                )
+                for owner, cutoff in [(1, 10), (2, 10), (3, 8), (1, 5)]
+            ]
+        else:
+            assert values == expected
+    null_values = actual["null_total"]
+    if output_format == "model":
+        assert null_values.type == pa.int64()
+        null_values = null_values.to_pylist()
+    assert null_values[1] == 0
+    assert all(value is None for index, value in enumerate(null_values) if index != 1)
+    assert expected[1] == 0
+
+
 @pytest.mark.parametrize("order", ["ascending", "descending"])
 @pytest.mark.parametrize("limit", [1, 3, 20, 100, None])
 @pytest.mark.parametrize("distinct", [True, False])
@@ -140,8 +239,8 @@ def test_limited_sequence_matches_source(history_graph, order, limit, distinct):
             for r in history_graph[1]
             if r["owner"] == owner
             and 1_700_000_000 + cutoff - 8
-            <= r["time"].replace(tzinfo=UTC).timestamp()
-            < 1_700_000_000 + cutoff
+            < r["time"].replace(tzinfo=UTC).timestamp()
+            <= 1_700_000_000 + cutoff
         ]
         rows.sort(
             key=lambda r: (r["time"], str(r["id"])), reverse=order == "descending"
@@ -362,7 +461,7 @@ def fallback_clock_graph(history_graph, tmp_path, request):
     config["tables"][1]["columns"] = [
         column
         for column in config["tables"][1]["columns"]
-        if column["name"] != "other_time"
+        if column["name"] not in {"other_time", "null_int"}
     ]
     config["tables"][1]["source"]["paths"] = [str(path)]
     reverse = config["tables"][1]["fkeys"][0]["reverse"]
@@ -557,18 +656,18 @@ def test_shared_history_avoids_extra_pass_for_low_selectivity(history_graph, lim
     assert a["batch"].equals(b["batch"].take(pa.array(selected, type=pa.int64())))
 
 
-@pytest.mark.parametrize("limit,deferred", [(8, True), (9, False)])
+@pytest.mark.parametrize("limit,deferred", [(7, True), (8, False)])
 def test_shared_history_selectivity_boundary(history_graph, limit, deferred):
     plan = plan_for(history_graph, limit=limit)
     plan["frames"][0]["columns"].append("owner")
     plan["sequences"][0]["columns"].append("owner")
     plan["aggregates"] = [{"name": "count", "frame": "f", "operation": "count"}]
     result = query(history_graph, plan)
-    # There are 99 eligible candidates. The caps select 24 vs 27 rows: either
+    # There are 94 eligible candidates. The caps select 21 vs 24 rows: either
     # side of the conservative one-quarter boundary, without changing answers.
     returned = result["sequences"][0]["batch"].num_rows
     assert returned == limit * 3
-    assert result["stats"]["rows_decoded"] == 99 + (returned if deferred else 0)
+    assert result["stats"]["rows_decoded"] == 94 + (returned if deferred else 0)
 
 
 def test_shared_history_preserves_types_and_floating_point_order(
