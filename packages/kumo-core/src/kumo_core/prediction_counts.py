@@ -16,7 +16,7 @@ labels positive.
 from typing import Any, List, Optional, Sequence
 
 import numpy as np
-from kumo_core.evaluation_counts import _metric_part
+from kumo_core.evaluation_counts import _horizons, _metric_part
 from kumo_core.score_counts import Counts
 from kumo_core.summaries import Scalar, Summary, Table
 from kumo_core.types import TaskType
@@ -28,13 +28,21 @@ _EPSILON = 1e-6
 
 
 def count_predictions(counts: Counts, task_type: TaskType, *, prob: Any,
-                      pred: Any, target_pred: Any,
-                      columns: Sequence[str]) -> None:
+                      pred: Any, target_pred: Any, columns: Sequence[str],
+                      horizon: Any = None) -> None:
     r"""Adds one batch: ``prob`` and ``pred`` as the model decoded them,
-    ``target_pred`` the written ``TARGET_PRED`` and ``columns`` the
-    probability columns' names, in class order."""
+    ``target_pred`` the written ``TARGET_PRED``, ``columns`` the
+    probability columns' names, in class order, and ``horizon`` each
+    forecast row's step ahead, from 0, whose `_horizons` are also counted
+    alone as ``TARGET_PRED_h<step>``."""
     if task_type.has_numerical_target:
         _column(counts, 'TARGET_PRED', 'target', target_pred)
+        if horizon is not None:
+            values = np.asarray(target_pred, dtype=np.float64)
+            horizon = np.asarray(horizon, dtype=np.int64)
+            for h in _horizons(int(horizon.max()) + 1 if horizon.size else 0):
+                counts.histogram(f'TARGET_PRED_h{h + 1}', 'target',
+                                 values[horizon == h])
         return
     prob = np.asarray(prob, dtype=np.float64)
     if task_type is TaskType.BINARY_CLASSIFICATION:
@@ -60,7 +68,8 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
     r"""``pred/<column>/hist`` and its ``mean``, ``min``, ``max`` and
     quantiles (``pred/...`` for ``TARGET_PRED``) for each column, of only
     the `TOP_CLASSES` most predicted classes; ``pred/positive_rate`` at a
-    binary ``threshold``; ``pred/classes``, each class's rows and share;
+    binary ``threshold``; ``pred/h<step>/hist`` per forecast horizon;
+    ``pred/classes``, each class's rows and share;
     and ``drift/score_psi`` and ``drift/score_ks`` against ``baseline``,
     the training holdout's counts."""
     columns = list(counts.extents)
@@ -81,6 +90,11 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
                 'pred/positive_rate',
                 float(counts.arrays['predicted_positive'] /
                       counts.arrays['True_PROB'].sum())))
+    summaries += [
+        counts.summary(name, 'target',
+                       f"pred/{name.removeprefix('TARGET_PRED_')}/hist")
+        for name in counts.arrays if name.startswith('TARGET_PRED_h')
+    ]
     if 'classes' in counts.arrays:
         summaries.append(_class_shares(tally, top, labels))
     score = next((name for name in ('True_PROB', 'confidence', 'TARGET_PRED')
