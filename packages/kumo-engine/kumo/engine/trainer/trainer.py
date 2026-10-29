@@ -34,6 +34,11 @@ from typing import (
 import pandas as pd
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.embedding_models import EmbeddingModelStore
+from kumo_core.evaluation_counts import (
+    baseline,
+    class_names,
+    evaluation_summaries,
+)
 from kumo_core.instrumentation import format_error
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
 from kumo_core.model_plan import inferred_or_missing_type_to_none
@@ -42,6 +47,7 @@ from kumo_core.pquery import (
     build_generated_training_task_dataset,
     resolve_query_forecast,
 )
+from kumo_core.summaries import Summary
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
 from kumo_core.training.explain_aggregation import aggregate_subgraph_features
 from kumo_core.training.workflow import TrainingWorkflowRequest
@@ -63,6 +69,7 @@ from kumo.engine._data_summaries import (
     snapshot_summaries,
     split_summaries,
     table_details,
+    target_edges,
 )
 from kumo.engine._deps import Dependencies
 from kumo.engine._embeddings import (
@@ -149,6 +156,9 @@ class TrainingResult:
     scoring_defaults: ScoringDefaults = field(default_factory=ScoringDefaults)
     _trainer: Optional['Trainer'] = field(default=None, repr=False,
                                           compare=False)
+    # The fit's `kumo_core.summaries` of its test split, for trackers.
+    _summaries: Tuple[Summary, ...] = field(default=(), repr=False,
+                                            compare=False)
 
     @property
     def id(self) -> Optional[str]:
@@ -1022,6 +1032,7 @@ class Trainer:
         session.finish(
             lambda: fitted_spec(
                 cast(RunSpec, session.spec), result, seconds, alias, (
+                    *result._summaries,
                     *snapshot_summaries(Path(snapshot.index_path),
                                         snapshot.graph_config),
                     *([] if result.manifest is None else artifact_summaries(
@@ -1200,13 +1211,17 @@ class Trainer:
             task_dataset_bundle_dir=materialized.bundle_dir,
             warm_start_artifacts=warm_start_artifacts,
         )
+        threshold = None if scoring_defaults is None else (
+            scoring_defaults.binary_classification_threshold)
         result = run_callable_training(
             training_input,
             bindings=local_training_bindings(
                 training_input, run_name=run_id,
                 embedding_models=self._embedding_models,
                 accelerator=self._accelerator, instrumentation=events),
-            options=CallableTrainingOptions(),
+            options=CallableTrainingOptions(
+                binary_classification_threshold=threshold,
+                target_edges=target_edges(train_table.staging_dir)),
         )
 
         if not result.explain_disabled:
@@ -1235,13 +1250,20 @@ class Trainer:
             result.best_trainer)
         fit_mode = result.best_trainer.published_fit_mode()
         fit_mode = None if fit_mode is None else fit_mode.value
+        task_type = TaskType(workflow.query.task_type)
         training_result = TrainingResult(
             metrics=dict(result.metrics),
             artifact_paths=dict(result.artifact_paths),
             bundle_dir=run_dir / 'published-model',
             holdout_path=holdout_path,
             holdout_truncated=holdout_truncated,
+            _summaries=() if result.test_counts is None else tuple(
+                evaluation_summaries(
+                    task_type, result.test_counts, threshold,
+                    class_names(result.best_trainer.target_encoder))),
         )
+        holdout_counts = None if result.published_counts is None else (
+            baseline(result.published_counts).to_dict())
         del result
         _collect_garbage('fit')
         return self._finish_fit(
@@ -1260,9 +1282,10 @@ class Trainer:
                     warm_start_bundle_id),
                 started_at=started_at, fit_mode=fit_mode,
                 tracking=tracking.pointer(),
-                task_type=TaskType(workflow.query.task_type),
+                task_type=task_type,
                 holdout_path=holdout_path,
-                holdout_truncated=holdout_truncated),
+                holdout_truncated=holdout_truncated,
+                holdout_counts=holdout_counts),
             deps=deps,
         )
 
