@@ -19,6 +19,12 @@ class Scalar:
 
 
 @dataclass(frozen=True)
+class Tag:
+    name: str
+    value: str
+
+
+@dataclass(frozen=True)
 class Series:
     r"""``(step, value)`` points; ``x_label`` says what a step counts."""
 
@@ -78,4 +84,5 @@ class Dataset:
     context: str
 
 
-Summary = Union[Scalar, Series, Curve, Histogram, Table, Confusion, Dataset]
+Summary = Union[Scalar, Tag, Series, Curve, Histogram, Table, Confusion,
+                Dataset]

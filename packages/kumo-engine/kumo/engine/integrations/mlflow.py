@@ -43,6 +43,7 @@ from kumo_core.summaries import (
     Series,
     Summary,
     Table,
+    Tag,
 )
 from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
@@ -461,6 +462,9 @@ class MlflowTracking:
         self._log_metrics(self._parent, {summary.name: summary.value},
                           model_id=model_id)
 
+    def _log_tag(self, summary: Tag) -> None:
+        self._log_tags(self._parent, {summary.name: summary.value})
+
     def _log_series(self, summary: Series) -> None:
         self._log_points({summary.name: summary.points})
 
@@ -587,6 +591,7 @@ class MlflowTracking:
 
 _SINKS: Dict[type, Callable[[MlflowTracking, Any], None]] = {
     Scalar: MlflowTracking._log_scalar,
+    Tag: MlflowTracking._log_tag,
     Series: MlflowTracking._log_series,
     Curve: MlflowTracking._log_curve,
     Histogram: MlflowTracking._log_histogram,
