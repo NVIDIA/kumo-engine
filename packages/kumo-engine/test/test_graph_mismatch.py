@@ -3,8 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
-import logging
-import warnings
 from dataclasses import replace
 
 import pytest
@@ -41,16 +39,14 @@ def _predict(trainer, snapshot, monkeypatch):
 
 
 def test_predict_says_what_differs_from_the_training_graph(
-        fitted, monkeypatch, caplog, tmp_path):
+        fitted, monkeypatch, tmp_path):
     trainer, _, snapshot = fitted
     assert kumo.Trainer.load(trainer.result.bundle_dir)._graph_config == (
         snapshot.graph_config)
 
-    with caplog.at_level(logging.INFO, logger='kumo.engine.graph'), \
-            warnings.catch_warnings():
-        warnings.filterwarnings('error', message='Snapshot .* was taken')
+    with pytest.warns(UserWarning, match='The schema is the same; only '
+                      'table connectors or locations differ'):
         _predict(trainer, _other(snapshot, _moved), monkeypatch)
-    assert 'only table connectors or locations differ' in caplog.text
 
     def dropped(tables):
         _moved(tables)

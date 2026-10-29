@@ -484,8 +484,8 @@ def test_load_rejects_unknown_formats_and_accepts_unknown_fields(
     assert loaded.id == snapshot.id
 
 
-def test_load_only_logs_a_graph_that_moved_with_the_same_schema(
-        tmp_path, scratch, graph, exports, caplog):
+def test_load_warns_about_a_graph_that_moved_with_the_same_schema(
+        tmp_path, scratch, graph, exports):
     location, _ = _export(graph.snapshot(), exports, tmp_path)
     shutil.copytree(tmp_path / 'data', tmp_path / 'prod')
     prod = kumo.FileConnector(root_dir=str(tmp_path / 'prod'))
@@ -496,11 +496,9 @@ def test_load_only_logs_a_graph_that_moved_with_the_same_schema(
         }, edges=graph.edges)
     assert moved.id != graph.id
 
-    with caplog.at_level('INFO', logger='kumo.engine.graph'), \
-            warnings.catch_warnings():
-        warnings.filterwarnings('error', message='.*another graph')
+    with pytest.warns(UserWarning, match=r'another graph\. The schema is '
+                      r'the same; only table connectors or locations differ'):
         _load(exports, location, graph=moved)
-    assert 'only table connectors or locations differ' in caplog.text
 
 
 @pytest.mark.parametrize('recorded', ['newer', 'missing'])

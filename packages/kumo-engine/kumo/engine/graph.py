@@ -60,7 +60,6 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 """
 
 import json
-import logging
 import threading
 import warnings
 from dataclasses import dataclass, field, replace
@@ -98,7 +97,6 @@ SNAPSHOT_MANIFEST_FILE = PROVENANCE_FILE
 
 _warned_scratch: set[Path] = set()
 _warned_backfill: set[Path] = set()
-logger = logging.getLogger(__name__)
 
 
 def _warn_if_network_scratch(root: Path) -> None:
@@ -265,8 +263,9 @@ def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
         warnings.warn(f"{message} Schema changes: {'; '.join(changes)}.",
                       UserWarning, stacklevel=stacklevel + 1)
     else:
-        logger.info('%s The schema is the same; only table connectors or '
-                    'locations differ.', message)
+        warnings.warn(f"{message} The schema is the same; only table "
+                      "connectors or locations differ.", UserWarning,
+                      stacklevel=stacklevel + 1)
 
 
 def _store() -> Any:
