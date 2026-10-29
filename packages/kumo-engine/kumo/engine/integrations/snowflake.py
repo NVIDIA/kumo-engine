@@ -4,16 +4,38 @@
 r"""Snowflake Experiment Tracking for `Trainer.fit`
 (``pip install 'kumo-engine[snowflake]'``)."""
 
+import json
 import logging
+import posixpath
 import re
 import tempfile
 import uuid
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 from kumo_core.instrumentation import format_error
 from kumo_core.sources.sql import resolve_snowflake_identifier
+from kumo_core.summaries import (
+    Confusion,
+    Curve,
+    Dataset,
+    Histogram,
+    Scalar,
+    Series,
+    Summary,
+    Table,
+)
 
 from kumo.engine._events import Event
 from kumo.engine._tracking import (
@@ -203,6 +225,7 @@ class SnowflakeTracking:
                                   for k, v in record.tags.items()
                                   if k not in self._start_tags}, _MAX_PARAMS)
                 self._log_artifacts(record.artifacts)
+                self.log_summaries(record.summaries)
                 self._log_dropped()
                 if error is None:
                     status = 'FINISHED'
@@ -248,14 +271,56 @@ class SnowflakeTracking:
                 name or 'a generated run name')
         return name
 
+    def log_summaries(self, summaries: Sequence[Summary]) -> None:
+        r"""Logs each summary on the run through its type's call in
+        `_SINKS`: values as metrics within the name budget, tables as JSON
+        artifacts; Snowflake has no datasets."""
+        if self._run is not None:
+            for summary in summaries:
+                _SINKS[type(summary)](self, summary)
+
+    def _log_scalar(self, summary: Scalar) -> None:
+        self._log_metrics({summary.name: summary.value}, _MAX_METRICS)
+
+    def _log_series(self, summary: Series) -> None:
+        self._log_points({summary.name: summary.points})
+
+    def _log_curve(self, summary: Curve) -> None:
+        self._log_points({summary.x.name: summary.x.points,
+                          summary.y.name: summary.y.points})
+
+    def _log_histogram(self, summary: Histogram) -> None:
+        self._log_points({
+            f'{summary.name}/count': tuple(enumerate(summary.counts)),
+            f'{summary.name}/lower_edge': tuple(enumerate(summary.edges, 1)),
+        })
+
+    def _log_table(self, summary: Table) -> None:
+        self._log_artifacts({f'{summary.name}.json': json.dumps({
+            'columns': list(summary.columns),
+            'data': [list(row) for row in summary.rows],
+        }, default=str)})
+
+    def _log_confusion(self, summary: Confusion) -> None:
+        self._log_table(Table(
+            summary.name, ('actual', *summary.labels),
+            tuple((label, *row)
+                  for label, row in zip(summary.labels, summary.counts))))
+
+    def _log_points(self, series: Mapping[str, Sequence[Tuple[int, float]]]
+                    ) -> None:
+        for step, metrics in by_step(series):
+            self._log_metrics(metrics, _SUMMARY_METRICS, step=step)
+
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         with tempfile.TemporaryDirectory() as directory:
             for name, text in artifacts.items():
                 if name in self._artifacts:
                     continue
-                path = Path(directory) / name
+                path = Path(directory) / posixpath.basename(name)
                 path.write_text(text, encoding='utf-8')
-                self._tracking.log_artifact(str(path))
+                self._tracking.log_artifact(
+                    str(path), posixpath.dirname(name) or None)
                 self._artifacts.add(name)
 
     def _log_dropped(self) -> None:
@@ -294,6 +359,17 @@ class SnowflakeTracking:
             kept[name] = value
         if kept:
             self._tracking.log_metrics(kept, step=step)
+
+
+_SINKS: Dict[type, Callable[[SnowflakeTracking, Any], None]] = {
+    Scalar: SnowflakeTracking._log_scalar,
+    Series: SnowflakeTracking._log_series,
+    Curve: SnowflakeTracking._log_curve,
+    Histogram: SnowflakeTracking._log_histogram,
+    Table: SnowflakeTracking._log_table,
+    Confusion: SnowflakeTracking._log_confusion,
+    Dataset: lambda tracker, summary: None,
+}
 
 
 def _suffixed(name: str, suffix: str) -> str:

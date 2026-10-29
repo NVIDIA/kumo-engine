@@ -33,6 +33,7 @@ from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
 
 if TYPE_CHECKING:
+    from kumo_core.summaries import Summary
     from kumoapi.plugin import ModelRegistryLocation, PublishedModel
 
     from kumo.engine._manifest import ModelManifest, TrackingRef
@@ -51,9 +52,10 @@ MODEL_SECONDS = 3600.0
 @dataclass(frozen=True)
 class RunRecord:
     r"""One tracked run; ``steps`` are per-epoch ``(epoch, value)``
-    histories, ``artifacts`` map file names to text and ``inputs`` map
+    histories, ``artifacts`` map file names to text, ``inputs`` map
     source table names to their ``connector``, ``location``, ``version`` and
-    ``version_kind``."""
+    ``version_kind``, and ``summaries`` are `kumo_core.summaries` results,
+    which each tracker logs in its own way."""
 
     name: Optional[str] = None
     params: Mapping[str, str] = field(default_factory=dict)
@@ -64,6 +66,7 @@ class RunRecord:
     artifacts: Mapping[str, str] = field(default_factory=dict)
     inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
         default_factory=dict)
+    summaries: Tuple['Summary', ...] = ()
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,7 @@ class RunSpec:
         default_factory=dict)
     parents: Mapping[str, Optional[str]] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
+    summaries: Sequence['Summary'] = ()
     status: Optional[str] = None
     error: Optional[str] = None
 
@@ -168,6 +172,7 @@ def run_record(spec: RunSpec) -> RunRecord:
         },
         artifacts=dict(spec.artifacts),
         inputs=dict(spec.inputs),
+        summaries=tuple(spec.summaries),
     )
 
 

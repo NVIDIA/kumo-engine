@@ -14,6 +14,15 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import pytest
 from kumo_core.artifacts import PROVENANCE_FILE
+from kumo_core.summaries import (
+    Confusion,
+    Curve,
+    Dataset,
+    Histogram,
+    Scalar,
+    Series,
+    Table,
+)
 
 from kumo.engine._tracking import (
     DROPPED_METRICS,
@@ -126,9 +135,11 @@ def join_tracking_threads():
 
 
 def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
-           context=CONTEXT, series=None) -> Dict[str, RunRecord]:
+           context=CONTEXT, series=None,
+           summaries=()) -> Dict[str, RunRecord]:
     r"""Feeds the recorded fit to `tracker`; returns the records expected
-    of it, with the fit run's ``series`` (default: the search's)."""
+    of it, with the fit run's ``series`` (default: the search's) and
+    ``summaries``."""
     recorder = _Recorder(tracker)
     session = TrackingSession(recorder)
     session.start(lambda: fit_spec(context))
@@ -136,7 +147,8 @@ def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
         session.on_event(event)
     session.finish(
         None if result is None else lambda: fitted_spec(
-            session.spec, result, events[-1].metrics.get('seconds')), error)
+            session.spec, result, events[-1].metrics.get('seconds'),
+            summaries=summaries), error)
     records = {
         record.name: record
         for hook, record in recorder.calls if hook == 'on_trial'
@@ -255,6 +267,7 @@ def mlflow_adapter(tmp_path, monkeypatch):
                     a.path: mlflow.artifacts.load_text(
                         f'{run.info.artifact_uri}/{a.path}')
                     for a in client.list_artifacts(run.info.run_id)
+                    if not a.is_dir
                 })
             for run in runs
         }
@@ -392,6 +405,60 @@ def test_adapter_records_a_single_trial_fit_epoch_by_epoch(adapter):
                           'val_mae': ((1, 0.4), (2, 0.35))})
 
     assert gaps(expected, adapter.observe(), adapter) == []
+
+
+SUMMARIES = (
+    Scalar('test/brier', 0.25),
+    Series('search/trials', ((1, 3.0), (2, 4.0)), x_label='trial'),
+    Curve('test/roc', Series('test/roc/fpr', ((0, 1.0), (1, 0.5))),
+          Series('test/roc/tpr', ((0, 1.0), (1, 0.75)))),
+    Histogram('pred/True_PROB/hist', (0.5,), (3, 4)),
+    Table('graph/col_stats', ('table', 'rows'), (('ents', 400),)),
+    Confusion('test/confusion', ('a', 'b'), ((5, 1), (2, 7))),
+    Dataset('ents', INPUTS['ents'], {'ID': {'stype': 'id', 'dtype': 'int64'}},
+            {'rows': 400}, 'training'),
+)
+
+
+def test_adapter_logs_each_summary_type(adapter, mlflow_adapter):
+    replay(adapter.make(), summaries=SUMMARIES)
+
+    fit = adapter.observe()[FIT]
+    assert {name: fit.steps[name] for name in (
+        'test/brier', 'search/trials', 'test/roc/fpr', 'test/roc/tpr',
+        'pred/True_PROB/hist/count', 'pred/True_PROB/hist/lower_edge')} == {
+        'test/brier': ((0, 0.25),), 'search/trials': ((1, 3.0), (2, 4.0)),
+        'test/roc/fpr': ((0, 1.0), (1, 0.5)),
+        'test/roc/tpr': ((0, 1.0), (1, 0.75)),
+        'pred/True_PROB/hist/count': ((0, 3.0), (1, 4.0)),
+        'pred/True_PROB/hist/lower_edge': ((1, 0.5),)}
+    tables = {'col_stats.json': {'columns': ['table', 'rows'],
+                                 'data': [['ents', 400]]},
+              'confusion.json': {'columns': ['actual', 'a', 'b'],
+                                 'data': [['a', 5, 1], ['b', 2, 7]]}}
+    if adapter is not mlflow_adapter:
+        assert {name: json.loads(fit.artifacts[name])
+                for name in tables} == tables
+        return
+    import mlflow
+
+    client = mlflow.MlflowClient()
+    run, = (r for r in client.search_runs(
+        [e.experiment_id for e in client.search_experiments()])
+        if r.data.tags['kumo.kind'] == 'fit')
+    assert {name: json.loads(mlflow.artifacts.load_text(
+        f'{run.info.artifact_uri}/{section}/{name}'))
+        for section, name in (('graph', 'col_stats.json'),
+                              ('test', 'confusion.json'))} == tables
+    assert json.loads(run.data.tags['mlflow.loggedArtifacts']) == [
+        {'path': 'graph/col_stats.json', 'type': 'table'},
+        {'path': 'test/confusion.json', 'type': 'table'}]
+    dataset, = run.inputs.dataset_inputs
+    assert (dataset.dataset.name, dataset.dataset.digest,
+            dataset.tags[0].value) == ('ents', '1790000000', 'training')
+    assert json.loads(dataset.dataset.schema) == {
+        'mlflow_colspec': [{'name': 'ID', 'type': 'long'}]}
+    assert json.loads(dataset.dataset.profile) == {'rows': 400}
 
 
 def test_a_raising_tracker_is_ended_and_not_called_again(caplog):
