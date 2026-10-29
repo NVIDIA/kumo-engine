@@ -269,12 +269,9 @@ let x=(left?c.left-t.width-12*b.sx:c.right+12*b.sx)+placement.offset*b.sx;
 const y=Math.max(b.top,Math.min(a.top,b.bottom-t.height));
 if(allowPan===true){
 const clamp=(v,lo,hi)=>Math.max(lo,Math.min(v,hi));
-const dy=clamp(y-a.top,b.top+Math.min(8*b.sy,a.height/2)-a.bottom,
-b.bottom-Math.min(8*b.sy,a.height/2)-a.top);
 if(active.dataset.kumoRow){
 // Compare the final popup with only route portions visible before the one pan.
-const top=Math.max(b.top,Math.min(a.top+dy,b.bottom-t.height))-dy;
-const band={...b,top:Math.max(b.top,top-2),bottom:Math.min(b.bottom,top+t.height+2)};
+const band={...b,top:Math.max(b.top,y-2),bottom:Math.min(b.bottom,y+t.height+2)};
 const spans=[];
 if(band.top<band.bottom)for(const edge of edges)
 if(edge.classList.contains('kumo-edge-active'))edgeExtent(edge,band,spans);
@@ -286,8 +283,8 @@ placement.offset+=(x-adjacent)/b.sx}
 const dx=clamp(clamp(x<b.left?b.left-x:x+t.width>b.right?b.right-x-t.width:0,
 -(b.right-b.left),b.right-b.left),b.left+Math.min(24*b.sx,a.width/2)-a.right,
 b.right-Math.min(24*b.sx,a.width/2)-a.left);
-if(Math.abs(dx)>.5||Math.abs(dy)>.5){hoverLock=pointer?{...pointer}:{};
-panBy(dx/b.sx,dy/b.sy);place();return}}
+if(Math.abs(dx)>.5){hoverLock=pointer?{...pointer}:{};
+panBy(dx/b.sx,0);place();return}}
 if(!intersects(a,b)){hide();return}
 const raw=x;x=Math.max(b.left,Math.min(x,b.right-t.width));
 tip.dataset.side=placement.side;tip.dataset.clamped=String(x!==raw||y!==a.top);
