@@ -68,7 +68,7 @@ from kumo.engine import _deps as dependency
 from kumo.engine._data_summaries import (
     snapshot_summaries,
     split_summaries,
-    table_source,
+    table_details,
     target_edges,
 )
 from kumo.engine._deps import Dependencies
@@ -87,6 +87,7 @@ from kumo.engine._manifest import (
     PredictionOutput,
     RunScoring,
     TrackingRef,
+    artifact_summaries,
     stub,
 )
 from kumo.engine._mlops import full_error, warn_failure
@@ -1033,8 +1034,10 @@ class Trainer:
                 cast(RunSpec, session.spec), result, seconds, alias, (
                     *result._summaries,
                     *snapshot_summaries(Path(snapshot.index_path),
-                                        snapshot.graph_config, 'training'),
-                    *table_source(train_table.manifest),
+                                        snapshot.graph_config),
+                    *([] if result.manifest is None else artifact_summaries(
+                        result.manifest, 'training', settings,
+                        table_details(Path(snapshot.index_path)))),
                     *split_summaries(train_table.staging_dir))), error)
         raise_on_error(settings, session.error or error,
                        'Trainer.fit (its model is in trainer.result)')

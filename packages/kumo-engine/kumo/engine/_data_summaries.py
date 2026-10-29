@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from kumo_core.instrumentation import format_error
-from kumo_core.summaries import Dataset, Scalar, Summary, Table, Tag
+from kumo_core.summaries import Scalar, Summary, Table, Tag
+
+from kumo.engine._manifest import Details
 
 logger = logging.getLogger(__name__)
 
@@ -74,19 +76,14 @@ def target_edges(staging_dir: Path) -> Tuple[float, ...]:
     return tuple(sorted(edges)) if len(edges) > 1 else ()
 
 
-def snapshot_summaries(index: Path, graph_config: Mapping[str, Any],
-                       context: str) -> List[Summary]:
+def snapshot_summaries(index: Path,
+                       graph_config: Mapping[str, Any]) -> List[Summary]:
     r"""The snapshot's tables and relations (`_graph_scalars`), their data
-    quality (`_quality`), ``graph/col_stats`` with a row per column, and a
-    `Dataset` per source table (its location, version, schema and profile)
-    in ``context``, ``training`` or ``scoring``."""
+    quality (`_quality`) and ``graph/col_stats`` with a row per column."""
     ingest = _read(index / 'ingest_stats.json').get('stats') or {}
     columns: Dict[str, Dict[str, Any]] = _read(index / 'col_stats.json')
     relations = _relations(_read(index / 'edge_stats.json'), ingest)
-    profiles = {
-        table: {column: _profile(stats) for column, stats in table_stats.items()}
-        for table, table_stats in sorted(columns.items())
-    }
+    profiles = _profiles(columns)
     return [
         *_graph_scalars(ingest, relations),
         *_quality(ingest, columns, relations, graph_config),
@@ -95,8 +92,15 @@ def snapshot_summaries(index: Path, graph_config: Mapping[str, Any],
               tuple((table, column, *profile.values())
                     for table, table_profiles in profiles.items()
                     for column, profile in table_profiles.items())),
-        *_datasets(index, ingest, profiles, context),
     ]
+
+
+def _profiles(columns: Mapping[str, Mapping[str, Any]]
+              ) -> Dict[str, Dict[str, Any]]:
+    return {
+        table: {column: _profile(stats) for column, stats in table_stats.items()}
+        for table, table_stats in sorted(columns.items())
+    }
 
 
 def _relations(edge_stats: Mapping[str, Any],
@@ -205,24 +209,21 @@ def _quality(ingest: Mapping[str, Any], columns: Mapping[str, Any],
     return summaries
 
 
-def _datasets(index: Path, ingest: Mapping[str, Any],
-              profiles: Mapping[str, Mapping[str, Any]],
-              context: str) -> List[Summary]:
-    sources = (_read(index / '_provenance.json').get('parents')
-               or {}).get('source_tables') or {}
-    rows = ingest.get('node_counts') or {}
-    datasets: List[Summary] = []
-    for table in _read(index / 'diskgraph_config.json').get('tables') or ():
-        name = table.get('kumo_source_table_name') or table.get('name')
-        if name in sources:
-            datasets.append(Dataset(
-                name=name, source=sources[name], context=context,
-                schema={column['name']: {'stype': column.get('semantic_type'),
-                                         'dtype': column.get('source_dtype')}
-                        for column in table.get('columns') or ()},
-                profile={'rows': rows.get(table.get('name')),
-                         'columns': profiles.get(table.get('name'), {})}))
-    return datasets
+def table_details(index: Path) -> Details:
+    r"""Each source table's schema and profile, its rows and column
+    statistics, for its `Dataset`."""
+    rows = (_read(index / 'ingest_stats.json').get('stats')
+            or {}).get('node_counts') or {}
+    profiles = _profiles(_read(index / 'col_stats.json'))
+    return {
+        table.get('kumo_source_table_name') or table.get('name'): (
+            {column['name']: {'stype': column.get('semantic_type'),
+                              'dtype': column.get('source_dtype')}
+             for column in table.get('columns') or ()},
+            {'rows': rows.get(table.get('name')),
+             'columns': profiles.get(table.get('name'), {})})
+        for table in _read(index / 'diskgraph_config.json').get('tables') or ()
+    }
 
 
 def _by_table(counts: Optional[Mapping[str, int]],
@@ -236,16 +237,6 @@ def _by_table(counts: Optional[Mapping[str, int]],
 
 def _invalid(stats: Mapping[str, Any]) -> int:
     return stats.get('parse_fail_count', 0) + stats.get('invalid_count', 0)
-
-
-def table_source(manifest: Any) -> List[Summary]:
-    r"""A `Dataset` for a training table read from its own source table,
-    which a snapshot's sources do not cover."""
-    from kumo.engine._tracking import fit_inputs
-
-    source = fit_inputs(manifest).get('training_table')
-    return [] if source is None else [
-        Dataset('training_table', source, {}, {}, 'training')]
 
 
 def _profile(stats: Mapping[str, Any]) -> Dict[str, Any]:
