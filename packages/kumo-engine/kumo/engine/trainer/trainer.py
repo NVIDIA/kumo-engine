@@ -57,6 +57,11 @@ from kumoapi.train import TrainingStage
 from typing_extensions import Self
 
 from kumo.engine import _deps as dependency
+from kumo.engine._data_summaries import (
+    snapshot_summaries,
+    split_summaries,
+    table_source,
+)
 from kumo.engine._deps import Dependencies
 from kumo.engine._embeddings import (
     no_encoder_inference_warnings,
@@ -750,7 +755,7 @@ class Trainer:
                                events=events, tracking=session,
                                deps=deps, model_name=None if (
                                    settings is None or settings.registry is
-                                   None) else settings.registry.name)
+                                   None) else settings.registry.model_name)
         except BaseException as error:
             events.emit('fit_ended', params={
                 'status': 'failed',
@@ -774,9 +779,12 @@ class Trainer:
         alias = None if settings is None or settings.registry is None else (
             settings.registry.alias)
         session.finish(
-            lambda: fitted_spec(cast(RunSpec, session.spec), result, seconds,
-                                alias),
-            error)
+            lambda: fitted_spec(
+                cast(RunSpec, session.spec), result, seconds, alias, (
+                    *snapshot_summaries(Path(snapshot.index_path),
+                                        'training'),
+                    *table_source(train_table.manifest),
+                    *split_summaries(train_table.staging_dir))), error)
         raise_on_error(settings, session.error or error,
                        'Trainer.fit (its model is in trainer.result)')
         return result

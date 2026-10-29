@@ -7,9 +7,10 @@ import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from kumo_core.artifacts import PROVENANCE_FILE
+from kumo_core.summaries import Summary
 
 from kumo.engine._tracking import RunSpec, _flatten
 from kumo.engine._version import __version__
@@ -53,11 +54,12 @@ def fit_spec(context: FitContext, *,
 
 
 def fitted_spec(spec: RunSpec, result: Any, seconds: Optional[float] = None,
-                alias: Optional[str] = None) -> RunSpec:
+                alias: Optional[str] = None,
+                summaries: Sequence[Summary] = ()) -> RunSpec:
     r"""``spec`` once the fit returned ``result``, a `TrainingResult`,
     after ``seconds``: its test metrics, since the run's train and
-    validation series show the selected trial's epochs, and the version it
-    registered with ``alias``."""
+    validation series show the selected trial's epochs, the version it
+    registered with ``alias``, and ``summaries``."""
     artifacts = dict(spec.artifacts)
     provenance = Path(result.bundle_dir) / PROVENANCE_FILE
     if provenance.is_file():
@@ -71,7 +73,7 @@ def fitted_spec(spec: RunSpec, result: Any, seconds: Optional[float] = None,
             })
         }, parents={**spec.parents, 'bundle_id': result.id,
                     **_registered(result.registered_model, alias)},
-        artifacts=artifacts)
+        artifacts=artifacts, summaries=summaries)
 
 
 def _registered(model: Any, alias: Optional[str]) -> Mapping[str, Any]:

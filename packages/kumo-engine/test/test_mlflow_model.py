@@ -20,6 +20,7 @@ from test_mlflow_tracking import (  # noqa: F401
 
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
+from kumo.engine._tracking import logged_names
 
 mlflow = pytest.importorskip('mlflow')
 
@@ -59,14 +60,15 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     model, = mlflow.search_logged_models(output_format='list')
     assert model.source_run_id == parent.info.run_id
     metrics = {metric.key: metric.value for metric in model.metrics}
-    assert metrics == {**result.metrics, 'seconds': metrics['seconds']}
+    assert metrics == {
+        **{name: value for name, value in logged_names(result.metrics).items()
+           if name.startswith('test/')}, 'seconds': metrics['seconds']}
     version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
     assert version.source == model.model_uri
-    assert {k: v for k, v in parent.data.tags.items()
-            if k.startswith('kumo.')} == {
-                'kumo.kind': 'fit',
-                'kumo.bundle_id': result.id,
-            }
+    assert parent.data.tags.items() >= {
+        'kumo.kind': 'fit', 'kumo.bundle_id': result.id,
+        'kumo.model_name': 'm', 'kumo.model_version': str(version.version),
+        'kumo.model_alias': 'champion'}.items()
     assert result.registered_model == PublishedModel(
         name='m', version=str(version.version),
         uri=f'models:/m/{version.version}',
