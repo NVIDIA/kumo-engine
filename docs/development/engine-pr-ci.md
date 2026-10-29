@@ -31,6 +31,8 @@ The behavior checks reuse small package fixtures. They cover recommendation
 counts and unique IDs, time filters, invalid options, exports and custom tables,
 continued training, and native sampling behavior. One retained model also
 predicts in a fresh process after reconstructing its graph from copied tables.
+The shared test also runs on the existing CPU owner suite. The PR worker
+requires CUDA and verifies the child's requested device and completed work.
 Public recommendation exclusions remain unsupported. The check does not claim
 coverage of that unsupported option.
 
@@ -54,6 +56,8 @@ counts are in `packages/kumo-engine/test/pr172/`. CI acquires the pinned source
 with the existing `KUMO_GITHUB_BOT_TOKEN`. That token needs read access to the
 source repository. Private source is neither committed nor uploaded in result
 artifacts. Generator output and file hashes are checked before training.
+The token preflight preserves a configuration receipt without its value. A
+missing token fails before training and still produces a result artifact.
 
 The GPU runner defaults to the repository's existing
 `linux-amd64-gpu-t4-latest-1` label. `KUMO_ENGINE_PR_GPU_RUNNER` can select an
@@ -67,6 +71,14 @@ The target is 20 minutes through the last required result. It includes build,
 queues, installation, generation, selected checks, reporting, and uploads.
 Per-job timeouts are execution bounds. They do not prove the complete target.
 The recorded manual trial and worker timings do not replace a GitHub run.
+
+The [recorded attempt at `4a508a93`](https://github.com/NVIDIA/kumo-engine/actions/runs/40924279550)
+took 25 minutes 56 seconds and failed before any primary fit. Its exact wheel
+build passed in 13 minutes 15 seconds. The GPU job lacked the generator token.
+The owner source suite also failed its BigQuery authentication setup and a
+shared test's unconditional CUDA check. This is a failed measurement, not a
+passing runtime estimate. The current control jobs use Ubuntu 22. The existing
+owner workflow retains its own runners and waiting time.
 
 After a run finishes, download its run metadata and the complete job inventory,
 including all pages for its recorded attempt. Then audit that run:

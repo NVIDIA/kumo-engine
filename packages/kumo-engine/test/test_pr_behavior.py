@@ -124,7 +124,8 @@ def test_retained_tables_and_model_predict_in_fresh_process(pr_link, tmp_path):
         json.dumps(
             dict(data=str(data), bundle=str(bundle),
                  output=str(tmp_path / 'child'),
-                 version=metadata.version('kumo-engine'), query=query.query)))
+                 version=metadata.version('kumo-engine'), query=query.query,
+                 accelerator=trainer._accelerator)))
     completed = subprocess.run(
         [sys.executable, '-I',
          str(Path(__file__).resolve()),
@@ -133,7 +134,11 @@ def test_retained_tables_and_model_predict_in_fresh_process(pr_link, tmp_path):
     assert completed.returncode == 0, completed.stderr
     result = json.loads((tmp_path / 'child/result.json').read_text())
     assert result['status'] == 'PASS' and result['fits_started'] == 0
-    assert result['cuda_prediction_batches'] > 0
+    assert result['requested_accelerator'] == trainer._accelerator
+    assert result['prediction_batches'] > 0
+    if trainer._accelerator == 'gpu':
+        assert result['cuda_prediction_batches'] == result['prediction_batches']
+        assert set(result['observed_devices']) == {'cuda:0'}
     assert _hash_files(data) == original['data']
     assert _hash_files(bundle) == original['bundle']
 
@@ -155,10 +160,16 @@ def _predict_retained(request):
     output.mkdir()
     if (metadata.version('kumo-engine') != options['version']
             or kumo.__version__ != options['version'] or
-            not Path(kumo.__file__).resolve().is_relative_to(Path(sys.prefix))
-            or not torch.cuda.is_available()):
-        raise ValueError('Require the selected installed wheel and real CUDA')
-    result = dict(status='RUNNING', fits_started=0, cuda_prediction_batches=0,
+            not Path(kumo.__file__).resolve().is_relative_to(Path(sys.prefix))):
+        raise ValueError('Require the selected installed wheel')
+    accelerator = options['accelerator']
+    expected_device = {'cpu': 'cpu', 'gpu': 'cuda', 'mps': 'mps',
+                       'auto': None}[accelerator]
+    if expected_device == 'cuda' and not torch.cuda.is_available():
+        raise ValueError('CUDA is unavailable for requested GPU')
+    result = dict(status='RUNNING', fits_started=0, prediction_batches=0,
+                  cuda_prediction_batches=0, requested_accelerator=accelerator,
+                  observed_devices=[],
                   installed_import=kumo.__file__, version=kumo.__version__)
 
     def forbidden_fit(*args, **kwargs):
@@ -172,13 +183,18 @@ def _predict_retained(request):
                 values, dict) else None)
             tensors = (list(logits.values())
                        if isinstance(logits, dict) else [logits])
-            if (trainer.strategy.root_device.type != 'cuda' or not tensors
+            device = trainer.strategy.root_device
+            if ((expected_device is not None and device.type != expected_device)
+                    or device.type not in ('cpu', 'cuda', 'mps') or not tensors
                     or any(not isinstance(value, torch.Tensor)
-                           or not value.numel() or value.device.type != 'cuda'
+                           or not value.numel() or value.device != device
                            for value in tensors)):
-                raise AssertionError('Missing completed CUDA prediction work')
-            torch.cuda.synchronize()
-            result['cuda_prediction_batches'] += 1
+                raise AssertionError('Missing prediction work on selected device')
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+                result['cuda_prediction_batches'] += 1
+            result['prediction_batches'] += 1
+            result['observed_devices'].append(str(device))
 
     original_create = CoreTrainer.create_pl_trainer
 
@@ -205,7 +221,7 @@ def _predict_retained(request):
         [Edge('events', 'ENT_ID', 'ents'),
          Edge('events', 'ITEM_ID', 'items')])
     snapshot = graph.snapshot()
-    model = kumo.Trainer.load(Path(options['bundle']))
+    model = kumo.Trainer.load(Path(options['bundle']), accelerator=accelerator)
     query = kumo.PredictiveQuery(graph, options['query'])
     table = query.generate_prediction_table(
         snapshot, plan=model.training_table_generation_plan)
@@ -214,8 +230,8 @@ def _predict_retained(request):
     ids = pd.read_parquet(data / 'ents.parquet')['ID'].tolist()
     catalog = pd.read_parquet(data / 'items.parquet')['IID'].tolist()
     result.update(verify_recommendations(frame, ids, catalog, 3))
-    if not result['cuda_prediction_batches']:
-        raise AssertionError('No CUDA prediction batches completed')
+    if not result['prediction_batches']:
+        raise AssertionError('No prediction batches completed')
     frame.to_parquet(output / 'predictions.parquet', index=False)
     result.update(status='PASS', snapshot_id=snapshot.id)
     (output / 'result.json').write_text(json.dumps(result, indent=2))
@@ -251,6 +267,22 @@ def test_recommendation_helper_rejects_missing_repeated_and_invalid_rows():
                 frame.assign(ENTITY=[0, 0, 2, 2])):
         with pytest.raises(ValueError):
             verify_recommendations(bad, [0, 1], [10, 11], 5)
+
+
+def test_retained_gpu_request_rejects_unavailable_cuda(tmp_path, monkeypatch):
+    from importlib import metadata
+
+    import pytest
+    import torch
+
+    request = tmp_path / 'request.json'
+    request.write_text(
+        json.dumps(dict(output=str(tmp_path / 'child'),
+                        version=metadata.version('kumo-engine'),
+                        accelerator='gpu')))
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: False)
+    with pytest.raises(ValueError, match='CUDA is unavailable for requested GPU'):
+        _predict_retained(request)
 
 
 if __name__ == '__main__':

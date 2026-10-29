@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,3 +56,32 @@ print(json.dumps({files!r} if any('/files?' in a for a in sys.argv) else {metada
                     'source': 'true',
                     'gpu': 'true'
                 }
+
+
+@pytest.mark.parametrize('token', ['', 'test-only-opaque-credential'])
+def test_generator_token_preflight_preserves_failure_without_exposing_secret(
+        tmp_path, token):
+    workflow = yaml.safe_load(
+        (ROOT / '.github/workflows/kumo-engine-pr.yml').read_text())
+    step = next(
+        s for s in workflow['jobs']['gpu']['steps']
+        if s.get('name') == 'Require access to the pinned synthetic generators')
+    completed = subprocess.run(['bash', '-e', '-c', step['run']], cwd=ROOT,
+                               env=dict(os.environ, SOURCE_TOKEN=token,
+                                        RUNNER_TEMP=str(tmp_path),
+                                        GITHUB_SHA='a' * 40),
+                               capture_output=True, text=True)
+    receipt_path = tmp_path / 'pr-preflight/source-token.json'
+    assert receipt_path.exists(), completed.stdout + completed.stderr
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt['revision'] == 'a' * 40
+    assert receipt['token_configured'] is bool(token)
+    assert receipt['physical_fits'] == 0
+    assert receipt['source_checkout_verified'] is False
+    assert (completed.returncode == 0) is bool(token)
+    if token:
+        assert token not in receipt_path.read_text()
+        assert token not in completed.stdout + completed.stderr
+    else:
+        assert receipt['status'] == 'FAIL'
+        assert 'KUMO_GITHUB_BOT_TOKEN' in completed.stdout + completed.stderr
