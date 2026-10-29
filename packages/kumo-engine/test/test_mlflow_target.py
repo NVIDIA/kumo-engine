@@ -114,6 +114,19 @@ def test_a_databricks_service_principal_lends_a_token_for_each_call(
         'https://dbc.example/ml/experiments/7/runs/r')
 
 
+def test_a_cluster_run_links_to_the_workspace_url_not_the_regional_host(
+        monkeypatch):
+    from mlflow.utils import databricks_utils
+
+    from kumo.engine.integrations._mlflow_target import resolve
+
+    target = resolve('databricks')
+    monkeypatch.setattr(databricks_utils, 'get_workspace_info_from_dbutils',
+                        lambda: ('https://dbc-1.example', '42'))
+    assert target.run_url('7', 'r') == (
+        'https://dbc-1.example/ml/experiments/7/runs/r')
+
+
 def test_an_aws_access_key_signs_sagemaker_calls_and_uploads(
         monkeypatch, tracking_uri):
     boto3 = pytest.importorskip('boto3')

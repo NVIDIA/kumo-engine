@@ -139,6 +139,17 @@ def resolve(target: Any) -> Target:
 
 
 def _workspace_host() -> Optional[str]:
+    # On a cluster the SDK's host is the regional one; the notebook context
+    # names the workspace's own URL, which run links need.
+    try:
+        from mlflow.utils.databricks_utils import (
+            get_workspace_info_from_dbutils,
+        )
+        host, _ = get_workspace_info_from_dbutils()
+        if host:
+            return host
+    except Exception:
+        pass
     try:
         return import_provider('databricks.sdk.config',
                                'databricks').Config().host
