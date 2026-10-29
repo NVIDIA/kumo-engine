@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+from kumo_core.summaries import Scalar
 from kumo_core.types import TaskType
 
 from kumo.engine._manifest import (
@@ -51,7 +52,7 @@ def test_any_models_prediction_run_is_recorded_and_monitored(tmp_path):
     assert run.manifest.parents.model == MODEL
 
     record = prediction_record(run.manifest)
-    assert record.metrics['predictions.skipped_rows'] == 5
+    assert Scalar('data/skipped_rows', 5) in record.summaries
     assert record.tags['kumo.bundle_id'] == 'toy-model'
 
     report = score_drift(SimpleNamespace(result=SimpleNamespace(

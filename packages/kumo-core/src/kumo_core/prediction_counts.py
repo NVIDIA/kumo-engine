@@ -109,8 +109,14 @@ def _drift(counts: Counts, baseline: Counts, score: str) -> List[Summary]:
     ]
 
 
+def summary_prefix(column: str) -> str:
+    r"""Where a score column's summaries go: ``pred/<column>``, or
+    ``pred`` for ``TARGET_PRED``."""
+    return 'pred' if column == 'TARGET_PRED' else f'pred/{column}'
+
+
 def _column_summaries(counts: Counts, name: str) -> List[Summary]:
-    prefix = 'pred' if name == 'TARGET_PRED' else f'pred/{name}'
+    prefix = summary_prefix(name)
     axis = _axis(name)
     histogram = counts.arrays[name]
     low, high = counts.extents[name]
