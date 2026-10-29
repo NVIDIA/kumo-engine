@@ -5,6 +5,8 @@ r"""The MLOps switch: :class:`MLOps` settings and the :func:`mlops` block."""
 
 import contextlib
 import contextvars
+import os
+import posixpath
 from dataclasses import dataclass, field
 from typing import Any, FrozenSet, Iterable, Iterator, Optional, Tuple, Union
 
@@ -79,6 +81,8 @@ class MLOps:
         if unknown:
             raise ValueError(f'Unknown store kinds {unknown}; choose from '
                              f'{list(KINDS)}.')
+        if kinds:
+            _require_writable(root)
         object.__setattr__(self, 'root', root)
         object.__setattr__(self, 'kinds', kinds)
 
@@ -105,6 +109,38 @@ def _require_within_root(connector: Any, path: str) -> None:
             f'({error}), so nothing could be stored there. Give the root '
             f'a connector that contains it: ({name}(root_dir={path!r}, '
             f'identity=...), {path!r}).') from error
+
+
+def _require_writable(root: _Root) -> None:
+    from uuid import uuid4
+
+    from kumo.engine.connector import file_store
+
+    store = file_store(root.connector,
+                       root.location(f'.kumo-write-check-{uuid4().hex}'))
+    if store is None:
+        return
+    filesystem, probe = store
+    try:
+        if filesystem.type_name == 'local':
+            existing = posixpath.dirname(probe)
+            while not os.path.exists(existing):
+                existing = posixpath.dirname(existing)
+            if not os.access(existing, os.W_OK | os.X_OK):
+                raise PermissionError(f'{existing} is not writable')
+            return
+        try:
+            filesystem.open_output_stream(probe).close()
+        except FileNotFoundError:  # a store with directories, before first use
+            filesystem.create_dir(posixpath.dirname(probe), recursive=True)
+            filesystem.open_output_stream(probe).close()
+        filesystem.delete_file(probe)
+    except Exception as error:
+        raise PermissionError(
+            f'kumo.MLOps cannot write under artifact_root '
+            f'{root.uri("")!r}: {type(error).__name__}: {error}. Grant this '
+            f'identity write and delete rights on it, or pick another '
+            f'root.') from error
 
 
 _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(

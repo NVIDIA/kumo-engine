@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import os
 import threading
 from types import SimpleNamespace
 
@@ -51,11 +52,29 @@ def test_a_root_is_a_uri_or_a_connector_and_path(tmp_path):
 
 def test_a_connector_root_outside_its_root_dir_fails_when_built():
     data = kumo.S3Connector(root_dir='s3://bucket/data')
-    assert kumo.MLOps(artifact_root=(data, 's3://bucket/data/kumo')).root
+    assert kumo.MLOps(artifact_root=(data, 's3://bucket/data/kumo'),
+                      store=False).root
     with pytest.raises(ValueError, match=r"'s3://bucket/kumo' is outside "
                        r"this S3Connector's root_dir s3://bucket/data .*"
                        r"S3Connector\(root_dir='s3://bucket/kumo'"):
-        kumo.MLOps(artifact_root=(data, 's3://bucket/kumo'))
+        kumo.MLOps(artifact_root=(data, 's3://bucket/kumo'), store=False)
+
+
+def test_a_root_that_cannot_be_written_fails_when_built(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip('root writes through a read-only directory')
+    read_only = tmp_path / 'read-only'
+    read_only.mkdir()
+    read_only.chmod(0o500)
+    try:
+        with pytest.raises(PermissionError, match='cannot write under '
+                           'artifact_root'):
+            kumo.MLOps(artifact_root=str(read_only / 'kumo'))
+        assert kumo.MLOps(artifact_root=str(read_only), store=False)
+    finally:
+        read_only.chmod(0o700)
+    kumo.MLOps(artifact_root=str(tmp_path / 'kumo'))
+    assert not (tmp_path / 'kumo').exists()
 
 
 def test_a_call_argument_beats_the_nearest_block(tmp_path):
