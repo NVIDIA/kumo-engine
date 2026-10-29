@@ -35,6 +35,7 @@ from kumo_core.summaries import (
     Series,
     Summary,
     Table,
+    Tag,
 )
 
 from kumo.engine._events import Event
@@ -282,6 +283,9 @@ class SnowflakeTracking:
     def _log_scalar(self, summary: Scalar) -> None:
         self._log_metrics({summary.name: summary.value}, _MAX_METRICS)
 
+    def _log_tag(self, summary: Tag) -> None:
+        self._log_params({summary.name: summary.value})
+
     def _log_series(self, summary: Series) -> None:
         self._log_points({summary.name: summary.points})
 
@@ -363,6 +367,7 @@ class SnowflakeTracking:
 
 _SINKS: Dict[type, Callable[[SnowflakeTracking, Any], None]] = {
     Scalar: SnowflakeTracking._log_scalar,
+    Tag: SnowflakeTracking._log_tag,
     Series: SnowflakeTracking._log_series,
     Curve: SnowflakeTracking._log_curve,
     Histogram: SnowflakeTracking._log_histogram,
