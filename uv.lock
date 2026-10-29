@@ -3541,7 +3541,7 @@ requires-dist = [
     { name = "kumo-glove-6b-50d", marker = "extra == 'text'", editable = "tools/glove-6b-50d" },
     { name = "kumo-s3", marker = "extra == 's3'", editable = "packages/kumo-s3" },
     { name = "kumo-snowflake", extras = ["sdk"], marker = "extra == 'snowflake'", editable = "packages/kumo-snowflake" },
-    { name = "mlflow-skinny", marker = "extra == 'mlflow'", specifier = ">=3.0.1,<4" },
+    { name = "mlflow-skinny", marker = "extra == 'mlflow'", specifier = ">=3.5,<4" },
     { name = "numpy", marker = "extra == 'test'", specifier = ">=1.26,<3" },
     { name = "nvidia-ml-py", marker = "extra == 'mlflow'" },
     { name = "pandas" },
