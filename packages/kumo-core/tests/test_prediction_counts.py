@@ -143,3 +143,15 @@ def test_regression_counts_on_the_target_bins_and_drift():
     assert not any(
         name.startswith('drift/') for name in _by_name(
             prediction_summaries(counts, threshold=None, baseline=other)))
+
+
+def test_class_names_are_safe_metric_names():
+    prob = np.array([[0.7, 0.3], [0.4, 0.6]])
+    counts = _batches(TaskType.MULTICLASS_CLASSIFICATION,
+                      {'score': PROBABILITY_EDGES}, ['a/b_PROB', 'c@d_PROB'],
+                      prob=prob)
+
+    names = {name for name in _by_name(prediction_summaries(
+        counts, threshold=None, baseline=None)) if name.endswith('/hist')}
+    assert names == {'pred/confidence/hist', 'pred/a_b_PROB/hist',
+                     'pred/c_d_PROB/hist'}

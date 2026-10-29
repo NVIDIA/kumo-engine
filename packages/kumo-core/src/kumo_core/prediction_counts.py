@@ -16,6 +16,7 @@ labels positive.
 from typing import Any, List, Optional, Sequence
 
 import numpy as np
+from kumo_core.evaluation_counts import _metric_part
 from kumo_core.score_counts import Counts
 from kumo_core.summaries import Scalar, Summary, Table
 from kumo_core.types import TaskType
@@ -110,9 +111,10 @@ def _drift(counts: Counts, baseline: Counts, score: str) -> List[Summary]:
 
 
 def summary_prefix(column: str) -> str:
-    r"""Where a score column's summaries go: ``pred/<column>``, or
-    ``pred`` for ``TARGET_PRED``."""
-    return 'pred' if column == 'TARGET_PRED' else f'pred/{column}'
+    r"""Where a score column's summaries go: ``pred/<column>``, with
+    characters metric names reject replaced by ``_``, or ``pred`` for
+    ``TARGET_PRED``."""
+    return 'pred' if column == 'TARGET_PRED' else f'pred/{_metric_part(column)}'
 
 
 def _column_summaries(counts: Counts, name: str) -> List[Summary]:
