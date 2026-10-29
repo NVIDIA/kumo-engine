@@ -40,6 +40,7 @@ class KumoModel(_pyfunc.PythonModel):
                     f"identity that reads it")):
             self._predictor = load_predictor(bundle)
         self._columns = list(context.model_config['columns'])
+        self._reader = context.model_config.get('assets_from')
         self._snapshots: Dict[str, GraphSnapshot] = {}
         self._default = context.model_config.get('snapshot')
         if self._default:
@@ -58,8 +59,13 @@ class KumoModel(_pyfunc.PythonModel):
                                        params)
 
     def _snapshot(self, uri: str) -> GraphSnapshot:
+        from kumo.engine._deps import reads
+
         if uri not in self._snapshots:
-            connector, path = snapshot_location(uri)
+            connector, path = ((self._reader, uri)
+                               if self._reader is not None
+                               and reads(self._reader, uri) else
+                               snapshot_location(uri))
             self._snapshots[uri] = GraphSnapshot.load_from_connector(
                 connector, path=path)
         return self._snapshots[uri]

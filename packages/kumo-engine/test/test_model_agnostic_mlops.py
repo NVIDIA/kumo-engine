@@ -473,6 +473,27 @@ def test_volume_assets_load_through_the_connector_the_loader_was_given(
     assert seen == [(volume, record.location)]
 
 
+def test_the_pyfunc_reads_a_volume_snapshot_through_assets_from(
+        monkeypatch):
+    from kumo.engine.graph import GraphSnapshot
+    from kumo.engine.integrations import _mlflow_model
+
+    volume = SimpleNamespace(sink_backend=SimpleNamespace(
+        holds_files=lambda connector, path: path.startswith('/Volumes/'),
+        filesystem=lambda connector, path: None))
+    loads = []
+    monkeypatch.setattr(GraphSnapshot, 'load_from_connector',
+                        lambda connector, *, path: loads.append(
+                            (connector, path)))
+    model = _mlflow_model.KumoModel()
+    model._snapshots, model._reader = {}, volume
+    model._snapshot('/Volumes/c/s/v/a/snapshots/g/version')
+    model._reader = None
+    model._snapshot('/Volumes/c/s/v/b/snapshots/g/version')
+    assert loads[0] == (volume, '/Volumes/c/s/v/a/snapshots/g/version')
+    assert loads[1][0] is not volume and loads[1][1] == 'version'
+
+
 def test_a_stage_root_registers_versions_that_serve_its_snapshot(tmp_path):
     from kumo.engine.trainer.trainer import _connector_registry, _publish
 
