@@ -109,3 +109,80 @@ def test_reload_comparison_measures_drift_and_rejects_unqualified_passes():
     for before, after in (([], []), ([[1.]], [[1., 2.]]), ([[1.]], [[np.inf]])):
         with pytest.raises(ValueError):
             compare(before, after, atol=1., rtol=1., qualify=True)
+
+
+@pytest.mark.parametrize('task', ['binary', 'multiclass', 'multilabel'])
+def test_reload_rejects_changed_labels_even_with_close_scores(task):
+    smoke = runner()
+    if task == 'binary':
+        before = pd.DataFrame({
+            'ENTITY': [10],
+            'False_PROB': [.5000001],
+            'True_PROB': [.4999999],
+            'TARGET_PRED': [False]
+        })
+        after = pd.DataFrame({
+            'ENTITY': [10],
+            'False_PROB': [.4999999],
+            'True_PROB': [.5000001],
+            'TARGET_PRED': [True]
+        })
+        classes = []
+    else:
+        scores = [.5, .5] if task == 'multiclass' else [.4999999, .5000001]
+        before = pd.DataFrame({
+            'ENTITY': [10, 10],
+            'CLASS': ['a', 'b'],
+            'SCORE':
+            scores,
+            'PREDICTED':
+            [True, False] if task == 'multiclass' else [False, True]
+        })
+        after = before.assign(
+            PREDICTED=[False, True] if task == 'multiclass' else [True, True],
+            SCORE=scores if task == 'multiclass' else [.5000001, .5000001])
+        classes = ['a', 'b']
+    before['ANCHOR_TIMESTAMP'] = after['ANCHOR_TIMESTAMP'] = '2025-01-01'
+    values = [
+        smoke.prediction_values(task, frame, [10], classes=classes,
+                                anchor='2025-01-01')
+        for frame in (before, after)
+    ]
+    decisions = [
+        smoke.prediction_decisions(task, frame, [10], classes=classes)
+        for frame in (before, after)
+    ]
+    options = dict(atol=1e-5, rtol=0., before_decisions=decisions[0],
+                   after_decisions=decisions[1])
+    assert smoke.compare_predictions(*values, qualify=True,
+                                     **options)['decisions_equal'] is False
+    with pytest.raises(ValueError, match='decisions'):
+        smoke.compare_predictions(*values, **options)
+
+
+@pytest.mark.parametrize('task',
+                         ['multilabel_ranking', 'static_link', 'temporal_link'])
+def test_reload_rejects_changed_ranks_even_with_identical_aligned_scores(task):
+    smoke = runner()
+    before = pd.DataFrame({
+        'ENTITY': [20, 20, 10, 10],
+        'CLASS': [1, 2, 1, 2],
+        'SCORE': [.6, .4, .7, .3],
+        'ANCHOR_TIMESTAMP': ['2025-01-01'] * 4
+    })
+    after = before.iloc[[1, 0, 2, 3]]
+    options = dict(classes=[1, 2], anchor='2025-01-01')
+    values = [
+        smoke.prediction_values(task, frame, [10, 20], **options)
+        for frame in (before, after)
+    ]
+    decisions = [
+        smoke.prediction_decisions(task, frame, [10, 20], classes=[1, 2])
+        for frame in (before, after)
+    ]
+    assert decisions[0].tolist() == [[0, 1], [0, 1]]
+    np.testing.assert_array_equal(values[0], values[1])
+    with pytest.raises(ValueError, match='decisions'):
+        smoke.compare_predictions(*values, atol=0., rtol=0.,
+                                  before_decisions=decisions[0],
+                                  after_decisions=decisions[1])

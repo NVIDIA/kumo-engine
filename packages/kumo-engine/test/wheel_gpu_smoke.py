@@ -149,7 +149,24 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
     return values
 
 
-def compare_predictions(before, after, *, atol, rtol, qualify=False):
+def prediction_decisions(task, frame, ids, *, classes=()):
+    """Retain labels and published ranks independently of numeric tolerance."""
+    if task in ('regression', 'forecasting'):
+        return None
+    if task == 'binary':
+        return frame.set_index('ENTITY').loc[ids, 'TARGET_PRED'].to_numpy()
+    column = 'PREDICTED'
+    if task not in ('multiclass', 'multilabel'):
+        column = 'RANK'
+        if column not in frame:
+            frame = frame.assign(
+                RANK=frame.groupby('ENTITY', sort=False).cumcount())
+    return frame.pivot(index='ENTITY', columns='CLASS',
+                       values=column).loc[ids, list(classes)].to_numpy()
+
+
+def compare_predictions(before, after, *, atol, rtol, qualify=False,
+                        before_decisions=None, after_decisions=None):
     """Measure numeric drift; qualification never supplies a normal CI pass."""
     import numpy as np
 
@@ -162,10 +179,13 @@ def compare_predictions(before, after, *, atol, rtol, qualify=False):
             'Reload comparison requires equal finite prediction shapes')
     difference = np.abs(left - right)
     result = dict(
+        decisions_equal=bool(np.array_equal(before_decisions, after_decisions)),
         max_abs_difference=float(difference.max()),
         max_relative_difference=float(
             (difference / np.maximum(np.abs(left), 1e-12)).max()),
         within_tolerance=bool(np.allclose(left, right, atol=atol, rtol=rtol)))
+    if not qualify and not result['decisions_equal']:
+        raise ValueError('Prediction decisions changed after repeat or reload')
     if not qualify and not result['within_tolerance']:
         raise ValueError(
             f'Prediction difference exceeds atol={atol}, rtol={rtol}: {result}')
@@ -548,38 +568,48 @@ def run_task(task, prepared, directory, args):
                     extra_fields=[MetadataField.ANCHOR_TIMESTAMP])
             frame = model.predict(table, snapshot=prepared['snapshot'],
                                   **options).frame
-            return prediction_values(task, frame, prepared['ids'],
-                                     classes=prepared['classes'],
-                                     anchor=prepared['anchor'],
-                                     time_column=time_column or 'TIMESTAMP')
+            values = prediction_values(task, frame, prepared['ids'],
+                                       classes=prepared['classes'],
+                                       anchor=prepared['anchor'],
+                                       time_column=time_column or 'TIMESTAMP')
+            decisions = prediction_decisions(task, frame, prepared['ids'],
+                                             classes=prepared['classes'])
+            return values, decisions
 
-        before = predict(trainer, 'predict')
-        repeated = predict(trainer, 'repeat')
+        before, before_decisions = predict(trainer, 'predict')
+        repeated, repeat_decisions = predict(trainer, 'repeat')
         repeat_delta = compare_predictions(before, repeated,
                                            atol=args.reload_atol,
                                            rtol=args.reload_rtol,
-                                           qualify=args.qualify)
+                                           qualify=args.qualify,
+                                           before_decisions=before_decisions,
+                                           after_decisions=repeat_decisions)
         del trainer
         gc.collect()
         restored = kumo.Trainer.load(saved, accelerator='gpu')
-        after = predict(restored, 'reload')
+        after, after_decisions = predict(restored, 'reload')
         reload_delta = compare_predictions(before, after, atol=args.reload_atol,
                                            rtol=args.reload_rtol,
-                                           qualify=args.qualify)
+                                           qualify=args.qualify,
+                                           before_decisions=before_decisions,
+                                           after_decisions=after_decisions)
     if (not state['reload_checks'] or not state['restored_tensors']
             or not all(state['prediction_batches'].values())):
         raise ValueError(
             'Reloaded state or completed CUDA prediction work is missing')
-    return dict(task=task, task_type=TASKS[task]['task_type'], seed=0,
-                status='MEASURED' if args.qualify else 'PASS',
-                entities=len(prepared['ids']), output_shape=list(before.shape),
-                optimizer_steps=state['optimizer_steps'],
-                selected_checkpoint_steps=steps,
-                training_batches=state['training_batches'],
-                prediction_batches=state['prediction_batches'],
-                checkpoint_sha256=state['checkpoint_sha256'],
-                restored_tensors=state['restored_tensors'], repeat=repeat_delta,
-                reload=reload_delta, seconds=time.monotonic() - started)
+    return dict(
+        task=task, task_type=TASKS[task]['task_type'], seed=0,
+        status='MEASURED' if args.qualify else 'PASS', metrics={
+            name: float(value) if math.isfinite(value) else None
+            for name, value in fitted.metrics.items()
+        }, entities=len(prepared['ids']), output_shape=list(before.shape),
+        optimizer_steps=state['optimizer_steps'],
+        selected_checkpoint_steps=steps,
+        training_batches=state['training_batches'],
+        prediction_batches=state['prediction_batches'],
+        checkpoint_sha256=state['checkpoint_sha256'],
+        restored_tensors=state['restored_tensors'], repeat=repeat_delta,
+        reload=reload_delta, seconds=time.monotonic() - started)
 
 
 def main():
