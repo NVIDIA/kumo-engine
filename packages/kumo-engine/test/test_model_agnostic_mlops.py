@@ -311,6 +311,9 @@ class _PrefixOnlyS3:
 
         return Writer()
 
+    def delete_file(self, path):
+        del self.objects[path]
+
 
 def test_an_asset_is_stored_on_s3_with_prefix_scoped_rights(
         tmp_path, monkeypatch):
