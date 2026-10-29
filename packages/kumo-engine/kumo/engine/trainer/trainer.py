@@ -402,14 +402,19 @@ def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
                  settings: Any) -> None:
     r"""Copy the bundle to ``<root>/models/<bundle id>/`` unless a complete
     copy is there."""
+    from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
     from kumo_core.object_store_sink import holds_bundle, upload_bundle
     from pyarrow.fs import FileSelector
 
     from kumo.engine.connector import file_store
+    from kumo.engine.trainer._spec import PROVENANCE_ROLE
 
     if manifest is None:
         return
     try:
+        if settings.locate(bundle_dir / PROVENANCE_FILE, ModelManifest,
+                           f'models/{manifest.id}') is not None:
+            add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
         filesystem, root = file_store(
             settings.root.connector,
             settings.root.location(f'models/{manifest.id}'))
