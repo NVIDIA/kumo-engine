@@ -374,3 +374,24 @@ def test_unity_catalog_search_results_with_tags_as_a_method():
             tags=held[version]))
     assert _registered_version(client, 'm', {'kumo_bundle_id': 'b'}) == '2'
     assert _registered_version(client, 'm', {'kumo_bundle_id': 'x'}) is None
+
+
+def test_kumo_calls_drop_mlflow_request_header_errors_only(caplog):
+    import logging
+
+    from kumo.engine.integrations._mlflow_target import resolve
+
+    headers = logging.getLogger('mlflow.tracking.request_header.registry')
+    message = ('Encountered unexpected error during resolving request '
+               'headers: %s')
+    headers.addHandler(caplog.handler)  # MLflow's loggers do not propagate
+    try:
+        with caplog.at_level('WARNING', logger=headers.name):
+            with resolve('sqlite:///x.db').scope():
+                headers.warning(message, 'inside')
+                headers.warning('another warning')
+            headers.warning(message, 'outside')
+    finally:
+        headers.removeHandler(caplog.handler)
+    assert 'inside' not in caplog.text
+    assert 'another warning' in caplog.text and 'outside' in caplog.text

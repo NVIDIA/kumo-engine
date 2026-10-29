@@ -14,6 +14,7 @@ credentials; a Databricks or SageMaker target still sets the process-wide
 tracking URI.
 """
 
+import logging
 import os
 import re
 import threading
@@ -26,6 +27,32 @@ from kumo.engine.connector._extras import import_provider
 SAGEMAKER_ARN = re.compile(r'arn:aws[a-z-]*:sagemaker:([^:]*):[^:]*:'
                            r'(mlflow-tracking-server|mlflow-app)/(.+)')
 _LOCK = threading.RLock()
+_HEADERS = logging.getLogger('mlflow.tracking.request_header.registry')
+_quiet = 0
+_QUIET_LOCK = threading.Lock()
+
+
+def _no_header_error(record: logging.LogRecord) -> bool:
+    # A request-header provider that fails off its platform; the call
+    # proceeds without those headers.
+    return not record.getMessage().startswith(
+        'Encountered unexpected error during resolving request headers')
+
+
+@contextmanager
+def _without_header_warnings() -> Iterator[None]:
+    global _quiet
+    with _QUIET_LOCK:
+        _quiet += 1
+        if _quiet == 1:
+            _HEADERS.addFilter(_no_header_error)
+    try:
+        yield
+    finally:
+        with _QUIET_LOCK:
+            _quiet -= 1
+            if not _quiet:
+                _HEADERS.removeFilter(_no_header_error)
 
 
 @dataclass(frozen=True)
@@ -94,11 +121,12 @@ class Target:
     @contextmanager
     def scope(self) -> Iterator[None]:
         r"""Runs the block with this target's credentials."""
-        if self._swap is None:
-            yield
-            return
-        with _LOCK, self._swap():
-            yield
+        with _without_header_warnings():
+            if self._swap is None:
+                yield
+            else:
+                with _LOCK, self._swap():
+                    yield
 
     def client(self) -> Any:
         mlflow = import_provider('mlflow', 'mlflow')
