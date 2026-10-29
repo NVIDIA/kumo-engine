@@ -54,6 +54,7 @@ After all eleven cases complete, collect their evidence into a new bundle. The c
 python -I packages/kumo-engine/scripts/weekly_check.py collect \
   --manifest "$MANIFEST" --manifest-sha256 "$MANIFEST_SHA256" \
   --mode reference --case-reports "$CASE_ROOT"/*/weekly-case.json \
+  --ancillary-reports "$ANCILLARY_REPORTS_JSON" \
   --output "$NEW_REFERENCE_BUNDLE"
 ```
 
@@ -61,7 +62,7 @@ Record the SHA-256 of the bundle's `manifest.json` outside the bundle. The bundl
 
 ## Bind the scheduled workflow
 
-The workflow uses existing registered runners and existing durable storage. Configure the repository variable `KUMO_ENGINE_WEEKLY_CONFIG` before a run. It contains `manifest_sha256`, `reference_sha256`, and `profiles.rtx` plus `profiles.scale`. Each profile supplies `runner` as a list of existing runner labels and absolute paths for `root`, `manifest`, `dependency_profile`, `reference_wheel`, `reference_root`, and `host_lock`. Reference creation can omit `reference_sha256` because that block does not exist yet.
+The workflow uses existing registered runners and existing durable storage. Configure the repository variable `KUMO_ENGINE_WEEKLY_CONFIG` before a run. It contains `manifest_sha256`, `reference_sha256`, and `profiles.rtx` plus `profiles.scale`. Each profile supplies `runner` as a list of existing runner labels and absolute paths for `root`, `manifest`, `dependency_profile`, `reference_wheel`, `reference_root`, and `host_lock`. Scale also requires exact P1 and B9 auxiliary runner and template bindings. Missing bindings fail before any fit. Reference creation can omit `reference_sha256` because that block does not exist yet.
 
 ```json
 {
@@ -84,7 +85,17 @@ The workflow uses existing registered runners and existing durable storage. Conf
       "dependency_profile": "/absolute/dependency-profile.json",
       "reference_wheel": "/absolute/kumo_engine-1.0.0.whl",
       "reference_root": "/absolute/approved-reference-bundle",
-      "host_lock": "/absolute/gpu-study.lock"
+      "host_lock": "/absolute/gpu-study.lock",
+      "auxiliary": {
+        "P1": {
+          "runner": {"path": "/absolute/P1/weekly_aux.py", "sha256": "<runner SHA-256>"},
+          "template": {"path": "/absolute/P1/manifest.json", "sha256": "<template SHA-256>"}
+        },
+        "B9": {
+          "runner": {"path": "/absolute/B9/weekly_aux.py", "sha256": "<runner SHA-256>"},
+          "template": {"path": "/absolute/B9/template.json", "sha256": "<template SHA-256>"}
+        }
+      }
     }
   }
 }
@@ -92,7 +103,11 @@ The workflow uses existing registered runners and existing durable storage. Conf
 
 Use the same pinned manifest and frozen inputs on both profiles. The selected paths must exist on their respective hosts. The GPU jobs require Python 3.12, enough admitted storage, and access to the declared public dependency packages. They create fresh isolated environments. They do not use the historical candidate readiness environment.
 
-Manual `reference` mode creates only the eleven approved reference fits. Scheduled runs use `candidate` mode. A manual candidate run can select a revision. The build receipt records its exact commit, tree, wheel, and wheel hash. The candidate mode checks a complete matching reference before installation and training. Each case retains the build receipt for the exact source commit, tree, and wheel. It runs ten cases on the RTX profile and one P2 case on Scale. Jobs preserve failures and upload raw evidence. The final job collects the complete block and compares matching cases.
+Both native shards verify their frozen inputs and auxiliary bindings before either shard can fit. The small `weekly_aux_bind.py` renderer copies the pinned template and changes only the selected mode, wheel, environment path, and same-hash dependency-profile path. It keeps the host lock and all frozen workload fields. B9 also freezes the completed P2 report, checkpoint, full saved-model file map, population, GPU class, and actual model helper. It rejects a changed frozen input. B9 native admission must match all eight P2 identities, its full prediction population, hardware profile, and prediction batch size. This prevents a small-fixture receipt from admitting the full P2 route.
+
+Manual `reference` mode creates only the eleven approved reference fits. Scheduled runs use `candidate` mode. A manual candidate run can select a revision. The build receipt records its exact commit, tree, wheel, and wheel hash. The candidate mode checks a complete matching reference before installation and training. Each case retains the build receipt for the exact source commit, tree, and wheel. It runs ten cases on the RTX profile. Scale runs exactly five P1 CPU sampling operations, the one P2 fit, and fresh prediction from its saved model on one then two matching GPUs. P1 adds no prewarm or cache-drop operation. Its `no_drop_uncontrolled` policy leaves cache state unqualified. The old profile's prewarm text remains historical context.
+
+Jobs preserve failures, binding receipts, and raw evidence. Collection receives both auxiliary records. Missing or invalid P1/B9 evidence keeps `weekly_milestone_complete` false and fails the workflow. A later candidate run still needs native end-to-end validation. The current Q15 reference keeps its exact eight identities, including harness source. A later replay-helper change needs a reviewed same-fit compatibility repair or a missing-compatible-reference report. It does not permit another fit or an identity waiver.
 
 The scheduled time is Sunday at 00:30 UTC. Change that schedule only as part of a reviewed configuration change. Runs do not cancel an earlier weekly run. Host locks still control actual GPU use. Missing runner bindings, storage, capacity, source, or reference evidence must fail explicitly. This change does not register runners or create another service.
 
@@ -102,6 +117,6 @@ This implementation depends on the existing shared PR workers and committed `nig
 
 Keep the PR draft until the concrete frozen adapters and access bindings are reviewed. The first reference execution and a later candidate comparison are separate runs. Do not claim that the candidate route passed end to end until it actually runs. Do not launch an extra candidate block merely to validate the first reference task.
 
-B6 reuses each fitted model for repeated, partial, and reloaded predictions. P1 adds five CPU sampling operations and no model fits. B9 needs fresh prediction from retained models on two matching GPUs. The one-GPU weekly host alone cannot prove B9. This primary runner does not implement those separate P1 or two-GPU B9 operations. The collected block and comparison explicitly mark P1 and B9 missing. The final workflow job fails after it preserves primary evidence. Keep that gate until both routes are wired and verified. Record their actual status separately before claiming the complete first-weekly behavior coverage.
+B6 reuses each fitted model for repeated, partial, and reloaded predictions. P1 adds five CPU sampling operations and no model fits. B9 needs fresh prediction from retained models on two matching GPUs. The one-GPU weekly host alone cannot prove B9. The local `weekly_aux.py` route supports both checks and rejects training and batch retries. The local workflow now wires both routes. Their native execution and the full workflow still need validation. The collector pins raw evidence and binds B9 to the exact retained primary checkpoint, population, wheel, and GPU class. Missing receipts keep `weekly_milestone_complete` false.
 
 Training variation, four additional P2 repetitions, deliberate faults, new numerical gates, and broader release qualification remain deferred. The training-stage target is under one hour. The comparison reports that target as unproved when exact training-stage timestamps are absent. When all timestamps exist, it reports the span from the first actual fit start to the last actual fit end. That conservative span keeps any gaps visible. Measure the training critical path separately from data preparation, builds, installation, transport, queues, scoring, and reporting. Keep the complete workflow elapsed time visible too.

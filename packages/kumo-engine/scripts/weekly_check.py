@@ -585,16 +585,70 @@ def load_case(path, spec, mode, manifest):
     return report
 
 
-def milestone_coverage():
-    return dict(primary_block_complete=True, weekly_milestone_complete=False,
-                ancillary_checks=dict(
-                    B6=dict(status='MEASURED_FROM_PRIMARY_MODELS', physical_fits=0, models=11),
-                    P1=dict(status='MISSING', physical_fits=0, required_cpu_operations=5),
-                    B9=dict(status='MISSING', physical_fits=0, required_matching_gpus=2)),
-                remaining_coverage='Bind and verify P1 and B9 workers before claiming the complete weekly milestone')
+def fitted_identities(reports):
+    return {
+        report['result']['fit_id']:
+        dict(
+            checkpoint_sha256=report['result']
+            ['expected_reload_checkpoint_sha256'],
+            population=report['case_spec'].get('population'),
+            gpu=report['device']['gpu'],
+            workload=report['case_spec']['workload'])
+        for report in reports.values()
+    }
 
 
-def collect(manifest, paths, output, mode):
+def milestone_coverage(records=None, fits=None, wheel=None):
+    remaining = 'Bind and verify P1 and B9 evidence'
+    coverage = dict(
+        primary_block_complete=True, weekly_milestone_complete=False,
+        ancillary_checks=dict(
+            B6=dict(status='MEASURED_FROM_PRIMARY_MODELS', physical_fits=0,
+                    models=11), P1=dict(status='MISSING', physical_fits=0,
+                                        required_cpu_operations=5),
+            B9=dict(status='MISSING', physical_fits=0,
+                    required_matching_gpus=2)), remaining_coverage=remaining)
+    if not records:
+        return coverage
+    if set(records) - {'P1', 'B9'}:
+        raise ValueError('Unknown ancillary check')
+    auxiliary = runpy.run_path(str(Path(__file__).with_name('weekly_aux.py')))
+    for check, record in records.items():
+        path = pinned(record['path'], record['sha256'])
+        row = read(path)
+        spec = read(path.parent / 'input-manifest.json')
+        if (spec.get('check') != check or row.get('check') != check
+                or (spec.get('wheel', {}).get('version'), spec.get(
+                    'wheel', {}).get('sha256')) != wheel):
+            raise ValueError(
+                'Ancillary source wheel or declared check differs from the primary block'
+            )
+        auxiliary['load_evidence'](path.parent, spec, row['manifest_sha256'])
+        if check == 'P1' and spec.get('dataset') != 'commerce/100M':
+            raise ValueError('P1 requires the full commerce/100M graph')
+        if check == 'B9':
+            retained = (fits or {}).get(row.get('retained_fit_id'))
+            if (not retained or retained['workload'] != 'P2'
+                    or retained['checkpoint_sha256']
+                    != spec.get('checkpoint_sha256')
+                    or retained['population'] != spec.get('population')
+                    or retained['gpu'] != spec.get('gpu_name')):
+                raise ValueError(
+                    'B9 does not reuse the exact retained primary model and inputs'
+                )
+        coverage['ancillary_checks'][check] = dict(
+            status='MEASURED', physical_fits=0,
+            manifest_sha256=row['manifest_sha256'],
+            result_sha256=record['sha256'])
+    coverage['weekly_milestone_complete'] = all(
+        coverage['ancillary_checks'][check]['status'] == 'MEASURED'
+        for check in ('P1', 'B9'))
+    if coverage['weekly_milestone_complete']:
+        coverage['remaining_coverage'] = None
+    return coverage
+
+
+def collect(manifest, paths, output, mode, ancillary_records=None):
     if len(paths) != 11:
         raise ValueError('All eleven completed weekly cases are required')
     specs = {spec['id']: spec for spec in manifest['cases']}
@@ -615,14 +669,24 @@ def collect(manifest, paths, output, mode):
             'The weekly block mixes wheels or uses the wrong reference')
     if len({row['result']['fit_id'] for row in reports.values()}) != 11:
         raise ValueError('The weekly block repeats fitted model identities')
+    version, wheel = next(iter(wheels))
+    coverage = milestone_coverage(ancillary_records, fitted_identities(reports),
+                                  (version, wheel))
     output.mkdir(parents=True, exist_ok=False)
     for path in paths:
         shutil.copytree(path.parent, output / 'cases' / read(path)['case_id'])
-    version, wheel = next(iter(wheels))
+    portable_auxiliary = {}
+    for check, record in (ancillary_records or {}).items():
+        source = Path(record['path'])
+        shutil.copytree(source.parent, output / 'ancillary' / check)
+        portable_auxiliary[check] = dict(
+            path=f'ancillary/{check}/auxiliary-result.json',
+            sha256=record['sha256'])
     bundle = dict(schema=1, mode=mode, status='MEASURED', version=version,
                   wheel_sha256=wheel, reference=manifest['reference'],
                   performance_reference=manifest['performance_reference'],
-                  physical_fits=11, **milestone_coverage(), cases=list(reports),
+                  physical_fits=11, **coverage,
+                  ancillary_reports=portable_auxiliary, cases=list(reports),
                   case_specs=manifest['cases'], input_manifest=manifest,
                   files=inventory(output))
     save(output / 'manifest.json', bundle)
@@ -643,9 +707,23 @@ def load_bundle(root, expected):
     specs = {spec['id']: spec for spec in value['case_specs']}
     if set(specs) != set(value['cases']):
         raise ValueError('The weekly bundle has mismatched case identities')
+    reports = {}
     for name in value['cases']:
-        load_case(root / 'cases' / name / 'weekly-case.json', specs[name],
-                  value['mode'], value['input_manifest'])
+        reports[name] = load_case(root / 'cases' / name / 'weekly-case.json',
+                                  specs[name], value['mode'],
+                                  value['input_manifest'])
+    auxiliary = {}
+    for check, record in value.get('ancillary_reports', {}).items():
+        relative = Path(record['path'])
+        if relative.is_absolute() or '..' in relative.parts:
+            raise ValueError('Ancillary evidence must stay inside the bundle')
+        auxiliary[check] = dict(path=str(root / relative),
+                                sha256=record['sha256'])
+    coverage = milestone_coverage(auxiliary, fitted_identities(reports),
+                                  (value['version'], value['wheel_sha256']))
+    if any(value.get(key) != item for key, item in coverage.items()):
+        raise ValueError(
+            'Ancillary completion differs from its actual bound evidence')
     return value
 
 
@@ -734,7 +812,13 @@ def compare(manifest, candidate, candidate_sha256, reference, reference_sha256,
     timing_scope = ('Elapsed time from first actual fit start to last '
                     'actual fit end, including gaps')
     report = dict(
-        schema=1, status='MEASURED', cases=rows, **milestone_coverage(), quality_policy='report_only',
+        schema=1, status='MEASURED', cases=rows, primary_block_complete=True,
+        weekly_milestone_complete=(baseline['weekly_milestone_complete']
+                                   and current['weekly_milestone_complete']),
+        ancillary_checks=current['ancillary_checks'],
+        reference_ancillary_checks=baseline['ancillary_checks'],
+        remaining_coverage=current['remaining_coverage']
+        or baseline['remaining_coverage'], quality_policy='report_only',
         resource_policy='report_only', reference_physical_fits=11,
         candidate_physical_fits=11,
         performance_reference=manifest['performance_reference'],
@@ -742,8 +826,7 @@ def compare(manifest, candidate, candidate_sha256, reference, reference_sha256,
         performance_reason=performance_reason,
         candidate_comparison_executed=True,
         training_critical_path_seconds=training_seconds,
-        training_critical_path_scope=timing_scope,
-        training_target_seconds=3600,
+        training_critical_path_scope=timing_scope, training_target_seconds=3600,
         training_target_met=(training_seconds < 3600
                              if training_seconds is not None else None))
     output.mkdir(parents=True, exist_ok=False)
@@ -774,6 +857,7 @@ def main():
                 command_parser.add_argument('--' + name, type=Path,
                                             required=True)
         if command == 'collect':
+            command_parser.add_argument('--ancillary-reports', type=Path)
             command_parser.add_argument('--case-reports', nargs='+', type=Path,
                                         required=True)
         if command == 'verify-reference':
@@ -799,7 +883,9 @@ def main():
             raise ValueError('Unknown weekly case')
         run(args, value)
     elif args.command == 'collect':
-        collect(value, args.case_reports, args.output, args.mode)
+        collect(
+            value, args.case_reports, args.output, args.mode,
+            read(args.ancillary_reports) if args.ancillary_reports else None)
     else:
         compare(value, args.candidate, args.candidate_sha256, args.reference,
                 args.reference_sha256, args.output)
