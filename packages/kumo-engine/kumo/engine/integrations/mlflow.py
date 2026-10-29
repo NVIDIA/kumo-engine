@@ -369,9 +369,6 @@ class MlflowTracking:
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
         self._log_samples()
-        if record.tags.get('kumo.kind') != 'fit':  # a fit logs Datasets
-            with self.target.scope():
-                _log_inputs(self._mlflow, client, self._parent, record.inputs)
 
     @contextmanager
     def sample_system_metrics(self) -> Iterator[None]:

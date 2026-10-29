@@ -464,6 +464,7 @@ def test_failed_export_still_writes_and_tracks_the_run(graph, classifier,
 def test_tracking_records_the_run_and_never_changes_it(graph, classifier,
                                                        tmp_path, caplog):
     from kumo.engine._tracking import prediction_record
+    from kumo.engine.trainer._run_manifest import _scoring_summaries
 
     _, snapshot = graph
     trainer, table = classifier
@@ -482,6 +483,11 @@ def test_tracking_records_the_run_and_never_changes_it(graph, classifier,
 
     for result in (tracked, failed):
         pd.testing.assert_frame_equal(result.frame, untracked.frame)
-    assert recorder.records == [
-        prediction_record(tracked.manifest, model=trainer.result)]
+    settings = kumo.MLOps(artifact_root=str(tmp_path / 'root'),
+                          tracking=recorder, store=set())
+    assert recorder.records == [prediction_record(
+        tracked.manifest, model=trainer.result,
+        summaries=_scoring_summaries(tracked.manifest, settings, snapshot))]
+    assert any(summary.name == 'graph/tables'
+               for summary in recorder.records[0].summaries)
     assert 'tracker down' in caplog.text

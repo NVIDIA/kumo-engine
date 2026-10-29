@@ -19,6 +19,7 @@ from typing import (
     Tuple,
 )
 
+from kumo_core.summaries import Summary
 from kumo_core.types import TaskType
 from kumoapi.jobs import WriteMode
 
@@ -61,11 +62,12 @@ def start(*, result: Any, trainer: Any, snapshot: Any, prediction_table: Any,
 
 
 def finish(result: Any, manifest: Optional[PredictionManifest],
-           output_config: Any, settings: Any, model: Any = None) -> None:
+           output_config: Any, settings: Any, model: Any = None,
+           snapshot: Any = None) -> None:
     r"""Export to ``output_config``, record the run (with the outputs
     written, even if the export fails), store it in the artifact root and
-    track it as a run of ``model``, a `TrainingResult`; a storing or
-    tracking failure raises last under ``on_error='raise'``."""
+    track it as a run of ``model``, a `TrainingResult`, on ``snapshot``; a
+    storing or tracking failure raises last under ``on_error='raise'``."""
     from kumo.engine._mlops import raise_on_error
     from kumo.engine._tracking import track_prediction
 
@@ -96,13 +98,33 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
                     manifest = store(result, manifest, settings)
                 except Exception as failure:
                     unstored = failure
-            untracked = track_prediction(manifest, settings.tracking,
-                                         error or unstored, model)
+            untracked = track_prediction(
+                manifest, settings.tracking, error or unstored, model,
+                _scoring_summaries(manifest, settings, snapshot))
     untracked = unstored or untracked
     if untracked is not None:
         raise_on_error(settings, untracked,
                        f'Trainer.predict (run {result.id}, outputs written)',
                        stacklevel=4)
+
+
+def _scoring_summaries(manifest: Optional[PredictionManifest], settings: Any,
+                       snapshot: Any) -> List[Summary]:
+    r"""The scoring snapshot's graph summaries, and the run's artifacts'
+    tags and datasets."""
+    from kumo.engine._data_summaries import snapshot_summaries, table_details
+    from kumo.engine._manifest import artifact_summaries
+
+    if manifest is None:
+        return []
+    index = getattr(snapshot, 'index_path', None)
+    return [
+        *([] if index is None else snapshot_summaries(
+            Path(index), snapshot.graph_config)),
+        *artifact_summaries(manifest, 'scoring', settings,
+                            None if index is None else table_details(
+                                Path(index))),
+    ]
 
 
 def store(result: Any, manifest: Optional[PredictionManifest],

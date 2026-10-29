@@ -235,7 +235,8 @@ def trial_spec(events: Sequence[Event]) -> RunSpec:
 
 def prediction_record(manifest: 'PredictionManifest',
                       error: Optional[BaseException] = None,
-                      model: Any = None) -> RunRecord:
+                      model: Any = None,
+                      summaries: Sequence['Summary'] = ()) -> RunRecord:
     r"""A prediction run's record, from its manifest: scoring options as
     params, row counts and score summaries (with drift against the holdout
     of ``model``, the `TrainingResult` that scored), the scoring
@@ -270,8 +271,8 @@ def prediction_record(manifest: 'PredictionManifest',
                            default=str)
             },
             inputs=fit_inputs(manifest),
-            summaries=_prediction_summaries(manifest,
-                                            holdout_counts(model_manifest)),
+            summaries=(*_prediction_summaries(
+                manifest, holdout_counts(model_manifest)), *summaries),
             error=None if error is None else format_error(error),
             description=_unlabelled(getattr(model_manifest, 'tracking',
                                             None)),
@@ -387,16 +388,17 @@ def record_failure(record: RunRecord) -> Optional[Exception]:
 def track_prediction(
         manifest: Optional['PredictionManifest'], tracking: Any,
         error: Optional[BaseException] = None,
-        model: Any = None) -> Optional[Exception]:
+        model: Any = None,
+        summaries: Sequence['Summary'] = ()) -> Optional[Exception]:
     r"""Record a prediction run of ``model`` in ``tracking``, failed if
-    ``error`` ended it; returns the tracking failure instead of raising
-    it."""
+    ``error`` ended it, with ``summaries`` besides its scores'; returns the
+    tracking failure instead of raising it."""
     if getattr(tracking, 'log_prediction_run', None) is None:
         return None
     try:
         if manifest is None:
             raise ValueError('the run has no prediction manifest')
-        record = prediction_record(manifest, error, model)
+        record = prediction_record(manifest, error, model, summaries)
     except Exception as failure:
         logger.warning('Experiment tracking failed: %s; the prediction run '
                        'is not tracked', full_error(failure), exc_info=_debug())
