@@ -151,3 +151,23 @@ def test_epoch_event_without_recorded_metrics_does_not_raise(tmp_path):
     logger.on_train_epoch_end(None, None)
 
     assert received == []
+
+
+def test_a_snapshot_reports_progress_events(graph, tmp_path):
+    previous = get_scratch_dir()
+    kumo.configure(scratch_dir=tmp_path / 'scratch')
+    try:
+        events, again = [], []
+        snapshot = graph.snapshot(callbacks=[events.append])
+        graph.snapshot(callbacks=[again.append])
+    finally:
+        kumo.configure(scratch_dir=previous)
+
+    assert [event.name for event in events] == [
+        'snapshot_started', 'table_staged', 'table_staged', 'snapshot_ended']
+    assert [event.params['table'] for event in events[1:3]] == [
+        'users', 'events']
+    assert events[-1].params['snapshot_id'] == snapshot.id
+    assert events[-1].params['reused'] is False
+    assert again[-1].params['reused'] is True
+    assert all(event.params['seconds'] >= 0 for event in events)

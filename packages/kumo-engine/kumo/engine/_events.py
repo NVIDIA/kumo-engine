@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Progress events reported by `Trainer.fit`."""
+r"""Progress events reported by `Trainer.fit` and `Graph.snapshot`."""
 
 import hashlib
 import logging
@@ -24,7 +24,8 @@ from kumo_core.instrumentation import NoOpTrainingInstrumentation
 logger = logging.getLogger(__name__)
 
 EventName = Literal['fit_started', 'trial_started', 'epoch_ended',
-                    'trial_ended', 'fit_ended']
+                    'trial_ended', 'fit_ended', 'snapshot_started',
+                    'table_staged', 'snapshot_ended']
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ class EventEmitter(NoOpTrainingInstrumentation):
             except Exception:
                 logger.warning(
                     'Progress callback %r failed; it is disabled for the '
-                    'rest of this fit', callback, exc_info=True)
+                    'rest of this call', callback, exc_info=True)
                 self._callbacks.remove(callback)
 
     def event(self, name: str, **fields: Any) -> None:
