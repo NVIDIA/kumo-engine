@@ -36,19 +36,24 @@ Each Task runs its job synchronously with the statement
 
 ## Before running
 
-1. Make `kumo-engine[snowflake]` and its dependency wheels installable in the
-   job container (package index via an external access integration, or a
-   custom image).
-2. Create the GPU compute pool `<compute_pool>` and the stage `<stage>`. The
-   artifact root must outlive the job container: an `s3://` or `gs://` URI
-   the external access integration reaches.
+1. Make the kumo-engine wheel installable in the job container: a URL the
+   external access integration reaches (or a private package index). Name it
+   with a direct reference, `kumo-engine[snowflake] @ <wheel URL>`: a bare
+   `kumo-engine[snowflake]` resolves to PyPI's kumo-engine 1.0.0, which
+   predates the MLOps API.
+2. Create the GPU compute pool `<compute_pool>`, the stage `<stage>` for the
+   job payloads, and a named internal stage for the artifact root, as for
+   any Snowflake artifact root: `CREATE STAGE <db>.<schema>.<root stage>
+   ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')`. An `s3://` or `gs://` root also
+   works if the external access integration reaches it.
 3. Run:
    ```bash
    python examples/mlops/snowflake/register_jobs.py --connection <connection> \
      --compute-pool <compute_pool> --stage <stage> --database <database> \
      --schema <schema> --warehouse <warehouse> \
-     --artifact-root s3://<bucket>/kumo/ \
-     --requirement 'kumo-engine[snowflake]' --external-access-integration <eai>
+     --artifact-root @<db>.<schema>.<root stage>/kumo \
+     --requirement 'kumo-engine[snowflake] @ <wheel URL>' \
+     --external-access-integration <eai>
    ```
    `--model-name` (default `USERS_CHURN`), `--predictions-table` (default
    `USERS_CHURN_PREDICTIONS`) and `--table-prefix` (prefix of `USERS`,
