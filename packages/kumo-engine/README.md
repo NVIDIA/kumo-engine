@@ -85,7 +85,8 @@ snapshot = graph.snapshot()
 pquery = PredictiveQuery(
     graph, "PREDICT COUNT(orders.*, 0, 30, days) > 0 FOR EACH users.user_id")
 trainer = Trainer(pquery.suggest_model_plan(snapshot))
-trainer.fit(pquery.generate_training_table(snapshot), snapshot=snapshot)
+training_result = trainer.fit(pquery.generate_training_table(snapshot),
+                              snapshot=snapshot)
 
 result = trainer.predict(pquery.generate_prediction_table(snapshot),
                          snapshot=snapshot, binary_classification_threshold=0.5)
@@ -99,6 +100,24 @@ To use your own data, point `FileConnector` at a directory of CSV or Parquet fil
 `generate_prediction_table(snapshot)` predicts as of the latest `order_time` in the snapshot, so the 30 days start there. To predict from another time, pass `prediction_time=` a timezone-naive `datetime`, read as UTC.
 
 `graph.snapshot()` ingests the tables into an on-disk graph index under the scratch directory, which also holds training runs, model bundles, and predictions. It defaults to `~/.cache/kumo-engine`; to put it on a large local disk, call `kumo.engine.configure(scratch_dir=...)` first.
+
+## Training explanations
+
+`training_result.explanations` reads existing training gradient scores, column
+cohorts, and sampled graphs. For example, after checking availability:
+
+```python
+explanations = training_result.explanations
+if explanations.availability["gradient"].available:
+    print(explanations.gradient_scores().to_pandas())
+    figure, axis = explanations.plot_gradient(top_k=20)
+    figure.savefig("training-importance.png", bbox_inches="tight")
+```
+
+Retain the training run separately from its published model bundle. See the
+[training explanation guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/explainability.md)
+for reopening a run, choosing cohort classes, loading sampled graphs, and
+interpreting availability and scores.
 
 ## Documentation
 
