@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import multiprocessing as mp
 import os
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import reduce
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -50,6 +52,9 @@ if TYPE_CHECKING:
     from .embedding_models import EmbeddingModelStore
 
 logger = logging.getLogger(__name__)
+
+COUNTS_FILE = '_prediction_counts.json'
+COUNTS_DIR = '_prediction_counts'
 
 
 @dataclass(frozen=True)
@@ -516,6 +521,7 @@ class _PredictionWorkerConfig(NamedTuple):
     embedding_models: Optional[EmbeddingModelStore] = None
     ignore_time_col: bool = False
     accelerator: str = 'auto'
+    count_edges: Optional[Dict[str, Tuple[float, ...]]] = None
 
 
 def _score_prediction_shard(
@@ -562,8 +568,11 @@ def _score_prediction_shard(
     )
     if config.forecast_options is not None:
         _validate_forecast_checkpoint(trainer, task)
+    from kumo_core.score_counts import Counts
     from kumo_core.train.artifact_stats import PredictionArtifactStatsCollector
     shard_attempt = f'{config.attempt_id}-{worker_id}'
+    counts = (None if config.count_edges is None else Counts(
+        dict(config.count_edges)))
     generation = (Path(config.output_dir) / '_attempts' /
                   f'runtime-{worker_id:05d}' / shard_attempt)
     collector = PredictionArtifactStatsCollector(
@@ -589,7 +598,12 @@ def _score_prediction_shard(
         runtime_worker_id=worker_id,
         task_manifest=manifest,
         binary_labels=config.binary_threshold is not None,
+        prediction_counts=counts,
     )
+    if counts is not None:
+        path = Path(config.output_dir) / COUNTS_DIR / f'{shard_attempt}.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(counts.to_dict()))
     return _publish_scored_shard(
         collector, output_dir=config.output_dir, run_id=config.run_id,
         attempt_id=shard_attempt, graph_snapshot_id=config.graph_snapshot_id,
@@ -617,13 +631,16 @@ def score_prediction(
     embedding_models: EmbeddingModelStore | None = None,
     encoders: Any = None,
     accelerator: str = 'auto',
+    count_edges: Mapping[str, Tuple[float, ...]] | None = None,
 ) -> Any:
     """Score partitions and publish bounded metadata using the hosted protocol.
 
     Rows stay in producer Parquet files. Workers return only small immutable
     manifest references; selection publishes after every scorer succeeds.
     ``encoders`` are the model's, if the caller already loaded them; only an
-    in-process scorer reuses them.
+    in-process scorer reuses them. With ``count_edges``, the bins of a
+    `Counts`, every scorer counts its scores and their sum is written to
+    ``COUNTS_FILE`` in the output directory.
     """
     from .prediction_options import validate_prediction_workers
     validate_prediction_workers(num_workers)
@@ -690,6 +707,7 @@ def score_prediction(
                           if forecast_options is not None else None),
         embedding_models=embedding_models,
         accelerator=accelerator,
+        count_edges=None if count_edges is None else dict(count_edges),
     )
     if worker_count == 1:
         references = [
@@ -704,12 +722,28 @@ def score_prediction(
         references = _run_prediction_workers(worker_count,
                                              _score_prediction_shard,
                                              {'config': config})
+    if count_edges is not None:
+        _merge_counts(prediction_dir, attempt_id, worker_count)
     return publish_prediction_selection(
         references, job_id=run_id, selection_id=run_id,
         selection_attempt_id=attempt_id, canonical_output_root=output_dir,
         graph_snapshot_id=graph_snapshot_id,
         source_config_sha256=source_config_sha256, expected_shards=worker_count,
         expected_output_partitions=worker_count)
+
+
+def _merge_counts(prediction_dir: Path, attempt_id: str,
+                  worker_count: int) -> None:
+    from kumo_core.score_counts import Counts
+
+    parts = [
+        prediction_dir / COUNTS_DIR / f'{attempt_id}-{worker_id}.json'
+        for worker_id in range(worker_count)
+    ]
+    total = reduce(Counts.merge,
+                   (Counts.from_dict(json.loads(part.read_text()))
+                    for part in parts))
+    (prediction_dir / COUNTS_FILE).write_text(json.dumps(total.to_dict()))
 
 
 def _publish_scored_shard(

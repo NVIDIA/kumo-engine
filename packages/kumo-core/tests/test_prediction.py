@@ -6,6 +6,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import kumo_core.prediction as prediction
+import numpy as np
 import pytest
 import torch
 from kumo_core.pquery import (
@@ -726,3 +727,69 @@ def test_in_process_scoring_parses_the_task_manifest_once(
     assert len(loaded) == 1
     assert predicts[0]['task_manifest'] is loaded[0]
     assert loads[0]['encoders'] is encoders
+
+
+@pytest.mark.parametrize('count', [False, True])
+def test_every_scorer_counts_its_scores_into_one_file(
+        monkeypatch, tmp_path, count):
+    import json
+
+    from kumo_core.prediction_counts import count_predictions
+    from kumo_core.resolved_task import ResolvedNumericalTask
+    from kumo_core.score_counts import Counts
+    from kumo_core.task_dataset import DiskgraphTaskManifest
+    from kumo_core.train import artifact_manifest
+    from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
+    from kumo_core.types import PredictionArtifactType
+
+    values = np.random.default_rng(0).normal(size=90)
+    edges = (-1.0, 0.0, 1.0)
+
+    def predict(**options):
+        assert (options['prediction_counts'] is not None) == count
+        if count:
+            count_predictions(
+                options['prediction_counts'], TaskType.REGRESSION, prob=None,
+                pred=None, target_pred=values[options['partition_id']::3],
+                columns=[])
+
+    monkeypatch.setattr(
+        DiskgraphTaskManifest, 'load', lambda _: SimpleNamespace(
+            task_type='regression', stage_counts={'predict': 90}))
+    monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
+                        lambda *_, **__: None)
+    monkeypatch.setattr(DiskgraphNestedTrainer, 'load',
+                        lambda *_, **__: SimpleNamespace(predict=predict))
+    monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
+                        lambda *_: None)
+    monkeypatch.setattr(artifact_manifest, 'hash_prediction_config',
+                        lambda _: 'runtime-hash')
+    monkeypatch.setattr(artifact_manifest, 'publish_prediction_selection',
+                        lambda references, **kwargs: references)
+    monkeypatch.setattr(prediction, '_publish_scored_shard',
+                        lambda *_, **__: None)
+    monkeypatch.setattr(prediction, '_prediction_worker_devices',
+                        lambda n, accelerator=None: (None, ) * n)
+    monkeypatch.setattr(
+        prediction, '_run_prediction_workers',
+        lambda n, fn, kw: [fn(worker_id=i, **kw) for i in range(n)])
+
+    prediction.score_prediction(
+        materialized=SimpleNamespace(manifest_path='manifest',
+                                     bundle_dir='bundle'),
+        model_dir=str(tmp_path), run_id='prediction',
+        scratch_dir=str(tmp_path),
+        artifacts=frozenset({PredictionArtifactType.PREDICTIONS}),
+        num_workers=3, output_dir=str(tmp_path / 'out'),
+        graph_snapshot_id='snapshot', source_config_sha256='source',
+        count_edges={'target': edges} if count else None)
+
+    path = tmp_path / 'out' / prediction.COUNTS_FILE
+    assert path.exists() == count
+    if count:
+        counts = Counts.from_dict(json.loads(path.read_text()))
+        assert counts.arrays['TARGET_PRED'].tolist() == [
+            np.sum(values < -1), np.sum((-1 <= values) & (values < 0)),
+            np.sum((0 <= values) & (values < 1)), np.sum(values >= 1)]
+        assert counts.arrays['TARGET_PRED/sum'] == pytest.approx(values.sum())
+        assert counts.extents['TARGET_PRED'] == (values.min(), values.max())
