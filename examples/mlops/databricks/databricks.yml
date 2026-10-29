@@ -54,6 +54,9 @@ variables:
   on_error:
     description: raise fails a job whose tracking or registration fails; warn lets it succeed
     default: raise
+  query:
+    description: predictive query kumo_train fits; a 30-day window needs about 6 months of orders
+    default: PREDICT COUNT(orders.*, 0, 7, days) > 0 FOR EACH users.USER_ID
   alias:
     description: alias kumo_train moves to its new version; promote it to score_alias yourself
     default: candidate
@@ -110,6 +113,8 @@ resources:
               - ${var.on_error}
               - --alias
               - ${var.alias}
+              - --query
+              - ${var.query}
               - --scratch-dir
               - /local_disk0/kumo
 
