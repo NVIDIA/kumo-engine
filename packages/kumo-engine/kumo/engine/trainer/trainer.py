@@ -376,6 +376,7 @@ def _store_and_register(
     registered, error = (None, None) if session is None else session.log_model(
         bundle_dir, manifest, snapshot,
         None if stored else _mlflow_registry(settings))
+    registered = _with_metrics(registered, metrics)
     error = stored or error
     registry = None if stored else _connector_registry(settings)
     if registry is None:
@@ -470,11 +471,21 @@ def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
                          'not set.')
     register = getattr(settings.tracking, 'register', None)
     if callable(register):
-        return register(result, settings.registry)
+        return cast(PublishedModel, _with_metrics(
+            register(result, settings.registry), result.metrics))
     registry = cast(ModelOutputConfig, _connector_registry(settings))
     _require_publisher(registry)
     return _publish(result.bundle_dir, result.bundle_id, result.metrics,
                     registry)
+
+
+def _with_metrics(model: Optional[PublishedModel],
+                  metrics: Mapping[str, float]) -> Optional[PublishedModel]:
+    r"""``model`` with the fit's metrics, where its registry returned none
+    (an MLflow version, unlike a Snowflake one, carries none)."""
+    if model is None or model.metrics:
+        return model
+    return replace(model, metrics=dict(metrics))
 
 
 def _mlflow_registry(settings: Any) -> Optional[ModelRegistryLocation]:
