@@ -76,6 +76,10 @@ EVENTS = [
     _event('fit_ended', metrics={'val_mae': 0.3, 'test_mae': 0.32,
                                  'seconds': 9.0}, status='succeeded'),
 ]
+# The fit run's own series: the best val_mae after each trial that
+# succeeded and, once the fit succeeds, the selected trial 2's epochs.
+SEARCH = {'search/best_val_mae': ((1, 0.35), (2, 0.3))}
+SELECTED = {'train_loss': ((1, 0.6), (2, 0.4)), 'val_mae': ((1, 0.5), (2, 0.3))}
 BUNDLE = 'b' * 64
 RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
                          id=BUNDLE, bundle_dir=Path('no-bundle'))
@@ -100,6 +104,10 @@ class _Recorder:
         if self.tracker is not None:
             self.tracker.on_trial(record, event)
 
+    def log_metrics(self, metrics, step):
+        self.calls.append(('log_metrics', (metrics, step)))
+        getattr(self.tracker, 'log_metrics', lambda *_: None)(metrics, step)
+
     def finish(self, record, error):
         self.calls.append(('finish', record))
         if self.tracker is not None:
@@ -112,13 +120,13 @@ def join_tracking_threads():
             thread.join(30)
 
 
-def replay(tracker=None, events=EVENTS, result=RESULT,
-           error=None) -> Dict[str, RunRecord]:
+def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
+           context=CONTEXT, series=None) -> Dict[str, RunRecord]:
     r"""Feeds the recorded fit to `tracker`; returns the records expected
-    of it."""
+    of it, with the fit run's ``series`` (default: the search's)."""
     recorder = _Recorder(tracker)
     session = TrackingSession(recorder)
-    session.start(lambda: fit_spec(CONTEXT))
+    session.start(lambda: fit_spec(context))
     for event in events:
         session.on_event(event)
     session.finish(
@@ -128,9 +136,11 @@ def replay(tracker=None, events=EVENTS, result=RESULT,
         record.name: record
         for hook, record in recorder.calls if hook == 'on_trial'
     }
-    spec = fit_spec(CONTEXT, tags=USER_TAGS)
+    spec = fit_spec(context, tags=USER_TAGS)
     if result is not None:
         spec = fitted_spec(spec, result, events[-1].metrics.get('seconds'))
+    spec = replace(spec, steps=series if series is not None else {
+        **SEARCH, **({} if error else SELECTED)})
     if 'error' in events[-1].params:
         spec = replace(spec, error=str(events[-1].params['error']))
     records[FIT] = run_record(spec)
@@ -321,7 +331,10 @@ def test_records_of_the_recorded_fit():
         spoofed = run_record(fit_spec(CONTEXT, tags={
             'kumo.bundle_id': 'x', 'training_job.tune_metric': 'y', 'a': 1}))
     assert spoofed.tags.keys() - fit.tags.keys() == {'a'}
-    assert fit.metrics == {'val/mae': 0.3, 'test/mae': 0.32, 'seconds': 9.0}
+    assert fit.metrics == {'test/mae': 0.32, 'seconds': 9.0}
+    assert fit.steps == {'search/best_val_mae': ((1, 0.35), (2, 0.3)),
+                         'train/loss': ((1, 0.6), (2, 0.4)),
+                         'val/mae': ((1, 0.5), (2, 0.3))}
     assert fit.artifacts['query.pql'] == QUERY
     assert json.loads(fit.artifacts['model_plan.json']) == CONTEXT.model_plan
     assert fit.inputs == INPUTS
@@ -348,6 +361,19 @@ def test_adapter_records_the_same_runs(adapter, tmp_path):
     expected = replay(adapter.make(), result=result)
 
     assert expected[FIT].artifacts[PROVENANCE_FILE] == '{"bundle": "b"}'
+    assert gaps(expected, adapter.observe(), adapter) == []
+
+
+def test_adapter_records_a_single_trial_fit_epoch_by_epoch(adapter):
+    plan = {**CONTEXT.model_plan,
+            'training_job': {'tune_metric': 'mae', 'num_experiments': 1}}
+    events = [EVENTS[0], *_epochs(1, (0.5, 0.4), (0.3, 0.35)), EVENTS[3],
+              EVENTS[-1]]
+    expected = replay(adapter.make(), events,
+                      context=replace(CONTEXT, model_plan=plan), series={
+                          'train_loss': ((1, 0.5), (2, 0.3)),
+                          'val_mae': ((1, 0.4), (2, 0.35))})
+
     assert gaps(expected, adapter.observe(), adapter) == []
 
 

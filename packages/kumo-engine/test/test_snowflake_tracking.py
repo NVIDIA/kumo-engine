@@ -175,10 +175,10 @@ def test_metric_and_param_limits(fake, monkeypatch):
 
     run, = fake._instance.runs.values()
     assert sorted({name for name, _, _ in run['metrics']}) == [
-        'test/mae', 'trial-1-attempt-1/train/loss',
-        'trial-1-attempt-1/val/best_mae', 'trial-1-attempt-1/val/mae', 'val/mae'
+        'seconds', 'test/mae', 'trial-1-attempt-1/train/loss',
+        'trial-1-attempt-1/val/best_mae', 'trial-1-attempt-1/val/mae'
     ]
-    assert run['params']['kumo.dropped_metrics'] == '6'
+    assert run['params']['kumo.dropped_metrics'] == '8'
     assert run['params']['kumo.dropped_params'] == '1'
     assert 'note' not in run['params']
     assert run['params']['level'] == '2'

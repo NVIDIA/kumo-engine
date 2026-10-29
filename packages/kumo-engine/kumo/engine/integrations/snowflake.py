@@ -16,7 +16,12 @@ from kumo_core.instrumentation import format_error
 from kumo_core.sources.sql import resolve_snowflake_identifier
 
 from kumo.engine._events import Event
-from kumo.engine._tracking import DROPPED_METRICS, DROPPED_PARAMS, RunRecord
+from kumo.engine._tracking import (
+    DROPPED_METRICS,
+    DROPPED_PARAMS,
+    RunRecord,
+    by_step,
+)
 from kumo.engine.connector._extras import import_provider
 
 logger = logging.getLogger(__name__)
@@ -190,6 +195,8 @@ class SnowflakeTracking:
         status = 'FAILED'
         try:
             if self._run is not None and record is not None:
+                for step, metrics in by_step(record.steps):
+                    self.log_metrics(metrics, step)
                 self._log_metrics(record.metrics, _MAX_METRICS)
                 self._log_params({k: v
                                   for k, v in record.tags.items()
@@ -208,6 +215,10 @@ class SnowflakeTracking:
             finally:
                 self._run_context.close()
                 self._reset()
+
+    def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
+        if self._run is not None:
+            self._log_metrics(metrics, _EPOCH_METRICS, step=step)
 
     def _new_run_name(self, tracking: Any,
                       experiment: Any) -> Optional[str]:

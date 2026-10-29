@@ -41,14 +41,17 @@ def fit_spec(context: FitContext, *,
 def fitted_spec(spec: RunSpec, result: Any,
                 seconds: Optional[float] = None) -> RunSpec:
     r"""``spec`` once the fit returned ``result``, a `TrainingResult`,
-    after ``seconds``."""
+    after ``seconds``: its test metrics, since the run's train and
+    validation series show the selected trial's epochs."""
     artifacts = dict(spec.artifacts)
     provenance = Path(result.bundle_dir) / PROVENANCE_FILE
     if provenance.is_file():
         artifacts[PROVENANCE_FILE] = provenance.read_text(encoding='utf-8')
+    tested = {name: value for name, value in result.metrics.items()
+              if not name.startswith(('train_', 'val_'))}
     return replace(
         spec, metrics={
-            **result.metrics, **({} if seconds is None else {
+            **tested, **({} if seconds is None else {
                 'seconds': seconds
             })
         }, parents={'bundle_id': result.id}, artifacts=artifacts)
