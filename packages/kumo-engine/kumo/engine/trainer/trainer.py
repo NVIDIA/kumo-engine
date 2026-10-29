@@ -48,7 +48,7 @@ from kumo_core.pquery import (
     build_generated_training_task_dataset,
     resolve_query_forecast,
 )
-from kumo_core.summaries import Summary
+from kumo_core.summaries import Scalar, Summary
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
 from kumo_core.training.explain_aggregation import aggregate_subgraph_features
 from kumo_core.training.workflow import TrainingWorkflowRequest
@@ -94,7 +94,12 @@ from kumo.engine._manifest import (
 from kumo.engine._mlops import full_error, warn_failure
 from kumo.engine._predictor import TRAINER_PREDICTOR
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
-from kumo.engine._tracking import RunSpec, TrackingSession, fit_inputs
+from kumo.engine._tracking import (
+    RunSpec,
+    TrackingSession,
+    fit_inputs,
+    logged_names,
+)
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot, report_other_graph
@@ -736,6 +741,15 @@ def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
                     registry)
 
 
+def _unlogged(summaries: Sequence[Summary],
+              metrics: Mapping[str, float]) -> Tuple[Summary, ...]:
+    r"""``summaries`` without the scalars ``metrics`` already logs, which
+    stay the trainer's own."""
+    logged = set(logged_names(metrics))
+    return tuple(summary for summary in summaries
+                 if not (isinstance(summary, Scalar) and summary.name in logged))
+
+
 def _with_metrics(model: Optional[PublishedModel],
                   metrics: Mapping[str, float]) -> Optional[PublishedModel]:
     r"""``model`` with the fit's metrics, where its registry returned none
@@ -1258,11 +1272,11 @@ class Trainer:
             bundle_dir=run_dir / 'published-model',
             holdout_path=holdout_path,
             holdout_truncated=holdout_truncated,
-            _summaries=(*(() if result.test_counts is None else
-                          evaluation_summaries(
-                              task_type, result.test_counts, threshold,
-                              class_names(result.best_trainer.target_encoder))),
-                        *at_k_summaries(result.metrics)),
+            _summaries=_unlogged((
+                *(() if result.test_counts is None else evaluation_summaries(
+                    task_type, result.test_counts, threshold,
+                    class_names(result.best_trainer.target_encoder))),
+                *at_k_summaries(result.metrics)), result.metrics),
         )
         holdout_counts = None if result.published_counts is None else (
             baseline(result.published_counts).to_dict())

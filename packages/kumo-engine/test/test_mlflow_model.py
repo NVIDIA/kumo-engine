@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from kumo_core.artifacts import PROVENANCE_FILE
+from kumo_core.summaries import Scalar
 from kumoapi.model_plan import ModelPlan
 from kumoapi.plugin import PublishedModel
 from test_mlflow_tracking import (  # noqa: F401
@@ -62,7 +63,9 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     metrics = {metric.key: metric.value for metric in model.metrics}
     assert metrics == {
         **{name: value for name, value in logged_names(result.metrics).items()
-           if name.startswith('test/')}, 'seconds': metrics['seconds']}
+           if name.startswith('test/')},
+        **{summary.name: summary.value for summary in result._summaries
+           if isinstance(summary, Scalar)}, 'seconds': metrics['seconds']}
     version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
     assert version.source == model.model_uri
     assert parent.data.tags.items() >= {
