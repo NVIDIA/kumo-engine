@@ -44,7 +44,8 @@ jobs:
     environment: gha-kumo-workflow-tests
     name: Check OpenAPI Changes
     runs-on: ubuntu-24.04
-    if: github.event_name == 'pull_request'
+    # A fork's pull_request run gets no OIDC token.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       id-token: write # Required for configure-aws-credentials OIDC.
       contents: read
