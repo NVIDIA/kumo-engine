@@ -1133,6 +1133,13 @@ fn test_custom_tt_forecasting_date_offset_split_routes_all_stages() {
     assert_eq!(count("train"), 2);
     assert_eq!(count("val"), 1);
     assert_eq!(count("test"), 2);
+    let split_stats: serde_json::Value =
+        serde_json::from_slice(&fs::read(out_dir.path().join("split_stats.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        split_stats["train_table_stats"]["target_distribution"]["histogram"]["num_bins"],
+        0
+    );
 }
 
 /// Unknown entity PK → rows skipped (documented behavior). Customer parquet
