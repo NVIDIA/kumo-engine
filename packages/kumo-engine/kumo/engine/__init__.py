@@ -27,6 +27,7 @@ from kumoapi.jobs import WriteMode
 from kumoapi.plugin import ModelRegistryLocation
 from kumoapi.table import Column
 
+from kumo.engine import _quiet  # noqa: F401
 from kumo.engine._manifest import (
     ModelManifest,
     SnapshotManifest,

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import logging
 
 import numpy as np
 import pandas as pd
@@ -171,3 +172,25 @@ def test_a_snapshot_reports_progress_events(graph, tmp_path):
     assert events[-1].params['reused'] is False
     assert again[-1].params['reused'] is True
     assert all(event.params['seconds'] >= 0 for event in events)
+
+
+def test_kumo_calls_drop_lightning_tips_and_only_those(caplog):
+    from pytorch_lightning.utilities.rank_zero import rank_zero_info
+
+    from kumo.engine.trainer.trainer import _without_torch_scatter_hint
+
+    @_without_torch_scatter_hint
+    def fit():
+        rank_zero_info('💡 Tip: inside')
+        rank_zero_info('GPU available: False')
+
+    lightning = logging.getLogger('pytorch_lightning')
+    lightning.addHandler(caplog.handler)  # it does not propagate
+    try:
+        with caplog.at_level('INFO', logger='pytorch_lightning'):
+            fit()
+            rank_zero_info('💡 Tip: outside')
+    finally:
+        lightning.removeHandler(caplog.handler)
+    assert 'inside' not in caplog.text
+    assert 'GPU available' in caplog.text and 'outside' in caplog.text

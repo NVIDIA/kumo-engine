@@ -544,7 +544,8 @@ _F = TypeVar('_F', bound=Callable[..., Any])
 
 def _without_torch_scatter_hint(method: _F) -> _F:
     r"""Runs ``method`` without PyTorch Geometric's GPU hint that min/max
-    aggregation "can be accelerated via the 'torch-scatter' package".
+    aggregation "can be accelerated via the 'torch-scatter' package", and
+    without Lightning's "Tip" log lines advertising its cloud products.
 
     kumo-engine uses PyTorch's own scatter instead of that optional extension
     (see ``test_wheel_uses_torch_fallbacks_without_native_extensions``), so
@@ -552,16 +553,25 @@ def _without_torch_scatter_hint(method: _F) -> _F:
     """
     @functools.wraps(method)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                'ignore',
-                message=r"The usage of `scatter\(reduce='\w+'\)` can be "
-                r"accelerated via the 'torch-scatter' package",
-                category=UserWarning,
-            )
-            return method(*args, **kwargs)
+        tips = logging.getLogger('pytorch_lightning.utilities.rank_zero')
+        tips.addFilter(_no_lightning_tip)
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    'ignore',
+                    message=r"The usage of `scatter\(reduce='\w+'\)` can be "
+                    r"accelerated via the 'torch-scatter' package",
+                    category=UserWarning,
+                )
+                return method(*args, **kwargs)
+        finally:
+            tips.removeFilter(_no_lightning_tip)
 
     return cast(_F, wrapper)
+
+
+def _no_lightning_tip(record: logging.LogRecord) -> bool:
+    return not str(record.msg).startswith('💡 Tip')
 
 
 class Trainer:
