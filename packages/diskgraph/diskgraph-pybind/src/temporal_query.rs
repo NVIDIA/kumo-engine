@@ -514,18 +514,17 @@ fn relation_columns(
         if count == 0 {
             break;
         }
-        if let Some((decoder, lower, upper, frame)) = window {
+        if let Some((decoder, lower, upper, _)) = window {
             for (&destination, &key) in destination_buffer[..count]
                 .iter()
                 .zip(&sort_key_buffer[..count])
             {
-                let timestamp = decoder
-                    .decode(key)
-                    .0
-                    .ok_or_else(|| format!("frame {frame:?} contains a null timestamp"))?;
-                if lower.is_none_or(|bound| timestamp > bound)
-                    && upper.is_none_or(|bound| timestamp <= bound)
-                {
+                // A clipped code is not the row's time; the rowpack check decides it.
+                let admitted = exact_key_time(decoder, key).is_none_or(|timestamp| {
+                    lower.is_none_or(|bound| timestamp > bound)
+                        && upper.is_none_or(|bound| timestamp <= bound)
+                });
+                if admitted {
                     destinations.push(destination);
                     if include_sort_keys {
                         sort_keys.push(key);
@@ -566,8 +565,7 @@ fn relation_destinations(
             // of timestamp width or weight bits. Ingestion may clamp later rows
             // there: they must reach the existing rowpack window check before
             // they can count toward the limit.
-            let ceiling = decoder.decode(u64::MAX).0;
-            if keys.iter().any(|&key| decoder.decode(key).0 == ceiling) {
+            if keys.iter().any(|&key| exact_key_time(decoder, key).is_none()) {
                 return Ok(destinations);
             }
             let mut seen = HashSet::new();
@@ -599,6 +597,13 @@ fn relation_destinations(
         }
     }
     Ok(destinations)
+}
+
+/// The time a sort key stores exactly. Ingestion clips out-of-range times to the
+/// ceiling code or to the lowest code, which also means NULL; neither is exact.
+fn exact_key_time(decoder: &SortKeyDecoder, key: u64) -> Option<i64> {
+    let timestamp = decoder.decode(key).0?;
+    (Some(timestamp) != decoder.decode(u64::MAX).0).then_some(timestamp)
 }
 
 fn matching_time_decoder(
@@ -1365,7 +1370,13 @@ fn count_frame(
             .as_ref()
             .expect("frame validation requires a time column for bounds");
         let sort_decoder =
-            matching_time_decoder(final_sort_key.as_ref(), &destination, time_column);
+            matching_time_decoder(final_sort_key.as_ref(), &destination, time_column)
+                .filter(|decoder| {
+                    rows_by_anchor
+                        .iter()
+                        .flatten()
+                        .all(|&(_, key)| exact_key_time(decoder, key).is_some())
+                });
         if let Some(decoder) = sort_decoder {
             for (anchor, rows) in rows_by_anchor.iter().enumerate() {
                 let lower = plan
@@ -1376,9 +1387,8 @@ fn count_frame(
                     .map(|value| cutoffs[anchor].saturating_add(value));
                 let mut selected = 0;
                 for &(_, raw_sort_key) in rows {
-                    let timestamp = decoder.decode(raw_sort_key).0.ok_or_else(|| {
-                        format!("frame {:?} contains a null timestamp", plan.name)
-                    })?;
+                    let timestamp = exact_key_time(&decoder, raw_sort_key)
+                        .expect("ambiguous sort keys select the rowpack path");
                     stats.sort_key_timestamps += 1;
                     if lower.is_none_or(|bound| timestamp > bound)
                         && upper.is_none_or(|bound| timestamp <= bound)

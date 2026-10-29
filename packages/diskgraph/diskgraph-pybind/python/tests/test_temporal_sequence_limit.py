@@ -744,7 +744,9 @@ def _window_plan(original, *, start, limit):
 
 def _ids_and_lengths(engine, plan, cutoff):
     ids = engine.lookup_node_ids("users", pa.array([1]))
-    result = engine.query_temporal({"users": ids}, {"users": [cutoff]}, json.dumps(plan))
+    result = engine.query_temporal(
+        {"users": ids}, {"users": [cutoff]}, json.dumps(plan)
+    )
     lengths = engine.query_temporal_lengths(
         {"users": ids}, {"users": [cutoff]}, json.dumps(plan)
     )["sequences"][0]["lengths"].to_pylist()
@@ -772,7 +774,9 @@ def test_lengths_match_rows_when_a_clipped_row_is_outside_the_window(
     assert lengths == [len(ids)]
 
 
-@pytest.fixture(params=[(bits, anchor) for bits in (8, 16, 32) for anchor in (0, 1_700_000_000)])
+@pytest.fixture(
+    params=[(bits, anchor) for bits in (8, 16, 32) for anchor in (0, 1_700_000_000)]
+)
 def floor_clock_graph(history_graph, tmp_path, request):
     bits, anchor = request.param
     # The lowest code is reserved for NULL, so the lowest exact time is one above it.
@@ -782,14 +786,18 @@ def floor_clock_graph(history_graph, tmp_path, request):
         {
             "id": [1, 2, 3],
             "owner": [1, 1, 1],
-            "time": pa.array([floor - 50, floor + 10, floor + 20], type=pa.timestamp("s")),
+            "time": pa.array(
+                [floor - 50, floor + 10, floor + 20], type=pa.timestamp("s")
+            ),
             "value": [10.0, 20.0, 30.0],
         }
     )
     path = tmp_path / "orders.parquet"
     pq.write_table(orders, path)
     config["tables"][1]["columns"] = [
-        column for column in config["tables"][1]["columns"] if column["name"] != "other_time"
+        column
+        for column in config["tables"][1]["columns"]
+        if column["name"] not in {"other_time", "null_int"}
     ]
     config["tables"][1]["source"]["paths"] = [str(path)]
     config["tables"][1]["fkeys"][0]["reverse"]["time"].update(
