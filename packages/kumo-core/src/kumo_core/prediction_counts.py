@@ -10,10 +10,14 @@ class's probability) is counted on the ``score`` axis, and ``TARGET_PRED``
 on the ``target`` axis, the training target's bins: a column ``c`` has the
 counts ``c``, the sum ``c/sum`` and the extent ``c``. ``classes`` tallies
 each row's top class, ``predicted_positive`` the rows ``TARGET_PRED``
-labels positive, ``label_positive`` the rows predicting each label and
-``predicted_labels`` the rows per number of predicted labels.
+labels positive, ``label_positive`` the rows predicting each label,
+``predicted_labels`` the rows per number of predicted labels and ``items``
+each catalogue item's recommendations.
 """
 
+import json
+import math
+from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
 import numpy as np
@@ -24,6 +28,7 @@ from kumo_core.types import TaskType
 
 QUANTILES = (1, 5, 25, 50, 75, 95, 99)
 TOP_CLASSES = 20
+ITEMS = 'items'
 MAX_CLASS_HISTOGRAMS = 100
 _EPSILON = 1e-6
 
@@ -62,6 +67,57 @@ def count_predictions(counts: Counts, task_type: TaskType, *, prob: Any,
             _column(counts, name, 'score', prob[:, index])
 
 
+def count_recommendations(counts: Counts, items: Any, catalogue: int) -> None:
+    r"""Adds one batch of recommended ``items``, indices into a catalogue of
+    ``catalogue`` items, to the ``items`` tally; out-of-range indices are
+    padding."""
+    items = np.asarray(items, dtype=np.int64).reshape(-1)
+    counts.tally(ITEMS, items[(items >= 0) & (items < catalogue)], catalogue)
+
+
+def item_counts(counts: Counts) -> Counts:
+    r"""``counts`` with its ``items`` tally replaced by what is logged of
+    it, which is as small for any catalogue: ``item_frequency``, items per
+    number of recommendations on powers of two, and the totals
+    ``catalogue``, ``items_recommended``, ``recommendations`` and
+    ``top1pct_recommendations``, those of the most recommended 1% of
+    items."""
+    arrays = dict(counts.arrays)
+    tally = arrays.pop(ITEMS)
+    top = max(1, math.ceil(tally.size / 100))
+    edges = tuple(2.0**power for power in range(
+        int(np.log2(max(tally.max(initial=1), 1))) + 1))
+    summary = Counts({**counts.edges, 'recommendations': edges}, arrays,
+                     dict(counts.extents))
+    summary.histogram('item_frequency', 'recommendations', tally)
+    for name, value in (('catalogue', tally.size),
+                        ('items_recommended', np.count_nonzero(tally)),
+                        ('recommendations', tally.sum()),
+                        ('top1pct_recommendations',
+                         np.partition(tally, tally.size - top)[-top:].sum()
+                         if tally.size else 0)):
+        summary.total(name, value)
+    return summary
+
+
+def save_counts(counts: Counts, path: Path) -> None:
+    r"""Writes ``counts`` as JSON at ``path``, and its ``items`` tally, as
+    large as the catalogue, as NumPy beside it."""
+    arrays = dict(counts.arrays)
+    items = arrays.pop(ITEMS, None)
+    if items is not None:
+        np.save(path.with_suffix('.npy'), items)
+    path.write_text(json.dumps(
+        Counts(counts.edges, arrays, counts.extents).to_dict()))
+
+
+def load_counts(path: Path) -> Counts:
+    counts = Counts.from_dict(json.loads(path.read_text()))
+    if path.with_suffix('.npy').exists():
+        counts.arrays[ITEMS] = np.load(path.with_suffix('.npy'))
+    return counts
+
+
 def _column(counts: Counts, name: str, axis: str, values: Any) -> None:
     values = np.asarray(values, dtype=np.float64)
     counts.histogram(name, axis, values)
@@ -77,7 +133,9 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
     binary ``threshold``; ``pred/h<step>/hist`` per forecast horizon;
     ``pred/classes``, each class's rows and share; for labels,
     ``pred/labels_per_entity``, rows per number of predicted labels, and
-    ``pred/label/<label>/share``, the rows predicting each top label;
+    ``pred/label/<label>/share``, the rows predicting each top label; for
+    recommendations, ``pred/item_frequency/hist``, ``pred/item_coverage``
+    and ``pred/top1pct_share``;
     and ``drift/score_psi`` and ``drift/score_ks`` against ``baseline``,
     the training holdout's counts."""
     columns = list(counts.extents)
@@ -110,6 +168,8 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
         summaries.append(_class_shares(tally, top, labels))
     if ranked == 'label_positive':
         summaries += _label_summaries(counts, top[:TOP_CLASSES], labels)
+    if 'item_frequency' in counts.arrays:
+        summaries += _item_summaries(counts)
     score = next((name for name in ('True_PROB', 'confidence', 'TARGET_PRED')
                   if name in counts.extents), None)
     if score is not None and baseline is not None:
@@ -139,6 +199,20 @@ def _label_summaries(counts: Counts, top: Sequence[int],
         *(Scalar(f'pred/label/{name}/share',
                  float(counts.arrays['label_positive'][i] / rows))
           for name, i in zip(names, top)),
+    ]
+
+
+def _item_summaries(counts: Counts) -> List[Summary]:
+    total = {name: float(counts.arrays[name])
+             for name in ('catalogue', 'items_recommended', 'recommendations',
+                          'top1pct_recommendations')}
+    return [
+        counts.summary('item_frequency', 'recommendations',
+                       'pred/item_frequency/hist'),
+        Scalar('pred/item_coverage',
+               total['items_recommended'] / max(total['catalogue'], 1)),
+        Scalar('pred/top1pct_share', total['top1pct_recommendations'] /
+               max(total['recommendations'], 1)),
     ]
 
 

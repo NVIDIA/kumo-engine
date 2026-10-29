@@ -601,9 +601,11 @@ def _score_prediction_shard(
         prediction_counts=counts,
     )
     if counts is not None:
+        from kumo_core.prediction_counts import save_counts
+
         path = Path(config.output_dir) / COUNTS_DIR / f'{shard_attempt}.json'
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(counts.to_dict()))
+        save_counts(counts, path)
     return _publish_scored_shard(
         collector, output_dir=config.output_dir, run_id=config.run_id,
         attempt_id=shard_attempt, graph_snapshot_id=config.graph_snapshot_id,
@@ -734,15 +736,16 @@ def score_prediction(
 
 def _merge_counts(prediction_dir: Path, attempt_id: str,
                   worker_count: int) -> None:
+    from kumo_core.prediction_counts import ITEMS, item_counts, load_counts
     from kumo_core.score_counts import Counts
 
     parts = [
         prediction_dir / COUNTS_DIR / f'{attempt_id}-{worker_id}.json'
         for worker_id in range(worker_count)
     ]
-    total = reduce(Counts.merge,
-                   (Counts.from_dict(json.loads(part.read_text()))
-                    for part in parts))
+    total = reduce(Counts.merge, (load_counts(part) for part in parts))
+    if ITEMS in total.arrays:
+        total = item_counts(total)
     (prediction_dir / COUNTS_FILE).write_text(json.dumps(total.to_dict()))
 
 

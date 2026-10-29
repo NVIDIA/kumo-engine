@@ -1396,7 +1396,10 @@ class DiskgraphNestedTrainer(Trainer):
 
         import torch
         from kumo_core.callbacks import PredictionProgressLogger
-        from kumo_core.prediction_counts import count_predictions
+        from kumo_core.prediction_counts import (
+            count_predictions,
+            count_recommendations,
+        )
         from kumo_core.train.formatting import (
             _get_col_names,
             format_embeddings,
@@ -1434,6 +1437,8 @@ class DiskgraphNestedTrainer(Trainer):
             if artifact_stats_collector is not None:
                 link_prediction_kwargs["artifact_stats_collector"] = (
                     artifact_stats_collector)
+            if prediction_counts is not None:
+                link_prediction_kwargs["prediction_counts"] = prediction_counts
             return self._predict_lp(**link_prediction_kwargs)
 
         self._prediction_mode = True
@@ -1580,6 +1585,12 @@ class DiskgraphNestedTrainer(Trainer):
 
         def _count(counts: Counts, prediction: dict[str, Any],
                    df: pd.DataFrame) -> None:
+            if self.task.task_type == TaskType.MULTILABEL_RANKING:
+                prob = prediction['prob']
+                k = min(top_k or prob.shape[1], prob.shape[1])
+                count_recommendations(counts, prob.topk(k, dim=1).indices,
+                                      prob.shape[1])
+                return
             forecast = self.task.task_type == TaskType.FORECASTING
             count_predictions(
                 counts, self.task.task_type,
@@ -1757,6 +1768,7 @@ class DiskgraphNestedTrainer(Trainer):
         artifact_stats_collector: PredictionArtifactStatsCollector
         | None = None,
         task_manifest: DiskgraphTaskManifest | None = None,
+        prediction_counts: Counts | None = None,
     ) -> Any:
         """TT-NG batch prediction for link prediction (all 4 model families).
 
@@ -1766,13 +1778,15 @@ class DiskgraphNestedTrainer(Trainer):
         legacy LP table (LHS fkey / ``CLASS`` / ``SCORE``, one row per anchor,k)
         when predictions are requested. With ``return_embeddings`` also emits
         the ``create_lp_embedding_output`` table (LHS per anchor + the filtered
-        RHS catalog for two-tower/shallow-RHS).
+        RHS catalog for two-tower/shallow-RHS). Each written batch's
+        recommendations are added to ``prediction_counts``, if given.
         """
         import math
 
         import numpy as np
         import torch
         from kumo_core.callbacks import PredictionProgressLogger
+        from kumo_core.prediction_counts import count_recommendations
         from kumo_core.train.output import (
             PredOutput,
             StreamingPredOutputWriter,
@@ -1917,6 +1931,14 @@ class DiskgraphNestedTrainer(Trainer):
                 class_metadata=class_metadata,
             )
 
+        def _count_lp(counts: Counts, prediction: dict[str, Any]) -> None:
+            target = _np(prediction['target']).reshape(-1)
+            count_recommendations(
+                counts,
+                np.where(target < 0, -1,
+                         np.searchsorted(catalog_node_ids, target)),
+                catalog_node_ids.shape[0])
+
         def _rhs_embedding_tables(
             output_partition_id: int,
             rhs_emb: torch.Tensor,
@@ -2042,6 +2064,8 @@ class DiskgraphNestedTrainer(Trainer):
                     self.partition_idx = partition_idx
                     self.saved_output_count += 1
                 out = _build_chunk_output(prediction)
+                if prediction_counts is not None and emit_predictions:
+                    _count_lp(prediction_counts, prediction)
                 assert self.stream is not None
                 self.stream.write(out)
                 self.last_output = out
@@ -2112,7 +2136,7 @@ class DiskgraphNestedTrainer(Trainer):
                 else:
                     delattr(self.pl_model, '_kumo_return_predict_embeddings')
             # See predict(): release what the per-call writer class closes over.
-            datamodule = _build_chunk_output = None
+            datamodule = _build_chunk_output = _count_lp = None
         if writer.saved_output_count == 0:
             raise RuntimeError('[TT-NG LP] predict produced no batches')
         logger.info('[TT-NG LP] saved batch prediction output to %s',
