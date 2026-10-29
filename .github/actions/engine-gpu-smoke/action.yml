@@ -9,7 +9,7 @@ inputs:
     description: Path or glob matching exactly one finished wheel
     required: true
   repetitions:
-    description: Number of complete eight-task runs
+    description: Prediction and reload cycles per retained model
     default: '1'
   qualify:
     description: Measure numerical differences without accepting a smoke pass

@@ -23,6 +23,24 @@ def runner():
     return module
 
 
+@pytest.mark.parametrize(('task', 'targets'), [
+    ('multiclass',
+     ['breakfast', 'dinner', 'lunch', 'late', 'early', 'afternoon']),
+    ('multilabel', ['breakfast|dinner', '', 'lunch|late', 'early|afternoon']),
+    ('multilabel_ranking',
+     ['breakfast|dinner', '', 'lunch|late', 'early|afternoon']),
+    ('multilabel', [['breakfast', 'dinner'], [], ['lunch', 'late'],
+                    ['early', 'afternoon']]),
+    ('multilabel_ranking', [['breakfast', 'dinner'], [], ['lunch', 'late'],
+                            ['early', 'afternoon']]),
+])
+def test_target_classes_decode_native_tokens_instead_of_string_characters(
+        task, targets):
+    assert runner().target_classes(task, targets) == [
+        'afternoon', 'breakfast', 'dinner', 'early', 'late', 'lunch'
+    ]
+
+
 @pytest.mark.parametrize('change', ['missing', 'duplicate', 'foreign', 'nan'])
 def test_scalar_outputs_reject_incomplete_or_invalid_entities(change):
     check = runner().prediction_values

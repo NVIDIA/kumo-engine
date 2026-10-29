@@ -267,6 +267,15 @@ def make_plan(task):
     return plan
 
 
+def target_classes(task, targets):
+    """Decode exported multicategorical tokens before collecting class names."""
+    if task == 'multiclass':
+        return sorted(set(targets))
+    members = (filter(None, value.split('|'))
+               if isinstance(value, str) else value for value in targets)
+    return sorted({category for value in members for category in value})
+
+
 def build_graph(spec, directory, *, static=False):
     from kumoapi.graph import Edge
     from kumoapi.table import Column
@@ -362,12 +371,7 @@ def prepare_task(task, root, metadata, directory, graphs):
             pq.read_table(source / 'merchants',
                           columns=['merchant_id'])['merchant_id'].to_pylist())
     elif task in ('multiclass', 'multilabel', 'multilabel_ranking'):
-        classes = sorted({
-            category
-            for row in rows
-            for category in (
-                [row['TARGET1']] if task == 'multiclass' else row['TARGET1'])
-        })
+        classes = target_classes(task, [row['TARGET1'] for row in rows])
     columns = ['ENTITY1'] if task == 'static_link' else ['ENTITY1', 'TIMESTAMP']
     if task == 'forecasting':
         columns.append('autoregression_labels')
@@ -445,6 +449,9 @@ def observe_cuda(state):
     original_create = CoreTrainer.create_pl_trainer
 
     class Proof(Callback):
+        def on_fit_start(self, trainer, module):
+            state['fits'] += 1
+
         def check(self, trainer, values):
             if (str(trainer.strategy.root_device) != 'cuda:0' or not values
                     or any(not isinstance(value, torch.Tensor) or str(
@@ -513,8 +520,8 @@ def run_task(task, prepared, directory, args):
     started = time.monotonic()
     kumo.configure(scratch_dir=directory / 'scratch')
     state = dict(
-        stage='fit', training_batches=0, completed_fits=0, optimizer_steps=0,
-        prediction_batches={
+        stage='fit', fits=0, training_batches=0, completed_fits=0,
+        optimizer_steps=0, prediction_batches={
             stage: 0
             for stage in ('predict', 'repeat', 'reload')
         }, reload_checks=0, restored_tensors=0)
@@ -529,7 +536,8 @@ def run_task(task, prepared, directory, args):
         steps = load_kumo_checkpoint(str(checkpoint),
                                      map_location='cpu').get('global_step')
         if (type(steps) is not int or steps <= 0
-                or not state['training_batches'] or state['completed_fits'] != 1
+                or not state['training_batches'] or state['fits'] != 1
+                or state['completed_fits'] != 1
                 or state['optimizer_steps'] < steps):
             raise ValueError(
                 'Training completed no optimizer updates or CUDA batches')
@@ -547,8 +555,9 @@ def run_task(task, prepared, directory, args):
         saved = directory / 'saved-model'
         shutil.copytree(fitted.bundle_dir, saved)
 
-        def predict(model, stage):
+        def predict(model, stage, cycle=0):
             state['stage'] = stage
+            previous_batches = state['prediction_batches'][stage]
             seed()
             inputs = prepared['input_file']
             table = kumo.PredictionTable.from_source_table(
@@ -564,10 +573,12 @@ def run_task(task, prepared, directory, args):
                 options['output_config'] = kumo.PredictionOutputConfig(
                     connector=kumo.FileConnector(root_dir=str(directory /
                                                               'predictions')),
-                    output_paths={'predictions': stage},
+                    output_paths={'predictions': f'{stage}-{cycle}'},
                     extra_fields=[MetadataField.ANCHOR_TIMESTAMP])
             frame = model.predict(table, snapshot=prepared['snapshot'],
                                   **options).frame
+            if state['prediction_batches'][stage] <= previous_batches:
+                raise ValueError('Prediction call completed no CUDA batches')
             values = prediction_values(task, frame, prepared['ids'],
                                        classes=prepared['classes'],
                                        anchor=prepared['anchor'],
@@ -577,23 +588,40 @@ def run_task(task, prepared, directory, args):
             return values, decisions
 
         before, before_decisions = predict(trainer, 'predict')
-        repeated, repeat_decisions = predict(trainer, 'repeat')
-        repeat_delta = compare_predictions(before, repeated,
-                                           atol=args.reload_atol,
-                                           rtol=args.reload_rtol,
-                                           qualify=args.qualify,
-                                           before_decisions=before_decisions,
-                                           after_decisions=repeat_decisions)
-        del trainer
-        gc.collect()
-        restored = kumo.Trainer.load(saved, accelerator='gpu')
-        after, after_decisions = predict(restored, 'reload')
-        reload_delta = compare_predictions(before, after, atol=args.reload_atol,
-                                           rtol=args.reload_rtol,
-                                           qualify=args.qualify,
-                                           before_decisions=before_decisions,
-                                           after_decisions=after_decisions)
-    if (not state['reload_checks'] or not state['restored_tensors']
+        comparisons = []
+        for cycle in range(1, args.repetitions + 1):
+            previous_reload_checks = state['reload_checks']
+            previous_batches = state['prediction_batches'].copy()
+            repeated, repeat_decisions = predict(trainer, 'repeat', cycle)
+            repeat_delta = compare_predictions(
+                before, repeated, atol=args.reload_atol, rtol=args.reload_rtol,
+                qualify=args.qualify, before_decisions=before_decisions,
+                after_decisions=repeat_decisions)
+            del trainer
+            gc.collect()
+            trainer = kumo.Trainer.load(saved, accelerator='gpu')
+            after, after_decisions = predict(trainer, 'reload', cycle)
+            reload_delta = compare_predictions(
+                before, after, atol=args.reload_atol, rtol=args.reload_rtol,
+                qualify=args.qualify, before_decisions=before_decisions,
+                after_decisions=after_decisions)
+            if (state['reload_checks'] <= previous_reload_checks
+                    or not state['restored_tensors']):
+                raise ValueError(
+                    'Prediction cycle lacks freshly restored model state')
+            comparisons.append(
+                dict(
+                    cycle=cycle, repeat=repeat_delta, reload=reload_delta,
+                    prediction_batches={
+                        stage:
+                        state['prediction_batches'][stage] -
+                        previous_batches[stage]
+                        for stage in ('repeat', 'reload')
+                    }, restored_tensors=state['restored_tensors']))
+    if (state['fits'] != 1 or state['completed_fits'] != 1
+            or len(comparisons) != args.repetitions
+            or state['reload_checks'] < args.repetitions
+            or not state['restored_tensors']
             or not all(state['prediction_batches'].values())):
         raise ValueError(
             'Reloaded state or completed CUDA prediction work is missing')
@@ -603,13 +631,15 @@ def run_task(task, prepared, directory, args):
             name: float(value) if math.isfinite(value) else None
             for name, value in fitted.metrics.items()
         }, entities=len(prepared['ids']), output_shape=list(before.shape),
+        physical_fits=state['fits'], completed_fits=state['completed_fits'],
         optimizer_steps=state['optimizer_steps'],
         selected_checkpoint_steps=steps,
         training_batches=state['training_batches'],
         prediction_batches=state['prediction_batches'],
         checkpoint_sha256=state['checkpoint_sha256'],
-        restored_tensors=state['restored_tensors'], repeat=repeat_delta,
-        reload=reload_delta, seconds=time.monotonic() - started)
+        restored_tensors=state['restored_tensors'],
+        reload_checks=state['reload_checks'], comparisons=comparisons,
+        seconds=time.monotonic() - started)
 
 
 def main():
@@ -618,7 +648,9 @@ def main():
     parser.add_argument('--graph-metadata', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--expected-version', required=True)
-    parser.add_argument('--repetitions', type=int, default=1)
+    parser.add_argument(
+        '--repetitions', type=int, default=1,
+        help='Prediction/reload cycles per model; each task trains once')
     parser.add_argument(
         '--qualify', action='store_true',
         help='Measure numeric differences; does not produce a normal CI pass')
@@ -667,23 +699,20 @@ def main():
                 torch.manual_seed(0)
                 prepared[task] = prepare_task(task, args.data_dir, metadata,
                                               work / 'inputs' / task, graphs)
-            for repetition in range(args.repetitions):
-                for task in TASKS:
-                    report['current_task'] = dict(task=task,
-                                                  repetition=repetition + 1)
-                    print(
-                        f'Repetition {repetition + 1}/{args.repetitions}: {task}',
-                        flush=True)
-                    directory = work / f'repetition-{repetition + 1}' / task
-                    directory.mkdir(parents=True)
-                    row = run_task(task, prepared[task], directory, args)
-                    row['repetition'] = repetition + 1
-                    report['tasks'].append(row)
-                    print(json.dumps(row), flush=True)
-                    (args.output_dir / 'summary.json').write_text(
-                        json.dumps(report, indent=2, allow_nan=False) + '\n')
-                    shutil.rmtree(directory)
-                    gc.collect()
+            for task in TASKS:
+                report['current_task'] = task
+                print(
+                    f'{task}: one fit, {args.repetitions} prediction/reload cycles',
+                    flush=True)
+                directory = work / 'models' / task
+                directory.mkdir(parents=True)
+                row = run_task(task, prepared[task], directory, args)
+                report['tasks'].append(row)
+                print(json.dumps(row), flush=True)
+                (args.output_dir / 'summary.json').write_text(
+                    json.dumps(report, indent=2, allow_nan=False) + '\n')
+                shutil.rmtree(directory)
+                gc.collect()
             report['status'] = 'MEASURED' if args.qualify else 'PASS'
     except Exception as error:
         report.update(status='FAIL', error=f'{type(error).__name__}: {error}')
