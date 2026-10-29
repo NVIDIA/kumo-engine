@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   changes:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -127,7 +127,7 @@ jobs:
   source:
     needs: changes
     if: needs.changes.outputs.source == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -209,10 +209,21 @@ jobs:
         env:
           SOURCE_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
         run: |
-          if [[ -z "$SOURCE_TOKEN" ]]; then
-            echo '::error::KUMO_GITHUB_BOT_TOKEN needs read access to the pinned PR172 source.'
-            exit 1
-          fi
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          configured = bool(os.environ.get('SOURCE_TOKEN'))
+          root = Path(os.environ['RUNNER_TEMP']) / 'pr-preflight'
+          root.mkdir(parents=True, exist_ok=True)
+          receipt = dict(status='CONFIGURED' if configured else 'FAIL',
+                         revision=os.environ['GITHUB_SHA'],
+                         stage='generator_token_configuration',
+                         token_configured=configured, source_checkout_verified=False,
+                         physical_fits=0)
+          (root / 'source-token.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          if not configured:
+              raise SystemExit('::error::KUMO_GITHUB_BOT_TOKEN needs read access to the pinned PR172 source.')
+          PY
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         if: needs.changes.outputs.learning == 'true'
         with:
@@ -251,6 +262,7 @@ jobs:
         with:
           name: engine-pr-gpu-${{ github.sha }}
           path: |
+            ${{ runner.temp }}/pr-preflight
             ${{ runner.temp }}/pr-evidence
             ${{ runner.temp }}/pr-wheel/install.json
             ${{ runner.temp }}/pr-inputs/pr172-inputs.json
@@ -262,7 +274,7 @@ jobs:
     name: kumo-engine-pr-ci
     needs: [changes, build, source, gpu]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
