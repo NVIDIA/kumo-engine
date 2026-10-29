@@ -42,6 +42,61 @@ and completed fit counts. Eight describes the primary task roster only.
 The source job also reads the existing source workflow at the same PR revision
 and rejects failed jobs even when that workflow allows their failure.
 
+## Agent-local feedback
+
+Vedaant Jain requested a local feedback command on October 29, 2026. Its
+selected tests must finish in strictly less than five minutes. This requirement
+is separate from the complete GPU CI timeline.
+
+Use Python 3.12 on macOS or Linux, with Git and Bash available. Prepare a local
+environment once from the repository root. This setup is outside the timed run:
+
+```sh
+python3.12 -m venv .venv-agent-local
+.venv-agent-local/bin/python -m pip install -r test/scripts/agent-local-requirements.txt
+```
+
+Run the marked tests with this one command:
+
+```sh
+.venv-agent-local/bin/python -I scripts/agent_local_tests.py
+```
+
+The entry point uses the existing pytest tests marked `agent_local`. It supplies
+an isolated configuration, disables plugin autoload and inherited pytest
+options, stops parent conftest discovery at `test/scripts`, and names the test
+files explicitly. Running a root-level `pytest -m agent_local` is insufficient:
+root collection can import service fixtures before marker selection.
+
+The selection covers changed-file and required-job decisions, complete source
+and timing evidence, bundled fixture integrity, package identity, finite and
+complete outputs, and score calculations. Separate supervisor regressions in full CI exercise failure, skip, incomplete
+selection, reporting time and collection-time timeout handling. Keeping those
+subprocess regressions outside the marked subset avoids nested supervisors.
+Remote API calls
+in owner and workflow unit tests use controlled responses. They do not establish
+network access. The Torch checkpoint test is not selected locally. Actual GPU
+training and checkpoint checks remain in full CI.
+
+A parent process times the complete pytest command, including Python startup,
+collection, fixture setup, execution and pytest reporting. It stops the suite
+at its deadline. A timeout, failure, missing report, empty selection, unmarked
+selected test, any skip, or elapsed time of 300 seconds or more cannot pass.
+The result retains exact selected node IDs, source hashes, environment and
+package versions, elapsed time, pytest logs and JUnit output. The printed path
+identifies this local evidence. Dependency installation is never hidden inside
+the timed command.
+
+The final complete local command took 5.04 seconds on macOS ARM64 with
+Python 3.12.13. All 56 selected tests completed, including 100 subtest cases,
+with no skips or failures. This is a prepared-environment observation, not a
+guarantee for every machine. The retained test list and environment identify
+that measurement.
+
+Normal CI runs these same tests along with its existing larger selection. The
+local marker does not remove any CI coverage or any of the eight primary GPU
+learning tasks. Nightly, weekly and release conditions remain unchanged.
+
 ## Artifact and input identity
 
 The CPU job requires a clean checkout, builds the full bundled wheel, and
@@ -70,12 +125,14 @@ runtime. Each run records its actual device and rejects CPU fallback.
 
 ## Timing and evidence
 
-The target is 20 minutes through the last required result. It includes build,
+Vedaant Jain accepts about 22 minutes through the last required result and
+asks that CI stay below 25 minutes. Twenty minutes remains preferred. The
+complete timeline includes build,
 queues, installation, fixture validation, selected checks, reporting, and uploads.
 Per-job timeouts are execution bounds. They do not prove the complete target.
 The source wrapper waits up to 30 minutes for the existing source workflow.
 Its job limit leaves time for setup and result upload. A source workflow that
-exceeds 20 minutes still fails the timing target. The longer observation
+exceeds the accepted target still reports that miss. The longer observation
 window allows the wrapper to retain the completed test result.
 The recorded manual trial and worker timings do not replace a GitHub run.
 
@@ -90,13 +147,22 @@ The selected worker took 462.61 seconds. The GPU job, including setup,
 installation, validation and upload, took 10 minutes 45 seconds.
 
 That cold build took 14 minutes 33 seconds. Native compilation occupied
-766.69 seconds. The job saved the new workspace-crate cache, but its warm
-benefit still needs measurement. The complete Engine workflow took 28 minutes
+766.69 seconds. The job saved the workspace-crate cache. The complete Engine workflow took 28 minutes
 27 seconds and failed because the previous 15-minute source observer stopped
 before the existing source workflow completed. The source workflow later
 passed in 24 minutes 55 seconds, with 49 successful jobs and one conditional
-skip. The longer observer preserves that completed result. These measurements
-do not establish a passing 20-minute PR check.
+skip. The longer observer preserves that completed result. These historical measurements
+remain failed observations under their original 20-minute policy.
+
+The [measured run at `eb1bd5f`](https://github.com/NVIDIA/kumo-engine/actions/runs/40952212441)
+passed all five Engine jobs in 21 minutes 17 seconds. The build used the exact
+native cache and took 9 minutes 24 seconds. The GPU job took 10 minutes
+40 seconds. Its selected worker completed eight primary fits and 39 additional
+fits in 473.89 seconds. The existing source workflow passed in 19 minutes
+17 seconds. These are measured observations, not a guarantee for every queue
+or runner. The original record remains a 77-second miss against 20 minutes.
+Under Vedaant's accepted 22-minute policy, the same observation meets the
+accepted target and stays below the 25-minute guardrail.
 
 After a run finishes, download its run metadata and the complete job inventory,
 including all pages for its recorded attempt. Then audit that run:
@@ -108,10 +174,15 @@ python3 .github/scripts/engine-pr-timing.py \
 ```
 
 The audit includes queue time and all jobs through their final completion.
+It reports the preferred 1,200-second metric separately. A verified successful
+run can pass the accepted 1,320-second target, including equality. A run above
+that target remains a target miss. Runs at 1,500 seconds or more also breach
+the strict guardrail. Historical report files keep their original policy.
+This full-CI policy does not relax the strictly under-300-second local limit.
 It rejects incomplete attempts, stale commits, and failed jobs hidden by a
 green workflow. Audit the other required workflows too before claiming the
-complete PR target. The measured existing source workflow took 1,495 seconds. It remains active
-and exceeds the target independently of the new worker in that attempt.
+complete PR target. The earlier source workflow took 1,495 seconds; the later
+run took 1,157 seconds. Keep both observations and their runner variation visible.
 
 The workflow keeps selection, build identity, installation, task results,
 physical-fit receipts, test results, fixture integrity, and failed-run evidence.

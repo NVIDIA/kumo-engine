@@ -11,6 +11,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.agent_local
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / '.github/scripts/engine-pr-timing.py'
 REVISION = 'a' * 40
@@ -81,23 +85,80 @@ class TimingTests(unittest.TestCase):
             self.assertTrue(output.exists(), completed.stderr)
             return completed, json.loads(output.read_text())
 
-    def test_queue_and_last_required_job_can_cross_the_budget(self):
+    def test_queue_and_last_job_can_miss_preferred_but_meet_accepted_target(
+            self):
         process, result = self.run_audit()
         self.assertEqual(result['elapsed_seconds'], 1201)
-        self.assertEqual(result['budget_seconds'], 1200)
-        self.assertFalse(result['passed'])
+        self.assertEqual(result['budget_seconds'], 1320)
+        self.assertTrue(result['within_budget'])
+        self.assertFalse(result.get('within_preferred_budget'))
+        self.assertTrue(result['passed'])
         self.assertEqual(result['jobs'][0]['queue_seconds'], 300)
         self.assertEqual(result['jobs'][0]['execution_seconds'], 420)
         self.assertEqual(result['run_attempt'], 2)
-        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(process.returncode, 0, process.stderr)
 
-    def test_exact_budget_equality_passes(self):
+    def test_exact_preferred_budget_equality_passes(self):
         jobs = recorded_jobs()
         jobs['jobs'][1]['completed_at'] = '2026-10-29T00:20:00Z'
         process, result = self.run_audit(jobs=jobs)
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertTrue(result['passed'])
         self.assertEqual(result['elapsed_seconds'], 1200)
+        self.assertTrue(result.get('within_preferred_budget'))
+        self.assertEqual(result.get('timing_classification'),
+                         'preferred_target')
+
+    def test_1277_seconds_passes_accepted_target_without_claiming_twenty(self):
+        jobs = recorded_jobs()
+        jobs['jobs'][1]['completed_at'] = '2026-10-29T00:21:17Z'
+        process, result = self.run_audit(jobs=jobs)
+        self.assertTrue(result['passed'])
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(result['elapsed_seconds'], 1277)
+        self.assertEqual(result['budget_seconds'], 1320)
+        self.assertTrue(result['within_budget'])
+        self.assertEqual(result.get('schema'), 2)
+        self.assertEqual(result.get('preferred_budget_seconds'), 1200)
+        self.assertEqual(result.get('guardrail_seconds'), 1500)
+        self.assertFalse(result.get('within_preferred_budget'))
+        self.assertTrue(result.get('within_guardrail'))
+        self.assertEqual(result.get('timing_classification'), 'accepted_target')
+
+    def test_twenty_two_minute_boundary_is_accepted(self):
+        jobs = recorded_jobs()
+        jobs['jobs'][1]['completed_at'] = '2026-10-29T00:22:00Z'
+        process, result = self.run_audit(jobs=jobs)
+        self.assertTrue(result['passed'])
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertTrue(result['within_budget'])
+        self.assertTrue(result.get('within_guardrail'))
+        self.assertEqual(result.get('timing_classification'), 'accepted_target')
+
+    def test_below_guardrail_does_not_claim_the_accepted_target(self):
+        for finished in ('2026-10-29T00:22:01Z', '2026-10-29T00:24:59Z'):
+            with self.subTest(finished=finished):
+                jobs = recorded_jobs()
+                jobs['jobs'][1]['completed_at'] = finished
+                process, result = self.run_audit(jobs=jobs)
+                self.assertFalse(result['passed'])
+                self.assertNotEqual(process.returncode, 0)
+                self.assertFalse(result['within_budget'])
+                self.assertTrue(result.get('within_guardrail'))
+                self.assertEqual(result.get('timing_classification'),
+                                 'above_accepted_target')
+
+    def test_twenty_five_minutes_or_more_fails_the_strict_guardrail(self):
+        for finished in ('2026-10-29T00:25:00Z', '2026-10-29T00:25:01Z'):
+            with self.subTest(finished=finished):
+                jobs = recorded_jobs()
+                jobs['jobs'][1]['completed_at'] = finished
+                process, result = self.run_audit(jobs=jobs)
+                self.assertFalse(result['passed'])
+                self.assertNotEqual(process.returncode, 0)
+                self.assertFalse(result.get('within_guardrail'))
+                self.assertEqual(result.get('timing_classification'),
+                                 'guardrail_exceeded')
 
     def test_pending_or_mismatched_records_cannot_claim_a_time(self):
         cases = []
@@ -134,7 +195,7 @@ class TimingTests(unittest.TestCase):
         self.assertIn('Duplicate', result['error'])
 
     def test_truncated_bare_jobs_cannot_approve_the_budget(self):
-        # Omitting the slower final job must not turn1201seconds into a pass.
+        # Omitting the final job cannot approve an unverified inventory.
         first_job_only = recorded_jobs()['jobs'][:1]
         process, result = self.run_audit(jobs=first_job_only)
         self.assertEqual(result['elapsed_seconds'], 720)

@@ -7,6 +7,10 @@ import runpy
 import unittest
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.agent_local
+
 BUILDER = (Path(__file__).resolve().parents[2] /
            'packages/kumo-engine/test/pr172/kumo/build_graph.py')
 

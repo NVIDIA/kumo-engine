@@ -13,6 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / 'packages/kumo-engine/scripts/pr_check.py'
 
@@ -75,6 +77,7 @@ class RuntimeTests(unittest.TestCase):
                         receipt['restore_path'],
                         'lightning_strategy.load_model_state_dict')
 
+    @pytest.mark.agent_local
     def test_build_receipt_rejects_wrong_revision_and_dirty_sources(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
@@ -98,6 +101,7 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module().source_identity(repo, revision)
 
+    @pytest.mark.agent_local
     def test_installed_archive_members_must_match_even_when_version_matches(
             self):
         with tempfile.TemporaryDirectory() as directory:
@@ -122,6 +126,7 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module().verify_installed_files(wheel, prefix)
 
+    @pytest.mark.agent_local
     def test_no_completed_gpu_fits_or_failed_fit_cannot_pass(self):
         checked = module().verify_fits
         with self.assertRaises(ValueError):
@@ -136,6 +141,7 @@ class RuntimeTests(unittest.TestCase):
                 checked([row])
         checked([dict(status='PASS', device='cuda:0', steps=2, cuda_batches=1)])
 
+    @pytest.mark.agent_local
     def test_only_eight_normal_seed_zero_primary_fits_pass(self):
         tasks = [
             'binary', 'multiclass', 'multilabel', 'multilabel_ranking',
@@ -152,6 +158,7 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module().verify_roster(broken)
 
+    @pytest.mark.agent_local
     def test_release_wheel_cannot_be_recorded_as_this_pr_build(self):
         with tempfile.TemporaryDirectory() as directory:
             wheel = Path(directory) / 'released.whl'
@@ -163,6 +170,7 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module().build_receipt(source, wheel)
 
+    @pytest.mark.agent_local
     def test_quickstart_rejects_duplicate_missing_or_nonfinite_predictions(
             self):
         import pandas as pd
@@ -180,6 +188,7 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module().verify_quickstart_predictions(bad, [1, 2])
 
+    @pytest.mark.agent_local
     def test_prediction_work_observer_accepts_link_and_forecast_output_shapes(
             self):
         score, horizon_a, horizon_b = object(), object(), object()
@@ -191,6 +200,7 @@ class RuntimeTests(unittest.TestCase):
         }}), [horizon_a, horizon_b])
         self.assertEqual(extract({'logits': score}), [score])
 
+    @pytest.mark.agent_local
     def test_quickstart_rejects_unnormalized_or_wrong_class_outputs(self):
         import pandas as pd
 

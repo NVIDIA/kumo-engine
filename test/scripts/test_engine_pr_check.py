@@ -10,6 +10,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.agent_local
+
 SCRIPT = (Path(__file__).resolve().parents[2] /
           '.github/scripts/engine-pr-check.py')
 REVISION = 'a' * 40

@@ -150,9 +150,10 @@ jobs:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
         run: |
           mkdir -p "$RUNNER_TEMP/pr-source"
-          python -I -m pytest -q -c /dev/null --confcutdir test/scripts \
+          python -I -m pytest -q -c test/scripts/agent-local.ini --confcutdir test/scripts \
             --junitxml "$RUNNER_TEMP/pr-source/tests.xml" \
             test/scripts/test_engine_pr_*.py \
+            test/scripts/test_engine_agent_local.py \
             test/scripts/test_engine_wheel_gpu.py \
             test/scripts/test_engine_wheel_scale_data.py \
             test/scripts/test_engine_wheel_scale_learning.py \

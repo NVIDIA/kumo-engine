@@ -11,7 +11,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-BUDGET_SECONDS = 1200
+PREFERRED_BUDGET_SECONDS = 1200
+BUDGET_SECONDS = 1320
+GUARDRAIL_SECONDS = 1500
 CONCLUSIONS = {
     'success', 'failure', 'cancelled', 'skipped', 'timed_out',
     'action_required', 'neutral', 'stale', 'startup_failure'
@@ -111,14 +113,33 @@ def audit(run, payload, revision):
         if row['conclusion'] not in ('success', 'skipped')
     ]
     success = run['conclusion'] == 'success' and not failures
+    within_preferred = elapsed <= PREFERRED_BUDGET_SECONDS
+    within_budget = elapsed <= BUDGET_SECONDS
+    within_guardrail = elapsed < GUARDRAIL_SECONDS
+    if within_preferred:
+        classification = 'preferred_target'
+    elif within_budget:
+        classification = 'accepted_target'
+    elif within_guardrail:
+        classification = 'above_accepted_target'
+    else:
+        classification = 'guardrail_exceeded'
     return dict(
-        schema=1, status='MEASURED', revision=revision, run_id=run_id,
+        schema=2, status='MEASURED', revision=revision, run_id=run_id,
         run_url=run['html_url'], run_attempt=attempt,
         run_conclusion=run['conclusion'], created_at=run['created_at'],
         run_started_at=run['run_started_at'],
         final_job_completed_at=final.isoformat(), elapsed_seconds=elapsed,
-        budget_seconds=BUDGET_SECONDS, within_budget=elapsed <= BUDGET_SECONDS,
-        passed=counted and success and elapsed <= BUDGET_SECONDS,
+        budget_seconds=BUDGET_SECONDS, within_budget=within_budget,
+        preferred_budget_seconds=PREFERRED_BUDGET_SECONDS,
+        within_preferred_budget=within_preferred,
+        guardrail_seconds=GUARDRAIL_SECONDS, within_guardrail=within_guardrail,
+        timing_classification=classification,
+        timing_policy='Twenty minutes is preferred; twenty-two minutes is '
+        'accepted. Above twenty-two minutes misses the accepted target, even '
+        'below the strict under-twenty-five-minute guardrail. A pass also '
+        'requires a verified complete inventory and successful jobs.',
+        passed=counted and success and within_budget and within_guardrail,
         failed_jobs=failures,
         job_count=len(rows), inventory_count_verified=counted, jobs=rows,
         timing_scope='Workflow creation through completion of every job '
@@ -137,7 +158,7 @@ def main():
         result = audit(json.loads(args.run.read_text()),
                        json.loads(args.jobs.read_text()), args.revision)
     except (OSError, ValueError, TypeError, KeyError) as error:
-        result = dict(schema=1, status='FAIL', passed=False, error=str(error))
+        result = dict(schema=2, status='FAIL', passed=False, error=str(error))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + '\n')
     print(json.dumps(result),

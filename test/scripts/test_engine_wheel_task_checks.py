@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 CHECKS = Path(__file__).resolve().parents[2] / (
     'packages/kumo-engine/test/wheel_task_checks.py')
@@ -66,6 +67,7 @@ class WheelTaskChecksTest(unittest.TestCase):
                 helpers['apply_training_budget'](plan, budget)
             self.assertEqual(plan.as_json(), original)
 
+    @pytest.mark.agent_local
     def test_metrics_score_full_outputs_against_known_answers(self):
         score = self.helpers()['score']
         self.assertEqual(
@@ -79,6 +81,7 @@ class WheelTaskChecksTest(unittest.TestCase):
             score('recall@5', [[0, 0, 0, 0, 1, 1]], [[6, 5, 4, 3, 2, 1]]), .5)
         self.assertEqual(score('mae', [[2, 4], [6, 8]], [[1, 5], [4, 8]]), 1)
 
+    @pytest.mark.agent_local
     def test_metrics_reject_missing_scores_and_invalid_answers(self):
         score = self.helpers()['score']
         for metric, targets, predictions in [
@@ -100,6 +103,7 @@ class WheelTaskChecksTest(unittest.TestCase):
                               targets=targets), self.assertRaises(ValueError):
                 score(metric, targets, predictions)
 
+    @pytest.mark.agent_local
     def test_prediction_ids_cannot_hide_missing_duplicate_or_reordered_rows(
             self):
         verify = self.helpers()['verify_predictions']
@@ -118,6 +122,7 @@ class WheelTaskChecksTest(unittest.TestCase):
             with self.subTest(actual=actual), self.assertRaises(ValueError):
                 verify(expected, actual, values)
 
+    @pytest.mark.agent_local
     def test_reload_checks_shape_finite_values_and_tolerance(self):
         verify = self.helpers()['verify_reload']
         self.assertLess(verify([[.5, 1]], [[.500001, 1.000001]]), 1.1e-6)
@@ -125,6 +130,7 @@ class WheelTaskChecksTest(unittest.TestCase):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 verify([[.5, 1]], values)
 
+    @pytest.mark.agent_local
     def test_fingerprint_ignores_mapping_order_and_rejects_nonfinite_inputs(
             self):
         fingerprint = self.helpers()['fingerprint']
@@ -258,6 +264,7 @@ class WheelTaskChecksTest(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 verify(arms)
 
+    @pytest.mark.agent_local
     def test_ranked_link_recall_keeps_full_positive_denominator_and_strict_ids(
             self):
         score = self.helpers()['ranked_link_score']

@@ -12,6 +12,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
+pytestmark = pytest.mark.agent_local
+
 SCRIPT = (Path(__file__).resolve().parents[2] /
           '.github/scripts/engine-pr-owner-source.py')
 REVISION = '54d73d45aa48a4c841cd8a8cdc9b5a8e8af5b5c5'

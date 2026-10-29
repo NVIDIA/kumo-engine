@@ -38,3 +38,11 @@ credentials, customer data, and private logs out of committed test reports.
 For a behavior change, add a regression test at the relevant boundary; pure
 prose edits need reference checks and a factual review rather than tests that
 repeat the prose.
+
+## Agent-local PR feedback
+
+Vedaant Jain requested a marked local selection that finishes in strictly less
+than five minutes. See [Engine PR checks](engine-pr-ci.md#agent-local-feedback)
+for one-time environment setup, the single command, selected coverage and timing
+evidence. Full CI keeps all eight learning tasks and the existing checks. Its
+accepted timeline is about 22 minutes, with a strict under-25-minute guardrail.
