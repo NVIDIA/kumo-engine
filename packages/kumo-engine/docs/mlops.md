@@ -2,7 +2,7 @@
 
 Turn MLOps on with one `kumo.MLOps` and the normal `kumo.engine` calls store their snapshots, training tables, models and prediction runs under an artifact root, record fits and prediction runs in your experiment tracker, and register models in its registry.
 
-Install with `pip install "kumo-engine[mlflow]"` (add `s3`, `gcs`, `databricks`, `sagemaker` or `snowflake` as needed; Snowflake needs only `kumo-engine[snowflake]`). GPU, CUDA and Databricks Runtime notes are under [Install](#install).
+Install the engine wheel by path, `pip install "<wheel dir>/<kumo_engine wheel>[mlflow]"` (add `s3`, `gcs`, `databricks`, `sagemaker` or `snowflake` as needed; Snowflake needs only `[snowflake]`): PyPI's `kumo-engine` 1.0.0 predates this API (see [Install](#install)). GPU, CUDA and Databricks Runtime notes are under [Install](#install).
 
 ## Quickstart
 
@@ -134,7 +134,7 @@ snapshot = kumo.GraphSnapshot.load_from_connector(cfg, id=result.snapshot_id)
 trainer = kumo.Trainer.load_from_connector(cfg, path=f"models/{result.id}")
 champion = kumo.Trainer.load_from_connector(cfg, location=kumo.ModelRegistryLocation("users-churn", alias="champion"))
 run = kumo.PredictionResult.load_from_connector(cfg, path=f"predictions/{run_id}")
-table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{table_id}", pq=pquery, snapshot=snapshot)
+table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{table_id}", pquery=pquery, snapshot=snapshot)
 ```
 
 `location=` loads the version an alias (or `version=`) names from the tracker's registry, one way on every platform. A loaded model is a `Trainer`; its `result` is the `TrainingResult` (`.id`, `.manifest`, `.metrics`, `.scoring_defaults`, `.holdout_df()`, `.holdout_evaluation()`).
@@ -236,7 +236,7 @@ with kumo.mlops(cfg):
 ```
 
 - Inside a block, the training and scoring snapshots come from the manifests and the artifact root (only their column statistics are fetched); outside one, pass `snapshot=` and `training_snapshot=`. Missing inputs leave a field `None` with a `reasons` entry.
-- `evaluate` returns the metrics the fit reports (`auroc`/`ap`, `mae`/`rmse`, `acc`, `map@k`), `matured=False` while the label window is still open, and `actuals`, a local Parquet directory of the evaluated rows (`pd.read_parquet(evaluation.actuals)`). `evaluation.export(PredictionOutputConfig(...))` writes them to a table or directory for a warehouse monitor.
+- `evaluate` returns the metrics the fit reports (`auroc`/`ap`, `mae`/`rmse`, `acc`, `map@k`), `matured=False` while the label window is still open, and the evaluated rows: `evaluation.frame` as a DataFrame, `evaluation.actuals` as a local Parquet directory. `evaluation.export(PredictionOutputConfig(...))` writes them to a table or directory for a warehouse monitor.
 
 A later job finds the champion's runs by tag and reads them from the root:
 
@@ -336,7 +336,7 @@ snowflake = SnowflakeTracking(SnowflakeConnector(warehouse="<wh>", database="ML"
 
 ### Install
 
-- A bare `kumo-engine[mlflow]` with `--find-links <wheel dir>` can resolve to an unrelated `kumo-engine` on PyPI; install the engine wheel by path: `pip install --find-links <wheel dir> "<wheel dir>/<kumo_engine wheel>[mlflow]"`.
+- Install the engine wheel by path, `pip install "<wheel dir>/<kumo_engine wheel>[mlflow]"`. PyPI's `kumo-engine` is the 1.0.0 release, which predates the MLOps API, and a bare `kumo-engine[mlflow]` resolves to it over a dev wheel; with it installed, `kumo.MLOps` raises `AttributeError: module 'kumo.engine' has no attribute 'MLOps'` and `pip show kumo-engine` says 1.0.0. The wheel `scripts/build_wheel.sh` builds bundles kumo-core, kumo-api, kumo-pql, DiskGraph and the connector packages; with separately built wheels, add `--find-links <wheel dir>`.
 - **GPU:** on a plain GPU VM or SageMaker image, install a torch build that matches the NVIDIA driver first, e.g. `pip install --index-url https://download.pytorch.org/whl/cu126 "torch==2.12.*" torchvision`. PyPI's default torch is built for a recent CUDA (`torch.version.cuda`; CUDA 13 needs driver ≥ 580); cu126 runs on ≥ 525.60. With `accelerator="auto"`, a torch that cannot use the driver runs on CPU: check `torch.cuda.is_available()`.
 - **Databricks:** Runtime 17.3 LTS ML or later keeps its torch, torchvision and pyarrow (kumo-engine accepts pyarrow 16 through 24; a custom CA bundle for S3 needs 21 or later). On 16.4 LTS ML pip replaces torch and breaks torchvision. The parent folder of an experiment path must exist. Registering to Unity Catalog from outside Databricks also needs `boto3`.
 - **Disk:** `kumo.configure(scratch_dir=...)` holds snapshots, tables and bundles; Python's own temporary files (multiprocessing) follow `TMPDIR`, so point both at a large local disk.
@@ -350,7 +350,7 @@ Every artifact has one way out and one way back. A `kumo.MLOps` stands in for th
 | Artifact | Export | Load |
 |---|---|---|
 | Snapshot | `snapshot.export(SnapshotOutputConfig(connector, path))`, returns the location | `GraphSnapshot.load_from_connector(connector, path=location)`, `(cfg, id=...)` |
-| Training table | `table.export(TrainingTableOutputConfig(connector, name))` | `TrainingTable.load_from_connector(connector, path=name, pq=pq, snapshot=snapshot)` |
+| Training table | `table.export(TrainingTableOutputConfig(connector, name))` | `TrainingTable.load_from_connector(connector, path=name, pquery=pquery, snapshot=snapshot)` |
 | Model | `result.export(ModelOutputConfig(connector, path=... or location=...))`, or `fit(export_config=...)` | `Trainer.load_from_connector(connector, path=... or location=...)` |
 | Prediction run | `run.export(PredictionOutputConfig(connector, path=...))`, or `predict(output_config=...)` | `PredictionResult.load_from_connector(connector, path=...)` |
 | Evaluation | `evaluation.export(PredictionOutputConfig(connector, path=...))` | `EvaluationResult.load_from_connector(connector, path=...)` |
@@ -411,7 +411,7 @@ A text column `infer_metadata()` reads as categorical (short values from a small
 | `ks` | largest gap between the two CDFs | ≤ 0.02 + 2× the sketch's rank error |
 | `wasserstein` | mean absolute gap between the quantile functions, in score units | ≤ 0.01 × (sum of both score ranges) + sketch error |
 
-The statistics are read off the recorded percentile curves (min, q01..q99, max), with no pass over the data. `DriftReport.features` compares, per column the model encodes (by its stype in the model plan), the statistics DiskGraph wrote when both snapshots were built: numeric deltas of mean, std, min, max, quartiles, skewness, kurtosis, null rate and distinct count plus `standardized_mean_shift`; categorical null rate, distinct count, PSI and Jensen-Shannon divergence (`category_counts_capped` flags truncated counts); timestamp min and max shift. Other columns, such as text, are not compared and are named in `reasons["features"]`. These are whole-snapshot statistics, so a slow change in a large event table is diluted. A tracked monitoring run logs the top ten columns by standardized shift and by PSI and the full comparison as `feature_drift.json`.
+The statistics are read off the recorded percentile curves (min, q01..q99, max), with no pass over the data. `DriftReport.features` compares, per column the model encodes (by its stype in the model plan), the statistics DiskGraph wrote when both snapshots were built: numeric deltas of mean, std, min, max, quartiles, skewness, kurtosis, null rate and distinct count plus `standardized_mean_shift`; categorical null rate, distinct count, PSI and Jensen-Shannon divergence (`category_counts_capped` flags truncated counts); timestamp min and max shift; text null rate, distinct count, average and maximum tokens per value and `glove_overlap`, the share of tokens the default GloVe vocabulary covers (new words lower it). Other columns are not compared and are named in `reasons["features"]`. These are whole-snapshot statistics, so a slow change in a large event table is diluted. A tracked monitoring run logs the top ten columns by standardized shift and by PSI and the full comparison as `feature_drift.json`.
 
 ### Warehouse monitor columns
 
@@ -424,7 +424,7 @@ Other systems plug in through `kumo.engine.tracking.Tracking`, which receives re
 
 ### Progress events
 
-`fit(callbacks=[...])` calls each callback with every `kumo.engine.tracking.Event`: `fit_started`, per trial `trial_started`, `epoch_ended` and `trial_ended`, then `fit_ended`. Ended events carry `params["status"]` and, on failure, `params["error"]`; a callback that raises is logged and not called again. For JSON lines: `callbacks=[lambda e: print(json.dumps(e.to_dict()))]`.
+`fit(callbacks=[...])` calls each callback with every `kumo.engine.tracking.Event`: `fit_started`, per trial `trial_started`, `epoch_ended` and `trial_ended`, then `fit_ended`. Ended events carry `params["status"]` and, on failure, `params["error"]`; a callback that raises is logged and not called again. For JSON lines: `callbacks=[lambda e: print(json.dumps(e.to_dict()))]`. `graph.snapshot(callbacks=[...])` reports `snapshot_started`, `table_staged` per table and `snapshot_ended` (with `snapshot_id` and `reused`), each with `params["seconds"]` since the start, and logs each at INFO.
 
 ### Limits
 
