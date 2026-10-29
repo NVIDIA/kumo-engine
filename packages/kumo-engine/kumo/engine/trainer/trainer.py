@@ -1593,6 +1593,8 @@ class Trainer:
             score_prediction,
         )
 
+        from kumo.engine.trainer._provenance import count_edges
+
         started_at = datetime.now(timezone.utc)
         run_dir = self.scratch_dir / 'runs' / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1680,6 +1682,8 @@ class Trainer:
             embedding_models=self._embedding_models,
             encoders=encoders,
             accelerator=self._accelerator,
+            count_edges=(None if settings is None else count_edges(
+                training_result.manifest, task_type)),
         )
 
         del encoders

@@ -7,8 +7,9 @@ import warnings
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.types import TaskType
 
 from kumo.engine._manifest import (
@@ -163,3 +164,26 @@ def holdout_baseline(path: Path, task_type: TaskType, *,
     top = top_score_stats([path])
     return HoldoutStats(truncated=truncated, rows=top['count'],
                         columns={TOP_SCORE: top})
+
+
+def holdout_counts(model: Optional[ModelManifest]) -> Optional[Counts]:
+    r"""The exact score counts of ``model``'s holdout, if it records them."""
+    holdout = None if model is None else model.holdout
+    if holdout is None or holdout.counts is None:
+        return None
+    return Counts.from_dict(holdout.counts)
+
+
+def count_edges(model: Optional[ModelManifest], task_type: TaskType
+                ) -> Optional[Dict[str, Tuple[float, ...]]]:
+    r"""The bins a prediction run of ``model`` counts its scores in:
+    probabilities in hundredths, or the training target's bins its holdout
+    counts; None for other tasks, or without a holdout's bins."""
+    if task_type in (TaskType.BINARY_CLASSIFICATION,
+                     TaskType.MULTICLASS_CLASSIFICATION):
+        return {'score': PROBABILITY_EDGES}
+    holdout = holdout_counts(model)
+    if (task_type.has_numerical_target and holdout is not None
+            and 'target' in holdout.edges):
+        return {'target': holdout.edges['target']}
+    return None

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Prediction-run manifest and output score statistics."""
 
+import json
 import warnings
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -145,12 +146,14 @@ def write(result: Any, manifest: PredictionManifest) -> None:
 def _manifest(result: Any, trainer: Any, snapshot: Any,
               prediction_table: Any, task_type: TaskType, scoring: RunScoring,
               started_at: str) -> PredictionManifest:
+    from kumo_core.prediction import COUNTS_FILE
     from kumo_core.train.artifact_manifest import load_prediction_selection
 
     from kumo.engine._events import query_sha256
 
     selection = load_prediction_selection(result.selection,
                                           validate_objects=False)
+    counts = Path(result.selection.pointer_path).parent / COUNTS_FILE
     model: Optional[ModelManifest] = trainer.result.manifest
     scoring_snapshot = getattr(snapshot, 'manifest', None)
     return _record_predictions(
@@ -177,7 +180,8 @@ def _manifest(result: Any, trainer: Any, snapshot: Any,
             skipped_rows=prediction_table.skipped_rows,
             skipped_sample=list(prediction_table.skipped_sample),
             skip_reason=prediction_table.skip_reason,
-        ), scoring=scoring, started_at=started_at)
+        ), scoring=scoring, started_at=started_at,
+        counts=json.loads(counts.read_text()) if counts.is_file() else None)
 
 
 def _record_predictions(
@@ -190,16 +194,20 @@ def _record_predictions(
     table: PredictionTableRecord,
     scoring: RunScoring,
     started_at: str,
+    counts: Optional[Dict[str, Any]] = None,
 ) -> PredictionManifest:
     r"""The manifest of prediction run ``run_id`` of any ``model``:
     ``outputs`` maps each artifact (``predictions``, ``embeddings``) to its
     row count and a call listing its Parquet files, whose scores are
-    summarized for ``task_type`` (see the column contract in mlops.md);
+    summarized for ``task_type`` (see the column contract in mlops.md),
+    with ``counts``, the scores' exact `Counts`, if the scorers counted;
     ``table`` holds the requested, scored and skipped counts."""
     stats: Dict[str, Dict[str, Any]] = {}
     for name, (rows, files) in outputs.items():
         stats[name] = {'rows': rows}
         if name == 'predictions':
+            if counts is not None:
+                stats[name]['counts'] = counts
             try:
                 stats[name].update(output_stats(files(), task_type))
             except Exception as error:
