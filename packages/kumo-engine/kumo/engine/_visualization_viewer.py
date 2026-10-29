@@ -111,7 +111,7 @@ tip.className='kumo-graph-tooltip';tip.role='tooltip';
 tip.id='kumo-tip-'+Math.random().toString(36).slice(2);host.append(tip);
 let active=null, card=null, timer, placement=null, hoverLock=null, pointer=null;
 let panTimer=null,panFrame=0,dwellPoint=null;
-const HOVER_DWELL=100,PAN_DURATION=250;
+const HOVER_DWELL=200,PAN_DURATION=250;
 const firstCard=svg.querySelector(':scope>[data-kumo-card]');
 const element=(cls,text)=>{const n=document.createElement('div');
 n.className='kumo-tip-'+cls;n.textContent=text;return n};
@@ -249,7 +249,8 @@ const selected=incident.filter(e=>e.classList.contains('kumo-edge-active'));
 const relevant=active.dataset.kumoRow?selected:incident;
 const extents=new Map(),extent=e=>{if(!extents.has(e))extents.set(e,edgeExtent(e,b));return extents.get(e)};
 let side;
-if(leftmost!==rightmost)side=leftmost?'left':'right';
+if(fk&&!pk)side='right';
+else if(leftmost!==rightmost)side=leftmost?'left':'right';
 else if(pk!==fk)side=pk?'left':'right';
 else{
 let left=0,right=0;for(const e of relevant){const r=extent(e);if(!r)continue;
