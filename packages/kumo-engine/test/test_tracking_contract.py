@@ -267,7 +267,9 @@ def snowflake_adapter(monkeypatch):
             names: Dict[Optional[str], Dict[str, Dict[str, Any]]] = {}
 
             def bucket(key):
-                prefix, _, name = key.rpartition('/')
+                prefix, _, name = key.partition('/')
+                if not prefix.startswith('trial-'):
+                    prefix, name = '', key
                 return names.setdefault(prefix or None, {
                     'params': {}, 'tags': {}, 'metrics': {}, 'steps': {}
                 }), name
@@ -319,7 +321,7 @@ def test_records_of_the_recorded_fit():
         spoofed = run_record(fit_spec(CONTEXT, tags={
             'kumo.bundle_id': 'x', 'training_job.tune_metric': 'y', 'a': 1}))
     assert spoofed.tags.keys() - fit.tags.keys() == {'a'}
-    assert fit.metrics == {'val_mae': 0.3, 'test_mae': 0.32, 'seconds': 9.0}
+    assert fit.metrics == {'val/mae': 0.3, 'test/mae': 0.32, 'seconds': 9.0}
     assert fit.artifacts['query.pql'] == QUERY
     assert json.loads(fit.artifacts['model_plan.json']) == CONTEXT.model_plan
     assert fit.inputs == INPUTS
@@ -334,9 +336,9 @@ def test_records_of_the_recorded_fit():
         })
     retry = records['trial-2-attempt-2']
     assert retry.params['attempt'] == '2'
-    assert retry.metrics == {'best_val_mae': 0.3, 'seconds': 4.0}
-    assert retry.steps == {'train_loss': ((1, 0.6), (2, 0.4)),
-                           'val_mae': ((1, 0.5), (2, 0.3))}
+    assert retry.metrics == {'val/best_mae': 0.3, 'seconds': 4.0}
+    assert retry.steps == {'train/loss': ((1, 0.6), (2, 0.4)),
+                           'val/mae': ((1, 0.5), (2, 0.3))}
 
 
 def test_adapter_records_the_same_runs(adapter, tmp_path):
