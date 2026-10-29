@@ -428,6 +428,51 @@ def test_staged_assets_load_through_the_loading_connector(tmp_path):
             (stage, f'@DB.S.ART/root/assets/toy/{sha}')]
 
 
+def test_volume_assets_load_through_the_connector_the_loader_was_given(
+        tmp_path, monkeypatch):
+    from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
+
+    from kumo.engine.integrations import _mlflow_model
+    from kumo.engine.integrations.mlflow import _target_hint
+
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    (tmp_path / 'volume').mkdir()
+    files = SubTreeFileSystem(str(tmp_path / 'volume'), LocalFileSystem())
+    volume = SimpleNamespace(sink_backend=SimpleNamespace(
+        holds_files=lambda connector, path: path.startswith('/Volumes/'),
+        filesystem=lambda connector, path: (files, path.lstrip('/'))))
+    (tmp_path / 'vocab').mkdir()
+    (tmp_path / 'vocab' / 'words.txt').write_text('a b c')
+    recorded = Dependencies(settings=kumo.MLOps((volume, '/Volumes/c/s/v/a')))
+    record = recorded.require(FileAsset('toy', 'vocab', tmp_path / 'vocab'))
+    assert record.location.startswith('/Volumes/c/s/v/a/assets/toy/')
+    manifest = ModelManifest(id='m', dependencies=[record])
+
+    with _deps.asset_locations([], _target_hint):
+        with pytest.raises(MissingDependencyError,
+                           match=r'pass target=DatabricksConnector\('
+                           r'identity=\.\.\.\) to load_model\(model_uri, '
+                           r'\.\.\.\), with an identity that reads '
+                           r'/Volumes/c/s/v/a/assets\.$'):
+            Dependencies.of(manifest).resolve('toy', 'vocab')
+    with _deps.asset_locations(_deps.connector_roots(manifest, volume)):
+        assert (Dependencies.of(manifest).resolve('toy', 'vocab') /
+                'words.txt').read_text() == 'a b c'
+    other_root = kumo.MLOps((volume, '/Volumes/c/s/v/b'))
+    assert Dependencies.of(manifest, other_root).resolve('toy', 'vocab')
+
+    seen = []
+    monkeypatch.setattr(
+        'kumo.engine._predictor.load_predictor', lambda bundle: seen.append(
+            Dependencies.of(manifest).candidates(record)[0]))
+    monkeypatch.setattr('kumo.engine.trainer._provenance.read_provenance',
+                        lambda bundle: manifest)
+    _mlflow_model.KumoModel().load_context(SimpleNamespace(
+        artifacts={'bundle': str(tmp_path)},
+        model_config={'columns': [], 'assets_from': volume}))
+    assert seen == [(volume, record.location)]
+
+
 def test_a_stage_root_registers_versions_that_serve_its_snapshot(tmp_path):
     from kumo.engine.trainer.trainer import _connector_registry, _publish
 

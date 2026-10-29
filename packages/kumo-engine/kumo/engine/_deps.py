@@ -15,6 +15,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import (
     Any,
+    Callable,
     Iterator,
     List,
     Mapping,
@@ -40,18 +41,30 @@ from kumo.engine._manifest import (
 Location = Union[str, Tuple[Any, str]]
 
 
+#: How to name the connector that reads an asset where it is stored, by
+#: location prefix; and, per loading call, which argument passes it.
+Hint = Callable[[str, str], str]
+READERS = (('@', 'SnowflakeConnector'), ('/Volumes/', 'DatabricksConnector'),
+           ('s3://', 'S3Connector'), ('gs://', 'GCSConnector'))
+
 _LOCATIONS: ContextVar[Tuple[Location, ...]] = ContextVar(
     'kumo_asset_locations', default=())
+_HINT: ContextVar[Optional[Hint]] = ContextVar('kumo_asset_hint',
+                                               default=None)
 
 
 @contextmanager
-def asset_locations(locations: Sequence[Location]) -> Iterator[None]:
+def asset_locations(locations: Sequence[Location],
+                    hint: Optional[Hint] = None) -> Iterator[None]:
     r"""Asset roots that dependencies resolved in the block look in
-    first."""
+    first; ``hint(reader, location)`` says which argument passes a
+    connector that reads an asset none of them holds."""
     token = _LOCATIONS.set((*locations, *_LOCATIONS.get()))
+    hinted = _HINT.set(hint or _HINT.get())
     try:
         yield
     finally:
+        _HINT.reset(hinted)
         _LOCATIONS.reset(token)
 
 
@@ -146,6 +159,7 @@ class Dependencies:
         self.errors: List[BaseException] = []
         self._settings = settings
         self._locations = [*locations, *_LOCATIONS.get()]
+        self._hint = _HINT.get()
 
     @classmethod
     def of(cls, manifest: Optional[ModelManifest], settings: Any = None,
@@ -196,6 +210,14 @@ class Dependencies:
                 continue
             if directory is not None and _verified(directory, record):
                 return directory
+        location = record.location or ''
+        reader = next((name for prefix, name in READERS
+                       if location.startswith(prefix)), None)
+        if reader is not None and self._hint is not None:
+            raise MissingDependencyError(
+                f"The model needs {asset_kind} {name!r} (sha256 "
+                f"{record.sha256}), stored at {location}, which this "
+                f"process cannot read: {self._hint(reader, location)}.")
         raise MissingDependencyError(
             f"The model needs {asset_kind} {name!r} (sha256 "
             f"{record.sha256}), which is in none of "
@@ -225,20 +247,39 @@ class Dependencies:
         if settings is not None:
             found.append((settings.root.connector,
                           settings.root.location(f'assets/{relative}')))
+            if record.location and reads(settings.root.connector,
+                                         record.location):
+                found.append((settings.root.connector, record.location))
         return found
+
+
+def reads(connector: Any, location: str) -> bool:
+    r"""Whether ``connector`` reads the stored ``location`` with its own
+    identity: a stage, a volume, or its object store's URI."""
+    from kumo.engine.connector import (
+        FileConnector,
+        GCSConnector,
+        S3Connector,
+        is_file_destination,
+    )
+
+    for kind, prefix in ((S3Connector, 's3://'), (GCSConnector, 'gs://'),
+                         (FileConnector, None)):
+        if isinstance(connector, kind):
+            return prefix is not None and location.startswith(prefix)
+    return (location.startswith(('@', '/Volumes/'))
+            and is_file_destination(connector, location))
 
 
 def connector_roots(manifest: Optional[ModelManifest],
                     connector: Any) -> List[Tuple[Any, str]]:
-    r"""The stage and volume asset roots of ``manifest`` that ``connector``
-    reads, which no URI reaches."""
-    from kumo.engine.connector import is_file_destination
-
+    r"""The asset roots of ``manifest`` that ``connector`` reads."""
+    if connector is None:
+        return []
     return [(connector, root) for root in sorted({
         record.location.rsplit('/', 2)[0]
         for record in Dependencies.of(manifest).records
-        if (record.location or '').startswith(('@', '/Volumes/'))
-        and is_file_destination(connector, record.location)
+        if record.location and reads(connector, record.location)
     })]
 
 
