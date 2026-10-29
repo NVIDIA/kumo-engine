@@ -219,13 +219,35 @@ def test_genie_fails_when_a_file_does_not_read_back(
     assert ws.deleted == []   # nothing is pruned after a failed check
 
 
+class FakeRow(tuple):
+    def __new__(cls, **fields: object) -> 'FakeRow':
+        row = super().__new__(cls, fields.values())
+        row.fields = fields
+        return row
+
+    def as_dict(self) -> dict:
+        return self.fields
+
+
 class FakeSession:
-    def __init__(self) -> None:
+    r"""Answers CURRENT_USER, SHOW VERSIONS (live unless ``live=False``) and
+    LIST (``listed``, names relative to the workspace's live version)."""
+
+    def __init__(self, live: bool = True, listed: tuple[str, ...] = ()) -> None:
         self.sql_log: list[str] = []
+        self.live = live
+        self.listed = listed
 
     def sql(self, text: str):
         self.sql_log.append(text)
-        return types.SimpleNamespace(collect=lambda: [('ME',)])
+        if text.startswith('SHOW VERSIONS'):
+            rows = [FakeRow(name='VERSION$1', is_live='false')]
+            rows += [FakeRow(name=None, is_live='true')] if self.live else []
+        elif text.startswith('LIST'):
+            rows = [FakeRow(name=f'/versions/live/{n}') for n in self.listed]
+        else:
+            rows = [FakeRow(user='ME')]
+        return types.SimpleNamespace(collect=lambda: rows)
 
 
 def test_coco_extension(home: Path) -> None:
@@ -280,8 +302,59 @@ def test_coco_workspace(home: Path) -> None:
     assert root == ('snow://workspace/USER$ME.PUBLIC."MY_WS"/versions/live/'
                     '.snowflake/cortex/skills/kumo-data-science')
     assert all(f"'{root}" in s for s in session.sql_log if s.startswith('PUT'))
+    assert not any(s.startswith(('ALTER', 'REMOVE')) for s in session.sql_log)
     with pytest.raises(ValueError, match='needs workspace'):
         skills.install_skills('coco', scope='workspace', session=session)
+
+
+def test_coco_workspace_without_a_live_version_gets_one(home: Path) -> None:
+    session = FakeSession(live=False)
+    skills.install_skills('coco', scope='workspace', session=session, workspace='NEW')
+    log = session.sql_log
+    add = log.index('ALTER WORKSPACE USER$ME.PUBLIC."NEW" ADD LIVE VERSION FROM LAST')
+    assert log[add - 1] == 'SHOW VERSIONS IN WORKSPACE USER$ME.PUBLIC."NEW"'
+    assert add < min(i for i, s in enumerate(log) if s.startswith('PUT'))
+
+
+@pytest.mark.parametrize('given, sql_name', [
+    ('UAT_testing', 'USER$ME.PUBLIC."UAT_testing"'),
+    ('my.ws', 'USER$ME.PUBLIC."my.ws"'),
+    ('say "hi"', 'USER$ME.PUBLIC."say ""hi"""'),
+    ('DB.SCH.WS', 'DB.SCH.WS'),
+    ('USER$ME.PUBLIC."My Ws"', 'USER$ME.PUBLIC."My Ws"'),
+])
+def test_coco_workspace_names(home: Path, given: str, sql_name: str) -> None:
+    session = FakeSession()
+    [root] = skills.install_skills('coco', scope='workspace', session=session, workspace=given)
+    assert root.startswith(f'snow://workspace/{sql_name}/versions/live/')
+    assert f'SHOW VERSIONS IN WORKSPACE {sql_name}' in session.sql_log
+
+
+def test_sql_literals_are_escaped(home: Path) -> None:
+    session = FakeSession()
+    skills.install_skills('coco', scope='workspace', session=session, workspace="it's")
+    put = next(s for s in session.sql_log if s.startswith('PUT'))
+    assert """'snow://workspace/USER$ME.PUBLIC."it\\'s"/versions/live/""" in put
+    assert skills._lit('a\\b') == 'a\\\\b'
+
+
+def test_coco_workspace_removes_what_the_build_no_longer_ships(home: Path) -> None:
+    base = '.snowflake/cortex/skills/kumo-data-science'
+    session = FakeSession(listed=(
+        f'{base}/SKILL.md',
+        f'{base}/.folder',
+        f'{base}/hosts/.folder',
+        f'{base}/hosts/snowflake-coco/adapter.md',
+        f'{base}/hosts/obsolete/.folder',
+        f'{base}/hosts/obsolete/a.md',
+        f'{base}/hosts/obsolete/deep/b.md',
+        f'{base}/old-notes.md',
+        f'{base}/SKILL',  # a prefix of SKILL.md: REMOVE would take both
+        '.snowflake/cortex/skills/other-skill/SKILL.md',
+    ))
+    [root] = skills.install_skills('coco', scope='workspace', session=session, workspace='WS')
+    removes = [s for s in session.sql_log if s.startswith('REMOVE')]
+    assert removes == [f"REMOVE '{root}/hosts/obsolete/'", f"REMOVE '{root}/old-notes.md'"]
 
 
 def test_snowflake_notebook_asks_for_a_destination(

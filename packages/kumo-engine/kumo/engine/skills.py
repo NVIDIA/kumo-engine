@@ -42,6 +42,7 @@ import argparse
 import fcntl
 import io
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -197,8 +198,9 @@ def install_skills(
         session: ``coco`` ``workspace``/``extension``: the Snowpark session.
             Defaults to the active one.
         workspace: ``coco`` ``workspace``: the Snowsight workspace, as
-            ``NAME`` (in your personal database) or a full
-            ``USER$<user>.PUBLIC.NAME``.
+            its name as Snowsight shows it (in your personal database) or a
+            full ``USER$<user>.PUBLIC."<name>"``. One created with SQL gets
+            its live version added.
         extension: ``coco`` ``extension``: the Cortex Extension, created if
             missing, in the session's current database and schema unless
             qualified.
@@ -306,23 +308,84 @@ def _put(session: Any, pkg: Path, root: str) -> None:
     for p in _files(pkg):
         rel = p.relative_to(pkg).parent.as_posix()
         dest = root if rel == '.' else f'{root}/{rel}'
-        session.sql(f"PUT 'file://{p.as_posix()}' '{dest}/' "
-                    'AUTO_COMPRESS=FALSE OVERWRITE=TRUE').collect()
+        session.sql(f"PUT '{_lit('file://' + p.as_posix())}' "
+                    f"'{_lit(dest)}/' AUTO_COMPRESS=FALSE OVERWRITE=TRUE"
+                    ).collect()
+
+
+def _lit(text: str) -> str:
+    r"""Escapes ``text`` for a single-quoted SQL string literal."""
+    return text.replace('\\', '\\\\').replace("'", "\\'")
+
+
+_IDENT = r'(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)'
+
+
+def _workspace_name(session: Any, workspace: str) -> str:
+    r"""The SQL name of a Snowsight workspace.
+
+    ``DB.SCHEMA.NAME`` is used as written. Anything else is the name as
+    Snowsight shows it, in the user's personal database, quoted so that case,
+    dots and spaces survive.
+    """
+    if re.fullmatch(rf'{_IDENT}\.{_IDENT}\.{_IDENT}', workspace):
+        return workspace
+    user = session.sql('SELECT CURRENT_USER()').collect()[0][0]
+    name = workspace.replace('"', '""')
+    return f'USER${user}.PUBLIC."{name}"'
+
+
+def _rows(session: Any, text: str) -> list[dict[str, Any]]:
+    return [r.as_dict() for r in session.sql(text).collect()]
 
 
 def _install_coco_workspace(pkg: Path, session: Any, workspace: str) -> str:
     r"""Uploads ``pkg`` to a Snowsight workspace's ``.snowflake/cortex/skills``,
     the copy Cortex Code reads in that workspace.
 
-    Workspace files cannot be listed as deleted or read back from here, so a
-    file an older build shipped and this one does not stays in place.
+    A workspace created with SQL has no live version and takes no files until
+    one is added, so it is added here. The package is written over the
+    previous install, and only then are the files it no longer ships removed.
     """
-    if '.' not in workspace:
-        user = session.sql('SELECT CURRENT_USER()').collect()[0][0]
-        workspace = f'USER${user}.PUBLIC."{workspace}"'
-    root = (f'snow://workspace/{workspace}/versions/live/'
-            f'.snowflake/cortex/skills/{SKILL}')
+    ws = _workspace_name(session, workspace)
+    versions = _rows(session, f'SHOW VERSIONS IN WORKSPACE {ws}')
+    if not any(str(v.get('is_live')).lower() == 'true' for v in versions):
+        session.sql(f'ALTER WORKSPACE {ws} ADD LIVE VERSION FROM LAST'
+                    ).collect()
+    live = f'snow://workspace/{ws}/versions/live/'
+    rel_root = f'.snowflake/cortex/skills/{SKILL}'
+    root = live + rel_root
     _put(session, pkg, root)
+
+    # LIST names each file from /versions/live/ on; empty `.folder` files
+    # mark folders made in Snowsight. Remove, for each file not shipped, the
+    # highest folder under the root that holds nothing shipped.
+    shipped_files = {p.relative_to(pkg).as_posix() for p in _files(pkg)}
+    shipped = {''}
+    for path in shipped_files:
+        while (path := path.rpartition('/')[0]) not in shipped:
+            shipped.add(path)
+    removed: list[str] = []
+    for row in _rows(session, f"LIST '{_lit(root)}/'"):
+        rel = row['name'].split('/versions/live/', 1)[1]
+        if not rel.startswith(rel_root + '/'):
+            continue
+        rel = rel[len(rel_root) + 1:]
+        folder = rel.rpartition('/')[0]
+        if rel in shipped_files or (rel.endswith('/.folder')
+                                    or rel == '.folder') and folder in shipped:
+            continue
+        top = rel
+        while (parent := top.rpartition('/')[0]) not in shipped:
+            top = parent
+        # REMOVE matches by prefix: a folder is named with its slash, and a
+        # file is skipped if it is a prefix of a shipped one.
+        target = top + '/' if top != rel else top
+        if any(target.startswith(r) for r in removed) or any(
+                f != target and f.startswith(target) for f in shipped_files):
+            continue
+        session.sql(f"REMOVE '{_lit(root)}/{_lit(target)}'").collect()
+        removed.append(target)
     return root
 
 
