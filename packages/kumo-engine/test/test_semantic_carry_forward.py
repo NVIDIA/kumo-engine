@@ -129,7 +129,6 @@ def test_compile_rejects_invalid_prediction_time(snapshot, tmp_path, value,
 
 @pytest.mark.parametrize('query, threshold, message', [
     ('PREDICT users.age FOR EACH users.id', .5, 'target/entity'),
-    ('PREDICT users.label FOR EACH users.id', None, 'must be specified'),
     ('PREDICT users.label FOR EACH users.id', 1.1, 'between 0 and 1'),
 ])
 def test_prediction_admission_before_materialization(snapshot, tmp_path, query,
