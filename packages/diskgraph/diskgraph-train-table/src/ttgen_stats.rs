@@ -318,6 +318,13 @@ impl<U: UnitSystem> StatsMerger<U> {
         std::mem::take(&mut self.source_rows)
     }
 
+    pub(crate) fn target_range(&self) -> Option<(f64, f64)> {
+        self.target_welford
+            .as_ref()
+            .filter(|w| w.count > 0)
+            .map(|w| (w.min, w.max))
+    }
+
     pub(crate) fn merge(&mut self, chunk: ChunkStats<U>) {
         self.source_rows.merge(chunk.source_rows);
         self.num_train_rows += chunk.num_train_rows;

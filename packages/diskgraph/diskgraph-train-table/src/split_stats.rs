@@ -55,6 +55,59 @@ pub(crate) struct KumoStageStats {
     target_false_count: u64,
     timestamp_min: Option<i64>,
     timestamp_max: Option<i64>,
+    target_histogram: Option<TargetHistogram>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TargetHistogram {
+    min: f64,
+    width: f64,
+    counts: [u64; NUM_HISTOGRAM_BINS],
+}
+
+impl TargetHistogram {
+    pub(crate) fn new(min: f64, max: f64) -> Self {
+        Self {
+            min,
+            width: range_bin_width(min, max),
+            counts: [0; NUM_HISTOGRAM_BINS],
+        }
+    }
+
+    fn observe(&mut self, value: f64) {
+        let raw = ((value - self.min) / self.width).floor() as isize;
+        self.counts[raw.clamp(0, NUM_HISTOGRAM_BINS as isize - 1) as usize] += 1;
+    }
+
+    fn merge(&mut self, other: &TargetHistogram) {
+        for (count, other) in self.counts.iter_mut().zip(other.counts) {
+            *count += other;
+        }
+    }
+
+    fn summary(&self, target_count: u64) -> (f64, f64, u64, JsonValue) {
+        let (mode_bin, mode_count) = self
+            .counts
+            .iter()
+            .copied()
+            .enumerate()
+            .max_by_key(|&(_, count)| count)
+            .unwrap_or_default();
+        let bins: Vec<f64> = (0..=NUM_HISTOGRAM_BINS)
+            .map(|i| self.min + self.width * i as f64)
+            .collect();
+        (
+            self.min + self.width * (mode_bin as f64 + 0.5),
+            mode_count as f64 / target_count as f64,
+            mode_count,
+            json!({
+                "bins": bins,
+                "counts": self.counts.as_slice(),
+                "bin_width": self.width,
+                "num_bins": NUM_HISTOGRAM_BINS,
+            }),
+        )
+    }
 }
 
 impl Default for KumoStageStats {
@@ -70,6 +123,7 @@ impl Default for KumoStageStats {
             target_false_count: 0,
             timestamp_min: None,
             timestamp_max: None,
+            target_histogram: None,
         }
     }
 }
@@ -90,6 +144,13 @@ impl std::fmt::Debug for KumoStageStats {
 }
 
 impl KumoStageStats {
+    pub(crate) fn new(target_histogram: Option<TargetHistogram>) -> Self {
+        Self {
+            target_histogram,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn merge(&mut self, other: KumoStageStats) {
         let KumoStageStats {
             row_count,
@@ -102,6 +163,7 @@ impl KumoStageStats {
             target_false_count,
             timestamp_min,
             timestamp_max,
+            target_histogram,
         } = other;
         self.row_count += row_count;
         self.entity_hll.merge(&entity_hll);
@@ -117,6 +179,12 @@ impl KumoStageStats {
         if let Some(value) = timestamp_max {
             self.timestamp_max = Some(self.timestamp_max.map_or(value, |v| v.max(value)));
         }
+        if let Some(other) = target_histogram {
+            match &mut self.target_histogram {
+                Some(histogram) => histogram.merge(&other),
+                None => self.target_histogram = Some(other),
+            }
+        }
     }
 
     fn observe_target(&mut self, value: f64) {
@@ -127,6 +195,13 @@ impl KumoStageStats {
         self.target_welford.observe(value);
         self.target_tdigest.observe(value);
         self.target_hll.observe_f64(value);
+        self.observe_target_histogram(value);
+    }
+
+    fn observe_target_histogram(&mut self, value: f64) {
+        if let Some(histogram) = &mut self.target_histogram {
+            histogram.observe(value);
+        }
     }
 
     fn observe_timestamp(&mut self, value: i64) {
@@ -242,6 +317,7 @@ fn observe_target_array(arr: &dyn Array, stats: &mut KumoStageStats) -> TTGenRes
                 stats.observe_i64_target(value);
                 stats.target_welford.observe(value as f64);
                 stats.target_tdigest.observe(value as f64);
+                stats.observe_target_histogram(value as f64);
             }
         }
         return Ok(());
@@ -336,6 +412,15 @@ fn numerical_target_distribution(stats: &KumoStageStats) -> JsonValue {
     let p75 = td.quantile_at(0.75);
     let min = stats.target_welford.min;
     let max = stats.target_welford.max;
+    let (mode, mode_percentage, mode_count, histogram) = match &stats.target_histogram {
+        Some(h) => h.summary(stats.target_welford.count),
+        None => (
+            min,
+            0.0,
+            0,
+            json!({"bins": [], "counts": [], "bin_width": 0.0, "num_bins": 0}),
+        ),
+    };
     json!({
         "target_mean": stats.target_welford.mean(),
         "target_min": min,
@@ -343,15 +428,10 @@ fn numerical_target_distribution(stats: &KumoStageStats) -> JsonValue {
         "target_percentile_25": p25,
         "target_percentile_75": p75,
         "target_median": p50,
-        "target_mode": min,
-        "target_mode_percentage": 0.0,
-        "target_mode_count": 0,
-        "histogram": {
-            "bins": JsonValue::Array(Vec::new()),
-            "counts": JsonValue::Array(Vec::new()),
-            "bin_width": 0.0,
-            "num_bins": 0,
-        },
+        "target_mode": mode,
+        "target_mode_percentage": mode_percentage,
+        "target_mode_count": mode_count,
+        "histogram": histogram,
     })
 }
 
@@ -649,7 +729,11 @@ fn histogram_bin_width(stats: &KumoStageStats) -> f64 {
     if stats.target_welford.count == 0 {
         return 1.0 / NUM_HISTOGRAM_BINS as f64;
     }
-    let range = stats.target_welford.max - stats.target_welford.min;
+    range_bin_width(stats.target_welford.min, stats.target_welford.max)
+}
+
+fn range_bin_width(min: f64, max: f64) -> f64 {
+    let range = max - min;
     if range.is_finite() && range > 0.0 {
         range / NUM_HISTOGRAM_BINS as f64
     } else {

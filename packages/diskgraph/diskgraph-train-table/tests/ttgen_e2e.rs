@@ -2213,6 +2213,15 @@ fn e2e_split_stats_emitted_when_split_computed() {
             .is_some(),
         "numerical split stats should include a histogram"
     );
+    let histogram = &payload["train_table_stats"]["target_distribution"]["histogram"];
+    assert_eq!(histogram["num_bins"], 50);
+    let counts: u64 = histogram["counts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_u64().unwrap())
+        .sum();
+    assert_eq!(counts, stage_row_count(&output, "train"));
 
     for (stage_key, payload_key) in [("val", "val_table_stats"), ("test", "test_table_stats")] {
         let row_count = stage_row_count(&output, stage_key);
