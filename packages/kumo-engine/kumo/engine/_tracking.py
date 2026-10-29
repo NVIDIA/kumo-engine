@@ -12,6 +12,7 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -59,8 +60,9 @@ class RunRecord:
     r"""One tracked run; ``steps`` are per-epoch ``(epoch, value)``
     histories, ``artifacts`` map file names to text, ``inputs`` map
     source table names to their ``connector``, ``location``, ``version`` and
-    ``version_kind``, and ``summaries`` are `kumo_core.summaries` results,
-    which each tracker logs in its own way."""
+    ``version_kind``, ``summaries`` are `kumo_core.summaries` results,
+    which each tracker logs in its own way, and ``description`` is Markdown
+    for trackers that describe runs."""
 
     name: Optional[str] = None
     params: Mapping[str, str] = field(default_factory=dict)
@@ -72,6 +74,7 @@ class RunRecord:
     inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
         default_factory=dict)
     summaries: Tuple['Summary', ...] = ()
+    description: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +97,7 @@ class RunSpec:
     summaries: Sequence['Summary'] = ()
     status: Optional[str] = None
     error: Optional[str] = None
+    description: Optional[str] = None
 
 
 INPUT_FIELDS = ('connector', 'location', 'version', 'version_kind')
@@ -181,6 +185,7 @@ def run_record(spec: RunSpec) -> RunRecord:
         artifacts=dict(spec.artifacts),
         inputs=dict(spec.inputs),
         summaries=tuple(spec.summaries),
+        description=spec.description,
     )
 
 
@@ -239,10 +244,13 @@ def prediction_record(manifest: 'PredictionManifest',
 
     table = manifest.prediction_table
     params = {**manifest.scoring.to_dict(), 'anchors': table.anchors}
+    training_table = getattr(_parents(manifest.parents.model),
+                             'training_table', None)
+    model_manifest = getattr(model, 'manifest', None)
     return run_record(
         RunSpec(
             kind='prediction',
-            name=manifest.id,
+            name=run_name('predict', model, _started(manifest)),
             params={
                 key: value
                 for key, value in params.items() if value is not None
@@ -250,6 +258,10 @@ def prediction_record(manifest: 'PredictionManifest',
             parents={
                 'bundle_id': manifest.parents.model.id,
                 'prediction_id': manifest.id,
+                'snapshot_id': manifest.parents.snapshot.id,
+                'task_type': getattr(training_table, 'task_type', None),
+                'fit_run_id': fit_run_id(model_manifest),
+                **registered_parents(model),
             },
             artifacts={
                 PROVENANCE_FILE:
@@ -257,10 +269,56 @@ def prediction_record(manifest: 'PredictionManifest',
                            default=str)
             },
             inputs=fit_inputs(manifest),
-            summaries=_prediction_summaries(
-                manifest, holdout_counts(getattr(model, 'manifest', None))),
+            summaries=_prediction_summaries(manifest,
+                                            holdout_counts(model_manifest)),
             error=None if error is None else format_error(error),
+            description=_unlabelled(getattr(model_manifest, 'tracking',
+                                            None)),
         ))
+
+
+def run_name(kind: str, model: Any, started: datetime) -> str:
+    r"""``<kind>-<model>-v<version>-<YYYYMMDD-HHMM>`` (UTC) for a run
+    started at ``started`` with ``model``, a `TrainingResult`, or
+    ``<kind>-<YYYYMMDD-HHMM>`` if the model is not registered."""
+    registered = getattr(model, 'registered_model', None)
+    return '-'.join(filter(None, (
+        kind, None if registered is None else
+        f'{registered.name}-v{registered.version}',
+        started.astimezone(timezone.utc).strftime('%Y%m%d-%H%M'))))
+
+
+def fit_run_id(manifest: Any) -> Optional[str]:
+    r"""The tracker's run of the fit a `ModelManifest` records."""
+    tracking = getattr(manifest, 'tracking', None)
+    return None if tracking is None else tracking.run_id
+
+
+def registered_parents(model: Any) -> Mapping[str, Any]:
+    r"""Pointer tags to the registered version of ``model``, a
+    `TrainingResult`: ``model_name``, ``model_version`` and
+    ``model_alias``."""
+    from kumo.engine.trainer._run_spec import _registered
+
+    if model is None:
+        return {}
+    return _registered(model.registered_model, model.registered_alias)
+
+
+def _started(manifest: 'PredictionManifest') -> datetime:
+    timings = manifest.timings
+    return (datetime.now(timezone.utc) if timings is None else
+            datetime.fromisoformat(timings.started_at))
+
+
+def _unlabelled(fit: Optional['TrackingRef']) -> str:
+    text = ('Scores of unlabelled rows: this run records their distribution '
+            'and its drift from the holdout, not accuracy, which '
+            '`Trainer.evaluate` logs once the outcomes are known.')
+    if fit is None:
+        return text
+    link = f'[{fit.run_id}]({fit.url})' if fit.url else fit.run_id
+    return f'{text} Fit run: {link}.'
 
 
 def _prediction_summaries(manifest: 'PredictionManifest',

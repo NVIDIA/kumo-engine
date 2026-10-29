@@ -215,6 +215,9 @@ def test_mlops_runs_record_their_exact_score_counts(graph, classifier,
         assert counts.extents[column] == (values.min(), values.max())
     assert counts.arrays['predicted_positive'] == frame['TARGET_PRED'].sum()
 
+    assert recorder.records[0].tags.items() >= {
+        'kumo.task_type': 'binary_classification',
+        'kumo.snapshot_id': snapshot.id}.items()
     logged = {summary.name: summary
               for summary in recorder.records[0].summaries}
     assert logged['pred/True_PROB/hist'] == Histogram(
