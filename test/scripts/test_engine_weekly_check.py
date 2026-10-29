@@ -598,3 +598,15 @@ def test_training_critical_path_uses_only_actual_fit_timestamps():
     api = weekly()
     assert api['training_critical_path'](rows) == 900.0
     assert api['training_critical_path']([rows[0], {}]) is None
+
+
+def test_eleven_models_do_not_claim_complete_weekly_ancillary_coverage(tmp_path):
+    value, paths = complete_evidence(tmp_path)
+    report = weekly()['collect'](value, paths, tmp_path / 'bundle', 'reference')
+    assert report['primary_block_complete'] is True
+    assert report['weekly_milestone_complete'] is False
+    assert report['ancillary_checks']['B6']['status'] == 'MEASURED_FROM_PRIMARY_MODELS'
+    assert report['ancillary_checks']['P1']['status'] == 'MISSING'
+    assert report['ancillary_checks']['P1']['required_cpu_operations'] == 5
+    assert report['ancillary_checks']['B9']['status'] == 'MISSING'
+    assert report['ancillary_checks']['B9']['required_matching_gpus'] == 2

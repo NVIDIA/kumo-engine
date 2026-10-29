@@ -585,6 +585,15 @@ def load_case(path, spec, mode, manifest):
     return report
 
 
+def milestone_coverage():
+    return dict(primary_block_complete=True, weekly_milestone_complete=False,
+                ancillary_checks=dict(
+                    B6=dict(status='MEASURED_FROM_PRIMARY_MODELS', physical_fits=0, models=11),
+                    P1=dict(status='MISSING', physical_fits=0, required_cpu_operations=5),
+                    B9=dict(status='MISSING', physical_fits=0, required_matching_gpus=2)),
+                remaining_coverage='Bind and verify P1 and B9 workers before claiming the complete weekly milestone')
+
+
 def collect(manifest, paths, output, mode):
     if len(paths) != 11:
         raise ValueError('All eleven completed weekly cases are required')
@@ -613,7 +622,7 @@ def collect(manifest, paths, output, mode):
     bundle = dict(schema=1, mode=mode, status='MEASURED', version=version,
                   wheel_sha256=wheel, reference=manifest['reference'],
                   performance_reference=manifest['performance_reference'],
-                  physical_fits=11, cases=list(reports),
+                  physical_fits=11, **milestone_coverage(), cases=list(reports),
                   case_specs=manifest['cases'], input_manifest=manifest,
                   files=inventory(output))
     save(output / 'manifest.json', bundle)
@@ -725,7 +734,7 @@ def compare(manifest, candidate, candidate_sha256, reference, reference_sha256,
     timing_scope = ('Elapsed time from first actual fit start to last '
                     'actual fit end, including gaps')
     report = dict(
-        schema=1, status='MEASURED', cases=rows, quality_policy='report_only',
+        schema=1, status='MEASURED', cases=rows, **milestone_coverage(), quality_policy='report_only',
         resource_policy='report_only', reference_physical_fits=11,
         candidate_physical_fits=11,
         performance_reference=manifest['performance_reference'],

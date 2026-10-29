@@ -272,8 +272,10 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a') as stream:
               stream.write(f'BLOCK_ROOT={output}\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
-              stream.write(f"Completed weekly block: eleven {os.environ['MODE']} fits. Manifest SHA-256: {pin}.\\n")
+              stream.write(f"Completed primary case block: eleven {os.environ['MODE']} fits. Manifest SHA-256: {pin}.\\n")
               stream.write('Quality and resource differences report only. The separate performance reference remains required.\\n')
+              stream.write('P1 sampling and B9 retained-model two-GPU prediction remain missing. This is not a complete weekly milestone.\\n')
+          raise SystemExit('P1 and B9 ancillary workers are not bound or verified; preserve primary evidence and keep the workflow draft')
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
