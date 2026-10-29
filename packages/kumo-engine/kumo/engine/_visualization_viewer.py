@@ -10,7 +10,7 @@ from kumo.engine._widget import THEME, button, render_widget
 _STYLE = Template(r"""
 .kumo-graph{container:kumo-graph/inline-size}
 .kumo-graph,.kumo-graph *{user-select:none;-webkit-user-select:none}
-.kumo-graph:fullscreen{width:100%;height:100%;max-height:none}
+.kumo-graph:fullscreen{width:100%;height:100%;max-height:none;padding:16px}
 .kumo-graph-toolbar{display:grid;
 grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
 .kumo-graph-layout{display:flex;grid-column:2;grid-row:1;justify-self:center;
