@@ -195,6 +195,36 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 - `database` and `schema_name` default to the session's (`PUBLIC` when only `database` is given). The fit is in Snowsight under AI & ML » Experiments.
 - The registered version carries the bundle; load it with `Trainer.load_from_connector`.
 
+### What each run shows
+
+Every artifact's location and how to load it is in the run's `_provenance.json` (Artifacts tab). Metric names have `/` sections, and the MLflow UI groups a run's charts by section. MLflow picks each chart's type: a metric with one value draws a bar, a metric logged at several steps draws a line. kumo-engine draws no figures of its own; every value comes from exact counts over all rows, with no sampling.
+
+| Run | Section | What |
+|---|---|---|
+| fit | `train/`, `val/` | Per-epoch metrics, step = epoch, plus `train/epoch_seconds`. A single-trial fit logs them live; a search logs them for the selected trial once the fit picks it. |
+| fit | `search/` | `best_val_<tune metric>` after each trial, step = trial (searches only). |
+| fit | `test/` | The selected model's test metrics, also on the logged model (Models tab), and curves and metrics from exact counts over every test row. See below. |
+| fit | `data/` | `rows`, `entities` and the label balance (`positive_rate`, or `label_mean` and friends) per split. |
+| fit, prediction | `graph/` | `rows/<table>`; `edges/<relation>/{count,src_match_frac,dst_match_frac,fk_lookup_failures}`; `<table>/{duplicate_pks,dropped_rows,null_time_dropped}`; `tables`, `edge_types`; a `graph/col_stats` table with a row per column. |
+| trial | `train/`, `val/` | Live per-epoch metrics and `val/best_<metric>`, with the trial's sampled params (compare trials with MLflow's parallel coordinates). |
+| prediction | `pred/` | Per probability column, `pred/<column>/hist` with its `mean`, `min`, `max` and quantiles (`pred/hist`, `pred/mean`... for a regression); `pred/positive_rate` with a threshold; for multiclass, `pred/confidence/...` and a `pred/classes` table of class shares. |
+| prediction | `drift/` | `score_psi` and `score_ks` against the model's holdout, on the same bins. |
+| prediction | `data/` | `rows`, `skipped_rows` and `skipped_fraction`, and the system metrics of the call. |
+| monitoring | `drift/`, `eval/` | `score_drift`'s `drift/score_{psi,ks,wasserstein}`, `drift/features/{shift,psi}/<table>/<column>` and `drift/input/...`; `evaluate`'s `eval/<metric>` and `eval/rows`. |
+
+`test/` by task type, with curves as two series over the same steps:
+- **Binary:** `roc/{fpr,tpr}`, `pr/{recall,precision}` and `gain/{ppr,tpr}` over thresholds 0.00 to 1.00 (step = hundredths), `calibration/{predicted,observed}` per score bin, `logloss`, `brier`, `label/positive_rate`; with a stored threshold, `confusion/{tp,fp,fn,tn}`, `accuracy`, `precision`, `recall`, `f1`.
+- **Multiclass:** `accuracy`, `top_k_accuracy` (step = k), `f1_{macro,micro,weighted}`, `logloss`, `class/<class>/{precision,recall,f1}` for the 20 classes with the most rows, `reliability/{confidence,accuracy}`, and a `test/confusion` table (the 20 classes, then `other`).
+- **Multilabel:** `f1_{micro,macro}`, `precision_micro`, `recall_micro`, `label/<label>/{precision,recall,f1}` for 20 labels, a pooled `roc`, and `labels_per_entity`.
+- **Regression and forecasting:** `mae`, `rmse`, `r2`, `bias`, `mape`, `smape`, `residual/hist`, `TARGET_PRED/hist` and `TARGET/hist` on the training target's bins, `calibration/{predicted,actual}`; a forecast also `horizon/{mae,rmse,bias,r2}` (step = horizon) and `TARGET_PRED/h<n>/hist`.
+- **Ranking and link prediction:** `<metric>_at_k` (step = k) beside the scalars.
+
+A histogram is two series over its bins: `<name>/count` and `<name>/lower_edge`. To draw a curve such as ROC, open `test/roc/tpr`'s chart, edit it, and set the X axis to the metric `test/roc/fpr` (MLflow 2.11 and later). Tags carry `kumo.task_type`, `kumo.tune_metric`, `kumo.engine_version`, `kumo.snapshot_id`, `kumo.bundle_id`, the registered `kumo.model_name`/`model_version`/`model_alias`, `kumo.best_trial`, `kumo.data_warnings` (each table that breaks a Kumo data check), and the artifacts' URIs. Each source table is a dataset (Datasets panel) with its schema and profile.
+
+MLflow shows no 2-D heatmap (regression predicted against actual), threshold slider, confusion picture (it is a table), reference lines (the ROC diagonal, a baseline), bar histograms (bins draw as a line), or labelled category charts (class shares are a table). Snowflake charts metrics against step only, so a curve shows as its two rates over thresholds; it has no datasets or tables (tables are JSON artifacts) and keeps 200 metric names per run.
+
+Where things are in the MLflow UI: the packaged model is in the experiment's Models tab (MLflow 3 logged models, `m-<id>`), with its files in MLflow's artifact store; a run's Artifacts tab holds `_provenance.json`, `model_plan.json`, `query.pql` and the tables; kumo-engine's bundle, snapshot, training table and scores are on the artifact root, linked by the `kumo.*_uri` tags. The Traces tab is for GenAI tracing, which kumo-engine does not use.
+
 ## Score
 
 `predict(snapshot)` scores the trained query's population at its prediction time; `entities=` scores given rows; `predict(prediction_table, snapshot=...)` scores a table generated beforehand.
