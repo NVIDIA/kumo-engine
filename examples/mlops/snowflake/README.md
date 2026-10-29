@@ -24,8 +24,8 @@ generates is undocumented) and has not been run end to end; see
 To review a model before it is scored, drop the alias from the registry
 location in `jobs.mlops` and move `champion` yourself with
 `ALTER MODEL <database>.<schema>.USERS_CHURN VERSION <version> SET ALIAS = champion`
-(after `... VERSION champion UNSET ALIAS`; see "Promote a Kumo model" in
-`packages/kumo-engine/docs/mlops.md`).
+(see [Promote a model](../../../packages/kumo-engine/docs/mlops.md#promote-a-model)
+for the statements that free both aliases first).
 If moving the alias fails, the fit still publishes, warns, and scoring keeps
 the previous `champion`.
 

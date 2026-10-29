@@ -16,8 +16,10 @@ separately. `--model-name` (default `users-churn`) and `--table-prefix`
 (prefix of the three Parquet file names) are passed to both steps, as is
 `--on-error` (default `raise`: a failed tracking call or registration fails
 the step, so `Predict` never runs on the previous version unnoticed). With `--alias candidate`, the pipeline registers and scores a
-candidate and leaves `champion` to be moved by hand (see "Promote a Kumo
-model" in `packages/kumo-engine/docs/mlops.md`).
+candidate and leaves `champion` to be moved by hand (see
+[Promote a model](../../../packages/kumo-engine/docs/mlops.md#promote-a-model)).
+On a shared tracking server, pass your own `--name` and `--model-name`: the
+defaults would update another team's pipeline or registered model.
 
 To score on a schedule without retraining, put `Predict` in its own pipeline
 with a `PipelineSchedule` trigger (`pipeline.put_triggers`).
@@ -25,7 +27,7 @@ with a `PipelineSchedule` trigger (`pipeline.put_triggers`).
 ## Before running
 
 1. Build and push the image. [`Dockerfile`](Dockerfile) installs
-   `kumo-engine[mlflow,sagemaker]` (MLflow, S3 and `sagemaker-mlflow`) and torch 2.12 for CUDA 12.6
+   `kumo-engine[mlflow,sagemaker,text]` (MLflow, S3, `sagemaker-mlflow` and the default word vectors for text columns) and torch 2.12 for CUDA 12.6
    on `python:3.12-slim`, from a directory holding the kumo-engine wheel and
    its kumo-core, kumo-api, kumo-pql, kumo-s3 and diskgraph wheels
    (`--find-links`; the engine wheel goes in by path, since PyPI's unrelated
