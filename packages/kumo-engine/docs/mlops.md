@@ -229,7 +229,7 @@ scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
 
 ## Monitor
 
-`score_drift` compares a run's scores with the model's holdout and a previous run; `evaluate` scores a run once its outcomes are in a newer snapshot. With tracking on, each call logs a monitoring run named `drift-<prediction id>` or `evaluate-<prediction id>`, tagged `kumo.kind=monitoring`, `kumo.monitors=<prediction id>` and `kumo.bundle_id`; on MLflow the prediction run also gets `kumo.monitored=<monitoring run id>`.
+`score_drift` compares a run's scores with the model's holdout and a previous run; `evaluate` scores a run once its outcomes are in a newer snapshot. With tracking on, each call logs a monitoring run named `monitor-<model>-v<version>-<YYYYMMDD-HHMM>`, tagged `kumo.kind=monitoring`, `kumo.monitor=drift` or `evaluate`, `kumo.monitors=<prediction id>`, `kumo.bundle_id` and `kumo.fit_run_id`, with its values under `drift/` or `eval/` and the system metrics of the call; on MLflow the prediction run also gets `kumo.monitored=<monitoring run id>`.
 
 ```python
 with kumo.mlops(cfg):

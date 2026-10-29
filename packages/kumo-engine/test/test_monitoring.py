@@ -5,6 +5,7 @@
 import gc
 import math
 import os
+import re
 import time
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
@@ -559,15 +560,16 @@ def test_tracked_monitoring_logs_a_new_run(snapshots, classifier, tmp_path):
         trainer.evaluate(run, labels_snapshot=snapshots.after)
 
     drift, evaluation = Tracker.records
-    assert (drift.name, evaluation.name) == (f'drift-{run.id}',
-                                             f'evaluate-{run.id}')
+    assert re.fullmatch(r'monitor-\d{8}-\d{4}', drift.name)
+    assert (drift.tags['kumo.monitor'],
+            evaluation.tags['kumo.monitor']) == ('drift', 'evaluate')
     for record in (drift, evaluation):
         assert record.tags['kumo.kind'] == 'monitoring'
         assert record.tags['kumo.monitors'] == run.id
         assert record.tags['kumo.bundle_id'] == run.bundle_id
-    assert drift.metrics['psi'] == report.psi
-    assert drift.metrics['wasserstein'] == report.wasserstein
-    assert 'auroc' in evaluation.metrics and 'rows' in evaluation.metrics
+    assert drift.metrics['drift/score_psi'] == report.psi
+    assert drift.metrics['drift/score_wasserstein'] == report.wasserstein
+    assert {'eval/auroc', 'eval/rows'} <= set(evaluation.metrics)
 
 
 def test_a_monitoring_tracking_failure_warns_or_raises(classifier, tmp_path,
@@ -769,7 +771,7 @@ def test_feature_metrics_stay_far_below_a_run_limit():
     metrics = feature_metrics(features)
     assert len(metrics) <= 4 * FEATURE_METRICS_TOP
     assert all(set(name) <= set('abcdefghijklmnopqrstuvwxyz'
-                                'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-')
+                                'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-/')
                for name in metrics)
 
     class Tracker:

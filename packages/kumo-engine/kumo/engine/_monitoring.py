@@ -10,6 +10,7 @@ import shutil
 import time
 import warnings
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 from uuid import uuid4
@@ -486,7 +487,12 @@ def score_drift(trainer: Any, run: Any, *, previous: Any, snapshot: Any,
     )
 
 
-def track(report: Any, run: Any, settings: Any) -> None:
+#: Score-drift fields under their logged names.
+_SCORE_DRIFT = {'psi': 'score_psi', 'ks': 'score_ks',
+                'wasserstein': 'score_wasserstein'}
+
+
+def track(report: Any, run: Any, settings: Any, model: Any = None) -> None:
     r"""Log ``report`` as a new monitoring run of ``run``; a failure warns,
     or raises under ``on_error='raise'``."""
     tracking = None if settings is None else settings.tracking
@@ -494,26 +500,35 @@ def track(report: Any, run: Any, settings: Any) -> None:
         return
 
     from kumo.engine._mlops import full_error, raise_on_error, warn_failure
-    from kumo.engine._tracking import RunSpec, log_run, run_record
+    from kumo.engine._tracking import (
+        RunSpec,
+        fit_run_id,
+        log_run,
+        registered_parents,
+        run_name,
+        run_record,
+    )
 
     try:
-        values = {**report.metrics} if isinstance(
-            report, EvaluationResult) else {}
+        evaluating = isinstance(report, EvaluationResult)
+        section = 'eval' if evaluating else 'drift'
+        values = {f'eval/{name}': value
+                  for name, value in report.metrics.items()} if evaluating \
+            else {}
         for name, value in dataclasses.asdict(report).items():
             if name == 'input_changes':
                 for key, (before, after) in (value or {}).items():
-                    values[f'input.{key}.before'] = before
-                    values[f'input.{key}.after'] = after
+                    values[f'drift/input/{key}/before'] = before
+                    values[f'drift/input/{key}/after'] = after
             elif name == 'features':
                 values.update(feature_metrics(value or {}))
             elif name not in ('metrics', 'reasons', 'actuals'):
-                values[name] = value
+                values[f'{section}/{_SCORE_DRIFT.get(name, name)}'] = value
         prediction_id = getattr(run, 'id', None)
         record = run_record(
             RunSpec(
                 kind='monitoring',
-                name=(f'evaluate-{prediction_id}' if isinstance(
-                    report, EvaluationResult) else f'drift-{prediction_id}'),
+                name=run_name('monitor', model, datetime.now(timezone.utc)),
                 params={
                     key: value
                     for key, value in values.items() if isinstance(value, str)
@@ -526,7 +541,11 @@ def track(report: Any, run: Any, settings: Any) -> None:
                 },
                 parents={
                     'monitors': prediction_id,
+                    'monitor': 'evaluate' if evaluating else 'drift',
                     'bundle_id': getattr(run, 'bundle_id', None),
+                    'fit_run_id': fit_run_id(getattr(model, 'manifest',
+                                                     None)),
+                    **registered_parents(model),
                 },
                 artifacts=({
                     'feature_drift.json':
@@ -931,7 +950,7 @@ def _js(p: Mapping[str, float], q: Mapping[str, float]) -> Optional[float]:
 
 def _metric_name(*parts: str) -> str:
     import re
-    return '.'.join(re.sub(r'[^A-Za-z0-9_-]', '_', part) for part in parts)
+    return '/'.join(re.sub(r'[^A-Za-z0-9_-]', '_', part) for part in parts)
 
 
 def feature_metrics(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
@@ -950,11 +969,13 @@ def feature_metrics(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
              and math.isfinite(change[key])),
             reverse=True)
         for value, table, column in ranked[:FEATURE_METRICS_TOP]:
-            metrics[_metric_name('features', name, table, column)] = value
+            metrics[_metric_name('drift', 'features', name, table,
+                                 column)] = value
         tables: Dict[str, float] = {}
         for value, table, _ in ranked:
             tables.setdefault(table, value)
         for table, value in sorted(tables.items(), key=lambda item: -item[1]
                                    )[:FEATURE_METRICS_TOP]:
-            metrics[_metric_name('features', f'max_{name}', table)] = value
+            metrics[_metric_name('drift', 'features', f'max_{name}',
+                                 table)] = value
     return metrics
