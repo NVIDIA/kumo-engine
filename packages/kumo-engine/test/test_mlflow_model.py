@@ -181,32 +181,24 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
     assert set(tables.glob('*')) == before | {tables / 'other-call'}
 
 
-def test_pyfunc_names_missing_temporal_and_threshold_inputs(
-        fitted, monkeypatch):
-    from dataclasses import replace
-
+def test_pyfunc_names_a_missing_prediction_time_and_needs_no_threshold(
+        fitted):
     from kumo.engine.integrations._mlflow_model import predict
 
     trainer, table, snapshot = fitted
     rows = pd.DataFrame({'ENTITY': range(5)})
-    time = str(pd.Timestamp(table.timestamps[0]))
     with pytest.raises(ValueError) as error:
         predict(trainer, snapshot, rows,
                 {'binary_classification_threshold': .5})
     assert str(error.value) == ("temporal query: pass params={"
                                 "'prediction_time': ...} or a TIMESTAMP "
                                 "column")
-    with pytest.raises(ValueError, match=r"^binary classification: pass "
-                       r"params=\{'binary_classification_threshold': "
-                       r"\.\.\.\}$"):
-        predict(trainer, snapshot, rows, {'prediction_time': time})
 
-    monkeypatch.setattr(
-        trainer, '_training_result',
-        replace(trainer.result, scoring_defaults=kumo.ScoringDefaults(
-            binary_classification_threshold=.5)))
-    assert len(predict(trainer, snapshot, rows, {'prediction_time': time
-                                                 })) == 5
+    time = str(pd.Timestamp(table.timestamps[0]))
+    scores = predict(trainer, snapshot, rows, {'prediction_time': time})
+    assert len(scores) == 5
+    assert scores['TARGET_PRED'].isna().all()
+    assert scores['True_PROB'].between(0, 1).all()
 
 
 def test_pyfunc_returns_rows_in_input_order(fitted):

@@ -1089,9 +1089,10 @@ class Trainer:
         Link predictions require an explicit count of at most 500. Embeddings
         alone do not require a count.
 
-        Binary classification requires an explicit threshold. Multilabel
-        classification defaults to 0.5. Both accept thresholds from 0 to 1;
-        thresholds change predicted labels without changing class scores.
+        Binary classification always returns ``True_PROB``; ``TARGET_PRED``
+        is set only with a threshold, else null. Multilabel classification
+        defaults to 0.5. Both accept thresholds from 0 to 1; thresholds
+        change predicted labels without changing class scores.
 
         Omitted arguments fall back to the bundle's :attr:`scoring_defaults`.
         """
@@ -1183,8 +1184,10 @@ class Trainer:
                 'Prediction query target/entity contract differs from the trained model'
             )
         task_type = TaskType(contract[1])
-        threshold = resolve_classification_threshold(
-            task_type, binary_classification_threshold, binary_required=True)
+        threshold = (None if binary_classification_threshold is None
+                     and task_type is TaskType.BINARY_CLASSIFICATION else
+                     resolve_classification_threshold(
+                         task_type, binary_classification_threshold))
         destinations = (output_config.destinations()
                         if output_config is not None else {})
         artifacts = frozenset(
