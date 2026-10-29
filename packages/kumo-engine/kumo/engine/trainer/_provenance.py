@@ -7,7 +7,7 @@ import warnings
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from kumo_core.types import TaskType
 
@@ -42,6 +42,7 @@ def write_provenance(
     fit_mode: Optional[str],
     tracking: Optional[TrackingRef] = None,
     dependencies: Optional[List[Dependency]] = None,
+    holdout_counts: Optional[Dict[str, Any]] = None,
 ) -> None:
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
 
@@ -50,8 +51,9 @@ def write_provenance(
     holdout: Optional[HoldoutStats] = None
     if holdout_path is not None and task_type in SCORE_COLUMNS:
         try:
-            holdout = holdout_baseline(holdout_path, task_type,
-                                       truncated=holdout_truncated)
+            holdout = replace(holdout_baseline(holdout_path, task_type,
+                                               truncated=holdout_truncated),
+                              counts=holdout_counts)
         except Exception as error:
             warnings.warn(
                 f"Recording the model manifest without the holdout score "

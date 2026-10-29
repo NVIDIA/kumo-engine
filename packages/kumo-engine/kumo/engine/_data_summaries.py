@@ -8,7 +8,7 @@ from the statistics their builds wrote (``split_stats.json``,
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from kumo_core.instrumentation import format_error
 from kumo_core.summaries import Scalar, Summary, Table, Tag
@@ -59,6 +59,21 @@ def split_summaries(staging_dir: Path) -> List[Summary]:
             if _number(target.get(key)) is not None
         ]
     return summaries
+
+
+def target_edges(staging_dir: Path) -> Tuple[float, ...]:
+    r"""Bin edges for a numerical target from the training split's
+    statistics, its histogram's bins and quartiles; empty without them."""
+    target = (_read(staging_dir / 'split_stats.json').get('train_table_stats')
+              or {}).get('target_distribution') or {}
+    edges = {
+        *((target.get('histogram') or {}).get('bins') or ()),
+        *(target[key] for key in ('target_min', 'target_percentile_25',
+                                  'target_median', 'target_percentile_75',
+                                  'target_max')
+          if _number(target.get(key)) is not None),
+    }
+    return tuple(sorted(edges)) if len(edges) > 1 else ()
 
 
 def snapshot_summaries(index: Path,
