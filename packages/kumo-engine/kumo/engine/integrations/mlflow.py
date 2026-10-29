@@ -161,6 +161,7 @@ class MlflowTracking:
         self.logs_model = log_model
         self._outer: Optional[str] = None
         self.run_id: Optional[str] = None
+        self._samples: List[Tuple[Mapping[str, float], int, int]] = []
         self._reset()
 
     def _reset(self) -> None:
@@ -367,9 +368,22 @@ class MlflowTracking:
                 _SystemMetrics(self._log_system_metrics))
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
+        self._log_samples()
         if record.tags.get('kumo.kind') != 'fit':  # a fit logs Datasets
             with self.target.scope():
                 _log_inputs(self._mlflow, client, self._parent, record.inputs)
+
+    @contextmanager
+    def sample_system_metrics(self) -> Iterator[None]:
+        r"""Samples system metrics during the block, for the next prediction
+        or monitoring run this tracker logs."""
+        self._samples = []
+        if not self.log_system_metrics:
+            yield
+            return
+        with _SystemMetrics(lambda metrics, step: self._samples.append(
+                (metrics, step, int(time.time() * 1000)))):
+            yield
 
     def log_prediction_run(self, record: RunRecord) -> None:
         self.start(record)
@@ -483,6 +497,20 @@ class MlflowTracking:
     def _log_system_metrics(self, metrics: Mapping[str, float],
                             step: int) -> None:
         self._log_metrics(self._parent, metrics, step)
+
+    def _log_samples(self) -> None:
+        samples, self._samples = self._samples, []
+        entities = self._mlflow.entities
+        metrics = [
+            entities.Metric(metric_key(name), float(value), timestamp, step)
+            for values, step, timestamp in samples
+            for name, value in values.items()
+        ]
+        with self.target.scope():
+            for start in range(0, len(metrics), _BATCH_METRICS):
+                self._client.log_batch(
+                    self._parent,
+                    metrics=metrics[start:start + _BATCH_METRICS])
 
     def log_summaries(self, summaries: Sequence[Summary]) -> None:
         r"""Logs each summary on the current run through its type's call in

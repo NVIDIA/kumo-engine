@@ -92,7 +92,12 @@ from kumo.engine._manifest import (
 from kumo.engine._mlops import full_error, warn_failure
 from kumo.engine._predictor import TRAINER_PREDICTOR
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
-from kumo.engine._tracking import RunSpec, TrackingSession, fit_inputs
+from kumo.engine._tracking import (
+    RunSpec,
+    TrackingSession,
+    fit_inputs,
+    system_metrics,
+)
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot, report_other_graph
@@ -1445,12 +1450,14 @@ class Trainer:
                      snapshot, entities, prediction_time, strict=(
                          settings is not None
                          and settings.on_error == 'raise')))
-        return self._predict(
-            table, snapshot=snapshot, output_config=output_config,
-            num_classes_to_return=num_classes_to_return,
-            num_workers=num_workers,
-            binary_classification_threshold=binary_classification_threshold,
-            settings=settings)
+        with system_metrics(None if settings is None else settings.tracking):
+            return self._predict(
+                table, snapshot=snapshot, output_config=output_config,
+                num_classes_to_return=num_classes_to_return,
+                num_workers=num_workers,
+                binary_classification_threshold=(
+                    binary_classification_threshold),
+                settings=settings)
 
     def _prediction_table(self, snapshot: GraphSnapshot,
                           entities: Optional[SourceTable],
