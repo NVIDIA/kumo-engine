@@ -27,6 +27,10 @@ For connector changes, start with the [public test command](public-tests.md).
 It builds its prerequisites and runs without cloud credentials. The
 [test matrix](../connector-test-matrix.md) lists coverage and CI limits.
 
+The [Engine PR check](engine-pr-ci.md) builds the candidate wheel and runs eight
+small task checks on CUDA. It reports learning scores without a quality gate.
+Its complete timing still requires a finished CI run and all required results.
+
 ## Report evidence
 
 Record the command, environment, result, and any untested dependency. Keep

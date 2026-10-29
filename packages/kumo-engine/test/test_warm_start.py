@@ -173,7 +173,8 @@ def test_bundle_warm_start_fit_reload_and_predict(tmp_path, monkeypatch, refit,
                     for name, value in entry.items():
                         if isinstance(value, torch.Tensor):
                             torch.testing.assert_close(actual[key][name], value,
-                                                       rtol=0, atol=0)
+                                                       rtol=0, atol=0,
+                                                       check_device=False)
             configured_states.append(states)
         return result
 
