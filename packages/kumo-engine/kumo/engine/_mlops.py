@@ -71,6 +71,7 @@ class MLOps:
                 raise ValueError(
                     f'{type(connector).__name__} cannot hold files at '
                     f'{path!r}; artifact_root needs a file location.')
+            _require_within_root(connector, path)
             root = _Root(connector, path, path)
         kinds = (frozenset(KINDS) if self.store is True else
                  frozenset() if self.store is False else frozenset(self.store))
@@ -84,6 +85,26 @@ class MLOps:
     def wants(self, kind: str) -> bool:
         r"""Whether artifacts of ``kind`` are stored under the root."""
         return kind in self.kinds
+
+
+def _require_within_root(connector: Any, path: str) -> None:
+    from kumo_core.sources.object_store_sessions import ObjectStoreSessions
+
+    sink = connector.sink_backend
+    if not isinstance(sink, ObjectStoreSessions):
+        return
+    try:
+        sink._resolved(connector, path)
+    except ValueError as error:
+        target = sink._root_for(connector)
+        within = (f'root_dir {sink.scheme}://{target.path}'
+                  if target is not None else 'target')
+        name = type(connector).__name__
+        raise ValueError(
+            f'artifact_root {path!r} is outside this {name}\'s {within} '
+            f'({error}), so nothing could be stored there. Give the root '
+            f'a connector that contains it: ({name}(root_dir={path!r}, '
+            f'identity=...), {path!r}).') from error
 
 
 _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(

@@ -49,6 +49,15 @@ def test_a_root_is_a_uri_or_a_connector_and_path(tmp_path):
     assert not kumo.MLOps(artifact_root=str(tmp_path), store=False).kinds
 
 
+def test_a_connector_root_outside_its_root_dir_fails_when_built():
+    data = kumo.S3Connector(root_dir='s3://bucket/data')
+    assert kumo.MLOps(artifact_root=(data, 's3://bucket/data/kumo')).root
+    with pytest.raises(ValueError, match=r"'s3://bucket/kumo' is outside "
+                       r"this S3Connector's root_dir s3://bucket/data .*"
+                       r"S3Connector\(root_dir='s3://bucket/kumo'"):
+        kumo.MLOps(artifact_root=(data, 's3://bucket/kumo'))
+
+
 def test_a_call_argument_beats_the_nearest_block(tmp_path):
     outer = kumo.MLOps(artifact_root=str(tmp_path / 'outer'))
     inner = kumo.MLOps(artifact_root=str(tmp_path / 'inner'))
