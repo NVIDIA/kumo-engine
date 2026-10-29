@@ -133,6 +133,15 @@ class TimingTests(unittest.TestCase):
         self.assertNotEqual(process.returncode, 0)
         self.assertIn('Duplicate', result['error'])
 
+    def test_truncated_bare_jobs_cannot_approve_the_budget(self):
+        # Omitting the slower final job must not turn1201seconds into a pass.
+        first_job_only = recorded_jobs()['jobs'][:1]
+        process, result = self.run_audit(jobs=first_job_only)
+        self.assertEqual(result['elapsed_seconds'], 720)
+        self.assertFalse(result['inventory_count_verified'])
+        self.assertFalse(result['passed'])
+        self.assertNotEqual(process.returncode, 0)
+
     def test_all_paginated_job_pages_are_measured(self):
         jobs = recorded_jobs()
         pages = [{'total_count': 2, 'jobs': [job]} for job in jobs['jobs']]

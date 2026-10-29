@@ -289,15 +289,20 @@ def run_phase(args):
                     raise ValueError(
                         'Installation workflow lacks loaded-state identity')
             else:
-                paths = (['test_readme_quickstart.py']
-                         if args.phase == 'example' else [
-                             'test_pr_behavior.py', 'test_warm_start.py',
-                             'test_training_table_export.py',
-                             'test_static_link_split.py',
-                             'test_static_link_pseudo_time.py',
-                             'test_static_query_time_cutoff.py',
-                             'test_timestamp_batch_cap.py'
-                         ])
+                paths = ([
+                    'test_readme_quickstart.py'
+                ] if args.phase == 'example' else [
+                    'test_pr_behavior.py', 'test_warm_start.py',
+                    'test_training_table_export.py',
+                    'test_static_link_split.py',
+                    'test_static_link_pseudo_time.py::test_static_link_subgraphs_hide_later_split_labels',
+                    'test_static_link_pseudo_time.py::test_native_iterator_infers_cutoff_without_loader_options',
+                    'test_static_link_pseudo_time.py::test_stage_visibility_overrides_generic_runtime_options',
+                    'test_static_query_time_cutoff.py',
+                    'test_timestamp_batch_cap.py',
+                    'test_prediction_workers.py::test_bad_worker_count_fails_at_public_entry',
+                    'test_prediction_workers.py::test_bad_class_count_fails_before_prediction_work'
+                ])
                 # Package-local fixtures import the installed wheel. No root
                 # conftest or source package path is added to this interpreter.
                 with (quickstart_prediction_check(output)

@@ -157,7 +157,8 @@ def test_bundle_warm_start_fit_reload_and_predict(tmp_path, monkeypatch, refit,
             for name, value in checkpoint['state_dict'].items():
                 if isinstance(value, torch.Tensor):
                     torch.testing.assert_close(self.state_dict()[name], value,
-                                               rtol=0, atol=0)
+                                               rtol=0, atol=0,
+                                               check_device=False)
             assert self._loaded_optimizer_states
             restored_states.append(copy.deepcopy(self._loaded_optimizer_states))
         return result

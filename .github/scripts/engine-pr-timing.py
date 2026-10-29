@@ -118,7 +118,8 @@ def audit(run, payload, revision):
         run_started_at=run['run_started_at'],
         final_job_completed_at=final.isoformat(), elapsed_seconds=elapsed,
         budget_seconds=BUDGET_SECONDS, within_budget=elapsed <= BUDGET_SECONDS,
-        passed=success and elapsed <= BUDGET_SECONDS, failed_jobs=failures,
+        passed=counted and success and elapsed <= BUDGET_SECONDS,
+        failed_jobs=failures,
         job_count=len(rows), inventory_count_verified=counted, jobs=rows,
         timing_scope='Workflow creation through completion of every job '
         'in the supplied attempt, including queues and final reporting. '
