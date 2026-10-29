@@ -46,7 +46,7 @@ env:
 
 jobs:
   configure:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     outputs:
       runner: ${{ steps.configure.outputs.runner }}
     steps:
@@ -489,7 +489,7 @@ jobs:
   required:
     needs: [configure, build, gpu, compare]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Report required jobs and unfinished behavior coverage
         env:
