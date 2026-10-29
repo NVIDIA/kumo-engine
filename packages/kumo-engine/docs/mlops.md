@@ -145,7 +145,7 @@ table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{tabl
 
 - `result.registered_model` is the version `MLOps(registry=)` registered; `result.published_model` the one `fit(export_config=...)` published.
 - `result.tracking` is the tracker's run: `TrackingRef(platform="databricks", run_id="...", url="https://.../ml/experiments/.../runs/...")`. The model's `_provenance.json` records the same.
-- `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict`, the MLflow pyfunc, Snowflake `run_batch` and the scoring jobs apply them when a call omits them; explicit arguments and a query's `TOP k` win. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
+- `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict`, the MLflow pyfunc, Snowflake `run_batch` and the scoring jobs apply them when a call omits them; explicit arguments and a query's `TOP k` win. A binary model always returns `True_PROB`; with no threshold passed or stored, its `TARGET_PRED` is null. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
 - `result.export(cfg)` (or `trainer.export(cfg)` for a loaded model) registers a model at `cfg.registry` through its tracker. On every platform, registering a bundle the registry already holds under that name returns its version instead of adding one.
 - If registration fails, `fit` warns with the full error and returns with `registered_model=None` (with `on_error="raise"`, it raises), and the fit run ends failed with `kumo.error`. Registering a bundle the registry already holds under the name returns that version (logged at info) and moves the alias to it.
 
@@ -293,11 +293,12 @@ A model registered through `MlflowTracking` is an MLflow pyfunc: it serves with 
 model = mlflow.pyfunc.load_model("models:/main.ml.users_churn@champion")
 scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
     "snapshot": cfg.snapshot_uri(snapshot),        # "/Volumes/main/ml/kumo/snapshots/<graph id>/<data version>"
-    "prediction_time": "2024-06-01"})              # temporal queries
+    "prediction_time": "2024-06-01"})              # temporal queries need it, or a TIMESTAMP column
 ```
 
-- Input rows have an `ENTITY` column and optionally a `TIMESTAMP`; scores come back in input order, one per scored row. Binary classification needs `params={"binary_classification_threshold": ...}` unless the model carries scoring defaults.
+- Input rows have an `ENTITY` column and optionally a `TIMESTAMP`; a temporal query needs one of `TIMESTAMP` or `prediction_time` (the anchor of a batch run is `run.manifest.prediction_table.anchors[0]`). Scores come back in input order, one per scored row. Binary classification returns `True_PROB`; `TARGET_PRED` needs `params={"binary_classification_threshold": ...}` or a stored threshold, and is null without one.
 - Each replica loads a snapshot on its first `predict` with that URI and keeps it. `log_model(trainer, snapshot=..., serving_snapshot=...)` logs a model whose replicas load that snapshot at startup and use it when no `snapshot` param is given; `serving_snapshot` takes a URI, or a `GraphSnapshot` or snapshot id stored under the block's artifact root.
+- A model with stored assets (word vectors for text columns) on a volume, stage or bucket reads them with the identity it is given: `mlflow.pyfunc.load_model(uri, model_config={"assets_from": connector})`, a connector for that store with its credentials; an asset it cannot find raises, naming this option.
 - Serving needs an image with kumo-engine installed: `mlflow models serve -m <model dir> --env-manager local`. Its pip requirement is `kumo-engine[s3,gcs]` of the same version (plus `[text]` for text columns).
 
 ### Batch inference in Snowflake
@@ -566,7 +567,7 @@ table is diluted.
 ### Warehouse monitor columns
 
 - Databricks keys the monitor on `EVALUATED_AT` (anchors are older than its lookback by the label window). For regression use `INFERENCE_PROBLEM_TYPE_REGRESSION`; for multiclass `prediction_column="CLASS"`. `True_PROB` is profiled as an ordinary column.
-- Snowflake: binary classification uses `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; multiclass `PREDICTION_CLASS_COLUMNS=(CLASS)`; regression `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`. The timestamp is `TIMESTAMP_NTZ`, columns free of nulls, NaN and infinities, each used once; mixed-case names such as `"True_PROB"` are double-quoted. Without `BASELINE` there is no drift. Registration records the version's task type, which Model Monitor requires.
+- Snowflake: binary classification uses `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; multiclass `PREDICTION_CLASS_COLUMNS=(CLASS)`; regression `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`. The timestamp is `TIMESTAMP_NTZ`, columns free of nulls, NaN and infinities, each used once; columns are listed as string literals in their stored case, `('True_PROB')` (`'"True_PROB"'` is not found). Without `BASELINE` there is no drift. Registration records the version's task type, which Model Monitor requires.
 
 ### Snowflake serving
 
