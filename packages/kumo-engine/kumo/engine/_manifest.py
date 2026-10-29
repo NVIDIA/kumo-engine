@@ -277,6 +277,9 @@ class HoldoutStats(Record):
     rows: int
     columns: Dict[str, Dict[str, Any]]
     label_positive_rate: Optional[float] = omit_none()
+    # `kumo_core.score_counts.Counts.to_dict()` of the test scores, the
+    # bins and counts a prediction run's scores are compared with.
+    counts: Optional[Dict[str, Any]] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
