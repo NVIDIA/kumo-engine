@@ -76,6 +76,23 @@ uv pip install .
 
 ## Usage
 
+`SamplerEngine.sample(..., deterministic_ties=True)` optionally makes capped
+`temporal_most_recent` selection independent of source row/file order when the
+destination table declares a primary key. Timestamp and configured weight keep
+precedence; boundary ties select the greatest exact numeric or lexical byte keys.
+Repeated edges remain repeated. Existing indexes need no rewrite.
+
+The default is `False`, preserving the fast sampling path. Repeated requests on
+one index already have stable ordering with a fixed random seed (#100); this
+option compares membership across differently built indexes. Rust dispatches
+once per request to separate compile-time specializations. Enabling it can be
+much slower: a large boundary tie requires reading every eligible key even for
+a small fanout. Unreadable declared keys raise errors when needed. Graphs without
+PK metadata retain their existing tie order.
+
+Rust callers opt in through `sample_with_deterministic_ties`; existing `sample`
+calls and runtime-batch sampling retain the default behavior.
+
 ```python
 import json
 import diskgraph_pybind

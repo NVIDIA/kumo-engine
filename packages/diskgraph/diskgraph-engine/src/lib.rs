@@ -6,6 +6,7 @@ pub mod edge_unpacker;
 pub mod engine;
 pub mod errors;
 pub mod output;
+mod recent;
 pub mod state;
 pub mod export_tt_artifacts;
 

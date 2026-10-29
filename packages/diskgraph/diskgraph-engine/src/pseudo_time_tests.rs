@@ -47,7 +47,7 @@ fn sample(times: &[u8], fanout: u32, seed: u64, mode: SamplingMode) -> Result<Ve
         seed_time: 1,
     };
     let mut result = Vec::new();
-    engine.sample_segment_edges(
+    engine.sample_segment_edges::<false>(
         &node,
         0,
         &segment,

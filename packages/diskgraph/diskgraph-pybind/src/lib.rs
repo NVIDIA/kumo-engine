@@ -701,7 +701,7 @@ impl SamplerEngine {
         py.detach(move || canonical_node_mask_from_arrow(&table, primary_keys.as_ref(), node_ids))
     }
 
-    #[pyo3(signature = (seed_nodes, plan_json, fused, seed_timestamps=None, swap_edge_direction=None, seed_timestamp_unit=None))]
+    #[pyo3(signature = (seed_nodes, plan_json, fused, seed_timestamps=None, swap_edge_direction=None, seed_timestamp_unit=None, *, deterministic_ties=false))]
     #[tracing::instrument(level = "debug", skip(self, py, seed_nodes, plan_json))]
     pub fn sample(
         &self,
@@ -712,6 +712,7 @@ impl SamplerEngine {
         seed_timestamps: Option<Bound<'_, PyDict>>,
         swap_edge_direction: Option<bool>,
         seed_timestamp_unit: Option<PyTimeUnit>,
+        deterministic_ties: bool,
     ) -> PyResult<PySampleIterator> {
         let mut seeds = HashMap::new();
         for (key, value) in seed_nodes.into_iter() {
@@ -803,7 +804,7 @@ impl SamplerEngine {
                     engine.relation_src_type.clone(),
                     engine.relation_info.clone(),
                 );
-                match engine.sample(&request, &mut state, &mut handler) {
+                match engine.sample_with_deterministic_ties(&request, &mut state, &mut handler, deterministic_ties) {
                     Ok(()) => {
                         if count % 100 == 0 {
                             info!(

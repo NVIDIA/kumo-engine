@@ -2782,3 +2782,122 @@ fn repeated_runs_give_identical_output() {
         assert!(runs.iter().all(|r| *r == runs[0]), "fused={fused}");
     }
 }
+
+/// Write an existing-format index directly, with deliberately unsorted ties.
+/// This tests reopening old adjacency bytes, independently of the ingester.
+fn write_recent_tie_index(root: &std::path::Path, keys: &[u64]) {
+    use diskgraph_core::metadata::{
+        EdgeRelationMetadata, EdgeStorageFormat, NodeDataCompression, PrimaryKeyMap,
+    };
+    let columns = vec![RowPackColumn {
+        name: "pk".into(), logical_type: IngestedType::UInt64,
+        fixed_len: None, precision: None, scale: None,
+    }];
+    let mut builder = RowPackContextBuilder::new(columns, RowPackConfig::default());
+    for &key in keys {
+        builder.observe_row(&[ValueRef::UInt64(key)]).unwrap();
+    }
+    let context = builder.finish().unwrap();
+    fs::write(root.join("rowpack.bin"), context.to_bytes().unwrap()).unwrap();
+    let metadata = DatasetMetadata {
+        dataset_name: "recent_ties".into(),
+        timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
+        node_types: vec![NodeTypeMetadata {
+            name: "nodes".into(), max_id: (keys.len() - 1) as u64,
+            has_node_data: true,
+            node_data_compression: Some(NodeDataCompression {
+                codec: "rowpack".into(), context_path: "rowpack.bin".into(),
+            }),
+            primary_key_map: Some(PrimaryKeyMap {
+                column: "pk".into(), dtype: "uint64".into(),
+                mapping_path: String::new(), hash_path: None,
+                // Sampling uses persisted PK values; this fixture needs no
+                // external PK-to-node lookup because its seed is a node ID.
+                mapping_kind: "rowpack".into(), fixed_len: None, pk_column_index: Some(0),
+            }),
+            create_time_col: None, end_time_col: None,
+            shards: vec![NodeShardMetadata {
+                min_id: 0, max_id: (keys.len() - 1) as u64, node_data_paths: None,
+            }],
+        }],
+        edge_relations: vec![EdgeRelationMetadata {
+            name: "neighbors".into(), src_type: "nodes".into(), dst_type: "nodes".into(),
+            shards: vec![], dest_sort_key_bits: Some(16),
+            dest_sort_key: Some(temporal_sortkey_meta()),
+            format: EdgeStorageFormat::Binary, reverse_of: None,
+        }],
+    };
+    fs::write(root.join("index_metadata.json"), serde_json::to_vec(&metadata).unwrap()).unwrap();
+    let layout = diskgraph_index::builder::compute_relation_layouts(
+        &metadata.edge_relations, &metadata.node_types,
+    ).unwrap().remove(0);
+    let shard = root.join("nodes/nodes/shard-00000");
+    fs::create_dir_all(&shard).unwrap();
+    let mut edges = File::create(shard.join(EDGES_FILENAME)).unwrap();
+    let mut offsets = bincode::serialize(&OffsetFileHeader::new(keys.len() as u64, keys.len() as u64 + 1)).unwrap();
+    offsets.extend_from_slice(&((keys.len() + 1) as u16).to_le_bytes());
+    offsets.extend_from_slice(&0u64.to_le_bytes());
+    let encoder = RowPackEncoder::new(context.clone()).unwrap();
+    let mut scratch = RowPackScratch::new(&context);
+    let sort_key = SortKeyEncoder::new(&temporal_sortkey_meta()).encode_lower(80);
+    for (node, &key) in keys.iter().enumerate() {
+        let mut row = Vec::new();
+        encoder.encode_row_into(&[ValueRef::UInt64(key)], &mut row, &mut scratch).unwrap();
+        let count = if node == 0 { keys.len() - 1 } else { 0 };
+        edges.write_all(&[count as u8]).unwrap();
+        edges.write_all(&(row.len() as u16).to_le_bytes()).unwrap();
+        for destination in 1..=count {
+            let entry = (destination as u128) | ((sort_key as u128) << layout.dst_bits);
+            edges.write_all(&entry.to_le_bytes()[..layout.entry_bytes]).unwrap();
+        }
+        edges.write_all(&row).unwrap();
+        offsets.extend_from_slice(&((3 + count * layout.entry_bytes + row.len()) as u16).to_le_bytes());
+    }
+    fs::write(shard.join(OFFSETS_FILENAME), offsets).unwrap();
+}
+
+#[test]
+fn recent_ties_reopen_existing_indexes_through_both_constructors() {
+    let largest = (1_u64 << 63) + 3;
+    for keys in [[0, largest - 2, largest - 1, largest], [0, largest, largest - 1, largest - 2]] {
+        let dir = TempDir::new().unwrap();
+        write_recent_tie_index(dir.path(), &keys);
+        let metadata = dir.path().join("index_metadata.json");
+        let before = fs::read(dir.path().join("nodes/nodes/shard-00000/edges.bin")).unwrap();
+        for (from_reader, deterministic_ties) in [(false, false), (false, true), (true, false), (true, true)] {
+            let engine = if from_reader {
+                let reader = diskgraph_index::graph::GraphIndexReader::open(&metadata, dir.path()).unwrap();
+                DiskGraphEngine::from_reader(Arc::new(reader), None, Some(1)).unwrap()
+            } else {
+                DiskGraphEngine::load(dir.path(), None, Some(1)).unwrap()
+            };
+            let request = BatchSamplingRequest {
+                dataset_id: DatasetId::nil(),
+                seed_nodes: HashMap::from([("nodes".into(), vec![0])]),
+                seed_timestamps: Some(HashMap::from([("nodes".into(), vec![100])])),
+                seed_timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
+                plan: SamplingPlan { layers: vec![LayerSpec {
+                    fanouts: HashMap::from([("neighbors".into(), FanoutSpec {
+                        fanout: 1, mode: SamplingMode::TemporalMostRecent,
+                        absent_key_policy: AbsentKeyPolicy::UniformFallback,
+                    })]), default_fanout: None,
+                }] },
+                flags: SamplingFlags {
+                    replace: false, directed: true, disjoint: true, return_edge_id: false,
+                    adaptive: false, fused_feature_fetching: true, swap_edge_direction: false,
+                },
+            };
+            let mut output = MockOutput { edges: vec![], feature_batches: vec![], schema: None, fused_batches: vec![] };
+            let mut state = crate::state::StatePool::new().acquire();
+            engine.sample_with_deterministic_ties(&request, &mut state, &mut output, deterministic_ties).unwrap();
+            assert_eq!(output.edges.len(), 1);
+            let mut actual = Vec::new();
+            for (_, batch) in output.fused_batches {
+                actual.extend(batch.column(0).as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap().values().iter().copied());
+            }
+            actual.sort();
+            assert_eq!(actual, vec![0, if deterministic_ties { largest } else { keys[1] }]);
+        }
+        assert_eq!(fs::read(dir.path().join("nodes/nodes/shard-00000/edges.bin")).unwrap(), before);
+    }
+}

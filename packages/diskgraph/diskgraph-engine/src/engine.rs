@@ -8,6 +8,8 @@ use crate::output::OutputHandler;
 use crate::state::{
     CommitPart, LookupKey, NodeRecord, RawEdge, ResolvedProjection, SamplingState, TypeState,
 };
+use crate::recent::{RecentGroup, RecentPrimaryKey};
+use diskgraph_core::metadata::PrimaryKeyMap;
 use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_core::tt_builder::{Value, WEIGHT_COL};
@@ -431,6 +433,8 @@ pub struct DiskGraphEngine {
     pub node_decoders: Vec<Option<Arc<RowPackDecoder>>>,
     /// Precomputed Arrow schemas for each node type.
     pub node_schemas: Vec<Option<Arc<arrow_schema::Schema>>>,
+    /// Logical primary keys retained for deterministic capped recent sampling.
+    pub(crate) primary_keys: Vec<Option<PrimaryKeyMap>>,
     /// Map from node type name to node type ID.
     pub node_type_to_id: HashMap<String, usize>,
     /// Map from relation name to edge type ID.
@@ -582,7 +586,10 @@ impl DiskGraphEngine {
 
         let timestamp_unit = reader.metadata().timestamp_unit;
 
-        Ok(Self::new(
+        let primary_keys = sorted_names.iter().filter_map(|name| {
+            reader.table(name)?.primary_key_map().cloned().map(|pk| (name.clone(), pk))
+        }).collect();
+        let mut engine = Self::new(
             readers_map,
             relation_info_map,
             decoders_map,
@@ -591,7 +598,9 @@ impl DiskGraphEngine {
             timestamp_unit,
             random_seed,
             num_threads,
-        ))
+        );
+        engine.set_primary_keys(primary_keys);
+        Ok(engine)
     }
 
     pub fn load(path: &Path, random_seed: Option<u64>, num_threads: Option<usize>) -> Result<Self> {
@@ -726,7 +735,10 @@ impl DiskGraphEngine {
         };
 
         println!("Graph loaded. Ready to serve.");
-        Ok(Self::new(
+        let primary_keys = metadata.node_types.iter().filter_map(|table| {
+            table.primary_key_map.clone().map(|pk| (table.name.clone(), pk))
+        }).collect();
+        let mut engine = Self::new(
             readers,
             relation_info,
             decoders,
@@ -735,7 +747,17 @@ impl DiskGraphEngine {
             metadata.timestamp_unit,
             random_seed,
             num_threads,
-        ))
+        );
+        engine.set_primary_keys(primary_keys);
+        Ok(engine)
+    }
+
+    fn set_primary_keys(&mut self, primary_keys: HashMap<String, PrimaryKeyMap>) {
+        for (name, pk) in primary_keys {
+            if let Some(&type_id) = self.node_type_to_id.get(&name) {
+                self.primary_keys[type_id] = Some(pk);
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -873,6 +895,7 @@ impl DiskGraphEngine {
         }
 
         Self {
+            primary_keys: vec![None; readers.len()],
             readers,
             relation_info,
             decoders,
@@ -1696,7 +1719,7 @@ impl DiskGraphEngine {
             // symmetric with the seed-src edge filtering above.
             seed_type_ids,
         );
-        self.sample_with_cutoff(&request, &mut state, &mut output, cutoff.as_ref())?;
+        self.sample_with_cutoff::<false>(&request, &mut state, &mut output, cutoff.as_ref())?;
         output.finalize(&state)?;
 
         // 7b. Non-fused path: the sampler doesn't fetch features inline, so
@@ -1982,7 +2005,7 @@ impl DiskGraphEngine {
             self.id_to_node_type.clone(),
             HashSet::new(),
         );
-        self.sample_with_cutoff(&request, &mut state, &mut output, cutoff.as_ref())?;
+        self.sample_with_cutoff::<false>(&request, &mut state, &mut output, cutoff.as_ref())?;
         output.finalize(&state)?;
 
         // Non-fused path: fetch features post-sampling per visited type (same as
@@ -2097,10 +2120,26 @@ impl DiskGraphEngine {
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
-        self.sample_with_cutoff(request, state, output, None)
+        self.sample_with_cutoff::<false>(request, state, output, None)
     }
 
-    fn sample_with_cutoff(
+    /// Opt in to primary-key tie resolution across rebuilt indexes.
+    /// Large boundary ties require reading every eligible key.
+    pub fn sample_with_deterministic_ties(
+        &self,
+        request: &BatchSamplingRequest,
+        state: &mut SamplingState,
+        output: &mut impl OutputHandler,
+        deterministic_ties: bool,
+    ) -> Result<()> {
+        if deterministic_ties {
+            self.sample_with_cutoff::<true>(request, state, output, None)
+        } else {
+            self.sample_with_cutoff::<false>(request, state, output, None)
+        }
+    }
+
+    fn sample_with_cutoff<const DETERMINISTIC_TIES: bool>(
         &self,
         request: &BatchSamplingRequest,
         state: &mut SamplingState,
@@ -2237,7 +2276,7 @@ impl DiskGraphEngine {
             let edges_before = state.stats.total_edges;
             let nodes_before = state.stats.total_nodes;
 
-            self.process_layer(
+            self.process_layer::<DETERMINISTIC_TIES>(
                 layer_idx,
                 &compiled_plan.layers[layer_idx],
                 request,
@@ -2585,9 +2624,90 @@ impl DiskGraphEngine {
     }
 
 
+    fn recent_primary_key(
+        &self,
+        type_id: usize,
+        node_id: u64,
+        scratch: &mut RowPackDecodeScratch,
+    ) -> Result<RecentPrimaryKey> {
+        let pk = self.primary_keys[type_id].as_ref().ok_or_else(|| {
+            EngineError::Configuration("recent sampling requires a declared primary key".into())
+        })?;
+        let decoder = self.node_decoders[type_id].as_ref().ok_or_else(|| {
+            EngineError::DataCorruption(format!("primary key {} has no rowpack decoder", pk.column))
+        })?;
+        let column = decoder.context().columns.iter().position(|col| col.name == pk.column)
+            .ok_or_else(|| EngineError::DataCorruption(format!("missing primary key column {}", pk.column)))?;
+        let shards = &self.readers[type_id];
+        let shard = &shards[self.find_shard(shards, node_id)?];
+        let view = shard.reader.edges_for_node(node_id - shard.min_id)
+            .map_err(|error| EngineError::DataCorruption(error.to_string()))?;
+        let raw = view.node_data()
+            .map_err(|error| EngineError::DataCorruption(error.to_string()))?
+            .ok_or_else(|| EngineError::DataCorruption(format!("node {node_id} has no primary key data")))?;
+        let value = decoder.decode_column_value(raw, column, scratch)
+            .map_err(|error| EngineError::DataCorruption(error.to_string()))?;
+        RecentPrimaryKey::from_value(value)
+    }
+
+    /// Only the equal sort-key group crossing the cap needs logical-PK reads.
+    /// Stops at that boundary with bounded batch lookahead and O(k) memory.
+    #[allow(clippy::too_many_arguments)]
+    fn sample_recent_with_primary_key(
+        &self,
+        unpacker: &mut EdgeUnpacker<'_>,
+        dst_type: usize,
+        k: usize,
+        decoder: Option<&SortKeyDecoder>,
+        anchor: Option<i64>,
+        cutoff: Option<&NodeCutoff<'_>>,
+        dst_scratch: &mut Vec<u64>,
+        key_scratch: &mut Vec<u64>,
+        on_edge: &mut impl FnMut(u64) -> Result<()>,
+    ) -> Result<()> {
+        let mut emitted = 0;
+        let mut group_key = None;
+        let mut group = RecentGroup::new(k);
+        let mut scratch = RowPackDecodeScratch::default();
+        loop {
+            dst_scratch.resize(128, 0);
+            key_scratch.resize(128, 0);
+            let count = unpacker.unpack_batch(dst_scratch, key_scratch);
+            if count == 0 {
+                break;
+            }
+            for (&node_id, &sort_key) in dst_scratch.iter().zip(key_scratch.iter()).take(count) {
+                if group_key.is_some_and(|key| key != sort_key) {
+                    for id in group.finish() {
+                        on_edge(id)?;
+                        emitted += 1;
+                    }
+                    if emitted == k {
+                        return Ok(());
+                    }
+                    group = RecentGroup::new(k - emitted);
+                }
+                group_key = Some(sort_key);
+                if cutoff.is_some_and(|cutoff| !cutoff.visible(node_id)) {
+                    continue;
+                }
+                if let (Some(decoder), Some(anchor)) = (decoder, anchor) {
+                    if decoder.decode(sort_key).0.is_some_and(|time| time > anchor) {
+                        continue;
+                    }
+                }
+                group.push(node_id, |id| self.recent_primary_key(dst_type, id, &mut scratch))?;
+            }
+        }
+        for id in group.finish() {
+            on_edge(id)?;
+        }
+        Ok(())
+    }
+
     #[inline]
     #[allow(clippy::too_many_arguments)]
-    fn sample_segment_edges(
+    fn sample_segment_edges<const DETERMINISTIC_TIES: bool>(
         &self,
         node: &NodeRecord,
         rel_id: usize,
@@ -2637,6 +2757,16 @@ impl DiskGraphEngine {
                     let newer = unpacker
                         .partition_point(|key| dec.decode(key).0.is_some_and(|ts| ts > anch));
                     unpacker.advance(newer);
+                }
+
+                if DETERMINISTIC_TIES {
+                    let dst_type = self.relation_info[rel_id];
+                    if self.primary_keys.get(dst_type).and_then(|pk| pk.as_ref()).is_some() {
+                        return self.sample_recent_with_primary_key(
+                            &mut unpacker, dst_type, k, decoder, anchor, cutoff,
+                            dst_scratch, key_scratch, &mut on_edge,
+                        );
+                    }
                 }
 
                 let mut n = 0;
@@ -2863,7 +2993,7 @@ impl DiskGraphEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn process_layer(
+    fn process_layer<const DETERMINISTIC_TIES: bool>(
         &self,
         layer_idx: usize,
         layer_spec: &CompiledLayerSpec,
@@ -2919,7 +3049,7 @@ impl DiskGraphEngine {
 
                     let segments = edges_view.relation_segments().unwrap_or_default();
 
-                    self.process_node_relations(
+                    self.process_node_relations::<DETERMINISTIC_TIES>(
                         layer_idx,
                         src_type_id,
                         &segments,
@@ -2958,14 +3088,15 @@ impl DiskGraphEngine {
             let mut buffers = std::mem::take(&mut state.raw_edges);
             let spare = buffers.split_off(shards.len().min(buffers.len()));
             buffers.resize_with(shards.len(), Vec::new);
-            let raw_edges_results: Vec<Vec<RawEdge>> = self.thread_pool.install(|| shard_groups
+            let raw_edges_results: Result<Vec<Vec<RawEdge>>> = self.thread_pool.install(|| {
+                let results = shard_groups
                 .into_par_iter()
                 .zip(buffers.into_par_iter())
                 .enumerate()
                 .map(|(shard_idx, (mut shard_nodes, mut local_raw_edges))| {
                     local_raw_edges.clear();
                     if shard_nodes.is_empty() {
-                        return local_raw_edges;
+                        return Ok(local_raw_edges);
                     }
                     let shard = &shards[shard_idx];
 
@@ -3017,7 +3148,7 @@ impl DiskGraphEngine {
                             if let Some(fanout_spec) = fanout_spec {
                                 let dst_type_id = *self.relation_info.get(rel_id).unwrap_or(&usize::MAX);
                                 if dst_type_id != usize::MAX {
-                                    let _ = self.sample_segment_edges(
+                                    let result = self.sample_segment_edges::<DETERMINISTIC_TIES>(
                                         node,
                                         rel_id,
                                         segment,
@@ -3039,15 +3170,23 @@ impl DiskGraphEngine {
                                             Ok(())
                                         }
                                     );
+                                    if DETERMINISTIC_TIES { result?; }
                                 }
                             }
                         }
                     }
-                    local_raw_edges
-                })
-                .collect()
-            );
+                    Ok(local_raw_edges)
+                });
+                if DETERMINISTIC_TIES {
+                    results.collect()
+                } else {
+                    // Keep the original indexed Vec collection on the fast path.
+                    // Only the enabled specialization can return an error above.
+                    Ok(results.map(|result| result.expect("fast path is infallible")).collect())
+                }
+            });
 
+            let raw_edges_results = raw_edges_results?;
             if self.per_seed_recording(fused) {
                 self.commit_edges(layer_idx, &raw_edges_results, state, output)?;
                 state.raw_edges = raw_edges_results;
@@ -3080,7 +3219,7 @@ impl DiskGraphEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn process_node_relations(
+    fn process_node_relations<const DETERMINISTIC_TIES: bool>(
         &self,
         layer_idx: usize,
         src_type_id: usize,
@@ -3120,7 +3259,7 @@ impl DiskGraphEngine {
             if let Some(fanout_spec) = fanout_spec {
                 let dst_type_id = *self.relation_info.get(rel_id).unwrap_or(&usize::MAX);
                 if dst_type_id != usize::MAX {
-                    self.sample_segment_edges(
+                    self.sample_segment_edges::<DETERMINISTIC_TIES>(
                         node,
                         rel_id,
                         segment,
