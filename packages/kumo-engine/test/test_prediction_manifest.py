@@ -169,6 +169,8 @@ def test_mlops_stores_the_run_after_its_export(graph, classifier, tmp_path):
         Path(p).name for p in result.files)
     copy = json.loads((stored / '_provenance.json').read_text())
     assert copy == result.manifest.to_dict()
+    assert copy['location'] == str(tmp_path / 'root' / 'predictions' /
+                                   result.id)
     assert [o['destination']['location'] for o in copy['outputs']] == [
         str(tmp_path / 'out' / 'preds' / result.id)
     ]
