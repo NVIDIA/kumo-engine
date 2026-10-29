@@ -323,8 +323,30 @@ def test_multilabel_thresholds_preserve_scores(tmp_path, num_workers):
             with pytest.raises(ValueError, match='between 0 and 1'):
                 trainer.predict(table, snapshot=snapshot,
                                 binary_classification_threshold=threshold)
+        _assert_label_counts(trainer.predict(
+            table, snapshot=snapshot, num_workers=num_workers,
+            binary_classification_threshold=0.25,
+            mlops=kumo.MLOps(str(tmp_path / 'root'))))
     finally:
         kumo.configure(scratch_dir=previous)
+
+
+def _assert_label_counts(run):
+    from kumo_core.score_counts import PROBABILITY_EDGES, Counts
+
+    counts = Counts.from_dict(run.manifest.stats['predictions'].counts)
+    output = run.frame
+    labels = [name.removesuffix('_PROB') for name in counts.extents]
+    assert dict(zip(labels, counts.arrays['label_positive'].tolist())) == (
+        output.groupby('CLASS')['PREDICTED'].sum().to_dict())
+    assert counts.arrays['predicted_labels'].tolist() == np.bincount(
+        output.groupby('ENTITY')['PREDICTED'].sum(),
+        minlength=len(labels) + 1).tolist()
+    for label in labels:
+        scores = output.loc[output['CLASS'] == label, 'SCORE']
+        assert counts.arrays[f'{label}_PROB'].tolist() == np.bincount(
+            np.searchsorted(PROBABILITY_EDGES, scores, 'right'),
+            minlength=len(PROBABILITY_EDGES) + 1).tolist()
 
 
 def test_mlops_counts_forecast_horizons_and_recommended_items(
