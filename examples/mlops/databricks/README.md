@@ -12,9 +12,12 @@ settings.
   and model are stored under it. `--registry mlflow` logs the fit to
   `MLFLOW_EXPERIMENT_NAME`, registers the model as a new version of
   `<catalog>.<schema>.<model_name>` (default `users_churn`) and moves the
-  `champion` alias to it.
+  `alias` variable's alias (default `candidate`) to it; move `champion` to it
+  once it is better (see
+  [Promote a model](../../../packages/kumo-engine/docs/mlops.md#promote-a-model)).
+  Set `alias` to `champion` to serve every fit without a gate.
 - **`kumo_score`** runs `score_job.py` daily at 03:00 UTC (created paused).
-  It loads the version `champion` points at in
+  It loads the version `score_alias` (default `champion`) points at in
   `<catalog>.<schema>.<model_name>`, builds a fresh snapshot and appends to
   `<predictions_table>` (default `users_churn_predictions`) in the
   connector's schema. Add `--snapshot <snapshot id>` to score a stored

@@ -95,6 +95,21 @@ def test_fit_then_score_locally(tmp_path, monkeypatch, capsys):
         'parents']['model']['id'] == fit.id
 
 
+def test_the_shared_graph_declares_text_columns(tmp_path, monkeypatch):
+    import kumo.engine as kumo
+
+    data = tmp_path / 'data'
+    _data(data)
+    users = pd.read_parquet(data / 'users.parquet')
+    users.assign(BIO='likes red shoes').to_parquet(data / 'users.parquet')
+    jobs = _module('jobs')
+    monkeypatch.setattr(jobs, 'TEXT_COLUMNS', ('users.BIO', ))
+    graph = jobs.build_graph(kumo.FileConnector(root_dir=str(data)))
+    [bio] = [column for column in graph.tables['users'].definition.cols
+             if column.name == 'BIO']
+    assert bio.stype == 'text'
+
+
 def test_jobs_fail_on_tracking_errors_unless_told_to_warn(tmp_path):
     jobs = _module('jobs')
     flags = ['--artifact-root', str(tmp_path), '--source', str(tmp_path)]
