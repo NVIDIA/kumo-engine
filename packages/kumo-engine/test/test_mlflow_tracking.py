@@ -241,6 +241,25 @@ def test_registry_model_names_are_checked_when_mlops_is_built(
                        registry=kumo.ModelRegistryLocation(name))
 
 
+def test_building_mlops_creates_the_experiment_or_says_why_it_cannot(
+        tmp_path, monkeypatch):
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    uri = f'sqlite:///{tmp_path}/m.db'
+    kumo.MLOps(str(tmp_path), tracking=MlflowTracking(
+        'churn', log_system_metrics=False, target=uri))
+    assert mlflow.MlflowClient(uri).get_experiment_by_name('churn')
+
+    def refuse(self, name, *args, **kwargs):
+        raise mlflow.exceptions.MlflowException('folder does not exist')
+
+    monkeypatch.setattr(mlflow.MlflowClient, 'create_experiment', refuse)
+    with pytest.raises(RuntimeError, match=r"experiment '/Shared/x/churn'.*"
+                       r"folder does not exist.*parent folder must exist"):
+        kumo.MLOps(str(tmp_path), tracking=MlflowTracking(
+            '/Shared/x/churn', log_system_metrics=False, target=uri))
+
+
 @pytest.mark.parametrize('uri,command', [
     (SAGEMAKER, 'aws sagemaker create-presigned-mlflow-tracking-server-url '
      '--tracking-server-name demo --region us-west-2'),
