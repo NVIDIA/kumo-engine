@@ -51,6 +51,12 @@ variables:
   on_error:
     description: raise fails a job whose tracking or registration fails; warn lets it succeed
     default: raise
+  alias:
+    description: alias kumo_train moves to its new version; promote it to score_alias yourself
+    default: candidate
+  score_alias:
+    description: alias kumo_score loads
+    default: champion
 
 resources:
   jobs:
@@ -99,6 +105,8 @@ resources:
               - --table-prefix=${var.table_prefix}
               - --on-error
               - ${var.on_error}
+              - --alias
+              - ${var.alias}
               - --scratch-dir
               - /local_disk0/kumo
 
@@ -151,6 +159,8 @@ resources:
               - --table-prefix=${var.table_prefix}
               - --on-error
               - ${var.on_error}
+              - --alias
+              - ${var.score_alias}
               - --scratch-dir
               - /local_disk0/kumo
               - --predictions-table

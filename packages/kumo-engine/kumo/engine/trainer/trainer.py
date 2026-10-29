@@ -1407,7 +1407,10 @@ class Trainer:
                              'and times; pass it or entities=/'
                              'prediction_time=, not both.')
         table = (prediction_table if prediction_table is not None else
-                 self._prediction_table(snapshot, entities, prediction_time))
+                 self._prediction_table(
+                     snapshot, entities, prediction_time, strict=(
+                         settings is not None
+                         and settings.on_error == 'raise')))
         return self._predict(
             table, snapshot=snapshot, output_config=output_config,
             num_classes_to_return=num_classes_to_return,
@@ -1417,8 +1420,8 @@ class Trainer:
 
     def _prediction_table(self, snapshot: GraphSnapshot,
                           entities: Optional[SourceTable],
-                          prediction_time: Optional[datetime]
-                          ) -> PredictionTable:
+                          prediction_time: Optional[datetime],
+                          strict: bool = False) -> PredictionTable:
         from kumo.engine.pquery.predictive_query import PredictiveQuery
 
         if self._training_query is None:
@@ -1434,7 +1437,7 @@ class Trainer:
                 f"Snapshot {snapshot.id} was taken of graph "
                 f"{snapshot._graph_key}, but this model was trained on a "
                 f"snapshot of graph {trained}.", self._graph_config,
-                snapshot.graph_config, stacklevel=3)
+                snapshot.graph_config, stacklevel=3, strict=strict)
         query = PredictiveQuery._from_snapshot(snapshot, self._training_query)
         plan = self._training_table_generation_plan
         return (query.generate_prediction_table(
