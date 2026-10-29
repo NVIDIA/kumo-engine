@@ -18,6 +18,8 @@ training and prediction batches. It rejects empty work, missing output rows,
 duplicate coordinates, and nonfinite values. Forecasts require all twelve
 horizons. Class and link outputs require every requested class or catalog item.
 The restored model weights must exactly match the saved checkpoint.
+Chosen labels and published ranks must also match exactly after repeat or reload.
+Training metrics report only; they do not set a learning-quality gate.
 
 The runner measures repeated and reloaded prediction differences. GPU results
 can contain small numeric differences despite identical saved weights.
@@ -59,8 +61,8 @@ parent fixture discovery. A parent process stops the suite at 300 seconds.
 Failures, skips, empty or incomplete selection, timeouts, and elapsed time of
 300 seconds or more return failure. The printed directory retains the pytest
 log, counts, and elapsed time. The local suite requires no GPU or cloud access.
-The complete command passed all eight selected tests with no skips in
-0.69 seconds on macOS ARM64 with Python 3.12.13. Setup was excluded.
+The complete command passed all fourteen selected cases with no skips in
+0.79 seconds on macOS ARM64 with Python 3.12.13. Setup was excluded.
 
 ## Scope and timing
 
