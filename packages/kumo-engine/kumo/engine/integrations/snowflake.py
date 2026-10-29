@@ -75,7 +75,7 @@ class SnowflakeTracking:
         schema_name: `None` uses the session's current schema, or ``PUBLIC``
             when `database` is given or the session has none.
         run_name: name of the fit run. `None` names it after its registry
-            model and UTC start, as ``"fit-USERS_CHURN-20261027-0618"``; a
+            model and UTC start, as ``fit_users_churn_20261027_0618``; a
             taken name gets a random suffix.
         tags: extra tags for the fit run.
         native_model_lineage: keep the run open as a context for the whole
@@ -183,7 +183,9 @@ class SnowflakeTracking:
                                              database_name=database,
                                              schema_name=schema or 'PUBLIC')
         self._run = tracking.start_run(
-            self._new_run_name(tracking, experiment.name, record.name))
+            self._new_run_name(
+                tracking, experiment.name,
+                self.run_name or _run_identifier(record.name or 'fit')))
         self.run_id = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
@@ -246,9 +248,8 @@ class SnowflakeTracking:
             self._log_metrics(metrics, _EPOCH_METRICS, step=step)
 
     def _new_run_name(self, tracking: Any, experiment: Any,
-                      default: Optional[str]) -> Optional[str]:
-        wanted = self.run_name or (default and f'"{default}"')
-        if wanted is None:
+                      run_name: Optional[str]) -> Optional[str]:
+        if run_name is None:
             return None
         # start_run(name) resumes, or raises on, any run matching name as a
         # SQL LIKE pattern and cannot create an existing run, so pick a name
@@ -259,16 +260,16 @@ class SnowflakeTracking:
                 experiment_name=experiment)
         ]
         short = uuid.uuid4().hex
-        for name in (wanted, _suffixed(wanted, short[:8]),
-                     _suffixed(wanted, short)):
+        for name in (run_name, _suffixed(run_name, short[:8]),
+                     _suffixed(run_name, short)):
             if not _taken(name, existing):
                 break
         else:
             name = None
-        if name != wanted:
+        if name != run_name:
             logger.warning(
                 'Snowflake run %s already exists in experiment %s; recording '
-                'this fit as %s', wanted, self.experiment_name,
+                'this fit as %s', run_name, self.experiment_name,
                 name or 'a generated run name')
         return name
 
@@ -375,6 +376,13 @@ _SINKS: Dict[type, Callable[[SnowflakeTracking, Any], None]] = {
     Confusion: SnowflakeTracking._log_confusion,
     Dataset: lambda tracker, summary: None,
 }
+
+
+def _run_identifier(name: str) -> str:
+    r"""``name`` as an unquoted identifier: snowflake-ml puts a run's name
+    into its artifact URIs, where a quoted name is not found."""
+    name = re.sub(r'[^A-Za-z0-9_]', '_', name)
+    return name if re.match(r'[A-Za-z_]', name) else f'_{name}'
 
 
 def _suffixed(name: str, suffix: str) -> str:
