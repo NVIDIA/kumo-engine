@@ -554,8 +554,6 @@ def render_html(svg: str, layouts: dict, initial_layout: str,
     body = (
         '<div class="kumo-widget-toolbar kumo-graph-toolbar">'
         '<div class="kumo-graph-actions">'
-        + (button('kumo-graph-download', 'Download PDF', download_icon)
-           if pdfs else '')
         + button('kumo-graph-enter', 'Enter full screen', enter_icon)
         + button('kumo-graph-exit', 'Exit full screen', exit_icon)
         + button('kumo-graph-fit', 'Fit graph', fit_icon)
@@ -563,7 +561,10 @@ def render_html(svg: str, layouts: dict, initial_layout: str,
         '<span class="kumo-graph-scale" aria-live="polite"></span>'
         + button('kumo-graph-zoom-out', 'Zoom out', text='−')
         + button('kumo-graph-zoom-in', 'Zoom in', text='+')
-        + '</div></div><div class="kumo-graph-layout" role="radiogroup" '
+        + '</div>'
+        + (button('kumo-graph-download', 'Download PDF', download_icon)
+           if pdfs else '')
+        + '</div><div class="kumo-graph-layout" role="radiogroup" '
         f'aria-label="Graph layout">{options}</div></div>'
         '<span class="kumo-graph-status" role="status" hidden="">'
         'Full screen is unavailable in this notebook. Use the graph controls '
