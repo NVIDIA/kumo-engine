@@ -66,6 +66,8 @@ with a `PipelineSchedule` trigger (`pipeline.put_triggers`).
    `cloudwatch:PutMetricData` rights, which this pipeline (no VPC config)
    does not use and the least-privilege role below does not grant.
    SageMaker still checks the role when it starts each job.
+   The SDK's own INFO lines (telemetry, `Popping out 'TrainingJobName'`,
+   `Running within a PipelineSession, there will be No Wait`) are expected.
    The name (`--name`, default `kumo-engine-users-churn`) may not contain
    `-aws-`: SageMaker reserves that token, and the execution then fails with
    no steps (`The token -aws- is reserved`).
