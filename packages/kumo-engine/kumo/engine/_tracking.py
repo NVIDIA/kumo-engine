@@ -443,7 +443,8 @@ class TrackingSession:
             selected = None if self._search is None else self._search.best
             if error is None and selected is not None:
                 final = dataclasses.replace(
-                    final, steps=trial_spec(self._trials[selected[1]]).steps)
+                    final, steps=trial_spec(self._trials[selected[1]]).steps,
+                    parents={**final.parents, 'best_trial': selected[1]})
             if error is not None and final.error is None:
                 final = dataclasses.replace(final, error=format_error(error))
             record: Optional[RunRecord] = run_record(final)
