@@ -4,6 +4,7 @@
 
 import importlib.util
 import json
+import os
 import py_compile
 import sys
 from pathlib import Path
@@ -167,6 +168,7 @@ def test_sagemaker_steps_take_their_own_instance_types_and_the_alias(
         f'--{flag}=x' for flag in ('role', 'image', 'code', 'data-root',
                                    'tracking-arn')
     ]
+    monkeypatch.delenv('SAGEMAKER_VALIDATE_ROLE', raising=False)
     _module('sagemaker/pipeline').main([
         *flags, '--artifact-root=s3://bucket/kumo/', '--fit-instance-type',
         'ml.g5.xlarge', '--score-instance-type', 'ml.m5.xlarge', '--alias',
@@ -175,8 +177,12 @@ def test_sagemaker_steps_take_their_own_instance_types_and_the_alias(
     assert made['Compute']['instance_type'] == 'ml.g5.xlarge'
     assert made['Processor']['instance_type'] == 'ml.m5.xlarge'
     assert made['PipelineSession'] == {
-        'default_bucket': 'bucket', 'default_bucket_prefix': 'kumo/sagemaker'}
+        'default_bucket': 'bucket', 'default_bucket_prefix': 'sagemaker'}
+    assert made['OutputDataConfig'] == {
+        's3_output_path': 's3://bucket/sagemaker/output'}
     assert made['SourceCode']['command'] == 'python fit_job.py'
+    assert '--query' not in made['SourceCode']['args']
+    assert os.environ['SAGEMAKER_VALIDATE_ROLE'] == 'false'
     for arguments in (made['SourceCode']['args'],
                       made['ProcessingStep']['step_args']['arguments']):
         assert arguments[arguments.index('--alias') + 1] == 'candidate'

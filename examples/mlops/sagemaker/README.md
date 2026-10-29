@@ -54,9 +54,18 @@ with a `PipelineSchedule` trigger (`pipeline.put_triggers`).
    ```
    The SDK reads the region from `AWS_DEFAULT_REGION` (or the AWS config
    file). The Training step runs `fit_job.py` through the SDK's
-   training-container drivers, which it uploads under
-   `<artifact root>/sagemaker/`; the Processing step runs `score_job.py`
-   directly.
+   training-container drivers; the Processing step runs `score_job.py`
+   directly. SageMaker's own files (the drivers, the training job's output)
+   go to `sagemaker/`, a sibling of the artifact root (for
+   `s3://<bucket>/kumo/artifacts/`, `s3://<bucket>/kumo/sagemaker/`), so the
+   write-once root holds only kumo-engine's artifacts. `--query` overrides
+   `fit_job.py`'s default query.
+   The script sets `SAGEMAKER_VALIDATE_ROLE=false` unless it is already set:
+   SDK v3 checks an explicitly passed execution role client-side for VPC
+   network-interface (`ec2:*NetworkInterface*`, `ec2:Describe*`) and
+   `cloudwatch:PutMetricData` rights, which this pipeline (no VPC config)
+   does not use and the least-privilege role below does not grant.
+   SageMaker still checks the role when it starts each job.
    The name (`--name`, default `kumo-engine-users-churn`) may not contain
    `-aws-`: SageMaker reserves that token, and the execution then fails with
    no steps (`The token -aws- is reserved`).
@@ -65,15 +74,14 @@ with a `PipelineSchedule` trigger (`pipeline.put_triggers`).
 
 - **Caller:** `sagemaker:CreatePipeline`, `UpdatePipeline`,
   `StartPipelineExecution`, and `iam:PassRole` on `<role-arn>`; S3 write under
-  `<artifact root>/sagemaker/` and `s3:ListAllMyBuckets` or `s3:ListBucket` on
+  the `sagemaker/` sibling prefix and `s3:ListAllMyBuckets` or `s3:ListBucket` on
   the bucket (the SDK checks the bucket before uploading its drivers).
-  `iam:SimulatePrincipalPolicy` lets the SDK check the role first; without it
-  the SDK warns and continues.
 - **Execution role** (`--role` also runs the steps): `sagemaker:CreateTrainingJob`,
   `DescribeTrainingJob`, `StopTrainingJob`, `CreateProcessingJob`,
   `DescribeProcessingJob`, `StopProcessingJob` and `AddTags`; `iam:PassRole`
-  on itself; S3 read on the code and data prefixes and read/write on
-  the artifact prefix; ECR pull; CloudWatch Logs; the `sagemaker-mlflow:*`
+  on itself; S3 read on the code and data prefixes, read/write on
+  the artifact prefix, and read/write on the `sagemaker/` sibling prefix (the
+  drivers and the training job's output); ECR pull; CloudWatch Logs; the `sagemaker-mlflow:*`
   actions for tracking and the registry (`CreateRun`, `LogBatch`,
   `CreateRegisteredModel`, `CreateModelVersion`, `SetRegisteredModelAlias`,
   `GetModelVersionByAlias`, ...).

@@ -5,6 +5,7 @@
 with kumo-engine; see README.md."""
 
 import argparse
+import os
 from typing import Any, Optional, Sequence
 
 PROCESS_CODE = '/opt/ml/processing/input/code'
@@ -23,6 +24,7 @@ def build_pipeline(
     fit_instance_type: str,
     score_instance_type: str,
     alias: str,
+    query: Optional[str] = None,
     model_name: str = 'users-churn',
     table_prefix: str = '',
     on_error: str = 'raise',
@@ -38,13 +40,18 @@ def build_pipeline(
     from sagemaker.train.configs import Compute, OutputDataConfig, SourceCode
     from sagemaker.train.model_trainer import ModelTrainer
 
-    # The SDK uploads its training-container drivers next to the artifacts,
-    # where the role already has rights, not to a default bucket.
+    # sagemaker 3 checks an explicit execution role client-side for VPC
+    # network-interface and CloudWatch rights this pipeline does not use;
+    # SageMaker still checks the role when it starts each job.
+    os.environ.setdefault('SAGEMAKER_VALIDATE_ROLE', 'false')
+    # SageMaker's own files (the SDK's training drivers, job output) go to
+    # a sibling of the write-once artifact root, not inside it.
     bucket, _, prefix = artifact_root.removeprefix('s3://').rstrip(
         '/').partition('/')
-    session = PipelineSession(
-        default_bucket=bucket,
-        default_bucket_prefix='/'.join(filter(None, [prefix, 'sagemaker'])))
+    sagemaker_prefix = '/'.join(filter(None, [prefix.rpartition('/')[0],
+                                              'sagemaker']))
+    session = PipelineSession(default_bucket=bucket,
+                              default_bucket_prefix=sagemaker_prefix)
     env = {
         'MLFLOW_TRACKING_URI': tracking_arn,
         'MLFLOW_EXPERIMENT_NAME': experiment,
@@ -61,10 +68,11 @@ def build_pipeline(
         compute=Compute(instance_type=fit_instance_type, instance_count=1),
         source_code=SourceCode(
             source_dir=code, command='python fit_job.py',
-            args=[*flags, '--scratch-dir', '/tmp/kumo']),
+            args=[*flags, *(['--query', query] if query else []),
+                  '--scratch-dir', '/tmp/kumo']),
         environment=env,
         output_data_config=OutputDataConfig(
-            s3_output_path=f'{artifact_root.rstrip("/")}/sagemaker-output'),
+            s3_output_path=f's3://{bucket}/{sagemaker_prefix}/output'),
         sagemaker_session=session,
     )
     fit = TrainingStep(name='Fit', step_args=trainer.train())
@@ -105,6 +113,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument('--fit-instance-type', required=True)
     parser.add_argument('--score-instance-type', required=True)
     parser.add_argument('--alias', default='champion')
+    parser.add_argument('--query', help="fit_job.py's query by default")
     parser.add_argument('--model-name', default='users-churn')
     parser.add_argument('--table-prefix', default='')
     parser.add_argument('--on-error', choices=('raise', 'warn'),
