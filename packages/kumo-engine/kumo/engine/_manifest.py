@@ -483,6 +483,7 @@ class ArtifactStats(Record):
     rows: Optional[int]
     columns: Optional[Dict[str, Dict[str, Any]]] = omit_none()
     predicted_positive_rate: Optional[float] = omit_none()
+    counts: Optional[Dict[str, Any]] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
