@@ -10,7 +10,12 @@ import pytest
 from kumo_core.summaries import Dataset, Scalar, Table, Tag
 
 import kumo.engine as kumo
-from kumo.engine._data_summaries import snapshot_summaries, split_summaries
+from kumo.engine._data_summaries import (
+    snapshot_summaries,
+    split_summaries,
+    table_details,
+)
+from kumo.engine._manifest import artifact_summaries
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.pquery import PredictiveQuery
 
@@ -63,7 +68,7 @@ def test_summaries_match_the_snapshot_and_training_table(scratch):
             seeds['TARGET1'].mean())
 
     summaries = snapshot_summaries(Path(snapshot.index_path),
-                                   snapshot.graph_config, 'training')
+                                   snapshot.graph_config)
     matched = orders['USER_ID'] < 300
     relation = 'graph/edges/orders_USER_ID_to_users_USER_ID'
     scalars = {s.name: s.value for s in summaries if isinstance(s, Scalar)}
@@ -85,7 +90,10 @@ def test_summaries_match_the_snapshot_and_training_table(scratch):
             age['max']) == ('numerical', 300, 1 / 300, users['AGE'].min(),
                             users['AGE'].max())
     assert age['mean'] == pytest.approx(users['AGE'].mean())
-    datasets = {s.name: s for s in summaries if isinstance(s, Dataset)}
+    datasets = {s.name: s for s in artifact_summaries(
+        snapshot.manifest, 'training',
+        details=table_details(Path(snapshot.index_path)))
+        if isinstance(s, Dataset)}
     assert set(datasets) == {'users', 'orders'}
     assert datasets['orders'].schema == {
         'ORDER_ID': {'stype': 'id', 'dtype': 'int64'},
@@ -130,7 +138,7 @@ def test_data_warnings_name_each_table_that_breaks_a_check(tmp_path):
                     'dst_key': 'USER_ID'}]},
     ]}
 
-    tag, = (s for s in snapshot_summaries(tmp_path, config, 'training')
+    tag, = (s for s in snapshot_summaries(tmp_path, config)
             if isinstance(s, Tag))
     assert tag == Tag('kumo.data_warnings', '; '.join([
         'users: 1 missing or invalid primary keys',
