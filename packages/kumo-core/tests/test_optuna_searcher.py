@@ -40,3 +40,16 @@ def test_independent_sampling_warnings_off_on_every_optuna_version(
     # deprecated and False is the default.
     assert ('warn_independent_sampling' in sampler_kwargs) == passed
     assert sampler_kwargs.get('warn_independent_sampling', False) is False
+
+
+def test_analyze_emits_no_experimental_warnings(tmp_path) -> None:
+    searcher = TPESearcher(SPACE)
+    searcher.study.optimize(lambda trial: trial.suggest_float('lr', 0, 1),
+                            n_trials=3)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        searcher.analyze(str(tmp_path))
+    assert [
+        str(warning.message) for warning in caught
+        if issubclass(warning.category, optuna.exceptions.ExperimentalWarning)
+    ] == []
