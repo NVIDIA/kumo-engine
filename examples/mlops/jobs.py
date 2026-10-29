@@ -29,6 +29,9 @@ from kumo.engine.connector import (
 
 # Needs several 30-day windows of order history; shorten it for small data.
 QUERY = 'PREDICT COUNT(orders.*, 0, 30, days) > 0 FOR EACH users.USER_ID'
+# 'table.COLUMN' names to encode as text: inference reads short text as
+# categorical, and the score job must declare the graph the fit trained on.
+TEXT_COLUMNS: Sequence[str] = ()
 
 
 def parse_args(argv: Optional[Sequence[str]], *,
@@ -136,12 +139,16 @@ def build_graph(connector: Connector, prefix: str = '') -> Graph:
                    time_column='ORDER_TIME').with_column(
                        'USER_ID',
                        stype=Stype.ID).with_column('ITEM_ID', stype=Stype.ID)
+    tables = {
+        'users': table('users', primary_key='USER_ID'),
+        'items': table('items', primary_key='ITEM_ID'),
+        'orders': orders,
+    }
+    for name in TEXT_COLUMNS:
+        alias, column = name.split('.')
+        tables[alias] = tables[alias].with_column(column, stype=Stype.text)
     return Graph(
-        tables={
-            'users': table('users', primary_key='USER_ID'),
-            'items': table('items', primary_key='ITEM_ID'),
-            'orders': orders,
-        }, edges=[
+        tables=tables, edges=[
             Edge(src_table='orders', fkey='USER_ID', dst_table='users'),
             Edge(src_table='orders', fkey='ITEM_ID', dst_table='items'),
         ])

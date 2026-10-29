@@ -16,7 +16,10 @@ schedule. Both take their settings as command-line flags.
   given. Inside the block the run is stored under `predictions/<id>/` with its
   `_provenance.json`.
 - `jobs.py` holds what both share: the flags, the graph (users, items, orders),
-  the connectors and the `kumo.MLOps` settings. Replace it with your own module.
+  the connectors and the `kumo.MLOps` settings. Replace it with your own module;
+  list text columns in `TEXT_COLUMNS` (e.g. `('users.BIO',)`), since inference
+  reads short text as categorical. With `--on-error raise`, a score job whose
+  graph differs from the one the model was trained on fails before scoring.
 
 | Directory | Platform | Registry | Schedule |
 |---|---|---|---|
