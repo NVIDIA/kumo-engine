@@ -8,9 +8,9 @@ from string import Template
 from kumo.engine._widget import THEME, button, render_widget
 
 _STYLE = Template(r"""
-.kumo-graph{container:kumo-graph/inline-size}
+.kumo-graph{container:kumo-graph/inline-size;padding:16px}
 .kumo-graph,.kumo-graph *{user-select:none;-webkit-user-select:none}
-.kumo-graph:fullscreen{width:100%;height:100%;max-height:none;padding:16px}
+.kumo-graph:fullscreen{width:100%;height:100%;max-height:none}
 .kumo-graph-toolbar{display:grid;
 grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
 .kumo-graph-layout{display:flex;grid-column:2;grid-row:1;justify-self:center;
@@ -30,7 +30,7 @@ box-shadow:$chrome_shadow}
 @container kumo-graph (max-width:900px){
 .kumo-graph-toolbar{grid-template-columns:minmax(0,1fr);row-gap:12px}
 .kumo-graph-layout{grid-column:1;grid-row:2}}
-@container kumo-graph (max-width:340px){.kumo-graph-actions{gap:4px}}
+@container kumo-graph (max-width:340px){.kumo-graph-actions{gap:2px}}
 .kumo-graph-layout input:focus-visible+span{
 outline:2px solid $focus;outline-offset:2px}
 .kumo-graph-scale{min-width:44px;text-align:center;color:#666;
