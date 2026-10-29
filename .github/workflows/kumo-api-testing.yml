@@ -32,39 +32,6 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
 jobs:
-  schema-compat:
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Checkout repository and submodules
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          python-version: '3.11'
-          activate-environment: true
-          # This job installs nothing via uv (schema checks below are disabled),
-          # so no cache is ever created. Disable caching to avoid the post-job
-          # `uv cache prune` failing on a missing cache dir.
-          enable-cache: false
-
-      - name: Get version from pyproject.toml
-        id: get-version
-        run: |
-          VERSION=$(awk '/^\[project\]/{p=1;next} p&&/^version/{gsub(/[^0-9.]/, "", $3);print $3;exit}' pyproject.toml)
-          echo "version=$VERSION"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      # - name: Check schema compatibility (Pydantic v2)
-      #   run: |
-      #     uv pip install '.[release-check]' 'pydantic>=2.7'
-      #     python -m tools.schema_compat check-release --version ${{ steps.get-version.outputs.version }}
-      #   env:
-      #     AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      #     AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      #     AWS_DEFAULT_REGION: us-west-2
-
   build:
     runs-on: ubuntu-24.04
 

@@ -3124,10 +3124,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-release-check = [
-    { name = "boto3" },
-    { name = "botocore" },
-]
 test = [
     { name = "cryptography" },
     { name = "pyarrow" },
@@ -3137,8 +3133,6 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boto3", marker = "extra == 'release-check'" },
-    { name = "botocore", marker = "extra == 'release-check'", specifier = ">=1.34,<2" },
     { name = "cryptography", marker = "extra == 'test'" },
     { name = "numpy" },
     { name = "pandas" },
@@ -3150,7 +3144,7 @@ requires-dist = [
     { name = "tabulate", marker = "extra == 'test'" },
     { name = "typing-extensions", specifier = ">=4.12.2" },
 ]
-provides-extras = ["test", "release-check"]
+provides-extras = ["test"]
 
 [[package]]
 name = "kumo-bigquery"
