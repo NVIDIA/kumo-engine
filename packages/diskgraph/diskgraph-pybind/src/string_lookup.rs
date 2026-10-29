@@ -44,6 +44,7 @@ impl StringLookup {
                 }
             }
         }
+        positions.shrink_to_fit();
         Ok(Self {
             positions,
             null_position,

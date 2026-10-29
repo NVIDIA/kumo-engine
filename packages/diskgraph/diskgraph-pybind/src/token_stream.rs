@@ -34,7 +34,16 @@ fn pack(
                 .into(),
         );
     }
-    let n = *offsets.last().unwrap() as usize;
+    // Every event has a part token or at most a separator, and output is capped per sample.
+    let supplied = parts.iter().map(|(events, _)| events.len()).sum::<usize>();
+    let bound = (offsets.len() - 1)
+        .checked_mul(maximum)
+        .and_then(|cap| cap.checked_add(supplied))
+        .unwrap_or(usize::MAX);
+    let n = usize::try_from(*offsets.last().unwrap()).unwrap_or(usize::MAX);
+    if n > bound {
+        return Err("declared event count exceeds the supplied tokens and token budget".into());
+    }
     let mut lengths = vec![usize::from(separator.is_some()); n];
     if separator.is_some() && between {
         for &end in &offsets[1..] {
@@ -118,15 +127,15 @@ fn pack(
 #[pyfunction]
 pub fn pack_token_stream(
     py: Python<'_>,
-    offsets: &Bound<'_, PyAny>,
+    event_offsets: &Bound<'_, PyAny>,
     parts: Vec<(Bound<'_, PyAny>, Bound<'_, PyAny>)>,
-    maximum: usize,
+    max_tokens: usize,
     keep_last: bool,
     event_boundary: bool,
-    separator: Option<i64>,
-    between: bool,
-    bos: Option<i64>,
-    eos: Option<i64>,
+    separator_id: Option<i64>,
+    separator_between: bool,
+    bos_id: Option<i64>,
+    eos_id: Option<i64>,
 ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
     fn column(value: &Bound<'_, PyAny>) -> PyResult<Int64Array> {
         make_array(ArrayData::from_pyarrow_bound(value)?)
@@ -135,7 +144,7 @@ pub fn pack_token_stream(
             .cloned()
             .ok_or_else(|| DiskgraphConfigError::new_err("expected an Arrow int64 array"))
     }
-    let offsets = column(offsets)?;
+    let offsets = column(event_offsets)?;
     if offsets.null_count() != 0 {
         return Err(DiskgraphConfigError::new_err("null event offset"));
     }
@@ -148,13 +157,13 @@ pub fn pack_token_stream(
             pack(
                 offsets.values(),
                 &parts,
-                maximum,
+                max_tokens,
                 keep_last,
                 event_boundary,
-                separator,
-                between,
-                bos,
-                eos,
+                separator_id,
+                separator_between,
+                bos_id,
+                eos_id,
             )
         })
         .map_err(DiskgraphConfigError::new_err)?;

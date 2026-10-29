@@ -11,7 +11,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
 use arrow::array::{
@@ -28,6 +28,7 @@ use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use regex::Regex;
 use serde::Deserialize;
 
 use crate::DiskgraphConfigError;
@@ -141,6 +142,69 @@ enum ScalarValue {
     String(String),
 }
 
+/// Python `repr(float)`: Rust's shortest round-trip digits and exponent cutoffs, Python spelling.
+fn python_float_repr(value: f64) -> String {
+    if value.is_nan() {
+        return "nan".into();
+    }
+    if value.is_infinite() {
+        return if value > 0.0 { "inf" } else { "-inf" }.into();
+    }
+    let text = format!("{value:?}");
+    match text.split_once('e') {
+        Some((mantissa, exponent)) => {
+            let (sign, digits) = match exponent.strip_prefix('-') {
+                Some(digits) => ('-', digits),
+                None => ('+', exponent),
+            };
+            format!("{mantissa}e{sign}{digits:0>2}")
+        }
+        None => text,
+    }
+}
+
+/// Characters Python's `str.isprintable()` rejects, apart from ASCII space. Surrogates (Cs)
+/// cannot occur in a Rust `str`.
+static NON_PRINTABLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]").expect("valid class")
+});
+
+/// Python `repr(str)`.
+fn python_str_repr(value: &str) -> String {
+    let quote = if value.contains('\'') && !value.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push(quote);
+    let mut buffer = [0; 4];
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ if ch == quote => {
+                out.push('\\');
+                out.push(ch);
+            }
+            ' '..='~' => out.push(ch),
+            _ if NON_PRINTABLE.is_match(ch.encode_utf8(&mut buffer)) => {
+                let code = u32::from(ch);
+                out.push_str(&match code {
+                    0..=0xff => format!("\\x{code:02x}"),
+                    0x100..=0xffff => format!("\\u{code:04x}"),
+                    _ => format!("\\U{code:08x}"),
+                });
+            }
+            _ => out.push(ch),
+        }
+    }
+    out.push(quote);
+    out
+}
+
 impl ScalarValue {
     fn numeric(&self) -> Result<Option<f64>, String> {
         match self {
@@ -181,8 +245,8 @@ impl ScalarValue {
             Self::Bool(value) => ("bool".into(), if *value { "True" } else { "False" }.into()),
             Self::I64(value) => ("int".into(), value.to_string()),
             Self::U64(value) => ("int".into(), value.to_string()),
-            Self::F64(value) => ("float".into(), format!("{value:?}")),
-            Self::String(value) => ("str".into(), format!("{value:?}")),
+            Self::F64(value) => ("float".into(), python_float_repr(*value)),
+            Self::String(value) => ("str".into(), python_str_repr(value)),
         }
     }
 
@@ -1801,6 +1865,55 @@ mod tests {
                     expected.iter().map(|row| row.0).collect::<Vec<_>>()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn stable_sort_key_spells_values_like_python_repr() {
+        for (value, expected) in [
+            (1e16, "1e+16"),
+            (1e-5, "1e-05"),
+            (1.5e-5, "1.5e-05"),
+            (123.0, "123.0"),
+            (-0.0, "-0.0"),
+            (0.0, "0.0"),
+            (f64::NAN, "nan"),
+            (f64::INFINITY, "inf"),
+            (f64::NEG_INFINITY, "-inf"),
+            (1e300, "1e+300"),
+            (5e-324, "5e-324"),
+            (0.0001, "0.0001"),
+            (9999999999999998.0, "9999999999999998.0"),
+            (1e-4 * 0.99, "9.900000000000001e-05"),
+            (f64::MAX, "1.7976931348623157e+308"),
+            (0.1, "0.1"),
+        ] {
+            assert_eq!(python_float_repr(value), expected);
+        }
+        for (value, expected) in [
+            ("a", "'a'"),
+            ("it's", "\"it's\""),
+            ("say \"hi\"", "'say \"hi\"'"),
+            ("both ' and \"", "'both \\' and \"'"),
+            ("back\\slash", "'back\\\\slash'"),
+            ("tab\t", "'tab\\t'"),
+            ("nl\n", "'nl\\n'"),
+            ("cr\r", "'cr\\r'"),
+            ("\x7f", "'\\x7f'"),
+            ("\u{80}", "'\\x80'"),
+            ("\u{a0}", "'\\xa0'"),
+            ("\u{ad}", "'\\xad'"),
+            ("é", "'é'"),
+            ("\u{200b}", "'\\u200b'"),
+            ("\u{2028}", "'\\u2028'"),
+            ("\u{3000}", "'\\u3000'"),
+            ("\u{e0001}", "'\\U000e0001'"),
+            ("\u{10ffff}", "'\\U0010ffff'"),
+            ("😀", "'😀'"),
+            ("", "''"),
+            (" ", "' '"),
+        ] {
+            assert_eq!(python_str_repr(value), expected);
         }
     }
 

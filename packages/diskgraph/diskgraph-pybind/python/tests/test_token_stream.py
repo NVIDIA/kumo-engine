@@ -68,3 +68,35 @@ def test_boundary_tokens_count_toward_budget():
         pack_token_stream(
             column([0, 1]), [(column([0]), column([10]))], 2, False, False, None, True, 90, 91
         )
+
+
+@pytest.mark.parametrize("last,expected", [(False, [1, 2, 3]), (True, [3, 4, 5])])
+def test_event_boundary_cuts_inside_event_when_none_fits(last, expected):
+    offsets, ids = pack_token_stream(
+        column([0, 1]),
+        [(column([0] * 5), column([1, 2, 3, 4, 5]))],
+        3,
+        last,
+        True,
+        None,
+        True,
+        None,
+        None,
+    )
+    assert offsets.to_pylist() == [0, 3]
+    assert ids.to_pylist() == expected
+
+
+def test_declared_event_count_is_bounded_before_allocation():
+    with pytest.raises(DiskgraphConfigError, match="declared event count"):
+        pack_token_stream(
+            column([0, 1_000_000_000]),
+            [(column([]), column([]))],
+            1,
+            False,
+            False,
+            None,
+            True,
+            None,
+            None,
+        )
