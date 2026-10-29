@@ -135,8 +135,8 @@ def test_unlisted_or_unreadable_defaults_are_ignored(fitted, tmp_path):
     with pytest.warns(UserWarning, match='Ignoring the scoring defaults'):
         ignored = kumo.Trainer.load(bundle)
     assert ignored.result.scoring_defaults == kumo.ScoringDefaults()
-    with pytest.raises(ValueError, match='must be specified'):
-        ignored.predict(table, snapshot=snapshot)
+    run = ignored.predict(table, snapshot=snapshot)
+    assert run.frame['TARGET_PRED'].isna().all()
 
 
 def test_a_fit_stores_its_defaults_in_the_bundle(fitted, tmp_path):

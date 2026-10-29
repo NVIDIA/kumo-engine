@@ -70,7 +70,7 @@ def predict(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
             'binary_classification_threshold'),
         num_classes_to_return=params.get('num_classes_to_return'),
     )
-    _require_inputs(trainer, snapshot, rows, params, time)
+    _require_inputs(trainer, snapshot, rows, time)
     trainer.scratch_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=trainer.scratch_dir) as tmp, \
             scoped_scratch_dir(Path(tmp) / 'scratch'):
@@ -138,28 +138,18 @@ def _seconds(values: pd.Series) -> pd.Series:
 
 
 def _require_inputs(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
-                    params: Mapping[str, Any],
                     time: Optional[pd.Timestamp]) -> None:
     from kumo_core.pquery import query_is_temporal
-    from kumo_core.types import TaskType
 
     from kumo.engine.pquery import PredictiveQuery
 
-    untimed = len(rows) > 0 and time is None and 'TIMESTAMP' not in rows
-    unthresholded = (
-        params.get('binary_classification_threshold') is None and
-        trainer.result.scoring_defaults.binary_classification_threshold is None)
-    if not (untimed or unthresholded):
+    if len(rows) == 0 or time is not None or 'TIMESTAMP' in rows:
         return
     parsed = PredictiveQuery._from_snapshot(snapshot,
                                             trainer._training_query)._parsed
-    if untimed and query_is_temporal(parsed, snapshot._native_graph):
+    if query_is_temporal(parsed, snapshot._native_graph):
         raise ValueError("temporal query: pass params={'prediction_time': "
                          "...} or a TIMESTAMP column")
-    if unthresholded and (TaskType(parsed.task_type)
-                          is TaskType.BINARY_CLASSIFICATION):
-        raise ValueError("binary classification: pass "
-                         "params={'binary_classification_threshold': ...}")
 
 
 def snapshot_location(uri: str) -> Tuple[Connector, str]:
