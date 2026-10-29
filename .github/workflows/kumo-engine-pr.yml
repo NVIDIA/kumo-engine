@@ -54,7 +54,16 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pr-selection"
           gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" > "$RUNNER_TEMP/pr-selection/pr.json"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$pr/files?per_page=100" \
-            --jq 'add' > "$RUNNER_TEMP/pr-selection/files.json"
+            > "$RUNNER_TEMP/pr-selection/file-pages.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'pr-selection'
+          pages = json.loads((root / 'file-pages.json').read_text())
+          if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+              raise SystemExit('Malformed paginated changed-file inventory')
+          (root / 'files.json').write_text(json.dumps([row for page in pages for row in page]))
+          PY
           python3 .github/scripts/engine-pr-check.py select \
             --files-json "$RUNNER_TEMP/pr-selection/files.json" \
             --pr-json "$RUNNER_TEMP/pr-selection/pr.json" \
