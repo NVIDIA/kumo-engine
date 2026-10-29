@@ -83,6 +83,7 @@ def test_fit_reports_progress_events(table_and_snapshot, monkeypatch,
     assert [(e.trial, e.epoch) for e in events if e.name == 'epoch_ended'
             ] == [(1, 1), (1, 2), (2, 1), (2, 2)]
     assert any(name.startswith('val_') for name in events[2].metrics)
+    assert events[2].metrics['train_epoch_seconds'] > 0
     assert events[1].params['attempt'] == 1
     assert events[4].params == {'status': 'succeeded', 'attempt': 1}
     assert {'val_mae', 'seconds'} <= set(events[4].metrics)

@@ -197,7 +197,8 @@ class AutoTrainingProgressLogger(MonitoringCallback):  # pragma: no cover
                 self.on_event('epoch_ended', trial=self.trial, epoch=epoch,
                               metrics={
                                   **metrics.train_metrics,
-                                  **metrics.validation_metrics
+                                  **metrics.validation_metrics,
+                                  'train_epoch_seconds': metrics.time_taken,
                               })
             except Exception:
                 logger.warning('Could not report epoch_ended',
