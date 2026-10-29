@@ -150,8 +150,8 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     tested = {name: value for name, value in logged_names(
         result.metrics).items() if name.startswith('test/')}
     assert {name for name in metrics if not name.startswith((
-        'train/', 'val/', 'data/', 'graph/'))} == {
-            *tested, 'seconds', 'search/best_val_mae'}
+        'train/', 'val/', 'test/', 'data/', 'graph/'))} == {
+            'seconds', 'search/best_val_mae'}
     assert metrics['graph/rows/ents'] == 400
     assert {name: metrics[name] for name in tested} == tested
     assert 'off for the rest of this run' not in caplog.text
