@@ -263,10 +263,19 @@ class MlflowTracking:
             raise ValueError('Loading from an MLflow registry takes a '
                              'ModelRegistryLocation with an alias or a '
                              'version.')
-        reference = (f'@{location.alias}'
-                     if location.alias else f'/{location.version}')
-        return load_model(f'models:/{location.model_name}{reference}',
-                          target=self.target, **kwargs)
+        name, alias = location.model_name, location.alias
+        reference = f'@{alias}' if alias else f'/{location.version}'
+        trainer = load_model(f'models:/{name}{reference}', target=self.target,
+                             **kwargs)
+        version = location.version
+        if alias:
+            with self.target.scope():
+                version = self.target.client().get_model_version_by_alias(
+                    name, alias).version
+        trainer._from_registry(
+            PublishedModel(name, str(version), f'models:/{name}/{version}'),
+            alias)
+        return trainer
 
     def register(self, result: Any,
                  location: ModelRegistryLocation) -> PublishedModel:

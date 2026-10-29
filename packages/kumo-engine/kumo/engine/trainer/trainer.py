@@ -141,7 +141,9 @@ class TrainingResult:
 
     `published_model` records the destination's assigned name, version and URI
     when `fit()` exports the bundle. It is `None` without an export.
-    `registered_model` is the version a `kumo.MLOps` ``registry`` registered.
+    `registered_model` is the version a `kumo.MLOps` ``registry`` registered,
+    or the registered version this model was loaded from, and
+    `registered_alias` the alias it was registered with or loaded by.
 
     `holdout_path` is the published model's holdout Parquet file written by
     `fit()`, or `None` when it has none (no holdout task, or a model refit on
@@ -160,6 +162,7 @@ class TrainingResult:
     holdout_truncated: Optional[bool] = False
     bundle_id: Optional[str] = None
     registered_model: Optional[PublishedModel] = None
+    registered_alias: Optional[str] = None
     scoring_defaults: ScoringDefaults = field(default_factory=ScoringDefaults)
     _trainer: Optional['Trainer'] = field(default=None, repr=False,
                                           compare=False)
@@ -1038,11 +1041,12 @@ class Trainer:
                     'model', result.bundle_id)), settings, session=session,
             snapshot=snapshot, metrics=result.metrics, warn=warn,
             stored=(deps.errors or [None])[0])
-        if registered is not None:
-            result = replace(result, registered_model=registered)
-            self._training_result = result
         alias = None if settings is None or settings.registry is None else (
             settings.registry.alias)
+        if registered is not None:
+            result = replace(result, registered_model=registered,
+                             registered_alias=alias)
+            self._training_result = result
         session.finish(
             lambda: fitted_spec(
                 cast(RunSpec, session.spec), result, seconds, alias, (
@@ -1821,7 +1825,15 @@ class Trainer:
         trainer = cls._load_bundle(bundle_dir, embedding_models,
                                    accelerator=accelerator)
         warn_if_other_bundle(getattr(published, 'metadata', None), trainer)
+        if location is not None:
+            trainer._from_registry(published, alias)
         return trainer
+
+    def _from_registry(self, model: PublishedModel,
+                       alias: Optional[str]) -> None:
+        self._training_result = replace(self._fitted('predict'),
+                                        registered_model=model,
+                                        registered_alias=alias)
 
     @classmethod
     def _load_bundle(
