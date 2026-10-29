@@ -12,7 +12,7 @@ from kumo_core.prediction_counts import (
     prediction_summaries,
 )
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts, merged
-from kumo_core.summaries import Histogram, Scalar, Table
+from kumo_core.summaries import Histogram, Scalar, Series, Table
 from kumo_core.types import TaskType
 
 
@@ -200,3 +200,30 @@ def test_a_quantile_at_a_bin_edge_stays_in_the_bin_that_reaches_it():
                                            baseline=None))
     _check_column(logged, 'pred/True_PROB', values, PROBABILITY_EDGES)
     assert logged['pred/True_PROB/q99'].value == pytest.approx(0.11)
+
+
+def test_multilabel_counts_each_labels_predicted_rows():
+    rng = np.random.default_rng(5)
+    prob = rng.random((300, 25)) * np.linspace(0.2, 1.0, 25)
+    pred = prob > 0.5
+    columns = [f'l{index}_PROB' for index in range(25)]
+    counts = _batches(TaskType.MULTILABEL_CLASSIFICATION,
+                      {'score': PROBABILITY_EDGES}, columns, prob=prob,
+                      pred=pred)
+
+    logged = _by_name(prediction_summaries(counts, threshold=None,
+                                           baseline=None))
+    positives = pred.sum(axis=0)
+    top = sorted(range(25), key=lambda index: -positives[index])[:20]
+    assert {name.split('/')[1] for name in logged if name.endswith('/hist')
+            } == {columns[index] for index in top}
+    _check_column(logged, f'pred/{columns[top[0]]}', prob[:, top[0]],
+                  PROBABILITY_EDGES)
+    per_row = np.bincount(pred.sum(axis=1))
+    assert logged['pred/labels_per_entity'] == Series(
+        'pred/labels_per_entity',
+        tuple((k, float(rows)) for k, rows in enumerate(per_row)), 'labels')
+    assert {name: summary.value for name, summary in logged.items()
+            if name.startswith('pred/label/')} == {
+        f'pred/label/l{index}/share': positives[index] / 300
+        for index in top}

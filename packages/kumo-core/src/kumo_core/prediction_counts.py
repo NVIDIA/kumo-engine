@@ -9,8 +9,9 @@ for at most `MAX_CLASS_HISTOGRAMS` classes; and ``confidence``, the top
 class's probability) is counted on the ``score`` axis, and ``TARGET_PRED``
 on the ``target`` axis, the training target's bins: a column ``c`` has the
 counts ``c``, the sum ``c/sum`` and the extent ``c``. ``classes`` tallies
-each row's top class and ``predicted_positive`` the rows ``TARGET_PRED``
-labels positive.
+each row's top class, ``predicted_positive`` the rows ``TARGET_PRED``
+labels positive, ``label_positive`` the rows predicting each label and
+``predicted_labels`` the rows per number of predicted labels.
 """
 
 from typing import Any, List, Optional, Sequence
@@ -18,7 +19,7 @@ from typing import Any, List, Optional, Sequence
 import numpy as np
 from kumo_core.evaluation_counts import _horizons, _metric_part
 from kumo_core.score_counts import Counts
-from kumo_core.summaries import Scalar, Summary, Table
+from kumo_core.summaries import Scalar, Series, Summary, Table
 from kumo_core.types import TaskType
 
 QUANTILES = (1, 5, 25, 50, 75, 95, 99)
@@ -48,6 +49,11 @@ def count_predictions(counts: Counts, task_type: TaskType, *, prob: Any,
     if task_type is TaskType.BINARY_CLASSIFICATION:
         counts.total('predicted_positive',
                      np.count_nonzero(np.asarray(pred, dtype=bool)))
+    elif task_type is TaskType.MULTILABEL_CLASSIFICATION:
+        positive = np.asarray(pred, dtype=bool)
+        counts.tally('label_positive', np.nonzero(positive)[1], prob.shape[1])
+        counts.tally('predicted_labels', positive.sum(axis=1),
+                     prob.shape[1] + 1)
     else:
         counts.tally('classes', prob.argmax(axis=1), prob.shape[1])
         _column(counts, 'confidence', 'score', prob.max(axis=1))
@@ -69,16 +75,21 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
     quantiles (``pred/...`` for ``TARGET_PRED``) for each column, of only
     the `TOP_CLASSES` most predicted classes; ``pred/positive_rate`` at a
     binary ``threshold``; ``pred/h<step>/hist`` per forecast horizon;
-    ``pred/classes``, each class's rows and share;
+    ``pred/classes``, each class's rows and share; for labels,
+    ``pred/labels_per_entity``, rows per number of predicted labels, and
+    ``pred/label/<label>/share``, the rows predicting each top label;
     and ``drift/score_psi`` and ``drift/score_ks`` against ``baseline``,
     the training holdout's counts."""
     columns = list(counts.extents)
-    if 'classes' in counts.arrays:
-        tally = counts.arrays['classes']
+    ranked = next((name for name in ('classes', 'label_positive')
+                   if name in counts.arrays), None)
+    if ranked is not None:
+        tally = counts.arrays[ranked]
         labels = [name for name in columns if name != 'confidence']
         top = np.argsort(-tally, kind='stable')
         columns = [
-            'confidence', *(labels[i] for i in top[:TOP_CLASSES] if labels)
+            *(name for name in columns if name == 'confidence'),
+            *(labels[i] for i in top[:TOP_CLASSES] if labels)
         ]
     summaries = [
         summary for name in columns
@@ -95,8 +106,10 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
                        f"pred/{name.removeprefix('TARGET_PRED_')}/hist")
         for name in counts.arrays if name.startswith('TARGET_PRED_h')
     ]
-    if 'classes' in counts.arrays:
+    if ranked == 'classes':
         summaries.append(_class_shares(tally, top, labels))
+    if ranked == 'label_positive':
+        summaries += _label_summaries(counts, top[:TOP_CLASSES], labels)
     score = next((name for name in ('True_PROB', 'confidence', 'TARGET_PRED')
                   if name in counts.extents), None)
     if score is not None and baseline is not None:
@@ -110,6 +123,23 @@ def _class_shares(tally: np.ndarray, order: Sequence[int],
         'pred/classes', ('class', 'rows', 'share'),
         tuple((labels[i].removesuffix('_PROB') if labels else str(i),
                int(tally[i]), tally[i] / tally.sum()) for i in order))
+
+
+def _label_summaries(counts: Counts, top: Sequence[int],
+                     labels: Sequence[str]) -> List[Summary]:
+    per_row = counts.arrays['predicted_labels']
+    rows = per_row.sum()
+    last = int(np.flatnonzero(per_row).max()) if rows else 0
+    names = [_metric_part(labels[i].removesuffix('_PROB')) if labels else
+             str(i) for i in top]
+    return [
+        Series('pred/labels_per_entity',
+               tuple((k, float(per_row[k])) for k in range(last + 1)),
+               'labels'),
+        *(Scalar(f'pred/label/{name}/share',
+                 float(counts.arrays['label_positive'][i] / rows))
+          for name, i in zip(names, top)),
+    ]
 
 
 def _drift(counts: Counts, baseline: Counts, score: str) -> List[Summary]:
