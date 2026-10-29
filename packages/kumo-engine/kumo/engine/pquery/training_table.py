@@ -142,6 +142,8 @@ class TrainingTable:
 
         path = settings.root.location(f'training_tables/{self.id}/')
         try:
+            settings.locate(self.staging_dir / STAGING_MANIFEST_FILE,
+                            TrainingTableManifest, f'training_tables/{self.id}')
             filesystem, root = file_store(settings.root.connector, path)
             if filesystem.get_file_info(
                     f'{root}/_SUCCESS').type is not FileType.File:

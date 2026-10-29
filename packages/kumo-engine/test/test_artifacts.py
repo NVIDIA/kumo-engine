@@ -5,6 +5,9 @@
 from dataclasses import dataclass
 from typing import List, Optional
 
+from kumo_core.artifacts import bundle_id_from_manifest
+
+import kumo.engine as kumo
 from kumo.engine._manifest import (
     Artifact,
     Manifest,
@@ -16,7 +19,10 @@ from kumo.engine._manifest import (
     SourceTableEntry,
     TrainingTableManifest,
     artifacts,
+    read_manifest,
 )
+from kumo.engine._snapshot_io import store
+from kumo.engine.trainer.trainer import _store_and_register
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -60,3 +66,19 @@ def test_a_new_kind_names_its_artifacts_without_other_changes():
         Artifact('snapshot', 'p', None, True, 'kumo.snapshot_uri',
                  version='p', version_kind='exact'),
     ]
+
+
+def test_each_store_records_its_location_and_keeps_the_ids(fitted, tmp_path):
+    trainer, _, snapshot = fitted
+    bundle = trainer.result.bundle_dir
+    ids = snapshot.id, trainer.result.id, bundle_id_from_manifest(bundle)
+    for root in (tmp_path / 'a', tmp_path / 'b'):
+        settings = kumo.MLOps(str(root))
+        store(snapshot, settings)
+        _store_and_register(bundle, trainer.result.manifest, settings)
+        assert snapshot.manifest.location == settings.snapshot_uri(snapshot)
+        assert trainer.result.manifest.location == f'{root}/models/{ids[1]}'
+        assert read_manifest(root / 'models' / ids[1] / '_provenance.json',
+                             ModelManifest).location == f'{root}/models/{ids[1]}'
+        assert (snapshot.id, trainer.result.id,
+                bundle_id_from_manifest(bundle)) == ids

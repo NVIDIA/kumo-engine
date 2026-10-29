@@ -235,17 +235,19 @@ def _store(asset: Asset, sha256: str, settings: Any) -> Optional[str]:
             with open(path, 'rb') as reader, \
                     filesystem.open_output_stream(f'{root}/{name}') as writer:
                 shutil.copyfileobj(reader, writer, 1 << 20)
+        location = settings.root.uri(relative)
         with filesystem.open_output_stream(marker) as writer:
-            writer.write(manifest_bytes(_manifest(asset, sha256)))
-        return settings.root.uri(relative)
+            writer.write(manifest_bytes(_manifest(asset, sha256, location)))
+        return location
     except Exception as error:
         raise RuntimeError(
             f"Could not store {asset.asset_kind} {asset.name!r} under the "
             f"artifact root: {error}") from error
 
 
-def _manifest(asset: Asset, sha256: str) -> AssetManifest:
-    return AssetManifest(id=sha256, asset_kind=asset.asset_kind,
+def _manifest(asset: Asset, sha256: str, location: str) -> AssetManifest:
+    return AssetManifest(id=sha256, location=location,
+                         asset_kind=asset.asset_kind,
                          name=asset.name, version=asset.version,
                          format=entry_point(asset),
                          source=str(getattr(asset, 'path', '') or '') or None,
