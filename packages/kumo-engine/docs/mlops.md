@@ -287,11 +287,13 @@ w.data_quality.create_monitor(monitor=Monitor(object_type="table", object_id=tab
             timestamp_column="EVALUATED_AT", granularities=[AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY]))))
 ```
 
-**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` to a Snowflake table writes `TARGET` as a number and `EVALUATED_AT` as `TIMESTAMP_NTZ`, as the monitor needs. The baseline is the model's holdout as evaluated rows, `result.holdout_evaluation()`, exported the same way, so its columns and types are the source's; pass the threshold the scored runs use, if they were not scored with the stored one:
+**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` to a Snowflake table writes `TARGET` as a number and `EVALUATED_AT` as `TIMESTAMP_NTZ`, as the monitor needs. The baseline is the model's holdout as evaluated rows, `result.holdout_evaluation()`, exported the same way, so its columns and types are the source's. Pass the threshold the monitored runs were scored with, so both sides' `TARGET_PRED` match (null for runs without one):
 
 ```python
 evaluation.export(kumo.PredictionOutputConfig(sf, path="churn_evaluated"))
-champion.result.holdout_evaluation().export(kumo.PredictionOutputConfig(sf, path="churn_holdout_evaluated"))
+threshold = latest.manifest.scoring.binary_classification_threshold      # None if the runs had none
+champion.result.holdout_evaluation(binary_classification_threshold=threshold).export(
+    kumo.PredictionOutputConfig(sf, path="churn_holdout_evaluated"))
 ```
 
 ```sql
