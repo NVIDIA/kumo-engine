@@ -31,6 +31,7 @@ from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
 from kumo_core.diskgraph.stores import iter_primary_key_batches
 from kumo_core.io.csv import save_csv
 from kumo_core.io.filesystem import fsspec_mangle
+from kumo_core.score_counts import Counts
 from kumo_core.task_dataset import DiskgraphTaskManifest
 from kumo_core.train.artifact_stats import PredictionArtifactStatsCollector
 from kumo_core.train.mapping import (
@@ -1375,13 +1376,15 @@ class DiskgraphNestedTrainer(Trainer):
         | None = None,
         task_manifest: DiskgraphTaskManifest | None = None,
         binary_labels: bool = True,
+        prediction_counts: Counts | None = None,
     ) -> Any:
         """TT-NG batch prediction over the wheel-backed predict stage.
 
         Serves the model over the ``predict`` stage via the wheel iterator and
         writes to ``output_dir``. Mirrors the node-pred branch of
         ``Trainer.predict_v2`` but sources metadata from the bundle / ``self.task``
-        and keys output on ``pkey`` (no ``arange``).
+        and keys output on ``pkey`` (no ``arange``). Each written batch's scores
+        are added to ``prediction_counts``, if given.
         """
         emit_embeddings = bool(return_embeddings)
         emit_predictions = bool(return_predictions)
@@ -1393,7 +1396,9 @@ class DiskgraphNestedTrainer(Trainer):
 
         import torch
         from kumo_core.callbacks import PredictionProgressLogger
+        from kumo_core.prediction_counts import count_predictions
         from kumo_core.train.formatting import (
+            _get_col_names,
             format_embeddings,
             format_prediction,
         )
@@ -1567,6 +1572,21 @@ class DiskgraphNestedTrainer(Trainer):
                 embedding = format_embeddings(embedding_arr, main_df)
             return PredOutput(df, embedding)
 
+        numerical = self.task.task_type.has_numerical_target
+        count_columns = ([] if prediction_counts is None or numerical else
+                         _get_col_names(
+                             self.target_encoder.tensor_mapper.mapping,
+                             self.task.task_type, is_wide_format=True))
+
+        def _count(counts: Counts, prediction: dict[str, Any],
+                   df: pd.DataFrame) -> None:
+            count_predictions(
+                counts, self.task.task_type,
+                prob=prediction.get('prob'), pred=prediction.get('pred'),
+                target_pred=(df['TARGET_PRED'].to_numpy(
+                    dtype=np.float64, na_value=np.nan) if numerical else None),
+                columns=count_columns)
+
         datamodule = self.datamodule
 
         class _ChunkedPredictionWriter(BasePredictionWriter):
@@ -1617,6 +1637,8 @@ class DiskgraphNestedTrainer(Trainer):
                     self.partition_idx = partition_idx
                     self.saved_output_count += 1
                 out = _build_output(prediction)
+                if prediction_counts is not None and emit_predictions:
+                    _count(prediction_counts, prediction, out.df)
                 assert self.stream is not None
                 self.stream.write(out)
                 self.last_output = out
@@ -1703,7 +1725,7 @@ class DiskgraphNestedTrainer(Trainer):
             # The per-call writer class is a reference cycle; release what its
             # methods close over so this trainer and its data module free on
             # return rather than at the next garbage collection.
-            datamodule = _build_output = None
+            datamodule = _build_output = _count = None
         if writer.saved_output_count == 0:
             raise RuntimeError('[TT-NG] predict produced no batches')
         logger.info('[TT-NG] saved batch prediction output to %s', output_dir)
