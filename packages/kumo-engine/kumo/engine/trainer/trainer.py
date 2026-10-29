@@ -863,18 +863,20 @@ class Trainer:
             train_table.generation_plan.lag_timesteps)
         year_over_year = inferred_or_missing_type_to_none(
             train_table.generation_plan.year_over_year)
-        task_dataset = build_generated_training_task_dataset(
-            query=workflow.query,
-            graph=workflow.graph,
-            graph_index_path=workflow.prepared_graph.index_path,
-            run_id=run_id,
-            artifact_dir=str(run_dir),
-            tt_id=ingest_tt_id,
-            required_stages=train_table.required_stages,
-            lag_timesteps=(None
-                           if lag_timesteps is None else int(lag_timesteps)),
-            year_over_year=bool(year_over_year),
-        )
+        with no_encoder_inference_warnings(
+                effective_plan.column_processing.encoder_overrides or {}):
+            task_dataset = build_generated_training_task_dataset(
+                query=workflow.query,
+                graph=workflow.graph,
+                graph_index_path=workflow.prepared_graph.index_path,
+                run_id=run_id,
+                artifact_dir=str(run_dir),
+                tt_id=ingest_tt_id,
+                required_stages=train_table.required_stages,
+                lag_timesteps=(None if lag_timesteps is None else
+                               int(lag_timesteps)),
+                year_over_year=bool(year_over_year),
+            )
         require_embedding_models(
             self._embedding_models, task_dataset.feature_schema,
             effective_plan.column_processing.encoder_overrides)
