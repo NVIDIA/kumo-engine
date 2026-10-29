@@ -19,6 +19,7 @@ from kumoapi.model_plan import WeightMode
 from kumoapi.train import TrainingStage
 from kumo_core.modeling.heads.link_prediction import LinkPredHead
 from kumo_core.modeling.heads.link_prediction import LinkPredHeadOutput
+from kumo_core.modeling.retrieval.mips import require_faiss
 from torch import Tensor
 from torch_frame import TensorFrame
 from torch_geometric import is_torch_instance
@@ -153,6 +154,7 @@ class LinkGNNLightningModule(BaseLinkLightningModule):
                 computed. VAL, TEST or PRED
         """
 
+        require_faiss(self.device)
         # TODO Cache these dataloaders.
         if stage == TrainingStage.VAL:
             loader = self.datamodule.rhs_val_dataloader()

@@ -8,8 +8,41 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from kumo_core.modeling.retrieval.mips import (
+    MAX_K,
+    FaissUnavailableError,
+    MIPSBruteForce,
+    MIPSFaiss,
+    require_faiss,
+)
 
-from kumo_core.modeling.retrieval.mips import MAX_K, MIPSBruteForce, MIPSFaiss
+
+def require_backend(device: torch.device) -> None:
+    try:
+        faiss = require_faiss()
+    except FaissUnavailableError as error:
+        pytest.skip(str(error))
+    if device.type == 'cuda' and not hasattr(faiss, 'StandardGpuResources'):
+        pytest.skip('CUDA retrieval requires GPU FAISS')
+
+
+@pytest.mark.parametrize('error', [
+    ModuleNotFoundError('No FAISS', name='faiss'),
+    ModuleNotFoundError('Missing numpy', name='numpy'),
+    ImportError('Broken FAISS shared library'),
+])
+def test_backend_import_errors(monkeypatch: pytest.MonkeyPatch,
+                               error: ImportError) -> None:
+    def broken_import(name: str) -> None:
+        raise error
+
+    monkeypatch.setattr(
+        'kumo_core.modeling.retrieval.mips.importlib.import_module',
+        broken_import)
+    expected = (pytest.skip.Exception if isinstance(error, ModuleNotFoundError)
+                and error.name == 'faiss' else type(error))
+    with pytest.raises(expected):
+        require_backend(torch.device('cpu'))
 
 
 @pytest.fixture(params=[
@@ -41,6 +74,7 @@ def test_mips_faiss(
     with_exclude: bool,
     requires_grad: bool,
 ) -> None:
+    require_backend(device)
     lhs = torch.randn(
         (num_lhs, dim),
         dtype=dtype,
@@ -139,6 +173,8 @@ def test_empty(
     cls: type[MIPSBruteForce | MIPSFaiss],
     device: torch.device,
 ) -> None:
+    if cls is MIPSFaiss:
+        require_backend(device)
     lhs = torch.randn(4, 8, device=device)
     rhs = torch.randn(0, 8, device=device)
     mips_structure = cls(rhs)
@@ -155,7 +191,7 @@ def test_empty(
 @pytest.mark.skipif(not torch.backends.mps.is_available(),
                     reason='MPS unavailable')
 @pytest.mark.parametrize('dtype', [torch.float32, torch.float16,
-                                  torch.bfloat16])
+                                   torch.bfloat16])
 @pytest.mark.parametrize('with_exclude', [False, True])
 def test_mips_metal_scores_and_gradients(
     dtype: torch.dtype,
@@ -243,6 +279,7 @@ def test_macos_cpu_retrieval_does_not_use_faiss_search(
     monkeypatch: pytest.MonkeyPatch,
     with_exclude: bool,
 ) -> None:
+    require_backend(torch.device('cpu'))
     monkeypatch.setattr(sys.modules[MIPSFaiss.__module__], 'sys',
                         SimpleNamespace(platform='darwin'))
     import faiss

@@ -7,6 +7,7 @@ import os
 import runpy
 import subprocess
 import sys
+import tomllib
 import types
 import zipfile
 from email.parser import BytesParser
@@ -15,6 +16,8 @@ from typing import cast
 from zipfile import ZipFile
 
 import pytest
+
+from io_utils.fsutil.api import read_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / 'packages/kumo-engine/scripts'
@@ -91,12 +94,38 @@ def test_removed_component_selection_flag_is_rejected(tmp_path):
     assert "unknown argument '--extra-components'" in result.stderr
 
 
+@pytest.mark.parametrize('target', [
+    '10.15', '11', '12.7', '13', '13.9', 'invalid', '14.invalid',
+])
+def test_macos_deployment_target_rejected_before_build(tmp_path, target):
+    uname = tmp_path / 'uname'
+    uname.write_text('#!/bin/sh\necho Darwin\n')
+    uname.chmod(0o755)
+    marker = tmp_path / 'python-invoked'
+    python = tmp_path / 'python'
+    python.write_text(
+        f'#!{sys.executable}\nfrom pathlib import Path\n'
+        f'Path({str(marker)!r}).touch()\n')
+    python.chmod(0o755)
+
+    result = subprocess.run(
+        ['bash', str(SCRIPT)],
+        env=dict(os.environ, MACOSX_DEPLOYMENT_TARGET=target, USE_ZIG='0',
+                 PYTHON=str(python), PATH=f'{tmp_path}:{os.environ["PATH"]}'),
+        capture_output=True, text=True)
+
+    assert result.returncode == 1
+    assert 'MACOSX_DEPLOYMENT_TARGET >= 14.0' in result.stderr
+    assert not marker.exists()
+
+
 def _wheel(directory, name, requires=(), extras=(), tag='py3-none-any',
-           python='>=3.11', files=None):
+           python='>=3.11', files=None, headers=''):
     """Write a component wheel with just enough metadata to merge."""
     stem = name.replace('-', '_')
     path = directory / f'{stem}-1.0-{tag}.whl'
     metadata = f'Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n'
+    metadata += headers
     if python is not None:
         metadata += f'Requires-Python: {python}\n'
     metadata += ''.join(f'Provides-Extra: {e}\n' for e in extras)
@@ -216,13 +245,17 @@ def test_merged_module_reports_bundle_version(tmp_path, monkeypatch):
             b"__version__ = '1.0'\n")
 
 
-@pytest.mark.parametrize(('platform', 'expected'), [
-    ('linux', {'faiss-gpu'}),
-    ('darwin', {'faiss-cpu'}),
-    ('win32', set()),
+@pytest.mark.parametrize(('platform', 'machine', 'expected'), [
+    ('linux', 'x86_64', {'faiss-gpu'}),
+    ('linux', 'aarch64', set()),
+    ('darwin', 'arm64', {'faiss-cpu'}),
+    ('darwin', 'x86_64', {'faiss-cpu'}),
+    ('win32', 'AMD64', set()),
+    ('win32', 'ARM64', set()),
 ])
+@pytest.mark.parametrize('extra', ['', 'cpu'])
 def test_engine_faiss_platform_selection_survives_merge(
-        tmp_path, monkeypatch, platform, expected):
+        tmp_path, monkeypatch, platform, machine, expected, extra):
     from packaging.requirements import Requirement
 
     setup_kwargs = {}
@@ -234,13 +267,29 @@ def test_engine_faiss_platform_selection_survives_merge(
         requirement for requirement in engine['requires']
         if 'extra ==' in requirement
     ]
+    project = tomllib.loads(read_text(str(
+        REPO_ROOT / 'packages/kumo-engine/pyproject.toml')))['project']
+    assert not {'faiss-cpu', 'faiss-gpu', 'gpu'} & set(
+        project['optional-dependencies'])
+    for name in ('cpu',):
+        for value in project['optional-dependencies'][name]:
+            requirement = Requirement(value)
+            spec = str(requirement).split(';', 1)[0]
+            marker = str(requirement.marker) if requirement.marker else None
+            condition = f'({marker}) and ' if marker else ''
+            provider_requirements.append(
+                f'{spec}; {condition}extra == "{name}"')
     monkeypatch.setitem(COMPONENTS, 'kumo-engine', {
         **engine,
+        'extras': [*engine['extras'], 'cpu'],
         'requires': setup_kwargs['install_requires'] + provider_requirements,
     })
     result = _merge(tmp_path, list(COMPONENTS))
     assert result.returncode == 0, result.stderr
     metadata, manifest, _ = _read_wheel(tmp_path)
+    assert not {'faiss-cpu', 'faiss-gpu', 'gpu'} & set(
+        metadata.get_all('Provides-Extra'))
+    assert 'cpu' in metadata.get_all('Provides-Extra')
     faiss = [
         Requirement(value) for value in metadata.get_all('Requires-Dist')
         if value.startswith('faiss-')
@@ -252,11 +301,13 @@ def test_engine_faiss_platform_selection_survives_merge(
                and requirement.marker is not None for requirement in faiss)
     selected = {
         requirement.name for requirement in faiss
-        if requirement.marker.evaluate({'sys_platform': platform, 'extra': ''})
+        if requirement.marker.evaluate({'sys_platform': platform,
+                                        'platform_machine': machine,
+                                        'extra': extra})
     }
-    assert selected == expected
-    assert {str(requirement) for requirement in faiss} <= set(
-        manifest['requires'])
+    assert selected == (expected or ({f'faiss-{extra}'} if extra else set()))
+    assert {str(requirement) for requirement in faiss
+            if 'extra' not in str(requirement.marker)} <= set(manifest['requires'])
 
 
 @pytest.mark.parametrize('providers', [
@@ -323,6 +374,25 @@ def test_core_packages_and_shared_license_are_bundled(tmp_path):
     for name in ['kumo-api', 'kumo-pql', 'kumo-core']:
         assert not any(requirement.startswith(name)
                        for requirement in requirements)
+
+
+def test_engine_project_metadata_passes_through(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    headers = ('Author: NVIDIA Corporation\n'
+               'Classifier: Development Status :: 5 - Production/Stable\n'
+               'Project-URL: issues, https://example.com/issues\n')
+    component = cast(dict[str, object], COMPONENTS['kumo-engine'])
+    monkeypatch.setitem(COMPONENTS, 'kumo-engine',
+                        dict(component, headers=headers))
+
+    result = _merge(tmp_path, CORE_COMPONENTS)
+
+    assert result.returncode == 0, result.stderr
+    metadata, _, _ = _read_wheel(tmp_path)
+    assert metadata['Author'] == 'NVIDIA Corporation'
+    assert metadata['Classifier'] == (
+        'Development Status :: 5 - Production/Stable')
+    assert metadata['Project-URL'] == 'issues, https://example.com/issues'
 
 
 def test_glove_stays_a_pypi_dependency_of_the_text_extra(tmp_path):
@@ -539,10 +609,15 @@ def test_wheel_verify_script_checks_base_install(tmp_path):
         ([], '2.5.0+unknown'),  # VERSION + commit (not a git repo here)
         (['--release'], '2.5.0'),
     ])
-@pytest.mark.parametrize('host_os', ['Linux', 'Darwin'])
+@pytest.mark.parametrize('host_os,target', [
+    ('Linux', ''), ('Darwin', ''), ('Darwin', '14'), ('Darwin', '15.0'),
+])
 def test_wheel_uses_torch_fallbacks_without_native_extensions(
-        tmp_path, args, version, host_os):
+        tmp_path, args, version, host_os, target):
     """Run the real assembly script with local stand-ins for component builds."""
+    deployment_target = target or '14.0'
+    major, minor, *_ = deployment_target.split('.') + ['0']
+    native_tag = f'cp311-abi3-macosx_{major}_{minor}_arm64'
     repo = tmp_path / 'repo'
     for name in CORE_COMPONENTS:
         package = repo / 'packages' / name
@@ -574,8 +649,8 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
     name = Path(source).name.split('==')[0].replace('-', '_')
     if name == 'diskgraph' and os.environ['TEST_HOST_OS'] == 'Darwin':
         assert os.environ['DISKGRAPH_BUILD_ZIG'] == '0'
-        assert os.environ['MACOSX_DEPLOYMENT_TARGET'] == '14.0'
-    tag = ('cp311-abi3-macosx_14_0_arm64' if name == 'diskgraph'
+        assert os.environ['MACOSX_DEPLOYMENT_TARGET'] == {deployment_target!r}
+    tag = ({native_tag!r} if name == 'diskgraph'
            and os.environ['TEST_HOST_OS'] == 'Darwin' else 'py3-none-any')
     with ZipFile(directory / (name + '-1-' + tag + '.whl'), 'w') as archive:
         metadata = 'Metadata-Version: 2.1\\nName: ' + name + '\\nVersion: 1\\n'
@@ -613,7 +688,7 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
         env=dict(os.environ, KUMO_REPO=str(repo), PYTHON=str(python),
                  BUILD_CALLS=str(calls), TMPDIR=str(tmp_path),
                  TEST_HOST_OS=host_os, USE_ZIG='', PLATFORM_TAG='',
-                 MACOSX_DEPLOYMENT_TARGET='',
+                 MACOSX_DEPLOYMENT_TARGET=target,
                  THIRD_PARTY_NOTICE=str(repo / 'THIRD-PARTY.txt'),
                  PATH=f'{tmp_path}:{os.environ["PATH"]}'),
         capture_output=True,
@@ -626,8 +701,7 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
     ]
     assert not downloads
     if host_os == 'Darwin':
-        assert next(output.glob('*.whl')).name.endswith(
-            '-cp311-abi3-macosx_14_0_arm64.whl')
+        assert next(output.glob('*.whl')).name.endswith(f'-{native_tag}.whl')
     with ZipFile(next(output.glob('*.whl'))) as archive:
         assert not any(name.startswith('torch_geometric/')
                        for name in archive.namelist())
@@ -650,7 +724,6 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
         assert 'Requires-Dist: kumo-glove-6b-50d; extra == "text"' in metadata
         assert 'Requires-Dist: pyg-lib' not in metadata
         assert 'Requires-Dist: torch-scatter' not in metadata
-    expected_tag = ('cp311-abi3-macosx_14_0_arm64'
-                    if host_os == 'Darwin' else 'py3-none-any')
+    expected_tag = native_tag if host_os == 'Darwin' else 'py3-none-any'
     assert next(output.glob('*.whl')).name == (
         f'kumo_engine-{version}-{expected_tag}.whl')

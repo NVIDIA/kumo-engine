@@ -92,16 +92,12 @@ stroke:$focus;stroke-width:2}
 stroke:none;filter:drop-shadow(0 1px 2px #00000026)}
 .kumo-graph [data-kumo-row]:not([data-kumo-row=""]):focus-visible .kumo-row-light{
 filter:drop-shadow(0 0 2px $focus)}
-.kumo-graph .kumo-table-veil{fill:#26341a;opacity:0;pointer-events:none;
-transition:opacity 140ms ease}
-.kumo-graph[data-highlight=table] .kumo-focused>.kumo-table-veil{opacity:.16}
-.kumo-graph[data-highlight=table] .kumo-row-light{fill:transparent}
 .kumo-graph .kumo-edge{transition:stroke 140ms ease,stroke-width 140ms ease,
 opacity 140ms ease}
 .kumo-graph.kumo-links-focused .kumo-edge:not(.kumo-edge-active){opacity:.35}
 .kumo-graph .kumo-edge-active{stroke:#6e9947;stroke-width:1.8}
 @media(prefers-reduced-motion:reduce){.kumo-graph-tooltip,
-.kumo-graph .kumo-row-light,.kumo-graph .kumo-table-veil,
+.kumo-graph .kumo-row-light,
 .kumo-graph .kumo-edge{transition:none}}
 
 .kumo-graph .kumo-edge{vector-effect:non-scaling-stroke}
@@ -124,7 +120,7 @@ host.classList.remove('kumo-links-focused');
 edges.forEach(edge=>edge.classList.remove('kumo-edge-active'));
 if(active){active.removeAttribute('aria-describedby');
 active.classList.remove('kumo-active')}
-card?.classList.remove('kumo-focused');active=card=null};
+active=card=null};
 const content=el=>{
 const row=!!el.dataset.kumoRow, table=el.dataset.kumoTable;
 const name=el.dataset.kumoColumn, full=table+(row?'.'+name:'');
@@ -133,9 +129,8 @@ const head=element('head',''), body=element('body','');
 head.append(element('context',row?table:'Table'),element('name',row?name:table));
 const badges=element('badges','');
 if(row){
-for(const [cls,prefix] of [[' kumo-tip-key','Role: ']]){
-const value=lines.find(x=>x.startsWith(prefix))?.slice(prefix.length);
-if(value)if(value!=='Column')badges.append(element('badge'+cls,value))}
+const role=lines.find(x=>x.startsWith('Role: '))?.slice(6);
+if(role&&role!=='Column')badges.append(element('badge kumo-tip-key',role));
 if(badges.childElementCount)body.append(badges);
 for(const [prefix,label] of [['Type: ','Data type: '],
 ['Semantic type: ','Semantic type: ']]){
@@ -299,7 +294,7 @@ const show=(el,event)=>{if(isDragging||hoverLock)return;
 cancelHide();if(active===el)return;
 if(event&&Number.isFinite(event.clientX))pointer={x:event.clientX,y:event.clientY};
 hide();active=el;card=el.parentElement;
-el.classList.add('kumo-active');card.classList.add('kumo-focused');
+el.classList.add('kumo-active');
 content(el);el.setAttribute('aria-describedby',tip.id);
 if(el.dataset.kumoRow){
 const table=el.dataset.kumoTable, column=el.dataset.kumoColumn;
@@ -313,10 +308,6 @@ placement=classify();tip.setAttribute('data-open','');place(true)};
 const scheduleHide=()=>{if(timer)return;timer=setTimeout(()=>{timer=null;
 if(!hoverLock&&active!==document.activeElement)hide()},150)};
 view.querySelectorAll('title').forEach(el=>el.remove());
-view.querySelectorAll('svg>g[transform]').forEach(g=>{
-const veil=g.querySelector(':scope>path').cloneNode();
-veil.classList.add('kumo-table-veil');veil.removeAttribute('fill');
-veil.removeAttribute('stroke');g.append(veil)});
 view.querySelectorAll('[data-kumo-tip]').forEach(el=>{
 const light=el.querySelector('.kumo-surface').cloneNode();
 light.classList.add('kumo-row-light');light.removeAttribute('fill');
@@ -498,7 +489,7 @@ fit();resizeObserver.observe(view);controls.forEach(el=>el.disabled=false);
     '__MUTED_COLOR__', THEME['muted'])
 
 
-def render_html(svg: str, mode: str, layouts: dict, initial_layout: str) -> str:
+def render_html(svg: str, layouts: dict, initial_layout: str) -> str:
     """Wrap one SVG with controls and serialized, precomputed geometries."""
     options = ''.join(
         '<label><input type="radio" '
@@ -540,5 +531,4 @@ def render_html(svg: str, mode: str, layouts: dict, initial_layout: str) -> str:
         + _HOVER + _CAMERA)
     return render_widget(body, style=_STYLE, script=script,
                          data={'layouts': layouts, 'initial': initial_layout},
-                         class_name='kumo-graph',
-                         attributes={'data-highlight': mode})
+                         class_name='kumo-graph')

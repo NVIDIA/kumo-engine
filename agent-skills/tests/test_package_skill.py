@@ -54,3 +54,32 @@ def test_broken_references_are_reported(tmp_path: Path) -> None:
         'SKILL.md: link (accept/missing.md) does not resolve',
         'SKILL.md: `accept/nope.md` does not resolve from the package root',
     ]
+
+
+def test_generic_ships_only_its_own_host(tmp_path: Path) -> None:
+    pkg = package_skill.build('generic', tmp_path)
+    assert pkg == tmp_path / 'generic' / 'skills' / 'kumo-data-science'
+    assert [p.name for p in (pkg / 'hosts').iterdir()] == ['generic']
+    leaks = [str(p.relative_to(pkg)) for p in pkg.rglob('*.md')
+             if 'snowflake-coco' in p.read_text() or 'ml_job.md' in p.read_text()]
+    assert leaks == []
+
+
+def test_core_names_no_host() -> None:
+    """The portable core reaches its host as `hosts/<host>/`, never by a host's own name."""
+    hosts = sorted(p.name for p in (package_skill.SKILLS / 'hosts').iterdir() if p.is_dir())
+    named = re.compile(r'hosts/(?:' + '|'.join(map(re.escape, hosts)) + r')\b')
+    hits = [f'{p.relative_to(package_skill.SKILLS)}: {m.group(0)}'
+            for p in sorted(package_skill.SKILLS.rglob('*.md'))
+            if p.relative_to(package_skill.SKILLS).parts[0] != 'hosts'
+            for m in named.finditer(p.read_text())]
+    assert hits == []
+
+
+@pytest.mark.parametrize('host', sorted(package_skill.HOSTS))
+def test_adapter_covers_what_the_core_defers(host: str) -> None:
+    """Preflight §0, the intake contract and batch inference defer these to the adapter."""
+    adapter = next(rel for rel in package_skill.HOSTS[host]['hosts'] if rel.endswith('adapter.md'))
+    text = (package_skill.SKILLS / 'hosts' / adapter).read_text()
+    for section in ['Source scope', 'Access', 'Destinations']:
+        assert section in text, f'{adapter} does not cover {section}'

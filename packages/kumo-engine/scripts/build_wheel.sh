@@ -112,7 +112,7 @@ Options:
 
 Environment:
   MACOSX_DEPLOYMENT_TARGET  Minimum macOS version for both native binaries.
-                           [14.0]
+                           Must be >= 14.0. [14.0]
   MAX_GLIBC             Highest glibc the DiskGraph binaries may require.
                         [2.34; Container Runtime provides 2.35]
 EOF
@@ -140,6 +140,13 @@ DISKGRAPH_SOURCE="${KUMO_REPO}/packages/diskgraph"
 
 log() { echo "[wheel] $*" >&2; }
 die() { echo "[wheel] ERROR: $*" >&2; exit 1; }
+
+if [ "${HOST_OS}" = "Darwin" ]; then
+    if ! [[ "${MACOSX_DEPLOYMENT_TARGET}" =~ ^[0-9]+(\.[0-9]+)*$ ]] \
+        || ! [ "${MACOSX_DEPLOYMENT_TARGET%%.*}" -ge 14 ]; then
+        die "macOS wheels require MACOSX_DEPLOYMENT_TARGET >= 14.0 (got ${MACOSX_DEPLOYMENT_TARGET})"
+    fi
+fi
 
 if [ "${HOST_OS}" = "Darwin" ] && [ "${USE_ZIG}" != "0" ]; then
     die "macOS wheels require a native DiskGraph build (USE_ZIG=0)"

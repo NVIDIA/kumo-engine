@@ -44,6 +44,7 @@ from kumo_core.io import filesystem
 from kumo_core.io.json import load_json, save_json
 from kumo_core.job_config import JobConfig, TrainStatus
 from kumo_core.model_plan import ModelPlan, _is_inferred, _parse_hop_key
+from kumo_core.modeling.retrieval.mips import require_faiss
 from kumo_core.resolved_task import ResolvedNumericalTask, ResolvedTaskGraph
 from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
 from kumo_core.train.shallow_rhs_link_gnn_module import MAX_RHS_SAMPLE_SIZE
@@ -225,6 +226,12 @@ class AutoTrainer:
     ) -> None:
         if not isinstance(task, ResolvedNumericalTask):
             raise TypeError("AutoTrainer requires ResolvedNumericalTask")
+        self.lp_module_type: LinkPredModuleType | None = None
+        if task.task_type.is_link_pred:
+            self.lp_module_type = infer_link_pred_module_type(
+                task, space.model_architecture.module)
+            if self.lp_module_type != LinkPredModuleType.ID:
+                require_faiss()
         self.space = space
         self.task = task
         self.runtime = runtime
@@ -269,11 +276,6 @@ class AutoTrainer:
         self.disable_compilation = space.training_job.disable_compilation
         if self.random_state_seed is None:
             self.random_state_seed = space.training_job.manual_seed
-
-        self.lp_module_type: LinkPredModuleType | None = None
-        if self.task.task_type.is_link_pred:
-            self.lp_module_type = infer_link_pred_module_type(
-                task, space.model_architecture.module)
 
         if self.random_state_seed is not None:
             seed_everything(self.random_state_seed)

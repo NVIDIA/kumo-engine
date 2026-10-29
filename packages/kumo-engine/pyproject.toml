@@ -6,7 +6,7 @@
 name="kumo-engine"
 dynamic=["dependencies", "version"]
 authors=[
-    {name="Kumo.AI", email="hello@kumo.ai"},
+    {name="NVIDIA Corporation"},
 ]
 license="Apache-2.0"
 license-files=["LICENSE"]
@@ -18,16 +18,25 @@ keywords=[
     "graph-neural-networks",
 ]
 classifiers=[
-    "Development Status :: 1 - Planning",
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 [project.optional-dependencies]
+# Keep the required backend on Linux x86_64/macOS; both distributions own
+# the same import namespace. This extra does not select Torch or its device.
+cpu=["faiss-cpu==1.14.3; sys_platform != 'linux' or platform_machine != 'x86_64'"]
 test=[
     "boto3>=1.34,<2",
     "botocore>=1.34,<2",
@@ -37,8 +46,8 @@ test=[
     "pytest-mock",
     "torch>=2.9,<2.13",
 ]
-# kumo-core (Torch/PyG/DiskGraph included) and platform-selected Faiss are
-# required dependencies of this package, not extras -- see setup.py.
+# kumo-core (Torch/PyG/DiskGraph included) is always required. Faiss is required
+# on Linux x86_64 and macOS; other platforms opt in -- see setup.py.
 # Unlike kumo-sdk, where the equivalent `core` extra is optional because
 # CloudBackend is the default path, this package has no non-training use
 # case. These per-vendor extras only need to add their own plugin package on
@@ -72,6 +81,7 @@ kumo-engine = "kumo_engine_version:installed_version"
 [project.urls]
 homepage="https://github.com/NVIDIA/kumo-engine"
 documentation="https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview"
+issues="https://github.com/NVIDIA/kumo-engine/issues"
 
 [tool.uv.sources]
 kumo-core = { workspace = true }
@@ -93,6 +103,9 @@ py-modules=["kumo_engine_version"]
 where=["."]
 include=["kumo*"]
 namespaces=true
+
+[tool.setuptools.package-data]
+"kumo.engine.datasets" = ["shop/*.parquet"]
 
 # The version is the root VERSION file, stamped into this module by
 # scripts/stamp_version.py (shared with kumo-sdk, the platform and the charts).

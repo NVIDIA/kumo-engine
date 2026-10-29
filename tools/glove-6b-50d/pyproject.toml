@@ -14,7 +14,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0 AND PDDL-1.0"
 license-files = ["LICENSE", "THIRD-PARTY.txt"]
-authors = [{name = "Kumo.AI", email = "hello@kumo.ai"}]
+authors = [{name = "NVIDIA Corporation"}]
+classifiers = ["Development Status :: 5 - Production/Stable"]
 
 [project.entry-points."kumo.embedding_models"]
 glove = "kumo_glove_6b_50d:ROOT"

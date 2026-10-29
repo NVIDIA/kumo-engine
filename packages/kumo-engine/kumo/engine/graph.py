@@ -8,7 +8,6 @@ r"""`Graph` (metadata) and `GraphSnapshot` (materialized).
 `Graph` -- reading each `Table`'s connector, running the result through
 `kumo-core` to build column stats and the on-disk index -- is the explicit,
 separate `snapshot()` step, mirroring the cloud pipeline's DG-ingest stage.
-See "Object model" and "Local storage and results" in the package README.
 
 `snapshot()` ports the real `kumo_core` DiskGraph ingest call
 (`kumo_core.diskgraph.ingest.execute_diskgraph_ingest`) used today by the
@@ -355,7 +354,7 @@ class Graph:
         Args:
             path: Optional local file to write as UTF-8 SVG, overwriting it.
             show_cols: Add columns up to 10 rows per table (5 above 10 tables).
-                Primary keys, foreign keys, and the declared time column (T)
+                Primary keys, foreign keys, and the declared time column (TS)
                 are always included, even above this limit. False shows only
                 these columns.
             sample_rows: Show 1 to 3 non-null examples per column in HTML

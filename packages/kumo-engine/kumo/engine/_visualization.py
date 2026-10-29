@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Dependency-free SVG rendering of graph schema metadata."""
+"""SVG rendering of declared table relationships."""
 
 import json
 from html import escape
@@ -37,7 +37,7 @@ class SVG(str):
     def _repr_svg_(self) -> str:
         return str(self)
 
-    def _repr_html_(self, *, _highlight_table: bool = False) -> str:
+    def _repr_html_(self) -> str:
         from kumo.engine._visualization_viewer import render_html
 
         svg = str(self)
@@ -45,8 +45,7 @@ class SVG(str):
             svg = svg.replace(metadata, sampled)
         if self._namespace:
             svg = svg.replace(self._namespace, 'kumo-' + uuid4().hex)
-        return render_html(svg, 'table' if _highlight_table else 'row',
-                           self._layouts, self._initial_layout)
+        return render_html(svg, self._layouts, self._initial_layout)
 
 
 def _wrap(text: str, width: int) -> list[str]:
@@ -235,7 +234,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         height = y + (26 if footer else 4)
         cards[name] = (title, header, rows, ports, footer, height)
 
-    # Rank primary-key tables before their dependents, as in the UI's LR flow.
+    # Rank primary-key tables before their dependents.
     parents = {name: set() for name in names}
     for edge in edges:
         parents[edge.src_table].add(edge.dst_table)
@@ -323,7 +322,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                 nx, ny = (dx, dy) if node == route[-1] else (xy[node][0],
                                                              xy[node][1] +
                                                              heights[node] / 2)
-                # UI getBezierPath: horizontal handles, half-gap controls.
+                # Use horizontal Bézier controls at half the column gap.
                 half = (nx - x) / 2
                 path += f' C {x + half} {y} {nx - half} {ny} {nx} {ny}'
                 x, y = nx, ny
@@ -383,8 +382,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         path = geometry['paths'][index]
         label = escape(f'{edge.src_table}.{edge.fkey} → '
                        f'{edge.dst_table}.{definitions[edge.dst_table].pkey}')
-        endpoints = (f'data-src-port="{cards[edge.src_table][3][edge.fkey]}" '
-                     f'data-dst-port="{cards[edge.dst_table][3][definitions[edge.dst_table].pkey]}" ') + ' '.join(
+        endpoints = ' '.join(
             f'data-{key}="{escape(value).replace(chr(10), "&#10;")}"'
             for key, value in [('src-table',
                                 edge.src_table), (
@@ -413,8 +411,6 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         shape = _squircle(card_width, card_height)
         clip = f'{uid}-card-{node_ids[name]}'
         svg.append(f'<g data-kumo-card="{escape(name).replace(chr(10), "&#10;")}" '
-                   f'data-width="{card_width}" data-height="{card_height}" '
-                   f'data-rank="{ranks[name]}" '
                    f'transform="translate({x} {y})">'
                    f'<defs><clipPath id="{clip}"><path d="{shape}"/>'
                    '</clipPath></defs>'

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Private, self-contained notebook presentation and per-output lifetime."""
+"""Shared notebook theme, controls, and output cleanup."""
 
 import json
 from html import escape
@@ -42,7 +42,7 @@ width:18px!important;height:18px!important}
 
 
 def button(cls: str, label: str, icon: str = '', text: str = '') -> str:
-    """Render a disabled, labeled control for feature-owned initialization."""
+    """Build a labeled button, disabled until initialization."""
     graphic = (f'<svg width="18" height="18" viewBox="0 0 24 24" '
                f'aria-hidden="true"><path d="{escape(icon)}" fill="none" '
                'stroke="currentColor" stroke-width="1.5" '

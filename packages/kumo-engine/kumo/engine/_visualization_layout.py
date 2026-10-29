@@ -128,8 +128,7 @@ def _compact_component(cards: list[Card], edges: list[Edge]
                 y += card['height'] + _GAP
             x += max(c['width'] for c in column) + _COLUMN_GAP
         width, height = x - _COLUMN_GAP, max(heights)
-        # A fixed reading canvas keeps geometry independent of the notebook.
-        # Count and heights determine packing; viewport fit is a viewer task.
+        # Score against a fixed 1.45:1 aspect ratio.
         score = max(width / 1.45, height) + .06 * (width + height)
         span = sum(math.hypot(
             positions[e['source']][0] - positions[e['target']][0],
@@ -382,11 +381,7 @@ def _geometry(cards: list[Card], edges: list[Edge]) -> Geometry:
 
 def build_layouts(cards: list[Card], edges: list[Edge],
                   standard: Geometry) -> dict[str, Geometry]:
-    """Build alternatives once; callers own camera and layout selection.
-
-    The standard geometry is passed through unchanged. Input collections are
-    never mutated, and alternate geometry does not depend on viewport size.
-    """
+    """Return Standard and Compact geometry without modifying inputs."""
     if not cards:
         return dict.fromkeys(('standard', 'compact'), standard)
     ordered = sorted(cards, key=lambda c: c['name'])
@@ -395,7 +390,7 @@ def build_layouts(cards: list[Card], edges: list[Edge],
 
 def choose_layout(cards: list[Card], edges: list[Edge],
                   layouts: dict[str, Geometry]) -> str:
-    """Conservative structural defaults, selected once when rendering."""
+    """Select the initial layout from graph structure."""
     if not cards:
         return 'standard'
     standard, compact = layouts['standard'], layouts['compact']

@@ -27,8 +27,10 @@ def test_accelerator_defaults_to_auto_and_is_instance_local(monkeypatch):
     assert os.environ['KUMO_ACCELERATOR'] == 'mps'
 
 
+@pytest.mark.parametrize('num_workers', [1, 2])
 def test_cpu_fit_refit_reload_and_predict_override_environment(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, num_workers):
+    import torch
     from kumo_core.train.trainer import Trainer as CoreTrainer
 
     import kumo.engine as kumo
@@ -42,6 +44,7 @@ def test_cpu_fit_refit_reload_and_predict_override_environment(
 
     monkeypatch.setattr(CoreTrainer, 'create_pl_trainer', create_pl_trainer)
     monkeypatch.setenv('KUMO_ACCELERATOR', 'mps')
+    monkeypatch.setattr(torch.cuda, 'device_count', lambda: 1)
     previous = get_scratch_dir()
     kumo.configure(scratch_dir=tmp_path / 'scratch')
     try:
@@ -74,9 +77,11 @@ def test_cpu_fit_refit_reload_and_predict_override_environment(
         restored = Trainer.load(result.bundle_dir, accelerator='cpu')
         prediction = restored.predict(
             query.generate_prediction_table(snapshot), snapshot=snapshot,
-            binary_classification_threshold=0.5)
+            binary_classification_threshold=0.5, num_workers=num_workers)
         assert len(prediction.frame) == 20
-        assert len(devices) > fit_count
+        assert len(prediction.files) >= num_workers
+        if num_workers == 1:
+            assert len(devices) > fit_count
         assert set(devices) == {'cpu'}
     finally:
         kumo.configure(scratch_dir=previous)

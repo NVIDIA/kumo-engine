@@ -1,6 +1,6 @@
 ---
 name: kumo-data-science
-description: "Use for any work with KumoAI predictive models on Snowflake data: train a model, score data with a trained one, or answer questions about an existing model or run — explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction; feature attribution and column cohorts; metrics, trials and learning curves; registry publishing and artifact retention; caller-supplied labels, weights and splits; encoders, run mode and experiments. For a new model it checks that the request names the data (a schema, connector, or semantic view), the outcome and the time window, confirms the inferred tables and the task, then generates one notebook or script; it runs the job only when asked, in the notebook or as a Snowflake ML Job on a compute pool. Triggers: kumo, predict, churn, recommend, forecast, fraud, train a model, run inference, explain a prediction, feature importance, model metrics, publish or load a model, tune a model, semantic view, ML Job, compute pool."
+description: "Use for any work with KumoAI predictive models on relational data in a warehouse, an object store or local files: train a model, score data with a trained one, or answer questions about an existing model or run — explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction; feature attribution and column cohorts; metrics, trials and learning curves; registry publishing and artifact retention; caller-supplied labels, weights and splits; encoders, run mode and experiments. For a new model it checks that the request names the data (a schema, dataset, folder of files, connector, or semantic view), the outcome and the time window, confirms the inferred tables and the task, then generates one notebook or script; it runs the job only when asked, in the notebook or, on Snowflake, as an ML Job on a compute pool. Triggers: kumo, predict, churn, recommend, forecast, fraud, train a model, run inference, explain a prediction, feature importance, model metrics, publish or load a model, tune a model, semantic view, ML Job, compute pool."
 ---
 
 # Data Science Agent — Router Skill
@@ -34,10 +34,12 @@ for what the selected workflow is missing. If the host has not provided the refe
 report that limitation rather than inventing its workflow. **New training requests still follow
 the gates below**, unchanged.
 
-A request to run the artifact as a **Snowflake ML Job** — on a compute pool, unattended, or on a
-schedule — or a question about a job already submitted (status, logs, cost) also reads
-`hosts/snowflake-coco/ml_job.md`. It adds settings to the gates below and changes where Step 3
-runs; it never replaces the gates. A request that does not mention a job stays in the notebook.
+A request to run the artifact as a **job** — a Snowflake ML Job on a compute pool, unattended, or
+on a schedule — or a question about a job already submitted (status, logs, cost) also reads the
+host's job file, when the host adapter names one. It adds settings to the gates below and changes
+where Step 3 runs; it never replaces the gates. If the adapter names no job file, say that this
+host does not run jobs and offer the notebook. A request that does not mention a job stays in the
+notebook.
 
 ## Purpose
 Take a plain-language ML request, get it to a **confirmed** task and graph through a multi-turn
@@ -68,7 +70,7 @@ trainer, and `predict` runs against an explicitly rebuilt graph snapshot (see St
 - Retry or resume jobs, or keep state across sessions. The one execution the agent performs is
   Step 3, and only when the user asks.
 - Schedule anything on its own initiative (a recurring run is proposed and created only on explicit
-  confirmation; see `hosts/snowflake-coco/ml_job.md` §8)
+  confirmation, and only on a host whose job file covers it)
 - RFM / zero-shot workflows
 - Audit the user's schema for leakage at intake beyond the mandatory availability guards in
   Node 1c. The codegen guard in `kumoai-reference/SKILL.md` (the target never appears as a
@@ -99,7 +101,7 @@ Reference: `accept/intake_contract.md`
 First decide the operation: `train` or `batch_inference`.
 
 **`train` — required (ask if missing):**
-- `source_scope` — connector, database + schema, or a semantic view
+- `source_scope` — where the tables live, in a form the host accepts (`accept/intake_contract.md`)
 - `prediction_entity` — what gets one prediction
 - `prediction_target` — the outcome or interaction, with the positive-label condition
 - `time_window` — `specified` / `not_critical` (static task) / `missing` → ask only when `missing`.
@@ -128,7 +130,7 @@ implements a field they already named** — infer the mapping and show it `[infe
 | Condition | Transition |
 |---|---|
 | Any required field missing | ASK BACK — list exactly the missing fields |
-| `source_scope` given but does not resolve (schema or semantic view not found / unreadable) | ASK BACK — ask for a valid source; do not guess a similar name |
+| `source_scope` given but does not resolve (location or semantic view not found) | ASK BACK — ask for a valid source; do not guess a similar name |
 | All required present | proceed to Node 1b |
 
 ### Node 1b — Atomic question check
@@ -144,7 +146,8 @@ Reference: `validate/atomic_question_check.md`
 ### Node 1c — Preflight & graph gate
 Reference: `accept/preflight.md`
 
-Run read-only preflight inside `source_scope`.
+First establish that you can read `source_scope` (`accept/preflight.md` §0). Then run read-only
+preflight inside it.
 
 Present the graph proposal — seeds, tables,
 primary keys, time columns, links, `table_mode: all-connected [default]` — each line tagged
@@ -191,6 +194,7 @@ leaving them unmentioned, because each one changes whether the task is expressib
 
 | Condition | Transition |
 |---|---|
+| You cannot read `source_scope` | ASK BACK — say what you checked; offer access or the structure in the user's own words (`accept/preflight.md` §0) |
 | Seeds cannot be connected without transforming data | REJECT — explain; generate nothing |
 | A semantic view fails a check in `accept/semantic_view.md` | ASK BACK — as that file says; do not pick a schema, drop tables, or substitute a link |
 | User corrects a line | re-present the proposal with the correction `[supplied]` |
@@ -208,15 +212,17 @@ generated before the task is confirmed:
 - Task type: <temporal binary classification | link prediction | ...>
 - Output: predictions written to <destination, verbatim> in the same notebook | notebook only, no predictions written
 - Scoring population (static tasks): rows whose <target> is NULL | all <entity> rows, staged at <DB.SCHEMA.TABLE>
+- Threshold (binary classification, predictions written): <the user's value [supplied] | 0.5 [default]>
 - Embeddings: <included, if explicitly requested>
 ```
 
 **Static tasks: confirm the scoring population.** A static query scores only the rows whose
 target is NULL (`kumoai-reference/references/kumo_finetuning_sdk.md` §7.1). If the user wants rows that
 already have a target scored (for example "every order"), the notebook stages an explicit
-population table. That is a write, so name it here: next to the confirmed destination by default
-(`<DESTINATION>_POPULATION`), or ask for a schema when there is no destination. Never stage it in
-the source schema.
+population table. That is a write, and it goes in the source's system, so name it here: next to the confirmed
+destination by default (`<DESTINATION>_POPULATION`) when the destination is in the source's
+system; otherwise, or when there is no destination, ask for a schema or path in the source's
+system. Never stage it in the source schema.
 
 | Condition | Transition |
 |---|---|
@@ -245,7 +251,7 @@ Source: shipped package (`kumo_core.model_plan`)
 
 ## Step 2 — Generate via KumoAI
 
-Read the host's `runtime.md` (`hosts/snowflake-coco/runtime.md`) before generating.
+Read the host's `runtime.md` (`hosts/<host>/runtime.md`) before generating.
 
 After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payload. Produce
 **one** artifact.
@@ -262,7 +268,9 @@ After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payloa
      `PredictionOutputConfig` pointing at that destination, written **verbatim**.
    - no destination → predictions stay local; the notebook ends with a short markdown cell
      describing the one line to add a destination later. That example is markdown text, never a
-     code cell: a notebook with no confirmed destination contains no code that writes.
+     code cell: a notebook with no confirmed destination contains no code that writes. Inside
+     the markdown, show the code as text (a `text` fence), never as a `python` code block —
+     one that would run is a code cell that writes.
    The predict call is part of the artifact, not a separate job the agent manages. The agent
    still executes nothing (Step 3 is opt-in).
 
@@ -282,18 +290,24 @@ metadata, links, destination. No invented link, horizon, or table.
 Default is generate-only. Run only when the user says to run it,
 in the same or a later turn. Then, per `kumoai-reference/references/kumo_finetuning_sdk.md`:
 - Run the notebook. `fit` blocks until training finishes; there is no Kumo job to poll. When the
-  user asked for a Snowflake ML Job, running means submitting it and waiting for its Snowflake
-  status instead (`hosts/snowflake-coco/ml_job.md` §6).
+  user asked for a job, running means submitting it and waiting for its status as the host's job
+  file describes.
 - Report the outcome: the training metrics, or the exception and the cell that raised it
 - Let the notebook's own predict step run; predictions land at the confirmed destination — **the
-  name is written verbatim**, no suffix, no case change; report it as `DB.SCHEMA.TABLE`
+  name is written verbatim**, no suffix, no case change; report it in the destination's own
+  form (`DB.SCHEMA.TABLE`, or a path)
 - Include embeddings if they were confirmed at Node 1d
 
 ---
 
 ## Host adapter
-Snowflake-specific runtime facts, including how to run preflight SQL, live in
-`hosts/snowflake-coco/adapter.md` (intake), and `hosts/snowflake-coco/runtime.md` (read at Step 2).
+This package carries exactly one host: the single directory under `hosts/`. Everything specific to
+where you run and where the data lives is there — never assume another host's rules.
+
+- `hosts/<host>/adapter.md` — read at intake: how to check access to the source, the source and
+  destination forms the host accepts, how to run preflight, and runtime column constraints
+- `hosts/<host>/runtime.md` — read at Step 2: how the generated code connects, authenticates,
+  writes and verifies
 
 ---
 
