@@ -22,8 +22,9 @@ from kumo.engine.connector._extras import import_provider
 
 custom_model = import_provider('snowflake.ml.model.custom_model', 'snowflake')
 
+#: The CUDA a version serves with when this installation's torch has none.
+CPU_TORCH_CUDA = '12.6'
 DEFAULTS = {
-    'cuda_version': '12.6',
     'python_version': f'{sys.version_info.major}.{sys.version_info.minor}',
     'function_type': 'TABLE_FUNCTION',
 }
@@ -93,10 +94,14 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
             if key.startswith(SERVING_OPTION_PREFIX)
         }
     }
+    ServingEnvironmentError = import_provider(
+        'kumo_snowflake.registry', 'snowflake').ServingEnvironmentError
+
     repository = options.pop('pip_repository', None)
     python = options.pop('python_version')
+    options['cuda_version'] = cuda_version(options.get('cuda_version'))
     if python != DEFAULTS['python_version']:
-        raise ValueError(
+        raise ServingEnvironmentError(
             f"serving_options python_version={python!r} differs from the "
             f"registering Python {DEFAULTS['python_version']}: snowflake-ml "
             f"pickles the model by value, so the container must run the same "
@@ -120,6 +125,36 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
         options=options,
         **environment,
     )
+
+
+def cuda_version(requested: Optional[str]) -> str:
+    r"""The CUDA the version's image installs torch for: this installation's
+    torch build's, which ``requested`` must equal, so the image resolves the
+    same torch minor version for it."""
+    import torch
+    ServingEnvironmentError = import_provider(
+        'kumo_snowflake.registry', 'snowflake').ServingEnvironmentError
+
+    def minor(version: str) -> str:
+        return '.'.join(version.split('.')[:2])
+
+    built = minor(torch.version.cuda) if torch.version.cuda else None
+    if requested is None:
+        return built or CPU_TORCH_CUDA
+    if built is not None and minor(requested) != built:
+        release = minor(torch.__version__.split('+')[0])
+        raise ServingEnvironmentError(
+            f"serving_options cuda_version={requested!r}, but this "
+            f"installation's torch {torch.__version__} is built for CUDA "
+            f"{built}; the version's image would need torch {release} for "
+            f"CUDA {minor(requested)}, which jobs fail to install when it does "
+            f"not exist. Register from a torch built for CUDA "
+            f"{minor(requested)}, e.g. pip install --index-url "
+            f"https://download.pytorch.org/whl/cu"
+            f"{minor(requested).replace('.', '')} \"torch=={release}.*\" "
+            f"(another release if that one has no such build), or drop "
+            f"cuda_version to serve with CUDA {built}.")
+    return requested
 
 
 def embedded_code(directory: Path) -> List[str]:

@@ -446,6 +446,50 @@ def test_engine_model_arguments_reach_log_model(tmp_path, monkeypatch):
         'warehouse': 'WH', 'database': 'DB', 'schema': 'ML'})]
 
 
+def test_a_serving_environment_that_cannot_work_fails_registration(
+        tmp_path, monkeypatch):
+    def refuse(*_):
+        raise registry_module.ServingEnvironmentError('torch has no cu126')
+
+    monkeypatch.setattr(registry_module, '_model_builder', lambda: refuse)
+    calls = []
+    sink = _publishing_sink(monkeypatch, [], calls)
+    connector = SimpleNamespace(config=SnowflakeConnectorResourceConfig(
+        warehouse='WH', database='DB', schema_name='ML'))
+    with pytest.raises(ValueError, match='torch has no cu126'):
+        sink.publish_model(connector, str(_bundle(tmp_path)),
+                           location=ModelRegistryLocation('CHURN'))
+    assert calls == []
+
+
+def test_a_bundle_registered_for_another_environment_gets_a_new_version(
+        tmp_path, monkeypatch, caplog):
+    environments = iter([['torch>=2.15,<2.16'], ['torch>=2.12,<2.13'],
+                         ['torch>=2.15,<2.16']])
+    monkeypatch.setattr(
+        registry_module, '_model_args', lambda *_: {
+            'model': 'runnable', 'pip_requirements': next(environments)})
+    versions, calls = [], []
+    sink = _publishing_sink(monkeypatch, versions, calls)
+    bundle = str(_bundle(tmp_path))
+
+    def publish():
+        logged = len(calls)
+        sink.publish_model(SimpleNamespace(), bundle,
+                           location=ModelRegistryLocation('CHURN'),
+                           metadata={'kumo_bundle_id': 'b1'})
+        if len(calls) > logged:
+            versions.append(SimpleNamespace(
+                version_name=f'V{len(versions) + 1}', model_name='CHURN',
+                fully_qualified_model_name='DB.S.CHURN',
+                show_metrics=lambda metrics=calls[-1]['metrics']: metrics))
+        return len(calls) > logged
+
+    with caplog.at_level('WARNING', logger=registry_module.__name__):
+        assert [publish(), publish(), publish()] == [True, True, False]
+    assert 'V1 holds bundle b1 for another serving environment' in caplog.text
+
+
 @pytest.mark.parametrize('engine', [None, 'raises'])
 def test_without_a_usable_engine_the_bundle_travels_in_the_carrier(
         tmp_path, monkeypatch, engine):

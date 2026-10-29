@@ -30,6 +30,7 @@ than at the path the packager stores artifacts under today. That path is
 snowflake-ml's private layout; the marker is ours.
 """
 
+import hashlib
 import json
 import logging
 import math
@@ -87,6 +88,16 @@ _IDENTIFIER = r'(?:[A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")+")'
 _MODEL_NAME = re.compile(rf'(?:{_IDENTIFIER}\.){{0,2}}{_IDENTIFIER}')
 
 _LOG = logging.getLogger(__name__)
+
+#: Version metric: a digest of the serving environment a runnable version
+#: was registered with.
+SERVING_KEY = 'kumo_serving'
+
+
+class ServingEnvironmentError(ValueError):
+    r"""A runnable version's serving environment could not work, raised at
+    registration rather than when a job builds its image."""
+
 
 #: Entry-point group of the callable that turns a bundle into ``log_model``
 #: arguments for a runnable version; kumo-engine registers one.
@@ -208,6 +219,8 @@ def _model_args(bundle: Path, metadata: Mapping[str, str],
         if build is not None:
             return build(str(bundle), metadata, _serving_target(connector),
                          workdir)
+    except ServingEnvironmentError:
+        raise
     except Exception as error:
         _LOG.warning(
             'Registering the bundle as a version that does not score in '
@@ -239,9 +252,26 @@ def _serving_target(connector: SourceConnector) -> Dict[str, Optional[str]]:
     }
 
 
+def _serving(args: Mapping[str, Any]) -> Optional[str]:
+    r"""A digest of the environment ``log_model`` arguments serve with;
+    `None` for a version that does not score."""
+    if 'pip_requirements' not in args:
+        return None
+    environment = {
+        name: args.get(name)
+        for name in ('python_version', 'options', 'pip_requirements',
+                     'artifact_repository_map')
+    }
+    return hashlib.sha256(
+        json.dumps(environment, sort_keys=True,
+                   default=str).encode()).hexdigest()[:16]
+
+
 def _version_holding(registry: "Registry", model_name: str,
-                     bundle_id: Optional[str]) -> Optional["ModelVersion"]:
-    r"""The Kumo version of ``model_name`` that records ``bundle_id``."""
+                     bundle_id: Optional[str],
+                     serving: Optional[str]) -> Optional["ModelVersion"]:
+    r"""The Kumo version of ``model_name`` that records ``bundle_id`` and
+    was registered for the ``serving`` environment."""
     if not bundle_id:
         return None
     try:
@@ -256,7 +286,13 @@ def _version_holding(registry: "Registry", model_name: str,
             continue
         if (recorded.get(ENGINE_MARKER) == '1'
                 and recorded.get(BUNDLE_ID_KEY) == bundle_id):
-            return version
+            if recorded.get(SERVING_KEY) == serving:
+                return version
+            _LOG.warning(
+                '%s version %s holds bundle %s for another serving '
+                'environment (torch, CUDA, Python or requirements); '
+                'registering a new version', model_name,
+                version.version_name, bundle_id)
     return None
 
 
@@ -489,8 +525,12 @@ class SnowflakeModelRegistryMixin:
         record = {**_finite(metrics), **_version_record(metadata)}
         with tempfile.TemporaryDirectory() as workdir, \
                 self._registry(connector) as registry:
+            args = _model_args(bundle, metadata, connector, workdir)
+            serving = _serving(args)
+            if serving is not None:
+                record[SERVING_KEY] = serving
             version = _version_holding(registry, location.model_name,
-                                       metadata.get(BUNDLE_ID_KEY))
+                                       metadata.get(BUNDLE_ID_KEY), serving)
             if version is not None:
                 _LOG.info('%s version %s already holds bundle %s; reused it',
                           location.model_name, version.version_name,
@@ -502,7 +542,7 @@ class SnowflakeModelRegistryMixin:
                     version_name=location.version,
                     comment=_comment(location.comment, metrics),
                     metrics=record,
-                    **_model_args(bundle, metadata, connector, workdir),
+                    **args,
                     **_task(bundle),
                 )
         return _published(connector, version, metadata=metadata,

@@ -174,7 +174,8 @@ class ModelOutputConfig:
     ``@DB.SCHEMA.STAGE/...`` path, or a `GraphSnapshot` or snapshot id
     stored under the stage artifact root of the enclosing `kumo.mlops`
     block. ``serving_options`` overrides how it runs:
-    ``cuda_version`` (default ``12.6``), ``python_version`` (the registering
+    ``cuda_version`` (the installed torch's, which it must equal),
+    ``python_version`` (the registering
     Python, which it must equal), ``function_type`` (``TABLE_FUNCTION``), and
     ``pip_repository``, a Snowflake pip artifact repository the version's
     third-party requirements install from instead of PyPI.

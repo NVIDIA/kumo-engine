@@ -87,7 +87,7 @@ with kumo.mlops(cfg):
     run = result.predict(snapshot, output_config=kumo.PredictionOutputConfig(sf, path="CHURN_SCORES"))
 ```
 
-The registered version also scores inside Snowflake: see [Batch inference in Snowflake](#batch-inference-in-snowflake). To serve only a better model, move its alias yourself: [Promote a model](#promote-a-model).
+The registered version also scores inside Snowflake: see [Batch inference in Snowflake](#batch-inference-in-snowflake). It serves with the torch and CUDA build installed where it registers, so install one the GPU pool runs first, e.g. `pip install --index-url https://download.pytorch.org/whl/cu126 "torch==2.12.*"`. To serve only a better model, move its alias yourself: [Promote a model](#promote-a-model).
 
 ## How it fits together
 
@@ -316,7 +316,7 @@ job = mv.run_batch(session.sql("SELECT ID::STRING AS ENTITY FROM ML.MODELS.USERS
 job.wait()
 ```
 
-- **Input:** one `ENTITY` column of ids as strings. Params: `prediction_time` (temporal queries), `binary_classification_threshold` and `num_classes_to_return` (override the model's defaults), and `snapshot`, another stage snapshot to score against.
+- **Input:** one `ENTITY` column of ids as strings. Params: `prediction_time` (temporal queries; `predict(snapshot)` defaults to the snapshot's latest time, so pass `run.manifest.prediction_table.anchors[0]` to reproduce a local run), `binary_classification_threshold` and `num_classes_to_return` (override the model's defaults), and `snapshot`, another stage snapshot to score against.
 - **Output:** Parquet under `<stage_location>/<job name>/` with the columns `predict` returns. Load it with `COPY INTO <table> FROM @... FILE_FORMAT = (TYPE = PARQUET) MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE`.
 - Pool, grants, environment and serving options: [Snowflake serving](#snowflake-serving).
 
@@ -571,12 +571,12 @@ table is diluted.
 ### Snowflake serving
 
 - **Snapshot:** a version `MLOps(registry=)` registers with a stage root scores against the fit's snapshot stored under `<root>/snapshots/`; pass `InputSpec(params={"snapshot": ...})` to score a newer one. The container reads it with its own Snowflake identity, in the registering connector's warehouse, over presigned URLs: create the stage with `ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')` (a `SNOWFLAKE_FULL` stage cannot be read back in ranges).
-- **Environment:** Snowflake builds the inference image on the first job (about 5 minutes). The version embeds kumo's own packages (kumo-engine, kumo-core, kumo-api, kumo-pql, kumo-snowflake, DiskGraph; about 100 MB) as code; its pip requirements are their third-party dependencies, with torch at this installation's minor version and `faiss-cpu`. snowflake-ml pickles the model by value, so the container runs the registering Python; another `python_version` raises at registration. Assets are read from `<root>/assets/` on the stage. A version without kumo-engine (from the hosted service) carries the bundle but refuses to score; `Trainer.load_from_connector` loads either.
+- **Environment:** Snowflake builds the inference image on the first job (about 5 minutes). The version embeds kumo's own packages (kumo-engine, kumo-core, kumo-api, kumo-pql, kumo-snowflake, DiskGraph; about 100 MB) as code; its pip requirements are their third-party dependencies, with torch at this installation's minor version for its CUDA, and `faiss-cpu`. Registering the same bundle again returns its version only if it was registered for the same environment (Python, torch, CUDA, requirements); otherwise it adds a version. snowflake-ml pickles the model by value, so the container runs the registering Python; another `python_version` raises at registration. Assets are read from `<root>/assets/` on the stage. A version without kumo-engine (from the hosted service) carries the bundle but refuses to score; `Trainer.load_from_connector` loads either.
 - **`SnowflakeTracking(serving_options={...})`** (or `ModelOutputConfig(serving_options=)` outside a block):
 
   | Option | Default | |
   |---|---|---|
-  | `cuda_version` | `12.6` | must match a torch CUDA build the pool's driver runs |
+  | `cuda_version` | this installation's torch CUDA (`torch.version.cuda`; `12.6` for a CPU torch) | another value than the installed torch's raises at registration |
   | `python_version` | the registering Python | must equal it |
   | `function_type` | `TABLE_FUNCTION` | `FUNCTION` suits only one output row per input row |
   | `pip_repository` | PyPI | a Snowflake pip artifact repository, e.g. `SNOWFLAKE.SNOWPARK.PYPI_SHARED_REPOSITORY` |

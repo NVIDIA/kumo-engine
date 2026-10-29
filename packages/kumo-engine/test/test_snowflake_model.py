@@ -50,7 +50,9 @@ def _package(trainer, metadata, tmp_path):
     return args, loaded.model
 
 
-def test_a_packaged_version_scores_like_the_trainer(served, tmp_path):
+def test_a_packaged_version_scores_like_the_trainer(served, tmp_path,
+                                                    monkeypatch):
+    monkeypatch.setattr('torch.version.cuda', '12.6.3')
     trainer, table, snapshot, uri = served
     args, model = _package(trainer, {'kumo.serving_snapshot': uri}, tmp_path)
 
@@ -97,9 +99,10 @@ def test_a_packaged_version_scores_like_the_trainer(served, tmp_path):
 
 
 def test_serving_options_override_the_defaults_and_a_snapshot_is_required(
-        served, tmp_path):
+        served, tmp_path, monkeypatch):
     from kumo.engine.integrations._snowflake_model import pip_requirements
 
+    monkeypatch.setattr('torch.version.cuda', None)
     trainer, *_ = served
     args, model = _package(
         trainer, {
@@ -114,11 +117,34 @@ def test_serving_options_override_the_defaults_and_a_snapshot_is_required(
         'cuda_version': '12.4',
         'function_type': 'FUNCTION'
     }
-    with pytest.raises(ValueError, match='serving_snapshot='):
+    with pytest.raises(ValueError, match='No snapshot to score against'):
         model.predict(pd.DataFrame({'ENTITY': ['1']}))
     with pytest.raises(ValueError, match='same Python'):
         _package(trainer, {'kumo.serving.python_version': '2.7'},
                  tmp_path / 'other')
+
+
+def test_the_version_serves_with_the_cuda_of_the_installed_torch(
+        monkeypatch):
+    from kumo_snowflake.registry import ServingEnvironmentError
+
+    from kumo.engine.integrations._snowflake_model import cuda_version
+
+    monkeypatch.setattr('torch.__version__', '2.15.0+cu132')
+    monkeypatch.setattr('torch.version.cuda', '13.2')
+    assert cuda_version(None) == cuda_version('13.2') == '13.2'
+    with pytest.raises(ServingEnvironmentError) as raised:
+        cuda_version('12.6')
+    assert str(raised.value) == (
+        "serving_options cuda_version='12.6', but this installation's torch "
+        "2.15.0+cu132 is built for CUDA 13.2; the version's image would need "
+        "torch 2.15 for CUDA 12.6, which jobs fail to install when it does "
+        "not exist. Register from a torch built for CUDA 12.6, e.g. pip "
+        "install --index-url https://download.pytorch.org/whl/cu126 "
+        "\"torch==2.15.*\" (another release if that one has no such build), "
+        "or drop cuda_version to serve with CUDA 13.2.")
+    monkeypatch.setattr('torch.version.cuda', None)
+    assert cuda_version(None) == '12.6' and cuda_version('12.4') == '12.4'
 
 
 def test_a_bundled_wheel_supplies_the_requirements(monkeypatch):
