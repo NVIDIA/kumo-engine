@@ -117,7 +117,8 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     assert parent.info.status == 'FINISHED'
     assert {k for k in parent.data.tags if k.startswith('kumo.')} == {
         'kumo.kind', 'kumo.bundle_id', 'kumo.dropped_params',
-        'kumo.snapshot_id', 'kumo.task_type'}
+        'kumo.snapshot_id', 'kumo.task_type', 'kumo.tune_metric',
+        'kumo.engine_version', 'kumo.best_trial'}
     assert parent.data.tags['kumo.snapshot_id'] == snapshot.id
     assert parent.data.tags['kumo.task_type'] == 'regression'
     assert parent.data.tags['kumo.bundle_id'] == result.id

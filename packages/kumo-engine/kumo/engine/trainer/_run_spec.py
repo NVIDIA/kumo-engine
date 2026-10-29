@@ -12,6 +12,7 @@ from typing import Any, Mapping, Optional
 from kumo_core.artifacts import PROVENANCE_FILE
 
 from kumo.engine._tracking import RunSpec, _flatten
+from kumo.engine._version import __version__
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,10 @@ def fit_spec(context: FitContext, *,
                                     started.strftime('%Y%m%d-%H%M')))),
         params=dict(_flatten(context.model_plan)),
         parents={'snapshot_id': context.snapshot_id,
-                 'task_type': context.task_type},
+                 'task_type': context.task_type,
+                 'tune_metric': (context.model_plan.get('training_job')
+                                 or {}).get('tune_metric'),
+                 'engine_version': __version__},
         tags=dict(tags or {}),
         inputs=dict(context.inputs),
         artifacts={

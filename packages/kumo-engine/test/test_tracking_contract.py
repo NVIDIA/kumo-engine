@@ -21,6 +21,7 @@ from kumo.engine._tracking import (
     TrackingSession,
     run_record,
 )
+from kumo.engine._version import __version__
 from kumo.engine.tracking import Event, RunRecord
 from kumo.engine.trainer._run_spec import FitContext, fit_spec, fitted_spec
 
@@ -145,6 +146,8 @@ def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
         spec = fitted_spec(spec, result, events[-1].metrics.get('seconds'))
     spec = replace(spec, steps=series if series is not None else {
         **SEARCH, **({} if error else SELECTED)})
+    if series is None and not error:
+        spec = replace(spec, parents={**spec.parents, 'best_trial': 2})
     if 'error' in events[-1].params:
         spec = replace(spec, error=str(events[-1].params['error']))
     records[FIT] = run_record(spec)
@@ -325,7 +328,10 @@ def test_records_of_the_recorded_fit():
     assert fit.name == 'fit-20261029-0618'
     assert fit.tags == {'team': 'ents', 'kumo.kind': 'fit',
                         'kumo.bundle_id': BUNDLE, 'kumo.snapshot_id': SNAPSHOT,
-                        'kumo.task_type': 'regression'}
+                        'kumo.task_type': 'regression',
+                        'kumo.tune_metric': 'mae',
+                        'kumo.engine_version': __version__,
+                        'kumo.best_trial': '2'}
     assert fit.params == {
         'optimization.base_lr': '[0.01, 0.001]',
         'optimization.max_epochs': '2',
