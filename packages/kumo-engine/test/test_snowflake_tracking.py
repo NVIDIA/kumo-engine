@@ -169,8 +169,8 @@ def test_metric_and_param_limits(fake, monkeypatch):
     monkeypatch.setattr(snowflake, '_EPOCH_METRICS', 2)
     monkeypatch.setattr(snowflake, '_SUMMARY_METRICS', 3)
     monkeypatch.setattr(snowflake, '_MAX_METRICS', 5)
-    result = type(RESULT)(metrics={**RESULT.metrics, 'r2': float('nan')},
-                          id=RESULT.id, bundle_dir=RESULT.bundle_dir)
+    result = type(RESULT)(**{**vars(RESULT), 'metrics': {
+        **RESULT.metrics, 'r2': float('nan')}})
     _replay(_tracking(tags={'note': 'a$$b', 'level': 2}), result)
 
     run, = fake._instance.runs.values()
