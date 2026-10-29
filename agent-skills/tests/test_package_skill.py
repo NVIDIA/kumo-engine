@@ -277,3 +277,10 @@ def test_adapter_covers_what_the_core_defers(host: str) -> None:
 def test_every_host_ships_a_runtime(host: str) -> None:
     """The router reads `hosts/<host>/runtime.md` at Step 2."""
     assert any(rel.endswith('/runtime.md') for rel in package_skill.HOSTS[host]['hosts'])
+
+
+def test_workspace_requires_https() -> None:
+    assert package_skill.Workspace('dbc.example.com', 't').host == 'https://dbc.example.com'
+    assert package_skill.Workspace('https://dbc.example.com/', 't').host == 'https://dbc.example.com'
+    with pytest.raises(SystemExit):
+        package_skill.Workspace('http://dbc.example.com', 't')

@@ -15,6 +15,7 @@ on:  # yamllint disable-line rule:truthy
       - "packages/kumo-core/**"
       - "packages/kumo-api/**"
       - "packages/kumo-snowflake/**"
+      - "packages/kumo-databricks/**"
       - ".github/workflows/agent-skills.yml"
   pull_request:
     paths:
@@ -24,6 +25,7 @@ on:  # yamllint disable-line rule:truthy
       - "packages/kumo-core/**"
       - "packages/kumo-api/**"
       - "packages/kumo-snowflake/**"
+      - "packages/kumo-databricks/**"
       - ".github/workflows/agent-skills.yml"
   merge_group:
 

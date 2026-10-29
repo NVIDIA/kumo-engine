@@ -116,7 +116,7 @@ output_config = kumo.PredictionOutputConfig(
     connector=output_connector,
     artifact_type=PredictionArtifactType.PREDICTIONS,
     table_name=f'{OUTPUT_SCHEMA}__kumo__{OUTPUT_TABLE}',
-    write_mode=WriteMode.OVERWRITE)
+    write_mode=WRITE_MODE)   # the write mode confirmed at the gate (job.md §3)
 ```
 
 The connector stages the rows through the volume `<OUTPUT_CATALOG>.<OUTPUT_SCHEMA>._kumo_staging`
@@ -125,10 +125,17 @@ Node 1d output line says so — `Output: <catalog.schema.table>; creates the sta
 <catalog.schema>._kumo_staging` — so the user confirms that write too.
 
 `PredictionArtifactType` and `WriteMode` come from `kumoapi.jobs`. Then read the destination back
-and compare its row count to `prediction_result.num_rows` — the only proof the write worked:
+and compare its row count to `prediction_result.num_rows` — the only proof the write worked. An
+OVERWRITE run compares the table total; an APPEND run compares the delta against a count taken
+before the write, as `kumoai-reference/references/outputs.md` says:
 
 ```python
-written = int(run_sql(f'SELECT COUNT(*) FROM {q(OUTPUT_CATALOG, OUTPUT_SCHEMA, OUTPUT_TABLE)}')[0][0])
+def count_output():
+    return int(run_sql(f'SELECT COUNT(*) FROM {q(OUTPUT_CATALOG, OUTPUT_SCHEMA, OUTPUT_TABLE)}')[0][0])
+
+before = count_output() if WRITE_MODE == WriteMode.APPEND else 0   # before the predict call
+# ... predict ...
+written = count_output() - before
 assert written == prediction_result.num_rows, (written, prediction_result.num_rows)
 ```
 
@@ -250,7 +257,11 @@ target = Path(VOLUME_PREFIX) / Path(ARCHIVE_PATH).name
 target.parent.mkdir(parents=True, exist_ok=True)
 with open(ARCHIVE_PATH, 'rb') as src, open(target, 'xb') as dst:   # FileExistsError: new run prefix
     shutil.copyfileobj(src, dst)
-copied = hashlib.sha256(target.read_bytes()).hexdigest()
+h = hashlib.sha256()
+with open(target, 'rb') as f:
+    for chunk in iter(lambda: f.read(1 << 20), b''):
+        h.update(chunk)
+copied = h.hexdigest()
 if copied != digest:
     raise RuntimeError(f'Retained archive digest mismatch: {copied} != {digest}')
 print('retained:', target, digest)

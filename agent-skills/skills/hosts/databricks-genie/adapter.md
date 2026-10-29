@@ -62,7 +62,8 @@ SELECT table_schema, table_name, table_type FROM <catalog>.information_schema.ta
 WHERE (table_schema, table_name) IN ((lower('<schema>'), lower('<table>')), ...);
 ```
 
-`MANAGED` and `EXTERNAL` are base tables. Any other `table_type` — `VIEW`, `METRIC_VIEW`,
+`MANAGED`, `EXTERNAL`, `MANAGED_SHALLOW_CLONE` and `EXTERNAL_SHALLOW_CLONE` are base (Delta)
+tables. Any other `table_type` — `VIEW`, `METRIC_VIEW`,
 `MATERIALIZED_VIEW`, `STREAMING_TABLE`, `FOREIGN` — is not one: read it as a logical table defined
 by a query. Map the YAML onto that file's `TABLE` and `RELATIONSHIP` records:
 
