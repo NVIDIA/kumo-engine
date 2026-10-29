@@ -23,6 +23,7 @@ from kumo_core.embedding_models import (
 from kumo_core.utils.nofile import ensure_nofile
 from kumoapi.encoder import TextEmbedding
 from kumoapi.graph import Edge
+from kumoapi.jobs import WriteMode
 from kumoapi.plugin import ModelRegistryLocation
 from kumoapi.table import Column
 
@@ -71,6 +72,7 @@ __all__ = [
     "EmbeddingModelStore",
     "GloVeVectors",
     "TextEmbedding",
+    "WriteMode",
     "TokenEmbeddingModel",
     "ModelRegistryLocation",
     "Connector",
