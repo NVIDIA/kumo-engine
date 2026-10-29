@@ -101,6 +101,7 @@ struct AggregatePlan {
     groups: Vec<GroupPlan>,
     operation: String,
     column: Option<String>,
+    sum_type: Option<SumType>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +117,14 @@ struct NamedReduction {
     name: String,
     operation: String,
     column: Option<String>,
+    sum_type: Option<SumType>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SumType {
+    Int64,
+    Uint64,
 }
 
 #[derive(Clone, Debug)]
@@ -200,11 +209,21 @@ impl ScalarValue {
     }
 }
 
-fn scalar_values_to_array(values: &[ScalarValue]) -> Result<ArrayRef, String> {
+fn scalar_values_to_array(
+    values: &[ScalarValue],
+    sum_type: Option<SumType>,
+) -> Result<ArrayRef, String> {
     let first = values
         .iter()
-        .find(|value| !matches!(value, ScalarValue::Null));
-    match first {
+        .find(|value| !matches!(value, ScalarValue::Null))
+        .cloned()
+        .or_else(|| {
+            sum_type.map(|kind| match kind {
+                SumType::Int64 => ScalarValue::I64(0),
+                SumType::Uint64 => ScalarValue::U64(0),
+            })
+        });
+    match first.as_ref() {
         None => Ok(Arc::new(NullArray::new(values.len()))),
         Some(ScalarValue::Bool(_)) => Ok(Arc::new(BooleanArray::from(
             values
@@ -282,6 +301,7 @@ struct SequenceResult {
 struct AggregateResult {
     name: String,
     values: Vec<ScalarValue>,
+    sum_type: Option<SumType>,
 }
 
 #[derive(Default)]
@@ -499,8 +519,8 @@ fn relation_columns(
                     .decode(key)
                     .0
                     .ok_or_else(|| format!("frame {frame:?} contains a null timestamp"))?;
-                if lower.is_none_or(|bound| timestamp >= bound)
-                    && upper.is_none_or(|bound| timestamp < bound)
+                if lower.is_none_or(|bound| timestamp > bound)
+                    && upper.is_none_or(|bound| timestamp <= bound)
                 {
                     destinations.push(destination);
                     if include_sort_keys {
@@ -825,8 +845,8 @@ fn materialize_frame(
                 None => None,
             };
             if timestamp.is_some_and(|value| {
-                lower.is_some_and(|bound| value < bound)
-                    || upper.is_some_and(|bound| value >= bound)
+                lower.is_some_and(|bound| value <= bound)
+                    || upper.is_some_and(|bound| value > bound)
             }) {
                 continue;
             }
@@ -1019,10 +1039,16 @@ fn reduce(
     operation: &str,
     column: Option<&str>,
     cutoff: i64,
+    sum_type: Option<SumType>,
 ) -> Result<ScalarValue, String> {
     validate_reduction(operation, column)?;
+    if sum_type.is_some() && operation != "sum" {
+        return Err("sum_type is only valid for sum".into());
+    }
     if operation == "count" {
-        return Ok(ScalarValue::F64(rows.len() as f64));
+        return i64::try_from(rows.len())
+            .map(ScalarValue::I64)
+            .map_err(|_| "count exceeds int64 range".to_string());
     }
     let values = rows
         .values(column.expect("validated reduction column"))?
@@ -1030,19 +1056,47 @@ fn reduce(
         .filter(|value| !matches!(value, ScalarValue::Null))
         .collect::<Vec<_>>();
     if operation == "count_distinct" {
-        return Ok(ScalarValue::F64(
+        return i64::try_from(
             values
                 .iter()
                 .map(ScalarValue::equality_key)
                 .collect::<HashSet<_>>()
-                .len() as f64,
-        ));
+                .len(),
+        )
+        .map(ScalarValue::I64)
+        .map_err(|_| "count_distinct exceeds int64 range".to_string());
     }
     if operation == "sum" && rows.len() == 0 {
-        return Ok(ScalarValue::F64(0.0));
+        return Ok(match sum_type {
+            Some(SumType::Int64) => ScalarValue::I64(0),
+            Some(SumType::Uint64) => ScalarValue::U64(0),
+            None => ScalarValue::F64(0.0),
+        });
     }
     if values.is_empty() {
         return Ok(ScalarValue::Null);
+    }
+    if operation == "sum" {
+        if let Some(sum_type) = sum_type {
+            let total = values.iter().try_fold(0i128, |total, value| {
+                let value = match (sum_type, value) {
+                    (SumType::Int64, ScalarValue::I64(value)) => i128::from(*value),
+                    (SumType::Uint64, ScalarValue::U64(value)) => i128::from(*value),
+                    _ => return Err("integer sum requires matching integer operands".into()),
+                };
+                total
+                    .checked_add(value)
+                    .ok_or_else(|| "integer sum exceeds accumulator range".to_string())
+            })?;
+            return match sum_type {
+                SumType::Int64 => i64::try_from(total)
+                    .map(ScalarValue::I64)
+                    .map_err(|_| "integer sum exceeds int64 range".to_string()),
+                SumType::Uint64 => u64::try_from(total)
+                    .map(ScalarValue::U64)
+                    .map_err(|_| "integer sum exceeds uint64 range".to_string()),
+            };
+        }
     }
     if operation == "recency" {
         let latest = values
@@ -1138,6 +1192,9 @@ fn group_rows(rows: RowsView<'_>, plan: &GroupPlan, cutoff: i64) -> Result<Vec<O
         .iter()
         .map(|value| {
             validate_reduction(&value.operation, value.column.as_deref())?;
+            if value.sum_type.is_some() && value.operation != "sum" {
+                return Err("sum_type is only valid for sum".to_string());
+            }
             Ok(match &value.column {
                 Some(column) => Some(rows.values(column)?),
                 None => None,
@@ -1179,6 +1236,7 @@ fn group_rows(rows: RowsView<'_>, plan: &GroupPlan, cutoff: i64) -> Result<Vec<O
                     &reduction.operation,
                     reduction.column.as_deref(),
                     cutoff,
+                    reduction.sum_type,
                 )?,
             );
         }
@@ -1210,15 +1268,23 @@ fn aggregate_result(
                 &plan.operation,
                 plan.column.as_deref(),
                 cutoff,
+                plan.sum_type,
             )?
         } else {
-            reduce(frame_view, &plan.operation, plan.column.as_deref(), cutoff)?
+            reduce(
+                frame_view,
+                &plan.operation,
+                plan.column.as_deref(),
+                cutoff,
+                plan.sum_type,
+            )?
         };
         values.push(value);
     }
     Ok(AggregateResult {
         name: plan.name.clone(),
         values,
+        sum_type: plan.sum_type,
     })
 }
 
@@ -1310,8 +1376,8 @@ fn count_frame(
                         format!("frame {:?} contains a null timestamp", plan.name)
                     })?;
                     stats.sort_key_timestamps += 1;
-                    if lower.is_none_or(|bound| timestamp >= bound)
-                        && upper.is_none_or(|bound| timestamp < bound)
+                    if lower.is_none_or(|bound| timestamp > bound)
+                        && upper.is_none_or(|bound| timestamp <= bound)
                     {
                         selected += 1;
                     }
@@ -1346,8 +1412,8 @@ fn count_frame(
                         })?;
                     row += 1;
                     stats.rowpack_timestamps += 1;
-                    if lower.is_none_or(|bound| timestamp >= bound)
-                        && upper.is_none_or(|bound| timestamp < bound)
+                    if lower.is_none_or(|bound| timestamp > bound)
+                        && upper.is_none_or(|bound| timestamp <= bound)
                     {
                         selected += 1;
                     }
@@ -1598,7 +1664,7 @@ impl QueryResult {
             let item = PyDict::new(py);
             item.set_item("name", aggregate.name)?;
             if model_format {
-                let values = scalar_values_to_array(&aggregate.values)
+                let values = scalar_values_to_array(&aggregate.values, aggregate.sum_type)
                     .map_err(DiskgraphConfigError::new_err)?;
                 item.set_item("values", values.to_data().to_pyarrow(py)?)?;
             } else {
@@ -1734,16 +1800,110 @@ mod tests {
     fn reduction_empty_and_null_semantics_are_distinct() {
         let empty = Vec::<OwnedRow>::new();
         assert!(matches!(
-            reduce(RowsView::Owned(&empty), "sum", Some("value"), 0).unwrap(),
+            reduce(RowsView::Owned(&empty), "sum", Some("value"), 0, None).unwrap(),
             ScalarValue::F64(0.0)
         ));
         assert!(matches!(
-            reduce(RowsView::Owned(&[row(None)]), "sum", Some("value"), 0).unwrap(),
+            reduce(
+                RowsView::Owned(&empty),
+                "sum",
+                Some("value"),
+                0,
+                Some(SumType::Int64)
+            )
+            .unwrap(),
+            ScalarValue::I64(0)
+        ));
+        assert!(matches!(
+            reduce(
+                RowsView::Owned(&[row(None)]),
+                "sum",
+                Some("value"),
+                0,
+                Some(SumType::Int64)
+            )
+            .unwrap(),
             ScalarValue::Null
         ));
         assert!(matches!(
-            reduce(RowsView::Owned(&empty), "count_distinct", Some("value"), 0).unwrap(),
-            ScalarValue::F64(0.0)
+            reduce(
+                RowsView::Owned(&empty),
+                "count_distinct",
+                Some("value"),
+                0,
+                None
+            )
+            .unwrap(),
+            ScalarValue::I64(0)
+        ));
+    }
+
+    #[test]
+    fn integer_sum_preserves_large_values_and_checks_overflow() {
+        let rows = [
+            row(Some(ScalarValue::I64(1 << 53))),
+            row(Some(ScalarValue::I64(1))),
+        ];
+        assert!(matches!(
+            reduce(RowsView::Owned(&rows), "sum", Some("value"), 0, Some(SumType::Int64)).unwrap(),
+            ScalarValue::I64(value) if value == (1 << 53) + 1
+        ));
+        let output = scalar_values_to_array(
+            &[ScalarValue::I64(0), ScalarValue::I64((1 << 53) + 1)],
+            Some(SumType::Int64),
+        )
+        .unwrap();
+        assert_eq!(output.data_type(), &arrow_schema::DataType::Int64);
+        assert_eq!(
+            output
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(1),
+            (1 << 53) + 1
+        );
+        for kind in [SumType::Int64, SumType::Uint64] {
+            let output = scalar_values_to_array(&[ScalarValue::Null], Some(kind)).unwrap();
+            assert_eq!(output.null_count(), 1);
+            assert_eq!(
+                output.data_type(),
+                &match kind {
+                    SumType::Int64 => arrow_schema::DataType::Int64,
+                    SumType::Uint64 => arrow_schema::DataType::UInt64,
+                }
+            );
+        }
+        let overflowing = [
+            row(Some(ScalarValue::I64(i64::MAX))),
+            row(Some(ScalarValue::I64(1))),
+        ];
+        assert!(reduce(
+            RowsView::Owned(&overflowing),
+            "sum",
+            Some("value"),
+            0,
+            Some(SumType::Int64)
+        )
+        .is_err());
+        let unsigned = [row(Some(ScalarValue::U64(u64::MAX)))];
+        assert!(matches!(
+            reduce(
+                RowsView::Owned(&unsigned),
+                "sum",
+                Some("value"),
+                0,
+                Some(SumType::Uint64)
+            )
+            .unwrap(),
+            ScalarValue::U64(u64::MAX)
+        ));
+        let floats = [
+            row(Some(ScalarValue::F64(1.25))),
+            row(Some(ScalarValue::F64(2.5))),
+        ];
+        assert!(matches!(
+            reduce(RowsView::Owned(&floats), "sum", Some("value"), 0, None).unwrap(),
+            ScalarValue::F64(3.75)
         ));
     }
 
@@ -1755,11 +1915,11 @@ mod tests {
             row(Some(ScalarValue::F64(30.0))),
         ];
         assert!(matches!(
-            reduce(RowsView::Owned(&rows), "var_population", Some("value"), 0).unwrap(),
+            reduce(RowsView::Owned(&rows), "var_population", Some("value"), 0, None).unwrap(),
             ScalarValue::F64(value) if (value - 66.66666666666667).abs() < 1e-10
         ));
         assert!(matches!(
-            reduce(RowsView::Owned(&rows), "std_sample", Some("value"), 0).unwrap(),
+            reduce(RowsView::Owned(&rows), "std_sample", Some("value"), 0, None).unwrap(),
             ScalarValue::F64(value) if (value - 10.0).abs() < 1e-10
         ));
         let tied = vec![
@@ -1767,7 +1927,7 @@ mod tests {
             row(Some(ScalarValue::String("a".into()))),
         ];
         assert!(matches!(
-            reduce(RowsView::Owned(&tied), "mode", Some("value"), 0).unwrap(),
+            reduce(RowsView::Owned(&tied), "mode", Some("value"), 0, None).unwrap(),
             ScalarValue::String(value) if value == "a"
         ));
     }

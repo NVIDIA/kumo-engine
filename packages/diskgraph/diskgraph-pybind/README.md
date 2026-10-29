@@ -262,7 +262,7 @@ result = engine.query_temporal(
 ```
 
 Windows are half-open relative to each aligned cutoff:
-`[cutoff + start_seconds, cutoff + stop_seconds)`. Either bound may be null;
+`(cutoff + start_seconds, cutoff + stop_seconds]`. Either bound may be null;
 bounds require `time_column`. Selected rows are sorted by timestamp and then
 primary key before a sequence optionally reverses and truncates them.
 `distinct` deduplicates destination dense IDs per root.
@@ -272,8 +272,16 @@ Available reductions are `count`, `count_distinct`, `sum`, `mean`, `min`,
 `recency`, and `mode`. `groups` are evaluated in list order, so the output of
 one grouping stage is the input to the next. Empty `count`, `count_distinct`,
 and `sum` are zero; other empty reductions are null. A non-empty all-null sum
-is null. Sample variance/deviation requires two non-null values, and mode ties
+is null. Counts return int64. Sample variance/deviation requires two non-null values, and mode ties
 use a stable type/value ordering.
+
+Integer sums request `"sum_type": "int64"` or `"sum_type": "uint64"` on the
+aggregate or grouped reduction. They accumulate exactly and fail if the
+result exceeds that type's range. The type also determines whether an empty
+sum returns integer zero. Without `sum_type`, `sum` retains its float64
+accumulation and result; mean and moments continue to use float64.
+Model-format integer sums retain their declared Arrow type when all results
+are null.
 
 The full row kernel still scans the reached adjacency; a sequence limit does
 not stop traversal, and aggregates still consider the entire selected frame.
