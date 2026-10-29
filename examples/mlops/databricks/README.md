@@ -41,8 +41,9 @@ settings.
      older than kumo-core needs, pip replaces torch and breaks the
      preinstalled torchvision.
 2. Replace the `<...>` placeholders in `databricks.yml` (or pass
-   `--var catalog=...`). `artifact_root`, `model_name`, `predictions_table`,
-   `table_prefix`, `experiment` and `on_error` have defaults; set them to run beside existing
+   `--var catalog=...`). `artifact_root`, `query`, `model_name`,
+   `predictions_table`, `table_prefix`, `experiment` and `on_error` have
+   defaults; set them to run beside existing
    objects in the same schema. The parent folder of the MLflow experiment
    path must already exist in the workspace (building `kumo.MLOps` creates the
    experiment and says so if it cannot).

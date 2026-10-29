@@ -27,8 +27,8 @@ from kumo.engine.connector import (
     connector_for_root,
 )
 
-# Needs several 30-day windows of order history; shorten it for small data.
-QUERY = 'PREDICT COUNT(orders.*, 0, 30, days) > 0 FOR EACH users.USER_ID'
+# Fits a few months of orders; a 30-day window needs about 6 months.
+QUERY = 'PREDICT COUNT(orders.*, 0, 7, days) > 0 FOR EACH users.USER_ID'
 # 'table.COLUMN' names to encode as text: inference reads short text as
 # categorical, and the score job must declare the graph the fit trained on.
 TEXT_COLUMNS: Sequence[str] = ()

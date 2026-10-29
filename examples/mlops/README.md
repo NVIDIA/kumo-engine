@@ -56,8 +56,9 @@ python score_job.py --source <data dir> --artifact-root <artifact dir> \
   --model-path models/<bundle id>
 ```
 
-The query needs several 30-day windows of order history; for a small sample
-pass a shorter `--query` and `--num-experiments 1`.
+The default query, `PREDICT COUNT(orders.*, 0, 7, days) > 0 FOR EACH
+users.USER_ID`, needs a few months of order history; a 30-day window needs
+about 6 months. For a quick run on a small sample pass `--num-experiments 1`.
 
 ## What every scheduler sees
 
