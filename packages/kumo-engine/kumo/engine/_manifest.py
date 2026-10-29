@@ -12,7 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     Any,
+    ClassVar,
     Dict,
+    Iterator,
     List,
     Mapping,
     Optional,
@@ -39,12 +41,34 @@ def omit_none() -> Any:
     return field(default=None, metadata={_OMIT_NONE: True})
 
 
+@dataclass(frozen=True)
+class Artifact:
+    r"""An artifact a manifest names, stored at ``location``, which tracked
+    runs tag as ``tag``. A dataset is data a run reads, or writes when its
+    ``context`` is ``output``."""
+
+    kind: str
+    id: str
+    location: Optional[str]
+    is_dataset: bool
+    tag: Optional[str] = None
+    connector: Optional[str] = None
+    version: Optional[str] = None
+    version_kind: Optional[str] = None
+    context: Optional[str] = None
+
+
 @dataclass(frozen=True, kw_only=True)
 class Record:
     """A JSON object; keys this version does not know are kept in ``extra``."""
 
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False,
                                      compare=False)
+
+    def as_artifact(self, key: str) -> Optional[Artifact]:
+        r"""The artifact this record names, if any, as ``key`` in its
+        parent."""
+        return None
 
     def to_dict(self) -> Dict[str, Any]:
         data = dict(self.extra)
@@ -125,6 +149,11 @@ class SourceTableEntry(Record):
     dialect: Optional[str] = omit_none()
     namespace: Optional[List[Any]] = omit_none()
 
+    def as_artifact(self, key: str) -> Artifact:
+        return Artifact('source_table', key, self.location, True,
+                        connector=self.connector, version=self.version,
+                        version_kind=self.version_kind)
+
 
 #: The artifact kinds, as manifests and the artifact root name them.
 KINDS = ('snapshot', 'training_table', 'model')
@@ -141,9 +170,48 @@ class Manifest(Record):
     created_at: Optional[str] = None
     environment: Optional[Environment] = None
     reconstructed: Optional[bool] = omit_none()
+    location: Optional[str] = omit_none()
 
     #: Fields left out where this manifest is embedded in a child's.
     EMBED_OMITS = ()
+    #: Whether this kind is data a run reads or writes.
+    IS_DATASET: ClassVar[bool] = False
+    #: The tag of its location in tracked runs.
+    URI_TAG: ClassVar[Optional[str]] = None
+
+    def as_artifact(self, key: str) -> Artifact:
+        return Artifact(self.kind, self.id, self.location, self.IS_DATASET,
+                        self.URI_TAG or f'kumo.{self.kind}_uri',
+                        version=self.id, version_kind='exact')
+
+
+def artifacts(manifest: Manifest) -> List[Artifact]:
+    r"""``manifest``'s artifact, then each one it names (parents, their
+    source tables, dependencies, outputs), depth first, each once. A named
+    manifest that is not a dataset, such as a warm-start model, is listed
+    but not opened: its own manifest names what it was made from."""
+    found: Dict[Any, Artifact] = {}
+    for artifact in _walk(manifest, manifest.kind, manifest):
+        found.setdefault((artifact.kind, artifact.id), artifact)
+    return list(found.values())
+
+
+def _walk(value: Any, key: str, root: Manifest) -> Iterator[Artifact]:
+    if isinstance(value, Record):
+        artifact = value.as_artifact(key)
+        if artifact is not None:
+            yield artifact
+        if isinstance(value, Manifest) and not value.IS_DATASET and \
+                value is not root:
+            return
+        for item in fields(value):
+            yield from _walk(getattr(value, item.name), item.name, root)
+    elif isinstance(value, AbcMapping):
+        for name, item in value.items():
+            yield from _walk(item, str(name), root)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _walk(item, key, root)
 
 
 def stamp() -> Dict[str, Any]:
@@ -206,6 +274,7 @@ class SnapshotManifest(Manifest):
     location and version, and the engine build that wrote it."""
 
     kind: str = 'snapshot'
+    IS_DATASET: ClassVar[bool] = True
     parents: Optional[SnapshotParents] = None
     record_sources: Optional[bool] = omit_none()
 
@@ -222,6 +291,7 @@ class TrainingTableManifest(Manifest):
     and, for caller-supplied rows, which source table."""
 
     kind: str = 'training_table'
+    IS_DATASET: ClassVar[bool] = True
     parents: Optional[TrainingTableParents] = None
     query: Optional[str] = None
     generation_plan: Optional[Dict[str, Any]] = None
@@ -280,6 +350,7 @@ class ModelManifest(Manifest):
     `Trainer` predictor)."""
 
     kind: str = 'model'
+    URI_TAG: ClassVar[Optional[str]] = 'kumo.bundle_uri'
     parents: Optional[ModelParents] = None
     fit: Optional[FitTiming] = None
     fit_mode: Optional[str] = None
