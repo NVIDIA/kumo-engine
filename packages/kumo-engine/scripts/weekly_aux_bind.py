@@ -71,6 +71,9 @@ def render(template, selected, retained=None):
             or retained['version'] != selected['wheel']['version']
             or retained['wheel_sha256'] != selected['wheel']['sha256']):
         raise ValueError('B9 requires the actual selected P2 model evidence')
+    if spec.get('prediction_batch_size') != retained['prediction_batch_size']:
+        raise ValueError(
+            'B9 batch size differs from the saved native scorer configuration')
     worker = retained['case_spec']['worker']
     spec.update(
         retained_case=dict(path=retained['path'], sha256=retained['sha256']),
@@ -92,6 +95,20 @@ def render(template, selected, retained=None):
     return spec
 
 
+def prediction_batch_size(bundle, files):
+    config = read(
+        pinned(bundle / 'model/config.json', files.get('model/config.json')))
+    evaluation = config.get('eval_loader_kwargs') or {}
+    if not isinstance(evaluation, dict):
+        raise ValueError(
+            'Saved native evaluation loader configuration is invalid')
+    batch = evaluation.get('batch_size', (config.get('loader_kwargs')
+                                          or {}).get('batch_size'))
+    if type(batch) is not int or batch <= 0:
+        raise ValueError('Saved native prediction batch size is invalid')
+    return batch
+
+
 def retained_evidence(path, mode):
     report = read(path)
     primary = report['case_spec']
@@ -109,7 +126,8 @@ def retained_evidence(path, mode):
         raise ValueError(
             'Retained P2 model bytes differ from the completed fit')
     return dict(report, path=str(path.resolve()), sha256=digest(path),
-                model_bundle=str(bundle.resolve()), model_files=files)
+                model_bundle=str(bundle.resolve()), model_files=files,
+                prediction_batch_size=prediction_batch_size(bundle, files))
 
 
 def bind(binding, selected, output, retained_case=None):

@@ -99,6 +99,18 @@ def b9_report():
         ])
 
 
+def freshness():
+    return dict(
+        status='UNCHANGED_FULL_HASHED_PAYLOAD', lease=dict(owner_pid=123),
+        seal_sha256='a' * 64, full_roster_sha256='b' * 64, payload_files=7858,
+        payload_bytes=1399792381206, frozen_native_inputs=dict(
+            status='FULL_NATIVE_INPUT_HASHES_VERIFIED',
+            training_files={'train.parquet': 'c' * 64},
+            prediction_files={'predict.parquet':
+                              'd' * 64}, prediction_population_sha256='e' * 64),
+        catalog_files_sha256={'merchants.parquet': 'f' * 64})
+
+
 def test_p1_requires_five_complete_frozen_cpu_operations():
     api()['verify_p1'](p1_spec(), p1_report())
 
@@ -207,6 +219,8 @@ def write_receipt(root, spec, row):
     (root / 'raw.json').write_text('{}')
     if spec['check'] == 'B9':
         (root / 'memory.json').write_text('{"overall":{"samples":1}}')
+        for name in ('payload-precheck.json', 'payload-postcheck.json'):
+            (root / name).write_text(json.dumps(freshness()))
     row.update(
         schema=1, manifest_sha256=pin, files={
             path.name: hashlib.sha256(path.read_bytes()).hexdigest()
@@ -430,3 +444,71 @@ def test_b9_capacity_is_bound_to_the_retained_full_p2_workload(changed):
             api()['verify_b9_capacity'](spec, capacity, primary)
     else:
         api()['verify_b9_capacity'](spec, capacity, primary)
+
+
+def test_b9_payload_postcheck_reuses_the_precheck_host_lease(tmp_path):
+    precheck = freshness()
+    calls = []
+
+    class Native:
+        @staticmethod
+        def verify_inputs(config, *, previous_lease):
+            calls.append((config, previous_lease))
+            return dict(precheck, checked_utc='later')
+
+    module = api()
+    prepared = dict(payload_freshness=precheck)
+    saved = module['b9_payload_precheck'](prepared, tmp_path)
+    post = module['b9_payload_postcheck'](Native, {
+        'frozen': True
+    }, saved, tmp_path)
+    assert calls == [({'frozen': True}, precheck['lease'])]
+    assert json.loads(
+        (tmp_path / 'payload-precheck.json').read_text()) == precheck
+    assert json.loads((tmp_path / 'payload-postcheck.json').read_text()) == post
+
+
+@pytest.mark.parametrize('changed', ['payload', 'lease'])
+def test_b9_changed_payload_or_lease_cannot_complete_and_preserves_postcheck(
+        tmp_path, changed):
+    precheck = freshness()
+
+    class Native:
+        @staticmethod
+        def verify_inputs(config, *, previous_lease):
+            if changed == 'payload':
+                raise ValueError('Payload identity changed')
+            return dict(precheck, lease=dict(owner_pid=999))
+
+    with pytest.raises(ValueError):
+        api()['b9_payload_postcheck'](Native, {}, precheck, tmp_path)
+    assert json.loads(
+        (tmp_path / 'payload-postcheck.json').read_text())['status'] == 'FAIL'
+
+
+@pytest.mark.parametrize('changed',
+                         ['missing_post', 'lease', 'seal', 'payload'])
+def test_collected_b9_requires_complete_same_payload_and_lease_receipts(
+        tmp_path, changed):
+    root = tmp_path / 'b9'
+    write_receipt(root, b9_spec(), b9_report())
+    post = root / 'payload-postcheck.json'
+    if changed == 'missing_post':
+        post.unlink()
+    else:
+        proof = freshness()
+        if changed == 'lease':
+            proof['lease']['owner_pid'] = 999
+        elif changed == 'seal':
+            proof['seal_sha256'] = 'f' * 64
+        else:
+            proof['payload_files'] = 1
+        post.write_text(json.dumps(proof))
+    row = json.loads((root / 'auxiliary-result.json').read_text())
+    row['files'] = {
+        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in root.iterdir() if p.name != 'auxiliary-result.json'
+    }
+    (root / 'auxiliary-result.json').write_text(json.dumps(row))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        api()['load_evidence'](root, b9_spec(), row['manifest_sha256'])

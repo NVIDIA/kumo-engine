@@ -73,13 +73,14 @@ def retained():
         device=dict(gpu='NVIDIA L4'), case_spec=dict(
             workload='P2', population=dict(expected_prediction_count=200000),
             worker=dict(path='/frozen/model-worker.py', sha256='8' * 64)),
-        model_bundle='/case/worker/saved-model',
+        model_bundle='/case/worker/saved-model', prediction_batch_size=1024,
         model_files={'model/checkpoint': '7' * 64})
 
 
 def test_b9_binding_uses_actual_retained_model_and_preserves_static_sources():
     source = template()
     source['check'] = 'B9'
+    source['prediction_batch_size'] = 1024
     source['worker'] = dict(b9_helper=dict(path='/frozen/b9.py', sha256='9' *
                                            64))
     bound = render(source, runtime(), retained())
@@ -91,23 +92,49 @@ def test_b9_binding_uses_actual_retained_model_and_preserves_static_sources():
     assert bound['source_sha256'] == source['source_sha256']
 
 
-@pytest.mark.parametrize('change',
-                         ['missing', 'wheel', 'workload', 'overwritten_input'])
+@pytest.mark.parametrize(
+    'change', ['missing', 'wheel', 'workload', 'overwritten_input', 'batch'])
 def test_b9_binding_rejects_missing_or_foreign_retained_evidence(change):
     source, evidence = template(), retained()
     source['check'] = 'B9'
+    source['prediction_batch_size'] = 1024
     if change == 'missing':
         evidence = None
     elif change == 'wheel':
         evidence['wheel_sha256'] = 'f' * 64
     elif change == 'workload':
         evidence['case_spec']['workload'] = 'tiny'
+    elif change == 'batch':
+        source['prediction_batch_size'] = 512
     else:
         source['inputs'][evidence['path']] = 'f' * 64
     original = copy.deepcopy(source)
     with pytest.raises(ValueError):
         render(source, runtime(), evidence)
     assert source == original
+
+
+@pytest.mark.parametrize('override,expected', [(None, 512), ({}, 512),
+                                               ({
+                                                   'batch_size': 256
+                                               }, 256)])
+def test_prediction_batch_size_uses_hash_pinned_saved_native_config(
+        tmp_path, override, expected):
+    bundle = tmp_path / 'saved-model'
+    (bundle / 'model').mkdir(parents=True)
+    config = bundle / 'model/config.json'
+    config.write_text(
+        json.dumps(
+            dict(loader_kwargs=dict(batch_size=512),
+                 eval_loader_kwargs=override)))
+    files = {
+        'model/config.json': hashlib.sha256(config.read_bytes()).hexdigest()
+    }
+    assert runpy.run_path(str(SCRIPT))['prediction_batch_size'](
+        bundle, files) == expected
+    config.write_text('{}')
+    with pytest.raises(ValueError):
+        runpy.run_path(str(SCRIPT))['prediction_batch_size'](bundle, files)
 
 
 @pytest.mark.parametrize('changed',

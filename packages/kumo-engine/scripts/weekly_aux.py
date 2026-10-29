@@ -309,6 +309,30 @@ def verify_b9(spec, row):
             (abs(before[key] - after[key]) for key in common), default=None))
 
 
+def verify_b9_freshness(before, after):
+    fields = ('lease', 'seal_sha256', 'full_roster_sha256', 'payload_files',
+              'payload_bytes', 'frozen_native_inputs', 'catalog_files_sha256')
+    for proof in (before, after):
+        frozen = proof.get('frozen_native_inputs', {})
+        if (proof.get('status') != 'UNCHANGED_FULL_HASHED_PAYLOAD'
+                or not isinstance(proof.get('lease'), dict)
+                or not proof['lease']
+                or any(not re.fullmatch('[0-9a-f]{64}', str(proof.get(key)))
+                       for key in ('seal_sha256', 'full_roster_sha256')) or any(
+                           type(proof.get(key)) is not int or proof[key] <= 0
+                           for key in ('payload_files', 'payload_bytes'))
+                or frozen.get('status') != 'FULL_NATIVE_INPUT_HASHES_VERIFIED'
+                or not frozen.get('training_files')
+                or not frozen.get('prediction_files')
+                or not frozen.get('prediction_population_sha256')
+                or not proof.get('catalog_files_sha256')):
+            raise ValueError(
+                'B9 full native payload freshness evidence is incomplete')
+    if any(before[key] != after[key] for key in fields):
+        raise ValueError(
+            'B9 native payload or host lease changed across prediction')
+
+
 def load_evidence(root, spec, manifest_sha256):
     row = read(root / 'auxiliary-result.json')
     if row.get('schema') != 1 or row.get(
@@ -322,6 +346,9 @@ def load_evidence(root, spec, manifest_sha256):
     if spec['check'] == 'B9' and not read(root / 'memory.json').get(
             'overall', {}).get('samples'):
         raise ValueError('B9 resource samples are missing')
+    if spec['check'] == 'B9':
+        verify_b9_freshness(read(root / 'payload-precheck.json'),
+                            read(root / 'payload-postcheck.json'))
     (verify_p1 if spec['check'] == 'P1' else verify_b9)(spec, row)
     return row
 
@@ -783,6 +810,26 @@ def load_saved_model(trainer_type, bundle):
     return trainer_type.load(bundle)
 
 
+def b9_payload_precheck(prepared, output):
+    proof = prepared.get('payload_freshness', {})
+    verify_b9_freshness(proof, proof)
+    save(output / 'payload-precheck.json', proof)
+    return proof
+
+
+def b9_payload_postcheck(native, config, precheck, output):
+    try:
+        previous = dict(precheck['lease'])
+        proof = native.verify_inputs(config, previous_lease=previous)
+        verify_b9_freshness(precheck, proof)
+        save(output / 'payload-postcheck.json', proof)
+        return proof
+    except BaseException as error:
+        save(output / 'payload-postcheck.json',
+             dict(status='FAIL', error=f'{type(error).__name__}: {error}'))
+        raise
+
+
 def execute_b9(spec, output):
     import pyarrow.parquet as pq
     import torch
@@ -857,6 +904,7 @@ def execute_b9(spec, output):
         with measurements.stage('verify_retained_inputs', gpu=False):
             prepared = native.load_prepared(config, primary['prepared_dir'],
                                             condition='normal')
+            payload_precheck = b9_payload_precheck(prepared, output)
             truth = dict(prepared['truth'], metric=primary['metric'])
             helper.verify_population(truth, spec['population'])
             ids = truth['entity_ids']
@@ -924,6 +972,7 @@ def execute_b9(spec, output):
             raise ValueError(
                 'Retained model bytes changed during B9 prediction')
         WEEKLY['verify_case_inputs'](primary)
+        b9_payload_postcheck(native, config, payload_precheck, output)
         row = dict(check='B9', status='MEASURED', physical_fits=0,
                    fit_attempts=0, retained_fit_id=spec['retained_fit_id'],
                    checkpoint_sha256=spec['checkpoint_sha256'], calls=calls)
