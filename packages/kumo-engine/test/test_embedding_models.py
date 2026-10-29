@@ -14,6 +14,7 @@ import pytest
 from kumo_core import embedding_models
 from kumo_core.embedding_models import EmbeddingModelNotFoundError, Release
 from kumo_core.glove import TokenEmbeddingTable
+from kumoapi.encoder import Null
 from kumoapi.typing import Stype
 
 from kumo.engine import (
@@ -70,7 +71,8 @@ def fitted(tmp_path_factory):
         warnings['failed fit'] = warned.take()
 
         plan.column_processing.encoder_overrides = {
-            'users.bio': TextEmbedding('words')
+            'users.bio': TextEmbedding('words'),
+            'users.code': Null(),
         }
         store = EmbeddingModelStore()
         store.add('words', GloVeVectors(archive, cache_dir=root / 'emb'))
@@ -155,7 +157,7 @@ def test_each_fit_reports_what_inference_leaves_unencoded(fitted):
     assert fitted[-1] == {
         'tables': [],
         'failed fit': [unencoded],
-        'fit': [unencoded],
+        'fit': [],
     }
 
 
