@@ -21,6 +21,9 @@ variables:
   volume:
     description: Unity Catalog volume for exported models and snapshots
     default: <volume>
+  artifact_root:
+    description: MLOps artifact root, a directory on the volume
+    default: /Volumes/${var.catalog}/${var.schema}/${var.volume}/kumo
   warehouse_id:
     description: SQL warehouse that reads the source tables and writes predictions
     default: <warehouse_id>
@@ -89,7 +92,7 @@ resources:
             python_file: ${workspace.file_path}/fit_job.py
             parameters:
               - --artifact-root
-              - /Volumes/${var.catalog}/${var.schema}/${var.volume}/kumo
+              - ${var.artifact_root}
               - --source
               - databricks
               - --catalog
@@ -143,7 +146,7 @@ resources:
             python_file: ${workspace.file_path}/score_job.py
             parameters:
               - --artifact-root
-              - /Volumes/${var.catalog}/${var.schema}/${var.volume}/kumo
+              - ${var.artifact_root}
               - --source
               - databricks
               - --catalog

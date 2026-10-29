@@ -10,8 +10,8 @@
 FROM python:3.12-slim
 ARG TORCH=cu126
 COPY *.whl /wheels/
-# The engine wheel is installed by path: PyPI's unrelated "kumo-engine" would
-# win over a dev build. Once kumo-engine is on the index, install
+# The engine wheel is installed by path: PyPI's "kumo-engine" 1.0.0, which
+# predates the MLOps API, would win over a dev build. Once kumo-engine is on the index, install
 # "kumo-engine[mlflow,sagemaker,text]" instead and drop the wheels.
 RUN pip install --no-cache-dir --find-links /wheels \
       --extra-index-url "https://download.pytorch.org/whl/${TORCH}" \
