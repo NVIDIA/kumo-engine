@@ -490,12 +490,15 @@ def test_a_tracking_start_failure_names_its_cause_and_can_raise(
         raise MlflowException(f'RESOURCE_DOES_NOT_EXIST: Parent of {name} '
                               f'does not exist.')
 
-    monkeypatch.setattr(MlflowClient, 'create_experiment', no_folder)
     table, snapshot = table_and_snapshot
     cfg = kumo.MLOps(str(tmp_path / 'root'),
                      tracking=MlflowTracking('/NoSuchFolder/churn',
                                              log_system_metrics=False),
                      on_error='raise')
+    warn = dataclasses.replace(cfg, on_error='warn')
+    monkeypatch.setattr(MlflowClient, 'get_experiment_by_name',
+                        lambda self, name: None)
+    monkeypatch.setattr(MlflowClient, 'create_experiment', no_folder)
     trainer = kumo.Trainer(_plan())
     with pytest.raises(RuntimeError, match='RESOURCE_DOES_NOT_EXIST') as raised:
         trainer.fit(table, snapshot=snapshot, mlops=cfg)
@@ -507,10 +510,9 @@ def test_a_tracking_start_failure_names_its_cause_and_can_raise(
     assert 'MlflowException: RESOURCE_DOES_NOT_EXIST' in off.getMessage()
     assert not off.exc_info
 
-    cfg = dataclasses.replace(cfg, on_error='warn')
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        trainer.fit(table, snapshot=snapshot, mlops=cfg)
+        trainer.fit(table, snapshot=snapshot, mlops=warn)
     reported = [str(w.message) for w in caught
                 if 'RESOURCE_DOES_NOT_EXIST' in str(w.message)]
     assert reported == [

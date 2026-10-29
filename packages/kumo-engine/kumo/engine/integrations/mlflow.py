@@ -188,11 +188,13 @@ class MlflowTracking:
         uri = self.target.tracking_uri
         owned = frozenset(name for name in _HTTP_LIMITS
                           if name not in os.environ)
+        missing = False
         try:
             with _limited_http(owned), self.target.scope():
                 client = self.target.client()
                 if self.experiment_name is not None:
-                    client.get_experiment_by_name(self.experiment_name)
+                    missing = client.get_experiment_by_name(
+                        self.experiment_name) is None
                 else:
                     client.search_experiments(max_results=1)
                 if registry is not None:
@@ -204,6 +206,22 @@ class MlflowTracking:
         except Exception as error:
             raise RuntimeError(f'MLflow at {uri} is not usable with these '
                                f'credentials: {full_error(error)}') from error
+        if missing:
+            self._create_experiment(client, owned)
+
+    def _create_experiment(self, client: Any, owned: FrozenSet[str]) -> None:
+        with _limited_http(owned), self.target.scope():
+            try:
+                client.create_experiment(self.experiment_name)
+            except Exception as error:
+                if client.get_experiment_by_name(self.experiment_name):
+                    return
+                raise RuntimeError(
+                    f'Could not create the MLflow experiment '
+                    f'{self.experiment_name!r}: {full_error(error)}. Its '
+                    f'parent folder must exist: on Databricks, create it '
+                    f'with `databricks workspace mkdirs <folder>` or in the '
+                    f'workspace UI.') from error
 
     def prepare(self) -> None:
         active = self._mlflow.active_run()
