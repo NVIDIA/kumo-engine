@@ -600,6 +600,7 @@ _SINKS: Dict[type, Callable[[MlflowTracking, Any], None]] = {
     Dataset: MlflowTracking._log_dataset,
 }
 _BATCH_METRICS = 1000  # MLflow's per-request limit
+_SYSTEM_METRICS_FAILURES = 6
 _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
                  'float32': 'float', 'bool': 'boolean', 'date': 'datetime',
                  'time': 'datetime'}
@@ -617,6 +618,7 @@ class _SystemMetrics:
         self._log = log
         self._interval = interval
         self._monitors = _metric_monitors()
+        self._failed = False
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name='kumo-system-metrics')
@@ -632,7 +634,7 @@ class _SystemMetrics:
             self._thread.join(self._interval + 5)
 
     def _run(self) -> None:
-        step = 0
+        step = failures = 0
         while not self._stop.wait(self._interval):
             metrics: Dict[str, float] = {}
             for monitor in self._monitors:
@@ -642,10 +644,17 @@ class _SystemMetrics:
             try:
                 self._log({f'system/{k}': v
                            for k, v in metrics.items()}, step)
+                failures = 0
             except Exception as error:
-                logger.debug('Could not log system metrics: %s',
-                             format_error(error))
-                return
+                if not self._failed:
+                    logger.info('Could not log system metrics, skipping that '
+                                'reading: %s', format_error(error))
+                self._failed = True
+                failures += 1
+                if failures == _SYSTEM_METRICS_FAILURES:
+                    logger.info('System metrics stopped after %d failed logs '
+                                'in a row', failures)
+                    return
             step += 1
 
 
