@@ -1580,12 +1580,16 @@ class DiskgraphNestedTrainer(Trainer):
 
         def _count(counts: Counts, prediction: dict[str, Any],
                    df: pd.DataFrame) -> None:
+            forecast = self.task.task_type == TaskType.FORECASTING
             count_predictions(
                 counts, self.task.task_type,
                 prob=prediction.get('prob'), pred=prediction.get('pred'),
                 target_pred=(df['TARGET_PRED'].to_numpy(
                     dtype=np.float64, na_value=np.nan) if numerical else None),
-                columns=count_columns)
+                columns=count_columns,
+                # A forecast row per step, each entity's steps in order.
+                horizon=(df.groupby(level=0, sort=False).cumcount().to_numpy()
+                         if forecast else None))
 
         datamodule = self.datamodule
 

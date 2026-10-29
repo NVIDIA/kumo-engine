@@ -155,3 +155,33 @@ def test_class_names_are_safe_metric_names():
         counts, threshold=None, baseline=None)) if name.endswith('/hist')}
     assert names == {'pred/confidence/hist', 'pred/a_b_PROB/hist',
                      'pred/c_d_PROB/hist'}
+
+
+@pytest.mark.parametrize('steps', [3, 30])
+def test_forecasts_count_each_kept_horizon_on_the_target_bins(steps):
+    from kumo_core.evaluation_counts import _horizons
+
+    rng = np.random.default_rng(4)
+    values = rng.normal(size=40 * steps)
+    horizon = np.tile(np.arange(steps), 40)
+    edges = (-1.0, 0.0, 1.0)
+    parts = []
+    for part in np.array_split(np.arange(40), 4):
+        rows = np.concatenate([np.arange(i * steps, (i + 1) * steps)
+                               for i in part])
+        counts = Counts({'target': edges})
+        count_predictions(counts, TaskType.FORECASTING, prob=None, pred=None,
+                          target_pred=values[rows], columns=[],
+                          horizon=horizon[rows])
+        parts.append(counts)
+
+    logged = _by_name(prediction_summaries(merged(parts), threshold=None,
+                                           baseline=None))
+    kept = _horizons(steps)
+    assert len(kept) == min(steps, 12)
+    assert [name for name in logged if name.endswith('/hist')] == [
+        'pred/hist', *(f'pred/h{h + 1}/hist' for h in kept)]
+    for h in kept:
+        assert logged[f'pred/h{h + 1}/hist'].counts == _brute_histogram(
+            values[horizon == h], edges)
+    _check_column(logged, 'pred', values, edges)
