@@ -271,11 +271,25 @@ class NightlyRuntimeTests(unittest.TestCase):
             inspect_gpu(SimpleNamespace(**values)),
             dict(gpu=values['name'], gpu_uuid=values['uuid'],
                  gpu_memory_bytes=values['total_memory']))
-        for key, value in [('name', 'NVIDIA T4'), ('uuid', ''),
+        for key, value in [('name', 'NVIDIA T4'), ('uuid', ''), ('uuid', None),
+                           ('uuid', False), ('uuid', object()),
                            ('total_memory', 0)]:
             with self.subTest(field=key,
                               value=value), self.assertRaises(ValueError):
                 inspect_gpu(SimpleNamespace(**dict(values, **{key: value})))
+
+    def test_torch_uuid_object_uses_its_canonical_string(self):
+        class CudaUuid:
+            # torch._C._CUuuid exposes its value through str(), not a str field.
+            def __str__(self):
+                return '9079f8f0-7852-f15a-d914-58072aeff113'
+
+        properties = SimpleNamespace(
+            name='NVIDIA RTX PRO 6000 Blackwell Server Edition',
+            uuid=CudaUuid(), total_memory=101975851008)
+        self.assertEqual(
+            self.function('gpu_properties')(properties)['gpu_uuid'],
+            str(properties.uuid))
 
 
 if __name__ == '__main__':

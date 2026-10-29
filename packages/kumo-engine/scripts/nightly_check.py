@@ -15,6 +15,7 @@ import runpy
 import sys
 import time
 import traceback
+import uuid
 from contextlib import chdir
 from pathlib import Path
 
@@ -42,12 +43,16 @@ def verify_archive(wheel, expected_sha256):
 
 
 def gpu_properties(properties):
+    identifier = str(properties.uuid)
+    try:
+        uuid.UUID(identifier.removeprefix('GPU-'))
+    except ValueError as error:
+        raise ValueError('Missing valid CUDA GPU identity') from error
     if (properties.name != 'NVIDIA RTX PRO 6000 Blackwell Server Edition'
-            or type(properties.uuid) is not str or not properties.uuid
             or type(properties.total_memory) is not int
             or properties.total_memory <= 0):
         raise ValueError('Use the fixed RTX PRO 6000 Blackwell GPU profile')
-    return dict(gpu=properties.name, gpu_uuid=properties.uuid,
+    return dict(gpu=properties.name, gpu_uuid=identifier,
                 gpu_memory_bytes=properties.total_memory)
 
 
