@@ -249,8 +249,7 @@ def test_evaluation_exports_its_rows(snapshots, classifier, tmp_path):
                                     output_paths={'predictions': 'evaluated/'})
     result.export(output)
     pd.testing.assert_frame_equal(
-        pd.read_parquet(tmp_path / 'evaluated' / run.id),
-        pd.read_parquet(result.actuals))
+        pd.read_parquet(tmp_path / 'evaluated' / run.id), result.frame)
 
     loaded = EvaluationResult.load_from_connector(
         connector, path=f'evaluated/{run.id}/')
@@ -715,10 +714,13 @@ def test_feature_drift_explains_what_it_cannot_compare(shifted):
     reasons = {}
     features = _compare(_encoding(root, ['AGE', 'BIO', 'GONE']), after,
                         before, reasons)
-    assert list(features['users']) == ['AGE']
+    assert list(features['users']) == ['AGE', 'BIO']
     assert reasons['features'] == (
-        'column statistics missing on a side for users.GONE; no drift '
-        'statistics for the type of users.BIO (text)')
+        'column statistics missing on a side for users.GONE')
+    bio = features['users']['BIO']
+    assert bio['type'] == 'text'
+    assert set(bio['delta']) == {'null_rate', 'num_unique', 'avg_tokens',
+                                 'max_tokens', 'glove_overlap'}
 
     reasons = {}
     assert _compare(_encoding(root, ['AGE']), None, None, reasons) == {}

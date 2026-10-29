@@ -76,6 +76,14 @@ class EvaluationResult:
 
     _exported: Any = field(default=None, compare=False, repr=False)
 
+    @property
+    def frame(self) -> pd.DataFrame:
+        r"""The evaluated rows (``actuals``) as a DataFrame, read into
+        memory."""
+        if self.actuals is None:
+            raise ValueError(f'No evaluated rows: {dict(self.reasons)}')
+        return pd.read_parquet(self.actuals)
+
     def export(self, output_config: Any) -> None:
         r"""Copy the evaluated rows to ``output_config``'s predictions
         destination (a `PredictionOutputConfig`), e.g. a table to monitor.
@@ -667,6 +675,8 @@ _NUMERIC_STATS = ('mean', 'std', 'min', 'max', 'q25', 'q50', 'q75',
                   'skewness', 'kurtosis', 'null_rate', 'num_unique')
 _CATEGORY_STATS = ('null_rate', 'num_unique')
 _TIME_STATS = ('min_secs', 'max_secs')
+_TEXT_STATS = ('null_rate', 'num_unique', 'avg_tokens', 'max_tokens',
+               'glove_overlap')
 _SMOOTHING = 1e-6
 
 
@@ -852,6 +862,8 @@ def _column_change(old: Mapping[str, Any],
             or new.get('category_counts_capped'))
     elif kind == 'timestamp':
         change = _deltas(old, new, _TIME_STATS)
+    elif kind == 'text':
+        change = _deltas(old, new, _TEXT_STATS)
     else:
         return None
     return {'type': kind, **change}
