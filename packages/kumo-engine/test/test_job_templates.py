@@ -138,7 +138,7 @@ def test_sagemaker_steps_take_their_own_instance_types_and_the_alias(
             def __init__(self, *args, **kwargs):
                 made[name] = kwargs
 
-            def fit(self, **kwargs):
+            def train(self, **kwargs):
                 return kwargs
 
             def run(self, **kwargs):
@@ -150,27 +150,34 @@ def test_sagemaker_steps_take_their_own_instance_types_and_the_alias(
         return Fake
 
     for module, names in {
-            'sagemaker.estimator': ['Estimator'],
-            'sagemaker.inputs': ['TrainingInput'],
-            'sagemaker.processing': ['ProcessingInput', 'Processor'],
-            'sagemaker.workflow.pipeline': ['Pipeline'],
-            'sagemaker.workflow.pipeline_context': ['PipelineSession'],
-            'sagemaker.workflow.steps': ['ProcessingStep', 'TrainingStep'],
+            'sagemaker.core.processing': ['ProcessingInput',
+                                          'ProcessingS3Input', 'Processor'],
+            'sagemaker.core.workflow.pipeline_context': ['PipelineSession'],
+            'sagemaker.mlops.workflow.pipeline': ['Pipeline'],
+            'sagemaker.mlops.workflow.steps': ['ProcessingStep',
+                                               'TrainingStep'],
+            'sagemaker.train.configs': ['Compute', 'OutputDataConfig',
+                                        'SourceCode'],
+            'sagemaker.train.model_trainer': ['ModelTrainer'],
     }.items():
         monkeypatch.setitem(sys.modules, module,
                             SimpleNamespace(**{n: fake(n)
                                                for n in names}))
     flags = [
         f'--{flag}=x' for flag in ('role', 'image', 'code', 'data-root',
-                                   'artifact-root', 'tracking-arn')
+                                   'tracking-arn')
     ]
     _module('sagemaker/pipeline').main([
-        *flags, '--fit-instance-type', 'ml.g5.xlarge',
-        '--score-instance-type', 'ml.m5.xlarge', '--alias', 'candidate'
+        *flags, '--artifact-root=s3://bucket/kumo/', '--fit-instance-type',
+        'ml.g5.xlarge', '--score-instance-type', 'ml.m5.xlarge', '--alias',
+        'candidate'
     ])
-    assert made['Estimator']['instance_type'] == 'ml.g5.xlarge'
+    assert made['Compute']['instance_type'] == 'ml.g5.xlarge'
     assert made['Processor']['instance_type'] == 'ml.m5.xlarge'
-    for arguments in (made['Estimator']['container_arguments'],
+    assert made['PipelineSession'] == {
+        'default_bucket': 'bucket', 'default_bucket_prefix': 'kumo/sagemaker'}
+    assert made['SourceCode']['command'] == 'python fit_job.py'
+    for arguments in (made['SourceCode']['args'],
                       made['ProcessingStep']['step_args']['arguments']):
         assert arguments[arguments.index('--alias') + 1] == 'candidate'
         assert arguments[arguments.index('--on-error') + 1] == 'raise'
