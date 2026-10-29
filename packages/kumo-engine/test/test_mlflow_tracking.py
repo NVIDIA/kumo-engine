@@ -562,3 +562,42 @@ def test_link_prediction_monitoring_metrics_are_logged(tracking_uri):
     run = mlflow.get_run(tracker.run_id)
     assert run.info.status == 'FINISHED'
     assert run.data.metrics == {'map_at_10': 0.5, 'precision_at_10': 0.25}
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
+        tracking_uri, monkeypatch, enabled):
+    from functools import partial
+
+    from test_tracking_contract import PREDICTION_MANIFEST
+
+    from kumo.engine._tracking import system_metrics, track_prediction
+    from kumo.engine.integrations import mlflow as integration
+
+    class Monitor:
+        samples = 0
+
+        def collect_metrics(self):
+            self.samples += 1
+
+        def aggregate_metrics(self):
+            return {'cpu_utilization_percentage': float(self.samples)}
+
+        def clear_metrics(self):
+            pass
+
+    monkeypatch.setattr(integration, '_metric_monitors', lambda: [Monitor()])
+    monkeypatch.setattr(integration, '_SystemMetrics',
+                        partial(integration._SystemMetrics, interval=0.01))
+    tracking = integration.MlflowTracking(experiment_name='scores',
+                                          log_system_metrics=enabled)
+    with system_metrics(tracking):
+        time.sleep(0.2)
+    track_prediction(PREDICTION_MANIFEST, tracking)
+
+    client = mlflow.MlflowClient()
+    run, = _runs(client)
+    history = [(point.step, point.value) for point in client.get_metric_history(
+        run.info.run_id, 'system/cpu_utilization_percentage')]
+    assert history == [(step, step + 1.0) for step in range(len(history))]
+    assert bool(history) == enabled
