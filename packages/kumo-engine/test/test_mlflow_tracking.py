@@ -134,8 +134,12 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
         for name, value in parent.data.metrics.items()
         if not name.startswith('system/')
     }
-    assert metrics == {**logged_names(result.metrics),
-                       'seconds': metrics['seconds']}
+    tested = {name: value for name, value in logged_names(
+        result.metrics).items() if name.startswith('test/')}
+    assert set(metrics) == {*tested, 'seconds', 'search/best_val_mae',
+                            *(name for name in metrics
+                              if name.startswith(('train/', 'val/')))}
+    assert {name: metrics[name] for name in tested} == tested
     assert 'off for the rest of this run' not in caplog.text
     ents, = parent.inputs.dataset_inputs
     assert (ents.dataset.name, ents.dataset.source_type) == ('ents', 'local')
@@ -152,6 +156,13 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
                 'val/mae'} <= set(child.data.metrics)
         history = client.get_metric_history(child.info.run_id, 'val/mae')
         assert sorted(metric.step for metric in history) == [1, 2]
+    selected = min(children, key=lambda run: run.data.metrics['val/best_mae'])
+    for name in ('train/loss', 'val/mae'):
+        curve, trial = (sorted((metric.step, metric.value)
+                               for metric in client.get_metric_history(
+                                   run.info.run_id, name))
+                        for run in (parent, selected))
+        assert curve == trial and len(curve) == 2
 
 
 def test_failed_fit_marks_the_run_failed(table_and_snapshot, tmp_path,

@@ -139,6 +139,17 @@ def logged_names(metrics: Mapping[str, Any]) -> Dict[str, Any]:
     return {logged_name(name): value for name, value in metrics.items()}
 
 
+def by_step(steps: Mapping[str, Sequence[Tuple[int, float]]]
+            ) -> List[Tuple[int, Dict[str, float]]]:
+    r"""Per-step histories regrouped as each step's metrics, in step
+    order."""
+    grouped: Dict[int, Dict[str, float]] = {}
+    for name, history in steps.items():
+        for step, value in history:
+            grouped.setdefault(step, {})[name] = value
+    return sorted(grouped.items())
+
+
 def run_record(spec: RunSpec) -> RunRecord:
     params = {key: _param_value(value) for key, value in spec.params.items()}
     return RunRecord(
@@ -211,7 +222,9 @@ class Tracking(Protocol):
     the event that updated it, and `finish` the fit run's final record
     (`None` if tracking stopped early, which should end the run as failed).
     Optional members: ``prepare()``, called first on the fit's own thread;
-    ``tags`` (extra fit-run tags); ``log_model(bundle_dir, manifest,
+    ``log_metrics(metrics, step)``, series of the fit run as they come (a
+    single trial's epochs, or a search's best validation metric after each
+    trial); ``tags`` (extra fit-run tags); ``log_model(bundle_dir, manifest,
     snapshot, registry)``, called after a fit that succeeded and before
     `finish`, which the fit waits for while the tracking thread is alive, up
     to an hour (an error, a stopped thread or the time limit ends the run as
@@ -232,6 +245,41 @@ class Tracking(Protocol):
         ...
 
 
+@dataclass
+class _Search:
+    r"""The fit run's own series: a single trial's epochs as they end, or,
+    for a search, the best validation ``metric`` after each trial; then
+    `best`, the selected trial, whose epochs the run records at the end."""
+
+    single: bool
+    metric: str
+    lower: bool
+    best: Optional[Tuple[float, int]] = None
+    trials: int = 0
+
+    @classmethod
+    def of(cls, params: Mapping[str, Any]) -> '_Search':
+        from kumo_core.evaluation.suite import MetricStore
+
+        metric = f"val_{params.get('training_job.tune_metric', 'loss')}"
+        return cls(single=params.get('training_job.num_experiments') == 1,
+                   metric=metric,
+                   lower=MetricStore.tune_mode(metric) == 'min')
+
+    def on(self, event: Event) -> Optional[Tuple[Dict[str, float], int]]:
+        if event.name == 'epoch_ended' and self.single:
+            return dict(event.metrics), event.epoch or 0
+        value = event.metrics.get(self.metric)
+        if (event.name != 'trial_ended' or self.single or value is None
+                or event.params.get('status') != 'succeeded'):
+            return None
+        if self.best is None or (value < self.best[0] if self.lower else
+                                 value > self.best[0]):
+            self.best = (value, event.trial or 0)
+        self.trials += 1
+        return {f'search/best_{self.metric}': self.best[0]}, self.trials
+
+
 class RegistrationError(Exception):
     r"""Raised by a tracker's ``log_model`` from the error that registering
     the logged model raised."""
@@ -244,6 +292,7 @@ class TrackingSession:
         self._warn = warn
         self.spec: Optional[RunSpec] = None
         self._trials: Dict[int, List[Event]] = {}
+        self._search: Optional[_Search] = None
         self._jobs: 'queue.Queue[Optional[Callable[[], Any]]]' = queue.Queue(
             QUEUE_SIZE)
         self._worker: Optional[threading.Thread] = None
@@ -267,6 +316,7 @@ class TrackingSession:
             self._tracker = None
             return
         self.spec = value
+        self._search = _Search.of(value.params)
         self._call(lambda tracker: getattr(tracker, 'prepare', _none)())
         self._worker = threading.Thread(target=self._work,
                                         name='kumo-tracking', daemon=True)
@@ -312,6 +362,12 @@ class TrackingSession:
                                      metrics=logged_names(event.metrics))
         self._submit(lambda: self._call(
             lambda tracker: tracker.on_trial(record, logged)))
+        series = None if self._search is None else self._search.on(event)
+        if series is not None:
+            metrics, step = logged_names(series[0]), series[1]
+            self._submit(lambda: self._call(
+                lambda tracker: getattr(tracker, 'log_metrics', _none)(
+                    metrics, step)))
 
     def log_model(
         self,
@@ -384,6 +440,10 @@ class TrackingSession:
             return
         try:
             final = self.spec if spec is None else spec()
+            selected = None if self._search is None else self._search.best
+            if error is None and selected is not None:
+                final = dataclasses.replace(
+                    final, steps=trial_spec(self._trials[selected[1]]).steps)
             if error is not None and final.error is None:
                 final = dataclasses.replace(final, error=format_error(error))
             record: Optional[RunRecord] = run_record(final)

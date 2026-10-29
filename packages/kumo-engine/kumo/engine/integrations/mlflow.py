@@ -37,7 +37,12 @@ from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
-from kumo.engine._tracking import DROPPED_PARAMS, RegistrationError, RunRecord
+from kumo.engine._tracking import (
+    DROPPED_PARAMS,
+    RegistrationError,
+    RunRecord,
+    by_step,
+)
 from kumo.engine._version import __version__
 from kumo.engine.connector._extras import import_provider
 from kumo.engine.integrations._mlflow_target import (
@@ -403,6 +408,8 @@ class MlflowTracking:
                    and record.tags.get('kumo.kind') == 'fit')
         try:
             if record is not None and self._parent is not None:
+                for epoch, metrics in by_step(record.steps):
+                    self._log_metrics(self._parent, metrics, epoch)
                 self._log_metrics(self._parent, record.metrics,
                                   model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
@@ -421,6 +428,9 @@ class MlflowTracking:
         hint = _sagemaker_ui_hint(self.target.tracking_uri)
         if fit_run and hint:
             warnings.warn(hint, UserWarning, stacklevel=2)
+
+    def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
+        self._log_metrics(self._parent, metrics, step)
 
     def _log_system_metrics(self, metrics: Mapping[str, float],
                             step: int) -> None:
