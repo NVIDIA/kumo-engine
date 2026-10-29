@@ -122,7 +122,7 @@ def verify_report(report, *, additional, prepared=False):
 SEED_PROFILES = {'pr': (0, ), 'full': (0, 1, 2, 3, 4)}
 
 
-def verify_prepared_report(report, *, calibration_dir=None):
+def verify_prepared_report(report, *, calibration_dir=None, expected_runs=None):
     import wheel_scale_learning as learning
     import wheel_task_checks as checks
     from wheel_measurements import verify_training_counts
@@ -135,17 +135,31 @@ def verify_prepared_report(report, *, calibration_dir=None):
         name for name in cases
         if group == 'all' or (name == 'binary') == (group == 'binary')
     ]
-    seeds = SEED_PROFILES.get(
-        report.get('configuration', {}).get('seed_profile'))
-    if seeds is None:
-        raise ValueError('A fixed PR or full seed profile is required')
-    expected = {
-        (task, seed, case)
-        for task in tasks
-        for seed in seeds
-        for case in (('learnable', ) if seeds == (0, ) else ('learnable',
-                                                             'independent'))
-    }
+    profile = report.get('configuration', {}).get('seed_profile')
+    if expected_runs is None:
+        seeds = SEED_PROFILES.get(profile)
+        if seeds is None:
+            raise ValueError('A fixed PR or full seed profile is required')
+        expected = {
+            (task, seed, case)
+            for task in tasks
+            for seed in seeds
+            for case in (('learnable', ) if seeds == (0, ) else ('learnable',
+                                                                 'independent'))
+        }
+    else:
+        roster = list(expected_runs)
+        if (profile != 'nightly' or calibration_dir is not None or not roster
+                or any(not isinstance(item, (tuple, list)) or len(item) != 3
+                       or type(item[0]) is not str or item[0] not in tasks
+                       or type(item[1]) is not int or item[1] != 0
+                       or item[2] not in ('learnable', 'independent')
+                       for item in roster)):
+            raise ValueError('Nightly needs an explicit fixed seed-zero roster')
+        expected = {tuple(item) for item in roster}
+        if len(expected) != len(roster):
+            raise ValueError('Nightly cannot repeat requested cases')
+        seeds = (0, )
     rows = report.get('runs', [])
     fault = report.get('calibration_fault')
     if calibration_dir is not None:
@@ -164,7 +178,8 @@ def verify_prepared_report(report, *, calibration_dir=None):
                     for row in rows}) != len(rows) or
             any(not row.get('fit_id') or row.get('status') != 'MEASURED' or row.
                 get('batch_retries_disabled') is not True or type(row['seed'])
-                is not int or row.get('training_seed') != row['seed'] or any(
+                is not int or type(row.get('training_seed')) is not int
+                or row.get('training_seed') != row['seed'] or any(
                     row.get('checks', {}).get(check) != 'PASS'
                     for check in ('fit', 'prediction', 'repeat_prediction',
                                   'partial_prediction', 'reload',
