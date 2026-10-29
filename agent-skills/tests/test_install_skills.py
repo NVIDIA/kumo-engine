@@ -7,6 +7,8 @@
 importing `kumo.engine` and the training stack behind it.
 """
 import importlib.util
+import io
+import re
 import sys
 import types
 from pathlib import Path
@@ -124,39 +126,42 @@ def test_the_bundled_copy_is_used_outside_a_checkout(
 class FakeDatabricks:
     """A `WorkspaceClient` holding files in a dict, plus the `databricks.sdk` modules it needs."""
 
-    class NotFound(Exception):
-        pass
-
-    def __init__(self, files: dict[str, bytes]) -> None:
+    def __init__(self, files: dict[str, bytes], fail_after: int = -1) -> None:
         self.files = files
+        self.fail_after = fail_after   # uploads that succeed before one raises; -1 never
+        self.deleted: list[str] = []
         self.current_user = types.SimpleNamespace(
             me=lambda: types.SimpleNamespace(user_name='someone@example.com'))
         self.workspace = self
 
     def delete(self, path: str, recursive: bool = False) -> None:
-        gone = [p for p in self.files if p.startswith(path + '/')]
-        if not gone:
-            raise self.NotFound(path)
         assert recursive
-        for p in gone:
+        for p in [p for p in self.files if p == path or p.startswith(path + '/')]:
             del self.files[p]
+        self.deleted.append(path)
+
+    def list(self, path: str, recursive: bool = False):
+        # Like the SDK: a recursive listing yields files, never folders.
+        assert recursive
+        return [types.SimpleNamespace(path=p) for p in self.files if p.startswith(path + '/')]
 
     def mkdirs(self, path: str) -> None:
         pass
 
     def upload(self, path: str, content, format, overwrite: bool) -> None:
         assert format == 'AUTO' and overwrite
+        if self.fail_after == 0:
+            raise ConnectionError('upload failed')
+        self.fail_after -= 1
         self.files[path] = content.read()
 
     def download(self, path: str, format):
-        import io
         return io.BytesIO(self.files[path])
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mods = {
             'databricks': types.ModuleType('databricks'),
             'databricks.sdk': types.SimpleNamespace(WorkspaceClient=lambda: self),
-            'databricks.sdk.errors': types.SimpleNamespace(NotFound=self.NotFound),
             'databricks.sdk.service': types.ModuleType('databricks.sdk.service'),
             'databricks.sdk.service.workspace': types.SimpleNamespace(
                 ImportFormat=types.SimpleNamespace(AUTO='AUTO'),
@@ -166,27 +171,52 @@ class FakeDatabricks:
             monkeypatch.setitem(sys.modules, name, mod)
 
 
+GENIE = '/Users/someone@example.com/.assistant/skills'
+
+
 def test_genie_on_databricks(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    skills_dir = '/Users/someone@example.com/.assistant/skills'
-    old = {f'{skills_dir}/kumo-data-science/hosts/generic/adapter.md': b'stale',
-           f'{skills_dir}/tabular/SKILL.md': b'another skill'}
+    old = {f'{GENIE}/kumo-data-science/hosts/generic/adapter.md': b'stale',
+           f'{GENIE}/kumo-data-science/hosts/generic/runtime.md': b'stale',
+           f'{GENIE}/kumo-data-science/old-notes.md': b'stale',
+           f'{GENIE}/kumo-data-science/SKILL.md': b'old router',
+           f'{GENIE}/tabular/SKILL.md': b'another skill'}
     ws = FakeDatabricks(dict(old))
     ws.install(monkeypatch)
     monkeypatch.setenv('DATABRICKS_RUNTIME_VERSION', '17.3')
-    assert skills.install_skills() == [f'{skills_dir}/kumo-data-science']
+    assert skills.install_skills() == [f'{GENIE}/kumo-data-science']
     shipped = {p.split('/kumo-data-science/')[1] for p in ws.files if '/kumo-data-science/' in p}
     assert 'SKILL.md' in shipped and 'hosts/databricks-genie/adapter.md' in shipped
-    assert not any(p.startswith('hosts/generic') for p in shipped)
-    assert ws.files[f'{skills_dir}/tabular/SKILL.md'] == b'another skill'
+    assert ws.files[f'{GENIE}/kumo-data-science/SKILL.md'] != b'old router'
+    assert not any(p.startswith('hosts/generic') or p == 'old-notes.md' for p in shipped)
+    # The stale host goes as one folder; nothing outside kumo-data-science/ is touched.
+    assert sorted(ws.deleted) == [f'{GENIE}/kumo-data-science/hosts/generic',
+                                  f'{GENIE}/kumo-data-science/old-notes.md']
+    assert ws.files[f'{GENIE}/tabular/SKILL.md'] == b'another skill'
+
+
+def test_a_failed_genie_reinstall_keeps_the_previous_skill(
+        home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    old = {f'{GENIE}/kumo-data-science/SKILL.md': b'old router',
+           f'{GENIE}/kumo-data-science/hosts/databricks-genie/zz-last.md': b'old'}
+    ws = FakeDatabricks(dict(old), fail_after=3)
+    ws.install(monkeypatch)
+    with pytest.raises(ConnectionError):
+        skills.install_skills('genie')
+    assert ws.deleted == []
+    assert ws.files[f'{GENIE}/kumo-data-science/hosts/databricks-genie/zz-last.md'] == b'old'
+    ws.fail_after = -1
+    skills.install_skills('genie')   # a rerun completes it
+    assert f'{GENIE}/kumo-data-science/hosts/databricks-genie/zz-last.md' not in ws.files
 
 
 def test_genie_fails_when_a_file_does_not_read_back(
         home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    ws = FakeDatabricks({})
+    ws = FakeDatabricks({f'{GENIE}/kumo-data-science/old.md': b'old'})
     ws.install(monkeypatch)
-    monkeypatch.setattr(ws, 'download', lambda path, format: __import__('io').BytesIO(b'x'))
+    monkeypatch.setattr(ws, 'download', lambda path, format: io.BytesIO(b'x'))
     with pytest.raises(RuntimeError, match='did not read back'):
         skills.install_skills('genie')
+    assert ws.deleted == []   # nothing is pruned after a failed check
 
 
 class FakeSession:
@@ -205,9 +235,43 @@ def test_coco_extension(home: Path) -> None:
     log = session.sql_log
     assert "ENCRYPTION=(TYPE='SNOWFLAKE_SSE')" in log[0]
     puts = [s for s in log if s.startswith('PUT')]
-    assert puts and all("'@KUMO_SKILL_PKG/kumo-ds/skills/kumo-data-science" in s for s in puts)
+    root = puts[0].split("'")[3].split('/skills/')[0]
+    assert re.fullmatch(r'@KUMO_SKILL_PKG/kumo-ds-[0-9a-f]{32}', root)
+    assert all(f"'{root}/skills/kumo-data-science" in s for s in puts)
     assert any('/hosts/snowflake-coco/' in s for s in puts)
-    assert log[-1] == 'ALTER CORTEX EXTENSION KUMO_DATA_SCIENCE ADD VERSION FROM @KUMO_SKILL_PKG/kumo-ds/'
+    assert log[-2:] == [f'ALTER CORTEX EXTENSION KUMO_DATA_SCIENCE ADD VERSION FROM {root}/',
+                        f'REMOVE {root}/']
+
+
+def test_concurrent_extension_installs_use_their_own_folders(home: Path) -> None:
+    first, second = FakeSession(), FakeSession()
+    skills.install_skills('coco', scope='extension', session=first)
+    skills.install_skills('coco', scope='extension', session=second, extension='OTHER')
+    assert first.sql_log[-1] != second.sql_log[-1]
+    assert not any(s.startswith('REMOVE') for s in first.sql_log[:-1])
+
+
+def test_a_failed_extension_install_removes_its_folder(home: Path) -> None:
+    class Failing(FakeSession):
+        def sql(self, text: str):
+            if text.startswith('ALTER CORTEX'):
+                raise RuntimeError('add version failed')
+            return super().sql(text)
+
+    session = Failing()
+    with pytest.raises(RuntimeError, match='add version failed'):
+        skills.install_skills('coco', scope='extension', session=session)
+    assert session.sql_log[-1].startswith('REMOVE @KUMO_SKILL_PKG/kumo-ds-')
+
+
+def test_no_agent_forwards_the_snowflake_destination(home: Path) -> None:
+    (home / '.snowflake' / 'cortex').mkdir(parents=True)
+    session = FakeSession()
+    assert skills.install_skills(scope='extension', session=session, extension='MY_EXT',
+                                 stage='MY_STAGE') == ['MY_EXT']
+    assert session.sql_log[-2].startswith('ALTER CORTEX EXTENSION MY_EXT ADD VERSION FROM @MY_STAGE/')
+    [root] = skills.install_skills(scope='workspace', session=FakeSession(), workspace='WS')
+    assert root.startswith('snow://workspace/USER$ME.PUBLIC."WS"/')
 
 
 def test_coco_workspace(home: Path) -> None:
@@ -227,3 +291,51 @@ def test_snowflake_notebook_asks_for_a_destination(
                         lambda self: str(self) == '/snowflake/session/token' or real(self))
     with pytest.raises(ValueError, match='name the destination'):
         skills.install_skills()
+
+
+def test_a_failed_copy_keeps_the_previous_install(home: Path,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    [target] = skills.install_skills('claude')
+    before = (Path(target) / 'SKILL.md').read_text()
+
+    def broken(src, dst, **kwargs):
+        Path(dst).mkdir(parents=True)
+        (Path(dst) / 'SKILL.md').write_text('half copied')
+        raise OSError('disk full')
+
+    monkeypatch.setattr(skills.shutil, 'copytree', broken)
+    with pytest.raises(OSError, match='disk full'):
+        skills.install_skills('claude')
+    assert (Path(target) / 'SKILL.md').read_text() == before
+    root = Path(target).parent
+    names = sorted(p.name for p in root.iterdir())
+    assert names == ['.kumo-data-science.lock', 'kumo-data-science']
+
+
+def test_a_checkout_install_checks_references_first(home: Path, tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    [target] = skills.install_skills('claude')
+    broken = tmp_path / 'package_skill.py'
+    broken.write_text(
+        'from pathlib import Path\n'
+        'def build(host, out):\n'
+        '    pkg = out / host / "kumo-data-science"\n'
+        '    pkg.mkdir(parents=True)\n'
+        '    (pkg / "SKILL.md").write_text("[gone](accept/missing.md)")\n'
+        '    return pkg\n'
+        'def unresolved(pkg):\n'
+        '    return ["SKILL.md: link (accept/missing.md) does not resolve"]\n')
+    monkeypatch.setattr(skills, '_PACKAGER', broken)
+    with pytest.raises(ValueError, match='unresolved reference'):
+        skills.install_skills('claude')
+    assert 'missing.md' not in (Path(target) / 'SKILL.md').read_text()
+
+
+def test_packaging_without_git_ships_what_git_tracks(monkeypatch: pytest.MonkeyPatch) -> None:
+    tracked = package_skill.git_tracked(package_skill.SKILLS)
+
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError('git')
+
+    monkeypatch.setattr(package_skill.subprocess, 'run', no_git)
+    assert package_skill.git_tracked(package_skill.SKILLS) == sorted(tracked)

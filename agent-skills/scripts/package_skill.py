@@ -97,12 +97,29 @@ def build_id() -> str:
     return f'{stamp}-dirty' if dirty else stamp
 
 
+SKILL_SUFFIXES = ('.md', '.py')
+
+
 def git_tracked(src: Path) -> list[Path]:
-    """List the files git tracks under `src`, as absolute paths."""
+    """List the files git tracks under `src`, as absolute paths.
+
+    Without git — a source archive, extracted — fall back to the skill's own file types, so a
+    stray `.env` or log still cannot ship. `tests/test_package_skill.py` checks that the two lists
+    agree on the committed tree.
+    """
     rel = src.relative_to(ROOT)
-    out = subprocess.run(['git', '-C', str(ROOT), 'ls-files', '--', str(rel)],
-                         check=True, capture_output=True, text=True).stdout
+    try:
+        out = subprocess.run(['git', '-C', str(ROOT), 'ls-files', '--', str(rel)],
+                             check=True, capture_output=True, text=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return skill_files(src)
     return [ROOT / line for line in out.splitlines() if line]
+
+
+def skill_files(src: Path) -> list[Path]:
+    """The files under `src` a skill is made of, found without git."""
+    return sorted(p for p in src.rglob('*')
+                  if p.is_file() and p.suffix in SKILL_SUFFIXES and '__pycache__' not in p.parts)
 
 
 def copy_tracked(src: Path, dest: Path) -> None:

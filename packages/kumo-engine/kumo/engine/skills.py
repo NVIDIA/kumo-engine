@@ -39,10 +39,12 @@ Genie and a Snowpark session for the ``coco`` account scopes.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import io
 import os
 import shutil
 import tempfile
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -97,7 +99,14 @@ def skill_package(host: str) -> Iterator[Path]:
         package_skill = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(package_skill)
         with tempfile.TemporaryDirectory() as tmp:
-            yield package_skill.build(host, Path(tmp))
+            pkg = package_skill.build(host, Path(tmp))
+            # The check a wheel build makes, before any destination changes.
+            errors = package_skill.unresolved(pkg)
+            if errors:
+                raise ValueError(
+                    f'The {host!r} skill package has {len(errors)} '
+                    f'unresolved reference(s), e.g. {errors[0]}')
+            yield pkg
         return
     pkg = _BUNDLED / host / SKILL
     if not (pkg / 'SKILL.md').is_file():
@@ -113,11 +122,32 @@ def _files(pkg: Path) -> list[Path]:
 
 
 def _copy(pkg: Path, skills_dir: Path) -> Path:
-    target = skills_dir.expanduser().resolve() / SKILL
-    if target.exists():
-        shutil.rmtree(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(pkg, target, ignore=shutil.ignore_patterns('__pycache__'))
+    r"""Replaces ``skills_dir/kumo-data-science`` with ``pkg``.
+
+    The package is copied in full beside the target first and then renamed
+    into place, under a lock on the destination, so concurrent installs never
+    mix files and a failed copy leaves the previous install intact.
+    """
+    root = skills_dir.expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / SKILL
+    with open(root / f'.{SKILL}.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        staging = Path(tempfile.mkdtemp(prefix=f'.{SKILL}.', dir=root))
+        try:
+            new, old = staging / SKILL, staging / 'previous'
+            shutil.copytree(pkg, new,
+                            ignore=shutil.ignore_patterns('__pycache__'))
+            if target.exists():
+                target.rename(old)
+            try:
+                new.rename(target)
+            except OSError:
+                if old.exists():
+                    old.rename(target)
+                raise
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
     return target
 
 
@@ -188,7 +218,9 @@ def install_skills(
     if agent is None:
         return [
             target for name in _detect()
-            for target in install_skills(name, scope=scope, client=client)
+            for target in install_skills(
+                name, scope=scope, session=session, workspace=workspace,
+                extension=extension, stage=stage, client=client)
         ]
     if agent not in AGENTS:
         raise ValueError(
@@ -216,18 +248,18 @@ def install_skills(
 def _install_genie(pkg: Path, client: Any = None) -> str:
     r"""Uploads ``pkg`` to the user's Genie Code skills folder and reads every
     file back. A new Genie Code chat loads it.
+
+    The Workspace API cannot rename, so the package is written over the
+    previous install and only then are the files it no longer ships deleted.
+    A failure part way leaves old and new files together, never an empty
+    folder, and running the install again completes it.
     """
     from databricks.sdk import WorkspaceClient
-    from databricks.sdk.errors import NotFound
     from databricks.sdk.service.workspace import ExportFormat, ImportFormat
 
     w = client or WorkspaceClient()
     target = (f'{GENIE_SKILLS.format(user=w.current_user.me().user_name)}'
               f'/{SKILL}')
-    try:
-        w.workspace.delete(target, recursive=True)
-    except NotFound:
-        pass
     remote = {
         f'{target}/{p.relative_to(pkg).as_posix()}': p
         for p in _files(pkg)
@@ -243,6 +275,22 @@ def _install_genie(pkg: Path, client: Any = None) -> str:
     if bad:
         raise RuntimeError(f'{len(bad)} file(s) did not read back intact, '
                            f'e.g. {bad[0]}')
+    # Delete, for each file not shipped, the highest folder under `target`
+    # that holds nothing shipped; the listing yields files, not folders.
+    shipped = {target}
+    for path in remote:
+        while (path := path.rsplit('/', 1)[0]) not in shipped:
+            shipped.add(path)
+    deleted: list[str] = []
+    for obj in w.workspace.list(target, recursive=True):
+        if obj.path in remote:
+            continue
+        top = obj.path
+        while (parent := top.rsplit('/', 1)[0]) not in shipped:
+            top = parent
+        if not any(top == d or top.startswith(d + '/') for d in deleted):
+            w.workspace.delete(top, recursive=True)
+            deleted.append(top)
     return target
 
 
@@ -289,11 +337,18 @@ def _install_coco_extension(pkg: Path, session: Any, extension: str,
     session.sql(f'CREATE STAGE IF NOT EXISTS {stage} '
                 "ENCRYPTION=(TYPE='SNOWFLAKE_SSE') "
                 'DIRECTORY=(ENABLE=TRUE)').collect()
-    session.sql(f'REMOVE @{stage}/kumo-ds/').collect()
-    _put(session, pkg, f'@{stage}/kumo-ds/skills/{SKILL}')
-    session.sql(f'CREATE CORTEX EXTENSION IF NOT EXISTS {extension}').collect()
-    session.sql(f'ALTER CORTEX EXTENSION {extension} '
-                f'ADD VERSION FROM @{stage}/kumo-ds/').collect()
+    # A folder of its own per install, so concurrent installs sharing the
+    # stage never publish each other's files. A version holds its own copy
+    # of the files, so the folder is removed once it is added.
+    root = f'@{stage}/kumo-ds-{uuid.uuid4().hex}'
+    try:
+        _put(session, pkg, f'{root}/skills/{SKILL}')
+        session.sql(
+            f'CREATE CORTEX EXTENSION IF NOT EXISTS {extension}').collect()
+        session.sql(f'ALTER CORTEX EXTENSION {extension} '
+                    f'ADD VERSION FROM {root}/').collect()
+    finally:
+        session.sql(f'REMOVE {root}/').collect()
     return extension
 
 
