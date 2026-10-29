@@ -179,6 +179,31 @@ def test_mlops_stores_the_run_after_its_export(graph, classifier, tmp_path):
     assert not (tmp_path / 'off' / 'predictions').exists()
 
 
+def test_mlops_runs_record_their_exact_score_counts(graph, classifier,
+                                                    tmp_path):
+    from kumo_core.score_counts import PROBABILITY_EDGES, Counts
+
+    _, snapshot = graph
+    trainer, table = classifier
+    plain = trainer.predict(table, snapshot=snapshot,
+                            binary_classification_threshold=0.4)
+    assert plain.manifest.stats['predictions'].counts is None
+
+    result = trainer.predict(table, snapshot=snapshot,
+                             binary_classification_threshold=0.4,
+                             mlops=kumo.MLOps(str(tmp_path / 'root')))
+    counts = Counts.from_dict(result.manifest.stats['predictions'].counts)
+    frame = result.frame
+    for column in ('False_PROB', 'True_PROB'):
+        values = frame[column].to_numpy()
+        assert counts.arrays[column].tolist() == np.bincount(
+            np.searchsorted(PROBABILITY_EDGES, values, side='right'),
+            minlength=102).tolist()
+        assert counts.arrays[f'{column}/sum'] == pytest.approx(values.sum())
+        assert counts.extents[column] == (values.min(), values.max())
+    assert counts.arrays['predicted_positive'] == frame['TARGET_PRED'].sum()
+
+
 @pytest.mark.parametrize('on_error', ['warn', 'raise'])
 def test_a_failed_store_of_a_run_follows_on_error(graph, classifier,
                                                   tmp_path, monkeypatch,
