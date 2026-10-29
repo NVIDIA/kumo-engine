@@ -48,6 +48,10 @@ The adapter returns the existing scale-worker result fields, plus the exact case
 
 The runner independently recomputes MAE, AUROC, and Recall@K from saved result coordinates. Native boolean binary targets remain valid. If the frozen native population makes a quality metric undefined, keep that population. Report the undefined score as `null` with `quality_missing_reason`. Do not silently drop empty link answers or replace them with a new score convention. Predictions still must be complete and finite.
 
+The released prediction-table API stages input Parquet files through relative symbolic links. Before sealing primary or B9 evidence, the runner accepts only the known managed prediction-source layout with an internal regular target. It verifies the target bytes, copies them into a regular file, and records the original link text, target, size, and hashes. Inventory still rejects symbolic links. External, directory, broken, cyclic, changed, or unrecognized links fail.
+
+If a completed fit failed only at this collection boundary, `weekly_recover.py` can create a new regular-file evidence tree from an exact reviewed link allowlist. It preserves the original failed tree and report. It verifies every pinned file in the original validator runtime before using those validators. Local mirrors need explicit byte-identical locator mappings. The original result, fit ID, checkpoint, device receipt, frozen manifest, and all eight identities stay exact. The command recomputes metrics from retained predictions and calls the original strict `load_case`. It performs no fit or model prediction. Recovery records its own source hashes and zero new model operations.
+
 After all eleven cases complete, collect their evidence into a new bundle. The collector refuses missing or repeated cases, mixed wheels, changed files, missing models, and reused fit identities. Verify local copies before reclaiming scratch. Reuse an old fit only after its whole identity and complete evidence match the selected case. A repair that only scores or collects a retained fit does not need another training attempt.
 
 ```bash

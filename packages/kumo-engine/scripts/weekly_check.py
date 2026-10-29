@@ -15,6 +15,7 @@ import os
 import re
 import runpy
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -336,6 +337,113 @@ def inventory(root):
     return files
 
 
+def prediction_source_links(root):
+    root = Path(root)
+    if root.is_symlink():
+        raise ValueError('Prediction evidence root cannot be a symbolic link')
+    root = root.resolve()
+    links = []
+    for path in sorted(root.rglob('*')):
+        if not path.is_symlink():
+            continue
+        relative = path.relative_to(root).as_posix()
+        text = os.readlink(path)
+        target = Path(os.path.normpath(path.parent / text))
+        if (not re.fullmatch(
+                r'(?:worker/)?scratch/prediction_tables/[0-9a-f]{32}/source-table/parts/part-00000\.parquet',
+                relative
+        ) or not re.fullmatch(
+                r'\.\./source/(predictions|repeat-predictions|partial-predictions|reloaded-predictions|full)\.parquet/\1\.parquet',
+                text) or not target.is_relative_to(root) or target.is_symlink()
+                or not target.exists()
+                or not stat.S_ISREG(target.lstat().st_mode)
+                or target.resolve() != target):
+            raise ValueError(
+                f'Unsafe or unrecognized prediction source link: {relative}')
+        links.append(
+            dict(path=relative, link_target=text,
+                 link_sha256=hashlib.sha256(os.fsencode(text)).hexdigest(),
+                 target=target.relative_to(root).as_posix(),
+                 bytes=target.stat().st_size, sha256=digest(target)))
+    return links
+
+
+def materialize_prediction_links(root, expected=None):
+    links = prediction_source_links(root)
+    root = Path(root).resolve()
+    if expected is not None and links != expected:
+        raise ValueError('Prediction source link bytes or targets changed')
+    receipt = dict(schema=1, status='PLANNED', links=links, materialized=0)
+    proof = root / 'prediction-link-portability.json'
+    if proof.exists():
+        raise ValueError('Prediction portability receipt already exists')
+    save(proof, receipt)
+    try:
+        for link in links:
+            path, target = root / link['path'], root / link['target']
+            temporary = path.with_name(path.name + '.portable')
+            with os.fdopen(os.open(target, os.O_RDONLY | os.O_NOFOLLOW),
+                           'rb') as source:
+                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                    raise ValueError(
+                        'Prediction source is no longer a regular file')
+                with temporary.open('xb') as output:
+                    shutil.copyfileobj(source, output)
+            if (temporary.stat().st_size != link['bytes']
+                    or digest(temporary) != link['sha256']
+                    or os.readlink(path) != link['link_target']
+                    or target.is_symlink() or digest(target) != link['sha256']):
+                raise ValueError(
+                    'Prediction source bytes or link changed during materialization'
+                )
+            temporary.replace(path)
+            receipt['materialized'] += 1
+        if prediction_source_links(root):
+            raise ValueError(
+                'Prediction source links changed during materialization')
+        receipt['status'] = 'PASS'
+    except BaseException as error:
+        receipt.update(status='FAIL', error=f'{type(error).__name__}: {error}')
+        raise
+    finally:
+        save(proof, receipt)
+    return receipt
+
+
+def copy_portable_case(source, destination, expected):
+    links = prediction_source_links(source)
+    source, destination = Path(source).resolve(), Path(destination).resolve()
+    if destination.is_relative_to(source):
+        raise ValueError('Portable evidence must be outside the original case')
+    if links != expected:
+        raise ValueError('The exact reviewed prediction links changed')
+
+    def regular_files(root):
+        return {
+            path.relative_to(root).as_posix(): digest(path)
+            for path in root.rglob('*')
+            if path.is_file() and not path.is_symlink()
+        }
+
+    before = regular_files(source)
+    if 'prediction-link-portability.json' in before or 'portable-copy.json' in before:
+        raise ValueError('The source case already has a portability receipt')
+    shutil.copytree(source, destination, symlinks=True)
+    materialize_prediction_links(destination, expected=links)
+    after = regular_files(destination)
+    after.pop('prediction-link-portability.json')
+    if (after != dict(before, **
+                      {link['path']: link['sha256']
+                       for link in links}) or regular_files(source) != before
+            or prediction_source_links(source) != links):
+        raise ValueError(
+            'Original or copied evidence bytes changed during collection')
+    receipt = dict(schema=1, status='PASS', source_root=str(source),
+                   source_unchanged=True, source_files=before, links=links)
+    save(destination / 'portable-copy.json', receipt)
+    return receipt
+
+
 def verify_candidate_build(path, version, wheel_sha256):
     build = read(path)
     if (build.get('version') != version
@@ -459,6 +567,7 @@ def run(args, manifest):
         helpers['verify_install'](dict(version=args.version,
                                        wheel_sha256=args.wheel_sha256),
                                   args.wheel)
+        materialize_prediction_links(output)
         verify_artifacts(output, inventory(output))
         report.update(status='MEASURED', result=row)
     except BaseException as error:

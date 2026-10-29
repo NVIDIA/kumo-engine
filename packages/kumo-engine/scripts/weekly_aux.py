@@ -960,6 +960,8 @@ def run(args):
             row.update(
                 (execute_p1 if spec['check'] == 'P1' else execute_b9)(spec,
                                                                       output))
+        if spec['check'] == 'B9':
+            WEEKLY['materialize_prediction_links'](output)
         load_spec(args.manifest, args.manifest_sha256)
         row['fit_attempts'] = sum(
             read(path)['fit_attempts']
@@ -977,8 +979,14 @@ def run(args):
             row['fit_attempts'] = sum(
                 read(path)['fit_attempts']
                 for path in (output / 'fit-attempts').glob('*.json'))
-        row['files'] = inventory(output)
-        save(output / 'auxiliary-result.json', row)
+        try:
+            row['files'] = inventory(output)
+        except BaseException as error:
+            row.update(status='FAIL',
+                       inventory_error=f'{type(error).__name__}: {error}')
+            raise
+        finally:
+            save(output / 'auxiliary-result.json', row)
     return row
 
 
