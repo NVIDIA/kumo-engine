@@ -436,7 +436,7 @@ def test_link_prediction_metric_names_are_logged(tracking_uri):
     from kumo.engine._tracking import RunRecord
     from kumo.engine.integrations.mlflow import MlflowTracking
 
-    tracker = MlflowTracking(experiment_name='lp')
+    tracker = MlflowTracking(experiment_name='lp', log_system_metrics=False)
     tags = {'kumo.kind': 'fit', 'kumo.run_id': 'r'}
     tracker.start(RunRecord(name='r', tags=tags))
     tracker.finish(
@@ -453,21 +453,22 @@ def test_link_prediction_metric_names_are_logged(tracking_uri):
     }
 
 
+class _Monitor:
+    def collect_metrics(self):
+        pass
+
+    def aggregate_metrics(self):
+        return {'cpu': 1.0}
+
+    def clear_metrics(self):
+        pass
+
+
 def test_system_metrics_skip_a_failed_log_and_stop_after_repeated_ones(
         monkeypatch, caplog):
     import logging
 
     from kumo.engine.integrations import mlflow as integration
-
-    class Monitor:
-        def collect_metrics(self):
-            pass
-
-        def aggregate_metrics(self):
-            return {'cpu': 1.0}
-
-        def clear_metrics(self):
-            pass
 
     calls = []
 
@@ -476,7 +477,7 @@ def test_system_metrics_skip_a_failed_log_and_stop_after_repeated_ones(
         if step == 0 or step >= 2:
             raise ConnectionError('blip')
 
-    monkeypatch.setattr(integration, '_metric_monitors', lambda: [Monitor()])
+    monkeypatch.setattr(integration, '_metric_monitors', lambda: [_Monitor()])
     caplog.set_level(logging.INFO, integration.logger.name)
     with integration._SystemMetrics(log, interval=0.001) as metrics:
         metrics._thread.join(10)
@@ -485,3 +486,16 @@ def test_system_metrics_skip_a_failed_log_and_stop_after_repeated_ones(
     assert caplog.text.count('Could not log system metrics') == 1
     assert 'ConnectionError: blip' in caplog.text
     assert 'stopped after 6 failed logs in a row' in caplog.text
+
+
+def test_system_metrics_log_a_reading_when_a_run_ends_within_the_interval(
+        monkeypatch):
+    from kumo.engine.integrations import mlflow as integration
+
+    calls = []
+    monkeypatch.setattr(integration, '_metric_monitors', lambda: [_Monitor()])
+    with integration._SystemMetrics(lambda metrics, step: calls.append(
+            (metrics, step)), interval=60):
+        pass
+
+    assert calls == [({'system/cpu': 1.0}, 0)]

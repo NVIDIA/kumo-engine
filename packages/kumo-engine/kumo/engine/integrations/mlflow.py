@@ -635,7 +635,9 @@ class _SystemMetrics:
 
     def _run(self) -> None:
         step = failures = 0
-        while not self._stop.wait(self._interval):
+        stopped = False
+        while not stopped:  # and a last reading when the run ends
+            stopped = self._stop.wait(self._interval)
             metrics: Dict[str, float] = {}
             for monitor in self._monitors:
                 monitor.collect_metrics()
