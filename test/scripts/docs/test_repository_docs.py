@@ -202,16 +202,11 @@ class RepositoryDocsTest(unittest.TestCase):
         self.write('docs/linked.md', '[Missing](absent.md)\n')
         self.assertIn('absent.md', self.check().stdout)
 
-    def test_diskgraph_links_are_reported_without_blocking(self):
-        self.write('packages/diskgraph/docs/guide.md', '[Upstream](missing.md)\n')
-        result = self.check()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('DiskGraph documentation:', result.stdout)
-        self.assertIn('missing.md', result.stdout)
-        self.write('packages/owned/docs/guide.md', '[Owned](missing.md)\n')
+    def test_diskgraph_links_block_like_other_docs(self):
+        self.write('packages/diskgraph/docs/guide.md', '[Broken](missing.md)\n')
         result = self.check()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('packages/owned/docs/guide.md', result.stdout)
+        self.assertIn('packages/diskgraph/docs/guide.md', result.stdout)
 
     def test_link_cannot_escape_repository(self):
         self.write('docs/guide.md', '# Guide\n## Usage\n[Outside](../../outside.md)\n')

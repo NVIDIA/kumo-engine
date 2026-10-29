@@ -1279,6 +1279,7 @@ fn test_sample_runtime_batch_e2e() {
             true,
             None, // node_range off
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch must succeed end-to-end");
 
@@ -1500,6 +1501,7 @@ fn test_sample_runtime_batch_excludes_orphan_seeds() {
             true,
             None,
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("clean post-drop stage must sample");
 
@@ -1705,6 +1707,7 @@ fn test_sample_runtime_batch_seed_topology_excluded_features_preserved() {
             true,
             None,
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch must succeed");
 
@@ -1913,6 +1916,7 @@ fn test_sample_runtime_batch_excludes_all_sibling_stage_seed_namespaces() {
             true,
             None,
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch (val stage) must succeed");
 
@@ -2061,6 +2065,7 @@ fn test_sample_runtime_batch_hop1_temporal_filter_no_leak() {
             true,
             None, // node_range off
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch must succeed");
 
@@ -2209,6 +2214,7 @@ fn run_sample_runtime_batch_with_flags(
             true,
             None, // node_range off
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch must succeed for any flag combination")
 }
@@ -2414,6 +2420,7 @@ fn test_sample_runtime_batch_swap_edge_direction_preserves_rel_name() {
             true,
             None, // node_range off
             None,
+            None, // projection: resolved per call in tests
         )
         .unwrap();
 
@@ -2732,6 +2739,7 @@ fn test_sample_runtime_batch_reads_weight_column() {
             true,
             None, // node_range off
             None,
+            None, // projection: resolved per call in tests
         )
         .expect("sample_runtime_batch must succeed; WEIGHT read off the rowpack");
 
@@ -2804,6 +2812,7 @@ fn test_sample_runtime_batch_no_weight_column_keeps_weight_none() {
             true,
             None, // node_range off
             None,
+            None, // projection: resolved per call in tests
         )
         .unwrap();
 
@@ -3341,5 +3350,316 @@ fn test_ts_grouping_null_timestamp_errors() {
     assert!(
         msg.contains("null TIMESTAMP") && msg.contains("train_seeds"),
         "error must name the offending table and the null TIMESTAMP; got: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FEATURE PROJECTION PUSHDOWN (`ResolvedProjection`, via `resolve_projection`).
+//
+// The caller supplies an optional per-node-type column list. Absent/empty MUST
+// mean select-all (the historical behavior, and the graceful-degradation path
+// under wheel/version skew); a non-empty list MUST narrow the materialized
+// columns without changing a single retained value.
+//
+// PROJECTION PUSHDOWN IS NON-FUSED ONLY: fused dispatch always fetches every
+// non-reserved column and never consults a `ResolvedProjection` (see
+// `SamplerEngine::resolve_projection`'s doc comment and
+// `RuntimeBatchIterator::build`, which forces non-fused whenever a caller
+// supplies a non-empty projection). `test_feature_projection_fused_mode_ignores_projection`
+// below pins that fused ignores a projection it is handed directly at the
+// engine layer, which is a real path: an integration caller here can invoke
+// `sample_runtime_batch` with `fused=true` AND a projection without going
+// through the pybind-level guard.
+// ---------------------------------------------------------------------------
+
+/// Run the standard depth-2 users→orders batch with an explicit fused mode and
+/// an explicit `feature_columns` projection.
+fn run_projected_runtime_batch(
+    tmp_root: &std::path::Path,
+    fused: bool,
+    feature_columns: std::collections::HashMap<String, Vec<String>>,
+) -> diskgraph_engine::output::RuntimeBatch {
+    use diskgraph_core::dataset::DatasetId;
+    use diskgraph_core::sampling::{
+        AbsentKeyPolicy, FanoutSpec, LayerSpec, SamplingFlags, SamplingMode, SamplingPlan,
+    };
+
+    let reader = std::sync::Arc::new(
+        diskgraph_index::graph::GraphIndexReader::open_with_tt(tmp_root, "tt_proj").unwrap(),
+    );
+    let engine =
+        diskgraph_engine::engine::DiskGraphEngine::from_reader(reader.clone(), Some(42), Some(1))
+            .unwrap();
+    let layer = || LayerSpec {
+        fanouts: std::collections::HashMap::new(),
+        default_fanout: Some(FanoutSpec {
+            fanout: 4,
+            mode: SamplingMode::Uniform,
+            absent_key_policy: AbsentKeyPolicy::UniformFallback,
+        }),
+    };
+    let plan = SamplingPlan {
+        layers: vec![layer(), layer()],
+    };
+    // Mirror the production wiring: the projection is resolved ONCE against the
+    // graph and handed to the engine, exactly as `RuntimeBatchIterator::build`
+    // does. It is no longer carried on the plan.
+    let projection = std::sync::Arc::new(engine.resolve_projection(&feature_columns));
+    let flags = SamplingFlags {
+        replace: false,
+        directed: true,
+        disjoint: true,
+        return_edge_id: false,
+        adaptive: false,
+        fused_feature_fetching: fused,
+        swap_edge_direction: false,
+    };
+    engine
+        .sample_runtime_batch(
+            reader.as_ref(),
+            "tt_proj/train_seeds",
+            &[0u64, 1, 2],
+            DatasetId::nil(),
+            &plan,
+            &flags,
+            None,
+            Some("users"),
+            None,
+            true,
+            None,
+            None,
+            Some(projection),
+        )
+        .expect("sample_runtime_batch must succeed")
+}
+
+/// `column name -> concatenated Int64 values`, in emission order.
+type Int64Columns = Vec<(String, Vec<Option<i64>>)>;
+
+/// `namespace -> (column name -> concatenated Int64 values)`, in emission order.
+fn int64_features_by_namespace(
+    batch: &diskgraph_engine::output::RuntimeBatch,
+) -> std::collections::HashMap<String, Int64Columns> {
+    let mut out = std::collections::HashMap::new();
+    for (ns, bank) in &batch.raw_features {
+        let mut per_col: Vec<(String, Vec<Option<i64>>)> = Vec::new();
+        for rb in &bank.batches {
+            for (idx, field) in rb.schema().fields().iter().enumerate() {
+                let vals: Vec<Option<i64>> = rb
+                    .column(idx)
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .map(|a| {
+                        use arrow_array::Array;
+                        (0..a.len())
+                            .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                match per_col.iter_mut().find(|(n, _)| n == field.name()) {
+                    Some((_, acc)) => acc.extend(vals),
+                    None => per_col.push((field.name().clone(), vals)),
+                }
+            }
+        }
+        out.insert(ns.clone(), per_col);
+    }
+    out
+}
+
+fn run_projection_equivalence() {
+    let fused = false; // projection pushdown is non-fused only.
+    let tmp = tempdir().unwrap();
+    let parent_root =
+        ingest_parent_with_orders_and_one_tt(&tmp, "tt_proj", &(0..6).collect::<Vec<_>>()).unwrap();
+
+    // Baseline: no projection at all => select-all, i.e. today's behavior.
+    let full = run_projected_runtime_batch(&parent_root, fused, Default::default());
+    // Projected: `orders` narrowed to its PK only; `user_id` (the FK, dead
+    // weight for the model) must disappear.
+    let mut projection = std::collections::HashMap::new();
+    projection.insert("orders".to_string(), vec!["order_id".to_string()]);
+    let projected = run_projected_runtime_batch(&parent_root, fused, projection);
+
+    let full_cols = int64_features_by_namespace(&full);
+    let proj_cols = int64_features_by_namespace(&projected);
+
+    let full_orders = full_cols.get("orders").expect("select-all emits `orders`");
+    let proj_orders = proj_cols
+        .get("orders")
+        .expect("projection must not drop the namespace itself");
+
+    let full_names: Vec<&str> = full_orders.iter().map(|(n, _)| n.as_str()).collect();
+    let proj_names: Vec<&str> = proj_orders.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        full_names.contains(&"order_id") && full_names.contains(&"user_id"),
+        "fused={fused}: baseline must carry BOTH stored columns; got {full_names:?}"
+    );
+    assert_eq!(
+        proj_names,
+        vec!["order_id"],
+        "fused={fused}: projection must narrow `orders` to exactly the requested column"
+    );
+
+    // EQUIVALENCE: every retained column is value-identical to the select-all run.
+    let full_order_id = &full_orders
+        .iter()
+        .find(|(n, _)| n == "order_id")
+        .expect("order_id in baseline")
+        .1;
+    let proj_order_id = &proj_orders[0].1;
+    assert_eq!(
+        full_order_id, proj_order_id,
+        "fused={fused}: projection changed the VALUES of a retained column"
+    );
+    assert!(
+        !proj_order_id.is_empty(),
+        "fused={fused}: the equivalence check must run on a non-empty batch"
+    );
+
+    // Namespaces with no entry in the projection are untouched (select-all).
+    for (ns, cols) in &full_cols {
+        if ns == "orders" {
+            continue;
+        }
+        assert_eq!(
+            proj_cols.get(ns),
+            Some(cols),
+            "fused={fused}: namespace {ns} has no projection entry and must be unchanged"
+        );
+    }
+
+    // The task bag (labels / weights / entity ids) rides the FULL seed rowpack
+    // and must never be narrowed.
+    assert_eq!(full.task.input_ids, projected.task.input_ids);
+    assert_eq!(full.task.seed_node_ids, projected.task.seed_node_ids);
+    assert_eq!(
+        full.task.target.is_some(),
+        projected.task.target.is_some(),
+        "fused={fused}: projection must not disturb task.target"
+    );
+}
+
+#[test]
+fn test_feature_projection_equivalence_non_fused() {
+    run_projection_equivalence();
+}
+
+/// PROJECTION PUSHDOWN IS NON-FUSED ONLY: fused dispatch must fetch every
+/// non-reserved column regardless of what projection it is handed. This calls
+/// `sample_runtime_batch` directly with `fused=true` AND a non-empty
+/// projection -- the pybind-level guard in `RuntimeBatchIterator::build`
+/// never runs on this path, so the engine itself must not silently narrow.
+#[test]
+fn test_feature_projection_fused_mode_ignores_projection() {
+    let tmp = tempdir().unwrap();
+    let parent_root =
+        ingest_parent_with_orders_and_one_tt(&tmp, "tt_proj", &(0..6).collect::<Vec<_>>()).unwrap();
+
+    let mut projection = std::collections::HashMap::new();
+    projection.insert("orders".to_string(), vec!["order_id".to_string()]);
+    let batch = run_projected_runtime_batch(&parent_root, /*fused=*/ true, projection);
+
+    let cols = int64_features_by_namespace(&batch);
+    let names: Vec<&str> = cols
+        .get("orders")
+        .expect("orders namespace")
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect();
+    assert!(
+        names.contains(&"order_id") && names.contains(&"user_id"),
+        "fused mode must ignore the projection and fetch every stored column; got {names:?}"
+    );
+}
+
+/// An unknown column name in the projection must degrade to select-all for that
+/// type rather than raising `unknown feature` — the task manifest and the
+/// snapshot can legitimately disagree across a refresh.
+#[test]
+fn test_feature_projection_ignores_unknown_columns() {
+    let tmp = tempdir().unwrap();
+    let parent_root =
+        ingest_parent_with_orders_and_one_tt(&tmp, "tt_proj", &(0..6).collect::<Vec<_>>()).unwrap();
+    let mut projection = std::collections::HashMap::new();
+    projection.insert(
+        "orders".to_string(),
+        vec!["order_id".to_string(), "column_that_does_not_exist".to_string()],
+    );
+    let batch = run_projected_runtime_batch(&parent_root, /*fused=*/ false, projection);
+    let cols = int64_features_by_namespace(&batch);
+    let names: Vec<&str> = cols
+        .get("orders")
+        .expect("orders namespace")
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect();
+    assert_eq!(names, vec!["order_id"], "unknown names must be dropped, known ones honored");
+}
+
+/// GUARD: the projection must ACTUALLY NARROW something.
+///
+/// Every other projection test asserts equivalence -- that projecting does not
+/// change retained values. Those all still pass if the projection silently
+/// degrades to a no-op, which is exactly what happens when a node-type key
+/// stops matching (a rename on either side of the key contract, a case-folding
+/// change in the catalog, a schema refresh that drops a column). The
+/// optimization would quietly stop working with a fully green build.
+///
+/// So assert the thing equivalence cannot: strictly fewer columns come back for
+/// at least one node type. This is the test that fails when the feature dies.
+#[test]
+fn test_feature_projection_actually_narrows() {
+    let fused = false; // projection pushdown is non-fused only.
+    let tmp = tempdir().unwrap();
+    let parent_root =
+        ingest_parent_with_orders_and_one_tt(&tmp, "tt_proj", &(0..6).collect::<Vec<_>>()).unwrap();
+
+    let full = run_projected_runtime_batch(&parent_root, fused, Default::default());
+    let mut projection = std::collections::HashMap::new();
+    projection.insert("orders".to_string(), vec!["order_id".to_string()]);
+    let projected = run_projected_runtime_batch(&parent_root, fused, projection);
+
+    let full_cols = int64_features_by_namespace(&full);
+    let proj_cols = int64_features_by_namespace(&projected);
+
+    let narrowed: Vec<(&String, usize, usize)> = full_cols
+        .iter()
+        .filter_map(|(ns, cols)| {
+            let after = proj_cols.get(ns)?.len();
+            (after < cols.len()).then_some((ns, cols.len(), after))
+        })
+        .collect();
+
+    assert!(
+        !narrowed.is_empty(),
+        "the projection narrowed NOTHING -- it silently degraded to select-all. \
+         Column counts per namespace: before={:?} after={:?}. Check that the \
+         projection keys still match the engine's node-type names.",
+        full_cols.iter().map(|(ns, c)| (ns, c.len())).collect::<Vec<_>>(),
+        proj_cols.iter().map(|(ns, c)| (ns, c.len())).collect::<Vec<_>>(),
+    );
+}
+
+/// `resolve_projection` must be tolerant of a key that binds to nothing (it
+/// falls back to select-all rather than erroring) -- but that fallback is
+/// invisible, which is why it is also logged. Pin the tolerance here; the log
+/// line is what makes it discoverable in production.
+#[test]
+fn test_resolve_projection_tolerates_unknown_node_type_key() {
+    let tmp = tempdir().unwrap();
+    let parent_root =
+        ingest_parent_with_orders_and_one_tt(&tmp, "tt_proj", &(0..6).collect::<Vec<_>>()).unwrap();
+
+    let baseline = run_projected_runtime_batch(&parent_root, false, Default::default());
+    let mut projection = std::collections::HashMap::new();
+    // Node type that does not exist in this graph at all.
+    projection.insert("ORDERS".to_string(), vec!["order_id".to_string()]);
+    let bogus = run_projected_runtime_batch(&parent_root, false, projection);
+
+    assert_eq!(
+        int64_features_by_namespace(&baseline),
+        int64_features_by_namespace(&bogus),
+        "a projection key matching no node type must fall back to select-all"
     );
 }

@@ -499,6 +499,81 @@ jobs:
           subprocess.run([str(ingest), '--help'], check=True)
           PY
 
+  pyarrow-range:
+    # DiskGraph accepts pyarrow>=16,<25 and every other job runs the locked
+    # version. Run the DiskGraph and kumo-core suites at both ends instead.
+    name: pyarrow-range (pyarrow${{ matrix.pyarrow }})
+    needs: [diskgraph-wheel]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+    env:
+      GITHUB_TOKEN: ''
+      GITHUB_REF: ${{ github.ref }}
+      GITHUB_API_URL: ${{ github.api_url }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+      GITHUB_RUN_ID: ${{ github.run_id }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pyarrow: ['==16.1.0', '<25']
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: '3.12'
+          activate-environment: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: diskgraph-wheel
+          path: dist
+      - name: Install the wheels with pyarrow${{ matrix.pyarrow }}
+        run: |
+          for package in kumo-api kumo-pql kumo-core; do
+            uv build --wheel --out-dir dist "packages/$package"
+          done
+          core=(dist/kumo_core-*.whl)
+          constraints="$RUNNER_TEMP/constraints.txt"
+          uv export --locked --no-emit-workspace --no-hashes --no-header \
+            --no-annotate --extra cpu | grep -v '^pyarrow==' > "$constraints"
+          uv pip install -c "$constraints" --torch-backend cpu dist/diskgraph-*.whl \
+            dist/kumo_api-*.whl dist/kumo_pql-*.whl "${core[0]}[test]" \
+            "pyarrow${{ matrix.pyarrow }}" "setuptools>=77" setuptools_scm
+          python -c 'import pyarrow; print(pyarrow.__version__)'
+      - name: Run the wheel's ingest for the tests' `cargo run`
+        run: |
+          shim="$RUNNER_TEMP/cargo-shim"
+          mkdir -p "$shim"
+          cat > "$shim/cargo" <<'SH'
+          #!/bin/bash
+          set -euo pipefail
+          if [ "${*:1:5}" != "run --release --bin ingest --" ]; then
+            echo "cargo shim: unexpected cargo $*" >&2
+            exit 1
+          fi
+          exec "$DISKGRAPH_INGEST" "${@:6}"
+          SH
+          chmod +x "$shim/cargo"
+          echo "$shim" >> "$GITHUB_PATH"
+          ingest=$(python -c 'import diskgraph, pathlib; print(pathlib.Path(diskgraph.__file__).parent / "bin" / "ingest")')
+          echo "DISKGRAPH_INGEST=$ingest" >> "$GITHUB_ENV"
+      - name: Test DiskGraph
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages/diskgraph/diskgraph-pybind/python/tests
+        run: |
+          cd "$RUNNER_TEMP"
+          python -m pytest --import-mode=importlib \
+            --confcutdir="$GITHUB_WORKSPACE/packages/diskgraph" \
+            -k 'not test_benchmark_uses_selected_graph' \
+            "$GITHUB_WORKSPACE/packages/diskgraph/diskgraph-pybind/python/tests" -q
+      - name: Test kumo-core
+        run: cd packages/kumo-core && python -m pytest -rs
+
   packages:
     # The suites under packages/ are the only thing enforcing the source-reader
     # package boundary (a reader package may not import the monolith, may not

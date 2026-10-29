@@ -58,8 +58,11 @@ def within_schema(name: str, schema: str) -> tuple[str, str]:
 
     The warehouse counterpart of :func:`kumo_core.sources.layout.within_root`:
     a connector reads from one catalog and schema, and writes to the same one,
-    so a destination naming another is refused rather than written.
+    so a destination naming another is refused rather than written. A bare
+    table name lands in the connector's schema, as a read of one does.
     """
+    if SEPARATOR not in name:
+        name = f"{schema}{SEPARATOR}{name}"
     schema_name, table_name = split_output_table(name)
     if not schema or schema_name.casefold() != schema.casefold():
         raise ArtifactValidationError(

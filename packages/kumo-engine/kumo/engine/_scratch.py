@@ -3,9 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Scratch-directory naming and configuration.
 
-There is no central registry of `Trainer`/`Graph` objects in this package
-(see "Local storage and results" in the package README), so scratch-directory
-names must be collision-free on their own:
+There is no central registry of `Trainer`/`Graph` objects in this package,
+so scratch-directory names must be collision-free on their own:
 
 * Each :class:`~kumo.engine.trainer.Trainer` gets a random UUID at construction,
   used as its scratch-dir prefix.

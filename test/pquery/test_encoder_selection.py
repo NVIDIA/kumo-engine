@@ -57,6 +57,51 @@ def _select_both(
     )
 
 
+def test_hosted_warnings_use_graph_table_names_in_override_keys(caplog):
+    stats = _hosted_stats({
+        ApiColStatType.NA_FRACTION: _EncoderStat(0.0, approx=True),
+        ApiColStatType.NUM_UNIQUE: _EncoderStat(8_000, approx=False),
+        ApiColStatType.STRING_GLOVE_OVERLAP: _EncoderStat(0.0, approx=True),
+        ApiColStatType.STRING_AVG_TOKENS: _EncoderStat(1.0, approx=True),
+        ApiColStatType.STRING_MAX_TOKENS: _EncoderStat(1.0, approx=True),
+        ApiColStatType.STRING_AVG_NON_CHAR: _EncoderStat(0.0, approx=True),
+    })
+    for table_name in ("users", "orders"):
+        table = Table(
+            table_name=table_name,
+            source_name="warehouse_source",
+            data_source="snapshot",
+            cols=[Column("category_01", dtype=Dtype.string, stype=Stype.text)],
+        )
+        table.infer_encoders(encoder_stats=SimpleNamespace(col_stats={
+            "category_01": {key: stat.config() for key, stat in stats.items()},
+        }))
+        assert table["category_01"].encoder.name == "Null"
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 2
+    for table_name, message in zip(("users", "orders"), messages):
+        assert f"Text column '{table_name}.category_01'" in message
+        assert (
+            f"encoder_overrides['{table_name}.category_01']" in message)
+        assert "warehouse_source" not in message
+
+
+@pytest.mark.parametrize("method,dtype,stype,missing_stat", [
+    ("get_numerical_encoder", Dtype.float, Stype.numerical, "MEAN"),
+    ("get_sequence_encoder", Dtype.floatlist, Stype.sequence,
+     "SEQUENCE_MIN_LENGTH"),
+])
+def test_direct_hosted_selectors_qualify_column_warnings(
+        method, dtype, stype, missing_stat, caplog):
+    column = Column("feature", dtype=dtype, stype=stype)
+    column.table_name = "users"
+
+    assert getattr(EncoderGenerator, method)(column, {}).name == "Null"
+    assert "users.feature" in caplog.text
+    assert missing_stat in caplog.text
+
+
 def test_real_entry_points_share_prepared_snapshot_selection(
         tmp_path, monkeypatch):
     stats = {
@@ -277,7 +322,7 @@ def test_hosted_and_shared_numerical_selection_handle_nonfinite_stats():
     assert hosted["name"] == "Numerical"
 
 
-def test_hosted_and_shared_selection_both_require_exact_category_stats():
+def test_hosted_and_shared_selection_warn_for_approximate_category_stats(caplog):
     stats = {
         ApiColStatType.NA_FRACTION:
         _EncoderStat(0.0, approx=True),
@@ -291,13 +336,12 @@ def test_hosted_and_shared_selection_both_require_exact_category_stats():
         _EncoderStat([["a", 60], ["b", 40]], approx=False),
     }
 
-    with pytest.raises(ValueError, match="must be exact"):
-        select_encoder("feature", Dtype.string, Stype.categorical, stats)
-    with pytest.raises(ValueError, match="must be exact"):
-        EncoderGenerator.get_encoder(
-            Column("feature", dtype=Dtype.string, stype=Stype.categorical),
-            _hosted_stats(stats),
-        )
+    shared, hosted = _select_both(dtype=Dtype.string, stype=Stype.categorical,
+                                  stats=stats)
+
+    assert shared["name"] == hosted["name"] == "Null"
+    assert len(caplog.records) == 2
+    assert "COUNT must be exact" in caplog.text
 
 
 def test_hosted_adapter_ignores_stats_outside_the_selector_contract():

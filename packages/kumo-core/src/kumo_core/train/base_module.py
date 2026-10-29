@@ -670,8 +670,12 @@ class BaseLightningModule(pl.LightningModule, ABC):
                 metric.__getitem__(key,
                                    False).target = [target_cat[sampled_idx]]
 
-            # Use GPU for fast computation
-            metric.to(self.device)
+            # Multilabel predictions/targets are accumulated on CPU above.
+            # Moving them back to MPS here would expose large curves to the
+            # MPSGraph padding bug again: compute_on_cpu moves list states
+            # after update(), not after an explicit to(device) before compute().
+            if self.device.type != 'mps':
+                metric.to(self.device)
 
         out_dict = metric.compute()
         metric.reset()

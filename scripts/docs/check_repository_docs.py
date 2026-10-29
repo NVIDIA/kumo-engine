@@ -5,7 +5,6 @@
 """Read-only local references and agent-interface checks; never fetch URLs.
 
 Discover repository Markdown through Git, including untracked, unignored files.
-Imported DiskGraph documentation link failures remain warnings.
 """
 import argparse
 import json
@@ -120,11 +119,7 @@ def check(root):
                 if unquote(parsed.fragment) not in anchors(dest.read_text()):
                     file_errors.append(f'{label}: missing heading/anchor')
 
-        if path.relative_to(root).parts[:2] == ('packages', 'diskgraph'):
-            for error in file_errors:
-                print(f'DiskGraph documentation: {error}')
-        else:
-            errors.extend(file_errors)
+        errors.extend(file_errors)
 
     expected_scopes = set(contract['instruction_scopes'])
     imported_scopes = set(contract.get('imported_instruction_scopes', []))
