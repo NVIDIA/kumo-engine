@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Small, batch-oriented temporal row query used by storage adapters.
 //!
 //! This is deliberately below task construction and model encoding.  A caller

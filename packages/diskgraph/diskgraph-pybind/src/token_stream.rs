@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Interleave encoded column buffers into bounded, per-sample token streams.
 //! Vocabulary fitting/column encoding remain caller policy. No Python row or
 //! token objects cross this interface; the full packing pass releases the GIL.
