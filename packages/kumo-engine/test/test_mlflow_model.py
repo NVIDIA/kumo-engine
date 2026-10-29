@@ -70,7 +70,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     assert result.registered_model == PublishedModel(
         name='m', version=str(version.version),
         uri=f'models:/m/{version.version}',
-        metadata={'kumo_bundle_id': result.id})
+        metadata={'kumo_bundle_id': result.id}, metrics=result.metrics)
     assert version.tags == {'kumo_bundle_id': result.id}
     assert trainer.result is result
 
