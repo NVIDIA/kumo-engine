@@ -6,10 +6,13 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from kumo_core.artifacts import bundle_id_from_manifest
+from kumo_core.summaries import Dataset, Tag
 
 import kumo.engine as kumo
+from kumo.engine._deps import Dependencies, FileAsset
 from kumo.engine._manifest import (
     Artifact,
+    Dependency,
     Manifest,
     ModelManifest,
     ModelParents,
@@ -18,6 +21,7 @@ from kumo.engine._manifest import (
     SnapshotParents,
     SourceTableEntry,
     TrainingTableManifest,
+    artifact_summaries,
     artifacts,
     read_manifest,
 )
@@ -36,6 +40,7 @@ class ReportManifest(Manifest):
     kind: str = 'report'
     parents: ReportParents
     pages: Optional[List[SnapshotManifest]] = None
+    dependencies: Optional[List[Dependency]] = None
 
     IS_DATASET = True
 
@@ -82,3 +87,44 @@ def test_each_store_records_its_location_and_keeps_the_ids(fitted, tmp_path):
                              ModelManifest).location == f'{root}/models/{ids[1]}'
         assert (snapshot.id, trainer.result.id,
                 bundle_id_from_manifest(bundle)) == ids
+
+
+def test_a_new_kind_and_asset_reach_tags_and_datasets(tmp_path):
+    settings = kumo.MLOps(str(tmp_path / 'root'))
+    (tmp_path / 'notes.txt').write_text('notes')
+    asset = FileAsset('dummy', 'notes', tmp_path / 'notes.txt')
+    dependency = Dependencies(settings=settings).require(asset)
+    root = f"{tmp_path / 'root'}"
+    orders = SourceTableEntry(connector='S3', location='s3://data/orders',
+                              version='7', version_kind='exact')
+    report = ReportManifest(
+        id='r', location=f'{root}/reports/r',
+        parents=ReportParents(
+            snapshot=SnapshotManifest(
+                id='g@d', location=f'{root}/snapshots/g/d',
+                parents=SnapshotParents(source_tables={'orders': orders})),
+            model=ModelManifest(id='m', location=f'{root}/models/m')),
+        dependencies=[dependency])
+
+    assert dependency.location == f'{root}/assets/dummy/{dependency.sha256}'
+    assert ReportManifest.from_dict(report.to_dict()) == report
+    assert artifact_summaries(report, 'training', settings, {
+        'orders': ({'ID': {'stype': 'ID', 'dtype': 'int64'}}, {'rows': 3})
+    }) == [
+        Tag('kumo.report_uri', f'{root}/reports/r'),
+        Tag('kumo.snapshot_uri', f'{root}/snapshots/g/d'),
+        Tag('kumo.bundle_uri', f'{root}/models/m'),
+        Tag('kumo.dummy_uri', dependency.location),
+        Tag('kumo.artifact_root', root),
+        Dataset('r', {'connector': 'LOCAL_FILE',
+                      'location': f'{root}/reports/r', 'version': 'r',
+                      'version_kind': 'exact'}, {}, {}, 'training'),
+        Dataset('g@d', {'connector': 'LOCAL_FILE',
+                        'location': f'{root}/snapshots/g/d',
+                        'version': 'g@d', 'version_kind': 'exact'}, {}, {},
+                'training'),
+        Dataset('orders', {'connector': 'S3', 'location': 's3://data/orders',
+                           'version': '7', 'version_kind': 'exact'},
+                {'ID': {'stype': 'ID', 'dtype': 'int64'}}, {'rows': 3},
+                'training'),
+    ]
