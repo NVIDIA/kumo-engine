@@ -73,6 +73,8 @@ class CallableTrainingOptions:
     refit_trainval: bool | None = None
     refit_full: bool | None = None
     warm_start_trainer_dir: str | None = None
+    binary_classification_threshold: float | None = None
+    target_edges: tuple[float, ...] = ()
 
 
 def _no_op() -> None:
@@ -112,6 +114,10 @@ class CallableTrainingResult:
     task: Any = field(repr=False, compare=False)
     auto_trainer: Any = field(repr=False, compare=False)
     best_trainer: Any = field(repr=False, compare=False)
+    # Exact counts of the test split's scores: the fit-mode model's, and the
+    # published (most-data) model's.
+    test_counts: Any = field(default=None, repr=False, compare=False)
+    published_counts: Any = field(default=None, repr=False, compare=False)
 
     def to_stage_output(self) -> dict[str, Any]:
         """Return the JSON-safe shape consumed by ``StageRunner``/MLflow."""
@@ -358,7 +364,11 @@ def run_callable_training(
 
     bindings.before_evaluate()
     with bindings.instrumentation.timing("kumo_auto.best_trainer_test_fit"):
-        evaluation = best_trainer.test(fit_mode_to_use=FitMode.fit)
+        evaluation = best_trainer.test(
+            fit_mode_to_use=FitMode.fit,
+            binary_classification_threshold=(
+                options.binary_classification_threshold),
+            target_edges=options.target_edges)
     with bindings.instrumentation.timing("kumo_auto.save_test_outputs_fit"):
         evaluation.save_all(
             root_dir=best_trainer.log_dir,
@@ -371,11 +381,15 @@ def run_callable_training(
     metrics.update(_training_metrics(best_trainer))
 
     refitted_trainval = bool(best_trainer.refit_cfg.refitted_trainval)
+    published = evaluation
     if refitted_trainval:
         with bindings.instrumentation.timing(
                 "kumo_auto.best_trainer_test_refit_trainval"):
             refit_evaluation = best_trainer.test(
-                fit_mode_to_use=FitMode.refit_trainval)
+                fit_mode_to_use=FitMode.refit_trainval,
+                binary_classification_threshold=(
+                    options.binary_classification_threshold),
+                target_edges=options.target_edges)
         with bindings.instrumentation.timing(
                 "kumo_auto.save_test_outputs_refit_trainval"):
             refit_evaluation.save_all(
@@ -384,6 +398,7 @@ def run_callable_training(
                 task=task,
             )
         metrics.update(_refit_metrics(refit_evaluation))
+        published = refit_evaluation
 
     analysis_path = posixpath.join(str(auto_trainer.log_dir), "analyze")
     if options.analyze:
@@ -417,6 +432,8 @@ def run_callable_training(
         task=task,
         auto_trainer=auto_trainer,
         best_trainer=best_trainer,
+        test_counts=getattr(evaluation, 'counts', None),
+        published_counts=getattr(published, 'counts', None),
     )
 
 

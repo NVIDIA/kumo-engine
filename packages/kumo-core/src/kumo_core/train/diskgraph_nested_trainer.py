@@ -14,7 +14,7 @@ import json
 import logging
 import os.path as osp
 from collections.abc import Iterator
-from typing import Any, ContextManager, Mapping
+from typing import Any, ContextManager, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -1177,9 +1177,12 @@ class DiskgraphNestedTrainer(Trainer):
         self,
         stage: Any,
         return_embeddings: bool = False,
+        binary_classification_threshold: float | None = None,
+        target_edges: Sequence[float] = (),
     ) -> Any:
         """Run PL validate/test, then build the formatted EvalOutput
-        (``_build_eval_df`` reconstructs the per-row df from ``pl_model.outputs``).
+        (``_build_eval_df`` reconstructs the per-row df from ``pl_model.outputs``)
+        and, for the test split, its counts (`Trainer.test`).
         """
         from kumo_core.train.output import EvalOutput
         from kumoapi.train import TrainingStage
@@ -1244,7 +1247,12 @@ class DiskgraphNestedTrainer(Trainer):
             return EvalOutput(metrics, None, None)
 
         df = self._build_eval_df(outputs)
-        return EvalOutput(metrics, df, None)
+        counts = None
+        if stage == TrainingStage.TEST and df is not None:
+            counts = self._test_counts(outputs, df,
+                                       binary_classification_threshold,
+                                       target_edges)
+        return EvalOutput(metrics, df, None, counts)
 
     def _build_eval_df(self, outputs: Any) -> pd.DataFrame | None:
         from kumo_core.train.formatting import format_prediction
