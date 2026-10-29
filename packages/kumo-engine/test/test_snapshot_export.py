@@ -787,3 +787,10 @@ def test_a_mlops_block_stores_each_snapshot_once(tmp_path, scratch, graph,
     graph.snapshot(mlops=kumo.MLOps(artifact_root=str(tmp_path / 'off'),
                                     store={'model'}))
     assert not (tmp_path / 'off').exists()
+
+
+def test_loading_a_missing_export_names_its_full_path(tmp_path, exports):
+    missing = tmp_path / 'exports' / 'snapshots' / 'graph' / 'version'
+    with pytest.raises(FileNotFoundError,
+                       match=f'No complete snapshot export at {missing}: '):
+        _load(exports, 'snapshots/graph/version')

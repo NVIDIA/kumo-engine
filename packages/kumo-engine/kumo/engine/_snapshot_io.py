@@ -372,8 +372,10 @@ def read(connector: Any, path: str) -> Tuple[str, dict]:
     except ValueError as error:
         raise _corrupt(path, f'unreadable {_MANIFEST}: {error}') from error
     if manifest is None:
-        raise FileNotFoundError(f'No complete snapshot export at {path}; '
-                                're-run export.')
+        raise FileNotFoundError(
+            f'No complete snapshot export at {root}: it has no {_MANIFEST}. '
+            f'Check the path, or export the snapshot there with '
+            f'GraphSnapshot.export.')
     if not isinstance(manifest, dict):
         raise _corrupt(path, 'manifest is not a JSON object')
     if manifest.get('format') != _FORMAT:
