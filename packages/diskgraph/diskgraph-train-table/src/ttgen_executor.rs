@@ -1066,7 +1066,9 @@ where
     let (total_rows, mut stats, per_anchor_parts) = pass_outputs?;
     let row_failures: Option<RowFailuresReport> = custom_tt_source_ref.map(|source| {
         let report = stats.take_source_rows().failures.report(source.on_error);
-        report.warn_if_any(total_rows);
+        if !plan.is_prediction {
+            report.warn_if_any(total_rows);
+        }
         report
     });
     // Node-task categorical targets require exact CATEGORY_COUNTS for encoder
