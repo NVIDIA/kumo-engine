@@ -76,7 +76,7 @@ def test_a_root_is_a_uri_or_a_connector_and_path(tmp_path):
     assert pair.wants('model') and not pair.wants('snapshot')
     assert not kumo.MLOps(artifact_root=str(tmp_path), store=False).kinds
     assert uri.snapshot_uri('ab12@cd34') == f'{tmp_path}/snapshots/ab12/cd34'
-    assert kumo.MLOps('s3://bucket/kumo').snapshot_uri(
+    assert kumo.MLOps('s3://bucket/kumo', store=False).snapshot_uri(
         SimpleNamespace(id='ab12@cd34')) == 's3://bucket/kumo/snapshots/ab12/cd34'
 
 
