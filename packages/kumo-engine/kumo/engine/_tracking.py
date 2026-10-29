@@ -11,6 +11,7 @@ import queue
 import threading
 import time
 import warnings
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -364,6 +365,19 @@ def _prediction_summaries(manifest: 'PredictionManifest',
                  for summary in (*scalars, *counted)}.values())
 
 
+@contextmanager
+def system_metrics(tracking: Any) -> Iterator[None]:
+    r"""Has ``tracking`` sample system metrics during the block, through its
+    optional ``sample_system_metrics()`` context, for the prediction or
+    monitoring run it logs next."""
+    sample = getattr(tracking, 'sample_system_metrics', None)
+    if sample is None or _rank() != 0:
+        yield
+        return
+    with sample():
+        yield
+
+
 def record_failure(record: RunRecord) -> Optional[Exception]:
     r"""The error a run record says ended its run (its ``kumo.error``)."""
     error = record.tags.get('kumo.error')
@@ -419,7 +433,8 @@ class Tracking(Protocol):
     ``platform``, ``run_id`` and ``run_url``, the tracker's own run once
     `start` returned, recorded as the model manifest's ``tracking``; and
     the best-effort hooks ``log_prediction_run(record)`` and
-    ``log_monitoring(record)``.
+    ``log_monitoring(record)``, whose system metrics a
+    ``sample_system_metrics()`` context samples while the run works.
     """
     def start(self, record: RunRecord) -> None:
         ...

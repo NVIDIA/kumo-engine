@@ -99,6 +99,7 @@ from kumo.engine._tracking import (
     TrackingSession,
     fit_inputs,
     logged_names,
+    system_metrics,
 )
 from kumo.engine.connector import model_sink
 from kumo.engine.connector.base import Connector
@@ -1468,12 +1469,14 @@ class Trainer:
                      snapshot, entities, prediction_time, strict=(
                          settings is not None
                          and settings.on_error == 'raise')))
-        return self._predict(
-            table, snapshot=snapshot, output_config=output_config,
-            num_classes_to_return=num_classes_to_return,
-            num_workers=num_workers,
-            binary_classification_threshold=binary_classification_threshold,
-            settings=settings)
+        with system_metrics(None if settings is None else settings.tracking):
+            return self._predict(
+                table, snapshot=snapshot, output_config=output_config,
+                num_classes_to_return=num_classes_to_return,
+                num_workers=num_workers,
+                binary_classification_threshold=(
+                    binary_classification_threshold),
+                settings=settings)
 
     def _prediction_table(self, snapshot: GraphSnapshot,
                           entities: Optional[SourceTable],
