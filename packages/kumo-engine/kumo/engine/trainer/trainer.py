@@ -35,6 +35,7 @@ import pandas as pd
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.embedding_models import EmbeddingModelStore
 from kumo_core.evaluation_counts import (
+    at_k_summaries,
     baseline,
     class_names,
     evaluation_summaries,
@@ -1256,10 +1257,11 @@ class Trainer:
             bundle_dir=run_dir / 'published-model',
             holdout_path=holdout_path,
             holdout_truncated=holdout_truncated,
-            _summaries=() if result.test_counts is None else tuple(
-                evaluation_summaries(
-                    task_type, result.test_counts, threshold,
-                    class_names(result.best_trainer.target_encoder))),
+            _summaries=(*(() if result.test_counts is None else
+                          evaluation_summaries(
+                              task_type, result.test_counts, threshold,
+                              class_names(result.best_trainer.target_encoder))),
+                        *at_k_summaries(result.metrics)),
         )
         holdout_counts = None if result.published_counts is None else (
             baseline(result.published_counts).to_dict())

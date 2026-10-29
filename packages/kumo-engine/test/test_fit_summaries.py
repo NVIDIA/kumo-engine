@@ -104,3 +104,15 @@ def test_multiclass_test_summaries_count_every_holdout_row(graph):
         (top['CLASS'] == top['TARGET']).mean())
     assert sum(map(sum, summaries['test/confusion'].counts)) == len(top)
     assert set(summaries['test/confusion'].labels) <= {'a', 'b', 'c'}
+
+
+def test_forecast_test_summaries_are_exact_per_horizon(graph):
+    _, summaries, holdout = _fit(
+        graph, 'PREDICT SUM(events.V, 0, 7, days) FORECAST 3 TIMEFRAMES '
+        'FOR EACH ents.ID')
+
+    horizon = holdout.groupby(['ENTITY', 'ANCHOR_TIMESTAMP'])[
+        'TIMESTAMP'].rank(method='first').astype(int)
+    error = (holdout['TARGET_PRED'] - holdout['TARGET']).abs()
+    assert dict(summaries['test/horizon/mae'].points) == pytest.approx(
+        error.groupby(horizon).mean().to_dict())

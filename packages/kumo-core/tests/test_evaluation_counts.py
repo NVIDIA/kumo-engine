@@ -3,9 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 import numpy as np
 import pytest
-from kumo_core.evaluation_counts import evaluation_counts, evaluation_summaries
+from kumo_core.evaluation_counts import (
+    at_k_summaries,
+    evaluation_counts,
+    evaluation_summaries,
+)
 from kumo_core.score_counts import PROBABILITY_EDGES, merged
-from kumo_core.summaries import Confusion, Curve, Histogram, Scalar
+from kumo_core.summaries import Confusion, Curve, Histogram, Scalar, Series
 from kumo_core.types import TaskType
 
 
@@ -158,3 +162,56 @@ def test_regression_summaries_match_brute_force():
     bins = np.array([_bin(v, edges) for v in pred])
     for bin, actual in _points(calibration, 'y').items():
         assert actual == pytest.approx(target[bins == bin].mean())
+
+
+def test_multilabel_summaries_match_brute_force():
+    rng = np.random.default_rng(3)
+    prob = rng.random((800, 6))
+    target = rng.random((800, 6)) < prob
+    pred = prob > 0.5
+
+    summaries = _summaries(TaskType.MULTILABEL_CLASSIFICATION, prob=prob,
+                           pred=pred.astype(int), target=target.astype(float),
+                           classes=list('abcdef'))
+
+    tp, fp, fn = ((pred & target).sum(), (pred & ~target).sum(),
+                  (~pred & target).sum())
+    assert summaries['test/f1_micro'].value == pytest.approx(
+        2 * tp / (2 * tp + fp + fn))
+    for i, label in enumerate('abcdef'):
+        hit = (pred[:, i] & target[:, i]).sum()
+        assert summaries[f'test/label/{label}/precision'].value == \
+            pytest.approx(hit / pred[:, i].sum())
+    roc = summaries['test/roc']
+    for step, t in enumerate(PROBABILITY_EDGES):
+        assert dict(roc.y.points)[step] == pytest.approx(
+            np.mean(prob[target] >= t))
+    assert dict(summaries['test/labels_per_entity'].points) == {
+        n: count for n, count in enumerate(np.bincount(target.sum(1)))
+        if count}
+
+
+def test_forecasting_summaries_are_per_horizon():
+    rng = np.random.default_rng(4)
+    horizon = np.tile(np.arange(3), 500)
+    target = rng.normal(size=horizon.size)
+    pred = target + rng.normal(0, 0.1 * (horizon + 1))
+    edges = tuple(np.linspace(-3, 3, 7).tolist())
+
+    summaries = _summaries(TaskType.FORECASTING, pred=pred, target=target,
+                           horizon=horizon, target_edges=edges)
+
+    for h in range(3):
+        rows = horizon == h
+        assert dict(summaries['test/horizon/mae'].points)[h + 1] == \
+            pytest.approx(np.abs(pred[rows] - target[rows]).mean())
+        assert sum(summaries[f'test/TARGET_PRED/h{h + 1}/hist'].counts) == \
+            rows.sum()
+    assert summaries['test/mae'].value == pytest.approx(
+        np.abs(pred - target).mean())
+
+
+def test_ranking_metrics_become_at_k_series():
+    assert at_k_summaries({'test_map@10': 0.2, 'test_map@1': 0.5,
+                           'test_loss': 1.0, 'val_map@10': 0.3}) == [
+        Series('test/map_at_k', ((1, 0.5), (10, 0.2)), 'k')]

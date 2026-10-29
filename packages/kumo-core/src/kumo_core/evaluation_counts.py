@@ -5,13 +5,14 @@ r"""Exact test-split counts per task type (`evaluation_counts`), and the
 ``test/`` summaries derived from them (`evaluation_summaries`).
 
 The counts take the test loop's calibrated scores of every evaluated row.
-Binary and multiclass scores fall in probability hundredths; a regression
-target in the training split's bins. `baseline` keeps the counts a
-prediction run's scores are compared with.
+Binary, multiclass and multilabel scores fall in probability hundredths; a
+regression or forecasting target in the training split's bins, a forecast
+also per horizon. `baseline` keeps the counts a prediction run's scores are
+compared with; `at_k_summaries` turns ranking metrics into ``@k`` series.
 """
 
 import re
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
@@ -22,6 +23,7 @@ _EPS = 1e-15
 _TOP_K = 5
 _TOP_CLASSES = 20
 _RESIDUAL_BINS = 40
+_HORIZONS = 12
 #: The arrays a prediction run's score distribution is compared with.
 BASELINE = ('True_PROB', 'False_PROB', 'confidence', 'classes', 'TARGET_PRED')
 
@@ -29,10 +31,12 @@ BASELINE = ('True_PROB', 'False_PROB', 'confidence', 'classes', 'TARGET_PRED')
 def evaluation_counts(task_type: TaskType, *, target: Any,
                       prob: Any = None, pred: Any = None,
                       threshold: Optional[float] = None,
-                      target_edges: Sequence[float] = ()) -> Optional[Counts]:
+                      target_edges: Sequence[float] = (),
+                      horizon: Any = None) -> Optional[Counts]:
     r"""The counts of one test split; ``None`` for task types without
     them. ``threshold`` labels a binary prediction positive when its
-    ``True_PROB`` is above it, as ``TARGET_PRED`` does."""
+    ``True_PROB`` is above it, as ``TARGET_PRED`` does; ``horizon`` is each
+    forecast row's step ahead, from 0."""
     if task_type is TaskType.BINARY_CLASSIFICATION:
         prob = np.asarray(prob, dtype=np.float64)
         return _binary(prob[:, -1] if prob.ndim == 2 else prob,
@@ -40,10 +44,16 @@ def evaluation_counts(task_type: TaskType, *, target: Any,
     if task_type is TaskType.MULTICLASS_CLASSIFICATION:
         return _multiclass(np.asarray(prob, dtype=np.float64),
                            np.asarray(target, dtype=np.int64).reshape(-1))
-    if task_type is TaskType.REGRESSION:
-        return _regression(np.asarray(pred, dtype=np.float64).reshape(-1),
-                           np.asarray(target, dtype=np.float64).reshape(-1),
-                           tuple(target_edges))
+    if task_type is TaskType.MULTILABEL_CLASSIFICATION:
+        return _multilabel(np.asarray(prob, dtype=np.float64),
+                           np.asarray(pred).astype(bool),
+                           np.asarray(target).astype(bool))
+    if task_type in (TaskType.REGRESSION, TaskType.FORECASTING):
+        values = (np.asarray(pred, dtype=np.float64).reshape(-1),
+                  np.asarray(target, dtype=np.float64).reshape(-1),
+                  tuple(target_edges))
+        return (_regression(*values) if horizon is None else
+                _forecasting(*values, np.asarray(horizon, dtype=np.int64)))
     return None
 
 
@@ -62,9 +72,26 @@ def evaluation_summaries(task_type: TaskType, counts: Counts,
         return _binary_summaries(counts, threshold)
     if task_type is TaskType.MULTICLASS_CLASSIFICATION:
         return _multiclass_summaries(counts, classes)
+    if task_type is TaskType.MULTILABEL_CLASSIFICATION:
+        return _multilabel_summaries(counts, classes)
     if task_type is TaskType.REGRESSION:
         return _regression_summaries(counts)
+    if task_type is TaskType.FORECASTING:
+        return [*_regression_summaries(counts), *_horizon_summaries(counts)]
     return []
+
+
+def at_k_summaries(metrics: Mapping[str, float]) -> List[Summary]:
+    r"""``test_map@1``, ``test_map@10``... as the series ``test/map_at_k``
+    with step k."""
+    series: Dict[str, List[Tuple[int, float]]] = {}
+    for name, value in metrics.items():
+        match = re.fullmatch(r'test_(\w+)@(\d+)', name)
+        if match:
+            series.setdefault(match.group(1), []).append(
+                (int(match.group(2)), float(value)))
+    return [Series(f'test/{metric}_at_k', tuple(sorted(points)), 'k')
+            for metric, points in sorted(series.items())]
 
 
 def _binary(p: np.ndarray, y: np.ndarray,
@@ -253,6 +280,103 @@ def _regression_summaries(counts: Counts) -> List[Summary]:
                arrays['target_sum'] / np.maximum(arrays['TARGET_PRED'], 1),
                x_label='prediction bin'),
     ]
+
+
+def _multilabel(prob: np.ndarray, pred: np.ndarray,
+                target: np.ndarray) -> Counts:
+    size = prob.shape[1]
+    counts = Counts({'score': PROBABILITY_EDGES})
+    for name, rows in (('tp', pred & target), ('fp', pred & ~target),
+                       ('fn', ~pred & target), ('support', target)):
+        counts.tally(name, np.nonzero(rows)[1], size)
+    counts.tally('labels', target.sum(axis=1), size + 1)
+    counts.tally('predicted_labels', pred.sum(axis=1), size + 1)
+    counts.histogram('positive', 'score', prob[target])
+    counts.histogram('negative', 'score', prob[~target])
+    counts.total('rows', target.shape[0])
+    return counts
+
+
+def _multilabel_summaries(counts: Counts,
+                          classes: Sequence[Any]) -> List[Summary]:
+    arrays = counts.arrays
+    tp, fp, fn = (arrays[name].astype(np.float64) for name in ('tp', 'fp', 'fn'))
+    names = [str(name) for name in classes] or [str(i) for i in range(tp.size)]
+    precision = tp / np.maximum(tp + fp, 1)
+    recall = tp / np.maximum(tp + fn, 1)
+    f1 = 2 * tp / np.maximum(2 * tp + fp + fn, 1)
+    seen = (tp + fp + fn) > 0
+    top = np.argsort(-arrays['support'], kind='stable')[:_TOP_CLASSES]
+    tp_all, fp_all, fn_all = tp.sum(), fp.sum(), fn.sum()
+    positives = _above(arrays['positive'])
+    negatives = _above(arrays['negative'])
+    return [
+        Scalar('test/f1_micro', _ratio(2 * tp_all, 2 * tp_all + fp_all + fn_all)),
+        Scalar('test/precision_micro', _ratio(tp_all, tp_all + fp_all)),
+        Scalar('test/recall_micro', _ratio(tp_all, tp_all + fn_all)),
+        Scalar('test/f1_macro', float(f1[seen].mean()) if seen.any() else 0.0),
+        *(Scalar(f'test/label/{_metric_part(names[i])}/{name}',
+                 float(values[i]))
+          for i in top
+          for name, values in (('precision', precision), ('recall', recall),
+                               ('f1', f1))),
+        _curve('test/roc', 'fpr', 'tpr', range(len(PROBABILITY_EDGES)),
+               negatives / max(float(arrays['negative'].sum()), 1.0),
+               positives / max(float(arrays['positive'].sum()), 1.0)),
+        *(Series(f'test/{name}_per_entity',
+                 tuple((n, float(count))
+                       for n, count in enumerate(arrays[name]) if count),
+                 'labels')
+          for name in ('labels', 'predicted_labels')),
+    ]
+
+
+def _forecasting(pred: np.ndarray, target: np.ndarray,
+                 edges: Tuple[float, ...], horizon: np.ndarray) -> Counts:
+    counts = _regression(pred, target, edges)
+    size = int(horizon.max()) + 1 if horizon.size else 1
+    counts.edges['horizon'] = tuple(float(h) for h in range(1, size))
+    error = pred - target
+    counts.histogram('horizon_rows', 'horizon', horizon)
+    for name, values in (('horizon_abs_error', np.abs(error)),
+                         ('horizon_squared_error', error**2),
+                         ('horizon_error', error),
+                         ('horizon_target', target),
+                         ('horizon_target_squared', target**2)):
+        counts.histogram(name, 'horizon', horizon, weights=values)
+    for h in _horizons(size):
+        counts.histogram(f'TARGET_PRED_h{h + 1}', 'target', pred[horizon == h])
+    return counts
+
+
+def _horizon_summaries(counts: Counts) -> List[Summary]:
+    arrays = counts.arrays
+    rows = np.maximum(arrays['horizon_rows'], 1)
+    spread = (arrays['horizon_target_squared'] -
+              arrays['horizon_target']**2 / rows)
+    r2 = np.where(spread > 0,
+                  1 - arrays['horizon_squared_error'] / np.maximum(spread,
+                                                                   _EPS), 0.0)
+    steps = [h for h, count in enumerate(arrays['horizon_rows']) if count]
+    return [
+        *(Series(f'test/horizon/{name}',
+                 tuple((h + 1, float(values[h])) for h in steps), 'horizon')
+          for name, values in (
+              ('mae', arrays['horizon_abs_error'] / rows),
+              ('rmse', np.sqrt(arrays['horizon_squared_error'] / rows)),
+              ('bias', arrays['horizon_error'] / rows),
+              ('r2', r2))),
+        *(counts.summary(name, 'target',
+                         f"test/TARGET_PRED/{name.rsplit('_', 1)[1]}/hist")
+          for name in sorted(arrays) if name.startswith('TARGET_PRED_h')),
+    ]
+
+
+def _horizons(size: int) -> List[int]:
+    if size <= _HORIZONS:
+        return list(range(size))
+    return sorted({int(h) for h in np.linspace(0, size - 1, _HORIZONS)
+                   .round()})
 
 
 def _above(counts: np.ndarray) -> np.ndarray:
