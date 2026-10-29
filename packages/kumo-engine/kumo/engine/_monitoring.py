@@ -677,6 +677,8 @@ def _features(trainer: Any, sides: Mapping[str, Mapping[str, Any]],
 
 def _parent_snapshot_id(manifest: Any) -> Optional[str]:
     parents = getattr(manifest, 'parents', None)
+    if getattr(parents, 'derived_from', None) is not None:
+        return _parent_snapshot_id(parents.derived_from)
     table = getattr(parents, 'training_table', None)
     snapshot = getattr(getattr(table, 'parents', None), 'snapshot', None)
     if snapshot is None:
@@ -685,6 +687,7 @@ def _parent_snapshot_id(manifest: Any) -> Optional[str]:
 
 
 _ARGUMENTS = {'training': 'training_snapshot', 'scoring': 'snapshot'}
+_NAMED_BY = {'training': "the model's manifest", 'scoring': "the run's manifest"}
 
 
 def _snapshot_stats(trainer: Any, run: Any, snapshot: Any,
@@ -699,10 +702,12 @@ def _snapshot_stats(trainer: Any, run: Any, snapshot: Any,
         ('training', training_snapshot, model),
         ('scoring', snapshot, getattr(run, 'manifest', None)),
     ):
-        read = _reader(passed, _parent_snapshot_id(manifest), root)
+        snapshot_id = _parent_snapshot_id(manifest)
+        read = _reader(passed, snapshot_id, root)
         ingest = read('ingest_stats.json')
         stats = ingest.get('stats') if isinstance(ingest, dict) else None
         sides[side] = {
+            'named': passed is not None or snapshot_id is not None,
             'col_stats': read('col_stats.json'),
             'counts': {
                 'rows': dict(stats.get('source_rows_by_table', {})),
@@ -751,6 +756,11 @@ def _missing(what: str, sides: Mapping[str, Mapping[str, Any]],
     passes = ', '.join(
         f'{_ARGUMENTS[side]}=GraphSnapshot.load_from_connector(store, '
         f'path=...)' for side in missing)
+    unnamed = [_NAMED_BY[side] for side in missing if not sides[side]['named']]
+    if unnamed:
+        return (f"no {what} for the {' and '.join(missing)} snapshot: "
+                f"{' and '.join(unnamed)} name{'s' * (len(unnamed) == 1)} "
+                f"no snapshot; pass {passes}")
     return (f"no {what} for the {' and '.join(missing)} snapshot: pass "
             f"{passes}, or turn MLOps on with the artifact root that stores "
             f"{'them' if len(missing) > 1 else 'it'}")
