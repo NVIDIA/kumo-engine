@@ -5,18 +5,25 @@
 import logging
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Collection, Dict, Iterator, List, Optional
 
 from kumo_core import embedding_models
 from kumo_core.embedding_models import EmbeddingModelStore
 
 
 @contextmanager
-def no_encoder_inference_warnings() -> Iterator[None]:
+def no_encoder_inference_warnings(
+        overridden: Optional[Collection[str]] = None) -> Iterator[None]:
     # Only fit reports what inference chose: training tables do not use it,
-    # and a trained model encodes columns as it was trained to.
+    # and a trained model encodes columns as it was trained to. Given the
+    # columns whose encoders the model plan overrides, fit stays silent on
+    # those alone.
     def drop(record: logging.LogRecord) -> bool:
-        return record.levelno < logging.WARNING
+        if overridden is None:
+            return record.levelno < logging.WARNING
+        return (record.levelno < logging.WARNING
+                or not isinstance(record.args, tuple) or not record.args
+                or record.args[0] not in overridden)
 
     inference = logging.getLogger('kumo_core.encoder_selection')
     inference.addFilter(drop)
