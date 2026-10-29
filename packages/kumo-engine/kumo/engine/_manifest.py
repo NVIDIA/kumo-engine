@@ -18,6 +18,7 @@ from typing import (
     List,
     Mapping,
     Optional,
+    Tuple,
     Type,
     TypeVar,
     Union,
@@ -27,6 +28,7 @@ from typing import (
 )
 
 from kumo_core.io.filesystem import atomic_write_bytes
+from kumo_core.summaries import Dataset, Summary, Tag
 
 SCHEMA_VERSION = 1
 _OMIT_NONE = 'omit_none'
@@ -212,6 +214,48 @@ def _walk(value: Any, key: str, root: Manifest) -> Iterator[Artifact]:
     elif isinstance(value, (list, tuple)):
         for item in value:
             yield from _walk(item, key, root)
+
+
+#: Connector kinds of the artifact root's URI schemes.
+_SCHEMES = {'s3': 'S3', 'gs': 'GCS', 'file': 'LOCAL_FILE', '': 'LOCAL_FILE'}
+
+Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
+
+
+def artifact_summaries(manifest: Manifest, context: str,
+                       settings: Any = None,
+                       details: Optional[Details] = None) -> List[Summary]:
+    r"""Where ``manifest``'s artifacts are, for its tracked run: each
+    artifact's tag (the nearest of each), ``kumo.artifact_root`` under MLOps
+    ``settings``, and a `Dataset` per stored dataset, read in ``context``
+    or written, with the schema and profile ``details`` gives its id."""
+    located = [item for item in artifacts(manifest) if item.location]
+    tags: Dict[str, str] = {}
+    for item in located:
+        if item.tag:
+            tags.setdefault(item.tag, str(item.location))
+    if settings is not None:
+        tags['kumo.artifact_root'] = settings.root.uri('').rstrip('/')
+    summaries: List[Summary] = [Tag(name, value)
+                                for name, value in tags.items()]
+    for item in located:
+        if not item.is_dataset:
+            continue
+        location = str(item.location)
+        source = {'connector': item.connector or _connector(location),
+                  'location': location, 'version': item.version,
+                  'version_kind': item.version_kind}
+        schema, profile = (details or {}).get(item.id, ({}, {}))
+        summaries.append(Dataset(item.id, source, schema, profile,
+                                 item.context or context))
+    return summaries
+
+
+def _connector(location: str) -> Optional[str]:
+    from urllib.parse import urlparse
+
+    return None if location.startswith('@') else _SCHEMES.get(
+        urlparse(location).scheme)
 
 
 def stamp() -> Dict[str, Any]:
