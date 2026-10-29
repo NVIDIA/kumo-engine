@@ -303,6 +303,8 @@ CREATE MODEL MONITOR churn_monitor WITH MODEL=churn_gnn VERSION=<version> FUNCTI
   PREDICTION_SCORE_COLUMNS=('True_PROB') ACTUAL_CLASS_COLUMNS=('TARGET');
 ```
 
+Snowflake allows one model monitor per model version: drop the old monitor (`DROP MODEL MONITOR churn_monitor`) before creating another on that version.
+
 Details per task type: [Warehouse monitor columns](#warehouse-monitor-columns).
 
 ## Credentials and running off-platform
