@@ -13,7 +13,7 @@ _STYLE = Template(r"""
 .kumo-graph:fullscreen{width:100%;height:100%;max-height:none}
 .kumo-graph-toolbar{display:grid;
 grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
-.kumo-graph-layout{display:flex;grid-column:2;justify-self:center;
+.kumo-graph-layout{display:flex;grid-column:2;grid-row:1;justify-self:center;
 border-radius:18px;background:$background;padding:2px;color:$chrome_foreground;
 font:13px $font}
 .kumo-graph-layout label{position:relative;cursor:pointer}
@@ -22,14 +22,15 @@ font:13px $font}
 padding:0 12px;border-radius:16px}
 .kumo-graph-layout input:checked+span{background:$chrome_hover;color:$foreground}
 .kumo-graph-actions{display:flex;align-items:center;gap:6px;
-grid-column:3;justify-self:end}
+grid-column:1;grid-row:1;justify-self:start}
 .kumo-graph-zoom{display:flex;align-items:center;gap:0;flex:none;
 background:$background;border-radius:18px}
 .kumo-graph-layout,.kumo-graph-zoom,.kumo-graph-actions>button{
 box-shadow:$chrome_shadow}
-@container kumo-graph (max-width:560px){
-.kumo-graph-toolbar{grid-template-columns:minmax(0,1fr)}
-.kumo-graph-layout,.kumo-graph-actions{grid-column:1}}
+@container kumo-graph (max-width:900px){
+.kumo-graph-toolbar{grid-template-columns:minmax(0,1fr);row-gap:12px}
+.kumo-graph-layout{grid-column:1;grid-row:2}}
+@container kumo-graph (max-width:340px){.kumo-graph-actions{gap:4px}}
 .kumo-graph-layout input:focus-visible+span{
 outline:2px solid $focus;outline-offset:2px}
 .kumo-graph-scale{min-width:44px;text-align:center;color:#666;
@@ -109,11 +110,15 @@ const tip=document.createElement('div');
 tip.className='kumo-graph-tooltip';tip.role='tooltip';
 tip.id='kumo-tip-'+Math.random().toString(36).slice(2);host.append(tip);
 let active=null, card=null, timer, placement=null, hoverLock=null, pointer=null;
+let panTimer=null,panFrame=0,dwellPoint=null;
+const HOVER_DWELL=350,PAN_DURATION=250;
 const firstCard=svg.querySelector(':scope>[data-kumo-card]');
 const element=(cls,text)=>{const n=document.createElement('div');
 n.className='kumo-tip-'+cls;n.textContent=text;return n};
 const cancelHide=()=>{clearTimeout(timer);timer=null};
-const hide=()=>{cancelHide();tip.removeAttribute('data-open');
+const cancelPan=()=>{clearTimeout(panTimer);panTimer=null;
+cancelAnimationFrame(panFrame);panFrame=0};
+const hide=()=>{cancelHide();cancelPan();tip.removeAttribute('data-open');
 placement=hoverLock=null;
 if(host.classList.contains('kumo-links-focused'))
 edges.forEach(edge=>svg.insertBefore(edge.parentElement,firstCard));
@@ -231,68 +236,53 @@ if(spans)spans.push([Math.min(a,z)-2,Math.max(a,z)+2])}};
 for(const curve of cached.curves)visit(curve.map(([x,y])=>({
 x:matrix.a*x+matrix.c*y+matrix.e,y:matrix.b*x+matrix.d*y+matrix.f})));
 return left===Infinity?null:[left-2,right+2]};
-const classify=()=>{
-const b=viewport(),c=card.getBoundingClientRect(),table=active.dataset.kumoTable;
-const visible=Array.from(svg.querySelectorAll(':scope>[data-kumo-card]'),
-x=>x.getBoundingClientRect()).filter(r=>intersects(r,b));
-const leftmost=c.left<=Math.min(...visible.map(r=>r.left))+1;
-const rightmost=c.right>=Math.max(...visible.map(r=>r.right))-1;
-const role=active.dataset.kumoTip.split('\n').find(x=>x.startsWith('Role: '))||'';
-const pk=/\bPK\b/.test(role),fk=/\bFK\b/.test(role);
-const incident=edges.filter(e=>e.dataset.srcTable===table||e.dataset.dstTable===table);
-const selected=incident.filter(e=>e.classList.contains('kumo-edge-active'));
-const relevant=active.dataset.kumoRow?selected:incident;
-const extents=new Map(),extent=e=>{if(!extents.has(e))extents.set(e,edgeExtent(e,b));return extents.get(e)};
-let side;
-if(leftmost!==rightmost)side=leftmost?'left':'right';
-else if(pk!==fk)side=pk?'left':'right';
-else{
-let left=0,right=0;for(const e of relevant){const r=extent(e);if(!r)continue;
-if(r[0]<c.left-1)left++;if(r[1]>c.right+1)right++}
-side=left===right?(c.left-b.left>=b.right-c.right?'left':'right'):
-(left<right?'left':'right')}
-if(active.dataset.kumoRow)return{side,offset:0};
-let boundary=side==='left'?c.left:c.right;
-for(const e of leftmost!==rightmost?edges:relevant){const r=extent(e);if(!r)continue;
-boundary=side==='left'?Math.min(boundary,r[0]):Math.max(boundary,r[1])}
-return{side,offset:(boundary-(side==='left'?c.left:c.right))/b.sx}};
 const place=(allowPan=false)=>{
-if(!active||!placement)return;
+if(!active)return;
 const b=viewport(),a=active.getBoundingClientRect(),c=card.getBoundingClientRect();
 if(b.right<=b.left||b.bottom<=b.top){hide();return}
 tip.style.maxWidth=Math.max(0,Math.min(320,(b.right-b.left)/b.sx))+'px';
 tip.style.maxHeight=Math.max(0,(b.bottom-b.top)/b.sy)+'px';
 layoutConnections(b.sx);
-const t=tip.getBoundingClientRect(),left=placement.side==='left';
-let x=(left?c.left-t.width-12*b.sx:c.right+12*b.sx)+placement.offset*b.sx;
-const y=Math.max(b.top,Math.min(a.top,b.bottom-t.height));
-if(allowPan===true){
-const clamp=(v,lo,hi)=>Math.max(lo,Math.min(v,hi));
+const t=tip.getBoundingClientRect(),clamp=(v,lo,hi)=>Math.max(lo,Math.min(v,hi));
+const y=clamp(a.top,b.top,b.bottom-t.height);
+if(!placement){
 const dy=clamp(y-a.top,b.top+Math.min(8*b.sy,a.height/2)-a.bottom,
 b.bottom-Math.min(8*b.sy,a.height/2)-a.top);
-if(active.dataset.kumoRow){
-// Compare the final popup with only route portions visible before the one pan.
-const top=Math.max(b.top,Math.min(a.top+dy,b.bottom-t.height))-dy;
+const top=clamp(a.top+dy,b.top,b.bottom-t.height)-dy;
 const band={...b,top:Math.max(b.top,top-2),bottom:Math.min(b.bottom,top+t.height+2)};
 const spans=[];
 if(band.top<band.bottom)for(const edge of edges)
 if(edge.classList.contains('kumo-edge-active'))edgeExtent(edge,band,spans);
+const options=['right','left'].map(side=>{
+const left=side==='left',adjacent=left?c.left-t.width-12*b.sx:c.right+12*b.sx;
+let x=adjacent;
 spans.sort((a,z)=>left?z[1]-a[1]:a[0]-z[0]);
-const adjacent=x;
 for(const span of spans)if(x<span[1]&&x+t.width>span[0])
 x=left?span[0]-t.width-12*b.sx:span[1]+12*b.sx;
-placement.offset+=(x-adjacent)/b.sx}
-const dx=clamp(clamp(x<b.left?b.left-x:x+t.width>b.right?b.right-x-t.width:0,
--(b.right-b.left),b.right-b.left),b.left+Math.min(24*b.sx,a.width/2)-a.right,
+const needed=x<b.left?b.left-x:x+t.width>b.right?b.right-x-t.width:0;
+const dx=clamp(clamp(needed,-(b.right-b.left),b.right-b.left),
+b.left+Math.min(24*b.sx,a.width/2)-a.right,
 b.right-Math.min(24*b.sx,a.width/2)-a.left);
-if(Math.abs(dx)>.5||Math.abs(dy)>.5){hoverLock=pointer?{...pointer}:{};
-panBy(dx/b.sx,dy/b.sy);place();return}}
+return{side,offset:(x-adjacent)/b.sx,dx,dy,
+cost:Math.abs(dx-needed)*1000+Math.hypot(dx,dy)}});
+placement=options[0].cost<=options[1].cost?options[0]:options[1]}
+if(allowPan===true&&(Math.abs(placement.dx)>.5||Math.abs(placement.dy)>.5)){
+hoverLock=pointer?{...pointer}:{};
+panBy(placement.dx/b.sx,placement.dy/b.sy,true);return}
 if(!intersects(a,b)){hide();return}
-const raw=x;x=Math.max(b.left,Math.min(x,b.right-t.width));
+const raw=(placement.side==='left'?c.left-t.width-12*b.sx:c.right+12*b.sx)+
+placement.offset*b.sx;
+const x=clamp(raw,b.left,b.right-t.width);
 tip.dataset.side=placement.side;tip.dataset.clamped=String(x!==raw||y!==a.top);
 tip.style.left=(x-b.h.left)/b.sx+'px';tip.style.top=(y-b.h.top)/b.sy+'px'};
-const show=(el,event)=>{if(isDragging||hoverLock)return;
-cancelHide();if(active===el)return;
+const schedulePan=()=>{
+clearTimeout(panTimer);dwellPoint=pointer?{...pointer}:null;
+panTimer=setTimeout(()=>{panTimer=null;
+if(active&&!drag&&!hoverLock){placement=null;place(true)}},HOVER_DWELL)};
+const show=(el,event)=>{if(drag||hoverLock)return;
+cancelHide();if(active===el){
+if(!panTimer&&placement&&(Math.abs(placement.dx)>.5||Math.abs(placement.dy)>.5))schedulePan();
+return}
 if(event&&Number.isFinite(event.clientX))pointer={x:event.clientX,y:event.clientY};
 hide();active=el;card=el.parentElement;
 el.classList.add('kumo-active');
@@ -305,8 +295,10 @@ const dst=d.dstTable===table?d.dstColumn===column:false;
 edge.classList.toggle('kumo-edge-active',src||dst);
 if(src||dst){svg.insertBefore(edge.parentElement,firstCard);
 host.classList.add('kumo-links-focused')}})}
-placement=classify();tip.setAttribute('data-open','');place(true)};
-const scheduleHide=()=>{if(timer)return;timer=setTimeout(()=>{timer=null;
+tip.setAttribute('data-open','');place();
+if(active&&(Math.abs(placement.dx)>.5||Math.abs(placement.dy)>.5))schedulePan()};
+const scheduleHide=()=>{if(hoverLock)return;
+clearTimeout(panTimer);panTimer=null;if(timer)return;timer=setTimeout(()=>{timer=null;
 if(!hoverLock&&active!==document.activeElement)hide()},150)};
 view.querySelectorAll('title').forEach(el=>el.remove());
 view.querySelectorAll('[data-kumo-tip]').forEach(el=>{
@@ -317,16 +309,19 @@ el.addEventListener('pointerenter',e=>{if(e.pointerType!=='touch')show(el,e)},{s
 el.addEventListener('pointerleave',scheduleHide,{signal});
 el.addEventListener('focus',()=>{hoverLock=null;show(el)},{signal});
 el.addEventListener('blur',scheduleHide,{signal})});
-host.addEventListener('pointerleave',()=>{hoverLock=null;scheduleHide()},{signal});
+host.addEventListener('pointerleave',()=>{cancelPan();hoverLock=null;scheduleHide()},{signal});
 document.addEventListener('pointerout',e=>{
-if(!e.relatedTarget){hoverLock=null;scheduleHide()}
+if(!e.relatedTarget){cancelPan();hoverLock=null;scheduleHide()}
 },{signal});
 document.addEventListener('pointermove',e=>{
-pointer={x:e.clientX,y:e.clientY};if(isDragging||!active)return;
-if(hoverLock&&Math.hypot(pointer.x-hoverLock.x,pointer.y-hoverLock.y)<=1)return;
+pointer={x:e.clientX,y:e.clientY};if(drag||!active||panFrame)return;
+if(hoverLock&&Math.hypot(pointer.x-hoverLock.x,pointer.y-hoverLock.y)<=4)return;
 hoverLock=null;const hit=document.elementFromPoint(e.clientX,e.clientY);
 const next=hit?.closest('[data-kumo-tip]');
-if(next&&view.contains(next)){show(next,e);return}
+if(next&&view.contains(next)){
+if(next===active&&panTimer&&dwellPoint&&
+Math.hypot(pointer.x-dwellPoint.x,pointer.y-dwellPoint.y)>4)schedulePan();
+show(next,e);return}
 scheduleHide();
 },{capture:true,signal});
 
@@ -391,7 +386,22 @@ view.style.backgroundImage=`radial-gradient(circle at ${scale}px ${scale}px,
 __GRID_COLOR__ ${.7*scale}px,transparent ${.8*scale}px)`;
 label.textContent=Math.round(scale*100)+'%';host.dataset.scale=String(scale);
 };
-const panBy=(dx,dy)=>{fitted=false;panX+=dx;panY+=dy;resizeScene()};
+const panBy=(dx,dy,animate=false)=>{
+fitted=false;
+if(!animate){panX+=dx;panY+=dy;resizeScene();return}
+const x=panX,y=panY,start=performance.now();
+const duration=matchMedia('(prefers-reduced-motion:reduce)').matches?0:PAN_DURATION;
+const step=now=>{
+if(!active||signal.aborted){panFrame=0;return}
+if(view.clientWidth!==viewWidth||view.clientHeight!==viewHeight){
+hide();resizeScene();return}
+const t=duration?Math.min(1,(now-start)/duration):1,k=t*t*(3-2*t);
+panX=x+dx*k;panY=y+dy*k;resizeScene();place();
+if(!active){panFrame=0;return}
+if(t<1)panFrame=requestAnimationFrame(step);
+else{panFrame=0;if(placement)placement.dx=placement.dy=0;
+hoverLock=pointer?{...pointer}:{}}};
+panFrame=requestAnimationFrame(step)};
 const fit=()=>{
 hide();fitted=true;scale=fitScale();
 panX=(view.clientWidth-layoutWidth*scale)/2;
@@ -405,6 +415,7 @@ panX=x-graphX*scale;panY=y-graphY*scale;resizeScene();
 };
 view.addEventListener('pointerdown',e=>{
 if(e.button!==0||e.pointerType==='touch')return;
+cancelPan();
 const rect=view.getBoundingClientRect();
 drag={id:e.pointerId,x:e.clientX,y:e.clientY,panX,panY,
 sx:rect.width/view.clientWidth,sy:rect.height/view.clientHeight};
@@ -472,8 +483,8 @@ inlineCamera=null;enter.focus({preventScroll:true});
 }
 },{signal});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')hide()},{signal});
-document.addEventListener('scroll',place,{capture:true,signal});
-window.addEventListener('resize',place,{signal});
+document.addEventListener('scroll',()=>{cancelPan();placement=null;place()},{capture:true,signal});
+window.addEventListener('resize',()=>{cancelPan();placement=null;place()},{signal});
 const resizeObserver=new ResizeObserver(()=>{
 if(signal.aborted)return;
 cancelAnimationFrame(resizeFrame);
@@ -491,7 +502,23 @@ fit();resizeObserver.observe(view);controls.forEach(el=>el.disabled=false);
     '__MUTED_COLOR__', THEME['muted'])
 
 
-def render_html(svg: str, layouts: dict, initial_layout: str) -> str:
+_DOWNLOAD = r"""
+const download=host.querySelector('.kumo-graph-download');
+const pdfURLs=new Map();
+download.addEventListener('click',()=>{
+if(!pdfURLs.has(selected)){
+const bytes=Uint8Array.from(atob(data.pdfs[selected]),char=>char.charCodeAt(0));
+pdfURLs.set(selected,URL.createObjectURL(new Blob([bytes],{type:'application/pdf'})));
+}
+const link=document.createElement('a');link.href=pdfURLs.get(selected);
+link.download='graph-'+selected+'.pdf';host.append(link);link.click();link.remove();
+},{signal});
+onDispose(()=>{for(const url of pdfURLs.values())URL.revokeObjectURL(url)});
+"""
+
+
+def render_html(svg: str, layouts: dict, initial_layout: str,
+                pdfs: dict | None = None) -> str:
     """Wrap one SVG with controls and serialized, precomputed geometries."""
     options = ''.join(
         '<label><input type="radio" '
@@ -507,19 +534,23 @@ def render_html(svg: str, layouts: dict, initial_layout: str) -> str:
                   'M 21 15 V 21 H 15')
     exit_icon = ('M 3 9 H 9 V 3 M 15 3 V 9 H 21 M 9 21 V 15 H 3 '
                  'M 21 15 H 15 V 21')
+    download_icon = ('M 12 3 V 15 M 7 10 L 12 15 L 17 10 '
+                     'M 4 16 V 21 H 20 V 16')
 
     body = (
         '<div class="kumo-widget-toolbar kumo-graph-toolbar">'
-        '<div class="kumo-graph-layout" role="radiogroup" '
-        f'aria-label="Graph layout">{options}</div>'
         '<div class="kumo-graph-actions">'
-        '<div class="kumo-graph-zoom" role="group" aria-label="Graph zoom">'
-        '<span class="kumo-graph-scale" aria-live="polite"></span>'
-        + button('kumo-graph-zoom-out', 'Zoom out', text='−')
-        + button('kumo-graph-zoom-in', 'Zoom in', text='+')
-        + '</div>' + button('kumo-graph-fit', 'Fit graph', fit_icon)
+        + (button('kumo-graph-download', 'Download PDF', download_icon)
+           if pdfs else '')
         + button('kumo-graph-enter', 'Enter full screen', enter_icon)
-        + button('kumo-graph-exit', 'Exit full screen', exit_icon) + '</div></div>'
+        + button('kumo-graph-exit', 'Exit full screen', exit_icon)
+        + button('kumo-graph-fit', 'Fit graph', fit_icon)
+        + '<div class="kumo-graph-zoom" role="group" aria-label="Graph zoom">'
+        + button('kumo-graph-zoom-in', 'Zoom in', text='+')
+        + button('kumo-graph-zoom-out', 'Zoom out', text='−')
+        + '<span class="kumo-graph-scale" aria-live="polite"></span>'
+        '</div></div><div class="kumo-graph-layout" role="radiogroup" '
+        f'aria-label="Graph layout">{options}</div></div>'
         '<span class="kumo-graph-status" role="status" hidden="">'
         'Full screen is unavailable in this notebook. Use the graph controls '
         'here or open the exported SVG.</span>'
@@ -530,7 +561,8 @@ def render_html(svg: str, layouts: dict, initial_layout: str) -> str:
         'const view=host.querySelector(".kumo-graph-view");'
         'const svg=view.querySelector("svg"),scene=view.firstElementChild;'
         'const edges=Array.from(view.querySelectorAll(".kumo-edge"));'
-        + _HOVER + _CAMERA)
+        + _HOVER + _CAMERA + (_DOWNLOAD if pdfs else ''))
     return render_widget(body, style=_STYLE, script=script,
-                         data={'layouts': layouts, 'initial': initial_layout},
+                         data={'layouts': layouts, 'initial': initial_layout,
+                               'pdfs': pdfs or {}},
                          class_name='kumo-graph')

@@ -100,7 +100,8 @@ exclude-newer = "7 days"
 # Allow the requested PyG 2.8.1 release, published on 2026-10-12.
 # Allow Pillow 13.0.0, released on 2026-10-16, for CVE-2026-112404.
 # Allow Certifi's 2026-10-19 fix for GHSA-6q48-6c7w-9gw2.
-exclude-newer-package = { torch-geometric = "2026-10-13T00:00:00Z", pillow = "2026-10-17T00:00:00Z", certifi = "2026-10-21T00:00:00Z" }
+# PDF export requires svglib 2.3.2's restricted SVG resource resolution.
+exclude-newer-package = { torch-geometric = "2026-10-13T00:00:00Z", pillow = "2026-10-17T00:00:00Z", certifi = "2026-10-21T00:00:00Z", svglib = "2026-10-24T00:00:00Z" }
 
 find-links = [
   # The GPU image workflow stages checksum-pinned custom CUDA Faiss wheels

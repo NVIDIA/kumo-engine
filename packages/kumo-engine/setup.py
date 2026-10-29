@@ -36,6 +36,8 @@ setup(
         # -- unlike its own SoftFileLock fallback, deliberately not used
         # here.
         "filelock>=3.0.0",
+        "reportlab>=4.4,<5",
+        "svglib>=2.3.2,<3",
         # Unlike kumo-sdk (where this is an optional extra behind
         # CloudBackend), this package has no non-training use case, so
         # kumo-core -- and the Torch/PyG/DiskGraph stack it pulls in -- is a

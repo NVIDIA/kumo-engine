@@ -352,7 +352,10 @@ class Graph:
         """Display pannable table relationships in notebooks and return SVG.
 
         Args:
-            path: Optional local file to write as UTF-8 SVG, overwriting it.
+            path: Optional local file, overwritten if it exists. A .pdf suffix
+                writes a vector graph and full schema/connection index;
+                other paths receive UTF-8 SVG. Paths refer to the filesystem
+                where Kumo Engine runs.
             show_cols: Add columns up to 10 rows per table (5 above 10 tables).
                 Primary keys, foreign keys, and the declared time column (TS)
                 are always included, even above this limit. False shows only
@@ -363,7 +366,8 @@ class Graph:
                 source data. Previews may
                 run warehouse queries and incur costs; returned row limits
                 do not bound bytes scanned. Unavailable previews are labeled.
-                Samples become part of saved notebook HTML, never SVG exports.
+                Samples become part of saved notebook HTML, never SVG or PDF
+                exports.
             layout: Initial arrangement: auto, standard, or compact.
                 Auto chooses from graph structure, independently of viewport
                 size. Standard preserves the layered relationship view;
@@ -375,13 +379,20 @@ class Graph:
         Trusted HTML output offers full screen when the notebook host permits it.
         Dragging, full screen, Fit, and zoom preserve the selected arrangement.
         SVG exports use the initial layout and contain no interactive controls.
+        The PDF download button exports the selected layout to the browser's
+        download location. PDF exports include all declared columns in the
+        index, even when the diagram omits them.
         """
         from kumo.engine._visualization import render
 
         svg = render(self._named_tables, self.edges, show_cols=show_cols,
                      show_samples=show_samples, layout=layout)
         if path is not None:
-            Path(path).write_text(svg, encoding='utf-8')
+            destination = Path(path)
+            if destination.suffix.lower() == '.pdf':
+                destination.write_bytes(svg._pdf(svg._initial_layout))
+            else:
+                destination.write_text(svg, encoding='utf-8')
         return svg
 
     def snapshot(self) -> GraphSnapshot:

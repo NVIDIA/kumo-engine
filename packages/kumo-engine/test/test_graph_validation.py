@@ -5,6 +5,7 @@
 import json
 import re
 from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 from xml.etree import ElementTree
@@ -19,6 +20,7 @@ from kumoapi.source_table import (
 )
 from kumoapi.table import Column, TableDefinition
 from kumoapi.typing import Dtype, Stype
+from pypdf import PdfReader
 
 from kumo.engine import FileConnector, Graph, S3Connector, Table
 from kumo.engine._portable import PortableGraphError
@@ -178,8 +180,9 @@ def test_omitted_self_relation_preserves_column_type(tables, original_stype):
     ('Ж' * 27, 'Ш' * 22),
     ('sales  data', 'order  id'),
 ])
+@pytest.mark.parametrize('suffix', ['svg', 'pdf'])
 def test_visualize_exports_escaped_svg_without_source_access(
-        tmp_path, alias, key):
+        tmp_path, alias, key, suffix):
     users, events = _s3_tables()
     events = replace(
         events, definition=replace(
@@ -191,7 +194,7 @@ def test_visualize_exports_escaped_svg_without_source_access(
         'purchases': events,
         alias: users
     }, [Edge('purchases', key, alias)])
-    destination = tmp_path / 'relationships.svg'
+    destination = tmp_path / f'relationships.{suffix}'
     with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
                       side_effect=AssertionError('source accessed')), \
             patch.object(Table, 'infer_metadata',
@@ -201,7 +204,15 @@ def test_visualize_exports_escaped_svg_without_source_access(
         svg = graph.visualize(destination, show_samples=False)
     assert isinstance(svg, str)
     assert svg._repr_svg_() == svg
-    assert destination.read_text(encoding='utf-8') == svg
+    if suffix == 'pdf':
+        document = PdfReader(destination)
+        assert len(document.pages) >= 2
+        index = '\n'.join(page.extract_text() for page in document.pages[1:])
+        assert alias in index and key in index
+        assert f'purchases.{key} → {alias}.id' in index.replace('\n', '')
+        assert 's3://schema-only-fixture' not in index
+    else:
+        assert destination.read_text(encoding='utf-8') == svg
     root = ElementTree.fromstring(svg)
     assert root.tag == '{http://www.w3.org/2000/svg}svg'
     html = ElementTree.fromstring(svg._repr_html_())
@@ -443,6 +454,8 @@ def test_visualize_layouts_preserve_schema_and_export_selection(tmp_path):
             './script[@type="application/json"]').text)
         assert payload['initial'] == layout
         selected = payload['layouts'][layout]
+        pdf = PdfReader(BytesIO(svg._pdf(layout)))
+        assert len(pdf.pages) >= 2
         assert list(map(float, root.get('viewBox').split())) == [
             0, 0, selected['width'], selected['height']]
         assert not root.findall(f'.//{svg_ns}script')
@@ -456,6 +469,29 @@ def test_visualize_layouts_preserve_schema_and_export_selection(tmp_path):
              for path in paths],
         ))
     assert schemas[0] == schemas[1]
+
+
+def test_visualize_pdf_indexes_hidden_columns(tmp_path):
+    users, events = _s3_tables()
+    users = replace(users, definition=replace(
+        users.definition, time_col='hidden_date', cols=[
+            *users.definition.cols,
+            Column('hidden_date', Stype.timestamp, Dtype.date),
+            *(Column(f'hidden_{i}_é_Ω_账户', Stype.numerical, Dtype.float64)
+              for i in range(100)),
+        ]))
+    graph = Graph([users, events], [Edge('events', 'user_id', 'users')])
+    destination = tmp_path / 'graph.PDF'
+    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
+                      side_effect=AssertionError('source accessed')):
+        svg = graph.visualize(destination, show_cols=False)
+    document = PdfReader(destination)
+    assert len(document.pages) > 2
+    index = '\n'.join(page.extract_text() for page in document.pages[1:])
+    assert 'hidden_99_é_Ω_账户' not in svg
+    assert all(f'hidden_{i}_é_Ω_账户' in index for i in range(100))
+    assert 'hidden_date' in index and 'TS' in index
+    assert 'float64' in index and 'events.user_id → users.id' in index
 
 
 @pytest.mark.parametrize('show_samples', [0, 1, 6, 'true', None])

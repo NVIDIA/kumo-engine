@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """SVG rendering of declared table relationships."""
 
+import base64
 import json
 from datetime import date
 from html import escape
@@ -27,16 +28,26 @@ class SVG(str):
 
     def __new__(cls, value: str, samples: dict[str, str] | None = None,
                 namespace: str = '', layouts: dict | None = None,
-                initial_layout: str = 'standard'):
+                initial_layout: str = 'standard', index: list | None = None):
         obj = super().__new__(cls, value)
         obj._samples = samples or {}
         obj._namespace = namespace
         obj._layouts = layouts or {}
         obj._initial_layout = initial_layout
+        obj._index = index or []
+        obj._pdfs = {}
         return obj
 
     def _repr_svg_(self) -> str:
         return str(self)
+
+    def _pdf(self, layout: str) -> bytes:
+        from kumo.engine._visualization_pdf import render_pdf
+
+        if layout not in self._pdfs:
+            self._pdfs[layout] = render_pdf(self, self._layouts[layout],
+                                            self._index)
+        return self._pdfs[layout]
 
     def _repr_html_(self) -> str:
         from kumo.engine._visualization_viewer import render_html
@@ -46,7 +57,9 @@ class SVG(str):
             svg = svg.replace(metadata, sampled)
         if self._namespace:
             svg = svg.replace(self._namespace, 'kumo-' + uuid4().hex)
-        return render_html(svg, self._layouts, self._initial_layout)
+        pdfs = {name: base64.b64encode(self._pdf(name)).decode('ascii')
+                for name in self._layouts}
+        return render_html(svg, self._layouts, self._initial_layout, pdfs)
 
 
 def _wrap(text: str, width: int) -> list[str]:
@@ -464,5 +477,14 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         svg.append('</g>')
     for x, y in geometry['handles']:
         svg.append(f'<circle cx="{x}" cy="{y}" r="4" fill="{THEME["muted"]}"/>')
+    index = [dict(
+        name=name,
+        columns=[dict(name=col.name, type=col.dtype.value,
+                      role=keys[name].get(col.name, ''))
+                 for col in definitions[name].cols],
+        connections=[f'{edge.src_table}.{edge.fkey} → '
+                     f'{edge.dst_table}.{definitions[edge.dst_table].pkey}'
+                     for edge in edges if edge.src_table == name],
+    ) for name in names]
     return SVG(''.join(svg) + '</svg>', samples, uid, layouts=layouts,
-               initial_layout=selected)
+               initial_layout=selected, index=index)
