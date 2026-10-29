@@ -42,6 +42,13 @@ class Event:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+    def __str__(self) -> str:
+        fields = {'trial': self.trial, 'epoch': self.epoch, **self.metrics,
+                  **self.params}
+        return ' '.join([self.name, *(f'{key}={value}'
+                                      for key, value in fields.items()
+                                      if value is not None)])
+
 
 def query_sha256(query: str) -> str:
     return hashlib.sha256(query.encode()).hexdigest()

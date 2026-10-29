@@ -555,8 +555,11 @@ _F = TypeVar('_F', bound=Callable[..., Any])
 
 def _without_torch_scatter_hint(method: _F) -> _F:
     r"""Runs ``method`` without PyTorch Geometric's GPU hint that min/max
-    aggregation "can be accelerated via the 'torch-scatter' package", and
-    without Lightning's "Tip" log lines advertising its cloud products.
+    aggregation "can be accelerated via the 'torch-scatter' package",
+    Lightning's "Tip" log lines advertising its cloud products, Lightning's
+    note that the loader's IterableDataset defines ``__len__``, and Python's
+    note that forking a multi-threaded process may deadlock (the loader
+    workers fork before any thread that matters holds a lock).
 
     kumo-engine uses PyTorch's own scatter instead of that optional extension
     (see ``test_wheel_uses_torch_fallbacks_without_native_extensions``), so
@@ -574,6 +577,13 @@ def _without_torch_scatter_hint(method: _F) -> _F:
                     r"accelerated via the 'torch-scatter' package",
                     category=UserWarning,
                 )
+                warnings.filterwarnings(
+                    'ignore', message=r'Your `IterableDataset` has `__len__`',
+                    category=UserWarning)
+                warnings.filterwarnings(
+                    'ignore', message=r'This process .* is multi-threaded, '
+                    r'use of fork\(\) may lead to deadlocks',
+                    category=DeprecationWarning)
                 return method(*args, **kwargs)
         finally:
             tips.removeFilter(_no_lightning_tip)

@@ -194,3 +194,32 @@ def test_kumo_calls_drop_lightning_tips_and_only_those(caplog):
         lightning.removeHandler(caplog.handler)
     assert 'inside' not in caplog.text
     assert 'GPU available' in caplog.text and 'outside' in caplog.text
+
+
+def test_an_event_prints_as_its_name_and_fields():
+    event = Event(name='table_staged', time=1.0,
+                  params={'table': 'users', 'seconds': 12.0})
+    assert str(event) == 'table_staged table=users seconds=12.0'
+    assert str(Event(name='epoch_ended', time=1.0, trial=1, epoch=2,
+                     metrics={'val_auroc': 0.5})) == (
+        'epoch_ended trial=1 epoch=2 val_auroc=0.5')
+
+
+def test_kumo_calls_drop_the_fork_and_iterable_dataset_notes():
+    import warnings
+
+    from kumo.engine.trainer.trainer import _without_torch_scatter_hint
+
+    @_without_torch_scatter_hint
+    def fit():
+        warnings.warn('This process (pid=1) is multi-threaded, use of fork() '
+                      'may lead to deadlocks in the child.',
+                      DeprecationWarning)
+        warnings.warn('Your `IterableDataset` has `__len__` defined.',
+                      UserWarning)
+        warnings.warn('something else', UserWarning)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        fit()
+    assert [str(warning.message) for warning in caught] == ['something else']
