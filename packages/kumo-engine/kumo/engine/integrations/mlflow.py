@@ -171,6 +171,7 @@ class MlflowTracking:
         self._children: Dict[Tuple[int, int], str] = {}
         self._artifacts: Set[str] = set()
         self._model_id: Optional[str] = None
+        self._dataset: Optional[Tuple[str, str]] = None
         self._http_owned: FrozenSet[str] = frozenset()
         self._guard = ExitStack()
 
@@ -466,13 +467,14 @@ class MlflowTracking:
                    and record.tags.get('kumo.kind') == 'fit')
         try:
             if record is not None and self._parent is not None:
+                self._dataset = _test_dataset(record)
                 for epoch, metrics in by_step(record.steps):
                     self._log_metrics(self._parent, metrics, epoch)
+                self.log_summaries(record.summaries)
                 self._log_metrics(self._parent, record.metrics,
                                   model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
                 self._log_artifacts(record.artifacts)
-                self.log_summaries(record.summaries)
                 if error is None:
                     status = 'FINISHED'
         finally:
@@ -561,11 +563,9 @@ class MlflowTracking:
         if source is None:
             return
         entities = self._mlflow.entities
-        version = summary.source.get('version') or ''
         dataset = entities.Dataset(
             name=summary.name,
-            digest=version[:36] or hashlib.sha256(json.dumps(
-                dict(summary.source), sort_keys=True).encode()).hexdigest()[:8],
+            digest=_digest(summary.source),
             source_type=source._get_source_type(),
             source=source.to_json(),
             schema=json.dumps({'mlflow_colspec': [
@@ -638,13 +638,34 @@ class MlflowTracking:
             return
         entities = self._mlflow.entities
         timestamp = int(time.time() * 1000)
+        name, digest = (self._dataset if model_id is not None
+                        and self._dataset else (None, None))
         with self.target.scope():
             self._client.log_batch(
                 run_id, metrics=[
                     entities.Metric(metric_key(key), float(value), timestamp,
-                                    step, model_id=model_id)
+                                    step, model_id=model_id,
+                                    dataset_name=name, dataset_digest=digest)
                     for key, value in metrics.items()
                 ])
+
+
+def _test_dataset(record: RunRecord) -> Optional[Tuple[str, str]]:
+    r"""The name and digest of the training-table dataset a fit's test
+    metrics come from, to link them to it on the logged model."""
+    location = next((summary.value for summary in record.summaries
+                     if isinstance(summary, Tag)
+                     and summary.name == 'kumo.training_table_uri'), None)
+    for summary in record.summaries:
+        if (isinstance(summary, Dataset) and location
+                and summary.source.get('location') == location):
+            return summary.name, _digest(summary.source)
+    return None
+
+
+def _digest(source: Mapping[str, Optional[str]]) -> str:
+    return (source.get('version') or '')[:36] or hashlib.sha256(json.dumps(
+        dict(source), sort_keys=True).encode()).hexdigest()[:8]
 
 
 _SINKS: Dict[type, Callable[[MlflowTracking, Any], None]] = {
