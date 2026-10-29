@@ -5,7 +5,6 @@
 import json
 import re
 from dataclasses import replace
-from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
 from xml.etree import ElementTree
@@ -20,7 +19,8 @@ from kumoapi.source_table import (
 )
 from kumoapi.table import Column, TableDefinition
 from kumoapi.typing import Dtype, Stype
-from pypdf import PdfReader
+from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.text import Text
 
 from kumo.engine import FileConnector, Graph, S3Connector, Table
 from kumo.engine._portable import PortableGraphError
@@ -70,6 +70,20 @@ def tables(request, tmp_path) -> list[Table]:
     if request.param == 'file':
         return _file_tables(tmp_path / 'data')
     return _s3_tables()
+
+
+@pytest.fixture
+def pdf_pages(monkeypatch):
+    pages = []
+    savefig = PdfPages.savefig
+
+    def record(document, figure, *args, **kwargs):
+        pages.append('\n'.join(text.get_text() for text in
+                               figure.findobj(match=Text)))
+        return savefig(document, figure, *args, **kwargs)
+
+    monkeypatch.setattr(PdfPages, 'savefig', record)
+    return pages
 
 
 @pytest.mark.parametrize(
@@ -182,7 +196,7 @@ def test_omitted_self_relation_preserves_column_type(tables, original_stype):
 ])
 @pytest.mark.parametrize('suffix', ['svg', 'pdf'])
 def test_visualize_exports_escaped_svg_without_source_access(
-        tmp_path, alias, key, suffix):
+        tmp_path, alias, key, suffix, pdf_pages):
     users, events = _s3_tables()
     events = replace(
         events, definition=replace(
@@ -205,11 +219,14 @@ def test_visualize_exports_escaped_svg_without_source_access(
     assert isinstance(svg, str)
     assert svg._repr_svg_() == svg
     if suffix == 'pdf':
-        document = PdfReader(destination)
-        assert len(document.pages) >= 2
-        index = '\n'.join(page.extract_text() for page in document.pages[1:])
-        assert alias in index and key in index
-        assert f'purchases.{key} → {alias}.id' in index.replace('\n', '')
+        data = destination.read_bytes()
+        assert data.startswith(b'%PDF-') and data.rstrip().endswith(b'%%EOF')
+        assert len(re.findall(rb'/Type /Page\b', data)) == len(pdf_pages) >= 2
+        index = '\n'.join(pdf_pages[1:])
+        pdf_alias = alias.replace('账户', r'\u8d26\u6237')
+        pdf_key = key.replace('账户', r'\u8d26\u6237')
+        assert pdf_alias in index and pdf_key in index
+        assert f'purchases.{pdf_key} → {pdf_alias}.id' in index.replace('\n', '')
         assert 's3://schema-only-fixture' not in index
     else:
         assert destination.read_text(encoding='utf-8') == svg
@@ -454,8 +471,9 @@ def test_visualize_layouts_preserve_schema_and_export_selection(tmp_path):
             './script[@type="application/json"]').text)
         assert payload['initial'] == layout
         selected = payload['layouts'][layout]
-        pdf = PdfReader(BytesIO(svg._pdf(layout)))
-        assert len(pdf.pages) >= 2
+        pdf = svg._pdf(layout)
+        assert pdf.startswith(b'%PDF-') and pdf.rstrip().endswith(b'%%EOF')
+        assert len(re.findall(rb'/Type /Page\b', pdf)) >= 2
         assert list(map(float, root.get('viewBox').split())) == [
             0, 0, selected['width'], selected['height']]
         assert not root.findall(f'.//{svg_ns}script')
@@ -471,7 +489,7 @@ def test_visualize_layouts_preserve_schema_and_export_selection(tmp_path):
     assert schemas[0] == schemas[1]
 
 
-def test_visualize_pdf_indexes_hidden_columns(tmp_path):
+def test_visualize_pdf_indexes_hidden_columns(tmp_path, pdf_pages):
     users, events = _s3_tables()
     users = replace(users, definition=replace(
         users.definition, time_col='hidden_date', cols=[
@@ -485,13 +503,47 @@ def test_visualize_pdf_indexes_hidden_columns(tmp_path):
     with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
                       side_effect=AssertionError('source accessed')):
         svg = graph.visualize(destination, show_cols=False)
-    document = PdfReader(destination)
-    assert len(document.pages) > 2
-    index = '\n'.join(page.extract_text() for page in document.pages[1:])
+    data = destination.read_bytes()
+    assert len(re.findall(rb'/Type /Page\b', data)) == len(pdf_pages) > 2
+    index = '\n'.join(pdf_pages[1:])
     assert 'hidden_99_é_Ω_账户' not in svg
-    assert all(f'hidden_{i}_é_Ω_账户' in index for i in range(100))
+    assert all(f'hidden_{i}_é_Ω_\\u8d26\\u6237' in index for i in range(100))
     assert 'hidden_date' in index and 'TS' in index
     assert 'float64' in index and 'events.user_id → users.id' in index
+
+
+@pytest.mark.parametrize('suffix', ['md', 'MARKDOWN'])
+def test_visualize_markdown_exports_complete_safe_schema(tmp_path, suffix):
+    users, events = _s3_tables()
+    alias = 'end"]\n```<script>alert(1)</script>|账户 www.example.com a@b.com'
+    key = 'user_id|[link](https://example.com)'
+    events = replace(events, definition=replace(events.definition, cols=[
+        events.definition.cols[0], Column(key, Stype.ID, Dtype.int64),
+        Column('hidden_**value**', Stype.numerical, Dtype.float64)]))
+    graph = Graph({alias: users, 'events': events},
+                  [Edge('events', key, alias)])
+    destination = tmp_path / f'graph.{suffix}'
+    destination.write_text('stale contents')
+    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
+                      side_effect=AssertionError('source accessed')):
+        svg = graph.visualize(destination, show_cols=False)
+    markdown = destination.read_text(encoding='utf-8')
+    assert markdown.startswith('# Table relationships\n')
+    assert markdown.count('```') == 2
+    assert 'flowchart LR\n' in markdown
+    assert 'table_1 -->|"' in markdown and '| table_0' in markdown
+    assert 'end#34;]<br/>#96;#96;#96;#60;script#62;' in markdown
+    schema = markdown.split('```')[-1]
+    assert '<script>' not in markdown and '[link](' not in schema
+    assert 'https://example.com' not in schema
+    assert r'www\.example\.com a\@b\.com' in schema
+    assert 'hidden_**value**' not in svg
+    assert r'| hidden\_\*\*value\*\* | float64 | Column |' in markdown
+    assert '账户' in markdown and 'FK' in markdown and 'PK' in markdown
+    assert 'stale contents' not in markdown
+    assert svg._markdown() == markdown
+    assert Graph([]).visualize(tmp_path / 'empty.md')._markdown().endswith(
+        'No tables.\n')
 
 
 @pytest.mark.parametrize('show_samples', [0, 1, 6, 'true', None])
@@ -578,6 +630,8 @@ def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
         assert call.kwargs['sql'] == (sql if table.table_name == 'users' else None)
         assert call.kwargs['timeout'] > 0
     assert 'Sample values' not in svg
+    markdown = svg._markdown()
+    assert 'private sample' not in markdown and 'credential secret' not in markdown
     assert svg._repr_svg_() == destination.read_text() == str(svg)
     assert 'credential secret' not in html
     assert '<script>alert' not in html

@@ -279,9 +279,6 @@ full_requires = [
 
 test_requires = [
     "moto==4.2.14",
-    "pypdf>=6,<7",
-    "reportlab>=4.4,<5",
-    "svglib>=2.3.2,<3",
     "pytest==9.0.3",
     "pytest-asyncio==1.3.0",
     "pytest-benchmark==4.0.0",

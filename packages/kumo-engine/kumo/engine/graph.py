@@ -353,7 +353,9 @@ class Graph:
 
         Args:
             path: Optional local file, overwritten if it exists. A .pdf suffix
-                writes a vector graph and full schema/connection index;
+                writes a vector graph and full schema/connection index.
+                A .md or .markdown suffix writes a Mermaid relationship
+                diagram and complete Markdown schema tables;
                 other paths receive UTF-8 SVG. Paths refer to the filesystem
                 where Kumo Engine runs.
             show_cols: Add columns up to 10 rows per table (5 above 10 tables).
@@ -366,8 +368,7 @@ class Graph:
                 source data. Previews may
                 run warehouse queries and incur costs; returned row limits
                 do not bound bytes scanned. Unavailable previews are labeled.
-                Samples become part of saved notebook HTML, never SVG or PDF
-                exports.
+                Samples become part of saved notebook HTML, never file exports.
             layout: Initial arrangement: auto, standard, or compact.
                 Auto chooses from graph structure, independently of viewport
                 size. Standard preserves the layered relationship view;
@@ -382,6 +383,8 @@ class Graph:
         The PDF download button exports the selected layout to the browser's
         download location. PDF exports include all declared columns in the
         index, even when the diagram omits them.
+        Markdown diagrams use the Markdown viewer's Mermaid layout rather than
+        the notebook arrangement; schema tables remain readable without Mermaid.
         """
         from kumo.engine._visualization import render
 
@@ -391,6 +394,8 @@ class Graph:
             destination = Path(path)
             if destination.suffix.lower() == '.pdf':
                 destination.write_bytes(svg._pdf(svg._initial_layout))
+            elif destination.suffix.lower() in ('.md', '.markdown'):
+                destination.write_text(svg._markdown(), encoding='utf-8')
             else:
                 destination.write_text(svg, encoding='utf-8')
         return svg

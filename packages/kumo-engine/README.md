@@ -102,16 +102,17 @@ To use your own data, point `FileConnector` at a directory of CSV or Parquet fil
 
 ## Visualize table relationships
 
-Display declared tables and relationships in a notebook, or export SVG or PDF:
+Display declared tables and relationships in a notebook, or export SVG, PDF, or Markdown:
 
 ```python
 graph.visualize()
 graph.visualize("relationships.svg", show_cols=True)
 graph.visualize("relationships.pdf", show_cols=True, layout="compact")
+graph.visualize("relationships.md")
 graph.visualize(layout="compact")
 ```
 
-Visualization reads no source data by default; rendering dependencies are installed with Kumo Engine.
+Visualization reads no source data by default and uses Kumo Engine's existing dependencies.
 The return value is SVG text with notebook display support.
 The default view includes primary keys, relationship foreign keys, and the declared time column (`TS`).
 `show_cols=True` adds other columns up to 10 rows per table, or 5 above 10 tables; key and time columns always remain visible.
@@ -125,13 +126,18 @@ SVG exports contain the initial arrangement and native tooltips.
 Use the download button to save the entire selected layout as a PDF on your computer.
 The PDF includes a paginated index of all declared tables, columns, data types, key/time roles, and connections, including columns omitted from the diagram.
 Passing a `.pdf` path to `visualize` saves the same document on the filesystem where Kumo Engine runs, using the requested initial layout; it overwrites an existing file.
-PDF text uses embedded DejaVu fonts and standard CJK font fallbacks; unsupported characters are shown as explicit Unicode escapes.
+PDF export uses Matplotlib and its embedded DejaVu fonts; unsupported characters are shown as explicit Unicode escapes.
+
+Passing a `.md` or `.markdown` path writes a Mermaid relationship diagram and Markdown tables containing every declared column, data type, key/time role, and outgoing connection.
+The file is saved on the machine running Kumo Engine and overwrites an existing file.
+Mermaid diagrams render on GitHub and in compatible Markdown viewers, using the viewer's layout rather than the notebook arrangement.
+The schema tables are readable without Mermaid support.
 
 `show_samples=True` shows up to six non-null examples per visible column in two columns and up to three rows, sampled independently from up to 30 preview rows per table.
 The default `show_samples=False` hides samples and reads no source data.
 Previews can run warehouse queries and incur costs; the row limit does not bound bytes scanned.
 Unavailable or empty previews are labeled.
-Sample values are saved in notebook HTML, but never included in SVG or PDF exports.
+Sample values are saved in notebook HTML, but never included in SVG, PDF, or Markdown exports.
 
 ### Developing another notebook widget
 

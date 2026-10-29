@@ -5,12 +5,14 @@
 
 import base64
 import json
+import re
 from datetime import date
 from html import escape
 from reprlib import Repr
 from typing import Mapping, Sequence
 from unicodedata import combining
 from uuid import uuid4
+from xml.etree import ElementTree
 
 from kumoapi.graph import Edge, validate_edge_endpoints
 from kumoapi.source_table import CustomSQLSourceTable
@@ -48,6 +50,52 @@ class SVG(str):
             self._pdfs[layout] = render_pdf(self, self._layouts[layout],
                                             self._index)
         return self._pdfs[layout]
+
+    def _markdown(self) -> str:
+        def label(value, mermaid=False):
+            value = value.replace('\r\n', '\n').replace('\r', '\n')
+            if mermaid:
+                return ''.join(
+                    '<br/>' if char == '\n' else
+                    f'#{ord(char)};' if char in '#&"<>\\`|' else char
+                    for char in value)
+            return re.sub(r'([\\`*_\[\]|#.@:])', r'\\\1',
+                          escape(value, quote=False)).replace('\n', '<br/>')
+
+        lines = ['# Table relationships', '']
+        if not self._index:
+            return '\n'.join(lines + ['No tables.', ''])
+        ids = {table['name']: f'table_{i}'
+               for i, table in enumerate(self._index)}
+        lines += ['Arrows point from foreign keys to referenced primary keys.',
+                  'Sample values are excluded.', '', '```mermaid',
+                  'flowchart LR']
+        lines.extend(f'    {ids[name]}["{label(name, True)}"]' for name in ids)
+        root = ElementTree.fromstring(self)
+        for edge in root.findall(
+                './/{http://www.w3.org/2000/svg}path[@class="kumo-edge"]'):
+            source = ids[edge.get('data-src-table')]
+            target = ids[edge.get('data-dst-table')]
+            columns = (f'{edge.get("data-src-column")} → '
+                       f'{edge.get("data-dst-column")}')
+            lines.append(f'    {source} -->|"{label(columns, True)}"| {target}')
+        lines += ['```', '', '## Schema', '',
+                  'All declared columns are listed. PK: primary key; '
+                  'FK: foreign key; TS: time column.', '']
+        for table in self._index:
+            lines += [f'### {label(table["name"])}', '',
+                      '| Column | Data type | Role |', '| --- | --- | --- |']
+            for column in table['columns']:
+                cells = [column['name'], column['type'],
+                         column['role'] or 'Column']
+                lines.append('| ' + ' | '.join(map(label, cells)) + ' |')
+            if not table['columns']:
+                lines += ['', 'No columns.']
+            lines += ['', '**Outgoing connections**', '']
+            lines.extend(f'- {label(connection)}' for connection in
+                         table['connections'] or ['No outgoing connections'])
+            lines.append('')
+        return '\n'.join(lines)
 
     def _repr_html_(self) -> str:
         from kumo.engine._visualization_viewer import render_html

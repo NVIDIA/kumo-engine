@@ -43,7 +43,6 @@ test=[
     "diskgraph>=0.1.0",
     "numpy>=1.26,<3",
     "pytest",
-    "pypdf>=6,<7",
     "pytest-mock",
     "torch>=2.9,<2.13",
 ]
