@@ -92,8 +92,8 @@ class MlflowTracking:
         experiment_name: experiment for the fit run, created if missing.
             `None` uses MLflow's current experiment; required to record
             runs at a ``target``.
-        run_name: name of the fit run. `None` names it after its UTC start
-            time, as ``fit-20261027T061838Z``.
+        run_name: name of the fit run. `None` names it after its registry
+            model and UTC start, as ``fit-users-churn-20261027-0618``.
         log_system_metrics: sample CPU, memory, disk, network and (with
             ``nvidia-ml-py``) GPU usage on the fit run.
         tags: extra tags for the fit run.
@@ -329,8 +329,9 @@ class MlflowTracking:
             }
             run = client.create_run(
                 experiment_id or '0',
-                run_name=record.name or self.run_name
-                or time.strftime('fit-%Y%m%dT%H%M%SZ', time.gmtime()),
+                run_name=(self.run_name if self.run_name
+                          and record.tags.get('kumo.kind') == 'fit' else
+                          record.name),
                 tags=context.resolve_tags({**record.tags, **parent}))
         self._parent = self.run_id = run.info.run_id
         self._experiment_id = run.info.experiment_id

@@ -107,7 +107,7 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
         if run.data.tags.get('mlflow.parentRunId') == outer.info.run_id
     ]
     assert tracking.run_id == parent.info.run_id
-    assert re.fullmatch(r'fit-\d{8}T\d{6}Z', parent.info.run_name)
+    assert re.fullmatch(r'fit-\d{8}-\d{4}', parent.info.run_name)
     children = sorted(
         (run for run in runs
          if run.data.tags.get('mlflow.parentRunId') == parent.info.run_id),
@@ -116,7 +116,10 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     assert client.get_experiment(parent.info.experiment_id).name == 'ents'
     assert parent.info.status == 'FINISHED'
     assert {k for k in parent.data.tags if k.startswith('kumo.')} == {
-        'kumo.kind', 'kumo.bundle_id', 'kumo.dropped_params'}
+        'kumo.kind', 'kumo.bundle_id', 'kumo.dropped_params',
+        'kumo.snapshot_id', 'kumo.task_type'}
+    assert parent.data.tags['kumo.snapshot_id'] == snapshot.id
+    assert parent.data.tags['kumo.task_type'] == 'regression'
     assert parent.data.tags['kumo.bundle_id'] == result.id
     stored = tmp_path / 'root' / 'models' / result.id / PROVENANCE_FILE
     assert json.loads(stored.read_text())['tracking'] == {
