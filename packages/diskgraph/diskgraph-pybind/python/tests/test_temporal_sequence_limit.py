@@ -633,3 +633,96 @@ def test_shared_history_preserves_types_and_floating_point_order(
         ]
         assert a["batch"].equals(b["batch"].take(pa.array(selected, type=pa.int64())))
         assert actual["stats"]["values_decoded"] < full["stats"]["values_decoded"]
+
+
+def _window_plan(original, *, start, limit):
+    plan = plan_for(original, limit=limit)
+    plan["frames"][0]["start_seconds"] = start
+    plan["frames"][0]["columns"] = ["id"]
+    plan["sequences"][0]["columns"] = ["id"]
+    return plan
+
+
+def _ids_and_lengths(engine, plan, cutoff):
+    ids = engine.lookup_node_ids("users", pa.array([1]))
+    result = engine.query_temporal({"users": ids}, {"users": [cutoff]}, json.dumps(plan))
+    lengths = engine.query_temporal_lengths(
+        {"users": ids}, {"users": [cutoff]}, json.dumps(plan)
+    )["sequences"][0]["lengths"].to_pylist()
+    return sorted(result["sequences"][0]["batch"].column("id").to_pylist()), lengths
+
+
+@pytest.mark.parametrize("limit", [1, None])
+def test_window_above_clock_ceiling_keeps_clipped_row(fallback_clock_graph, limit):
+    # The row at ceiling + 200 is stored at the ceiling; its real time is in the window.
+    engine, ceiling, original = fallback_clock_graph
+    plan = _window_plan(original, start=-200, limit=limit)
+    ids, lengths = _ids_and_lengths(engine, plan, ceiling + 300)
+    assert ids == [3]
+    assert lengths == [1]
+
+
+@pytest.mark.parametrize("limit", [1, 3, None])
+def test_lengths_match_rows_when_a_clipped_row_is_outside_the_window(
+    fallback_clock_graph, limit
+):
+    engine, ceiling, original = fallback_clock_graph
+    plan = _window_plan(original, start=None, limit=limit)
+    ids, lengths = _ids_and_lengths(engine, plan, ceiling + 100)
+    assert ids == ([2] if limit == 1 else [1, 2])
+    assert lengths == [len(ids)]
+
+
+@pytest.fixture(params=[(bits, anchor) for bits in (8, 16, 32) for anchor in (0, 1_700_000_000)])
+def floor_clock_graph(history_graph, tmp_path, request):
+    bits, anchor = request.param
+    # The lowest code is reserved for NULL, so the lowest exact time is one above it.
+    floor = anchor - (1 << (bits - 1)) + 1
+    config = copy.deepcopy(history_graph[4])
+    orders = pa.table(
+        {
+            "id": [1, 2, 3],
+            "owner": [1, 1, 1],
+            "time": pa.array([floor - 50, floor + 10, floor + 20], type=pa.timestamp("s")),
+            "value": [10.0, 20.0, 30.0],
+        }
+    )
+    path = tmp_path / "orders.parquet"
+    pq.write_table(orders, path)
+    config["tables"][1]["columns"] = [
+        column for column in config["tables"][1]["columns"] if column["name"] != "other_time"
+    ]
+    config["tables"][1]["source"]["paths"] = [str(path)]
+    config["tables"][1]["fkeys"][0]["reverse"]["time"].update(
+        bitwidth=bits, anchor_time=anchor, unit="s"
+    )
+    diskgraph.ingest(
+        json.dumps(config),
+        str(tmp_path / "index"),
+        col_stats=False,
+        context_threads=2,
+        encode_threads=2,
+        pk_map_threads=2,
+        edges_map_threads=2,
+        index_threads=2,
+    )
+    return diskgraph.SamplerEngine(str(tmp_path / "index")), floor, history_graph
+
+
+@pytest.mark.parametrize("limit", [1, None])
+@pytest.mark.parametrize(
+    ("start", "cutoff_offset", "expected"),
+    [(-200, 15, [1, 2]), (-10, 15, [2]), (-200, -40, [1])],
+)
+def test_rows_below_clock_floor_use_their_real_time(
+    floor_clock_graph, limit, start, cutoff_offset, expected
+):
+    # The row at floor - 50 is stored in the NULL code; it is a real time, not NULL.
+    engine, floor, original = floor_clock_graph
+    plan = _window_plan(original, start=start, limit=limit)
+    ids, lengths = _ids_and_lengths(engine, plan, floor + cutoff_offset)
+    if limit is None:
+        assert ids == expected
+    else:
+        assert len(ids) == 1 and ids[0] in expected
+    assert lengths == [len(ids)]
