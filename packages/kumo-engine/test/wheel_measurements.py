@@ -6,12 +6,14 @@
 import hashlib
 import json
 import logging
+import math
 import os
 import runpy
 import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from numbers import Integral
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,7 +25,41 @@ def verify_loader_profile(observed, *, batch_size, workers):
         raise ValueError('The actual batch size or workers differ from the fixed profile')
 
 
-def verify_training_work(work, window, *, expected_batches):
+def training_batch_examples(batch, module):
+    seed = (getattr(module, 'lhs_name', None)
+            or getattr(module, 'entity_table_name', None)
+            or getattr(batch, 'input_type', None))
+    try:
+        size = batch[seed].batch_size
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError('Missing actual seed-row count in training batch') from error
+    if isinstance(size, bool) or not isinstance(size, Integral) or size < 1:
+        raise ValueError('Invalid actual seed-row count in training batch')
+    return int(size)
+
+
+def allocate_memory_control(*, cpu_bytes=0, gpu_bytes=0):
+    """Retain real allocations for a separate declared memory-growth trial."""
+    for size in (cpu_bytes, gpu_bytes):
+        if isinstance(size, bool) or not isinstance(size, Integral) or size < 0:
+            raise ValueError('Memory-control byte counts must be nonnegative integers')
+    buffers = []
+    if cpu_bytes:
+        host = bytearray(cpu_bytes)
+        for offset in range(0, cpu_bytes, 4096):
+            host[offset] = 1
+        buffers.append(host)
+    if gpu_bytes:
+        import torch
+
+        device = torch.ones(gpu_bytes, dtype=torch.uint8, device='cuda')
+        torch.cuda.synchronize()
+        buffers.append(device)
+    return buffers, dict(cpu_bytes=int(cpu_bytes), gpu_bytes=int(gpu_bytes),
+                         scope='Touched allocations retained through the declared workflow; resource monitors measure their effect')
+
+
+def verify_training_work(work, window, *, expected_batches, expected_batch_size=None):
     if (expected_batches < 220 or len(work) != 1
             or work[0].get('completed_batches') != expected_batches
             or work[0].get('early_stopped') is not False
@@ -32,6 +68,13 @@ def verify_training_work(work, window, *, expected_batches):
             or window.get('timed_batches') != 200
             or not window.get('seconds', 0)):
         raise ValueError('The declared training work or timing window did not complete')
+    if expected_batch_size is not None:
+        sizes = window.get('batch_examples', [])
+        if (expected_batch_size < 1 or len(sizes) != expected_batches
+                or any(size != expected_batch_size for size in sizes)
+                or window.get('completed_examples') != expected_batches * expected_batch_size
+                or window.get('timed_examples') != 200 * expected_batch_size):
+            raise ValueError('Actual training examples differ from the fixed full-batch profile')
 
 
 def measure_recommendations(before, after):
@@ -59,7 +102,7 @@ def measure_recommendations(before, after):
 
 
 @contextmanager
-def fixed_loaders(measurements, report, *, batch_size, workers):
+def fixed_loaders(measurements, report, *, batch_size, workers, full_batches=False):
     import pytorch_lightning as pl
     import torch
     from kumo_core.train import diskgraph_nested_trainer as native
@@ -90,9 +133,14 @@ def fixed_loaders(measurements, report, *, batch_size, workers):
 
     def create(trainer):
         data = trainer.datamodule
+        if full_batches:
+            if not hasattr(data, 'drop_last_train'):
+                raise ValueError('The native loader cannot request complete training batches')
+            data.drop_last_train = True
         observed = dict(train_batch_size=data.train_batch_size,
                         eval_batch_size=data.eval_loader_kwargs['batch_size'],
                         workers=data.num_workers,
+                        drop_last_train=getattr(data, 'drop_last_train', None),
                         stage=(measurements.output / '.stage').read_text())
         verify_loader_profile(observed, batch_size=batch_size, workers=workers)
         observations.append(observed)
@@ -130,31 +178,54 @@ def binary_split_counts(values):
 class TrainingWindow:
     """Time 200 complete batches after 20 warmup batches."""
 
-    def __init__(self, synchronize, *, timing=True):
+    def __init__(self, synchronize, *, timing=True, control_delay_seconds=0):
+        if (not math.isfinite(control_delay_seconds) or control_delay_seconds < 0
+                or (control_delay_seconds and not timing)):
+            raise ValueError('A timing control needs a finite nonnegative delay and an active timer')
         self.synchronize = synchronize
         self.timing = timing
+        self.control_delay_seconds = control_delay_seconds
+        self.observed_control_delay_seconds = 0
         self.batches = 0
         self.optimizer_steps = 0
         self.started = None
         self.seconds = None
+        self.batch_examples = []
 
     def batch_start(self):
         if self.timing and self.batches == 20:
             self.synchronize()
             self.started = time.perf_counter()
 
-    def batch_end(self, *, optimizer_steps):
+    def batch_end(self, *, optimizer_steps, examples=None):
+        if examples is not None and (isinstance(examples, bool)
+                                     or not isinstance(examples, Integral) or examples < 1):
+            raise ValueError('Invalid actual example count')
+        self.batch_examples.append(int(examples) if examples is not None else None)
         self.batches += 1
         self.optimizer_steps = optimizer_steps
         if self.timing and self.batches == 220:
             self.synchronize()
+            if self.control_delay_seconds:
+                delay_started = time.perf_counter()
+                time.sleep(self.control_delay_seconds)
+                self.observed_control_delay_seconds = time.perf_counter() - delay_started
             self.seconds = time.perf_counter() - self.started
 
     def summary(self):
+        def total(values):
+            return sum(values) if all(value is not None for value in values) else None
+
         return dict(completed_batches=self.batches,
                     optimizer_steps=self.optimizer_steps,
                     warmup_batches=20,
                     timed_batches=200 if self.seconds is not None else 0,
+                    batch_examples=list(self.batch_examples),
+                    completed_examples=total(self.batch_examples),
+                    warmup_examples=total(self.batch_examples[:20]),
+                    timed_examples=total(self.batch_examples[20:220]),
+                    control_delay_seconds=self.control_delay_seconds,
+                    observed_control_delay_seconds=self.observed_control_delay_seconds,
                     seconds=self.seconds)
 
 

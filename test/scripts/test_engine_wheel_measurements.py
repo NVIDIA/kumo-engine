@@ -4,17 +4,101 @@
 
 import json
 import runpy
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 WORKER = (Path(__file__).resolve().parents[2] /
           'packages/kumo-engine/test/wheel_measurements.py')
 
 
 class WheelMeasurementsTest(unittest.TestCase):
+    def test_timing_control_spends_real_time_inside_the_measured_window(self):
+        worker = runpy.run_path(str(WORKER))
+        self.assertIn('control_delay_seconds',
+                      worker['TrainingWindow'](lambda: None).summary())
+        window = worker['TrainingWindow'](lambda: None, control_delay_seconds=0.02)
+        for batch in range(220):
+            window.batch_start()
+            window.batch_end(optimizer_steps=batch + 1, examples=64)
+        result = window.summary()
+        self.assertGreaterEqual(result['seconds'], 0.02)
+        self.assertGreaterEqual(result['observed_control_delay_seconds'], 0.02)
+        self.assertEqual(result['completed_examples'], 14080)
+        for delay in (-1, float('nan'), float('inf')):
+            with self.subTest(delay=delay), self.assertRaises(ValueError):
+                worker['TrainingWindow'](lambda: None, control_delay_seconds=delay)
+
+    def test_memory_control_retains_and_touches_real_host_pages(self):
+        worker = runpy.run_path(str(WORKER))
+        self.assertIn('allocate_memory_control', worker)
+        buffers, record = worker['allocate_memory_control'](cpu_bytes=16385)
+        self.assertEqual(len(buffers[0]), 16385)
+        self.assertEqual([buffers[0][offset] for offset in range(0, 16385, 4096)],
+                         [1, 1, 1, 1, 1])
+        self.assertEqual(record['cpu_bytes'], 16385)
+        self.assertEqual(record['gpu_bytes'], 0)
+        for invalid in (-1, 1.5, True):
+            with self.subTest(size=invalid), self.assertRaises(ValueError):
+                worker['allocate_memory_control'](cpu_bytes=invalid)
+
+    def test_partial_measurement_modes_reject_conflicting_work_before_start(self):
+        command = [sys.executable, str(WORKER.with_name('wheel_customer_learning.py')),
+                   '--dataset', 'doordash_small', '--data', '/missing',
+                   '--output', '/missing/output', '--scratch', '/missing/scratch',
+                   '--seed', '0', '--version', '1.0.0', '--frozen-plan', '/missing',
+                   '--resource-helper', '/missing']
+        for modes in (['--fit-only', '--quality-only'],
+                      ['--fit-only', '--preflight-only'],
+                      ['--quality-only', '--training-probe']):
+            with self.subTest(modes=modes):
+                result = subprocess.run(command + modes, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('not allowed with argument', result.stderr)
+
+    def test_training_window_records_real_examples_and_rejects_partial_work(self):
+        worker = runpy.run_path(str(WORKER))
+        window = worker['TrainingWindow'](lambda: None)
+        self.assertIn('timed_examples', window.summary())
+        for batch in range(220):
+            window.batch_start()
+            window.batch_end(optimizer_steps=(batch + 1) * 2,
+                             examples=14 if batch == 219 else 64)
+        measured = window.summary()
+        self.assertEqual(measured['warmup_examples'], 1280)
+        self.assertEqual(measured['timed_examples'], 12750)
+        self.assertEqual(measured['completed_examples'], 14030)
+        work = [dict(completed_batches=220, optimizer_steps=440,
+                     early_stopped=False)]
+        with self.assertRaisesRegex(ValueError, 'examples|batch'):
+            worker['verify_training_work'](work, measured,
+                                           expected_batches=220,
+                                           expected_batch_size=64)
+        complete = worker['TrainingWindow'](lambda: None)
+        for batch in range(220):
+            complete.batch_start()
+            complete.batch_end(optimizer_steps=(batch + 1) * 2, examples=64)
+        self.assertEqual(complete.summary()['timed_examples'], 12800)
+        worker['verify_training_work'](work, complete.summary(),
+                                       expected_batches=220, expected_batch_size=64)
+
+    def test_training_example_count_uses_native_seed_rows(self):
+        worker = runpy.run_path(str(WORKER))
+        self.assertTrue(callable(worker.get('training_batch_examples')),
+                        'Actual seed-row accounting is missing')
+        actual = worker['training_batch_examples']
+        batch = {'users': SimpleNamespace(batch_size=14)}
+        module = SimpleNamespace(lhs_name='users', batch_size=256)
+        self.assertEqual(actual(batch, module), 14)
+        self.assertEqual(actual(batch, SimpleNamespace(entity_table_name='users')), 14)
+        for size in (None, 0, -1, True):
+            with self.subTest(size=size), self.assertRaises(ValueError):
+                actual({'users': SimpleNamespace(batch_size=size)}, module)
+
     def test_gpu_ranking_measurement_keeps_cutoff_changes_unqualified(self):
         import pandas as pd
 

@@ -348,12 +348,29 @@ Check the actual selected plan against every fixed requested field.
 DoorDash training requires equal minimum and maximum batch budgets.
 It times 200 batches after twenty warmup batches, then completes all declared training.
 It counts optimizer updates separately from batches.
+Use `--require-full-batches` for a fixed performance profile.
+It requests complete native batches and checks their actual seed-row counts.
+An incomplete batch fails that profile. Configuration alone does not prove the completed example count.
 
 Use `--training-probe` to score the complete validation cohort before selecting a learning recipe.
 Freeze that recipe before comparing wheels on five matching seeds.
 The normal route predicts every reserved test entity and every requested operational entity.
 Capped SDK test metrics remain auxiliary. Independent complete test predictions supply the reported quality score.
 Prediction and reload share trained models and outputs where their inputs match.
+
+For a separate calibration profile, `--fit-only` saves the complete fixed fit without independent prediction.
+`--quality-only` scores every held-out example and skips operational and reload prediction.
+These modes return `FIT_MEASURED` and `QUALITY_MEASURED`, respectively.
+They set `native_workflow_complete` to false and cannot replace full workflow evidence.
+They cannot be combined with each other, `--preflight-only`, or `--training-probe`.
+
+Separate resource controls require `--fit-only --require-full-batches`.
+`--control-delay-seconds` waits after GPU synchronization inside the measured training window.
+`--control-cpu-bytes` touches host pages. `--control-gpu-bytes` creates a filled CUDA buffer.
+Both memory controls retain their allocations through the workflow.
+Resource monitors measure their effect. Do not add artificial deltas to saved measurements.
+Freeze control sizes and criteria before fresh reserved trials.
+These new modes still need native profile admission before study use.
 
 `measurements.json` separates SDK operation times from the synchronized training window.
 Prediction callback windows remain separate from full SDK prediction times.

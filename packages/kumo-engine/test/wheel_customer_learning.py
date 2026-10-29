@@ -25,9 +25,11 @@ from wheel_learning import score_predictions, verify_plan
 from wheel_measurements import (
     Measurements,
     TrainingWindow,
+    allocate_memory_control,
     binary_split_counts,
     fixed_loaders,
     measure_recommendations,
+    training_batch_examples,
     verify_training_work,
 )
 
@@ -187,16 +189,33 @@ def main():
     parser.add_argument('--resource-helper', type=Path, required=True)
     parser.add_argument('--graph-recipe', type=Path)
     parser.add_argument('--prepared-manifest', type=Path)
-    parser.add_argument('--preflight-only', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--preflight-only', action='store_true')
+    mode.add_argument('--fit-only', action='store_true',
+                      help='Measure the fixed fit and save its bundle without independent prediction')
+    mode.add_argument('--quality-only', action='store_true',
+                      help='Score every held-out answer without full operational or reload prediction')
     parser.add_argument('--loader-workers', type=int, default=8)
-    parser.add_argument('--training-probe', action='store_true',
-                        help='Train and score validation answers, then stop before operational prediction')
+    parser.add_argument('--require-full-batches', action='store_true',
+                        help='Require measured complete batches for a fixed performance profile')
+    mode.add_argument('--training-probe', action='store_true',
+                      help='Train and score validation answers, then stop before operational prediction')
+    parser.add_argument('--control-delay-seconds', type=float, default=0,
+                        help='Real wait inside the synchronized training window for a separate control')
+    parser.add_argument('--control-cpu-bytes', type=int, default=0)
+    parser.add_argument('--control-gpu-bytes', type=int, default=0)
     args = parser.parse_args()
     if args.seed < 0 or args.loader_workers < 1:
         parser.error('Seed must be nonnegative and loader workers must be positive')
+    if (not math.isfinite(args.control_delay_seconds) or args.control_delay_seconds < 0
+            or args.control_cpu_bytes < 0 or args.control_gpu_bytes < 0):
+        parser.error('Control sizes and delay must be finite and nonnegative')
     doordash = args.dataset.startswith('doordash_')
-    if args.training_probe and not doordash:
-        parser.error('Training-profile probes currently require a DoorDash recipe')
+    if (args.training_probe or args.fit_only or args.quality_only) and not doordash:
+        parser.error('Partial measurement modes currently require a DoorDash recipe')
+    if ((args.control_delay_seconds or args.control_cpu_bytes or args.control_gpu_bytes)
+            and not (args.fit_only and args.require_full_batches)):
+        parser.error('Resource controls require --fit-only and --require-full-batches')
     if doordash and (args.graph_recipe is None or args.prepared_manifest is None
                      or not args.frozen_plan.is_file()):
         parser.error('DoorDash needs a graph recipe, prepared manifest, and existing frozen plan')
@@ -207,8 +226,15 @@ def main():
     report = dict(status='RUNNING', dataset=args.dataset, seed=args.seed,
                   version=args.version, recipe=recipe, release_approved=False,
                   quality_limit=None, performance_limit=None,
+                  quality_score=None, native_workflow_complete=False,
                   performance_profile_qualified=False,
                   training_recipe='Adoption notebook: one experiment, no refit, three epochs')
+    report['measurement_scope'] = ('fit' if args.fit_only else 'quality' if args.quality_only
+                                   else 'validation' if args.training_probe
+                                   else 'preflight' if args.preflight_only else 'full_workflow')
+    report['requested_controls'] = dict(delay_seconds=args.control_delay_seconds,
+                                        cpu_bytes=args.control_cpu_bytes,
+                                        gpu_bytes=args.control_gpu_bytes)
     report['source_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     if doordash:
         report['training_recipe'] = 'Fixed benchmark profile: 20 warmup and 200 timed batches, one experiment, no refit'
@@ -218,6 +244,7 @@ def main():
     report['reload_scope'] = 'The complete reserved quality population'
     started = time.monotonic()
     device_evidence = {}
+    control_buffers = []
     try:
         measurements.start_monitor(args.resource_helper, args.scratch)
         with measurements.stage('import', gpu=False):
@@ -244,6 +271,8 @@ def main():
             name: Path('/sys/fs/cgroup', name).read_text().strip()
             for name in ('memory.max', 'cpu.max')
             if Path('/sys/fs/cgroup', name).exists()}
+        control_buffers, report['memory_control'] = allocate_memory_control(
+            cpu_bytes=args.control_cpu_bytes, gpu_bytes=args.control_gpu_bytes)
         if doordash:
             prepared = json.loads(args.prepared_manifest.read_text())
             audit = json.loads((args.data / 'copy-verification.json').read_text())
@@ -343,12 +372,13 @@ def main():
             plan.training_job.manual_seed = args.seed
             write_json(args.output / 'requested-plan.json', to_json_dict(plan))
         report['frozen_plan_sha256'] = hashlib.sha256(args.frozen_plan.read_bytes()).hexdigest()
-        with measurements.stage('prediction_table'):
-            prediction_table = query.generate_prediction_table(
-                snapshot, prediction_time=datetime.fromisoformat(recipe['prediction_time']))
-        population = pq.read_table(prediction_table.table_path, columns=['ENTITY1'])
-        pq.write_table(population, args.output / 'prediction-inputs.parquet')
-        expected_ids = population['ENTITY1'].to_pylist()
+        if not (args.fit_only or args.quality_only or args.training_probe):
+            with measurements.stage('prediction_table'):
+                prediction_table = query.generate_prediction_table(
+                    snapshot, prediction_time=datetime.fromisoformat(recipe['prediction_time']))
+            population = pq.read_table(prediction_table.table_path, columns=['ENTITY1'])
+            pq.write_table(population, args.output / 'prediction-inputs.parquet')
+            expected_ids = population['ENTITY1'].to_pylist()
         if args.preflight_only:
             measurements.finish_monitor()
             measurements.monitor = None
@@ -359,7 +389,7 @@ def main():
         if doordash:
             loader_profile = fixed_loaders(
                 measurements, report, batch_size=plan.optimization.batch_size[0],
-                workers=args.loader_workers)
+                workers=args.loader_workers, full_batches=args.require_full_batches)
         with observe_gpu(device_evidence), loader_profile:
             import pytorch_lightning as pl
             from kumo_core.train.trainer import Trainer as CoreTrainer
@@ -368,14 +398,17 @@ def main():
 
             class WorkCounter(pl.Callback):
                 def __init__(self):
-                    self.window = TrainingWindow(torch.cuda.synchronize, timing=doordash)
+                    self.window = TrainingWindow(
+                        torch.cuda.synchronize, timing=doordash,
+                        control_delay_seconds=args.control_delay_seconds)
 
                 def on_train_batch_start(self, trainer, module, batch, batch_idx):
                     if doordash:
                         self.window.batch_start()
 
                 def on_train_batch_end(self, trainer, module, outputs, batch, batch_idx):
-                    self.window.batch_end(optimizer_steps=int(trainer.global_step))
+                    self.window.batch_end(optimizer_steps=int(trainer.global_step),
+                                          examples=training_batch_examples(batch, module))
                     if doordash:
                         report['training_window'] = self.window.summary()
 
@@ -406,7 +439,9 @@ def main():
                     raise ValueError('The fixed profile needs equal minimum and maximum batches')
                 expected = optimization.max_epochs * optimization.max_steps_per_epoch
                 verify_training_work(work, report.get('training_window', {}),
-                                     expected_batches=expected)
+                                     expected_batches=expected,
+                                     expected_batch_size=(optimization.batch_size[0]
+                                                          if args.require_full_batches else None))
                 report['required_training_batches'] = expected
             shutil.copytree(result.bundle_dir, args.output / 'bundle')
             for name in ('resolved_model_plan', 'trainer_config', 'encoders',
@@ -439,10 +474,18 @@ def main():
             report['selected_plan'] = 'PASS: fixed requested fields match the actual selected plan'
             report['metrics'] = {key: float(value) for key, value in result.metrics.items()
                                  if isinstance(value, (int, float)) and math.isfinite(value)}
+            report['bundle_dir'] = str(args.output / 'bundle')
+            if args.fit_only:
+                verify_devices(device_evidence, ('training',))
+                measurements.finish_monitor()
+                measurements.monitor = None
+                report.update(status='FIT_MEASURED', prediction_scope='None', reload_scope='None')
+                return 0
             metric = 'val_recall@10' if args.training_probe else recipe['metric']
             if metric not in report['metrics']:
                 raise ValueError('Missing held-out quality metric')
-            report['quality_score'] = report['metrics'][metric]
+            report['sdk_auxiliary_metric'] = metric
+            report['sdk_auxiliary_score'] = report['metrics'][metric]
             write_json(args.output / 'progress.json', dict(report, **device_evidence, stage='training_complete'))
             options = ({'binary_classification_threshold': 0.5} if args.dataset == 'affirm'
                        else {'num_classes_to_return': recipe.get('top_k', 10)})
@@ -468,7 +511,16 @@ def main():
                 measurements.monitor = None
                 report.update(status='TRAINED_PROFILE_PROBE', quality_metric='validation_Recall@12',
                               prediction_scope='Complete validation cohort only',
+                              reload_scope='None',
                               evaluation_scope='Validation selects the profile. SDK auxiliary test metrics are not reserved validation. No independent test or operational prediction.')
+                return 0
+            if args.quality_only:
+                verify_devices(device_evidence, ('training', 'prediction'))
+                measurements.finish_monitor()
+                measurements.monitor = None
+                report.update(status='QUALITY_MEASURED',
+                              prediction_scope='Complete held-out quality cohort only',
+                              reload_scope='None')
                 return 0
             del evaluated, reserved
             gc.collect()
@@ -514,6 +566,7 @@ def main():
         verify_devices(device_evidence, ('training', 'prediction', 'reload_and_predict'))
         report.update(device_evidence)
         report['status'] = 'MEASURED'
+        report['native_workflow_complete'] = True
         if args.dataset == 'sothebys' and report['quality_score'] == 0:
             report['quality_warning'] = 'Zero held-out Recall@10 cannot qualify learning-loss detection'
     except Exception as error:
@@ -528,6 +581,7 @@ def main():
             traceback.print_exc()
         report['elapsed_seconds'] = time.monotonic() - started
         write_json(args.output / 'result.json', report)
+        del control_buffers
     return 0 if report['status'] == 'MEASURED' else 1
 
 
