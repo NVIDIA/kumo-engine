@@ -37,8 +37,9 @@ import math
 import re
 import shutil
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -107,6 +108,7 @@ MODEL_BUILDER_GROUP = 'kumo_snowflake.registry_models'
 #: rather than a temporary directory so a half-finished import leaves something
 #: a reader can look at.
 _EXPORT_DIR = '_registry-export'
+_EXPORT_WORKERS = 8
 
 #: How a version comment's line of holdout metrics begins.
 _METRICS_LINE = 'Holdout: '
@@ -315,6 +317,35 @@ def _locate_bundle(root: Path) -> Path:
         f"No Kumo model bundle under {root}: no directory holds both "
         f"{_SPEC_FILE} and {_MANIFEST_FILE}. This model version was not "
         f"published by kumoai_studio.export_model().")
+
+
+def _export(session: Any, version: "ModelVersion", directory: Path) -> None:
+    r"""Downloads the version's files but the code embedded in it, which
+    loading the bundle back does not import: one LIST, then GETs on a
+    bounded pool (``ModelVersion.export`` GETs every file in turn)."""
+    from kumo_core.sources.layout import confined
+
+    root = (f'snow://model/{version.fully_qualified_model_name}/versions/'
+            f'{resolved(str(version.version_name))}/')
+    names = [
+        PurePosixPath(*PurePosixPath(row['name']).parts[2:])
+        for row in session.sql(f"LIST {_quoted(root + 'model/')}").collect()
+    ]
+
+    def get(name: PurePosixPath) -> None:
+        local = directory / confined(str(name.parent))
+        local.mkdir(parents=True, exist_ok=True)
+        with session.connection.cursor() as cursor:
+            cursor.execute(f"GET {_quoted(root + str(name))} "
+                           f"{_quoted(f'file://{local}')}")
+
+    with ThreadPoolExecutor(_EXPORT_WORKERS) as pool:
+        list(pool.map(get, [name for name in names
+                            if name.parts[:2] != ('model', 'code')]))
+
+
+def _quoted(url: str) -> str:
+    return "'" + url.replace('\\', '\\\\').replace("'", "\\'") + "'"
 
 
 def _model_uri(connector: SourceConnector, version: "ModelVersion") -> str:
@@ -614,7 +645,8 @@ class SnowflakeModelRegistryMixin:
                 'ModelRegistryLocation.')
 
         destination = Path(local_dir)
-        with self._registry(connector) as registry:
+        with self._registry(connector) as registry, \
+                self._session(connector) as session:
             # Resolved before anything on disk is touched: a name the registry
             # does not know must not cost the caller the bundle already there.
             model = registry.get_model(location.model_name)
@@ -637,7 +669,7 @@ class SnowflakeModelRegistryMixin:
             if staged.exists():
                 shutil.rmtree(staged)
             staged.mkdir(parents=True)
-            version.export(str(staged))
+            _export(session, version, staged)
 
         bundle = _locate_bundle(staged)
         metrics_path = bundle / 'metrics.json'

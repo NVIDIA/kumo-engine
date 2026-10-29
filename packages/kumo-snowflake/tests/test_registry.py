@@ -4,6 +4,7 @@
 """Metrics returned by model downloads come from the exported bundle."""
 
 import json
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,46 +17,85 @@ from kumoapi.data_source import SnowflakeConnectorResourceConfig
 from kumoapi.plugin import ModelRegistryLocation
 
 
+class _VersionFiles:
+    r"""A session over model version files, as LIST and GET see them."""
+    def __init__(self, files):
+        self.files, self.got = files, []
+
+    def sql(self, query):
+        version = re.search(r'/versions/([^/]+)/model/', query).group(1)
+        return SimpleNamespace(collect=lambda: [{
+            'name': f'versions/{version}/{name}'
+        } for name in self.files[version]])
+
+    @property
+    def connection(self):
+        return SimpleNamespace(cursor=self._cursor)
+
+    @contextmanager
+    def _cursor(self):
+        yield SimpleNamespace(execute=self._get)
+
+    def _get(self, query):
+        version, name, local = re.fullmatch(
+            r"GET 'snow://model/DB\.SCHEMA\.CHURN/versions/([^/]+)/(\S+)' "
+            r"'file://(\S+)'", query).groups()
+        self.got.append(name)
+        (Path(local) / Path(name).name).write_bytes(self.files[version][name])
+
+
+def _version_files(**files):
+    return {
+        f'model/models/CHURN/artifacts/bundle/{name}': data
+        for name, data in {
+            'training-spec.json': b'{}',
+            'publication-manifest.json': b'{}',
+            **files
+        }.items()
+    } | {'model/code/kumo/__init__.py': b''}
+
+
+def _sink(monkeypatch, model, files):
+    @contextmanager
+    def registry(_):
+        yield SimpleNamespace(get_model=lambda _: model)
+
+    @contextmanager
+    def session(_):
+        yield files
+
+    sink = SnowflakeModelRegistryMixin()
+    monkeypatch.setattr(sink, '_registry', registry)
+    monkeypatch.setattr(sink, '_session', session, raising=False)
+    return sink
+
+
 @pytest.fixture
 def fetch(tmp_path, monkeypatch):
-    metrics_payload = None
-
-    def export(directory):
-        bundle = Path(directory) / 'artifacts' / 'bundle'
-        bundle.mkdir(parents=True)
-        (bundle / 'training-spec.json').write_text('{}')
-        (bundle / 'publication-manifest.json').write_text('{}')
-        (bundle / 'weights.bin').write_bytes(b'model weights')
-        if metrics_payload is not None:
-            (bundle / 'metrics.json').write_text(metrics_payload)
-
+    files = _VersionFiles({})
     version = SimpleNamespace(
         model_name='CHURN', version_name='V1',
-        fully_qualified_model_name='DB.SCHEMA.CHURN', export=export,
+        fully_qualified_model_name='DB.SCHEMA.CHURN',
         show_metrics=lambda: {
             'kumo_engine': '1',
             'kumo_bundle_id': 'b1',
             'auc': 0.5
         })
     model = SimpleNamespace(default=version, version=lambda _: version)
-
-    @contextmanager
-    def registry(_):
-        yield SimpleNamespace(get_model=lambda _: model)
-
-    sink = SnowflakeModelRegistryMixin()
-    monkeypatch.setattr(sink, '_registry', registry)
+    sink = _sink(monkeypatch, model, files)
     destination = tmp_path / 'restored'
     destination.mkdir()
     (destination / 'previous').write_bytes(b'previous bundle')
 
     def run(payload, requested_version):
-        nonlocal metrics_payload
-        metrics_payload = payload
+        extra = {} if payload is None else {'metrics.json': payload.encode()}
+        files.files['V1'] = _version_files(**{'weights.bin': b'model weights'},
+                                           **extra)
         return sink.fetch_model(
             SimpleNamespace(), str(destination),
             location=ModelRegistryLocation('CHURN', version=requested_version))
 
+    run.files = files
     return run, destination
 
 
@@ -70,6 +110,7 @@ def test_fetch_returns_bundle_metrics(fetch, requested_version, metrics):
     assert published.version == 'V1'
     assert (destination / 'weights.bin').read_bytes() == b'model weights'
     assert not (destination / 'previous').exists()
+    assert not any(name.startswith('model/code/') for name in run.files.got)
     if payload is not None:
         assert (destination / 'metrics.json').read_text() == payload
 
@@ -170,15 +211,9 @@ class _Model:
                      if version_or_alias.upper() in held), version_or_alias)
         held = self.aliases[name]
 
-        def export(directory):
-            bundle = Path(directory) / 'bundle'
-            bundle.mkdir()
-            (bundle / 'training-spec.json').write_text(name)
-            (bundle / 'publication-manifest.json').write_text('{}')
-
         return SimpleNamespace(
             version_name=name, model_name='CHURN',
-            fully_qualified_model_name='DB.SCHEMA.CHURN', export=export,
+            fully_qualified_model_name='DB.SCHEMA.CHURN',
             set_alias=lambda alias: held.append(alias.upper()),
             unset_alias=lambda alias: held.remove(alias.upper()),
             show_metrics=lambda: {
@@ -188,13 +223,11 @@ class _Model:
 
 
 def _aliasing_sink(monkeypatch, model):
-    @contextmanager
-    def registry(_):
-        yield SimpleNamespace(get_model=lambda _: model)
-
-    sink = SnowflakeModelRegistryMixin()
-    monkeypatch.setattr(sink, '_registry', registry)
-    return sink
+    files = _VersionFiles({
+        name: _version_files(**{'training-spec.json': name.encode()})
+        for name in model.aliases
+    })
+    return _sink(monkeypatch, model, files)
 
 
 def test_set_alias_moves_it_and_refuses_what_snowflake_cannot(monkeypatch):
