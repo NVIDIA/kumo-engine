@@ -185,6 +185,7 @@ class Adapter:
     nested_runs: bool = False
     step_metrics: bool = False
     artifacts: bool = False
+    run_name: Callable[[str], str] = str
 
 
 def gaps(expected: Dict[str, RunRecord], observed: Dict[str, Observed],
@@ -207,7 +208,8 @@ def gaps(expected: Dict[str, RunRecord], observed: Dict[str, Observed],
                 found.append(f'{run_id} {what}: {have!r} != {want!r}')
 
         if record.name is not None:
-            differ('name', seen.name, record.name)
+            differ('name', adapter.run_name(seen.name),
+                   adapter.run_name(record.name))
         differ('params', dict(seen.params), dict(kept_params(record.params)))
         differ('metrics', {k: seen.metrics.get(k) for k in record.metrics},
                dict(record.metrics))
@@ -289,7 +291,10 @@ def snowflake_adapter(monkeypatch):
     import _snowflake_experiment_fake
 
     fake = _snowflake_experiment_fake.install(monkeypatch)
-    from kumo.engine.integrations.snowflake import SnowflakeTracking
+    from kumo.engine.integrations.snowflake import (
+        SnowflakeTracking,
+        _run_identifier,
+    )
 
     def observe():
         observed = {}
@@ -326,7 +331,8 @@ def snowflake_adapter(monkeypatch):
     return Adapter(
         make=lambda: SnowflakeTracking(_snowflake_experiment_fake.FakeSession(),
                                        experiment_name='ents', tags=USER_TAGS),
-        observe=observe, step_metrics=True, artifacts=True)
+        observe=observe, step_metrics=True, artifacts=True,
+        run_name=lambda name: _run_identifier(name).upper())
 
 
 @pytest.fixture(params=['mlflow', 'snowflake'])
