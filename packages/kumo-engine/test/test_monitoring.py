@@ -310,6 +310,37 @@ def test_a_snowflake_table_gets_the_types_model_monitor_needs(
         original.TARGET.astype(int).tolist())
 
 
+def test_the_holdout_baseline_exports_the_evaluated_rows_shape(
+        snapshots, classifier, monkeypatch):
+    import pyarrow.parquet as parquet
+
+    from kumo.engine.trainer.output_config import PredictionOutputConfig
+
+    trainer, run = classifier
+    exports = []
+    sink = SimpleNamespace(write_files=lambda connector, table, files, mode,
+                           **kwargs: exports.append((
+                               [(field.name, field.type) for field in
+                                parquet.read_schema(files[0])],
+                               sorted(kwargs['extra_columns']))))
+    monkeypatch.setattr(kumo.SnowflakeConnector, 'sink_backend', sink)
+    connector = kumo.SnowflakeConnector(warehouse='WH', database='ML',
+                                        schema_name='S')
+    trainer.evaluate(run, labels_snapshot=snapshots.after).export(
+        PredictionOutputConfig(connector, path='EVALUATED'))
+    baseline = trainer.result.holdout_evaluation(
+        binary_classification_threshold=0.5)
+    baseline.export(PredictionOutputConfig(connector, path='BASELINE'))
+    assert exports[0] == exports[1]
+
+    rows = pd.read_parquet(baseline.actuals)
+    holdout = trainer.result.holdout_df()
+    assert rows.TARGET_PRED.tolist() == (holdout.True_PROB > 0.5).tolist()
+    assert rows.TARGET.tolist() == holdout.TARGET.tolist()
+    unthresholded = trainer.result.holdout_evaluation()
+    assert pd.read_parquet(unthresholded.actuals).TARGET_PRED.isna().all()
+
+
 def _join(tmp_path, task, predictions, labels):
     import json
 

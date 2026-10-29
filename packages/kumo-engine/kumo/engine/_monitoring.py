@@ -235,6 +235,46 @@ def evaluate(trainer: Any, run: Any, snapshot: Any) -> EvaluationResult:
     )
 
 
+def holdout_evaluation(result: Any,
+                       threshold: Optional[float]) -> EvaluationResult:
+    r"""``result``'s holdout as evaluated rows with the columns and types
+    `evaluate` writes, so its export is a warehouse monitor's baseline."""
+    from kumo_core.artifacts import bundle_task_type
+
+    from kumo.engine._scratch import get_scratch_dir
+
+    task_type = bundle_task_type(result.artifact_paths).value
+    task = _TASKS.get(task_type)
+    if task not in ('binary', 'regression'):
+        raise ValueError(f'Holdout evaluated rows cover binary '
+                         f'classification and regression, not {task_type}.')
+    holdout = result.holdout_df()
+    now = pd.Timestamp.now(tz='UTC')
+    rows = pd.DataFrame({
+        'ENTITY': holdout['ENTITY'],
+        'ANCHOR_TIMESTAMP': holdout.get('TIMESTAMP', now.tz_localize(None)),
+        'TARGET': holdout['TARGET'],
+        'EVALUATED_AT': now,
+    }).astype({'ANCHOR_TIMESTAMP': 'datetime64[ns]',
+               'EVALUATED_AT': 'datetime64[ns, UTC]'})
+    for name in _EMITTED[task]:
+        rows[name] = holdout[name]
+    if task == 'binary':
+        rows['TARGET_PRED'] = (
+            rows['True_PROB'].gt(threshold) if threshold is not None else
+            pd.Series(pd.NA, index=rows.index, dtype='boolean'))
+    actuals = get_scratch_dir() / 'evaluations' / f'holdout-{result.id}'
+    shutil.rmtree(actuals, ignore_errors=True)
+    actuals.mkdir(parents=True)
+    rows.to_parquet(actuals / 'part-00000.parquet', index=False)
+    return EvaluationResult(
+        prediction_id='holdout', bundle_id=result.id,
+        snapshot_id=result.snapshot_id or '', task_type=task_type,
+        anchors=(), metrics={}, rows=len(rows), labelled=len(rows),
+        labelled_fraction=1.0 if len(rows) else None, matured=True,
+        bundle_matches=True, actuals=str(actuals))
+
+
 _TASKS = {
     'binary_classification': 'binary',
     'regression': 'regression',
