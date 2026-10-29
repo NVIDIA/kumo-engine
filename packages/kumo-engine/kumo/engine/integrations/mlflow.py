@@ -43,6 +43,7 @@ from kumo.engine.connector._extras import import_provider
 from kumo.engine.integrations._mlflow_target import (
     SAGEMAKER_ARN,
     SageMakerMLflow,
+    global_tracking_uri,
 )
 from kumo.engine.integrations._mlflow_target import resolve as resolve_target
 
@@ -160,6 +161,16 @@ class MlflowTracking:
         if self.run_id is None or self._experiment_id is None:
             return None
         return self.target.run_url(self._experiment_id, self.run_id)
+
+    @contextmanager
+    def client(self) -> Iterator[Any]:
+        r"""An ``MlflowClient`` for this tracker's server, with its
+        credentials and tracking URI set for the block, so your own MLflow
+        calls (the client's, or ``mlflow.search_runs``) reach the server
+        kumo-engine records to, as the same identity."""
+        with self.target.scope(), global_tracking_uri(
+                self.target.tracking_uri):
+            yield self.target.client()
 
     def check_model_name(self, name: str) -> None:
         r"""Raises :class:`ValueError` unless this tracker's registry

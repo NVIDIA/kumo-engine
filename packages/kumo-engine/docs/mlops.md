@@ -58,6 +58,16 @@ with kumo.mlops(cfg):
     print(result.registered_model.version, result.tracking.url)
 ```
 
+Tables on S3 are read through an `S3Connector`:
+
+```python
+s3 = kumo.S3Connector(root_dir="s3://<bucket>/data")
+users = kumo.Table.from_source_table(s3["users.parquet"], primary_key="USER_ID").infer_metadata()
+orders = kumo.Table.from_source_table(s3["orders.parquet"], primary_key="ORDER_ID", time_column="ORDER_TIME").infer_metadata()
+graph = kumo.Graph(tables={"users": users, "orders": orders.with_column("USER_ID", stype="ID")},
+                   edges=[kumo.Edge(src_table="orders", fkey="USER_ID", dst_table="users")])
+```
+
 ### Snowflake
 
 Tracking and the Snowflake Model Registry through one connector (`kumo-engine[snowflake,s3]`):
@@ -151,15 +161,18 @@ An alias is a letter or underscore followed by letters, digits or underscores; `
 Register every fit under a candidate alias and move the serving alias yourself once the new model is better, comparing `result.metrics` with the champion's:
 
 ```python
-champion = kumo.Trainer.load_from_connector(cfg, location=kumo.ModelRegistryLocation(name, alias="champion"))
-if result.metrics["test_auroc"] > champion.result.metrics["test_auroc"]:
-    mlflow.MlflowClient().set_registered_model_alias(name, "champion", result.registered_model.version)
+with cfg.tracking.client() as client:          # the tracker's MLflow server, as its identity
+    first = "champion" not in client.get_registered_model(name).aliases
+    if first or result.metrics["test_auroc"] > kumo.Trainer.load_from_connector(
+            cfg, location=kumo.ModelRegistryLocation(name, alias="champion")).result.metrics["test_auroc"]:
+        client.set_registered_model_alias(name, "champion", result.registered_model.version)
 ```
 
-In the Snowflake Model Registry a version holds at most one alias, so unset it first:
+In the Snowflake Model Registry a version holds at most one alias: take `champion` off the old version (there is none on the first promotion) and `candidate` off the new one, then set it:
 
 ```sql
-ALTER MODEL ML.MODELS.CHURN_GNN VERSION champion UNSET ALIAS;
+ALTER MODEL ML.MODELS.CHURN_GNN VERSION champion UNSET ALIAS;   -- skip on the first promotion
+ALTER MODEL ML.MODELS.CHURN_GNN VERSION V3 UNSET ALIAS;         -- V3 holds candidate
 ALTER MODEL ML.MODELS.CHURN_GNN VERSION V3 SET ALIAS = champion;
 ```
 
@@ -206,16 +219,16 @@ workspace = DatabricksConnector(catalog="main", schema_name="ml", warehouse_id="
                                 identity=DatabricksIdentity(host="https://<workspace>", client_id="<id>", client_secret="<secret>"))
 databricks = MlflowTracking("/Users/<you>/users_churn", target=workspace)
 sagemaker = MlflowTracking("users-churn", target=SageMakerMLflow("<ARN>", identity=S3Identity(role_arn="<role ARN>")))
-snowflake = SnowflakeTracking(SnowflakeConnector(warehouse="<wh>", database="ML", schema_name="RUNS",
+snowflake = SnowflakeTracking(SnowflakeConnector(warehouse="<wh>", database="ML", schema_name="RUNS", role="<role>",
                               identity=SnowflakeIdentity(account="<account>", username="<user>", private_key="<PEM>")),
                               experiment_name="USERS_CHURN")
 ```
 
-`load_model(uri, target=...)` and `log_model(..., target=...)` take the same targets. A `DatabricksConnector` without an identity uses a notebook, a job or a `~/.databrickscfg` profile with no environment variables to set. MLflow has no per-client credentials, so with explicit credentials each MLflow call kumo-engine makes sets `DATABRICKS_HOST` and a short-lived `DATABRICKS_TOKEN` (never the secret), or the SageMaker tracking URI and AWS session, and restores them afterwards: don't call MLflow or Databricks yourself on other threads during a fit. `examples/mlops/smoke.py databricks|sagemaker|snowflake` is a manual live check per platform.
+`load_model(uri, target=...)` and `log_model(..., target=...)` take the same targets. A `DatabricksConnector` without an identity uses a notebook, a job or a `~/.databrickscfg` profile with no environment variables to set. MLflow has no per-client credentials, so with explicit credentials each MLflow call kumo-engine makes sets `DATABRICKS_HOST` and a short-lived `DATABRICKS_TOKEN` (never the secret), or the SageMaker tracking URI and AWS session, and restores them afterwards: don't call MLflow or Databricks yourself on other threads during a fit. For your own MLflow calls as that identity, use `with tracking.client() as client:`, an `MlflowClient` for the tracker's server with the same state set for the block (`mlflow.search_runs` inside it reaches that server too). A `SnowflakeConnector` without `role=` uses the user's default role. `examples/mlops/smoke.py databricks|sagemaker|snowflake` is a manual live check per platform.
 
 ### SageMaker managed MLflow
 
-1. Create a tracking server once (15-25 minutes): `aws sagemaker create-mlflow-tracking-server --tracking-server-name <name> --artifact-store-uri s3://<bucket>/mlflow --role-arn <server role ARN>`; the server role needs read and write on that prefix.
+1. Create a tracking server once (15-25 minutes): `aws sagemaker create-mlflow-tracking-server --tracking-server-name <name> --artifact-store-uri s3://<bucket>/mlflow --role-arn <server role ARN>`; the server role needs read and write on that prefix. A stopped server starts with `aws sagemaker start-mlflow-tracking-server --tracking-server-name <name>` (about 20 minutes); `kumo.MLOps` fails until `aws sagemaker describe-mlflow-tracking-server --tracking-server-name <name>` reports `Started`.
 2. Give the job's identity `sagemaker-mlflow:*` on the server ARN and S3 read and write on the artifact store and the kumo artifact root. Rights scoped to the root's prefix (`s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on `<bucket>/<prefix>/*`, `s3:ListBucket` limited to that prefix) suffice: kumo-engine makes no bucket-level calls.
 3. Install `kumo-engine[mlflow,sagemaker]` and pass `MlflowTracking(..., target=SageMakerMLflow(arn))`; the registry is the same server.
 4. MLflow's run links do not open on SageMaker: open the UI from SageMaker Studio, or at the URL `aws sagemaker create-presigned-mlflow-tracking-server-url --tracking-server-name <name>` prints. A tracked fit warns with this command, and `result.tracking.url` is `None`.
@@ -225,7 +238,7 @@ snowflake = SnowflakeTracking(SnowflakeConnector(warehouse="<wh>", database="ML"
 ### Install
 
 - A bare `kumo-engine[mlflow]` with `--find-links <wheel dir>` can resolve to an unrelated `kumo-engine` on PyPI; install the engine wheel by path: `pip install --find-links <wheel dir> "<wheel dir>/<kumo_engine wheel>[mlflow]"`.
-- **GPU:** on a plain GPU VM or SageMaker image, install a torch build that matches the NVIDIA driver first, e.g. `pip install --index-url https://download.pytorch.org/whl/cu126 "torch==2.12.*" torchvision`. PyPI's default torch (cu130) needs driver ≥ 580; cu126 runs on ≥ 525.60. With `accelerator="auto"`, a torch that cannot use the driver runs on CPU: check `torch.cuda.is_available()`.
+- **GPU:** on a plain GPU VM or SageMaker image, install a torch build that matches the NVIDIA driver first, e.g. `pip install --index-url https://download.pytorch.org/whl/cu126 "torch==2.12.*" torchvision`. PyPI's default torch is built for a recent CUDA (`torch.version.cuda`; CUDA 13 needs driver ≥ 580); cu126 runs on ≥ 525.60. With `accelerator="auto"`, a torch that cannot use the driver runs on CPU: check `torch.cuda.is_available()`.
 - **Databricks:** Runtime 17.3 LTS ML or later keeps its torch, torchvision, MLflow and pyarrow (kumo-engine accepts pyarrow 16 through 24; a custom CA bundle for S3 needs 21 or later). On 16.4 LTS ML pip replaces torch and breaks torchvision. The parent folder of an experiment path must exist. Registering to Unity Catalog from outside Databricks also needs `boto3`.
 - **MLflow:** the `mlflow` extra installs `mlflow-skinny` 3.0.1 or later; a 3.x client works against SageMaker's MLflow 3.0 servers.
 - **SageMaker serving:** MLflow's stock serving containers cannot install kumo-engine; on SageMaker endpoints serve with `-m /opt/ml/model -p 8080`. GPU endpoints need a driver for CUDA 12.6 (set `InferenceAmiVersion`, e.g. `al2023-ami-sagemaker-inference-gpu-4-1`); batch transform takes JSON (`dataframe_split` plus `params`).
@@ -258,12 +271,14 @@ Every artifact carries `_provenance.json`, metadata only (the underscore keeps S
 
 ```python
 store = kumo.EmbeddingModelStore()
-store.add("colors", kumo.GloVeVectors("/data/vectors"))
-plan.column_processing.encoder_overrides = {"users.bio": TextEmbedding("colors")}
+store.add("glove100", kumo.GloVeVectors("glove.6B.zip", dim=100))   # the official GloVe release .zip, unchanged
+plan.column_processing.encoder_overrides = {"users.bio": kumo.TextEmbedding("glove100")}
 with kumo.mlops(cfg):
     result = kumo.Trainer(plan, embedding_models=store).fit(table, snapshot=snapshot)
 trainer = kumo.Trainer.load_from_connector(cfg, path=f"models/{result.id}")   # anywhere, no store
 ```
+
+A text column `infer_metadata()` reads as categorical (short values from a small vocabulary) takes a text encoder once its stype is text: `users.with_column("bio", stype="text")`.
 
 ### Moving snapshots between machines
 
