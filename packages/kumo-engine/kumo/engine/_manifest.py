@@ -340,6 +340,13 @@ class Dependency(Record):
     packing: Optional[str] = omit_none()
     location: Optional[str] = omit_none()
 
+    def as_artifact(self, key: str) -> Optional[Artifact]:
+        kind = _kinds().get(self.kind)
+        return None if kind is None else Artifact(
+            self.kind, str(self.sha256), self.location, kind.IS_DATASET,
+            f'kumo.{self.asset_kind}_uri', version=self.sha256,
+            version_kind='exact')
+
 
 @dataclass(frozen=True, kw_only=True)
 class ModelManifest(Manifest):
