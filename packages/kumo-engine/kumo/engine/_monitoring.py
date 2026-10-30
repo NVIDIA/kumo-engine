@@ -19,7 +19,7 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 from kumo_core.score_counts import Counts
-from kumo_core.score_drift import drift_column
+from kumo_core.score_drift import PSI_SHIFTS, drift_column, psi_shift
 from kumo_core.score_drift import score_drift as exact_drift
 from kumo_core.summaries import Dataset, Note, Scalar, Summary, Table, Tag
 
@@ -596,36 +596,41 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
 
 def _drift_summaries(report: 'DriftReport',
                      previous_name: Optional[str] = None) -> List[Summary]:
-    r"""What a tracker logs of ``report``: drift since training and since
-    the previous run, named ``previous_name`` (else by its id), and, when the
-    run's model is the trainer's, the input changes and column drift since
-    training (its score drift since training is the prediction run's own);
-    notes on what is missing and why."""
+    r"""What a tracker logs of ``report``: score drift vs the holdout and
+    vs the previous run, named ``previous_name`` (else by its id), and, when
+    the run's model is the trainer's, the input changes and column drift
+    since training (its score drift metrics vs the holdout are the
+    prediction run's own); notes on what is missing and why."""
     summaries: List[Summary] = []
     reasons = report.reasons
+    holdout = {'psi': report.psi, 'ks': report.ks,
+               'wasserstein': report.wasserstein}
     previous = {'psi': report.previous_psi, 'ks': report.previous_ks,
                 'wasserstein': report.previous_wasserstein}
     if report.previous_prediction_id:
         summaries.append(Tag('kumo.drift_previous',
                              report.previous_prediction_id))
     if report.previous_psi is not None:
-        summaries += [Scalar(f'drift/{name}_prev', value)
+        summaries += [Scalar(f'drift/{name}_vs_prev', value)
                       for name, value in previous.items()]
     sides = [] if report.bundle_matches is False else [
-        ('training', report.psi, report.ks)]
-    sides.append((previous_name or report.previous_prediction_id,
-                  report.previous_psi, report.previous_ks))
-    drift = [f"vs {side}: {_values({'psi': psi, 'ks': ks})}"
-             for side, psi, ks in sides if psi is not None]
-    if drift:
-        summaries.append(Note('notes', f"Drift {' · '.join(drift)}."))
+        ('holdout scores at training', holdout)]
+    sides.append(('previous run', previous))
+    rows = tuple((side, values['psi'], _shift(values['psi']), values['ks'],
+                  values['wasserstein'])
+                 for side, values in sides if values['psi'] is not None)
+    if rows:
+        summaries.append(Table('drift/score', ('compared with', 'psi',
+                                               'shift', 'ks', 'wasserstein'),
+                               rows, brief=True))
+    if report.previous_psi is not None:
+        name = previous_name or report.previous_prediction_id
+        summaries.append(Note('notes', f'Previous run: {name}.'))
     if report.bundle_matches is False:
-        against = {'psi': report.psi, 'ks': report.ks,
-                   'wasserstein': report.wasserstein}
         summaries.append(Note('notes', (
-            "This trainer's model did not score this run, so its drift "
-            'since training is not logged here'
-            + (f'; against its holdout: {_values(against)}'
+            "This trainer's model did not score this run, so its drift vs "
+            'holdout scores is not logged'
+            + (f"; against this trainer's holdout scores: {_values(holdout)}"
                if report.psi is not None else '') + '.')))
         reasons = {name: reason for name, reason in reasons.items()
                    if name == 'previous'}
@@ -695,10 +700,10 @@ def _tune_metric(trainer: Any) -> Optional[str]:
     return (plan.get('training_job') or {}).get('tune_metric')
 
 
-_REASONS = {'holdout': 'Drift since training', 'previous':
-            'Drift since the previous run', 'input_changes': 'Input changes',
-            'features': 'Column drift', 'metrics': 'Realized metrics',
-            'matured': 'Label maturity'}
+_REASONS = {'holdout': 'Score drift vs holdout', 'previous':
+            'Score drift vs the previous run', 'input_changes':
+            'Input changes', 'features': 'Input columns vs training data',
+            'metrics': 'Realized metrics', 'matured': 'Label maturity'}
 _TOP_FEATURES = 3
 _MOVED = 0.1
 
@@ -706,6 +711,11 @@ _MOVED = 0.1
 def _reason_notes(reasons: Mapping[str, str]) -> List[Summary]:
     return [Note('notes', f'{_REASONS.get(name, name)}: {reason}.')
             for name, reason in reasons.items()]
+
+
+def _shift(psi: float) -> str:
+    shift = psi_shift(psi)
+    return f'{shift} ({PSI_SHIFTS[shift]})'
 
 
 def _values(values: Mapping[str, Optional[float]]) -> str:

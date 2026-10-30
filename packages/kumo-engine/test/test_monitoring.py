@@ -666,10 +666,15 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
     assert record.prediction_run == 'run-7'
     assert record.summaries == (
         Tag('kumo.drift_previous', 'p0'),
-        Scalar('drift/psi_prev', 0.01), Scalar('drift/ks_prev', 0.02),
-        Scalar('drift/wasserstein_prev', 0.03),
-        Note('notes', 'Drift vs training: psi 0.5 · ks 0.25 · vs '
-             '2026-10-28-v6-churn: psi 0.01 · ks 0.02.'),
+        Scalar('drift/psi_vs_prev', 0.01), Scalar('drift/ks_vs_prev', 0.02),
+        Scalar('drift/wasserstein_vs_prev', 0.03),
+        Table('drift/score', ('compared with', 'psi', 'shift', 'ks',
+                              'wasserstein'),
+              (('holdout scores at training', 0.5, 'large (> 0.25)', 0.25,
+                0.125),
+               ('previous run', 0.01, 'small (< 0.1)', 0.02, 0.03)),
+              brief=True),
+        Note('notes', 'Previous run: 2026-10-28-v6-churn.'),
         Table('drift/input_changes', ('table or link', 'at training', 'now',
                                       'change %'),
               (('orders', 100, 104, 4.0),
@@ -685,8 +690,8 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
              '`users.PLAN` (psi 0.75); all in `drift/features.json`.'),
         Note('notes', "The model's holdout file was truncated to fit its "
              'size limit.'),
-        Note('notes', 'Column drift: no drift statistics for the type of '
-             'users.TS (timestamp).'))
+        Note('notes', 'Input columns vs training data: no drift statistics '
+             'for the type of users.TS (timestamp).'))
     assert _feature_drift({'users': {'AGE': {
         'type': 'numerical', 'standardized_mean_shift': -0.09, 'delta': {}}}}
     )[1] == Note('notes', 'Columns vs training: no column moved much; all in '
@@ -700,10 +705,14 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
     record, = tracker.records
     assert record.prediction_run is None
     assert record.summaries[4:] == (
-        Note('notes', 'Drift vs p0: psi 0.01 · ks 0.02.'),
+        Table('drift/score', ('compared with', 'psi', 'shift', 'ks',
+                              'wasserstein'),
+              (('previous run', 0.01, 'small (< 0.1)', 0.02, 0.03),),
+              brief=True),
+        Note('notes', 'Previous run: p0.'),
         Note('notes', "This trainer's model did not score this run, so its "
-             'drift since training is not logged here; against its '
-             'holdout: psi 0.5 · ks 0.25 · wasserstein 0.125.'))
+             "drift vs holdout scores is not logged; against this trainer's "
+             'holdout scores: psi 0.5 · ks 0.25 · wasserstein 0.125.'))
 
 
 def test_evaluation_summaries_name_the_labels_snapshot(tmp_path):
