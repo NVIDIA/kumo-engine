@@ -354,19 +354,31 @@ Both platforms monitor the evaluated rows exported to a table with `write_mode=W
 ```python
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.dataquality import (AggregationGranularity, DataProfilingConfig, InferenceLogConfig,
-                                                InferenceProblemType, Monitor)
+                                                InferenceProblemType, Monitor, Refresh)
 from kumoapi.jobs import WriteMode
 
-evaluation.export(kumo.PredictionOutputConfig(dbx, path="churn_evaluated", write_mode=WriteMode.APPEND))
+evaluation.export(kumo.PredictionOutputConfig(dbx, path="churn_evaluated", write_mode=WriteMode.APPEND))   # each day
+threshold = latest.manifest.scoring.binary_classification_threshold
+champion.result.holdout_evaluation(binary_classification_threshold=threshold).export(
+    kumo.PredictionOutputConfig(dbx, path="churn_holdout_evaluated", write_mode=WriteMode.APPEND))     # once per model
+
 w = WorkspaceClient()
 table_id = w.tables.get("main.ml.churn_evaluated").table_id
-w.data_quality.create_monitor(monitor=Monitor(object_type="table", object_id=table_id,
-    data_profiling_config=DataProfilingConfig(output_schema_id=w.schemas.get("main.ml").schema_id,
-        assets_dir="/Workspace/Users/<you>/monitoring", inference_log=InferenceLogConfig(
+w.data_quality.create_monitor(monitor=Monitor(                                                         # once
+    object_type="table", object_id=table_id,
+    data_profiling_config=DataProfilingConfig(
+        output_schema_id=w.schemas.get("main.ml").schema_id,
+        assets_dir="/Workspace/Users/<you>/monitoring",
+        baseline_table_name="main.ml.churn_holdout_evaluated",
+        inference_log=InferenceLogConfig(
             problem_type=InferenceProblemType.INFERENCE_PROBLEM_TYPE_CLASSIFICATION,
             prediction_column="TARGET_PRED", label_column="TARGET", model_id_column="BUNDLE_ID",
             timestamp_column="EVALUATED_AT", granularities=[AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY]))))
+w.data_quality.create_refresh(object_type="table", object_id=table_id,
+                              refresh=Refresh(object_type="table", object_id=table_id))                # after each export
 ```
+
+The baseline is the model's holdout as evaluated rows, exported with `APPEND` once per model. Each evaluation is exported with `APPEND`: the default export replaces the table without `PREDICTION_ID` and `BUNDLE_ID`, and the refresh then fails with `MISSING_REQUIRED_METADATA`. The monitor keys on `EVALUATED_AT` (anchors are older than its lookback by the label window). It writes `<table>_profile_metrics` and `<table>_drift_metrics`: one window per day, per `BUNDLE_ID` and over all models (`'*'`), with drift against the day before and against the baseline. The API has no probability column, so the profile has no ROC AUC or log loss; `evaluate` reports AUROC. Labels filled in later are picked up by the next refresh. It supports binary and multiclass classification (`prediction_column="CLASS"`) and regression (`INFERENCE_PROBLEM_TYPE_REGRESSION`) only.
 
 **Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` to a Snowflake table writes `TARGET` as a number and `EVALUATED_AT` as `TIMESTAMP_NTZ`, as the monitor needs. The baseline is the model's holdout as evaluated rows, `result.holdout_evaluation()`, exported once the same way, so its columns and types are the source's. Pass the threshold the monitored runs were scored with, so both sides' `TARGET_PRED` match (null for runs without one):
 
