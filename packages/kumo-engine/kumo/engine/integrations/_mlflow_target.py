@@ -100,14 +100,21 @@ class Target:
             return 'databricks'
         return 'mlflow'
 
+    @property
+    def workspace_host(self) -> Optional[str]:
+        r"""The Databricks workspace's URL, when tracking there and known."""
+        if self.platform != 'databricks':
+            return None
+        host = self._host or _workspace_host()
+        return host and host.rstrip('/')
+
     def run_url(self, experiment_id: str, run_id: str) -> Optional[str]:
         r"""The run's page in the MLflow UI; None where no link opens it
         (SageMaker, local stores)."""
         if self.platform == 'databricks':
-            host = self._host or _workspace_host()
+            host = self.workspace_host
             return None if host is None else (
-                f"{host.rstrip('/')}/ml/experiments/{experiment_id}/runs/"
-                f'{run_id}')
+                f'{host}/ml/experiments/{experiment_id}/runs/{run_id}')
         if self.platform == 'mlflow' and self.tracking_uri.startswith(
             ('http://', 'https://')):
             return (f"{self.tracking_uri.rstrip('/')}/#/experiments/"
