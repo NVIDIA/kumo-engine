@@ -9,6 +9,7 @@ import gc
 import importlib.metadata
 import importlib.util
 import inspect
+import os
 import random
 import resource
 import shutil
@@ -36,6 +37,14 @@ def check_gpu_class(expected, actual):
             'GPU class or memory differs from the approved workload')
 
 
+def installation_helper():
+    helper = Path(__file__).resolve().parents[1] / 'test/wheel_gpu_smoke.py'
+    spec = importlib.util.spec_from_file_location('weekly_install', helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def runtime(args, case):
     import torch
 
@@ -49,11 +58,7 @@ def runtime(args, case):
             or weekly.digest(args.wheel) != args.wheel_sha256):
         raise ValueError(
             'Use an isolated installed wheel and one visible CUDA GPU')
-    helper = Path(__file__).resolve().parents[1] / 'test/wheel_gpu_smoke.py'
-    spec = importlib.util.spec_from_file_location('weekly_install', helper)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    installed = module.verify_installed_files(
+    installed = installation_helper().verify_installed_files(
         args.wheel, importlib.metadata.distribution('kumo-engine'))
     subprocess.run([sys.executable, '-I', '-m', 'pip', '--isolated', 'check'],
                    check=True)
@@ -84,6 +89,15 @@ def observe_work(state):
     initialize, fit = Trainer.__init__, Trainer.fit
 
     class Proof(Callback):
+        def on_predict_start(self, trainer, module):
+            stage = state['stage']
+            if stage in ('reference_replay', 'reload'):
+                count = installation_helper().verify_checkpoint(
+                    module, trainer.ckpt_path,
+                    state['checkpoint_sha256'][stage])
+                state.setdefault('restored_tensors', {})[stage] = count
+                weekly.save(state['ledger'], state)
+
         def cuda(self, values):
             if isinstance(values, dict):
                 for value in values.values():
@@ -149,11 +163,44 @@ def data_directory(root, name, files):
     return path
 
 
-def prepared(root, files, case):
+def table_path(root, name, files):
+    if (root / name).is_dir():
+        return data_directory(root, name, files)
+    return weekly.data_file(root, name, files)
+
+
+def stage_snapshot(root, name, files, output):
+    root = Path(root).resolve()
+    source = root / name
+    declared = {key for key in files if key.startswith(name.rstrip('/') + '/')}
+    actual = set()
+    for directory, dirs, names in os.walk(source):
+        directory = Path(directory)
+        if directory == source:
+            dirs[:] = [v for v in dirs if v != 'train_tables']
+        actual.update(str((directory / v).relative_to(root)) for v in names)
+    if not declared or actual != declared:
+        raise ValueError('Frozen native graph has missing or unlisted files')
+    output.mkdir(parents=True, exist_ok=False)
+    for name in sorted(declared):
+        path = weekly.data_file(root, name, files)
+        target = output / path.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(path, target)
+        except OSError as error:
+            raise ValueError(
+                'Put scratch on the native graph filesystem for bounded graph staging'
+            ) from error
+    return output
+
+
+def prepared(root, files, case, scratch):
     import kumo.engine as kumo
 
     snapshot = weekly.read(weekly.data_file(root, case['snapshot'], files))
-    index = data_directory(root, snapshot['index_path'], files)
+    index = stage_snapshot(root, snapshot['index_path'], files,
+                           scratch / 'graph')
     snapshot = kumo.GraphSnapshot(id=snapshot['id'], index_path=index,
                                   graph_config=snapshot['graph_config'])
     descriptor = weekly.read(
@@ -161,11 +208,77 @@ def prepared(root, files, case):
     staging = data_directory(root, descriptor['staging_dir'], files)
     table = kumo.PredictionTable(
         query=case['query'], staging_dir=staging,
-        table_path=weekly.data_file(root, descriptor['table_path'],
-                                    files), row_count=descriptor['row_count'],
+        table_path=table_path(root, descriptor['table_path'],
+                              files), row_count=descriptor['row_count'],
         tt_id=descriptor['tt_id'], timestamps=tuple(descriptor['timestamps']),
         required_stages=tuple(descriptor['required_stages']))
     return snapshot, table
+
+
+def check_native_contract(graph, runtime, features, config, expected_counts,
+                          task):
+    tables = {v['table_name']: v for v in graph['tables']}
+    if (runtime.get('task') != dict(task_type=task, is_temporal=True)
+            or runtime.get('table', {}).get('columns', {}).get('timestamp')
+            != 'TIMESTAMP' or set(
+                runtime.get('graph', {}).get('node_types', [])) != set(tables)
+            or config.get('sampler_kwargs',
+                          {}).get('temporal_strategy') != 'last' or {
+                              k: v['row_count']
+                              for k, v in runtime.get('stages', {}).items()
+                          } != expected_counts):
+        raise ValueError(
+            'Native task, temporal sampling, graph, or stage counts changed')
+    if not features.get('node_types') or not set(
+            features['node_types']) <= set(tables):
+        raise ValueError('Native feature tables differ from the frozen graph')
+    for name, values in features['node_types'].items():
+        table = tables[name]
+        time_column = (table.get('time_col') or {}).get('name')
+        roles = [(table.get(k) or {}).get('name')
+                 for k in ('time_col', 'end_time_col', 'pkey')]
+        allowed = {v['name']
+                   for v in table.get('cols', [])
+                   } | set(roles) | {v['name']
+                                     for v in table.get('fkeys', [])}
+        actual = set(values['feature_columns'])
+        if (actual & {'TARGET', 'TARGET1', 'LABEL', 'future_labels'}
+                or not actual <= allowed
+                or values.get('time_column') != time_column):
+            raise ValueError(
+                'An answer, unapproved feature, or changed time cutoff entered the model'
+            )
+    return dict(status='PASS', task_type=task, stage_counts=expected_counts,
+                graph_tables=sorted(tables), temporal_strategy='last')
+
+
+def check_graph_population(snapshot, case, source):
+    graph, rung = case['dataset'].split('/')
+    rung = rung.split()[0]
+    minimum = {'100M': 100000000, '1B': 1000000000, '25B': 25000000000}[rung]
+    source_rows = {
+        name: value['rows']
+        for name, value in source['tables'].items()
+    }
+    selected = {
+        table['table_name']
+        for table in snapshot.graph_config['tables']
+    }
+    if (source.get('graph') != graph or source.get('rung') != rung
+            or source.get('total_rows') != sum(source_rows.values())
+            or source['total_rows'] < minimum
+            or not selected <= set(source_rows)):
+        raise ValueError(
+            'Published dataset does not match the full frozen workload')
+    expected = {name: source_rows[name] for name in selected}
+    stats = weekly.read(snapshot.index_path / 'ingest_stats.json')['stats']
+    metadata = weekly.read(snapshot.index_path / 'index_metadata.json')
+    actual = {v['name']: v['max_id'] + 1 for v in metadata['node_types']}
+    if stats['node_counts'] != expected or actual != expected:
+        raise ValueError(
+            'Native graph row counts differ from the full source profile')
+    return dict(status='PASS', source_total_rows=source['total_rows'],
+                graph_rows=expected)
 
 
 def prediction_values(files, population, case, scratch, input_root):
@@ -221,7 +334,10 @@ def prediction_values(files, population, case, scratch, input_root):
         }) as db:
             relation = db.read_parquet([str(p) for p in files])
             order = 'ENTITY, SCORE DESC, CLASS ASC' if link else 'ENTITY'
-            for batch in relation.order(order).fetch_record_batch(65536):
+            ordered = relation.order(order)
+            batches = getattr(ordered, 'to_arrow_reader',
+                              ordered.fetch_record_batch)(65536)
+            for batch in batches:
                 frame = batch.to_pandas()
                 if not pd.api.types.is_integer_dtype(frame.ENTITY):
                     raise ValueError(
@@ -321,14 +437,20 @@ def run(args):
                  ledger=str(args.output / 'fits.json'))
     report = dict(status='RUNNING', case_id=args.case, work=state)
     try:
-        manifest = weekly.load_manifest(args.input_root, args.manifest_sha256,
-                                        verify_files=False)
+        manifest = weekly.load_manifest(
+            args.input_root, args.manifest_sha256, verify_files=False,
+            profile='scale' if args.case == 'P2-fixed' else 'rtx')
         [case] = [c for c in manifest['cases'] if c['id'] == args.case]
         files = {key: manifest['files'][key] for key in case['files']}
         report['runtime'] = runtime(args, case)
         args.scratch.mkdir(parents=True, exist_ok=False)
         kumo.configure(scratch_dir=args.scratch)
-        snapshot, table = prepared(args.input_root, files, case)
+        snapshot, table = prepared(args.input_root, files, case, args.scratch)
+        population_proof = check_graph_population(
+            snapshot, case,
+            weekly.read(
+                weekly.data_file(args.input_root, case['dataset_manifest'],
+                                 files)))
         population = pd.read_parquet(
             weekly.data_file(args.input_root, case['population'], files))
         plan_json = weekly.read(
@@ -347,9 +469,8 @@ def run(args):
             query=case['query'],
             staging_dir=data_directory(args.input_root,
                                        descriptor['staging_dir'], files),
-            train_table_path=weekly.data_file(args.input_root,
-                                              descriptor['train_table_path'],
-                                              files),
+            train_table_path=table_path(args.input_root,
+                                        descriptor['train_table_path'], files),
             manifest_path=weekly.data_file(args.input_root,
                                            descriptor['manifest_path'], files),
             required_stages=tuple(descriptor['required_stages']),
@@ -394,6 +515,10 @@ def run(args):
         with observe_work(state):
             if args.reference_root:
                 previous = args.reference_root / 'cases' / args.case
+                state.setdefault(
+                    'checkpoint_sha256', {})['reference_replay'] = weekly.read(
+                        args.reference_root / 'reference.json')['cases'][
+                            args.case]['checkpoint_sha256']
                 report['reference_replay'] = weekly.replay_reference(
                     previous / 'model',
                     weekly.read(previous / 'predictions.json'), load,
@@ -419,9 +544,35 @@ def run(args):
                     or state['optimizer_steps'] <= 0):
                 raise ValueError(
                     'Training did not complete exactly one actual CUDA fit')
+            [runtime_path] = trainer.scratch_dir.glob(
+                'runs/*-fit-*/task_dataset/runtime_manifest.json')
+            runtime_manifest = weekly.read(runtime_path)
+            features = weekly.read(
+                runtime_path.with_name('feature_schema.json'))
+            configuration = weekly.read(fitted.artifact_paths['trainer_config'])
+            native_spec = weekly.read(training.staging_dir /
+                                      'tt_ingest_spec.json')
+            counts = {
+                v['key']: v['row_count']
+                for v in native_spec['split_stages']
+            }
+            task = 'temporal_link_prediction' if case['metric'].startswith(
+                'recall@') else 'regression' if case[
+                    'metric'] == 'mae' else 'binary_classification'
+            report['native_contract'] = check_native_contract(
+                snapshot.graph_config, runtime_manifest, features,
+                configuration, counts, task)
+            report['native_contract']['population'] = population_proof
+            weekly.save(args.output / 'runtime_manifest.json', runtime_manifest)
+            weekly.save(args.output / 'feature_schema.json', features)
+            weekly.save(args.output / 'trainer_config.json', configuration)
+            shutil.copyfile(fitted.artifact_paths['resolved_model_plan'],
+                            args.output / 'resolved_model_plan.json')
             shutil.copytree(fitted.bundle_dir, args.output / 'model')
             model_files = weekly.inventory(args.output / 'model')
             report['checkpoint_sha256'] = model_files['model/checkpoint']
+            state.setdefault('checkpoint_sha256',
+                             {})['reload'] = report['checkpoint_sha256']
             predictions = predict(trainer, 'candidate')
             weekly.save(args.output / 'predictions.json', predictions)
             report['score'] = score(case, predictions, args.input_root)

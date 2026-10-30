@@ -30,6 +30,15 @@ ROSTER = {f'{task}-{arm}'
           for task in PROFILES if task != 'P2' for arm in ARMS} | {'P2-fixed'}
 
 
+def select_cases(manifest, profile=None):
+    if profile not in (None, 'rtx', 'scale'):
+        raise ValueError('Unknown weekly execution profile')
+    return [
+        case for case in manifest['cases']
+        if profile is None or (case['id'] == 'P2-fixed') == (profile == 'scale')
+    ]
+
+
 def trusted_revision(repo, requested, default_ref):
     def resolve(ref):
         return subprocess.check_output([
@@ -197,16 +206,20 @@ def check_case_result(row, case_id, wheel, *, candidate):
                 for k, v in wheel.items()) or work.get('completed_fits') != 1
             or work.get('optimizer_steps', 0) <= 0
             or work.get('training_batches', 0) <= 0
-            or row.get('reload', {}).get('status') != 'PASS' or candidate
+            or row.get('reload', {}).get('status') != 'PASS'
+            or row.get('native_contract', {}).get('status') != 'PASS'
+            or candidate
             and row.get('reference_replay', {}).get('status') != 'PASS' or any(
                 work.get('prediction_batches', {}).get(s, 0) <= 0
-                for s in stages)):
+                for s in stages) or any(
+                    work.get('restored_tensors', {}).get(s, 0) <= 0
+                    for s in stages if s != 'candidate')):
         raise ValueError(
             'Case lacks one CUDA fit, complete predictions, or reference replay'
         )
 
 
-def load_manifest(root, expected, *, verify_files=True):
+def load_manifest(root, expected, *, verify_files=True, profile=None):
     path = root / 'manifest.json'
     if digest(path) != expected:
         raise ValueError('Input manifest checksum differs')
@@ -220,20 +233,37 @@ def load_manifest(root, expected, *, verify_files=True):
                 'wheel_sha256', ''))):
         raise ValueError(
             'Use the complete eleven-case manifest and an approved wheel')
+    selected = {c['id'] for c in select_cases(value, profile)}
     for case in cases:
         task = case['id'].split('-')[0]
         if ((case['dataset'], case['metric']) != PROFILES[task]
                 or type(case['seed']) is not int or case['seed'] != 0
                 or case['arm'] != case['id'].split('-')[1]):
             raise ValueError('Frozen workload, metric, arm, or seed differs')
+        required = ('snapshot', 'training_table', 'model_plan',
+                    'prediction_table', 'population', 'dataset_manifest')
+        if (any(not isinstance(case.get(k), str) or not case[k]
+                for k in required)
+                or case['id'] != 'P2-fixed' and not case.get('answers')):
+            raise ValueError(
+                'Freeze every required native input and reserved answer file')
+        if case['metric'].startswith('recall@') and (
+                not case.get('catalog')
+                or type(case.get('raw_limit')) is not int or not int(
+                    case['metric'].split('@')[1]) <= case['raw_limit'] <= 500):
+            raise ValueError(
+                'Freeze the ranking catalog and prediction limit before fitting'
+            )
         if not all(
                 finite(case['tolerance'][k]) and case['tolerance'][k] >= 0
                 for k in ('atol', 'rtol')):
             raise ValueError(
                 'Approve finite prediction tolerances before execution')
         for key in ('snapshot', 'training_table', 'model_plan',
-                    'prediction_table', 'population', 'answers', 'catalog'):
-            if case.get(key) is not None:
+                    'prediction_table', 'population', 'answers', 'catalog',
+                    'dataset_manifest'):
+            if verify_files and case.get(
+                    key) is not None and case['id'] in selected:
                 data_file(root, case[key],
                           {k: value['files'][k]
                            for k in case['files']})
@@ -245,7 +275,11 @@ def load_manifest(root, expected, *, verify_files=True):
                 or case['gpu_class']['minimum_memory_bytes'] <= 0):
             raise ValueError('Bind the GPU class and its minimum memory')
     if verify_files:
-        for name in {name for case in cases for name in case['files']}:
+        for name in {
+                name
+                for case in cases if case['id'] in selected
+                for name in case['files']
+        }:
             data_file(root, name, value['files'])
     return value
 
@@ -260,20 +294,35 @@ def inventory(root):
     return files
 
 
-def load_reference(root, expected, manifest, manifest_sha256):
-    path = data_file(root, 'reference.json', {'reference.json': expected})
-    value = read(path)
+def reference_header(path, expected, manifest, manifest_sha256):
+    value = read(data_file(path.parent, path.name, {path.name: expected}))
     if (value.get('format') != 'kumo-engine-weekly-reference-v2'
             or value.get('status') != 'PASS'
             or value.get('manifest_sha256') != manifest_sha256
             or value.get('wheel') != manifest['reference']
-            or set(value.get('cases', {})) != ROSTER):
-        raise ValueError('Reference approval, wheel, inputs, or roster differs')
+            or set(value.get('cases', {})) != ROSTER
+            or len({v.get('fit_id')
+                    for v in value.get('cases', {}).values()}) != 11):
+        raise ValueError(
+            'Reference approval, wheel, inputs, roster, or fit identities differ'
+        )
     scores = {}
-    for case in manifest['cases']:
-        record = value['cases'][case['id']]
-        if record['status'] != 'PASS' or record['physical_fits'] != 1:
+    for name, record in value['cases'].items():
+        if record['status'] != 'PASS' or record[
+                'physical_fits'] != 1 or not record.get('fit_id'):
             raise ValueError('Reference case did not complete exactly one fit')
+        scores[name] = record['score']
+    if check_learning(scores, scores)['status'] != 'PASS':
+        raise ValueError(
+            'Reference does not establish the required learning separation')
+    return value
+
+
+def load_reference(root, expected, manifest, manifest_sha256, *, profile=None):
+    value = reference_header(root / 'reference.json', expected, manifest,
+                             manifest_sha256)
+    for case in select_cases(manifest, profile):
+        record = value['cases'][case['id']]
         directory = root / 'cases' / case['id']
         actual = inventory(directory)
         if actual != record['files']:
@@ -282,10 +331,6 @@ def load_reference(root, expected, manifest, manifest_sha256):
                    for k in actual) or 'predictions.json' not in actual:
             raise ValueError(
                 'Reference model or stored predictions are missing')
-        scores[case['id']] = record['score']
-    if check_learning(scores, scores)['status'] != 'PASS':
-        raise ValueError(
-            'Reference does not establish the required learning separation')
     return value
 
 
@@ -309,15 +354,117 @@ def execute_cases(cases, output, execute):
         cases=rows)
 
 
+def collect_shards(paths, manifest, manifest_sha256, output, *,
+                   reference_sha256=None):
+    if len(paths) != 2 or output.exists():
+        raise ValueError('Collect two complete profiles into a fresh directory')
+    reports = [read(path / 'weekly-result.json') for path in paths]
+    if {r.get('profile') for r in reports} != {'rtx', 'scale'}:
+        raise ValueError('Both distinct weekly profiles are required')
+    modes = {r['mode'] for r in reports}
+    wheels = {(r['wheel']['version'], r['wheel']['wheel_sha256'])
+              for r in reports}
+    if len(modes) != 1 or len(wheels) != 1:
+        raise ValueError('Weekly profiles used different modes or wheels')
+    mode = reports[0]['mode']
+    wheel = reports[0]['wheel']
+    if mode not in ('candidate', 'reference'
+                    ) or mode == 'reference' and wheel != manifest['reference']:
+        raise ValueError('Reference profile used an unapproved wheel')
+    reference = None
+    if mode == 'candidate':
+        if not reference_sha256:
+            raise ValueError(
+                'Candidate collection needs the approved reference checksum')
+        reference = reference_header(paths[0] / 'reference.json',
+                                     reference_sha256, manifest,
+                                     manifest_sha256)
+        check_build(read(paths[0] / 'build.json'), wheel['version'],
+                    wheel['wheel_sha256'])
+    rows = []
+    for path, report in zip(paths, reports, strict=True):
+        expected = {c['id'] for c in select_cases(manifest, report['profile'])}
+        if (report.get('format') != 'kumo-engine-weekly-run-v2'
+                or report.get('status') != 'PASS'
+                or report.get('manifest_sha256') != manifest_sha256
+                or digest(path / 'manifest.json') != manifest_sha256
+                or len(report['cases']) != len(expected)
+                or set(report['case_ids']) != expected
+                or {v['case_id']
+                    for v in report['cases']} != expected):
+            raise ValueError(
+                'Weekly profile is incomplete or uses different inputs')
+        if reference:
+            if report.get('reference_sha256') != reference_sha256:
+                raise ValueError(
+                    'Weekly profile used a different approved reference')
+            reference_header(path / 'reference.json', reference_sha256,
+                             manifest, manifest_sha256)
+            if read(path / 'build.json') != read(paths[0] / 'build.json'):
+                raise ValueError(
+                    'Weekly profiles used different source build receipts')
+        for row in report['cases']:
+            check_case_result(row, row['case_id'], wheel,
+                              candidate=mode == 'candidate')
+            directory = path / 'cases' / row['case_id']
+            if read(directory / 'result.json') != row or read(
+                    directory / 'worker-result.json') != row:
+                raise ValueError(
+                    'Collected row differs from its worker evidence')
+            rows.append(row)
+    fits = {r['fit_id'] for r in rows}
+    if len(fits) != 11 or reference and fits & {
+            v['fit_id']
+            for v in reference['cases'].values()
+    }:
+        raise ValueError('Weekly collection needs eleven distinct fresh fits')
+    scores = {r['case_id']: r['score'] for r in rows}
+    baseline = {
+        k: v['score']
+        for k, v in reference['cases'].items()
+    } if reference else scores
+    learning = check_learning(scores, baseline)
+    result = dict(format='kumo-engine-weekly-run-v2', mode=mode,
+                  status=learning['status'], wheel=wheel,
+                  manifest_sha256=manifest_sha256,
+                  reference_sha256=reference_sha256, learning=learning,
+                  cases=rows, physical_fits=sum(r['physical_fits']
+                                                for r in rows),
+                  profiles=reports)
+    output.mkdir(parents=True)
+    # Model bytes stay in the per-profile artifacts. Collection writes metadata only.
+    if mode == 'reference' and result['status'] == 'PASS':
+        records = {}
+        for path, report in zip(paths, reports, strict=True):
+            for row in report['cases']:
+                source = path / 'cases' / row['case_id']
+                records[row['case_id']] = dict(row, files=inventory(source))
+        save(
+            output / 'reference.json',
+            dict(format='kumo-engine-weekly-reference-v2', status='PASS',
+                 wheel=wheel, manifest_sha256=manifest_sha256, cases=records))
+    save(output / 'weekly-result.json', result)
+    return result
+
+
 def run(args):
-    manifest = load_manifest(args.input_root, args.manifest_sha256)
+    with args.host_lock.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return run_locked(args)
+
+
+def run_locked(args):
+    manifest = load_manifest(args.input_root, args.manifest_sha256,
+                             profile=args.profile)
+    selected = select_cases(manifest, args.profile)
     reference = None
     if args.mode == 'candidate':
         if not args.build_receipt:
             raise ValueError('Candidate work needs its source build receipt')
         check_build(read(args.build_receipt), args.version, args.wheel_sha256)
         reference = load_reference(args.reference_root, args.reference_sha256,
-                                   manifest, args.manifest_sha256)
+                                   manifest, args.manifest_sha256,
+                                   profile=args.profile)
     if digest(args.wheel) != args.wheel_sha256:
         raise ValueError('Selected wheel checksum differs')
     if args.mode == 'reference' and dict(
@@ -330,91 +477,104 @@ def run(args):
     if (args.scratch.resolve().is_relative_to(args.output.resolve())
             or args.output.resolve().is_relative_to(args.scratch.resolve())):
         raise ValueError('Keep engine scratch outside the evidence tree')
+    immutable = [
+        args.input_root, *([args.reference_root] if args.reference_root else [])
+    ]
+    if any(path.resolve().is_relative_to(root.resolve()) for root in immutable
+           for path in (args.output, args.scratch)):
+        raise ValueError(
+            'Keep all new work outside immutable input and reference directories'
+        )
     args.output.mkdir(parents=True)
     if args.build_receipt:
         shutil.copyfile(args.build_receipt, args.output / 'build.json')
+    if reference:
+        shutil.copyfile(args.reference_root / 'reference.json',
+                        args.output / 'reference.json')
+    shutil.copyfile(args.input_root / 'manifest.json',
+                    args.output / 'manifest.json')
     report = dict(
         format='kumo-engine-weekly-run-v2', status='RUNNING', mode=args.mode,
         wheel=dict(version=args.version, wheel_sha256=args.wheel_sha256),
-        manifest_sha256=args.manifest_sha256, cases=[])
+        manifest_sha256=args.manifest_sha256, profile=args.profile,
+        reference_sha256=args.reference_sha256,
+        case_ids=[c['id'] for c in selected], cases=[])
     started = time.monotonic()
     try:
-        with args.host_lock.open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            worker = Path(__file__).with_name('weekly_worker.py')
-            report['capacity'] = capacity(args.scratch.parent)
-            check_capacity(manifest['cases'], report['capacity'])
-            import torch
-            properties = torch.cuda.get_device_properties(0)
-            if (not torch.cuda.is_available() or torch.cuda.device_count() != 1
-                    or
-                    any(c['gpu_class']['compute_capability'] !=
-                        [properties.major, properties.minor] or c['gpu_class']
-                        ['minimum_memory_bytes'] > properties.total_memory
-                        for c in manifest['cases'])):
+        worker = Path(__file__).with_name('weekly_worker.py')
+        report['capacity'] = capacity(args.scratch.parent)
+        check_capacity(selected, report['capacity'])
+        import torch
+        properties = torch.cuda.get_device_properties(0)
+        if (not torch.cuda.is_available() or torch.cuda.device_count() != 1
+                or any(c['gpu_class']['compute_capability'] !=
+                       [properties.major, properties.minor] or c['gpu_class']
+                       ['minimum_memory_bytes'] > properties.total_memory
+                       for c in selected)):
+            raise ValueError('The current GPU class does not admit every case')
+
+        def execute(case, directory):
+            command = [
+                sys.executable, '-I',
+                str(worker), '--input-root',
+                str(args.input_root), '--manifest-sha256', args.manifest_sha256,
+                '--case', case['id'], '--output',
+                str(directory), '--scratch',
+                str(args.scratch / case['id']), '--wheel',
+                str(args.wheel), '--version', args.version, '--wheel-sha256',
+                args.wheel_sha256
+            ]
+            if reference is not None:
+                command += ['--reference-root', str(args.reference_root)]
+            with (directory / 'worker.log').open('w') as log:
+                result = subprocess.run(command, stdout=log,
+                                        stderr=subprocess.STDOUT)
+            row = read(directory / 'worker-result.json')
+            if result.returncode != 0 or row['status'] != 'PASS':
                 raise ValueError(
-                    'The current GPU class does not admit every case')
+                    f'{case["id"]} failed: {row.get("error", "worker exit " + str(result.returncode))}'
+                )
+            check_case_result(row, case['id'], report['wheel'],
+                              candidate=reference is not None)
+            if reference and row['fit_id'] in {
+                    v['fit_id']
+                    for v in reference['cases'].values()
+            }:
+                raise ValueError('Candidate reused an approved reference fit')
+            return row
 
-            def execute(case, directory):
-                command = [
-                    sys.executable, '-I',
-                    str(worker), '--input-root',
-                    str(args.input_root), '--manifest-sha256',
-                    args.manifest_sha256, '--case', case['id'], '--output',
-                    str(directory), '--scratch',
-                    str(args.scratch / case['id']), '--wheel',
-                    str(args.wheel), '--version', args.version,
-                    '--wheel-sha256', args.wheel_sha256
-                ]
-                if reference is not None:
-                    command += ['--reference-root', str(args.reference_root)]
-                with (directory / 'worker.log').open('w') as log:
-                    result = subprocess.run(command, stdout=log,
-                                            stderr=subprocess.STDOUT)
-                row = read(directory / 'worker-result.json')
-                if result.returncode != 0 or row['status'] != 'PASS':
-                    raise ValueError(
-                        f'{case["id"]} failed: {row.get("error", "worker exit " + str(result.returncode))}'
-                    )
-                check_case_result(row, case['id'], report['wheel'],
-                                  candidate=reference is not None)
-                if reference and row['fit_id'] in {
-                        v['fit_id']
-                        for v in reference['cases'].values()
-                }:
-                    raise ValueError(
-                        'Candidate reused an approved reference fit')
-                return row
-
-            report.update(
-                execute_cases(manifest['cases'], args.output / 'cases',
-                              execute))
-            fits = [r['fit_id'] for r in report['cases'] if r.get('fit_id')]
-            if len(set(fits)) != len(fits):
-                report['status'] = 'FAIL'
-            scores = {r['case_id']: r.get('score') for r in report['cases']}
-            baseline = {
-                k: v['score']
-                for k, v in reference['cases'].items()
-            } if reference else scores
-            report['learning'] = check_learning(scores, baseline)
-            if report['learning']['status'] != 'PASS':
-                report['status'] = 'FAIL'
-            load_manifest(args.input_root, args.manifest_sha256)
-            if reference:
-                load_reference(args.reference_root, args.reference_sha256,
-                               manifest, args.manifest_sha256)
-            if args.mode == 'reference' and report['status'] == 'PASS':
-                records = {}
-                for row in report['cases']:
-                    records[row['case_id']] = dict(
-                        row,
-                        files=inventory(args.output / 'cases' / row['case_id']))
-                save(
-                    args.output / 'reference.json',
-                    dict(format='kumo-engine-weekly-reference-v2',
-                         status='PASS', wheel=manifest['reference'],
-                         manifest_sha256=args.manifest_sha256, cases=records))
+        report.update(execute_cases(selected, args.output / 'cases', execute))
+        fits = [r['fit_id'] for r in report['cases'] if r.get('fit_id')]
+        if len(set(fits)) != len(fits):
+            report['status'] = 'FAIL'
+        scores = {r['case_id']: r.get('score') for r in report['cases']}
+        baseline = {
+            k: v['score']
+            for k, v in reference['cases'].items()
+        } if reference else scores
+        report['learning'] = check_learning(
+            scores, baseline) if args.profile is None else dict(
+                status='DEFERRED_TO_COLLECTION')
+        if report['learning']['status'] == 'FAIL':
+            report['status'] = 'FAIL'
+        load_manifest(args.input_root, args.manifest_sha256,
+                      profile=args.profile)
+        if reference:
+            load_reference(args.reference_root, args.reference_sha256, manifest,
+                           args.manifest_sha256, profile=args.profile)
+        if args.mode == 'reference' and report['status'] == 'PASS':
+            records = {}
+            for row in report['cases']:
+                records[row['case_id']] = dict(
+                    row,
+                    files=inventory(args.output / 'cases' / row['case_id']))
+            save(
+                args.output /
+                ('reference-shard.json' if args.profile else 'reference.json'),
+                dict(format='kumo-engine-weekly-reference-v2', status='PASS',
+                     wheel=manifest['reference'],
+                     manifest_sha256=args.manifest_sha256, profile=args.profile,
+                     cases=records))
     except Exception as error:
         report.update(status='FAIL', error=f'{type(error).__name__}: {error}',
                       traceback=traceback.format_exc())
@@ -426,21 +586,39 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    run_parser = commands.add_parser('run')
     for name in ('input-root', 'output', 'scratch', 'host-lock', 'wheel'):
-        parser.add_argument('--' + name, type=Path, required=True)
+        run_parser.add_argument('--' + name, type=Path, required=True)
     for name in ('manifest-sha256', 'wheel-sha256', 'version'):
-        parser.add_argument('--' + name, required=True)
-    parser.add_argument('--mode', choices=('reference', 'candidate'),
-                        default='candidate')
-    parser.add_argument('--reference-root', type=Path)
-    parser.add_argument('--build-receipt', type=Path)
-    parser.add_argument('--reference-sha256')
+        run_parser.add_argument('--' + name, required=True)
+    run_parser.add_argument('--mode', choices=('reference', 'candidate'),
+                            default='candidate')
+    run_parser.add_argument('--profile', choices=('rtx', 'scale'))
+    run_parser.add_argument('--reference-root', type=Path)
+    run_parser.add_argument('--build-receipt', type=Path)
+    run_parser.add_argument('--reference-sha256')
+    collect_parser = commands.add_parser('collect')
+    collect_parser.add_argument('--shards', nargs=2, type=Path, required=True)
+    collect_parser.add_argument('--input-root', type=Path, required=True)
+    collect_parser.add_argument('--manifest-sha256', required=True)
+    collect_parser.add_argument('--reference-sha256')
+    collect_parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    if args.mode == 'candidate' and (not args.reference_root
-                                     or not args.reference_sha256):
-        parser.error(
-            'Candidate work needs an approved reference bundle and checksum')
-    return 0 if run(args)['status'] == 'PASS' else 1
+    if args.command == 'collect':
+        manifest = load_manifest(args.input_root, args.manifest_sha256,
+                                 verify_files=False)
+        result = collect_shards(args.shards, manifest, args.manifest_sha256,
+                                args.output,
+                                reference_sha256=args.reference_sha256)
+    else:
+        if args.mode == 'candidate' and (not args.reference_root
+                                         or not args.reference_sha256):
+            parser.error(
+                'Candidate work needs an approved reference bundle and checksum'
+            )
+        result = run(args)
+    return 0 if result['status'] == 'PASS' else 1
 
 
 if __name__ == '__main__':

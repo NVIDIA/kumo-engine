@@ -34,6 +34,10 @@ zero relative tolerance for every task. Labels, ranks, valid outputs, and
 completed CUDA work remain strict. Training metrics report separately and set
 no learning-quality requirement. Source and package workflows remain separate.
 
+The [weekly Engine check](engine-weekly-ci.md) runs eleven cases with learning
+gates and loads approved saved models with the candidate wheel. Its GPU jobs
+remain dispatch-only until one complete candidate run passes.
+
 ## Report evidence
 
 Record the command, environment, result, and any untested dependency. Keep

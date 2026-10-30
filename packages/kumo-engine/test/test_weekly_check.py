@@ -4,11 +4,14 @@
 """CPU checks for learning loss, reference replay, and failed-case retention."""
 
 import copy
+import fcntl
 import importlib.util
+import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 SOURCE = Path(__file__).parents[1] / 'scripts/weekly_check.py'
 SPEC = importlib.util.spec_from_file_location('weekly_check', SOURCE)
@@ -46,10 +49,13 @@ def input_fixture(root):
                     seed=0, query='frozen query', files=['data.json'],
                     snapshot='data.json', training_table='data.json',
                     model_plan='data.json', prediction_table='data.json',
-                    population='data.json',
+                    population='data.json', dataset_manifest='data.json',
                     answers=None if task == 'P2' else 'data.json',
-                    tolerance=dict(atol=1e-5, rtol=1e-5),
-                    capacity=dict(memory_bytes=100, scratch_bytes=200),
+                    catalog='data.json' if metric.startswith('recall@') else
+                    None, raw_limit=51 if task == 'Q13' else 11, tolerance=dict(
+                        atol=1e-5,
+                        rtol=1e-5), capacity=dict(memory_bytes=100,
+                                                  scratch_bytes=200),
                     gpu_class=dict(compute_capability=[12, 0],
                                    minimum_memory_bytes=90)))
     value = dict(format='kumo-engine-weekly-input-v2',
@@ -60,6 +66,263 @@ def input_fixture(root):
 
 
 class WeeklyChecks(unittest.TestCase):
+    def test_admission_rejects_missing_prediction_inputs_before_a_fit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for field in ('catalog', 'raw_limit', 'population',
+                          'dataset_manifest'):
+                value = input_fixture(root)
+                del value['cases'][0][field]
+                weekly.save(root / 'manifest.json', value)
+                with self.subTest(field=field):
+                    with self.assertRaises(ValueError):
+                        weekly.load_manifest(
+                            root, weekly.digest(root / 'manifest.json'))
+
+    def test_busy_host_fails_before_any_input_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / 'host.lock'
+            with path.open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    weekly.run(
+                        SimpleNamespace(host_lock=path,
+                                        input_root=root / 'missing-inputs',
+                                        manifest_sha256='a' * 64, profile=None))
+                except BlockingIOError:
+                    pass
+                except Exception as error:
+                    self.fail(f'Input read before host reservation: {error}')
+                else:
+                    self.fail('Busy host was accepted')
+
+    def test_dataset_admission_rejects_a_smaller_graph_with_a_scale_label(self):
+        worker = importlib.util.module_from_spec(WORKER_SPEC)
+        WORKER_SPEC.loader.exec_module(worker)
+        self.assertTrue(
+            callable(getattr(worker, 'check_graph_population', None)))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            weekly.save(root / 'ingest_stats.json',
+                        dict(stats=dict(node_counts=dict(events=100000000))))
+            weekly.save(root / 'index_metadata.json',
+                        dict(node_types=[dict(name='events', max_id=99999999)]))
+            snapshot = SimpleNamespace(
+                index_path=root,
+                graph_config=dict(tables=[dict(table_name='events')]))
+            source = dict(graph='streaming', rung='100M', total_rows=100000000,
+                          tables=dict(events=dict(rows=100000000)))
+            worker.check_graph_population(snapshot,
+                                          dict(dataset='streaming/100M'),
+                                          source)
+            source['total_rows'] = 10
+            source['tables']['events']['rows'] = 10
+            with self.assertRaises(ValueError):
+                worker.check_graph_population(snapshot,
+                                              dict(dataset='streaming/100M'),
+                                              source)
+            source.update(graph='commerce', rung='25B', total_rows=100000000)
+            with self.assertRaises(ValueError):
+                worker.check_graph_population(snapshot,
+                                              dict(dataset='commerce/25B'),
+                                              source)
+
+    def test_native_contract_rejects_future_features_and_changed_cutoffs(self):
+        worker = importlib.util.module_from_spec(WORKER_SPEC)
+        WORKER_SPEC.loader.exec_module(worker)
+        self.assertTrue(callable(getattr(worker, 'check_native_contract',
+                                         None)))
+        graph = dict(tables=[
+            dict(table_name='events', cols=[dict(name='amount')], time_col=dict(
+                name='TS'))
+        ])
+        runtime = dict(
+            task=dict(task_type='binary_classification', is_temporal=True),
+            table=dict(columns=dict(timestamp='TIMESTAMP')),
+            graph=dict(node_types=['events']), stages={
+                s: dict(row_count=n)
+                for s, n in [('train', 100), ('val', 20), ('test', 20)]
+            })
+        features = dict(node_types=dict(
+            events=dict(feature_columns=['amount', 'TS'], time_column='TS')))
+        config = dict(sampler_kwargs=dict(temporal_strategy='last'))
+        expected = dict(train=100, val=20, test=20)
+        worker.check_native_contract(graph, runtime, features, config, expected,
+                                     'binary_classification')
+        for kind in ('future', 'timestamp', 'rows', 'sampler'):
+            r, f, c = copy.deepcopy(runtime), copy.deepcopy(
+                features), copy.deepcopy(config)
+            if kind == 'future':
+                f['node_types']['events']['feature_columns'].append('TARGET1')
+            elif kind == 'timestamp':
+                f['node_types']['events']['time_column'] = None
+            elif kind == 'rows':
+                r['stages']['test']['row_count'] = 19
+            else:
+                c['sampler_kwargs']['temporal_strategy'] = 'uniform'
+            with self.subTest(kind=kind):
+                with self.assertRaises(ValueError):
+                    worker.check_native_contract(graph, r, f, c, expected,
+                                                 'binary_classification')
+
+    def test_native_extensions_stay_outside_the_frozen_graph(self):
+        worker = importlib.util.module_from_spec(WORKER_SPEC)
+        WORKER_SPEC.loader.exec_module(worker)
+        self.assertTrue(callable(getattr(worker, 'stage_snapshot', None)))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'index').mkdir()
+            (root / 'index/graph.bin').write_bytes(b'frozen native graph')
+            weekly.save(root / 'index/train_tables/old/manifest.json',
+                        dict(old_cache=True))
+            files = {'index/graph.bin': weekly.digest(root / 'index/graph.bin')}
+            staged = worker.stage_snapshot(root, 'index', files,
+                                           root / 'scratch/index')
+            self.assertEqual((staged / 'graph.bin').read_bytes(),
+                             b'frozen native graph')
+            self.assertFalse((staged / 'train_tables').exists())
+            weekly.save(staged / 'train_tables/new/manifest.json',
+                        dict(new_cache=True))
+            self.assertFalse((root / 'index/train_tables/new').exists())
+            self.assertTrue(
+                (root / 'index/train_tables/old/manifest.json').exists())
+            (root / 'index/foreign.bin').write_bytes(b'unlisted graph data')
+            with self.assertRaises(ValueError):
+                worker.stage_snapshot(root, 'index', files,
+                                      root / 'scratch/changed')
+
+    def test_collection_requires_both_profiles_and_enforces_learning(self):
+        self.assertTrue(callable(getattr(weekly, 'collect_shards', None)))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = input_fixture(root)
+            manifest_sha256 = weekly.digest(root / 'manifest.json')
+            wheel = dict(version='2.0.0', wheel_sha256='a' * 64)
+            paths = []
+            for profile in ('rtx', 'scale'):
+                output = root / profile
+                output.mkdir()
+                shutil.copyfile(root / 'manifest.json',
+                                output / 'manifest.json')
+                rows = []
+                for case in weekly.select_cases(manifest, profile):
+                    name = case['id']
+                    row = dict(
+                        status='PASS', case_id=name, physical_fits=1,
+                        fit_id='fit-' + name,
+                        native_contract=dict(status='PASS'), runtime=wheel,
+                        checkpoint_sha256='b' * 64, score=scores().get(name),
+                        reload=dict(status='PASS'), work=dict(
+                            completed_fits=1, optimizer_steps=10,
+                            training_batches=10,
+                            restored_tensors=dict(reload=100,
+                                                  reference_replay=100),
+                            prediction_batches=dict(candidate=2, reload=2)))
+                    destination = output / 'cases' / name
+                    weekly.save(destination / 'model/model.json',
+                                dict(model='fixture'))
+                    weekly.save(destination / 'predictions.json',
+                                dict(entity_ids=[1], values=[[.2]]))
+                    weekly.save(destination / 'worker-result.json', row)
+                    weekly.save(destination / 'result.json', row)
+                    rows.append(row)
+                weekly.save(
+                    output / 'weekly-result.json',
+                    dict(format='kumo-engine-weekly-run-v2', status='PASS',
+                         mode='reference', profile=profile, wheel=wheel,
+                         manifest_sha256=manifest_sha256,
+                         case_ids=[v['case_id'] for v in rows], cases=rows))
+                paths.append(output)
+            with self.assertRaises(ValueError):
+                weekly.collect_shards(paths[:1], manifest, manifest_sha256,
+                                      root / 'missing')
+            result = weekly.collect_shards(paths, manifest, manifest_sha256,
+                                           root / 'complete')
+            self.assertEqual(result['status'], 'PASS')
+            self.assertEqual(len(result['cases']), 11)
+            self.assertTrue((root / 'complete/reference.json').is_file())
+            self.assertFalse((root / 'complete/cases').exists())
+            reference_sha256 = weekly.digest(root / 'complete/reference.json')
+            candidate_wheel = dict(version='2.1.0+candidate',
+                                   wheel_sha256='c' * 64)
+            for path in paths:
+                shutil.copyfile(root / 'complete/reference.json',
+                                path / 'reference.json')
+                report = weekly.read(path / 'weekly-result.json')
+                report.update(mode='candidate',
+                              reference_sha256=reference_sha256,
+                              wheel=candidate_wheel)
+                weekly.save(
+                    path / 'build.json',
+                    dict(revision='e' * 40, tree='f' * 40, **candidate_wheel))
+                for row in report['cases']:
+                    row.update(runtime=candidate_wheel,
+                               fit_id='candidate-' + row['case_id'],
+                               reference_replay=dict(status='PASS'))
+                    row['work']['prediction_batches']['reference_replay'] = 2
+                    weekly.save(
+                        path / 'cases' / row['case_id'] / 'worker-result.json',
+                        row)
+                    weekly.save(path / 'cases' / row['case_id'] / 'result.json',
+                                row)
+                weekly.save(path / 'weekly-result.json', report)
+            candidate = weekly.collect_shards(paths, manifest, manifest_sha256,
+                                              root / 'candidate',
+                                              reference_sha256=reference_sha256)
+            self.assertEqual(candidate['status'], 'PASS')
+            self.assertEqual(candidate['physical_fits'], 11)
+            self.assertFalse((root / 'candidate/cases').exists())
+            (paths[1] / 'manifest.json').write_text('{}')
+            with self.assertRaises(ValueError):
+                weekly.collect_shards(paths, manifest, manifest_sha256,
+                                      root / 'changed-header',
+                                      reference_sha256=reference_sha256)
+            shutil.copyfile(root / 'manifest.json', paths[1] / 'manifest.json')
+            report = weekly.read(paths[0] / 'weekly-result.json')
+            for row in report['cases']:
+                if row['case_id'] == 'Q17-normal':
+                    row['score'] = .004
+                    weekly.save(
+                        paths[0] / 'cases/Q17-normal/worker-result.json', row)
+                    weekly.save(paths[0] / 'cases/Q17-normal/result.json', row)
+            weekly.save(paths[0] / 'weekly-result.json', report)
+            result = weekly.collect_shards(paths, manifest, manifest_sha256,
+                                           root / 'no-learning',
+                                           reference_sha256=reference_sha256)
+            self.assertEqual(result['status'], 'FAIL')
+            self.assertFalse((root / 'no-learning/reference.json').exists())
+
+    def test_profiles_keep_the_ten_pairs_separate_from_p2(self):
+        self.assertTrue(callable(getattr(weekly, 'select_cases', None)))
+        with tempfile.TemporaryDirectory() as directory:
+            value = input_fixture(Path(directory))
+            pairs = weekly.select_cases(value, 'rtx')
+            scale = weekly.select_cases(value, 'scale')
+            self.assertEqual([v['id'] for v in scale], ['P2-fixed'])
+            self.assertEqual(len(pairs), 10)
+            self.assertEqual({v['id']
+                              for v in pairs} | {v['id']
+                                                 for v in scale}, weekly.ROSTER)
+            with self.assertRaises(ValueError):
+                weekly.select_cases(value, 'unknown')
+
+    def test_admission_does_not_read_data_from_the_other_host(self):
+        self.assertTrue(callable(getattr(weekly, 'select_cases', None)))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            value = input_fixture(root)
+            value['cases'][-1]['files'] = ['scale-only.json']
+            for key in ('snapshot', 'training_table', 'model_plan',
+                        'prediction_table', 'population'):
+                value['cases'][-1][key] = 'scale-only.json'
+            value['files']['scale-only.json'] = 'e' * 64
+            weekly.save(root / 'manifest.json', value)
+            checksum = weekly.digest(root / 'manifest.json')
+            weekly.load_manifest(root, checksum, profile='rtx')
+            with self.assertRaises(ValueError):
+                weekly.load_manifest(root, checksum, profile='scale')
+
     def test_build_receipt_binds_source_version_and_wheel(self):
         self.assertTrue(callable(getattr(weekly, 'check_build', None)))
         receipt = dict(revision='a' * 40, tree='b' * 40, version='2.0+abc',
@@ -108,13 +371,21 @@ class WeeklyChecks(unittest.TestCase):
         row = dict(
             status='PASS', case_id='Q17-normal', physical_fits=1,
             fit_id='fresh-fit', runtime=wheel,
+            native_contract=dict(status='PASS'),
             reference_replay=dict(status='PASS'), reload=dict(status='PASS'),
             work=dict(
                 completed_fits=1, optimizer_steps=10, training_batches=10,
+                restored_tensors=dict(reload=100, reference_replay=100),
                 prediction_batches=dict(candidate=2, reload=2,
                                         reference_replay=2)))
         weekly.check_case_result(row, 'Q17-normal', wheel, candidate=True)
-        for key in ('physical_fits', 'reference_replay', 'runtime'):
+        missing_state = copy.deepcopy(row)
+        missing_state['work']['restored_tensors']['reference_replay'] = 0
+        with self.assertRaises(ValueError):
+            weekly.check_case_result(missing_state, 'Q17-normal', wheel,
+                                     candidate=True)
+        for key in ('physical_fits', 'reference_replay', 'runtime',
+                    'native_contract'):
             changed = copy.deepcopy(row)
             changed[key] = 0 if key == 'physical_fits' else {}
             with self.subTest(key=key):

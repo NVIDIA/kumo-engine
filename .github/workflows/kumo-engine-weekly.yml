@@ -29,6 +29,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  configure:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
+      manifest_sha256: ${{ steps.config.outputs.manifest_sha256 }}
+      reference_sha256: ${{ steps.config.outputs.reference_sha256 }}
+    steps:
+      - name: Bind the two existing execution profiles
+        id: config
+        env:
+          WEEKLY_CONFIG: ${{ vars.KUMO_ENGINE_WEEKLY_CONFIG }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, re
+          from pathlib import PurePosixPath
+          value = json.loads(os.environ['WEEKLY_CONFIG'])
+          for key in ('manifest_sha256', 'reference_sha256'):
+              if key == 'reference_sha256' and os.environ['MODE'] == 'reference':
+                  continue
+              if not re.fullmatch('[0-9a-f]{64}', value.get(key, '')):
+                  raise SystemExit('Bind exact input and approved reference checksums')
+          profiles = []
+          if set(value['profiles']) != {'rtx', 'scale'}:
+              raise SystemExit('Bind both existing execution profiles')
+          for name in ('rtx', 'scale'):
+              profile = dict(value['profiles'][name], profile=name,
+                  manifest_sha256=value['manifest_sha256'], reference_sha256=value.get('reference_sha256'))
+              runner = profile['runner']
+              if (not isinstance(runner, dict) or set(runner) != {'group', 'labels'}
+                      or any(not isinstance(v, str) or not v for v in runner.values())):
+                  raise SystemExit('Bind the existing runner group and label for each profile')
+              for key in ('input_root', 'reference_root', 'host_lock', 'work_root'):
+                  path = profile[key]
+                  if not isinstance(path, str) or not PurePosixPath(path).is_absolute() or any(c in path for c in '\r\n'):
+                      raise SystemExit('Bind absolute data paths and the shared host lock')
+              profiles.append(profile)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps(dict(include=profiles)) + '\n')
+              for key in ('manifest_sha256', 'reference_sha256'):
+                  output.write(key + '=' + str(value.get(key, '')) + '\n')
+          PYCODE
+
   cpu:
     runs-on: ubuntu-24.04
     steps:
@@ -38,12 +82,14 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - run: python -m pip --isolated install duckdb pandas pyarrow
+      - run: python -m pip --isolated install --index-url https://pypi.org/simple duckdb pandas pyarrow pyyaml
       - run: python packages/kumo-engine/test/test_weekly_check.py
+      - run: python packages/kumo-engine/test/test_weekly_reference.py
+      - run: python packages/kumo-engine/test/test_weekly_workflow.py
 
   wheel:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate'
-    needs: cpu
+    needs: [cpu, configure]
     runs-on: ubuntu-22.04
     outputs:
       version: ${{ steps.receipt.outputs.version }}
@@ -83,7 +129,7 @@ jobs:
           CARGO_BUILD_JOBS: '4'
         run: |
           set -euo pipefail
-          python -m pip --isolated install ziglang
+          python -m pip --isolated install --index-url https://pypi.org/simple ziglang
           mkdir -p "$RUNNER_TEMP/weekly-wheel"
           git -C product rev-parse HEAD 'HEAD^{tree}' > "$RUNNER_TEMP/weekly-wheel/source.txt"
           (cd product && packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/weekly-wheel")
@@ -111,21 +157,64 @@ jobs:
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: weekly-wheel
+          name: weekly-wheel-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/weekly-wheel
           compression-level: 0
           retention-days: 7
 
+  admit:
+    needs: [cpu, configure]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.configure.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      PROFILE_JSON: ${{ toJSON(matrix) }}
+      MODE: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Admit both fixed workloads before any fit
+        run: |
+          python - <<'PYCODE'
+          import csv, fcntl, json, os, runpy, subprocess
+          from pathlib import Path
+          config = json.loads(os.environ['PROFILE_JSON'])
+          api = runpy.run_path('packages/kumo-engine/scripts/weekly_check.py')
+          with Path(config['host_lock']).open('a') as lock:
+              fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+              manifest = api['load_manifest'](Path(config['input_root']), config['manifest_sha256'], profile=config['profile'])
+              api['check_capacity'](api['select_cases'](manifest, config['profile']), api['capacity'](Path(config['work_root'])))
+              raw = subprocess.check_output(['nvidia-smi', '--id=0', '--query-gpu=compute_cap,memory.total',
+                  '--format=csv,noheader,nounits'], text=True)
+              [observed] = list(csv.reader(raw.splitlines()))
+              capability = [int(v) for v in observed[0].strip().split('.')]
+              memory = int(observed[1].strip()) * 1024 * 1024
+              for case in api['select_cases'](manifest, config['profile']):
+                  if (case['gpu_class']['compute_capability'] != capability
+                          or memory < case['gpu_class']['minimum_memory_bytes']):
+                      raise SystemExit('GPU class or memory does not admit this fixed profile')
+              if os.environ['MODE'] == 'candidate':
+                  api['load_reference'](Path(config['reference_root']), config['reference_sha256'],
+                      manifest, config['manifest_sha256'], profile=config['profile'])
+          PYCODE
+
   gpu:
-    needs: [cpu, wheel]
-    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && needs.cpu.result == 'success' && (inputs.mode == 'reference' || needs.wheel.result == 'success') }}
-    runs-on:
-      group: nv-gpu-amd64-rtxpro6000-1gpu
-      labels: linux-amd64-gpu-rtxpro6000-latest-1
+    needs: [cpu, configure, admit, wheel]
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && needs.cpu.result == 'success' && needs.admit.result == 'success' && (inputs.mode == 'reference' || needs.wheel.result == 'success') }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.configure.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 720
     env:
       MODE: ${{ inputs.mode }}
-      WEEKLY_CONFIG: ${{ vars.KUMO_ENGINE_WEEKLY_CONFIG }}
+      PROFILE_JSON: ${{ toJSON(matrix) }}
       CUDA_VISIBLE_DEVICES: '0'
       KUMO_ACCELERATOR: gpu
       OMP_NUM_THREADS: '4'
@@ -143,23 +232,23 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: env.MODE == 'candidate'
         with:
-          name: weekly-wheel
+          name: weekly-wheel-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/weekly-wheel
       - name: Admit inputs and prepare temporary storage
         run: |
           python - <<'PY'
           import json, os, runpy
           from pathlib import Path
-          config = json.loads(os.environ['WEEKLY_CONFIG'])
+          config = json.loads(os.environ['PROFILE_JSON'])
           api = runpy.run_path('packages/kumo-engine/scripts/weekly_check.py')
-          for key in ('input_root', 'reference_root', 'host_lock'):
+          for key in ('input_root', 'reference_root', 'host_lock', 'work_root'):
               if not Path(config[key]).is_absolute() or any(c in config[key] for c in '\r\n'):
                   raise SystemExit('Bind absolute data paths and the shared host lock')
-          manifest = api['load_manifest'](Path(config['input_root']), config['manifest_sha256'])
+          manifest = api['load_manifest'](Path(config['input_root']), config['manifest_sha256'], profile=config['profile'], verify_files=False)
           if os.environ['MODE'] == 'candidate':
-              api['load_reference'](Path(config['reference_root']), config['reference_sha256'],
+              api['reference_header'](Path(config['reference_root']) / 'reference.json', config['reference_sha256'],
                   manifest, config['manifest_sha256'])
-          root = Path(os.environ['RUNNER_TEMP']) / ('weekly-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          root = Path(config['work_root']) / ('weekly-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'] + '-' + config['profile'])
           root.mkdir(exist_ok=False)
           api['save'](root / 'configuration.json', config)
           api['save'](root / 'reference-wheel.json', manifest['reference'])
@@ -174,7 +263,7 @@ jobs:
           from pathlib import Path
           root = Path(os.environ['WEEKLY_ROOT'])
           approved = json.loads((root / 'reference-wheel.json').read_text())
-          subprocess.run(['python', '-m', 'pip', '--isolated', 'download', '--only-binary=:all:',
+          subprocess.run(['python', '-m', 'pip', '--isolated', 'download', '--index-url', 'https://pypi.org/simple', '--only-binary=:all:',
               '--no-deps', '--dest', str(Path(os.environ['RUNNER_TEMP']) / 'weekly-wheel'),
               'kumo-engine==' + approved['version']], check=True)
           PY
@@ -193,8 +282,8 @@ jobs:
           if api['digest'](wheel) != build['wheel_sha256']:
               raise SystemExit('Selected wheel archive checksum differs')
           python = str(root / 'venv/bin/python')
-          subprocess.run([python, '-I', '-m', 'pip', '--isolated', 'install', str(wheel), 'duckdb'], check=True)
-          command = [python, '-I', 'packages/kumo-engine/scripts/weekly_check.py', '--mode', os.environ['MODE'],
+          subprocess.run([python, '-I', '-m', 'pip', '--isolated', 'install', '--index-url', 'https://pypi.org/simple', str(wheel), 'duckdb'], check=True)
+          command = [python, '-I', 'packages/kumo-engine/scripts/weekly_check.py', 'run', '--mode', os.environ['MODE'], '--profile', config['profile'],
               '--input-root', config['input_root'], '--manifest-sha256', config['manifest_sha256'],
               '--host-lock', config['host_lock'], '--output', str(root / 'evidence'), '--scratch', str(root / 'scratch'),
               '--wheel', str(wheel), '--version', build['version'], '--wheel-sha256', build['wheel_sha256']]
@@ -205,7 +294,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always() && env.WEEKLY_ROOT != ''
         with:
-          name: weekly-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          name: weekly-evidence-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}
           path: ${{ env.WEEKLY_ROOT }}/evidence
           if-no-files-found: error
           retention-days: 7
@@ -213,12 +302,55 @@ jobs:
         if: always() && env.WEEKLY_ROOT != ''
         run: |
           python - <<'PY'
-          import os, shutil
+          import json, os, shutil
           from pathlib import Path
           temporary = Path(os.environ['RUNNER_TEMP']).resolve()
+          config = json.loads(os.environ['PROFILE_JSON'])
           root = Path(os.environ['WEEKLY_ROOT']).resolve()
-          if root.parent != temporary or not root.name.startswith('weekly-'):
+          expected = 'weekly-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'] + '-' + config['profile']
+          if root.parent != Path(config['work_root']).resolve() or root.name != expected:
               raise SystemExit('Unexpected cleanup directory')
           shutil.rmtree(root)
           shutil.rmtree(temporary / 'weekly-wheel', ignore_errors=True)
           PY
+
+  collect:
+    needs: [configure, gpu]
+    if: ${{ !cancelled() && needs.configure.result == 'success' }}
+    runs-on: ubuntu-24.04
+    env:
+      MANIFEST_SHA256: ${{ needs.configure.outputs.manifest_sha256 }}
+      REFERENCE_SHA256: ${{ needs.configure.outputs.reference_sha256 }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: weekly-evidence-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/weekly-shards
+      - name: Require eleven fits, eleven candidate replays, and the learning gates
+        run: |
+          python - <<'PYCODE'
+          import os, runpy
+          from pathlib import Path
+          api = runpy.run_path('packages/kumo-engine/scripts/weekly_check.py')
+          root = Path(os.environ['RUNNER_TEMP'])
+          prefix = 'weekly-evidence-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'] + '-'
+          shards = [root / 'weekly-shards' / (prefix + profile) for profile in ('rtx', 'scale')]
+          manifest = api['load_manifest'](shards[0], os.environ['MANIFEST_SHA256'], verify_files=False)
+          report = api['collect_shards'](shards, manifest, os.environ['MANIFEST_SHA256'], root / 'weekly-summary',
+              reference_sha256=os.environ.get('REFERENCE_SHA256') or None)
+          if report['status'] != 'PASS':
+              raise SystemExit('Weekly learning or model compatibility check failed')
+          PYCODE
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: weekly-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/weekly-summary
+          if-no-files-found: error
+          retention-days: 7
