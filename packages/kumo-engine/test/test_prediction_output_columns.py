@@ -326,17 +326,31 @@ def test_multilabel_thresholds_preserve_scores(tmp_path, num_workers):
         _assert_label_counts(trainer.predict(
             table, snapshot=snapshot, num_workers=num_workers,
             binary_classification_threshold=0.25,
-            mlops=kumo.MLOps(str(tmp_path / 'root'))))
+            mlops=kumo.MLOps(str(tmp_path / 'root'))), result)
     finally:
         kumo.configure(scratch_dir=previous)
 
 
-def _assert_label_counts(run):
+def _top_scores(frame):
+    from kumo_core.score_counts import PROBABILITY_EDGES
+
+    return np.bincount(
+        np.searchsorted(PROBABILITY_EDGES,
+                        frame.groupby('ENTITY')['SCORE'].max(), 'right'),
+        minlength=len(PROBABILITY_EDGES) + 1).tolist()
+
+
+def _assert_label_counts(run, fitted):
     from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 
     counts = Counts.from_dict(run.manifest.stats['predictions'].counts)
     output = run.frame
-    labels = [name.removesuffix('_PROB') for name in counts.extents]
+    holdout = Counts.from_dict(fitted.manifest.holdout.counts)
+    assert holdout.arrays['top_score'].tolist() == _top_scores(
+        fitted.holdout_df())
+    assert counts.arrays['top_score'].tolist() == _top_scores(output)
+    labels = [name.removesuffix('_PROB') for name in counts.extents
+              if name != 'top_score']
     assert dict(zip(labels, counts.arrays['label_positive'].tolist())) == (
         output.groupby('CLASS')['PREDICTED'].sum().to_dict())
     assert counts.arrays['predicted_labels'].tolist() == np.bincount(

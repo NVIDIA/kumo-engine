@@ -1399,6 +1399,7 @@ class DiskgraphNestedTrainer(Trainer):
         from kumo_core.prediction_counts import (
             count_predictions,
             count_recommendations,
+            count_top_scores,
         )
         from kumo_core.train.formatting import (
             _get_col_names,
@@ -1588,8 +1589,9 @@ class DiskgraphNestedTrainer(Trainer):
             if self.task.task_type == TaskType.MULTILABEL_RANKING:
                 prob = prediction['prob']
                 k = min(top_k or prob.shape[1], prob.shape[1])
-                count_recommendations(counts, prob.topk(k, dim=1).indices,
-                                      prob.shape[1])
+                top = prob.topk(k, dim=1)
+                count_recommendations(counts, top.indices, prob.shape[1])
+                count_top_scores(counts, top.values[:, 0].cpu().numpy())
                 return
             forecast = self.task.task_type == TaskType.FORECASTING
             count_predictions(
