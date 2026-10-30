@@ -27,13 +27,12 @@ For connector changes, start with the [public test command](public-tests.md).
 It builds its prerequisites and runs without cloud credentials. The
 [test matrix](../connector-test-matrix.md) lists coverage and CI limits.
 
-The [Engine PR check](engine-pr-ci.md) builds the candidate wheel and runs eight
-small task checks on CUDA through one shared smoke action. It checks completed
-work, output structure, saved model state, and reloaded predictions. It sets no
-learning-quality score requirement. Source and package workflows remain separate.
-Repeat and reload scores use the shared absolute tolerance of `1e-5` with
-zero relative tolerance. Weights, labels, ranks, valid outputs, and CUDA
-execution remain strict.
+The [Engine PR check](engine-pr-ci.md) builds the candidate wheel on CPU and
+runs eight small task checks on CUDA through one shared smoke action. Repeated
+and reloaded predictions must match within `0.00001` absolute tolerance and
+zero relative tolerance for every task. Labels, ranks, valid outputs, and
+completed CUDA work remain strict. Training metrics report separately and set
+no learning-quality requirement. Source and package workflows remain separate.
 
 ## Finished Kumo Engine wheel
 
@@ -47,8 +46,7 @@ The job uses the same [GPU test script](../../packages/kumo-engine/test/wheel_gp
 and [setup action](../../.github/actions/engine-gpu-smoke/action.yml) as the PR
 check. The action installs the selected wheel in a fresh environment outside the
 checkout. It uses public PyPI and ignores host pip settings. The installed version
-and SHA-256 (file fingerprint) must match the downloaded wheel. Dependencies must
-pass `pip check`.
+must match the selected wheel. Dependencies must pass `pip check`.
 
 Each of the eight task types trains one model with seed zero, predicts, and
 reloads the saved model on CUDA. Outputs must be finite and complete. Restored
@@ -72,17 +70,9 @@ For a behavior change, add a regression test at the relevant boundary; pure
 prose edits need reference checks and a factual review rather than tests that
 repeat the prose.
 
-## Agent-local PR feedback
+## Local PR feedback
 
-Vedaant Jain requested a marked local selection that finishes in strictly less
-than five minutes. See [Engine PR checks](engine-pr-ci.md#agent-local-feedback)
-for one-time environment setup, the single command, selected coverage and timing
-evidence. The local command runs only the small pure output tests. It needs no
-GPU or cloud access. Normal GPU CI fits eight models. The separate numeric
-qualification fits eight models and repeats prediction and reload three times
-on each model. It adds no fits for those repeats. Source and package workflows
-keep their existing tests and failure policies. The preferred full-CI timeline
-is 20 minutes. The accepted budget is about 22 minutes, with a strict
-under-25-minute guardrail. The first normal run reached the 22-minute job limit
-after a cold 14m22s build. Five task checks passed, but the run remained
-incomplete. A complete normal runtime is still unverified.
+The [Engine PR guide](engine-pr-ci.md#local-feedback) gives one pytest command
+for the small pure output and workflow checks. The existing OSS Readiness job
+runs the same tests. They need no GPU or cloud access. The GPU job runs the
+eight actual training and save/load cases.

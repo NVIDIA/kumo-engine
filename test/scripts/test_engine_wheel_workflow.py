@@ -95,7 +95,7 @@ def test_release_steps_use_the_matching_platform_and_wheel(
         assert command['target'] == '14.0'
 
 
-def test_all_platforms_require_validation_and_release_approval():
+def test_all_platforms_require_validation_and_release_environment():
     arches = {build['arch'] for build in BUILDS}
     assert len(arches) == len(BUILDS)
     for job in ['check-requirements', 'kitmaker']:

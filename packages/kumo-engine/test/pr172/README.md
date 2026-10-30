@@ -1,9 +1,14 @@
 # Small PR172 fixtures
 
-The GPU smoke action downloads the versioned S3 bundle recorded in
+The GPU smoke action downloads the shared S3 bundle recorded in
 `inputs.json`. Its SHA-256 pins the complete compressed archive. The action
 checks that hash before extraction and uses the repository's existing AWS role.
 No private GitHub repository or fixture-access token is required.
+
+The bundle uses the shared `kumo-unit-test/diskgraph-profiles/engine-pr/`
+prefix. The bucket enables S3 Versioning, so a deleted or replaced object can
+be restored. The existing CI role reads this prefix with `GetObject`. The
+download uses that operation and the archive checksum.
 
 The bundle retains the same 29 files from the approved generate-once inputs:
 23 Parquet table files, three manifests, and three validation stamps. It adds
@@ -17,7 +22,7 @@ The extracted root contains `adtech/pr`, `delivery/pr`, `commerce/pr`, and
 It uses native static-link splitting for smoke coverage. The previous quality
 control payload and source projection are not part of this check.
 
-A fixture update requires a new versioned S3 object and an updated manifest
-hash. Keep the frozen reports from previous runs unchanged. The
+A fixture update requires a new object key and an updated manifest hash.
+Keep previous objects and frozen reports unchanged. The
 [Engine PR guide](../../../../docs/development/engine-pr-ci.md) describes
-normal runs, numeric qualification, and local feedback.
+the GPU checks and local feedback.

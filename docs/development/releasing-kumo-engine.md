@@ -115,8 +115,8 @@ platform's `release-version`.
      Weights, labels, and ranks remain exact. The macOS wheel has no GPU smoke
      check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
    - attaches the Linux x86_64 and macOS ARM64 wheels to the GitHub release.
-5. **Approve the publication.** The `kitmaker` job waits for approval on the
-   `kumo-engine-release` environment. It then checks that the Portal project
+5. **Publish through Kitmaker.** The `kitmaker` job runs in the
+   `kumo-engine-release` environment. It checks that the Portal project
    has the expected name and owner and that the attached wheel is the one this
    run built, has Kitmaker dry-run it, and only then publishes it to PyPI and
    pypi.nvidia.com, where it confirms both serve exactly those bytes. Both
@@ -184,7 +184,7 @@ Kitmaker downloads the wheels from the GitHub release, the repository must be
 public when a release is published. The `kumo-engine-release` environment
 needs:
 
-- required reviewers, since its approval is what publishes;
+- required reviewers for a manual approval gate;
 - the secret `KITMAKER_API_TOKEN`, a token for a Kitmaker service account
   owned by the Portal projects' owner;
 - the variable `KITMAKER_PIC`, that owner's email address.

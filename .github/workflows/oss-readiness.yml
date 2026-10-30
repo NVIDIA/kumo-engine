@@ -49,6 +49,7 @@ jobs:
             test/scripts/test_check_oss_readiness.py \
             test/scripts/test_check_secrets.py \
             test/scripts/test_engine_gpu_smoke.py \
+            test/scripts/test_engine_pr_workflow.py \
             test/scripts/test_engine_wheel_workflow.py
 
       # Pull requests check only the files they change. Pushes to main check
