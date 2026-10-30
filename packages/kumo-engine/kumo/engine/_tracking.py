@@ -328,7 +328,7 @@ def prediction_record(manifest: 'PredictionManifest',
                       else _utc(timings.finished_at)),
             params={
                 key: value
-                for key, value in params.items() if value is not None
+                for key, value in params.items() if value not in (None, 'none')
             },
             parents={
                 'bundle_id': manifest.parents.model.id,

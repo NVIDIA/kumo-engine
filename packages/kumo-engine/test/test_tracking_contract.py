@@ -661,7 +661,6 @@ def test_prediction_record_of_the_recorded_run():
         'anchors': '["2024-04-29T00:00:00+00:00"]',
         'binary_classification_threshold': '0.4',
         'threshold_source': 'argument',
-        'count_source': 'none',
     }
     assert record.metrics == {}
     assert record.summaries == (
