@@ -270,3 +270,9 @@ def test_ranking_metrics_become_at_k_columns():
     assert at_k_summaries({'test_map@10': 0.2, 'test_map@1': 0.5,
                            'test_loss': 1.0, 'val_map@10': 0.3}) == [
         Series('holdout/by_k/map', ((1, 0.5), (10, 0.2)), 'k')]
+
+
+def test_at_k_columns_describe_the_refit_model_when_there_is_one():
+    assert at_k_summaries({'test_map@10': 0.2, 'test_refit_map@10': 0.25,
+                           'test_refit_map@1': 0.6}) == [
+        Series('holdout/by_k/map', ((1, 0.6), (10, 0.25)), 'k')]

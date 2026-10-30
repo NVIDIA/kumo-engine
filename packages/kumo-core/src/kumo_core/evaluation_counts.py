@@ -114,10 +114,13 @@ def evaluation_summaries(task_type: TaskType, counts: Counts,
 
 def at_k_summaries(metrics: Mapping[str, float]) -> List[Summary]:
     r"""``test_map@1``, ``test_map@10``... as the column ``map`` of the
-    table ``holdout/by_k``."""
+    table ``holdout/by_k``, from the refit model's ``test_refit_map@1``...
+    when there are any: the bundle ships that model."""
+    refit = any(re.fullmatch(r'test_refit_\w+@\d+', name) for name in metrics)
+    prefix = 'test_refit_' if refit else 'test_'
     series: Dict[str, List[Tuple[int, float]]] = {}
     for name, value in metrics.items():
-        match = re.fullmatch(r'test_(\w+)@(\d+)', name)
+        match = re.fullmatch(rf'{prefix}(\w+)@(\d+)', name)
         if match:
             series.setdefault(match.group(1), []).append(
                 (int(match.group(2)), float(value)))
