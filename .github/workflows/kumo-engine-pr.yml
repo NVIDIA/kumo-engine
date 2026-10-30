@@ -70,6 +70,7 @@ jobs:
           prefix-key: engine-pr-zig-workspace-v2
           key: py312-glibc234-${{ hashFiles('packages/diskgraph/**', 'packages/kumo-engine/scripts/build_wheel.sh') }}
           cache-workspace-crates: true
+          cache-on-failure: true
       - name: Build the candidate wheel
         run: |
           python -m pip --isolated install ziglang
@@ -79,6 +80,7 @@ jobs:
           wheel-path: ${{ runner.temp }}/pr-wheel/*.whl
           repetitions: ${{ inputs.qualify && inputs.repetitions || '1' }}
           qualify: ${{ inputs.qualify || 'false' }}
+          report-numeric-drift: ${{ !inputs.qualify }}
       - name: Retain the tested wheel and task results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

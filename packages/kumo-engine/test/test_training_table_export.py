@@ -127,15 +127,12 @@ def test_node_export_roundtrip(graph, name, query):
     columns = ['ENTITY1', 'TIMESTAMP', 'TARGET1']
     assert exported.schema.names == columns + ['SPLIT']
     assert exported.schema.types == [
-        pa.int64(), pa.timestamp('ns'),
-        pa.bool_(), pa.int64()
+        pa.int64(), pa.timestamp('ns'), pa.bool_(), pa.int64()
     ]
     expected = Counter()
     for key, seed in seeds.items():
-        expected += _rows(
-            seed.append_column('SPLIT',
-                               pa.array([SPLITS[key]] * len(seed), pa.int64())),
-            exported.schema.names)
+        expected += _rows(seed.append_column('SPLIT', pa.array(
+            [SPLITS[key]] * len(seed), pa.int64())), exported.schema.names)
     assert _rows(exported, exported.schema.names) == expected
     for key, split in SPLITS.items():
         assert exported['SPLIT'].to_pylist().count(split) == counts[key]
@@ -145,8 +142,8 @@ def test_node_export_roundtrip(graph, name, query):
     frame.to_parquet(out / f'{name}_w.parquet')
     reimported = kumo.TrainingTable.from_source_table(
         connector[f'{name}_w.parquet'],
-        TrainingTableSpec(weight_col='WEIGHT', split_col='SPLIT'), pq=pquery,
-        snapshot=snapshot)
+        TrainingTableSpec(weight_col='WEIGHT', split_col='SPLIT'),
+        pq=pquery, snapshot=snapshot)
     imported, imported_counts = _seeds(reimported)
     assert imported_counts == counts
     verify_weighted_roundtrip(pa.Table.from_pandas(frame, preserve_index=False),

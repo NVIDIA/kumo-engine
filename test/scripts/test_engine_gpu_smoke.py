@@ -129,8 +129,26 @@ def test_reload_comparison_measures_drift_and_rejects_unqualified_passes():
             compare(before, after, atol=1., rtol=1., qualify=True)
 
 
+def test_report_numeric_drift_keeps_measurements_and_default_enforcement():
+    compare = runner().compare_predictions
+    before, after = [[1., 2.]], [[1.125, 2.25]]
+    options = dict(atol=1e-5, rtol=0., before_decisions=[[True, False]],
+                   after_decisions=[[True, False]])
+    with pytest.raises(ValueError, match='exceeds'):
+        compare(before, after, **options)
+    measured = compare(before, after, report_numeric_drift=True, **options)
+    assert measured == dict(decisions_equal=True, max_abs_difference=.25,
+                            max_relative_difference=.125,
+                            within_tolerance=False)
+    for invalid in ([], [[1.]], [[np.nan, 2.]], [[np.inf, 2.]]):
+        with pytest.raises(ValueError, match='equal finite'):
+            compare(before, invalid, report_numeric_drift=True, **options)
+
+
 @pytest.mark.parametrize('task', ['binary', 'multiclass', 'multilabel'])
-def test_reload_rejects_changed_labels_even_with_close_scores(task):
+@pytest.mark.parametrize('report_numeric_drift', [False, True])
+def test_reload_rejects_changed_labels_even_with_close_scores(
+        task, report_numeric_drift):
     smoke = runner()
     if task == 'binary':
         before = pd.DataFrame({
@@ -171,7 +189,8 @@ def test_reload_rejects_changed_labels_even_with_close_scores(task):
         for frame in (before, after)
     ]
     options = dict(atol=1e-5, rtol=0., before_decisions=decisions[0],
-                   after_decisions=decisions[1])
+                   after_decisions=decisions[1],
+                   report_numeric_drift=report_numeric_drift)
     assert smoke.compare_predictions(*values, qualify=True,
                                      **options)['decisions_equal'] is False
     with pytest.raises(ValueError, match='decisions'):
@@ -180,7 +199,9 @@ def test_reload_rejects_changed_labels_even_with_close_scores(task):
 
 @pytest.mark.parametrize('task',
                          ['multilabel_ranking', 'static_link', 'temporal_link'])
-def test_reload_rejects_changed_ranks_even_with_identical_aligned_scores(task):
+@pytest.mark.parametrize('report_numeric_drift', [False, True])
+def test_reload_rejects_changed_ranks_even_with_identical_aligned_scores(
+        task, report_numeric_drift):
     smoke = runner()
     before = pd.DataFrame({
         'ENTITY': [20, 20, 10, 10],
@@ -203,4 +224,59 @@ def test_reload_rejects_changed_ranks_even_with_identical_aligned_scores(task):
     with pytest.raises(ValueError, match='decisions'):
         smoke.compare_predictions(*values, atol=0., rtol=0.,
                                   before_decisions=decisions[0],
-                                  after_decisions=decisions[1])
+                                  after_decisions=decisions[1],
+                                  report_numeric_drift=report_numeric_drift)
+
+
+def test_checkpoint_exclusions_keep_other_state_and_all_keys_strict(tmp_path):
+    import hashlib
+    from types import SimpleNamespace
+
+    import torch
+
+    expected = {'rhs': torch.tensor([1., 2.]), 'encoder': torch.tensor([3.])}
+    checkpoint = tmp_path / 'model.ckpt'
+    torch.save({'state_dict': expected}, checkpoint)
+    digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    actual = dict(expected, rhs=torch.tensor([1., 2., 1.5]))
+    model = SimpleNamespace(state_dict=lambda: actual)
+    check = runner().verify_checkpoint
+    assert check(model, checkpoint, digest, exclude=('rhs', )) == 1
+    with pytest.raises(ValueError):
+        check(model, checkpoint, digest)
+    actual['encoder'] = torch.tensor([4.])
+    with pytest.raises(ValueError):
+        check(model, checkpoint, digest, exclude=('rhs', ))
+    actual['encoder'] = expected['encoder']
+    del actual['rhs']
+    with pytest.raises(ValueError):
+        check(model, checkpoint, digest, exclude=('rhs', ))
+    actual['rhs'] = expected['rhs']
+    with pytest.raises(ValueError):
+        check(model, checkpoint, digest, exclude=('unknown', ))
+
+
+def test_installed_wheel_check_rejects_changed_runtime_files(tmp_path):
+    import importlib.metadata
+    import zipfile
+
+    dist_info = tmp_path / 'example-1.0.dist-info'
+    dist_info.mkdir()
+    metadata = b'Name: example\nVersion: 1.0\n'
+    (dist_info / 'METADATA').write_bytes(metadata)
+    source = tmp_path / 'example.py'
+    source.write_bytes(b'VALUE = 1\n')
+    wheel = tmp_path / 'example-1.0-py3-none-any.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        archive.writestr('example.py', source.read_bytes())
+        archive.writestr('example-1.0.dist-info/METADATA', metadata)
+        archive.writestr('example-1.0.dist-info/RECORD', b'wheel record')
+    distribution = importlib.metadata.Distribution.at(dist_info)
+    check = runner().verify_installed_files
+    assert check(wheel, distribution) == 2
+    source.write_bytes(b'VALUE = 2\n')
+    with pytest.raises(ValueError):
+        check(wheel, distribution)
+    source.unlink()
+    with pytest.raises(ValueError):
+        check(wheel, distribution)

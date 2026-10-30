@@ -31,12 +31,10 @@ The [Engine PR check](engine-pr-ci.md) builds the candidate wheel and runs eight
 small task checks on CUDA through one shared smoke action. It checks completed
 work, output structure, saved model state, and reloaded predictions. It sets no
 learning-quality score requirement. Source and package workflows remain separate.
-Its new numeric limits and complete timing require real GPU qualification
-and a fresh normal run.
-
-The [Engine nightly check](engine-nightly-ci.md) compares sixteen large-profile
-GPU fits with a saved reference. Its guide lists the remaining access and
-behavior coverage requirements.
+Numeric repeat/reload score drift reports only in PR135. Weights, labels,
+ranks, valid outputs, and CUDA execution remain strict. The shared publication
+caller keeps its enforced numerical policy. Complete PR timing still requires
+a fresh normal run.
 
 ## Report evidence
 
@@ -53,7 +51,10 @@ than five minutes. See [Engine PR checks](engine-pr-ci.md#agent-local-feedback)
 for one-time environment setup, the single command, selected coverage and timing
 evidence. The local command runs only the small pure output tests. It needs no
 GPU or cloud access. Normal GPU CI fits eight models. The separate numeric
-qualification runs three repetitions, or 24 fits. Source and package workflows
+qualification fits eight models and repeats prediction and reload three times
+on each model. It adds no fits for those repeats. Source and package workflows
 keep their existing tests and failure policies. The preferred full-CI timeline
 is 20 minutes. The accepted budget is about 22 minutes, with a strict
-under-25-minute guardrail. The new slim job does not yet have a measured runtime.
+under-25-minute guardrail. The first normal run reached the 22-minute job limit
+after a cold 14m22s build. Five task checks passed, but the run remained
+incomplete. A complete normal runtime is still unverified.

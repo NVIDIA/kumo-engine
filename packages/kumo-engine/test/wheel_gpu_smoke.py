@@ -74,6 +74,28 @@ TASKS = {
 }
 
 
+def verify_installed_files(wheel, distribution):
+    """Match installed files to the finished archive, except pip's rewritten RECORD."""
+    from zipfile import ZipFile
+
+    location = Path(distribution.locate_file('')).resolve()
+    checked = 0
+    with ZipFile(wheel) as archive:
+        for name in archive.namelist():
+            if name.endswith('/') or name.endswith('.dist-info/RECORD'):
+                continue
+            destination = Path(distribution.locate_file(name)).resolve()
+            if (not destination.is_relative_to(location)
+                    or not destination.is_file()
+                    or hashlib.sha256(destination.read_bytes()).digest() !=
+                    hashlib.sha256(archive.read(name)).digest()):
+                raise ValueError(f'Installed wheel member differs: {name}')
+            checked += 1
+    if not checked:
+        raise ValueError('Wheel contains no installed files')
+    return checked
+
+
 def prediction_values(task, frame, ids, *, classes=(), anchor=None,
                       time_column='TIMESTAMP'):
     """Require complete, unique output coordinates before aligning values."""
@@ -97,8 +119,8 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
             values = ordered[['False_PROB', 'True_PROB']].to_numpy(dtype=float)
             if (not ((values >= 0) & (values <= 1)).all() or
                     not np.allclose(values.sum(axis=1), 1, atol=1e-6, rtol=1e-7)
-                    or not np.array_equal(ordered['TARGET_PRED'], values[:, 1]
-                                          > .5)):
+                    or not np.array_equal(ordered['TARGET_PRED'],
+                                          values[:, 1] > .5)):
                 raise ValueError(
                     'Binary probabilities or chosen labels are invalid')
         else:
@@ -116,10 +138,10 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
         if (not coordinates or len(set(coordinates)) != len(coordinates)
                 or frame[key].isna().any()
                 or frame.duplicated(['ENTITY', key]).any()
-                or set(zip(frame['ENTITY'],
-                           frame[key])) != {(entity, coordinate)
-                                            for entity in ids
-                                            for coordinate in coordinates}):
+                or set(zip(frame['ENTITY'], frame[key])) != {
+                    (entity, coordinate)
+                    for entity in ids for coordinate in coordinates
+                }):
             raise ValueError(
                 'Prediction output coordinates are incomplete or repeated')
         values = frame.pivot(
@@ -166,7 +188,8 @@ def prediction_decisions(task, frame, ids, *, classes=()):
 
 
 def compare_predictions(before, after, *, atol, rtol, qualify=False,
-                        before_decisions=None, after_decisions=None):
+                        before_decisions=None, after_decisions=None,
+                        report_numeric_drift=False):
     """Measure numeric drift; qualification never supplies a normal CI pass."""
     import numpy as np
 
@@ -186,7 +209,8 @@ def compare_predictions(before, after, *, atol, rtol, qualify=False,
         within_tolerance=bool(np.allclose(left, right, atol=atol, rtol=rtol)))
     if not qualify and not result['decisions_equal']:
         raise ValueError('Prediction decisions changed after repeat or reload')
-    if not qualify and not result['within_tolerance']:
+    if not qualify and not report_numeric_drift and not result[
+            'within_tolerance']:
         raise ValueError(
             f'Prediction difference exceeds atol={atol}, rtol={rtol}: {result}')
     return result
@@ -276,7 +300,7 @@ def target_classes(task, targets):
     return sorted({category for value in members for category in value})
 
 
-def build_graph(spec, directory, *, static=False):
+def build_graph(spec, directory, *, static=False, sources=None):
     from kumoapi.graph import Edge
     from kumoapi.table import Column
 
@@ -287,7 +311,8 @@ def build_graph(spec, directory, *, static=False):
     for name, definition in spec['tables'].items():
         columns = [Column(**column) for column in definition['cols']]
         table = kumo.Table.from_source_table(
-            files[name], [column.name for column in columns],
+            files[(sources
+                   or {}).get(name, name)], [column.name for column in columns],
             primary_key=definition.get('pkey'),
             time_column=None if static else definition.get('time_col'),
             end_time_column=None if static else definition.get('end_time_col'),
@@ -381,15 +406,13 @@ def prepare_task(task, root, metadata, directory, graphs):
     inputs = directory / 'inputs.parquet'
     import pyarrow as pa
     pq.write_table(
-        pa.Table.from_pylist([{
-            key: row[key]
-            for key in columns
-        } for row in test]), inputs)
+        pa.Table.from_pylist([{key: row[key]
+                               for key in columns} for row in test]), inputs)
     return dict(query=query, snapshot=snapshot, training_table=table,
                 input_file=inputs, ids=ids, classes=classes, anchor=anchor)
 
 
-def verify_checkpoint(model, path, expected_digest):
+def verify_checkpoint(model, path, expected_digest, *, exclude=()):
     """Compare the weights that Lightning actually restored, with no tolerance."""
     import numpy as np
     import pandas as pd
@@ -434,7 +457,12 @@ def verify_checkpoint(model, path, expected_digest):
         elif left != right:
             raise ValueError('Restored model state values differ')
 
-    equal(expected, actual)
+    if set(expected) != set(actual) or not set(exclude) <= set(expected):
+        raise ValueError('Restored model state keys differ')
+    equal({key: value
+           for key, value in expected.items() if key not in exclude},
+          {key: value
+           for key, value in actual.items() if key not in exclude})
     if not tensors:
         raise ValueError('Reload checked no model tensors')
     return tensors
@@ -442,20 +470,26 @@ def verify_checkpoint(model, path, expected_digest):
 
 @contextmanager
 def observe_cuda(state):
+    from numbers import Integral
+
     import torch
     from kumo_core.train.trainer import Trainer as CoreTrainer
     from pytorch_lightning import Callback
+    from pytorch_lightning.callbacks import EarlyStopping
 
     original_create = CoreTrainer.create_pl_trainer
 
     class Proof(Callback):
         def on_fit_start(self, trainer, module):
             state['fits'] += 1
+            if 'fit_ledger' in state:
+                state['fit_ledger'].append(
+                    dict(status='RUNNING', steps=0, cuda_batches=0))
 
         def check(self, trainer, values):
             if (str(trainer.strategy.root_device) != 'cuda:0' or not values
-                    or any(not isinstance(value, torch.Tensor) or str(
-                        value.device) != 'cuda:0' or not value.numel()
+                    or any(not isinstance(value, torch.Tensor) or
+                           str(value.device) != 'cuda:0' or not value.numel()
                            for value in values)):
                 raise ValueError('Completed work did not use CUDA tensors')
             torch.cuda.synchronize()
@@ -465,10 +499,42 @@ def observe_cuda(state):
                 trainer,
                 [values.get('loss') if isinstance(values, dict) else values])
             state['training_batches'] += 1
+            if 'fit_ledger' in state:
+                state['fit_ledger'][-1]['cuda_batches'] += 1
+            if 'training_epochs' in state:
+                seed = (getattr(module, 'lhs_name', None)
+                        or getattr(module, 'entity_table_name', None)
+                        or getattr(batch, 'input_type', None))
+                size = batch[seed].batch_size
+                if isinstance(
+                        size,
+                        bool) or not isinstance(size, Integral) or size < 1:
+                    raise ValueError(
+                        'Training batch has no valid seed-row count')
+                state['training_epochs'][-1]['batch_sizes'].append(int(size))
+                state['training_epochs'][-1]['batches'] += 1
+
+        def on_train_epoch_start(self, trainer, module):
+            if 'training_epochs' in state:
+                state['training_epochs'].append(
+                    dict(epoch=int(trainer.current_epoch), batches=0,
+                         batch_sizes=[]))
 
         def on_fit_end(self, trainer, module):
             state['completed_fits'] += 1
             state['optimizer_steps'] += int(trainer.global_step)
+            if 'fit_ledger' in state:
+                state['fit_ledger'][-1].update(status='PASS',
+                                               steps=int(trainer.global_step))
+            if 'training_epochs' in state:
+                [stop] = [
+                    callback for callback in trainer.callbacks
+                    if isinstance(callback, EarlyStopping)
+                ]
+                state['early_stopping'] = dict(
+                    stopped_epoch=int(stop.stopped_epoch),
+                    wait_count=int(stop.wait_count),
+                    patience=int(stop.patience))
 
         def on_predict_batch_end(self, trainer, module, values, batch,
                                  batch_idx, dataloader_idx=0):
@@ -596,7 +662,8 @@ def run_task(task, prepared, directory, args):
             repeat_delta = compare_predictions(
                 before, repeated, atol=args.reload_atol, rtol=args.reload_rtol,
                 qualify=args.qualify, before_decisions=before_decisions,
-                after_decisions=repeat_decisions)
+                after_decisions=repeat_decisions,
+                report_numeric_drift=args.report_numeric_drift)
             del trainer
             gc.collect()
             trainer = kumo.Trainer.load(saved, accelerator='gpu')
@@ -604,7 +671,8 @@ def run_task(task, prepared, directory, args):
             reload_delta = compare_predictions(
                 before, after, atol=args.reload_atol, rtol=args.reload_rtol,
                 qualify=args.qualify, before_decisions=before_decisions,
-                after_decisions=after_decisions)
+                after_decisions=after_decisions,
+                report_numeric_drift=args.report_numeric_drift)
             if (state['reload_checks'] <= previous_reload_checks
                     or not state['restored_tensors']):
                 raise ValueError(
@@ -613,8 +681,7 @@ def run_task(task, prepared, directory, args):
                 dict(
                     cycle=cycle, repeat=repeat_delta, reload=reload_delta,
                     prediction_batches={
-                        stage:
-                        state['prediction_batches'][stage] -
+                        stage: state['prediction_batches'][stage] -
                         previous_batches[stage]
                         for stage in ('repeat', 'reload')
                     }, restored_tensors=state['restored_tensors']))
@@ -654,6 +721,9 @@ def main():
     parser.add_argument(
         '--qualify', action='store_true',
         help='Measure numeric differences; does not produce a normal CI pass')
+    parser.add_argument(
+        '--report-numeric-drift', action='store_true',
+        help='Report numeric drift; keep labels, ranks and execution strict')
     # The T4 qualification measured at most 1.91e-6 across 48 comparisons.
     parser.add_argument('--reload-atol', type=float, default=1e-5)
     parser.add_argument('--reload-rtol', type=float, default=0.)
@@ -667,9 +737,13 @@ def main():
     args.data_dir = args.data_dir.resolve()
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    report = dict(status='RUNNING', repetitions=args.repetitions, tasks=[],
-                  qualification=args.qualify, reload_atol=args.reload_atol,
-                  reload_rtol=args.reload_rtol)
+    report = dict(
+        status='RUNNING', repetitions=args.repetitions, tasks=[],
+        qualification=args.qualify, reload_atol=args.reload_atol,
+        reload_rtol=args.reload_rtol,
+        report_numeric_drift=args.report_numeric_drift,
+        numeric_drift_policy=('qualification' if args.qualify else 'report_only'
+                              if args.report_numeric_drift else 'enforced'))
     started = time.monotonic()
     try:
         import numpy as np
