@@ -48,6 +48,7 @@ from kumo.engine.connector import (
 )
 from kumo.engine.graph import Graph, GraphSnapshot
 from kumo.engine.pquery import PredictionTable, PredictiveQuery, TrainingTable
+from kumo.engine.skills import install_skills
 from kumo.engine.table import Table
 from kumo.engine.trainer import (
     ModelOutputConfig,
@@ -63,6 +64,7 @@ __all__ = [
     "ADLSIdentity",
     "__version__",
     "configure",
+    "install_skills",
     "EmbeddingModelStore",
     "GloVeVectors",
     "TokenEmbeddingModel",

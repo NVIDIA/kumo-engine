@@ -11,6 +11,9 @@
 #   3. This workflow builds the wheels at that tag and attaches them to the
 #      release once `check-requirements` shows each wheel installs from
 #      PyPI, alone and with each extra, on every Python version it claims.
+#      The agent skill zips (`kumo-data-science-<host>.zip`, built from the
+#      same commit by `skill-zips`) are attached beside them; the docs and
+#      install scripts link to them by release tag.
 #   4. Once the `kumo-engine-release` environment approves it, `kitmaker`
 #      publishes the attached wheels to PyPI and pypi.nvidia.com through
 #      Kitmaker (scripts/kitmaker_release.py).
@@ -129,6 +132,36 @@ jobs:
           retention-days: ${{ inputs.retention_days || 30 }}
           if-no-files-found: error
 
+  # The kumo-data-science agent skill, one zip per host, for anyone who installs it without the
+  # wheel: a docs download link or an install script. The wheel carries the same packages for
+  # kumo.engine.install_skills(); both are built from this commit.
+  skill-zips:
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+      || startsWith(github.event.release.tag_name, 'kumo-engine-v') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Build the skill zips
+        run: python3 agent-skills/scripts/package_skill.py --zip dist
+
+      - name: Upload skill zips
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kumo-data-science-zips-${{ github.sha }}
+          path: dist/*.zip
+          retention-days: ${{ inputs.retention_days || 30 }}
+          if-no-files-found: error
+
   check-requirements:
     needs: [build]
     strategy:
@@ -166,7 +199,7 @@ jobs:
           dist/kumo_engine-*.whl --platform "${WHEEL_PLATFORM}"
 
   attach-to-release:
-    needs: [build, check-requirements]
+    needs: [build, check-requirements, skill-zips]
     if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-24.04
     permissions:
@@ -179,12 +212,18 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Attach wheel to the GitHub release
+      - name: Download skill zips
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: kumo-data-science-zips-${{ github.sha }}
+          path: dist
+
+      - name: Attach wheel and skill zips to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "${RELEASE_TAG}" dist/*.whl --clobber
+        run: gh release upload "${RELEASE_TAG}" dist/*.whl dist/*.zip --clobber
 
   kitmaker:
     needs: [attach-to-release]

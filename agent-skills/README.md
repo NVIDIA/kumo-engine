@@ -43,6 +43,7 @@ python3 agent-skills/scripts/package_skill.py generic     # -> agent-skills/dist
 python3 agent-skills/scripts/package_skill.py genie       # -> agent-skills/dist/genie/skills/
 python3 agent-skills/scripts/package_skill.py genie --deploy   # + upload to your Genie Code skills folder
 python3 agent-skills/scripts/package_skill.py --check     # build every host, verify references
+python3 agent-skills/scripts/package_skill.py --zip DIR   # kumo-data-science-<host>.zip for every host
 ```
 
 A package carries exactly one host, and the core reaches it only as `hosts/<host>/`; tests fail if
@@ -52,6 +53,50 @@ Code, `~/.claude/skills/`) — not into this repository, for the reason above. `
 uploads the `genie` package to `/Users/<you>/.assistant/skills/kumo-data-science/` in the
 workspace named by `DATABRICKS_HOST` and `DATABRICKS_TOKEN` and reads every file back; a new Genie
 Code chat loads it.
+
+## Shipping in the `kumo-engine` wheel
+
+Users install the skill from Kumo itself, so it always matches the installed SDK:
+
+```python
+import kumo.engine as kumo
+kumo.install_skills()                  # Genie on Databricks; else every local agent found
+kumo.install_skills('claude')          # ~/.claude/skills/        (scope='project': ./.claude/skills/)
+kumo.install_skills('codex')           # ~/.agents/skills/        (scope='project': ./.agents/skills/)
+kumo.install_skills('coco')            # ~/.snowflake/cortex/skills/ (scope='project': ./.cortex/skills/)
+kumo.install_skills('coco', scope='workspace', workspace='MY_WS')   # a Snowsight workspace
+kumo.install_skills('coco', scope='extension')                      # a Cortex Extension
+kumo.install_skills('genie')           # /Users/<you>/.assistant/skills/
+kumo.install_skills(path='...')        # any other agent's skills directory (generic package)
+```
+
+`python -m kumo.engine.skills [agent] [--scope ...]` does the same from a shell. Claude Code and
+Codex get the `generic` package, CoCo `coco`, Genie `genie`.
+
+`packages/kumo-engine/setup.py` calls `package_skill.bundle()` on every build from a checkout,
+writing all three packages to `kumo/engine/_skills/` (gitignored), which the wheel ships as package
+data. In a source checkout `install_skills` builds from `agent-skills/` directly instead, so an
+edit is installed without a rebuild. Each install replaces only its own `kumo-data-science/`
+directory. `tests/test_install_skills.py` covers every agent and scope; the Genie and Snowflake
+account paths run there against fakes.
+
+## Download zips on each release
+
+For anyone installing the skill without the wheel (a docs download button, an install script),
+every `kumo-engine-v*` GitHub release carries one zip per host, attached by the `skill-zips` job in
+`.github/workflows/kumo-engine-wheel.yml` beside the wheels built from the same commit:
+
+```
+https://github.com/NVIDIA/kumo-engine/releases/download/kumo-engine-v<version>/kumo-data-science-generic.zip
+https://github.com/NVIDIA/kumo-engine/releases/download/kumo-engine-v<version>/kumo-data-science-coco.zip
+https://github.com/NVIDIA/kumo-engine/releases/download/kumo-engine-v<version>/kumo-data-science-genie.zip
+```
+
+Each zip holds `kumo-data-science/` at its root, the directory `install_skills()` installs: unzip it
+into the agent's skills directory (the same locations as above). Link by release tag, never through
+`releases/latest`: this repository also publishes `kumo-sdk-v*`, model and wheel releases, and
+whichever is newest is "latest". The zips are reproducible, so `/skill-zips` can rebuild a
+release's zips from its tag and compare them byte for byte.
 
 The build stamps the router's `SKILL-BUILD` marker with the source commit
 (`<commit date>-<short sha>`, `-dirty` for uncommitted edits); never edit it by hand. Every build

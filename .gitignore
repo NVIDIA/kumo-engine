@@ -173,3 +173,6 @@ docker/compose/config/generated/
 pytest-of-*/
 
 /public-reports/
+
+# Built by packages/kumo-engine/setup.py from agent-skills/; ships in the wheel.
+packages/kumo-engine/kumo/engine/_skills/
