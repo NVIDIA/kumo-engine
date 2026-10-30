@@ -12,7 +12,7 @@ from typing import Any, Mapping, Optional, Sequence
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.summaries import Summary
 
-from kumo.engine._tracking import RunSpec, _flatten
+from kumo.engine._tracking import RunSpec, _flatten, logged_names
 
 
 @dataclass(frozen=True)
@@ -61,8 +61,10 @@ def fitted_spec(spec: RunSpec, result: Any, seconds: Optional[float] = None,
     provenance = Path(result.bundle_dir) / PROVENANCE_FILE
     if provenance.is_file():
         artifacts[PROVENANCE_FILE] = provenance.read_text(encoding='utf-8')
-    tested = {name: value for name, value in result.metrics.items()
-              if not name.startswith(('train_', 'val_'))}
+    tested = logged_names({
+        name: value for name, value in result.metrics.items()
+        if not name.startswith(('train_', 'val_'))
+    }, refit_full=_fit_mode(result) == 'refit_full')
     return replace(
         spec, metrics={
             **tested, **({} if seconds is None else {
@@ -72,6 +74,10 @@ def fitted_spec(spec: RunSpec, result: Any, seconds: Optional[float] = None,
                     **_registered(result.registered_model,
                                   result.registered_alias)},
         artifacts=artifacts, summaries=summaries)
+
+
+def _fit_mode(result: Any) -> Optional[str]:
+    return getattr(getattr(result, 'manifest', None), 'fit_mode', None)
 
 
 def _registered(model: Any, alias: Optional[str]) -> Mapping[str, Any]:

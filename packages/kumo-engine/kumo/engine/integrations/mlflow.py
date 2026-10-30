@@ -519,12 +519,12 @@ class MlflowTracking:
 
     def log_summaries(self, summaries: Sequence[Summary]) -> None:
         r"""Logs each summary on the current run through its type's call in
-        `_SINKS`; a test scalar also goes on the logged model."""
+        `_SINKS`; a ``role='model'`` scalar also goes on the logged model."""
         for summary in summaries:
             _SINKS[type(summary)](self, summary)
 
     def _log_scalar(self, summary: Scalar) -> None:
-        model_id = self._model_id if summary.name.startswith('test/') else None
+        model_id = self._model_id if summary.role == 'model' else None
         self._log_metrics(self._parent, {summary.name: summary.value},
                           model_id=model_id)
 

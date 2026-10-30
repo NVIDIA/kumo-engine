@@ -432,7 +432,7 @@ def test_records_of_the_recorded_fit():
         spoofed = run_record(fit_spec(CONTEXT, tags={
             'kumo.bundle_id': 'x', 'training_job.tune_metric': 'y', 'a': 1}))
     assert spoofed.tags.keys() - fit.tags.keys() == {'a'}
-    assert fit.metrics == {'test/mae': 0.32, 'seconds': 9.0}
+    assert fit.metrics == {'mae': 0.32, 'seconds': 9.0}
     assert fit.steps == {'search/best_val_mae': ((1, 0.35), (2, 0.3)),
                          'train/loss': ((1, 0.6), (2, 0.4)),
                          'val/mae': ((1, 0.5), (2, 0.3))}
@@ -696,3 +696,33 @@ def test_every_summary_type_has_a_sink_in_each_tracker():
 
     for sinks in (mlflow._SINKS, snowflake._SINKS):
         assert set(sinks) == set(get_args(Summary))
+
+
+@pytest.mark.parametrize('metrics,refit_full,expected', [
+    ({'test_auroc': 0.7, 'test_loss': 0.5, 'val_auroc': 0.6},
+     False, {'auroc': 0.7, 'holdout_loss': 0.5, 'val/auroc': 0.6}),
+    ({'test_auroc': 0.7, 'test_refit_auroc': 0.8, 'test_refit_loss': 0.4},
+     False, {'before_refit/auroc': 0.7, 'auroc': 0.8, 'holdout_loss': 0.4}),
+    ({'test_auroc': 0.7}, True, {'before_refit/auroc': 0.7}),
+    ({'test_auroc': 0.7, 'test_refit_auroc': 0.8}, True,
+     {'before_refit/auroc': 0.8}),
+])
+def test_holdout_metrics_are_named_after_the_shipped_model(
+        metrics, refit_full, expected):
+    from kumo.engine._tracking import logged_names
+
+    assert logged_names(metrics, refit_full) == expected
+
+
+def test_a_full_refit_names_the_holdout_summaries_before_it():
+    from kumo_core.summaries import Note
+
+    from kumo.engine.trainer.trainer import _REFIT_FULL, _unlogged
+
+    summaries = (Scalar('auroc', 0.7, role='model'), Scalar('brier', 0.2,
+                                                           role='model'),
+                 Scalar('label/rows', 9.0))
+    assert _unlogged(summaries, {'test_auroc': 0.7}) == summaries[1:]
+    assert _unlogged(summaries, {'test_auroc': 0.7}, refit_full=True) == (
+        Scalar('before_refit/brier', 0.2, role='model'),
+        Scalar('label/rows', 9.0), Note('notes', _REFIT_FULL))

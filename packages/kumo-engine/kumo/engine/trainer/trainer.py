@@ -48,7 +48,7 @@ from kumo_core.pquery import (
     build_generated_training_task_dataset,
     resolve_query_forecast,
 )
-from kumo_core.summaries import Scalar, Summary
+from kumo_core.summaries import Note, Scalar, Summary
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
 from kumo_core.training.explain_aggregation import aggregate_subgraph_features
 from kumo_core.training.workflow import TrainingWorkflowRequest
@@ -743,13 +743,24 @@ def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
                     registry)
 
 
-def _unlogged(summaries: Sequence[Summary],
-              metrics: Mapping[str, float]) -> Tuple[Summary, ...]:
+def _unlogged(summaries: Sequence[Summary], metrics: Mapping[str, float],
+              refit_full: bool = False) -> Tuple[Summary, ...]:
     r"""``summaries`` without the scalars ``metrics`` already logs, which
-    stay the trainer's own."""
-    logged = set(logged_names(metrics))
+    stay the trainer's own. After a refit on all data no holdout describes
+    the shipped model, so its scalars are ``before_refit/<name>``."""
+    logged = set(logged_names(metrics, refit_full))
+    if refit_full:
+        summaries = (*(replace(summary, name=f'before_refit/{summary.name}')
+                       if isinstance(summary, Scalar)
+                       and summary.role == 'model' else summary
+                       for summary in summaries), Note('notes', _REFIT_FULL))
     return tuple(summary for summary in summaries
                  if not (isinstance(summary, Scalar) and summary.name in logged))
+
+
+_REFIT_FULL = ('The model was refit on all the data, the test split included, '
+               'so no holdout metric describes it; `before_refit/*` describe '
+               'the model before that refit.')
 
 
 def _with_metrics(model: Optional[PublishedModel],
@@ -1277,10 +1288,12 @@ class Trainer:
             holdout_path=holdout_path,
             holdout_truncated=holdout_truncated,
             _summaries=_unlogged((
-                *(() if result.test_counts is None else evaluation_summaries(
-                    task_type, result.test_counts, threshold,
-                    class_names(result.best_trainer.target_encoder))),
-                *at_k_summaries(result.metrics)), result.metrics),
+                *(() if result.published_counts is None else
+                  evaluation_summaries(
+                      task_type, result.published_counts, threshold,
+                      class_names(result.best_trainer.target_encoder))),
+                *at_k_summaries(result.metrics)), result.metrics,
+                refit_full=fit_mode == 'refit_full'),
         )
         holdout_counts = None if result.published_counts is None else (
             baseline(result.published_counts).to_dict())

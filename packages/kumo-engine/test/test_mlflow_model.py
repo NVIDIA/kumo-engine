@@ -64,9 +64,10 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     metrics = {metric.key: metric.value for metric in model.metrics}
     assert metrics == {
         **{name: value for name, value in logged_names(result.metrics).items()
-           if name.startswith('test/')},
+           if not name.startswith(('train/', 'val/'))},
         **{summary.name: summary.value for summary in result._summaries
-           if isinstance(summary, Scalar)}, 'seconds': metrics['seconds']}
+           if isinstance(summary, Scalar) and summary.role == 'model'},
+        'seconds': metrics['seconds']}
     version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
     assert version.source == model.model_uri
     assert parent.data.tags.items() >= {

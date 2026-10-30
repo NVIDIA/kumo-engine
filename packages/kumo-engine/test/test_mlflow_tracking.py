@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from kumo_core.artifacts import PROVENANCE_FILE
-from kumo_core.summaries import Dataset
+from kumo_core.summaries import Dataset, Scalar
 from kumoapi.encoder import Numerical
 from kumoapi.model_plan import ModelPlan
 from test_tracking_contract import (
@@ -148,10 +148,12 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
         if not name.startswith('system/')
     }
     tested = {name: value for name, value in logged_names(
-        result.metrics).items() if name.startswith('test/')}
-    assert {name for name in metrics if not name.startswith((
-        'train/', 'val/', 'test/', 'data/', 'graph/'))} == {
-            'seconds', 'search/best_val_mae'}
+        result.metrics).items() if not name.startswith(('train/', 'val/'))}
+    assert {name for name in metrics
+            if '/' not in name.removeprefix('before_refit/')} == {
+        *tested, 'seconds', *(summary.name for summary in result._summaries
+                              if isinstance(summary, Scalar)
+                              and '/' not in summary.name)}
     assert metrics['graph/rows/ents'] == 400
     assert {name: metrics[name] for name in tested} == tested
     assert 'off for the rest of this run' not in caplog.text
