@@ -140,13 +140,23 @@ SELECT table_name FROM <catalog>.information_schema.tables WHERE table_schema = 
 -- columns and types
 SELECT table_name, column_name, data_type, full_data_type FROM <catalog>.information_schema.columns
 WHERE table_schema = lower('<schema>') ORDER BY table_name, ordinal_position;
--- declared keys, if any (informational constraints)
-SELECT tc.table_name, tc.constraint_type, kcu.column_name
+-- declared keys, if any (informational constraints); a FOREIGN KEY row names its target
+SELECT tc.table_name, tc.constraint_name, tc.constraint_type, kcu.column_name,
+       ref.table_name AS referenced_table, ref.column_name AS referenced_column
 FROM <catalog>.information_schema.table_constraints tc
 JOIN <catalog>.information_schema.key_column_usage kcu
   ON tc.constraint_catalog = kcu.constraint_catalog AND tc.constraint_schema = kcu.constraint_schema
  AND tc.constraint_name = kcu.constraint_name
-WHERE tc.table_schema = lower('<schema>');
+LEFT JOIN <catalog>.information_schema.referential_constraints rc
+  ON tc.constraint_catalog = rc.constraint_catalog AND tc.constraint_schema = rc.constraint_schema
+ AND tc.constraint_name = rc.constraint_name
+LEFT JOIN <catalog>.information_schema.key_column_usage ref
+  ON rc.unique_constraint_catalog = ref.constraint_catalog
+ AND rc.unique_constraint_schema = ref.constraint_schema
+ AND rc.unique_constraint_name = ref.constraint_name
+ AND kcu.position_in_unique_constraint = ref.ordinal_position
+WHERE tc.table_schema = lower('<schema>')
+ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position;
 ```
 
 - Row counts are not in `information_schema` and are not needed for the graph proposal.

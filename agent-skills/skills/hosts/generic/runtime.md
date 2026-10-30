@@ -146,12 +146,24 @@ from google.cloud import bigquery
 written = next(iter(bigquery.Client(project=PROJECT_ID).query(
     f'SELECT COUNT(*) FROM `{PROJECT_ID}.{OUTPUT_DATASET}.{OUTPUT_TABLE}`').result()))[0]
 
-# Databricks — with the confirmed SQL warehouse; wait_timeout is at most '50s'
+# Databricks — with the confirmed SQL warehouse; wait_timeout is at most '50s', so poll
+import time
 from databricks.sdk import WorkspaceClient
-response = WorkspaceClient().statement_execution.execute_statement(
-    warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='30s',
-    statement=f'SELECT COUNT(*) FROM {CATALOG}.{OUTPUT_SCHEMA}.{OUTPUT_TABLE}')
-written = int(response.result.data_array[0][0])
+from databricks.sdk.service.sql import StatementState
+
+def q(*parts):
+    """`catalog`.`schema`.`table`: Unity Catalog names may contain hyphens."""
+    return '.'.join('`' + p.replace('`', '``') + '`' for p in parts)
+
+ws = WorkspaceClient()
+r = ws.statement_execution.execute_statement(
+    warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='50s',
+    statement=f'SELECT COUNT(*) FROM {q(CATALOG, OUTPUT_SCHEMA, OUTPUT_TABLE)}')
+while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
+    time.sleep(5)
+    r = ws.statement_execution.get_statement(r.statement_id)
+assert r.status.state == StatementState.SUCCEEDED, r.status
+written = int(r.result.data_array[0][0])
 
 # Snowflake — through the same connections.toml entry
 import snowflake.connector
@@ -236,13 +248,17 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   from databricks.sdk import WorkspaceClient
   from databricks.sdk.service.sql import StatementState
 
+  def q(*parts):
+      """`catalog`.`schema`.`table`: Unity Catalog names may contain hyphens."""
+      return '.'.join('`' + p.replace('`', '``') + '`' for p in parts)
+
   ws = WorkspaceClient()
-  time_col = f', CAST({ENTITY_TIME} AS TIMESTAMP) AS TIMESTAMP' if ENTITY_TIME else ''
+  time_col = f', CAST({q(ENTITY_TIME)} AS TIMESTAMP) AS TIMESTAMP' if ENTITY_TIME else ''
   r = ws.statement_execution.execute_statement(
       warehouse_id=DATABRICKS_WAREHOUSE_ID, wait_timeout='50s',
-      statement=(f'CREATE OR REPLACE TABLE {CATALOG}.{POP_SCHEMA}.{POP_TABLE} AS '
-                 f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
-                 f'FROM {CATALOG}.{SCHEMA}.{ENTITY_TABLE}'))
+      statement=(f'CREATE OR REPLACE TABLE {q(CATALOG, POP_SCHEMA, POP_TABLE)} AS '
+                 f'SELECT {q(ENTITY_KEY)} AS ENTITY1{time_col} '
+                 f'FROM {q(CATALOG, SCHEMA, ENTITY_TABLE)}'))
   while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
       time.sleep(5)
       r = ws.statement_execution.get_statement(r.statement_id)
