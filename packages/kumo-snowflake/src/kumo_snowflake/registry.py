@@ -271,32 +271,6 @@ def _comment(user: Optional[str],
                      if text) or None
 
 
-def _backfill(version: "ModelVersion", metrics: Mapping[str, float],
-              comment: Optional[str]) -> None:
-    r"""Records ``metrics`` on a reused ``version``, in its metadata and as
-    its comment line after ``comment`` (`None`: the version's own comment),
-    leaving what it already holds; a refused change warns, since it needs
-    OWNERSHIP of the model."""
-    try:
-        recorded = dict(version.show_metrics() or {})
-        for name, value in _finite(metrics).items():
-            if recorded.get(name) != value:
-                version.set_metric(name, value)
-        current = version.comment or None
-        if comment is None:
-            comment = '\n'.join(
-                line for line in (current or '').split('\n')
-                if not line.startswith(_METRICS_LINE))
-        wanted = _comment(comment, metrics)
-        if wanted is not None and wanted != current:
-            version.comment = wanted
-    except Exception as error:
-        _LOG.warning(
-            'Could not record the holdout metrics on %s version %s, which '
-            'needs OWNERSHIP of the model: %s', version.model_name,
-            version.version_name, error)
-
-
 def _recorded_lineage(version: "ModelVersion") -> Dict[str, str]:
     try:
         return registry_lineage(dict(version.show_metrics() or {}))
@@ -430,7 +404,7 @@ class SnowflakeModelRegistryMixin:
         with self._registry(connector) as registry:
             name = location.version or _next_version(registry,
                                                      location.model_name)
-            while True:
+            for attempt in range(3):
                 try:
                     version = registry.log_model(
                         _bundle_model(str(bundle)),
@@ -445,7 +419,7 @@ class SnowflakeModelRegistryMixin:
                 except Exception:
                     taken, name = name, location.version or _next_version(
                         registry, location.model_name)
-                    if name == taken:
+                    if name == taken or attempt == 2:
                         raise
         return _published(connector, version, metadata=metadata,
                           metrics=metrics)

@@ -162,6 +162,23 @@ def test_publish_names_the_next_version_and_retries_a_taken_one(
                            location=ModelRegistryLocation('CHURN',
                                                           version='V4'))
 
+    def fail_after_creating(*args, version_name, **kwargs):
+        tried.append(version_name)
+        names.append(version_name)
+        raise RuntimeError('upload failed')
+
+    @contextmanager
+    def failing(_):
+        yield SimpleNamespace(log_model=fail_after_creating,
+                              get_model=lambda _: model)
+
+    tried.clear()
+    monkeypatch.setattr(sink, '_registry', failing)
+    with pytest.raises(RuntimeError, match='upload failed'):
+        sink.publish_model(SimpleNamespace(), str(bundle),
+                           location=ModelRegistryLocation('CHURN'))
+    assert len(tried) == 3
+
 
 def test_listing_filters_engine_marker_and_returns_lineage(monkeypatch):
     versions = []
@@ -353,59 +370,3 @@ def test_other_model_names_are_refused_with_the_rule(name):
     with pytest.raises(ValueError, match="letter or underscore.*USERS_CHURN"):
         SnowflakeModelRegistryMixin().check_model_location(
             SimpleNamespace(), ModelRegistryLocation(name))
-
-
-class _Version:
-    model_name, version_name = 'CHURN', 'V1'
-
-    def __init__(self, recorded, comment, refuse=False):
-        self.recorded, self._comment, self.refuse = recorded, comment, refuse
-        self.calls = []
-
-    def show_metrics(self):
-        return dict(self.recorded)
-
-    def set_metric(self, name, value):
-        if self.refuse:
-            raise RuntimeError('Insufficient privileges to operate on model')
-        self.calls.append(('set_metric', name, value))
-
-    @property
-    def comment(self):
-        return self._comment
-
-    @comment.setter
-    def comment(self, comment):
-        self.calls.append(('comment', comment))
-
-
-METRICS = {'auroc': 0.9, 'holdout_loss': 0.5}
-LINE = 'Holdout: auroc 0.9 · holdout_loss 0.5'
-
-
-@pytest.mark.parametrize('recorded, comment, given, calls', [
-    ({'kumo_engine': '1', 'auroc': 0.9}, 'Weekly.', None,
-     [('set_metric', 'holdout_loss', 0.5), ('comment', f'Weekly.\n{LINE}')]),
-    ({'auroc': 0.8}, 'Weekly.\nHoldout: auroc 0.8', 'Daily.',
-     [('set_metric', 'auroc', 0.9), ('set_metric', 'holdout_loss', 0.5),
-      ('comment', f'Daily.\n{LINE}')]),
-    (METRICS, f'Weekly.\n{LINE}', None, []),
-    (METRICS, None, None, [('comment', LINE)]),
-])
-def test_a_reused_version_gets_the_metrics_it_lacks(recorded, comment, given,
-                                                    calls):
-    version = _Version(recorded, comment)
-
-    registry_module._backfill(version, METRICS, given)
-
-    assert version.calls == calls
-
-
-def test_a_refused_backfill_warns_naming_ownership(caplog):
-    version = _Version({}, None, refuse=True)
-
-    registry_module._backfill(version, METRICS, None)
-
-    assert version.calls == []
-    assert 'needs OWNERSHIP of the model' in caplog.text
-    assert 'Insufficient privileges' in caplog.text
