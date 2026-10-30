@@ -443,8 +443,10 @@ class MlflowTracking:
                     client.create_experiment(self.experiment_name))
             experiment_id, self.experiment = (experiment.experiment_id,
                                               experiment.name)
-            if not experiment.tags.get(_NOTE) and not client.search_runs(
-                    [experiment_id], max_results=1):
+            note = experiment.tags.get(_NOTE)
+            if note != _EXPERIMENT_NOTE and (
+                    note.startswith('kumo-engine:') if note else
+                    not client.search_runs([experiment_id], max_results=1)):
                 client.set_experiment_tag(experiment_id, _NOTE,
                                           _EXPERIMENT_NOTE)
             tags = dict(record.tags)
