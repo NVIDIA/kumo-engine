@@ -39,6 +39,7 @@ from kumo_core.summaries import (
     Curve,
     Dataset,
     Histogram,
+    Note,
     Scalar,
     Series,
     Summary,
@@ -171,6 +172,8 @@ class MlflowTracking:
         self._experiment_id: Optional[str] = None
         self._children: Dict[Tuple[int, int], str] = {}
         self._artifacts: Set[str] = set()
+        # The run's notes and brief tables, for its description.
+        self._card: List[Summary] = []
         self._model_id: Optional[str] = None
         self._dataset: Optional[Tuple[str, str]] = None
         self._http_owned: FrozenSet[str] = frozenset()
@@ -542,6 +545,9 @@ class MlflowTracking:
         })
 
     def _log_table(self, summary: Table) -> None:
+        if summary.brief:
+            self._card.append(summary)
+            return
         path = f'{summary.name}.json'
         self._log_artifacts({path: json.dumps({
             'columns': list(summary.columns),
@@ -554,6 +560,9 @@ class MlflowTracking:
             if entry not in logged:
                 self._client.set_tag(self._parent, 'mlflow.loggedArtifacts',
                                      json.dumps([*logged, entry]))
+
+    def _log_note(self, summary: Note) -> None:
+        self._card.append(summary)
 
     def _log_confusion(self, summary: Confusion) -> None:
         self._log_table(Table(
@@ -679,6 +688,7 @@ _SINKS: Dict[type, Callable[[MlflowTracking, Any], None]] = {
     Histogram: MlflowTracking._log_histogram,
     Table: MlflowTracking._log_table,
     Confusion: MlflowTracking._log_confusion,
+    Note: MlflowTracking._log_note,
     Dataset: MlflowTracking._log_dataset,
 }
 _BATCH_METRICS = 1000  # MLflow's per-request limit

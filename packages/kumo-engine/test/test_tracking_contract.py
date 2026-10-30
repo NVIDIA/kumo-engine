@@ -673,3 +673,14 @@ def test_prediction_run_without_a_manifest_or_hook_is_skipped(caplog):
 
     assert recorder.calls == []
     assert 'not tracked' in caplog.text
+
+
+def test_every_summary_type_has_a_sink_in_each_tracker():
+    from typing import get_args
+
+    from kumo_core.summaries import Summary
+
+    from kumo.engine.integrations import mlflow, snowflake
+
+    for sinks in (mlflow._SINKS, snowflake._SINKS):
+        assert set(sinks) == set(get_args(Summary))

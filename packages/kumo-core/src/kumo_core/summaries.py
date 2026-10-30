@@ -9,13 +9,17 @@ its own calls, so another rendering (a figure, a UI) is one more mapping.
 """
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Tuple, Union
+from typing import Any, Literal, Mapping, Optional, Tuple, Union
 
 
 @dataclass(frozen=True)
 class Scalar:
+    r"""``role='model'`` marks the model's own quality, which also goes on
+    the logged model."""
+
     name: str
     value: float
+    role: Optional[Literal['model']] = None
 
 
 @dataclass(frozen=True)
@@ -55,9 +59,22 @@ class Histogram:
 
 @dataclass(frozen=True)
 class Table:
+    r"""``brief`` marks a small table (at most 12 rows and 5 columns) shown
+    with the run's description rather than as a file."""
+
     name: str
     columns: Tuple[str, ...]
     rows: Tuple[Tuple[Any, ...], ...]
+    brief: bool = False
+
+
+@dataclass(frozen=True)
+class Note:
+    r"""A line of text for the run's description, under ``section``: a
+    warning, why a value is missing, or where something is."""
+
+    section: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -85,4 +102,4 @@ class Dataset:
 
 
 Summary = Union[Scalar, Tag, Series, Curve, Histogram, Table, Confusion,
-                Dataset]
+                Note, Dataset]

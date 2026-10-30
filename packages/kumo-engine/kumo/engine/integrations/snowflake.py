@@ -31,6 +31,7 @@ from kumo_core.summaries import (
     Curve,
     Dataset,
     Histogram,
+    Note,
     Scalar,
     Series,
     Summary,
@@ -129,6 +130,8 @@ class SnowflakeTracking:
         self._params = 0
         self._start_tags: Set[str] = set()
         self._artifacts: Set[str] = set()
+        # The run's notes and brief tables, for its description.
+        self._card: List[Summary] = []
         self._dropped_metrics: Set[str] = set()
         self._dropped_params = 0
 
@@ -317,10 +320,16 @@ class SnowflakeTracking:
         })
 
     def _log_table(self, summary: Table) -> None:
+        if summary.brief:
+            self._card.append(summary)
+            return
         self._log_artifacts({f'{summary.name}.json': json.dumps({
             'columns': list(summary.columns),
             'data': [list(row) for row in summary.rows],
         }, default=str)})
+
+    def _log_note(self, summary: Note) -> None:
+        self._card.append(summary)
 
     def _log_confusion(self, summary: Confusion) -> None:
         self._log_table(Table(
@@ -390,6 +399,7 @@ _SINKS: Dict[type, Callable[[SnowflakeTracking, Any], None]] = {
     Histogram: SnowflakeTracking._log_histogram,
     Table: SnowflakeTracking._log_table,
     Confusion: SnowflakeTracking._log_confusion,
+    Note: SnowflakeTracking._log_note,
     Dataset: lambda tracker, summary: None,
 }
 
