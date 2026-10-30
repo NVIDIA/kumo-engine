@@ -122,4 +122,4 @@ def test_forecast_test_summaries_are_exact_per_horizon(graph):
     assert {row[0]: row[table.columns.index('mae')] for row in table.rows
             } == pytest.approx(error.groupby(horizon).mean().to_dict())
     assert [row[table.columns.index('window')] for row in table.rows] == [
-        'days 0–7', 'days 7–14', 'days 14–21']
+        '(0, 7] days', '(7, 14] days', '(14, 21] days']

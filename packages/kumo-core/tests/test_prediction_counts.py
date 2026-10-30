@@ -290,5 +290,5 @@ def test_forecast_horizons_are_named_by_their_window():
     names = [name for name in _by_name(prediction_summaries(
         counts, threshold=None, baseline=None, timeframe=(0, 7, 7, 'days')))
         if name.startswith('pred/histogram/predicted, ')]
-    assert names == ['pred/histogram/predicted, days 0–7',
-                     'pred/histogram/predicted, days 7–14']
+    assert names == ['pred/histogram/predicted, (0, 7] days',
+                     'pred/histogram/predicted, (7, 14] days']

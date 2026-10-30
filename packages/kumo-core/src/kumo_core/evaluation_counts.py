@@ -33,7 +33,6 @@ _TOP_CLASSES = 20
 _RESIDUAL_BINS = 40
 _HORIZONS = 12
 _TOP_SCORE_BINS = 100
-_FORECAST_ROWS = 'rows (entity × horizon)'
 #: The arrays a prediction run's score distribution is compared with.
 BASELINE = ('True_PROB', 'confidence', 'top_score', 'classes', 'TARGET_PRED')
 #: A forecast's target window: its first horizon's ``(start, end)`` offsets,
@@ -99,7 +98,7 @@ def evaluation_summaries(task_type: TaskType, counts: Counts,
                          timeframe: Optional[Timeframe] = None
                          ) -> List[Summary]:
     r"""The holdout's summaries from its ``counts``; ``timeframe`` names a
-    forecast's horizons by their window (``days 0–7``), else by number."""
+    forecast's horizons by their window (``(0, 7] days``), else by number."""
     if task_type is TaskType.BINARY_CLASSIFICATION:
         return _binary_summaries(counts, threshold)
     if task_type is TaskType.MULTICLASS_CLASSIFICATION:
@@ -109,7 +108,7 @@ def evaluation_summaries(task_type: TaskType, counts: Counts,
     if task_type is TaskType.REGRESSION:
         return _regression_summaries(counts)
     if task_type is TaskType.FORECASTING:
-        return [*_regression_summaries(counts, _FORECAST_ROWS),
+        return [*_regression_summaries(counts),
                 *_horizon_summaries(counts, timeframe)]
     return []
 
@@ -279,8 +278,7 @@ def _regression(pred: np.ndarray, target: np.ndarray,
     return counts
 
 
-def _regression_summaries(counts: Counts, rows_title: str = 'rows'
-                          ) -> List[Summary]:
+def _regression_summaries(counts: Counts) -> List[Summary]:
     r"""With ``mae`` and ``rmse``, which the trainer's own metrics of the
     same names replace."""
     arrays = counts.arrays
@@ -303,8 +301,7 @@ def _regression_summaries(counts: Counts, rows_title: str = 'rows'
         counts.summary('residual', 'residual', 'holdout/residuals/rows'),
         _calibration(edges, counts.extents.get('TARGET_PRED'),
                      arrays['TARGET_PRED'], arrays['pred_sum'],
-                     arrays['target_sum'], ('mean predicted', 'mean actual'),
-                     rows_title),
+                     arrays['target_sum'], ('mean predicted', 'mean actual')),
     ]
 
 
@@ -383,10 +380,10 @@ def _horizon_summaries(counts: Counts,
                   1 - arrays['horizon_squared_error'] / np.maximum(spread,
                                                                    _EPS), 0.0)
     columns = {
-        _FORECAST_ROWS: arrays['horizon_rows'].astype(np.int64),
+        'rows': arrays['horizon_rows'].astype(np.int64),
         'mae': arrays['horizon_abs_error'] / rows,
         'rmse': np.sqrt(arrays['horizon_squared_error'] / rows),
-        'bias': arrays['horizon_error'] / rows,
+        'bias (pred − actual)': arrays['horizon_error'] / rows,
         'r2': r2,
     }
     steps = np.flatnonzero(arrays['horizon_rows'])
@@ -408,12 +405,12 @@ def _horizon_summaries(counts: Counts,
 
 
 def horizon_label(h: int, timeframe: Optional[Timeframe] = None) -> str:
-    r"""Horizon ``h``, from 0, as its target window (``days 7–14``), or as
-    ``horizon <h + 1>`` without a ``timeframe``."""
+    r"""Horizon ``h``, from 0, as its target window (``(7, 14] days``), or
+    as ``horizon <h + 1>`` without a ``timeframe``."""
     if timeframe is None:
         return f'horizon {h + 1}'
     start, end, step, unit = timeframe
-    return f'{unit} {start + h * step}–{end + h * step}'
+    return f'({start + h * step}, {end + h * step}] {unit}'
 
 
 def _horizons(size: int) -> List[int]:
@@ -448,10 +445,10 @@ def _by_threshold(positive: np.ndarray, negative: np.ndarray) -> Table:
 def _calibration(edges: Sequence[float],
                  extent: Optional[Tuple[float, float]], rows: np.ndarray,
                  x_sum: np.ndarray, y_sum: np.ndarray,
-                 names: Tuple[str, str], rows_title: str = 'rows') -> Table:
+                 names: Tuple[str, str]) -> Table:
     r"""Per non-empty bin, its rows and their mean ``x`` and ``y``."""
     bounds = bin_bounds(edges, extent)
-    return Table('holdout/calibration', ('from', 'to', rows_title, *names),
+    return Table('holdout/calibration', ('from', 'to', 'rows', *names),
                  tuple((bounds[b].item(), bounds[b + 1].item(), int(rows[b]),
                         (x_sum[b] / rows[b]).item(),
                         (y_sum[b] / rows[b]).item())

@@ -236,7 +236,7 @@ def test_multilabel_summaries_match_brute_force():
 
 @pytest.mark.parametrize('timeframe, windows', [
     (None, ['horizon 1', 'horizon 2', 'horizon 3']),
-    ((0, 7, 7, 'days'), ['days 0–7', 'days 7–14', 'days 14–21']),
+    ((0, 7, 7, 'days'), ['(0, 7] days', '(7, 14] days', '(14, 21] days']),
 ])
 def test_forecasting_summaries_are_per_horizon(timeframe, windows):
     rng = np.random.default_rng(4)
@@ -256,17 +256,17 @@ def test_forecasting_summaries_are_per_horizon(timeframe, windows):
         assert row == pytest.approx({
             'horizon': h + 1, **({} if timeframe is None else
                                  {'window': windows[h]}),
-            'rows (entity × horizon)': kept.sum(),
+            'rows': kept.sum(),
             'mae': np.abs(error).mean(),
-            'rmse': np.sqrt((error**2).mean()), 'bias': error.mean(),
+            'rmse': np.sqrt((error**2).mean()),
+            'bias (pred − actual)': error.mean(),
             'r2': 1 - (error**2).sum() / (
                 (target[kept] - target[kept].mean())**2).sum()})
         assert sum(summaries[f'holdout/histogram/predicted, {windows[h]}']
                    .counts) == kept.sum()
     assert len(rows) == 3
     assert summaries['holdout/calibration'].columns == (
-        'from', 'to', 'rows (entity × horizon)', 'mean predicted',
-        'mean actual')
+        'from', 'to', 'rows', 'mean predicted', 'mean actual')
     assert summaries['mae'].value == pytest.approx(
         np.abs(pred - target).mean())
 
