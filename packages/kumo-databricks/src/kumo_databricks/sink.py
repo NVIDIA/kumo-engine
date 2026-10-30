@@ -244,14 +244,13 @@ class DatabricksSinkBackend(DatabricksModelRegistryMixin):
             FilesystemSink(self).preflight_write_files(connector, table_name)
 
     def holds_files(self, connector: SourceConnector, path: str) -> bool:
-        """``/Volumes/<catalog>/<schema>/<volume>/...``; anything else is a
-        table."""
+        """Volume paths hold files; anything else is a table."""
         return is_volume_path(path)
 
     def filesystem(self, connector: SourceConnector,
                    path: str) -> tuple[FileSystem, str]:
-        """A volume path as a filesystem, as the connector's identity."""
-        if not is_volume_path(path):
+        """A volume path's filesystem, as the connector's identity."""
+        if not self.holds_files(connector, path):
             raise ValueError(
                 f"{path!r} is not a Unity Catalog volume path; Databricks "
                 f"artifacts go under /Volumes/<catalog>/<schema>/<volume>/.")
