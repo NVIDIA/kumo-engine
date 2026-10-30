@@ -169,6 +169,14 @@ as a workflow artifact for 30 days. It never
 attaches or publishes anything: attaching runs only for release events, and PyPI
 rejects local versions anyway.
 
+## Native CPU baseline
+
+DiskGraph builds retain the fixed CPU baseline in `.cargo/config.toml` and
+the native build backend: AES plus SSE2 on x86-64; AES plus NEON on ARM64.
+There is no `target-cpu=native` setting or AVX2 requirement. Qualification
+runners and deployment CPUs must expose that baseline, including through
+virtualization.
+
 ## Build locally
 
 ```bash

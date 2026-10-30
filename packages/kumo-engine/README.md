@@ -17,6 +17,10 @@ Kumo Engine (`kumo.engine`) trains graph neural networks on relational data, in-
 
 Kumo Engine uses a GPU when one is available: an NVIDIA GPU through CUDA, or an Apple silicon GPU through PyTorch's MPS backend. Without one, training and prediction run on CPU, which is enough for small jobs such as the quickstart below. To choose the device, pass `accelerator=` (`"auto"`, `"cpu"`, `"gpu"`, or `"mps"`) to `Trainer`.
 
+The bundled native engine requires CPU AES instructions: AES and SSE2 on
+x86-64, or AES and NEON on ARM64. Check that your host or virtual machine
+exposes these features before installing a wheel.
+
 ## Installation
 
 ```bash
