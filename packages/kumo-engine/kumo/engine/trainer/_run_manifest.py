@@ -230,16 +230,17 @@ def _record_predictions(
 ) -> PredictionManifest:
     r"""The manifest of prediction run ``run_id`` of any ``model``:
     ``outputs`` maps each artifact (``predictions``, ``embeddings``) to its
-    row count and a call listing its Parquet files, whose scores are
-    summarized for ``task_type`` (see the column contract in mlops.md),
-    with ``counts``, the scores' exact `Counts`, if the scorers counted;
-    ``table`` holds the requested, scored and skipped counts."""
+    row count and a call listing its Parquet files; the predictions record
+    ``counts``, their scores' exact `Counts`, if the scorers counted, and
+    else their scores' statistics for ``task_type`` (see the column
+    contract in mlops.md); ``table`` holds the requested, scored and
+    skipped counts."""
     stats: Dict[str, Dict[str, Any]] = {}
     for name, (rows, files) in outputs.items():
         stats[name] = {'rows': rows}
-        if name == 'predictions':
-            if counts is not None:
-                stats[name]['counts'] = counts
+        if name == 'predictions' and counts is not None:
+            stats[name]['counts'] = counts
+        elif name == 'predictions':
             try:
                 stats[name].update(output_stats(files(), task_type))
             except Exception as error:

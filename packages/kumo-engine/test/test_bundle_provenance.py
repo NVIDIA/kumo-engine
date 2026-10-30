@@ -170,17 +170,3 @@ def test_manifest_failure_warns_and_still_publishes(tmp_path, monkeypatch):
     assert result.manifest is None
     assert re.fullmatch('[0-9a-f]{64}', result.bundle_id)
     assert trainer.result is result
-
-
-def test_holdout_stats_failure_keeps_the_manifest(tmp_path, monkeypatch):
-    def fail(*args, **kwargs):
-        raise ValueError('unreadable holdout')
-
-    monkeypatch.setattr('kumo.engine.trainer._provenance.holdout_baseline',
-                        fail)
-    with pytest.warns(UserWarning, match='unreadable holdout'):
-        result = _finish_stub_fit(tmp_path / 'bundle',
-                                  kumo.Trainer(ModelPlan()),
-                                  holdout_path=tmp_path / 'test_df.parquet')
-    assert result.manifest.parents.training_table.id == 'tt-1'
-    assert result.manifest.holdout is None

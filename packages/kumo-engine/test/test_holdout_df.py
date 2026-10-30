@@ -96,7 +96,6 @@ def test_holdout_df_after_fit(graph):
     assert not (result.bundle_dir / 'test_df.parquet').exists()
     holdout = result.manifest.holdout
     assert holdout.rows == len(frame)
-    assert holdout.label_positive_rate == frame['TARGET'].mean()
     assert holdout.truncated is False
     assert embedded_model(result.manifest).holdout is None
 
