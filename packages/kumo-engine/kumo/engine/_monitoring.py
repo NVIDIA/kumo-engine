@@ -741,36 +741,39 @@ def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
 
 def _feature_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
                    ) -> List[Summary]:
-    rows = sorted(
-        ((table, column, change['type'] if 'type_changed' not in change else
-          ' → '.join(map(str, change['type_changed'])), change.get('psi'),
-          change.get('standardized_mean_shift'),
-          (change.get('delta') or {}).get('null_rate'))
-         for table, columns in features.items()
-         for column, change in columns.items()),
-        key=lambda row: (_moved(row) is None, -(_moved(row) or 0)))
+    rows = sorted((_feature_row(table, column, change)
+                   for table, columns in features.items()
+                   for column, change in columns.items()),
+                  key=lambda row: (row[4] == '', -abs(row[4] or 0)))
     if not rows:
         return []
     moved = [f'`{table}.{column}` ' + (
-        f'(psi {number(psi)})' if psi is not None else
-        f'(mean shift {number(shift)} sd)')
-        for table, column, _, psi, shift, _ in [
-            row for row in rows if (_moved(row) or 0) >= _MOVED
-        ][:_TOP_FEATURES]]
-    return [Table('drift/features', ('table', 'column', 'type', 'psi',
-                                     'mean shift', 'null-rate change'),
+        f'(psi {number(value)})' if measure == 'psi' else
+        f'(mean shift {number(value)} sd)')
+        for table, column, _, measure, value, _ in rows
+        if value != '' and abs(value) >= _MOVED][:_TOP_FEATURES]
+    return [Table('drift/features', ('table', 'column', 'type', 'measure',
+                                     'value', 'null-rate change'),
                   tuple(rows)),
-            Note('notes', 'Columns vs training: '
+            Note('notes', 'Input columns vs training data: '
                  + (', '.join(moved) if moved else 'no column moved much')
                  + '; all in `drift/features.json`.')]
 
 
-def _moved(row: Tuple[Any, ...]) -> Optional[float]:
-    r"""How far a ``drift/features`` row's column moved: its psi for a
-    category, its absolute mean shift in training standard deviations for a
-    number; None for other types."""
-    psi, shift = row[3], row[4]
-    return psi if psi is not None else None if shift is None else abs(shift)
+def _feature_row(table: str, column: str,
+                 change: Mapping[str, Any]) -> Tuple[Any, ...]:
+    r"""A ``drift/features`` row: how far the column moved, as its psi for
+    a category or its mean shift in training standard deviations for a
+    number, blank otherwise."""
+    kind = (' → '.join(map(str, change['type_changed']))
+            if 'type_changed' in change else change['type'])
+    psi, shift = change.get('psi'), change.get('standardized_mean_shift')
+    measure, value = (('psi', psi) if psi is not None else
+                      ('mean shift (sd)', shift) if shift is not None else
+                      ('', ''))
+    null_rate = (change.get('delta') or {}).get('null_rate')
+    return (table, column, kind, measure, value,
+            '' if null_rate is None else null_rate)
 
 
 def _count_changes(before: Mapping[str, Mapping[str, int]],

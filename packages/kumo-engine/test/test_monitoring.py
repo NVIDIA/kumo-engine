@@ -617,7 +617,7 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
     features = drift.summaries[-2]
     amount = report.features['orders']['AMT']
     assert features.name == 'drift/features'
-    assert ('orders', 'AMT', 'numerical', None,
+    assert ('orders', 'AMT', 'numerical', 'mean shift (sd)',
             amount['standardized_mean_shift'],
             amount['delta']['null_rate']) in features.rows
     labels = snapshots.after.manifest
@@ -679,23 +679,24 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
                                       'change %'),
               (('orders', 100, 104, 4.0),
                ('orders.USER_ID → users', 100, None, None)), brief=True),
-        Table('drift/features', ('table', 'column', 'type', 'psi',
-                                 'mean shift', 'null-rate change'),
-              (('users', 'AGE', 'numerical', None, -2.5, 0.0),
-               ('users', 'PLAN', 'categorical', 0.75, None, None),
-               ('users', 'REGION', 'categorical', 0.05, None, None),
-               ('users', 'BIO', 'text', None, None, 0.0),
-               ('users', 'ID', 'numerical → categorical', None, None, None))),
-        Note('notes', 'Columns vs training: `users.AGE` (mean shift -2.5 sd), '
-             '`users.PLAN` (psi 0.75); all in `drift/features.json`.'),
+        Table('drift/features', ('table', 'column', 'type', 'measure',
+                                 'value', 'null-rate change'),
+              (('users', 'AGE', 'numerical', 'mean shift (sd)', -2.5, 0.0),
+               ('users', 'PLAN', 'categorical', 'psi', 0.75, ''),
+               ('users', 'REGION', 'categorical', 'psi', 0.05, ''),
+               ('users', 'BIO', 'text', '', '', 0.0),
+               ('users', 'ID', 'numerical → categorical', '', '', ''))),
+        Note('notes', 'Input columns vs training data: `users.AGE` (mean '
+             'shift -2.5 sd), `users.PLAN` (psi 0.75); all in '
+             '`drift/features.json`.'),
         Note('notes', "The model's holdout file was truncated to fit its "
              'size limit.'),
         Note('notes', 'Input columns vs training data: no drift statistics '
              'for the type of users.TS (timestamp).'))
     assert _feature_drift({'users': {'AGE': {
         'type': 'numerical', 'standardized_mean_shift': -0.09, 'delta': {}}}}
-    )[1] == Note('notes', 'Columns vs training: no column moved much; all in '
-                 '`drift/features.json`.')
+    )[1] == Note('notes', 'Input columns vs training data: no column moved '
+                 'much; all in `drift/features.json`.')
 
     tracker.records.clear()
     track(replace(report, bundle_matches=False),
