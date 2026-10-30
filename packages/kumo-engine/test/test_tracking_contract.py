@@ -790,6 +790,8 @@ def test_every_summary_type_has_a_sink_in_each_tracker():
     ({'test_auroc': 0.7}, True, {'before_refit/auroc': 0.7}),
     ({'test_auroc': 0.7, 'test_refit_auroc': 0.8}, True,
      {'before_refit/auroc': 0.8}),
+    ({'test_acc': 0.9, 'val_acc': 0.8, 'best_val_acc': 0.85}, False,
+     {'test/accuracy': 0.9, 'val/accuracy': 0.8, 'val/best_accuracy': 0.85}),
 ])
 def test_holdout_metrics_are_named_after_the_shipped_model(
         metrics, refit_full, expected):

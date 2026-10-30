@@ -15,6 +15,7 @@ from kumo.engine._tracking import (
     RunSpec,
     _flatten,
     logged_names,
+    metric_name,
     model_label,
     run_name,
 )
@@ -42,6 +43,7 @@ def fit_spec(context: FitContext, *,
              tags: Optional[Mapping[str, Any]] = None) -> RunSpec:
     started = context.started or datetime.now(timezone.utc)
     model = model_label(context.model_name, context.query, context.task_type)
+    tune = (context.model_plan.get('training_job') or {}).get('tune_metric')
     return RunSpec(
         kind='fit',
         name=run_name('fit', f'{model}-{started:%Y%m%d-%H%M%S}'),
@@ -51,8 +53,7 @@ def fit_spec(context: FitContext, *,
                 if value is not None and value != _UNSET},
         parents={'snapshot_id': context.snapshot_id,
                  'task_type': context.task_type,
-                 'tune_metric': (context.model_plan.get('training_job')
-                                 or {}).get('tune_metric')},
+                 'tune_metric': tune and metric_name(tune)},
         tags=dict(tags or {}),
         inputs=dict(context.inputs),
         description=f'`{context.query}`',

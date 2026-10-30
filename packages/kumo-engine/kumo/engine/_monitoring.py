@@ -26,6 +26,7 @@ from kumo_core.summaries import Dataset, Note, Scalar, Summary, Table, Tag
 
 from kumo.engine._card import number
 from kumo.engine._manifest import PredictionManifest, TrackingRef
+from kumo.engine._tracking import metric_name
 
 _EVALUATION_FILE = '_evaluation.json'
 
@@ -662,7 +663,7 @@ def _evaluation_summaries(result: EvaluationResult, labels: Any,
         if isinstance(summary, Dataset)
         and summary.name == (name or manifest.id)]
     tune = _tune_metric(model)
-    metrics = dict(sorted(((metric, value) for metric, value
+    metrics = dict(sorted(((metric_name(metric), value) for metric, value
                            in result.metrics.items() if value is not None),
                           key=lambda item: item[0] != tune))
     holdout = _holdout(model)
@@ -703,7 +704,8 @@ def _tune_metric(model: Any) -> Optional[str]:
     if not path or not Path(path).is_file():
         return None
     plan = json.loads(Path(path).read_text())
-    return (plan.get('training_job') or {}).get('tune_metric')
+    tune = (plan.get('training_job') or {}).get('tune_metric')
+    return tune and metric_name(tune)
 
 
 def _holdout(model: Any) -> Dict[str, float]:
@@ -715,7 +717,7 @@ def _holdout(model: Any) -> Dict[str, float]:
         return {}
     prefix = ('test_refit_' if any(name.startswith('test_refit_')
                                    for name in metrics) else 'test_')
-    return {name.removeprefix(prefix): value
+    return {metric_name(name.removeprefix(prefix)): value
             for name, value in metrics.items() if name.startswith(prefix)}
 
 

@@ -159,6 +159,12 @@ def _text(value: Any) -> Optional[str]:
     return None if value is None else str(value)
 
 
+def metric_name(metric: str) -> str:
+    r"""``metric`` as every task logs it: the plan's ``acc`` is
+    ``accuracy``."""
+    return 'accuracy' if metric == 'acc' else metric
+
+
 def logged_name(name: str) -> str:
     r"""A metric's name in a tracker: ``val_auroc`` is ``val/auroc`` and a
     trial's ``best_val_auroc`` is ``val/best_auroc``, so charts group by
@@ -167,7 +173,7 @@ def logged_name(name: str) -> str:
     split, _, metric = name.removeprefix('best_').partition('_')
     if split not in ('train', 'val') or not metric:
         return name
-    return f"{split}/{'best_' if best else ''}{metric}"
+    return f"{split}/{'best_' if best else ''}{metric_name(metric)}"
 
 
 def logged_names(metrics: Mapping[str, Any],
@@ -185,7 +191,7 @@ def logged_names(metrics: Mapping[str, Any],
             continue
         metric = name.removeprefix('test_')
         latest = metric.startswith('refit_') == refit
-        metric = metric.removeprefix('refit_')
+        metric = metric_name(metric.removeprefix('refit_'))
         if not latest and refit_full:
             continue
         named[f'test/{metric}' if latest and not refit_full else
@@ -421,7 +427,7 @@ def _tune_metric(model: Any) -> Optional[str]:
     plan = getattr(getattr(model, '_trainer', None), 'model_plan', None)
     metric = getattr(getattr(plan, 'training_job', None), 'tune_metric', None)
     text = None if metric is None else str(getattr(metric, 'value', metric))
-    return None if text in (None, '', '???') else text
+    return None if text in (None, '', '???') else metric_name(text)
 
 
 def _one_epoch_note(spec: RunSpec,
