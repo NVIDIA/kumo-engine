@@ -99,3 +99,29 @@ def test_a_prediction_headline_leads_with_the_tuned_realized_metric():
                           {'kumo.tune_metric': 'auroc'}, {}) == (
         'realized auroc 0.78')
     assert _card.headline('prediction', metrics, {}, {}) == 'realized ap 0.71'
+
+
+def test_data_preparation_marks_a_snapshot_built_by_another_process(
+        monkeypatch):
+    from kumo.engine import _prep_cost
+    from kumo.engine._manifest import (
+        BuildCost,
+        SnapshotManifest,
+        TrainingTableManifest,
+    )
+
+    cost = BuildCost(started_at='2026-10-29T06:00:00+00:00',
+                     finished_at='2026-10-29T06:01:30+00:00', seconds=90.0,
+                     disk_bytes=3 * 1024**3)
+    monkeypatch.setattr(_prep_cost, '_built_here', {'tt'})
+    table, = _prep_cost.prep_summaries(
+        SnapshotManifest(id='snap', build=cost),
+        TrainingTableManifest(id='tt', build=BuildCost(
+            started_at='', finished_at='', seconds=12.5,
+            disk_bytes=1024**3 // 2)))
+
+    assert _card.table_text(table) == (
+        '**Data preparation:** Graph snapshot (built earlier, reused): '
+        'time (s) 90 · disk (GiB) 3; Training table: time (s) 12.5 · '
+        'disk (GiB) 0.5')
+    assert _prep_cost.prep_summaries(SnapshotManifest(id='old')) == []

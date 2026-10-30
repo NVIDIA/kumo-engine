@@ -94,6 +94,7 @@ from kumo.engine._manifest import (
 )
 from kumo.engine._mlops import full_error, warn_failure
 from kumo.engine._predictor import TRAINER_PREDICTOR
+from kumo.engine._prep_cost import prep_summaries
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine._tracking import (
     RunSpec,
@@ -1102,7 +1103,9 @@ class Trainer:
                         {**table_details(Path(snapshot.index_path),
                                          snapshot.id),
                          **training_table_details(train_table)})),
-                    *split_summaries(train_table.staging_dir))), error)
+                    *split_summaries(train_table.staging_dir),
+                    *prep_summaries(snapshot.manifest,
+                                    train_table.manifest))), error)
         if session.final is not None:
             result = replace(result, _tracking=session.final)
             self._training_result = result

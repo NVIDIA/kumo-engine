@@ -295,6 +295,7 @@ def prediction_record(manifest: 'PredictionManifest',
     of ``model``, the `TrainingResult` that scored), the scoring
     snapshot's source tables as inputs, pointer tags (``kumo.error`` when
     ``error`` ended the run), and the manifest as an artifact."""
+    from kumo.engine._prep_cost import prep_summaries
     from kumo.engine.trainer._provenance import holdout_counts
 
     table = manifest.prediction_table
@@ -341,7 +342,8 @@ def prediction_record(manifest: 'PredictionManifest',
             },
             inputs=fit_inputs(manifest),
             summaries=(*_prediction_summaries(
-                manifest, holdout_counts(model_manifest), window), *summaries),
+                manifest, holdout_counts(model_manifest), window), *summaries,
+                *prep_summaries(manifest.parents.snapshot)),
             error=None if error is None else format_error(error),
         ))
 

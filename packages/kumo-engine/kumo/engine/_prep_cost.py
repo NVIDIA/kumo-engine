@@ -7,9 +7,17 @@ wrote, shown on the runs that use it."""
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Set, Tuple
+from typing import Any, List, Set, Tuple
+
+from kumo_core.summaries import Table
 
 from kumo.engine._manifest import BuildCost
+
+PREP_TABLE = 'data_preparation'
+_GIB = 1024**3
+_COLUMNS = ('step', 'time (s)', 'disk (GiB)')
+_ROWS = {'snapshot': 'Graph snapshot', 'training_table': 'Training table'}
+_REUSED = ' (built earlier, reused)'
 
 Start = Tuple[datetime, float]
 
@@ -35,3 +43,18 @@ def build_cost(id: str, started: Start, disk_bytes: int) -> BuildCost:
 def directory_bytes(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob('*')
                if item.is_file())
+
+
+def prep_summaries(*manifests: Any) -> List[Table]:
+    r"""A brief table of what building each of ``manifests`` (a snapshot's,
+    a training table's) cost, for those that recorded it."""
+    rows = []
+    for manifest in manifests:
+        build = getattr(manifest, 'build', None)
+        if build is None:
+            continue
+        label = _ROWS[manifest.kind] + ('' if manifest.id in _built_here
+                                        else _REUSED)
+        rows.append((label, build.seconds, build.disk_bytes / _GIB))
+    return ([Table(PREP_TABLE, _COLUMNS, tuple(rows), brief=True)]
+            if rows else [])
