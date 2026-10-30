@@ -807,3 +807,10 @@ def test_a_prediction_names_its_entity_and_when_its_labels_mature():
     assert (tags['kumo.entity'], tags['kumo.labels_mature']) == (
         'ents', '2024-05-06')
     assert _labels_mature(PREDICTION_MANIFEST, None) is None
+
+
+def test_a_fit_logs_only_the_plan_options_it_sets():
+    spec = fit_spec(replace(CONTEXT, model_plan={'optimization': {
+        'base_lr': 0.01, 'max_epochs': '???', 'loss': None}}))
+
+    assert spec.params == {'optimization.base_lr': 0.01}

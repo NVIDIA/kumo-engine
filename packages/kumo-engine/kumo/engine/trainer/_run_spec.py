@@ -28,6 +28,10 @@ class FitContext:
     model_name: Optional[str] = None
 
 
+#: A model-plan option the plan leaves to its defaults.
+_UNSET = '???'
+
+
 def fit_spec(context: FitContext, *,
              tags: Optional[Mapping[str, Any]] = None) -> RunSpec:
     started = context.started or datetime.now(timezone.utc)
@@ -37,7 +41,8 @@ def fit_spec(context: FitContext, *,
         name=f'fit-{started:%Y%m%d-%H%M%S}-{model}',
         model_label=model,
         started=started,
-        params=dict(_flatten(context.model_plan)),
+        params={key: value for key, value in _flatten(context.model_plan)
+                if value is not None and value != _UNSET},
         parents={'snapshot_id': context.snapshot_id,
                  'task_type': context.task_type,
                  'tune_metric': (context.model_plan.get('training_job')
