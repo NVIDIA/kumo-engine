@@ -213,9 +213,10 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 - Then one sentence says what the run is. A fit names its model, task, the trial and the epoch its curves and holdout
   metrics come from (the epoch with the best validation tune metric, tag `kumo.best_epoch`). A prediction names its
   model and the fit run that trained it.
+- Problems, when there are any, come right after the sentence.
 - Then tables: holdout metrics (fit; `test/ap` is average precision, `test/auprc` the trapezoidal area under the
   precision-recall curve, `test/loss` the training objective, `test/logloss` the cross-entropy of the scores); the 2x2
-  matrix at the binary threshold; the training data; data preparation; problems and notes; "Where things are", with
+  matrix at the binary threshold; the training data; data preparation; notes; "Where things are", with
   each artifact's full location, linked to the S3 or GCS console.
 - Add your own notes below the line "Add notes below this line"; the card ends with a rule. Editing above it stops
   kumo-engine updating that card; the run is then tagged `kumo.card_frozen`.
@@ -226,7 +227,7 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 - The `test/` values are also logged on the fit's logged model, against the training table dataset, so the model page, the Models tab and the registry's Compare versions view show them; they are also in the registered version's description. After a refit they describe the refit model the bundle ships; the model before the refit is `before_refit/<metric>`.
 - `loss` (`train/loss`, `val/loss`, `test/loss`) is the training objective, the model plan's `optimization.loss` (weighted when the plan weights examples), averaged as the trainer averages it. `logloss` is the plain log loss of the shipped probabilities over every holdout row. Compare models on `test/logloss`; `loss` compares only fits with the same objective.
 - `ap` is average precision, the precision at each threshold weighted by the recall it adds; `auprc` is the area under the precision-recall curve by trapezoids, which runs slightly higher on few distinct scores. They usually agree to two digits; `ap` is the one to compare.
-- Prediction: `pred/rows`, `pred/skipped_share`, `pred/positive_rate` (binary, with a threshold), `pred/item_coverage` and `pred/top_1pct_items_share` (ranking and link prediction); `drift/psi`, `drift/ks` and `drift/wasserstein` vs the model's holdout scores at training ([definitions](#drift-statistics)). After `score_drift`: `drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev` against the previous run (`_vs_prev` always means the previous run, never training), and `drift/inputs_max_psi`, the largest input-column PSI. After `evaluate`: `realized/<metric>` and `realized/labelled_share`. A prediction run shows "Model metrics (0)": the model's own quality is on its fit run.
+- Prediction: `pred/rows`, `pred/skipped_share`, `pred/positive_rate` (binary, with a threshold), `pred/item_coverage` and `pred/top_1pct_items_share` (ranking and link prediction); `drift/psi`, `drift/ks` and `drift/wasserstein` vs the model's holdout scores at training ([definitions](#drift-statistics)). After `score_drift`: `drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev` against the previous run (`_vs_prev` always means the previous run, never training), and `drift/inputs_max_psi`, the largest input-column PSI. After `evaluate`: `realized/<metric>` and `realized/labelled_share`. A prediction run's Model metrics tab shows "Model metrics (0)": the model's own quality is on its fit run.
 - `pred/<column>_count_by_score_pct`: step = the score in hundredths, so step 37 counts the entities scored from 0.37 to under 0.38 (step 99 includes 1.0). Logged for the 20 most predicted classes' probability columns; not on Snowflake, whose histogram tables carry the same counts.
 - `pred/recommendations_by_item_rank`: step = an item's rank by how often it was recommended (1 = most recommended, up to 100); the value is how many times it was recommended.
 - Data preparation: a fit's or prediction's card shows how long the graph snapshot and the training table took to build and their size on disk, read from their manifests. A snapshot or table built in an earlier process shows its original build, marked "(built earlier, reused)". On Snowflake the same numbers are the run params `prep.<step>.seconds` and `prep.<step>.disk_gib`.
@@ -248,13 +249,13 @@ A histogram table has a row per bin with `from` and `to` (the end bins are open)
 - Every run: `kumo.kind`, `kumo.engine_version`.
 - Fit: `kumo.task_type`, `kumo.tune_metric`, `kumo.snapshot_id`, `kumo.bundle_id`, `kumo.bundle_uri`, `kumo.model_name`, `kumo.model_version`, `kumo.best_trial`, `kumo.best_epoch`, and `kumo.data_warnings`, the number of data problems the card lists.
 - Prediction: `kumo.prediction_id`, `kumo.as_of`, `kumo.entity`, `kumo.tune_metric`, `kumo.labels_mature` (temporal queries), `kumo.bundle_id`, `kumo.fit_run_id`, `kumo.model_name`, `kumo.model_version`, and `kumo.output_uri` or `kumo.output_table`. After `score_drift`: `kumo.drift_previous`; after `evaluate`: `kumo.labels_snapshot_id`.
-- Datasets: the snapshot, the training table (fits), then each source table, at their real locations; after `evaluate`, the labels snapshot. Each dataset's context says its role: `training` on a fit, `scoring` on a prediction, `labels` for the labels snapshot. A prediction of a model its fit logged lists that model under "Logged models", Type Input.
+- Datasets: the snapshot, the training table (fits) and each source table, at their real locations; after `evaluate`, the labels snapshot. Each dataset's context says its role: `training` on a fit, `scoring` on a prediction, `labels` for the labels snapshot. A prediction of a model its fit logged lists that model under "Logged models", Type Input.
 - MLflow shortens a tag chip whose value is long, key included; hover the chip or open the Tags table for the full key.
 - Params are the model plan's own names. In the plan an experiment is one trial: `training_job.num_experiments` is the number of trials, and `pruning.*` settings stop unpromising trials of a search early.
 
-**Finding runs.** Keys with a `/` or `.` need backticks:
+**Finding runs.** Keys with a `/` need backticks:
 - a model's fits: ``tags.`kumo.kind` = 'fit' and tags.`kumo.model_name` = 'churn'``;
-- its scoring history, one row per day: ``tags.`kumo.kind` = 'prediction' and tags.`kumo.model_name` = 'churn'``, sorted by the tag `kumo.as_of`, with the columns `pred/rows`, `drift/psi`, `drift/psi_vs_prev` and `realized/auroc`;
+- its scoring history, one row per day: ``tags.`kumo.kind` = 'prediction' and tags.`kumo.model_name` = 'churn'``, sorted in the UI by the param `anchors` (an ISO date for a single-anchor run; the UI cannot sort by a tag) or, in the API, `order_by=["tags.kumo.as_of"]`, with the columns `pred/rows`, `drift/psi`, `drift/psi_vs_prev` and `realized/auroc`;
 - drifted days (a large shift): ``metrics.`drift/psi` > 0.25``;
 - everything one model version scored: ``tags.`kumo.bundle_id` = '<bundle id>'``.
 
@@ -279,7 +280,7 @@ run.id, run.bundle_id, run.snapshot_id, run.scored_rows, run.skipped_rows
 - **`PredictionOutputConfig(connector, path=...)`**: a directory or file on a file destination (local, S3, GCS, a volume or stage), else a table. `output_paths={"predictions": ..., "embeddings": ...}` writes embeddings too.
 - Your destination keeps the defaults it always had, with MLOps on or off: a **table** is replaced with exactly the columns of the [output contract](#prediction-output-contract), and **files** go to exactly `path` as given, with the run's `_provenance.json` next to the Parquet parts. History is not kept there; it lives under the artifact root (below). A directory holding another export is refused; `write_mode=WriteMode.OVERWRITE` replaces it.
 - `write_mode=WriteMode.APPEND` (`from kumoapi.jobs import WriteMode`) adds each run's rows to a table with two extra columns, the only case that adds columns: `PREDICTION_ID` (`run.id`) and `BUNDLE_ID`, so the runs in one table can be told apart.
-- With MLOps on, each run is also kept, never overwritten, under `<root>/predictions/<id>/`, which `evaluate`, `score_drift` and `kumo.output_uri` point at, and recorded as a tracker run named after its id: scoring options as params, row counts and score percentiles as metrics, the scoring snapshot's source tables as inputs. A failed export still records the run, ended failed with `kumo.error`.
+- With MLOps on, each run is also kept, never overwritten, under `<root>/predictions/<id>/`, which `evaluate`, `score_drift` and `kumo.output_uri` point at, and recorded as its tracker run ([names](#what-youll-see-in-mlflow-and-snowsight)): scoring options as params, row counts and score drift as metrics, the scoring snapshot's source tables as inputs. A failed export still records the run, ended failed with `kumo.error`.
 - Entities the snapshot does not hold are skipped and counted (`run.skipped_rows`, the `pred/skipped_share` metric), never refused.
 - A scoring job needs no `Graph` code: `GraphSnapshot.load_from_connector(cfg, id=...)` and `Trainer.load_from_connector(cfg, ...)`, then `predict`. It warns when the snapshot was taken of a different graph than the model's, naming the schema changes (tables, columns, types, keys, edges); under `on_error="raise"` it raises instead, before scoring.
 
@@ -528,7 +529,7 @@ first (by PSI, then by null-rate change). A table leaves out measures that none 
 
 | column | types | meaning |
 |---|---|---|
-| `psi` | numerical, categorical | Numerical: over up to 10 groups of DiskGraph's fixed value bins (eight per power of two, the same in every snapshot), cut where the training snapshot's cumulative share reaches each decile. Exact. Categorical: over the categories; approximate when DiskGraph capped or sampled them (`category_counts_capped`). Shares floored at 1e-6. |
+| `psi` | numerical, categorical | Numerical: over up to 10 groups of DiskGraph's fixed value bins (eight per power of two, the same in every snapshot), cut where the training snapshot's cumulative share reaches each decile. Exact. Categorical: over the categories; approximate when DiskGraph capped or sampled them (`category_counts_capped`). Shares are floored at 1e-6 for numerical psi; categorical psi adds 1e-6 to each share and renormalises. |
 | `shift` | numerical, categorical | The PSI rule of thumb: < 0.1 small, 0.1–0.25 moderate, > 0.25 large |
 | `mean change (training sd)` | numerical | (mean now − mean at training) / training standard deviation |
 | `null rate change (pp)` | all | in percentage points |
