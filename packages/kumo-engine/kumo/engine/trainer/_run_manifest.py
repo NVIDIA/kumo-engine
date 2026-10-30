@@ -103,7 +103,7 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
                     unstored = failure
             untracked = track_prediction(
                 manifest, settings.tracking, error or unstored, model,
-                _scoring_summaries(manifest, settings, snapshot))
+                _scoring_summaries(manifest, snapshot))
             tracked = getattr(settings.tracking, 'log_prediction_run', None)
             if untracked is None and tracked is not None:
                 tracking = tracking_ref(settings.tracking)
@@ -115,7 +115,7 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
     return tracking
 
 
-def _scoring_summaries(manifest: Optional[PredictionManifest], settings: Any,
+def _scoring_summaries(manifest: Optional[PredictionManifest],
                        snapshot: Any) -> List[Summary]:
     r"""The scoring snapshot's graph summaries, and the run's artifacts'
     tags and datasets."""
@@ -128,9 +128,8 @@ def _scoring_summaries(manifest: Optional[PredictionManifest], settings: Any,
     return [
         *([] if index is None else snapshot_summaries(
             Path(index), snapshot.graph_config)),
-        *artifact_summaries(manifest, 'scoring', settings,
-                            None if index is None else table_details(
-                                Path(index), snapshot.id)),
+        *artifact_summaries(manifest, 'scoring', None if index is None else
+                            table_details(Path(index), snapshot.id)),
     ]
 
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from kumo_core.artifacts import bundle_id_from_manifest
-from kumo_core.summaries import Dataset, Note, Tag
+from kumo_core.summaries import Dataset, Table, Tag
 
 import kumo.engine as kumo
 from kumo.engine._deps import Dependencies, FileAsset
@@ -114,15 +114,16 @@ def test_a_new_kind_and_asset_reach_tags_and_datasets(tmp_path):
 
     assert dependency.location == f'{root}/assets/dummy/{dependency.sha256}'
     assert ReportManifest.from_dict(report.to_dict()) == report
-    assert artifact_summaries(report, 'training', settings, {
+    assert artifact_summaries(report, 'training', {
         'orders': ({'ID': {'stype': 'ID', 'dtype': 'int64'}}, {'rows': 3})
     }) == [
         Tag('kumo.bundle_uri', f'{root}/models/m'),
-        *(Note('locations', line) for line in (
-            f'root `{root}`', 'report `reports/r`',
-            'snapshot `snapshots/g/d`', 'bundle `models/m`',
-            f'asset `assets/dummy/{dependency.sha256}`',
-            'source orders `s3://data/orders`')),
+        Table('locations', ('kind', 'id', 'location'), (
+            ('report', 'r', f'{root}/reports/r'),
+            ('snapshot', 'g@d', f'{root}/snapshots/g/d'),
+            ('source_table', 'orders', 's3://data/orders'),
+            ('model', 'm', f'{root}/models/m'),
+            ('asset', dependency.sha256, dependency.location)), brief=True),
         Dataset('g@d', {'connector': 'LOCAL_FILE',
                         'location': f'{root}/snapshots/g/d',
                         'version': 'g@d', 'version_kind': 'exact'}, {}, {},
@@ -167,10 +168,13 @@ def test_a_prediction_run_reads_its_snapshot_and_writes_its_outputs():
         Tag('kumo.bundle_uri', 's3://root/models/m'),
         Tag('kumo.output_uri', 's3://out/p'),
         Tag('kumo.output_table', '"DB"."S"."EMB"'),
-        *(Note('locations', line) for line in (
-            'prediction run `s3://root/predictions/p`',
-            'bundle `s3://root/models/m`', 'source orders `s3://data/orders`',
-            'scores `s3://out/p`', 'embeddings `"DB"."S"."EMB"`')),
+        Table('locations', ('kind', 'id', 'location'), (
+            ('prediction', 'p', 's3://root/predictions/p'),
+            ('model', 'm', 's3://root/models/m'),
+            ('source_table', 'orders', 's3://data/orders'),
+            ('prediction_output', 'predictions', 's3://out/p'),
+            ('prediction_output', 'embeddings', '"DB"."S"."EMB"')),
+              brief=True),
         Dataset('orders', {'connector': 'S3', 'location': 's3://data/orders',
                            'version': '7', 'version_kind': 'exact'}, {}, {},
                 'scoring'),

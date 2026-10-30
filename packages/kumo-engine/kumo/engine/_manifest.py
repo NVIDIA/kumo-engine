@@ -30,7 +30,7 @@ from typing import (
 )
 
 from kumo_core.io.filesystem import atomic_write_bytes
-from kumo_core.summaries import Dataset, Note, Summary, Tag
+from kumo_core.summaries import Dataset, Summary, Table, Tag
 
 SCHEMA_VERSION = 1
 _OMIT_NONE = 'omit_none'
@@ -228,23 +228,23 @@ Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
 
 
 def artifact_summaries(manifest: Manifest, context: str,
-                       settings: Any = None,
                        details: Optional[Details] = None) -> List[Summary]:
     r"""Where ``manifest``'s artifacts are, for its tracked run: the tags
     ``kumo.bundle_uri`` and ``kumo.output_uri`` or ``kumo.output_table``
-    (the nearest of each); a ``locations`` note per artifact, by its path
-    from the artifact root of MLOps ``settings`` when it is under it; and a
-    `Dataset` per stored dataset, read in ``context`` or written, with the
-    schema and profile ``details`` gives its id."""
+    (the nearest of each); the brief table ``locations`` of each artifact's
+    kind, id and location; and a `Dataset` per stored dataset, read in
+    ``context`` or written, with the schema and profile ``details`` gives
+    its id."""
     located = [item for item in artifacts(manifest) if item.location]
     tags: Dict[str, str] = {}
     for item in located:
         if item.tag:
             tags.setdefault(item.tag, str(item.location))
-    root = None if settings is None else settings.root.uri('').rstrip('/')
     summaries: List[Summary] = [
         *(Tag(name, value) for name, value in tags.items()),
-        *(Note('locations', line) for line in _locations(located, root)),
+        *([Table('locations', ('kind', 'id', 'location'), tuple(
+            (item.kind, item.id, str(item.location)) for item in located),
+                 brief=True)] if located else []),
     ]
     for item in sorted(located, key=lambda item: _DATASET_ORDER.get(
             item.kind, len(_DATASET_ORDER))):
@@ -258,26 +258,6 @@ def artifact_summaries(manifest: Manifest, context: str,
         summaries.append(Dataset(item.label or item.id, source, schema,
                                  profile, item.context or context))
     return summaries
-
-
-def _locations(located: List[Artifact], root: Optional[str]) -> List[str]:
-    r"""``root`` once, then each artifact under it by its path from it, then
-    the others in full."""
-    inside, outside = [], []
-    for item in located:
-        location = str(item.location)
-        if root and location.startswith(f'{root}/'):
-            inside.append(f'{_label(item)} `{location[len(root) + 1:]}`')
-        else:
-            outside.append(f'{_label(item)} `{location}`')
-    return [*([f'root `{root}`'] if root else []), *inside, *outside]
-
-
-def _label(item: Artifact) -> str:
-    return {'model': 'bundle', 'prediction': 'prediction run',
-            'source_table': f'source {item.id}',
-            'prediction_output': {'predictions': 'scores'}.get(item.id, item.id)
-            }.get(item.kind, item.kind.replace('_', ' '))
 
 
 #: Datasets lead with the snapshot, as the run list shows the first.

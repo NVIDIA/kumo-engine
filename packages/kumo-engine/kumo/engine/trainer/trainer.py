@@ -1098,7 +1098,7 @@ class Trainer:
                     *snapshot_summaries(Path(snapshot.index_path),
                                         snapshot.graph_config),
                     *([] if result.manifest is None else artifact_summaries(
-                        result.manifest, 'training', settings,
+                        result.manifest, 'training',
                         {**table_details(Path(snapshot.index_path),
                                          snapshot.id),
                          **training_table_details(train_table)})),
