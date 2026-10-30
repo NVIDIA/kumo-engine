@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from kumo_core.artifacts import bundle_id_from_manifest
-from kumo_core.summaries import Dataset, Tag
+from kumo_core.summaries import Dataset, Note, Tag
 
 import kumo.engine as kumo
 from kumo.engine._deps import Dependencies, FileAsset
@@ -67,15 +67,15 @@ def test_a_new_kind_names_its_artifacts_without_other_changes():
 
     assert artifacts(report) == [
         Artifact('report', 'r', 's3://root/reports/r', True,
-                 'kumo.report_uri', version='r', version_kind='exact'),
+                 version='r', version_kind='exact'),
         Artifact('snapshot', 'g@d', 's3://root/snapshots/g/d', True,
-                 'kumo.snapshot_uri', version='g@d', version_kind='exact'),
+                 version='g@d', version_kind='exact'),
         Artifact('source_table', 'orders', 's3://data/orders', True,
                  connector='S3', version='7', version_kind='exact'),
         Artifact('model', 'm', 's3://root/models/m', False,
                  'kumo.bundle_uri', version='m', version_kind='exact'),
-        Artifact('snapshot', 'p', None, True, 'kumo.snapshot_uri',
-                 version='p', version_kind='exact'),
+        Artifact('snapshot', 'p', None, True, version='p',
+                 version_kind='exact'),
     ]
 
 
@@ -117,11 +117,12 @@ def test_a_new_kind_and_asset_reach_tags_and_datasets(tmp_path):
     assert artifact_summaries(report, 'training', settings, {
         'orders': ({'ID': {'stype': 'ID', 'dtype': 'int64'}}, {'rows': 3})
     }) == [
-        Tag('kumo.report_uri', f'{root}/reports/r'),
-        Tag('kumo.snapshot_uri', f'{root}/snapshots/g/d'),
         Tag('kumo.bundle_uri', f'{root}/models/m'),
-        Tag('kumo.dummy_uri', dependency.location),
-        Tag('kumo.artifact_root', root),
+        *(Note('locations', line) for line in (
+            f'root `{root}`', 'report `reports/r`',
+            'snapshot `snapshots/g/d`', 'bundle `models/m`',
+            f'asset `assets/dummy/{dependency.sha256}`',
+            'source orders `s3://data/orders`')),
         Dataset('r', {'connector': 'LOCAL_FILE',
                       'location': f'{root}/reports/r', 'version': 'r',
                       'version_kind': 'exact'}, {}, {}, 'training'),
@@ -163,10 +164,13 @@ def test_a_prediction_run_reads_its_snapshot_and_writes_its_outputs():
         ], status='succeeded', timings=None, stats=None)
 
     assert artifact_summaries(run, 'scoring') == [
-        Tag('kumo.prediction_uri', 's3://root/predictions/p'),
         Tag('kumo.bundle_uri', 's3://root/models/m'),
         Tag('kumo.output_uri', 's3://out/p'),
         Tag('kumo.output_table', '"DB"."S"."EMB"'),
+        *(Note('locations', line) for line in (
+            'prediction `s3://root/predictions/p`',
+            'bundle `s3://root/models/m`', 'source orders `s3://data/orders`',
+            'predictions `s3://out/p`', 'embeddings `"DB"."S"."EMB"`')),
         Dataset('orders', {'connector': 'S3', 'location': 's3://data/orders',
                            'version': '7', 'version_kind': 'exact'}, {}, {},
                 'scoring'),

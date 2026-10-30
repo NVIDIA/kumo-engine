@@ -28,7 +28,7 @@ from typing import (
 )
 
 from kumo_core.io.filesystem import atomic_write_bytes
-from kumo_core.summaries import Dataset, Summary, Tag
+from kumo_core.summaries import Dataset, Note, Summary, Tag
 
 SCHEMA_VERSION = 1
 _OMIT_NONE = 'omit_none'
@@ -178,13 +178,12 @@ class Manifest(Record):
     EMBED_OMITS = ()
     #: Whether this kind is data a run reads or writes.
     IS_DATASET: ClassVar[bool] = False
-    #: The tag of its location in tracked runs.
+    #: The tag of its location in tracked runs, if it has one.
     URI_TAG: ClassVar[Optional[str]] = None
 
     def as_artifact(self, key: str) -> Artifact:
         return Artifact(self.kind, self.id, self.location, self.IS_DATASET,
-                        self.URI_TAG or f'kumo.{self.kind}_uri',
-                        version=self.id, version_kind='exact')
+                        self.URI_TAG, version=self.id, version_kind='exact')
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
@@ -225,19 +224,22 @@ Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
 def artifact_summaries(manifest: Manifest, context: str,
                        settings: Any = None,
                        details: Optional[Details] = None) -> List[Summary]:
-    r"""Where ``manifest``'s artifacts are, for its tracked run: each
-    artifact's tag (the nearest of each), ``kumo.artifact_root`` under MLOps
-    ``settings``, and a `Dataset` per stored dataset, read in ``context``
-    or written, with the schema and profile ``details`` gives its id."""
+    r"""Where ``manifest``'s artifacts are, for its tracked run: the tags
+    ``kumo.bundle_uri`` and ``kumo.output_uri`` or ``kumo.output_table``
+    (the nearest of each); a ``locations`` note per artifact, by its path
+    from the artifact root of MLOps ``settings`` when it is under it; and a
+    `Dataset` per stored dataset, read in ``context`` or written, with the
+    schema and profile ``details`` gives its id."""
     located = [item for item in artifacts(manifest) if item.location]
     tags: Dict[str, str] = {}
     for item in located:
         if item.tag:
             tags.setdefault(item.tag, str(item.location))
-    if settings is not None:
-        tags['kumo.artifact_root'] = settings.root.uri('').rstrip('/')
-    summaries: List[Summary] = [Tag(name, value)
-                                for name, value in tags.items()]
+    root = None if settings is None else settings.root.uri('').rstrip('/')
+    summaries: List[Summary] = [
+        *(Tag(name, value) for name, value in tags.items()),
+        *(Note('locations', line) for line in _locations(located, root)),
+    ]
     for item in located:
         if not item.is_dataset:
             continue
@@ -249,6 +251,25 @@ def artifact_summaries(manifest: Manifest, context: str,
         summaries.append(Dataset(item.id, source, schema, profile,
                                  item.context or context))
     return summaries
+
+
+def _locations(located: List[Artifact], root: Optional[str]) -> List[str]:
+    r"""``root`` once, then each artifact under it by its path from it, then
+    the others in full."""
+    inside, outside = [], []
+    for item in located:
+        location = str(item.location)
+        if root and location.startswith(f'{root}/'):
+            inside.append(f'{_label(item)} `{location[len(root) + 1:]}`')
+        else:
+            outside.append(f'{_label(item)} `{location}`')
+    return [*([f'root `{root}`'] if root else []), *inside, *outside]
+
+
+def _label(item: Artifact) -> str:
+    return {'model': 'bundle', 'source_table': f'source {item.id}',
+            'prediction_output': item.id}.get(item.kind,
+                                              item.kind.replace('_', ' '))
 
 
 def _connector(location: str) -> Optional[str]:
@@ -388,8 +409,7 @@ class Dependency(Record):
         kind = _kinds().get(self.kind)
         return None if kind is None else Artifact(
             self.kind, str(self.sha256), self.location, kind.IS_DATASET,
-            f'kumo.{self.asset_kind}_uri', version=self.sha256,
-            version_kind='exact')
+            version=self.sha256, version_kind='exact')
 
 
 @dataclass(frozen=True, kw_only=True)
