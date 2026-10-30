@@ -33,3 +33,13 @@ def test_tables_round_measurements_and_keep_definitions_and_counts():
 
     assert json.loads(table_json(table))['data'] == [
         [0.07, 12, 0.487744], [0.3333333333, 7, 27.6108]]
+
+
+def test_a_histogram_table_leaves_out_empty_bins():
+    tables = SummaryTables()
+    tables.add_histogram(Histogram('pred/histogram/score', (0.0, 0.5, 1.0),
+                                   (0, 4, 0, 1), (0.1, 1.0)))
+
+    table, = tables.tables()
+
+    assert table.rows == ((0.0, 0.5, 4, 0.8), (1.0, 1.0, 1, 1.0))

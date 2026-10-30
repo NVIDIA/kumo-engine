@@ -59,7 +59,7 @@ def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
     r"""Histograms ``<name>/<column>`` over the same edges as one table: a
     bin per row from ``from`` to ``to``, the end bins closed at the values'
     recorded minimum and maximum (open without one), a count and a
-    cumulative share per histogram."""
+    cumulative share per histogram; bins no histogram counts are left out."""
     edges = histograms[0].edges
     extents = [h.extent for h in histograms if h.extent is not None]
     first = min((extent[0] for extent in extents), default=None)
@@ -79,7 +79,8 @@ def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
             (low, high, *(h.counts[i] for h in histograms),
              *(share[i] for share in shares))
             for i, (low, high) in enumerate(zip((first, *edges),
-                                                (*edges, last)))))
+                                                (*edges, last)))
+            if any(h.counts[i] for h in histograms)))
 
 
 def table_json(table: Table) -> str:
