@@ -671,7 +671,9 @@ def test_durable_job_resource_requires_project():
             }],
         })
     restored = from_json(payload, BatchPredictionJobResource)
-    assert restored.config.outputs[0].file_path == 'predictions/output'
+    output = restored.config.outputs[0]
+    assert isinstance(output, GCSPredictionOutput)
+    assert output.file_path == 'predictions/output'
 
 
 def test_a_training_table_spec_may_describe_an_unmodified_table():
