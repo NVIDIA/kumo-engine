@@ -19,7 +19,7 @@ from kumoapi.model_plan import ModelPlan
 from kumoapi.typing import Stype
 
 import kumo.engine as kumo
-from kumo.engine._manifest import ArtifactStats
+from kumo.engine._manifest import ArtifactStats, TrackingRef
 from kumo.engine._monitoring import evaluate, score_drift
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._version import __version__
@@ -532,6 +532,7 @@ class _Tracker:
 
     def log_monitoring(self, record):
         self.records.append(record)
+        self.run_id = f'run-{len(self.records)}'
 
 
 def test_tracked_monitoring_is_tagged_like_its_prediction_run(
@@ -546,6 +547,9 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
         evaluation = trainer.evaluate(run, labels_snapshot=snapshots.after)
 
     drift, evaluated = tracker.records
+    assert (report.tracking, evaluation.tracking) == (
+        TrackingRef(platform='fake', run_id='run-1'),
+        TrackingRef(platform='fake', run_id='run-2'))
     for record, monitor in ((drift, 'drift'), (evaluated, 'evaluate')):
         assert record.tags.items() >= {
             'kumo.kind': 'monitoring', 'kumo.monitor': monitor,
@@ -575,7 +579,6 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
 
 
 def test_drift_summaries_log_the_previous_run_and_explain_gaps():
-    from kumo.engine._manifest import TrackingRef
     from kumo.engine._monitoring import DriftReport, track
 
     report = DriftReport(
@@ -594,12 +597,14 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
             'ID': {'type': 'categorical', 'type_changed': ['numerical',
                                                            'categorical']}}})
     tracker = _Tracker()
-    track(report, SimpleNamespace(id='p', bundle_id='b', manifest=None,
-                                  tracking=TrackingRef(platform='fake',
-                                                       run_id='run-7')),
-          SimpleNamespace(tracking=tracker, on_error='raise'),
-          SimpleNamespace(result=None), PREDICTED_AT.to_pydatetime())
+    tracked = track(report, SimpleNamespace(
+        id='p', bundle_id='b', manifest=None,
+        tracking=TrackingRef(platform='fake', run_id='run-7')),
+        SimpleNamespace(tracking=tracker, on_error='raise'),
+        SimpleNamespace(result=None), PREDICTED_AT.to_pydatetime())
 
+    assert tracked == replace(report, tracking=TrackingRef(platform='fake',
+                                                           run_id='run-1'))
     record, = tracker.records
     assert record.prediction_run == 'run-7'
     assert record.summaries == (
@@ -684,7 +689,8 @@ def test_a_monitoring_tracking_failure_warns_or_raises(classifier, tmp_path,
         cfg = kumo.MLOps(str(tmp_path / 'root'), tracking=Tracker(),
                          on_error=on_error)
         if on_error == 'warn':
-            assert trainer.score_drift(run, mlops=cfg).psi is not None
+            report = trainer.score_drift(run, mlops=cfg)
+            assert report.psi is not None and report.tracking is None
         else:
             with pytest.raises(RuntimeError, match='tracking server down'
                                ) as raised:

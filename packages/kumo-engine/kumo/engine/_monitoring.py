@@ -23,7 +23,7 @@ from kumo_core.score_drift import score_drift as exact_drift
 from kumo_core.summaries import Dataset, Note, Scalar, Summary, Table, Tag
 
 from kumo.engine._card import number
-from kumo.engine._manifest import PredictionManifest
+from kumo.engine._manifest import PredictionManifest, TrackingRef
 
 _EVALUATION_FILE = '_evaluation.json'
 
@@ -63,7 +63,8 @@ class EvaluationResult:
     ``ANCHOR_TIMESTAMP`` (the prediction time for static queries), the
     prediction (``True_PROB`` and ``TARGET_PRED``; ``TARGET_PRED``; or the
     top ``CLASS`` and its ``SCORE``), the label ``TARGET`` and
-    ``EVALUATED_AT``, when `evaluate` ran.
+    ``EVALUATED_AT``, when `evaluate` ran. ``tracking`` is the tracked run
+    the result was written into.
     """
 
     prediction_id: str
@@ -79,6 +80,7 @@ class EvaluationResult:
     bundle_matches: Optional[bool]
     reasons: Mapping[str, str] = field(default_factory=dict)
     actuals: Optional[str] = None
+    tracking: Optional[TrackingRef] = None
 
     _exported: Any = field(default=None, compare=False, repr=False)
 
@@ -118,7 +120,7 @@ class EvaluationResult:
             extra['extra_columns'] = columns
         if _holds_parquet(output_config.connector, destination):
             fields = dataclasses.asdict(self)
-            for name in ('actuals', '_exported'):
+            for name in ('actuals', 'tracking', '_exported'):
                 fields.pop(name)
             extra['sidecars'] = {
                 _EVALUATION_FILE: json.dumps(fields, sort_keys=True).encode()
@@ -199,7 +201,8 @@ class DriftReport:
     (`kumo_core.score_drift`; ``wasserstein`` is in score units), and None
     when the bins differ. ``features`` compares, per table and column the
     model encodes, the column statistics DiskGraph wrote when each snapshot
-    was built (training snapshot, then scoring snapshot).
+    was built (training snapshot, then scoring snapshot). ``tracking`` is
+    the tracked run the report was written into.
     """
 
     prediction_id: Optional[str]
@@ -218,6 +221,7 @@ class DriftReport:
     reasons: Mapping[str, str]
     features: Mapping[str, Mapping[str, Mapping[str, Any]]] = field(
         default_factory=dict)
+    tracking: Optional[TrackingRef] = None
 
 
 def evaluate(trainer: Any, run: Any, snapshot: Any) -> EvaluationResult:
@@ -502,14 +506,14 @@ def _drift(counts: Optional[Counts], reference: Optional[Counts], name: str,
 
 
 def track(report: Any, run: Any, settings: Any, trainer: Any,
-          started: datetime, labels: Any = None) -> None:
-    r"""Log ``report``, a monitoring call of ``run`` that started at
-    ``started`` (an evaluation against the ``labels`` snapshot), with the
-    tracker's ``log_monitoring``; a failure warns, or raises under
-    ``on_error='raise'``."""
+          started: datetime, labels: Any = None) -> Any:
+    r"""``report``, a monitoring call of ``run`` that started at ``started``
+    (an evaluation against the ``labels`` snapshot), with the ``tracking``
+    of the run the tracker's ``log_monitoring`` wrote it into; a failure
+    warns, or raises under ``on_error='raise'``."""
     tracking = None if settings is None else settings.tracking
     if tracking is None:
-        return
+        return report
 
     from kumo.engine._mlops import full_error, raise_on_error, warn_failure
     from kumo.engine._tracking import log_run
@@ -526,6 +530,12 @@ def track(report: Any, run: Any, settings: Any, trainer: Any,
         failure = log_run(tracking, 'log_monitoring', record)
     raise_on_error(settings, failure, f'Monitoring of prediction run '
                    f'{getattr(run, "id", None)}', stacklevel=3)
+    run_id = getattr(tracking, 'run_id', None)
+    if failure is not None or not run_id:
+        return report
+    return replace(report, tracking=TrackingRef(
+        platform=str(getattr(tracking, 'platform', type(tracking).__name__)),
+        run_id=str(run_id), url=getattr(tracking, 'run_url', None)))
 
 
 #: The prediction run's tags a monitoring record carries, which name it.

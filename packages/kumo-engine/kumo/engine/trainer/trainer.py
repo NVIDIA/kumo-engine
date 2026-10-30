@@ -1746,7 +1746,8 @@ class Trainer:
         snapshot newer than the one the run scored, holding its outcomes.
 
         With MLOps tracking on (``mlops`` or a `kumo.mlops` block), the
-        result is logged as a new monitoring run of ``run``.
+        result is written into ``run``'s prediction run (on Snowflake, a run
+        named after it), which its ``tracking`` names.
         """
         from kumo.engine._mlops import resolve
         from kumo.engine._monitoring import evaluate, track
@@ -1754,8 +1755,7 @@ class Trainer:
         settings = resolve(mlops)
         started = datetime.now(timezone.utc)
         result = evaluate(self, run, labels_snapshot)
-        track(result, run, settings, self, started, labels_snapshot)
-        return result
+        return track(result, run, settings, self, started, labels_snapshot)
 
     def score_drift(
         self,
@@ -1775,7 +1775,7 @@ class Trainer:
                 with MLOps on, the artifact root.
             training_snapshot: The snapshot this model trained on; found
                 like ``snapshot`` by default.
-            mlops: Logs the report as a new monitoring run of ``run`` when
+            mlops: Writes the report into ``run``'s prediction run when
                 tracking is on, like `evaluate`.
         """
         from kumo.engine._mlops import resolve
@@ -1788,8 +1788,7 @@ class Trainer:
                              training_snapshot=training_snapshot,
                              root=None if settings is None else
                              settings.root)
-        track(report, run, settings, self, started)
-        return report
+        return track(report, run, settings, self, started)
 
     @classmethod
     def load(
