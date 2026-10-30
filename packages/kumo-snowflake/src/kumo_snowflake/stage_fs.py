@@ -1,13 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""A pyarrow filesystem over a Snowflake named internal stage.
-
-Writes are ``PUT``, listings ``LIST``, deletes ``REMOVE``. Reads fetch byte
-ranges from ``GET_PRESIGNED_URL`` links when the stage serves plaintext
-(``ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')``); otherwise each file is
-downloaded once with ``GET`` and read locally.
-"""
+r"""A pyarrow filesystem over a Snowflake named internal stage."""
 
 import logging
 import posixpath
@@ -37,22 +31,19 @@ from pyarrow.fs import PyFileSystem
 logger = logging.getLogger(__name__)
 
 _PROBE = b'kumo-stage-range-probe\n'
-_ranged_stages: Dict[Tuple[Optional[str], str], str] = {}
 _RANGED, _GET, _ENCRYPTED = 'ranged', 'get', 'encrypted'
-_ranged_lock = threading.Lock()
+_read_modes: Dict[Tuple[Optional[str], str], str] = {}
+_read_modes_lock = threading.Lock()
 
 
 def _pattern(relative: str) -> str:
-    # REMOVE and GET match PATTERN against the stage's internal storage path,
-    # whose prefix LIST does not show, so the full stage-relative path is the
-    # anchored suffix.
+    # PATTERN sees the stage's internal path, so anchor the suffix.
     escaped = ''.join(f'[{c}]' if c in '.$+' else c for c in relative)
     return f'.*/{escaped}'
 
 
 class StageFileSystemHandler(ChunkedFileHandler):
-    # PUT has no small size cap, so a file stays one object (readable by
-    # COPY INTO) up to the same bound as a Databricks volume.
+    # One object up to this size, so COPY INTO reads it.
     part_bytes = 4 << 30
 
     def __init__(self, session: SnowflakeSession, root: str) -> None:
@@ -119,10 +110,10 @@ class StageFileSystemHandler(ChunkedFileHandler):
 
     def _read_mode(self) -> str:
         key = (getattr(self._session.connection, 'account', None), self._stage)
-        with _ranged_lock:
-            if key not in _ranged_stages:
-                _ranged_stages[key] = self._probe()
-            return _ranged_stages[key]
+        with _read_modes_lock:
+            if key not in _read_modes:
+                _read_modes[key] = self._probe()
+            return _read_modes[key]
 
     def _probe(self) -> str:
         root = _stage_join(self._stage, '.kumo-preflight', uuid.uuid4().hex)
