@@ -1,9 +1,8 @@
 # Databricks Jobs
 
 `databricks.yml` is an Asset Bundle with two jobs on a single-node job
-cluster, a GPU node with the GPU ML runtime by default. Each task is a `spark_python_task` running a job script with its
-flags as `parameters`; the cluster's `spark_env_vars` hold only MLflow's own
-settings.
+cluster. Each task runs a job script as a `spark_python_task`, with its flags
+as `parameters`.
 
 - **`kumo_train`** runs `fit_job.py` on the `users`, `items` and `orders`
   tables (each prefixed with `table_prefix`) in `<catalog>.<schema>` inside
@@ -33,13 +32,8 @@ settings.
    - **Runtime:** Databricks Runtime 17.3 LTS ML or later: the GPU flavour
      (`17.3.x-gpu-ml-scala2.13`) on a GPU node such as `g5.xlarge`, or the
      CPU flavour (`17.3.x-cpu-ml-scala2.13`) on a node type with local NVMe
-     disks such as `m5d.xlarge`. These runtimes already carry a torch that
-     kumo-core accepts, so pip keeps the runtime's torch, torchvision,
-     MLflow and cryptography; leave torch out of the requirements file.
-     kumo-engine accepts pyarrow 16 through 24, so the runtime's pyarrow
-     (19 on 17.3) is kept too. On 16.4 LTS ML, whose torch 2.6 is
-     older than kumo-core needs, pip replaces torch and breaks the
-     preinstalled torchvision.
+     disks such as `m5d.xlarge`. pip keeps the runtime's torch, MLflow and
+     pyarrow; leave torch out of the requirements file.
 2. Replace the `<...>` placeholders in `databricks.yml` (or pass
    `--var catalog=...`). `artifact_root`, `query`, `model_name`,
    `predictions_table`, `table_prefix`, `experiment` and `on_error` have
@@ -73,10 +67,6 @@ settings.
 
 ## Notes
 
-- **Strict mode.** Both jobs pass `--on-error raise` (variable `on_error`):
-  if MLflow tracking or Unity Catalog registration fails, the task fails after
-  the model or predictions are stored, and `champion` stays where it was.
-
 - **Script, not `python_wheel_task`.** Databricks overrides a custom
   `PYTHONPATH` at driver startup, so a wheel task cannot import `jobs.py`; the
   scripts put their own directory on `sys.path` (from `sys.argv[0]`: a
@@ -92,12 +82,9 @@ settings.
 
 ## Verified
 
-This bundle was deployed and both jobs were run on a single-node cluster
-against synthetic `users`, `items` and `orders` tables, on a GPU ML runtime
-on a `g5.xlarge` (A10G; the fit trained on the GPU): the fit registered a
-new `users_churn` version and moved `champion`, and the score job loaded it and
-wrote the predictions table. `test_job_templates.py` checks the scripts
-locally.
+Deployed and run on a single-node `g5.xlarge` GPU cluster against synthetic
+tables: the fit registered a version and the score job wrote the predictions
+table. `test_job_templates.py` checks the scripts locally.
 
 ## References
 

@@ -5,7 +5,7 @@
 
 import argparse
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from kumoapi.jobs import MetadataField, WriteMode
 from kumoapi.typing import Stype
@@ -22,17 +22,13 @@ from kumo.engine import (
 from kumo.engine.connector import (
     Connector,
     DatabricksConnector,
-    FileConnector,
-    S3Connector,
     SnowflakeConnector,
     connector_for_root,
     is_file_destination,
 )
 
-# Fits a few months of orders; a 30-day window needs about 6 months.
 QUERY = 'PREDICT COUNT(orders.*, 0, 7, days) > 0 FOR EACH users.USER_ID'
-# 'table.COLUMN' names to encode as text: inference reads short text as
-# categorical, and the score job must declare the graph the fit trained on.
+# 'table.COLUMN' names to encode as text
 TEXT_COLUMNS: Sequence[str] = ()
 
 
@@ -113,6 +109,7 @@ def source(args: argparse.Namespace) -> Connector:
 def mlops(args: argparse.Namespace, connector: Connector) -> kumo.MLOps:
     root = ((connector, args.artifact_root)
             if args.artifact_root.startswith('@') else args.artifact_root)
+    tracking: Any = None
     if args.registry == 'mlflow':
         from kumo.engine.integrations.mlflow import MlflowTracking
 
@@ -122,9 +119,8 @@ def mlops(args: argparse.Namespace, connector: Connector) -> kumo.MLOps:
 
         tracking = SnowflakeTracking(connector,
                                      experiment_name=args.model_name)
-    else:
-        return kumo.MLOps(root, on_error=args.on_error)
-    return kumo.MLOps(root, tracking=tracking, registry=registry(args),
+    return kumo.MLOps(root, tracking=tracking,
+                      registry=registry(args) if tracking else None,
                       on_error=args.on_error)
 
 
@@ -136,11 +132,12 @@ def build_graph(connector: Connector, prefix: str = '') -> Graph:
 
     def table(alias: str, **kwargs: str) -> Table:
         alias = f'{prefix}{alias}'
-        name = {
-            S3Connector: f'{alias}.parquet',
-            FileConnector: f'{alias}.parquet',
-            SnowflakeConnector: alias.upper(),
-        }.get(type(connector), alias)
+        if isinstance(connector, SnowflakeConnector):
+            name = alias.upper()
+        elif isinstance(connector, DatabricksConnector):
+            name = alias
+        else:
+            name = f'{alias}.parquet'
         return Table.from_source_table(connector[name], **kwargs)
 
     orders = table('orders', primary_key='ORDER_ID',
@@ -171,9 +168,9 @@ def load_model(args: argparse.Namespace, cfg: kumo.MLOps) -> Trainer:
 def prediction_output(
         args: argparse.Namespace,
         connector: Connector) -> Optional[PredictionOutputConfig]:
-    if not args.predictions_table:
-        return None
     path = args.predictions_table
+    if not path:
+        return None
     return PredictionOutputConfig(
         connector, path=path,
         write_mode=(WriteMode.OVERWRITE if is_file_destination(

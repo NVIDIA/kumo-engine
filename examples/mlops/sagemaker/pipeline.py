@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Upsert a SageMaker Pipeline (SageMaker Python SDK v3) that fits and scores
-with kumo-engine; see README.md."""
+"""Upsert a SageMaker Pipeline that fits and scores; see README.md."""
 
 import argparse
 import os
@@ -25,10 +24,10 @@ def build_pipeline(
     fit_instance_type: str,
     score_instance_type: str,
     alias: str,
-    query: Optional[str] = None,
-    model_name: str = 'users-churn',
-    table_prefix: str = '',
-    on_error: str = 'raise',
+    query: Optional[str],
+    model_name: str,
+    table_prefix: str,
+    on_error: str,
 ) -> Any:
     from sagemaker.core.processing import (
         ProcessingInput,
@@ -41,12 +40,8 @@ def build_pipeline(
     from sagemaker.train.configs import Compute, OutputDataConfig, SourceCode
     from sagemaker.train.model_trainer import ModelTrainer
 
-    # sagemaker 3 checks an explicit execution role client-side for VPC
-    # network-interface and CloudWatch rights this pipeline does not use;
-    # SageMaker still checks the role when it starts each job.
+    # the SDK's client-side role check wants VPC rights this does not use
     os.environ.setdefault('SAGEMAKER_VALIDATE_ROLE', 'false')
-    # SageMaker's own files (the SDK's training drivers, job output) go to
-    # a sibling of the write-once artifact root, not inside it.
     bucket, _, prefix = artifact_root.removeprefix('s3://').rstrip(
         '/').partition('/')
     sagemaker_prefix = '/'.join(filter(None, [prefix.rpartition('/')[0],

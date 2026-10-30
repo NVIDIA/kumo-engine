@@ -1,26 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Experimental: register fit_job.py/score_job.py as Snowflake ML Jobs with
-one Task each (snowflake-ml-python 2.6, preview API); see README.md."""
+"""Experimental: register the fit and score jobs as Snowflake Tasks; see
+README.md."""
 
 import argparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 PAYLOAD = Path(__file__).resolve().parent.parent
-JOBS = {
-    'train': {
-        'entrypoint': 'fit_job.py',
-        'schedule': 'USING CRON 0 2 * * 0 UTC',
-        'timeout_ms': 24 * 3600 * 1000,
-    },
-    'score': {
-        'entrypoint': 'score_job.py',
-        'schedule': 'USING CRON 0 3 * * * UTC',
-        'timeout_ms': 6 * 3600 * 1000,
-    },
-}
+JOBS = (
+    ('train', 'fit_job.py', 'USING CRON 0 2 * * 0 UTC', 24),
+    ('score', 'score_job.py', 'USING CRON 0 3 * * * UTC', 6),
+)
 
 
 def task_sql(*, task_name: str, warehouse: str, schedule: str,
@@ -48,8 +40,7 @@ def register(session: Any, *, compute_pool: str, stage: str, database: str,
              predictions_table: str = 'USERS_CHURN_PREDICTIONS',
              table_prefix: str = '',
              on_error: str = 'raise') -> Dict[str, str]:
-    r"""Returns each task's state: a task that was started before it was
-    replaced is resumed; a new one is suspended."""
+    r"""Returns each task's state; a replaced started task is resumed."""
     from snowflake.ml.jobs import MLJobDefinition
 
     flags = [
@@ -59,19 +50,15 @@ def register(session: Any, *, compute_pool: str, stage: str, database: str,
         f'--table-prefix={table_prefix}', '--on-error', on_error,
         '--scratch-dir', '/tmp/kumo'
     ]
-    job_args = {
-        'train': flags,
-        'score': [*flags, '--predictions-table', predictions_table],
-    }
     tasks = {}
-    for kind, job in JOBS.items():
+    for kind, entrypoint, schedule, hours in JOBS:
         definition = MLJobDefinition.register(
             str(PAYLOAD),
             compute_pool,
             stage,
             session=session,
             name=f'KUMO_{kind.upper()}',
-            entrypoint=str(job['entrypoint']),
+            entrypoint=entrypoint,
             pip_requirements=requirements,
             external_access_integrations=external_access_integrations,
             query_warehouse=warehouse,
@@ -85,10 +72,11 @@ def register(session: Any, *, compute_pool: str, stage: str, database: str,
         session.sql(
             task_sql(
                 task_name=name, warehouse=warehouse,
-                schedule=str(job['schedule']),
-                timeout_ms=int(job['timeout_ms']),
+                schedule=schedule, timeout_ms=hours * 3600 * 1000,
                 execute_ml_job_sql=definition.to_sql(
-                    job_args=job_args[kind], use_async=False),
+                    job_args=(flags if kind == 'train' else [
+                        *flags, '--predictions-table', predictions_table
+                    ]), use_async=False),
             )).collect()
         if started:
             session.sql(f'ALTER TASK {name} RESUME').collect()

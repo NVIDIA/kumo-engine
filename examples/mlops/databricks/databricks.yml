@@ -2,8 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Train and daily score jobs for kumo-engine; see README.md.
-
 bundle:
   name: kumo-engine-users-churn
 
@@ -34,10 +32,10 @@ variables:
     description: requirements.txt for kumo-engine's dependencies; see README.md
     default: /Volumes/<catalog>/<schema>/<volume>/wheels/requirements.txt
   spark_version:
-    description: Databricks Runtime 17.3 LTS ML or later, for example 17.3.x-gpu-ml-scala2.13 (or 17.3.x-cpu-ml-scala2.13 on a CPU node)
+    description: Databricks Runtime 17.3 LTS ML or later
     default: <dbr_version>
   node_type_id:
-    description: a GPU node type, for example g5.xlarge (or a CPU node type with local NVMe disks, such as m5d.xlarge)
+    description: GPU node type, e.g. g5.xlarge
     default: <node_type>
   experiment:
     description: MLflow experiment (workspace path) for train and score runs

@@ -1,9 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Score with the champion model, or the one ``--model-path`` names:
-``python score_job.py --artifact-root ROOT --source SOURCE [...]``; see
-README.md."""
+"""Score with the champion or ``--model-path`` model; see README.md."""
 
 import os
 import sys
