@@ -317,7 +317,7 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
     monkeypatch.setattr(snowflake, '_now',
                         lambda: STARTED + timedelta(seconds=90))
     tags = {'kumo.kind': 'fit', 'kumo.task_type': 'regression',
-            'kumo.tune_metric': 'mae'}
+            'kumo.tune_metric': 'mae', 'kumo.entity': 'ents'}
     start = RunRecord(name='fit', tags=tags, description=f'`{QUERY}`',
                       started=STARTED)
     tracking = _tracking()
