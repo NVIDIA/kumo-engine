@@ -790,3 +790,20 @@ def test_a_full_refit_names_the_holdout_summaries_before_it():
     assert _unlogged(summaries, {'test_auroc': 0.7}, refit_full=True) == (
         Scalar('before_refit/brier', 0.2, role='model'),
         Scalar('label/rows', 9.0), Note('notes', _REFIT_FULL))
+
+
+def test_a_prediction_names_its_entity_and_when_its_labels_mature():
+    from kumo.engine._tracking import _labels_mature
+
+    trained = SimpleNamespace(query=QUERY, task_type='regression')
+    model = SimpleNamespace(registered_model=None, registered_alias=None,
+                            manifest=SimpleNamespace(
+                                parents=SimpleNamespace(training_table=trained),
+                                holdout=SimpleNamespace(window=[0, 7, 7, 'days'],
+                                                        counts=None),
+                                tracking=None))
+
+    tags = prediction_record(PREDICTION_MANIFEST, model=model).tags
+    assert (tags['kumo.entity'], tags['kumo.labels_mature']) == (
+        'ents', '2024-05-06')
+    assert _labels_mature(PREDICTION_MANIFEST, None) is None

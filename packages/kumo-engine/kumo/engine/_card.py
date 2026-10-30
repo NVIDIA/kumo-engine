@@ -41,8 +41,11 @@ def headline(kind: str, metrics: Mapping[str, float], tags: Mapping[str, str],
             parts.append(f"psi {number(metrics['drift/psi'])} vs training")
         if 'pred/rows' in metrics:
             as_of = tags.get('kumo.as_of')
-            parts.append(f"{number(metrics['pred/rows'])} rows"
+            parts.append(f"{number(metrics['pred/rows'])} "
+                         f"{tags.get('kumo.entity') or 'rows'}"
                          + (f' as of {as_of}' if as_of else ''))
+        if tags.get('kumo.labels_mature') and not realized:
+            parts.append(f"labels mature {tags['kumo.labels_mature']}")
         if metrics.get('pred/skipped_share'):
             parts.append(f"{metrics['pred/skipped_share']:.1%} skipped")
     problems = int(tags.get('kumo.data_warnings') or 0)

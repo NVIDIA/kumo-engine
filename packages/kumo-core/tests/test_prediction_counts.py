@@ -269,3 +269,16 @@ def test_recommendations_count_items_and_top_scores_across_workers(tmp_path):
         scores, holdout.edges['top_score'])
     assert logged['drift/ks'] == Scalar(
         'drift/ks', score_drift(total, holdout)['ks'])
+
+
+def test_forecast_horizons_are_named_by_their_window():
+    counts = Counts({'target': (0.0, 1.0)})
+    count_predictions(counts, TaskType.FORECASTING, prob=None, pred=None,
+                      target_pred=np.array([0.5, 2.0]), columns=[],
+                      horizon=np.array([0, 1]))
+
+    names = [name for name in _by_name(prediction_summaries(
+        counts, threshold=None, baseline=None, timeframe=(0, 7, 7, 'days')))
+        if name.startswith('pred/histogram/predicted, ')]
+    assert names == ['pred/histogram/predicted, days 0–7',
+                     'pred/histogram/predicted, days 7–14']

@@ -308,6 +308,7 @@ def prediction_record(manifest: 'PredictionManifest',
                         getattr(trained, 'task_type', None))
     as_of = _as_of(manifest)
     timings = manifest.timings
+    window = getattr(getattr(model_manifest, 'holdout', None), 'window', None)
     return run_record(
         RunSpec(
             kind='prediction',
@@ -326,6 +327,8 @@ def prediction_record(manifest: 'PredictionManifest',
                 'bundle_id': manifest.parents.model.id,
                 'prediction_id': manifest.id,
                 'as_of': as_of,
+                'entity': entity(getattr(trained, 'query', None)),
+                'labels_mature': _labels_mature(manifest, window),
                 **prediction_parents(manifest),
                 'fit_run_id': fit_run_id(model_manifest),
                 **registered_parents(model),
@@ -337,7 +340,7 @@ def prediction_record(manifest: 'PredictionManifest',
             },
             inputs=fit_inputs(manifest),
             summaries=(*_prediction_summaries(
-                manifest, holdout_counts(model_manifest)), *summaries),
+                manifest, holdout_counts(model_manifest), window), *summaries),
             error=None if error is None else format_error(error),
         ))
 
@@ -398,17 +401,40 @@ def _as_of(manifest: 'PredictionManifest') -> str:
     return dates[0] if len(dates) == 1 else f'{dates[0]}..{dates[-1]}'
 
 
+def _labels_mature(manifest: 'PredictionManifest',
+                   window: Optional[Sequence[Any]]) -> Optional[str]:
+    r"""The date (UTC) the latest anchor's labels are all known: the anchor
+    plus the target ``window``'s end and, for a forecast, its last
+    horizon's steps; None without anchors or a window."""
+    import pandas as pd
+
+    anchors = manifest.prediction_table.anchors
+    if not window or not anchors:
+        return None
+    _, end, step, unit = window
+    stats = (manifest.stats or {}).get('predictions')
+    arrays = getattr(stats, 'counts', None) or {}
+    last = max((int(name.removeprefix('TARGET_PRED_h'))
+                for name in arrays.get('arrays', {})
+                if name.startswith('TARGET_PRED_h')), default=1)
+    latest = max(_utc(anchor) for anchor in anchors)
+    return (latest + pd.DateOffset(**{unit: end + (last - 1) * step})
+            ).date().isoformat()
+
+
 def _utc(text: str) -> datetime:
     moment = datetime.fromisoformat(text)
     return (moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else
             moment.astimezone(timezone.utc))
 
 
-def _prediction_summaries(manifest: 'PredictionManifest',
-                          baseline: Any) -> List['Summary']:
+def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
+                          window: Optional[Sequence[Any]] = None
+                          ) -> List['Summary']:
     r"""``pred/rows``, ``pred/skipped_share`` and a note of the rows not
     scored; the scores' summaries from their exact counts, with their drift
-    from ``baseline``, the holdout's."""
+    from ``baseline``, the holdout's, and a forecast's horizons named by
+    their target ``window``."""
     from kumo_core.prediction_counts import prediction_summaries
     from kumo_core.score_counts import Counts
     from kumo_core.summaries import Note, Scalar
@@ -431,7 +457,8 @@ def _prediction_summaries(manifest: 'PredictionManifest',
         summaries += prediction_summaries(
             Counts.from_dict(stats.counts),
             threshold=manifest.scoring.binary_classification_threshold,
-            baseline=baseline)
+            baseline=baseline, timeframe=None if window is None else tuple(
+                window))
     return summaries
 
 

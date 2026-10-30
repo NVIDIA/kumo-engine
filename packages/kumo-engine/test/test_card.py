@@ -34,6 +34,14 @@ def test_a_prediction_headline_leads_with_its_watch_numbers():
     assert _card.headline('prediction', metrics, tags, {}) == (
         'realized auroc 0.7 · psi 0.031 vs training · 10,000 rows as of '
         '2026-10-29 · 1.2% skipped · 1 data problem · v6 kumo-demo-churn')
+    unlabelled = {name: value for name, value in metrics.items()
+                  if not name.startswith('realized/')}
+    assert _card.headline('prediction', unlabelled, {
+        **tags, 'kumo.entity': 'users',
+        'kumo.labels_mature': '2026-11-05'}, {}) == (
+        'psi 0.031 vs training · 10,000 users as of 2026-10-29 · labels '
+        'mature 2026-11-05 · 1.2% skipped · 1 data problem · v6 '
+        'kumo-demo-churn')
     assert _card.headline('prediction', {}, {}, {}) == 'prediction'
     long = _card.headline('prediction', {}, {'kumo.error': 'x' * 200}, {})
     assert len(long) == _card.HEADLINE_CHARS and long.endswith('x…')

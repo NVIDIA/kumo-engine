@@ -761,9 +761,10 @@ def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
                     model_metrics(result), registry)
 
 
-def _forecast_timeframe(workflow: Any) -> Optional[Tuple[int, int, int, str]]:
-    r"""A forecast's target window, step and unit, to name its horizons."""
-    if workflow.query.task_type != 'forecasting':
+def _target_window(workflow: Any) -> Optional[Tuple[int, int, int, str]]:
+    r"""A temporal query's target window, the step between a forecast's
+    horizons and their unit; None for a static query."""
+    if not workflow.query.query.get_all_target_aggregations():
         return None
     offset = workflow.query.query.get_combined_date_offset_range()
     start, end = int(offset.start or 0), int(offset.end)
@@ -1325,7 +1326,7 @@ class Trainer:
                   evaluation_summaries(
                       task_type, result.published_counts, threshold,
                       class_names(result.best_trainer.target_encoder),
-                      _forecast_timeframe(workflow))),
+                      _target_window(workflow))),
                 *at_k_summaries(result.metrics)), result.metrics,
                 refit_full=fit_mode == 'refit_full'),
         )
@@ -1352,7 +1353,8 @@ class Trainer:
                 task_type=task_type,
                 holdout_path=holdout_path,
                 holdout_truncated=holdout_truncated,
-                holdout_counts=holdout_counts),
+                holdout_counts=holdout_counts,
+                holdout_window=_target_window(workflow)),
             deps=deps,
         )
 

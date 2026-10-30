@@ -204,7 +204,7 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 - Snowflake names are upper-case identifiers: `<MODEL>_FIT_<YYYYMMDD_HHMMSS>` and `AS_OF_<YYYYMMDD>_V<version>_<MODEL>` (`_2` for a repeat). Finished Snowflake runs cannot change, so `score_drift` and `evaluate` add `<prediction>_DRIFT` and `<prediction>_EVAL` runs.
 
 **The card.** Each run's description (the Overview on MLflow, `run_card.md` on Snowflake) starts with a card.
-- Line 1 is the run's status and watch numbers. For a fit: the tuned holdout metric, data problems, the model version, the number of trials and the task. For a prediction: realized quality, `psi` against training, rows and date, skipped share and the model version.
+- Line 1 is the run's status and watch numbers. For a fit: the tuned holdout metric, data problems, the model version, the number of trials and the task. For a prediction: realized quality, `psi` against training, the entities scored and their date, when their labels mature (tag `kumo.labels_mature`, until `evaluate` logs realized quality), skipped share and the model version.
 - Then the model and the fit run that trained it, data problems, small tables, where things are, and the run's files.
 - Write your own notes below the card's last line ("Notes below this line are kept"). Editing above it stops kumo-engine updating that card; the run is then tagged `kumo.card_frozen`.
 
@@ -226,7 +226,7 @@ A histogram table has a row per bin with `from` and `to` (the end bins are open)
 **Tags and datasets.**
 - Every run: `kumo.kind`, `kumo.engine_version`.
 - Fit: `kumo.task_type`, `kumo.tune_metric`, `kumo.snapshot_id`, `kumo.bundle_id`, `kumo.bundle_uri`, `kumo.model_name`, `kumo.model_version`, `kumo.best_trial`, and `kumo.data_warnings`, the number of data problems the card lists.
-- Prediction: `kumo.prediction_id`, `kumo.as_of`, `kumo.bundle_id`, `kumo.fit_run_id`, `kumo.model_name`, `kumo.model_version`, and `kumo.output_uri` or `kumo.output_table`. After `score_drift`: `kumo.drift_previous`; after `evaluate`: `kumo.labels_snapshot_id`.
+- Prediction: `kumo.prediction_id`, `kumo.as_of`, `kumo.entity`, `kumo.labels_mature` (temporal queries), `kumo.bundle_id`, `kumo.fit_run_id`, `kumo.model_name`, `kumo.model_version`, and `kumo.output_uri` or `kumo.output_table`. After `score_drift`: `kumo.drift_previous`; after `evaluate`: `kumo.labels_snapshot_id`.
 - Datasets: the snapshot, then each source table, at their real locations; after `evaluate`, the labels snapshot (context `labels`). A prediction of a model its fit logged lists that model under "Logged models", Type Input.
 
 **Finding runs.** Keys with a `/` or `.` need backticks:

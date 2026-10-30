@@ -43,6 +43,7 @@ def write_provenance(
     tracking: Optional[TrackingRef] = None,
     dependencies: Optional[List[Dependency]] = None,
     holdout_counts: Optional[Dict[str, Any]] = None,
+    holdout_window: Optional[Tuple[int, int, int, str]] = None,
 ) -> None:
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
 
@@ -51,7 +52,9 @@ def write_provenance(
     holdout = None if holdout_counts is None or fit_mode == 'refit_full' else (
         HoldoutStats(truncated=holdout_truncated,
                      rows=holdout_rows(holdout_counts), columns={},
-                     counts=holdout_counts))
+                     counts=holdout_counts,
+                     window=None if holdout_window is None else list(
+                         holdout_window)))
     write_manifest(
         bundle_dir / PROVENANCE_FILE,
         ModelManifest(

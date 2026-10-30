@@ -109,9 +109,10 @@ def test_multiclass_test_summaries_count_every_holdout_row(graph):
 
 
 def test_forecast_test_summaries_are_exact_per_horizon(graph):
-    _, summaries, holdout = _fit(
+    result, summaries, holdout = _fit(
         graph, 'PREDICT SUM(events.V, 0, 7, days) FORECAST 3 TIMEFRAMES '
         'FOR EACH ents.ID')
+    assert result.manifest.holdout.window == [0, 7, 7, 'days']
 
     horizon = holdout.groupby(['ENTITY', 'ANCHOR_TIMESTAMP'])[
         'TIMESTAMP'].rank(method='first').astype(int)

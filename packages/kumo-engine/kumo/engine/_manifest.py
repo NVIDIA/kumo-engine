@@ -437,6 +437,9 @@ class HoldoutStats(Record):
     # `kumo_core.score_counts.Counts.to_dict()` of the test scores, the
     # bins and counts a prediction run's scores are compared with.
     counts: Optional[Dict[str, Any]] = omit_none()
+    # A temporal query's target window: start, end, the step between a
+    # forecast's horizons, and their unit.
+    window: Optional[List[Any]] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)

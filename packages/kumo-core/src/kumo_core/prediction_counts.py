@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
 import numpy as np
-from kumo_core.evaluation_counts import _horizons, horizon_label
+from kumo_core.evaluation_counts import Timeframe, _horizons, horizon_label
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.score_drift import axis, drift_column, score_drift
 from kumo_core.summaries import Note, Scalar, Series, Summary, Table
@@ -140,7 +140,9 @@ def _column(counts: Counts, name: str, axis: str, values: Any) -> None:
 
 
 def prediction_summaries(counts: Counts, *, threshold: Optional[float],
-                         baseline: Optional[Counts]) -> List[Summary]:
+                         baseline: Optional[Counts],
+                         timeframe: Optional[Timeframe] = None
+                         ) -> List[Summary]:
     r"""``pred/histogram`` of each score column, of only the `TOP_CLASSES`
     most predicted classes, and of each forecast horizon; ``pred/summary``,
     the mean, minimum and maximum of the score that drift is measured on;
@@ -149,7 +151,9 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
     ``pred/item_frequency``, ``pred/item_coverage`` and
     ``pred/top_1pct_items_share``; and ``drift/psi``, ``drift/ks`` and
     ``drift/wasserstein`` against ``baseline``, the training holdout's
-    counts, when it counted the same score on the same bins."""
+    counts, when it counted the same score on the same bins. A forecast's
+    horizons are named by their window in ``timeframe``, as the holdout's
+    are."""
     summaries: List[Summary] = []
     scores = [name for name in counts.extents if name in _SCORES]
     columns = [name for name in counts.extents if name not in _SCORES]
@@ -166,7 +170,7 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
     summaries += [
         counts.summary(name, 'target', 'pred/histogram/predicted, ' +
                        horizon_label(int(name.removeprefix('TARGET_PRED_h'))
-                                     - 1))
+                                     - 1, timeframe))
         for name in counts.arrays if name.startswith('TARGET_PRED_h')
     ]
     score = drift_column(counts)
