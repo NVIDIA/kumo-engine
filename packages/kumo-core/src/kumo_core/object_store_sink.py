@@ -6,7 +6,6 @@ import os
 import posixpath
 import shutil
 from abc import ABC, abstractmethod
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
 
@@ -145,7 +144,7 @@ class ObjectStoreSinkBackend(ABC):
                                           identity=export_id or str(files),
                                           file_type=kind,
                                           convert_csv=storage.convert_csv)
-        return f'{self.scheme}://{output}'
+        return self._uri(output)
 
     def publish_model(
         self,
@@ -171,13 +170,12 @@ class ObjectStoreSinkBackend(ABC):
                 f"Publishing a model to {self.provider} needs a destination "
                 f"path. Set output_path on the ModelExportConfig.")
 
-        filesystem, destination = self._destination(connector, path)
-        destination = destination.rstrip('/')
+        filesystem, destination = self.filesystem(connector, path)
         upload_bundle(filesystem, destination, bundle_dir)
         return PublishedModel(
             name=posixpath.basename(destination),
             version=destination,
-            uri=f'{self.scheme}://{destination}',
+            uri=self._uri(destination),
             metadata=dict(metadata),
         )
 
@@ -204,14 +202,16 @@ class ObjectStoreSinkBackend(ABC):
                 f"was published to. Reuse the output_path from the export "
                 f"config.")
 
-        filesystem, source = self._destination(connector, path)
-        source = source.rstrip('/')
+        filesystem, source = self.filesystem(connector, path)
         if not download_bundle(filesystem, source, local_dir):
             raise ValueError(
-                f"Nothing is published at {self.scheme}://{source}. Check the "
+                f"Nothing is published at {self._uri(source)}. Check the "
                 f"path the model was exported to.")
         return PublishedModel(name=posixpath.basename(source), version=source,
-                              uri=f'{self.scheme}://{source}')
+                              uri=self._uri(source))
+
+    def _uri(self, path: str) -> str:
+        return f'{self.scheme}://{path}'
 
     def _write(self, filesystem: FileSystem, frame: pd.DataFrame, path: str,
                export_id: Optional[str] = None) -> str:
@@ -233,12 +233,12 @@ class ObjectStoreSinkBackend(ABC):
                        kind)
             with filesystem.open_output_stream(f'{directory}/_SUCCESS'):
                 pass
-            return f'{self.scheme}://{directory}/'
+            return self._uri(f'{directory}/')
         if not path.casefold().endswith(f'.{kind}'):
             path += f'.{kind}'
         _prepared(filesystem, posixpath.dirname(path))
         _write_one(filesystem, frame, path, kind)
-        return f'{self.scheme}://{path}'
+        return self._uri(path)
 
     def _occupied(self, filesystem: FileSystem, directory: str,
                   marker: Optional[str]) -> bool:
@@ -259,7 +259,7 @@ class ObjectStoreSinkBackend(ABC):
                 if reader.readall().decode('utf-8') == marker:
                     return True
         raise ValueError(
-            f"Output directory '{self.scheme}://{directory}/' already "
+            f"Output directory '{self._uri(directory)}/' already "
             f"contains data from another export. Choose an empty destination "
             f"path.")
 
@@ -392,11 +392,7 @@ class _ArrowExportFiles:
 
 
 class FilesystemSink(ObjectStoreSinkBackend):
-    """The object-store file writers over any sink's ``filesystem()``, for
-    the file paths of a sink that also writes tables: paths in, bare
-    resolved paths out."""
-    scheme = 'filesystem'
-
+    """The object-store file writers over any sink's ``filesystem()``."""
     def __init__(self, sink: Any) -> None:
         self._sink = sink
         self.provider = type(sink).__name__
@@ -405,19 +401,5 @@ class FilesystemSink(ObjectStoreSinkBackend):
         filesystem, path = self._sink.filesystem(connector, coordinate)
         return filesystem, path + ('/' if coordinate.endswith('/') else '')
 
-    def _bare(self, uri: str) -> str:
-        return uri.removeprefix(f'{self.scheme}://')
-
-    def write_table(self, *args, **kwargs):
-        return self._bare(super().write_table(*args, **kwargs))
-
-    def write_files(self, *args, **kwargs):
-        return self._bare(super().write_files(*args, **kwargs))
-
-    def publish_model(self, *args, **kwargs):
-        published = super().publish_model(*args, **kwargs)
-        return replace(published, uri=self._bare(published.uri))
-
-    def fetch_model(self, *args, **kwargs):
-        fetched = super().fetch_model(*args, **kwargs)
-        return replace(fetched, uri=self._bare(fetched.uri))
+    def _uri(self, path: str) -> str:
+        return path
