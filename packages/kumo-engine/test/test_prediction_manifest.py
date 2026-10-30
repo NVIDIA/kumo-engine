@@ -172,7 +172,7 @@ def test_mlops_stores_the_run_after_its_export(graph, classifier, tmp_path):
     assert copy['location'] == str(tmp_path / 'root' / 'predictions' /
                                    result.id)
     assert [o['destination']['location'] for o in copy['outputs']] == [
-        str(tmp_path / 'out' / 'preds' / result.id)
+        str(tmp_path / 'out' / 'preds' / result.id), str(stored)
     ]
 
     off = kumo.MLOps(artifact_root=str(tmp_path / 'off'), store={'model'})
@@ -185,7 +185,7 @@ def test_mlops_runs_record_their_exact_score_counts(graph, classifier,
                                                     tmp_path, monkeypatch):
     from kumo_core.prediction_counts import psi
     from kumo_core.score_counts import PROBABILITY_EDGES, Counts
-    from kumo_core.summaries import Histogram, Scalar
+    from kumo_core.summaries import Dataset, Histogram, Scalar, Tag
 
     _, snapshot = graph
     trainer, table = classifier
@@ -227,6 +227,12 @@ def test_mlops_runs_record_their_exact_score_counts(graph, classifier,
         'pred/positive_rate', frame['TARGET_PRED'].mean())
     assert logged['drift/score_psi'].value == pytest.approx(
         psi(histogram(frame['True_PROB']), histogram(holdout)))
+    output = str(tmp_path / 'root' / 'predictions' / result.id / 'predictions')
+    assert logged['kumo.output_uri'] == Tag('kumo.output_uri', output)
+    assert [summary.source['location']
+            for summary in recorder.records[0].summaries
+            if isinstance(summary, Dataset)
+            and summary.context == 'output'] == [output]
 
 
 @pytest.mark.parametrize('on_error', ['warn', 'raise'])

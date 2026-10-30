@@ -131,7 +131,7 @@ def store(result: Any, manifest: Optional[PredictionManifest],
           settings: Any) -> Optional[PredictionManifest]:
     r"""Copy the run's outputs and manifest to
     ``<root>/predictions/<id>/<artifact>/``; returns the manifest, which
-    records where."""
+    records where, the copies among its outputs."""
     from kumo_core.train.artifact_manifest import load_prediction_selection
 
     from kumo.engine.trainer.output_config import PredictionOutputConfig
@@ -144,6 +144,14 @@ def store(result: Any, manifest: Optional[PredictionManifest],
         base = f'predictions/{result.id}'
         manifest = settings.locate(result._manifest_path, PredictionManifest,
                                    base) or manifest
+        stored = [
+            PredictionOutput(artifact=name, destination=destination_record(
+                settings.root.connector,
+                settings.root.location(f'{base}/{name}'))) for name in names
+        ]
+        if manifest is not None:
+            manifest = replace(manifest,
+                               outputs=[*(manifest.outputs or []), *stored])
         result._export(
             PredictionOutputConfig(settings.root.connector, output_paths={
                 name: settings.root.location(f'{base}/{name}/')
@@ -152,6 +160,8 @@ def store(result: Any, manifest: Optional[PredictionManifest],
     except Exception as error:
         raise RuntimeError(f"Could not store prediction run {result.id} in "
                            f"the artifact root: {error}") from error
+    if manifest is not None:
+        write(result, manifest)
     return manifest
 
 
