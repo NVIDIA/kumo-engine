@@ -4,6 +4,7 @@
 
 import json
 import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -109,3 +110,40 @@ def test_all_platforms_require_validation_and_release_approval():
     assert JOBS['kitmaker']['environment'] == 'kumo-engine-release'
     for job in ['attach-to-release', 'kitmaker']:
         assert JOBS[job]['if'] == "${{ github.event_name == 'release' }}"
+
+
+@pytest.mark.parametrize(('before', 'after', 'accepted'), [
+    (0., .0049, True),
+    (0., .005, True),
+    (0., .0051, False),
+    (1000., 1000.0051, False),
+])
+def test_publication_scores_use_the_absolute_user_margin(
+        before, after, accepted):
+    root = WORKFLOW.parents[2]
+    workflow = yaml.safe_load(
+        (root / ('.github/workflows/kumo-engine-wheel-smoke.yml')).read_text())
+    action = yaml.safe_load(
+        (root / ('.github/actions/engine-gpu-smoke/action.yml')).read_text())
+    call = next(step['with'] for step in workflow['jobs']['smoke']['steps']
+                if step.get('uses') == './.github/actions/engine-gpu-smoke')
+    defaults = action['inputs']
+    atol = call.get('reload-atol',
+                    defaults.get('reload-atol', {}).get('default', '0.00001'))
+    options = dict(
+        atol=float(atol), rtol=0., before_decisions=[[True]],
+        after_decisions=[[True]],
+        qualify=str(call.get('qualify',
+                             defaults['qualify']['default'])).lower() == 'true',
+        report_numeric_drift=str(
+            call.get(
+                'report-numeric-drift',
+                defaults['report-numeric-drift']['default'])).lower() == 'true')
+    compare = runpy.run_path(
+        str(root / ('packages/kumo-engine/test/wheel_gpu_smoke.py'))
+    )['compare_predictions']
+    if accepted:
+        assert compare([[before]], [[after]], **options)['within_tolerance']
+    else:
+        with pytest.raises(ValueError, match='exceeds'):
+            compare([[before]], [[after]], **options)

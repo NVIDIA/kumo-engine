@@ -14,6 +14,12 @@ inputs:
   qualify:
     description: Measure numerical differences without accepting a smoke pass
     default: 'false'
+  report-numeric-drift:
+    description: Report score drift while keeping decisions and outputs strict
+    default: 'false'
+  reload-atol:
+    description: Absolute limit for enforced repeat and reload score comparisons
+    default: '0.00001'
 runs:
   using: composite
   steps:
@@ -107,6 +113,8 @@ runs:
       env:
         REPETITIONS: ${{ inputs.repetitions }}
         QUALIFY: ${{ inputs.qualify }}
+        REPORT_NUMERIC_DRIFT: ${{ inputs.report-numeric-drift }}
+        RELOAD_ATOL: ${{ inputs.reload-atol }}
         CUDA_VISIBLE_DEVICES: '0'
         OMP_NUM_THREADS: '4'
         MKL_NUM_THREADS: '4'
@@ -121,9 +129,12 @@ runs:
         cd "$RUNNER_TEMP/engine-gpu-smoke"
         flags=()
         if [[ "$QUALIFY" == true ]]; then flags+=(--qualify); fi
+        if [[ "$REPORT_NUMERIC_DRIFT" == true ]]; then flags+=(--report-numeric-drift); fi
         "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I runner.py \
           --data-dir "$RUNNER_TEMP/engine-smoke-inputs" \
           --graph-metadata "$RUNNER_TEMP/engine-smoke-inputs/graphs.json" \
           --output-dir "$RUNNER_TEMP/engine-gpu-smoke" \
           --expected-version "$ENGINE_SMOKE_VERSION" \
+          --reload-atol "$RELOAD_ATOL" \
+          --reload-rtol 0 \
           --repetitions "$REPETITIONS" "${flags[@]}"

@@ -112,7 +112,9 @@ platform's `release-version`.
    - runs the shared eight-task GPU check on the finished Linux x86_64 wheel
      with Python 3.12. Installation, CUDA training, prediction, and model reload
      must pass before attachment or publication. The GPU job downloads this
-     build's wheel without rebuilding it. See the [test criteria](testing.md#finished-kumo-engine-wheel);
+     build's wheel without rebuilding it. Its user-selected score margin is
+     0.005 absolute with zero relative tolerance. Weights, labels, and ranks
+     remain exact. See the [test criteria](testing.md#finished-kumo-engine-wheel).
    - attaches the Linux x86_64 and macOS ARM64 wheels to the GitHub release.
 5. **Approve the publication.** The `kitmaker` job waits for approval on the
    `kumo-engine-release` environment. It then checks that the Portal project

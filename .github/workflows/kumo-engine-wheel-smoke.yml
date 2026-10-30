@@ -70,6 +70,7 @@ jobs:
         uses: ./.github/actions/engine-gpu-smoke
         with:
           wheel-path: ${{ runner.temp }}/wheel-smoke-input/*.whl
+          reload-atol: '0.005'
 
       - name: Preserve GPU results and logs
         if: ${{ always() }}

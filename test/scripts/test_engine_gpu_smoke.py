@@ -126,11 +126,29 @@ def test_reload_comparison_measures_drift_and_rejects_unqualified_passes():
                    rtol=0.)['within_tolerance']
     for before, after in (([], []), ([[1.]], [[1., 2.]]), ([[1.]], [[np.inf]])):
         with pytest.raises(ValueError):
-            compare(before, after, atol=1., rtol=1., qualify=True)
+            compare(before, after, atol=.005, rtol=0., qualify=True)
+
+
+def test_report_numeric_drift_keeps_measurements_and_default_enforcement():
+    compare = runner().compare_predictions
+    before, after = [[1., 2.]], [[1.125, 2.25]]
+    options = dict(atol=.005, rtol=0., before_decisions=[[True, False]],
+                   after_decisions=[[True, False]])
+    with pytest.raises(ValueError, match='exceeds'):
+        compare(before, after, **options)
+    measured = compare(before, after, report_numeric_drift=True, **options)
+    assert measured == dict(decisions_equal=True, max_abs_difference=.25,
+                            max_relative_difference=.125,
+                            within_tolerance=False)
+    for invalid in ([], [[1.]], [[np.nan, 2.]], [[np.inf, 2.]]):
+        with pytest.raises(ValueError, match='equal finite'):
+            compare(before, invalid, report_numeric_drift=True, **options)
 
 
 @pytest.mark.parametrize('task', ['binary', 'multiclass', 'multilabel'])
-def test_reload_rejects_changed_labels_even_with_close_scores(task):
+@pytest.mark.parametrize('report_numeric_drift', [False, True])
+def test_reload_rejects_changed_labels_even_with_close_scores(
+        task, report_numeric_drift):
     smoke = runner()
     if task == 'binary':
         before = pd.DataFrame({
@@ -170,8 +188,9 @@ def test_reload_rejects_changed_labels_even_with_close_scores(task):
         smoke.prediction_decisions(task, frame, [10], classes=classes)
         for frame in (before, after)
     ]
-    options = dict(atol=1e-5, rtol=0., before_decisions=decisions[0],
-                   after_decisions=decisions[1])
+    options = dict(atol=.005, rtol=0., before_decisions=decisions[0],
+                   after_decisions=decisions[1],
+                   report_numeric_drift=report_numeric_drift)
     assert smoke.compare_predictions(*values, qualify=True,
                                      **options)['decisions_equal'] is False
     with pytest.raises(ValueError, match='decisions'):
@@ -180,7 +199,9 @@ def test_reload_rejects_changed_labels_even_with_close_scores(task):
 
 @pytest.mark.parametrize('task',
                          ['multilabel_ranking', 'static_link', 'temporal_link'])
-def test_reload_rejects_changed_ranks_even_with_identical_aligned_scores(task):
+@pytest.mark.parametrize('report_numeric_drift', [False, True])
+def test_reload_rejects_changed_ranks_even_with_identical_aligned_scores(
+        task, report_numeric_drift):
     smoke = runner()
     before = pd.DataFrame({
         'ENTITY': [20, 20, 10, 10],
@@ -201,6 +222,7 @@ def test_reload_rejects_changed_ranks_even_with_identical_aligned_scores(task):
     assert decisions[0].tolist() == [[0, 1], [0, 1]]
     np.testing.assert_array_equal(values[0], values[1])
     with pytest.raises(ValueError, match='decisions'):
-        smoke.compare_predictions(*values, atol=0., rtol=0.,
+        smoke.compare_predictions(*values, atol=.005, rtol=0.,
                                   before_decisions=decisions[0],
-                                  after_decisions=decisions[1])
+                                  after_decisions=decisions[1],
+                                  report_numeric_drift=report_numeric_drift)

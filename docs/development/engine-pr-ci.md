@@ -29,16 +29,29 @@ can contain small numeric differences despite identical saved weights.
 The manual qualification fits eight models and repeats prediction and reload
 three times on each retained model. It adds no training block for those repeats.
 Qualification returns `MEASURED`, not a normal CI pass. A normal run has eight
-fits, one prediction/reload cycle, and enforced numeric comparison limits.
+fits and one prediction/reload cycle. PR135 explicitly enables
+`report-numeric-drift`. It records maximum absolute and relative score
+differences for each comparison. Crossing the descriptive 0.00001 value alone
+does not fail this PR check. This reporting policy keeps labels, ranks, model
+state, valid outputs, and completed CUDA work strict.
+
+The shared action defaults to enforced numeric comparison with an absolute
+limit of 0.00001 and zero relative tolerance. PR40 explicitly selects an
+absolute limit of 0.005 and keeps zero relative tolerance. Its reporting input
+stays disabled. The user selected this operational margin on October 29, 2026.
+It is not a statistically established GPU bound. Labels, ranks, and restored
+weights remain exact. Qualification stays separate from the PR135 reporting
+policy.
+
 The [T4 qualification](https://github.com/NVIDIA/kumo-engine/actions/runs/40975805986)
 completed all eight fits and 48 repeat/reload comparisons. Its largest absolute
-difference was 0.00000190735. We use an absolute limit of 0.00001 with zero
-relative tolerance, about 5.2 times that measured maximum. Absolute comparison
-also handles values close to zero. Weights, chosen labels, and ranks stay exact.
-This empirical limit covers the fixed PR172 inputs on Tesla T4 with
-PyTorch 2.15.0 and CUDA 13.2. It does not qualify another device or a
-learning-quality limit. The finished-wheel run passed all eight tasks at
-`2ac62b5`. A complete normal PR run still needs verification.
+difference was 0.00000190735 for the fixed PR172 inputs on Tesla T4 with
+PyTorch 2.15.0 and CUDA 13.2. The earlier finished-wheel run at `2ac62b5` passed
+all eight tasks under the original absolute limit of 0.00001. Those records
+retain their original limit. The new 0.005 setting has local comparison and
+configuration checks; it does not yet have a fresh GPU run. Training metrics
+and numeric prediction drift stay report-only in PR135. The normal PR run at
+`99e9661` passed all eight tasks with that reporting policy.
 This smoke check sets no learning-quality score or baseline requirement.
 
 ## Shared inputs
@@ -73,8 +86,8 @@ parent fixture discovery. A parent process stops the suite at 300 seconds.
 Failures, skips, empty or incomplete selection, timeouts, and elapsed time of
 300 seconds or more return failure. The printed directory retains the pytest
 log, counts, and elapsed time. The local suite requires no GPU or cloud access.
-The complete command passed all nineteen selected cases with no skips in
-0.70 seconds on macOS ARM64 with Python 3.12.13. Setup was excluded.
+The complete command passed all 26 selected cases with no skips in
+0.85 seconds on macOS ARM64 with Python 3.12.13. Setup was excluded.
 
 ## Scope and timing
 
@@ -86,6 +99,16 @@ The existing package suite retains its ordinary behavior tests.
 Twenty minutes remains the preferred full-CI target. The accepted budget is
 about 22 minutes, with a strict under-25-minute guardrail. Those budgets include
 queues, build, installation, input download, execution, and result upload.
+
+The [normal run at `99e9661`](https://github.com/NVIDIA/kumo-engine/actions/runs/40989739702)
+passed all eight tasks with numeric drift set to report-only. It took 18m08s
+from workflow creation at 02:06:28 to finalization at 02:24:36 UTC on October
+30, 2026. The last job ended at 02:24:35. The GPU worker took 365.00 seconds.
+
+The conservative total includes queue time and finalization. This is one
+measured pass. Future durations still depend on setup, cache state, and runner
+conditions.
+
 The earlier 21m17s result belongs to the larger 47-fit implementation. It does
 not establish the timing of this smaller job. GitHub job times and the short
 GPU summary provide the new evidence. Nightly, weekly, and release policies
@@ -101,4 +124,9 @@ run does not pass correctness or timing.
 GitHub caches are scoped by branch. That trusted copied-PR branch could not
 read the compatible native cache saved on the feature branch. The workflow
 now retains a completed native build even when a later GPU check fails.
-A complete normal run with the compatible cache still needs measurement.
+The cached normal attempt at `18598be` also reached the job deadline. Seven
+tasks passed before cancellation during the final temporal-link task. Its
+native build still took 10m33s despite a cache hit. Both attempts remain
+incomplete records. The later `99e9661` run supplies the complete timing pass
+above. This reporting-policy change adds no reference or qualification
+training block.
