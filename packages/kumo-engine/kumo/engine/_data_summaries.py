@@ -189,6 +189,8 @@ def _links(table: Mapping[str, Any],
 def _health(ingest: Mapping[str, Any], columns: Mapping[str, Any],
             relations: Mapping[str, Mapping[str, float]],
             graph_config: Mapping[str, Any]) -> Table:
+    r"""A row per table, then per link, with '' in the columns that apply
+    only to the other kind."""
     duplicates = _by_table(ingest.get('pk_duplicate_counts'), ':')
     null_time = _by_table(ingest.get('pk_null_timestamp_drops'), ':shard-')
     dropped = ingest.get('dropped_rows_counts') or {}
@@ -199,11 +201,11 @@ def _health(ingest: Mapping[str, Any], columns: Mapping[str, Any],
         name = table['table_name']
         rows.append((name, nodes.get(name), len(columns.get(name) or {}),
                      dropped.get(name, 0), duplicates.get(name, 0),
-                     null_time.get(name, 0) if table.get('time_col') else None,
-                     None, None, None, None))
+                     null_time.get(name, 0) if table.get('time_col') else '',
+                     '', '', '', ''))
     for table in tables:
         for fkey, relation in _links(table, relations):
-            rows.append((_link(table, fkey), None, None, None, None, None,
+            rows.append((_link(table, fkey), '', '', '', '', '',
                          *(relation.get(key) for key in (
                              'count', 'src_match_frac', 'dst_match_frac',
                              'fk_lookup_failures'))))
