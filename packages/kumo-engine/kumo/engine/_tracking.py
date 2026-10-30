@@ -433,8 +433,8 @@ class Tracking(Protocol):
     r"""Records one `Trainer.fit` in an experiment tracker.
 
     Calls come from one background thread. `start` gets the fit run's
-    record without metrics, `on_trial` a trial attempt's record so far with
-    the event that updated it, and `finish` the fit run's final record
+    record without metrics, `on_trial` (in a search of several trials) a
+    trial attempt's record so far with the event that updated it, and `finish` the fit run's final record
     (`None` if tracking stopped early, which should end the run as failed).
     Optional members: ``prepare()``, called first on the fit's own thread;
     ``log_metrics(metrics, step)``, series of the fit run as they come (a
@@ -575,15 +575,17 @@ class TrackingSession:
                 **event.params, 'attempt': events[0].params['attempt']
             })
         events.append(event)
-        trial = trial_spec(events)
-        record = run_record(dataclasses.replace(trial, parents={
-            **{name: self.spec.parents.get(name) for name in _TRIAL_PARENTS},
-            **trial.parents
-        }))
-        logged = dataclasses.replace(event,
-                                     metrics=logged_names(event.metrics))
-        self._submit(lambda: self._call(
-            lambda tracker: tracker.on_trial(record, logged)))
+        if self._search is not None and not self._search.single:
+            trial = trial_spec(events)
+            record = run_record(dataclasses.replace(trial, parents={
+                **{name: self.spec.parents.get(name)
+                   for name in _TRIAL_PARENTS},
+                **trial.parents
+            }))
+            logged = dataclasses.replace(event,
+                                         metrics=logged_names(event.metrics))
+            self._submit(lambda: self._call(
+                lambda tracker: tracker.on_trial(record, logged)))
         series = None if self._search is None else self._search.on(event)
         if series is not None:
             metrics, step = logged_names(series[0]), series[1]

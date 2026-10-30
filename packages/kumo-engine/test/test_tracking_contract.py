@@ -497,7 +497,8 @@ def test_adapter_records_the_same_runs(adapter, tmp_path):
     assert gaps(expected, adapter.observe(), adapter) == []
 
 
-def test_adapter_records_a_single_trial_fit_epoch_by_epoch(adapter):
+def test_adapter_records_a_single_trial_fit_epoch_by_epoch_without_trials(
+        adapter):
     plan = {**CONTEXT.model_plan,
             'training_job': {'tune_metric': 'mae', 'num_experiments': 1}}
     events = [EVENTS[0], *_epochs(1, (0.5, 0.4), (0.3, 0.35)), EVENTS[3],
@@ -507,6 +508,7 @@ def test_adapter_records_a_single_trial_fit_epoch_by_epoch(adapter):
                           'train_loss': ((1, 0.5), (2, 0.3)),
                           'val_mae': ((1, 0.4), (2, 0.35))})
 
+    assert list(expected) == [FIT]
     assert gaps(expected, adapter.observe(), adapter) == []
 
 
