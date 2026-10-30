@@ -597,7 +597,7 @@ def test_system_metrics_skip_a_failed_log_and_stop_after_repeated_ones(
         metrics._thread.join(10)
 
     reading = ({'system/cpu': 1.0}, 0)
-    assert batches == [[reading] * 10, *[[reading]] * (
+    assert batches == [[reading] * 2, *[[reading]] * (
         1 + integration._SYSTEM_METRICS_FAILURES)]
     assert caplog.text.count('Could not log system metrics') == 1
     assert 'ConnectionError: blip' in caplog.text
@@ -612,7 +612,7 @@ def test_system_metrics_sample_every_second_unless_the_environment_says(
     batches = []
     with integration._SystemMetrics(batches.append) as metrics:
         pass
-    assert batches == []  # fewer than 10 readings
+    assert batches == []  # fewer than 2 readings
     assert metrics._interval == 1.0
     monkeypatch.setenv('MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL', '2')
     assert integration._SystemMetrics(batches.append)._interval == 2.0

@@ -1145,16 +1145,17 @@ _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
 
 _Reading = Tuple[Mapping[str, float], int, int]  # values, second, time
 _FLUSH_SECONDS = 10.0
-_MIN_READINGS = 10
+_MIN_READINGS = 2
 
 
 class _SystemMetrics:
     r"""Samples MLflow's CPU, disk, network and GPU monitors on its own
     thread every second (``MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL`` sets
     the interval) and hands ``log`` the readings, each with its elapsed
-    second as step and its time, every 10 seconds once there are 10, so a
-    run shorter than that logs none and no run's metrics draw as a bar. (MLflow's own ``SystemMetricsMonitor``
-    logs with process-wide credentials.)"""
+    second as step and its time, every 10 seconds and once more when the
+    run ends, so a run with fewer than 2 readings logs none and no metric
+    draws as a bar. (MLflow's own ``SystemMetricsMonitor`` logs with
+    process-wide credentials.)"""
 
     def __init__(self, log: Callable[[List[_Reading]], None],
                  interval: Optional[float] = None) -> None:
