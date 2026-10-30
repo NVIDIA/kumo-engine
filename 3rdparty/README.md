@@ -16,7 +16,7 @@ cargo fetch --locked --manifest-path packages/diskgraph/Cargo.toml
 python packages/diskgraph/scripts/generate_artifact_manifest.py --repo-root packages/diskgraph --check packages/diskgraph/third_party/artifact-manifest.json
 ```
 
-The DiskGraph synchronization workflow reconciles the inventory's Rust components with the mirrored artifact manifest and regenerates the notice in the synchronization PR. Existing records are kept, crate versions that left both artifacts are removed, and new crate versions are derived from their root legal files in Cargo's source cache. Run the same steps after populating the cache:
+After DiskGraph dependency changes, reconcile the inventory's Rust components with the artifact manifest and regenerate the notice in the same PR. Existing records are kept, crate versions that left both artifacts are removed, and new crate versions are derived from their root legal files in Cargo's source cache. Run these steps after populating the cache:
 
 ```bash
 python scripts/refresh_diskgraph_notice_inventory.py
@@ -31,4 +31,4 @@ After reviewing an inventory or policy change, regenerate the notice:
 python scripts/gen_third_party.py --output THIRD-PARTY.txt
 ```
 
-The fat-wheel builder validates collected wheel identities, native members, and legal metadata before generating its artifact-specific notice. Its GloVe input is separately hash-pinned. Set `THIRD_PARTY_NOTICE` only to supply a reviewed alternative.
+The `kumo-engine` wheel builder validates collected wheel identities, native members, and legal metadata before generating its artifact-specific notice. GloVe remains a separate dependency. See the [release guide](../docs/development/releasing-kumo-engine.md). Set `THIRD_PARTY_NOTICE` only to supply a reviewed alternative.

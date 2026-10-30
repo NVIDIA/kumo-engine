@@ -187,8 +187,9 @@ class SubgraphCollector(Explainer):
 
                     dst_pkey = batch[dst_table_name].get('pkey')
                     if dst_pkey is not None:
-                        df.loc[index.cpu().numpy(), fkey_name] = dst_pkey[
-                            local_dst_node_id.cpu().numpy()]
+                        _set_column_values(
+                            df, fkey_name, index.cpu().numpy(),
+                            dst_pkey[local_dst_node_id.cpu().numpy()])
 
             tf: TensorFrame = batch[table_name].tf
             feat_df = _tf_to_df(tf, table_name, feature_store)
@@ -1084,6 +1085,21 @@ def requires_grad(step_output: dict[str, Tensor]) -> bool:
     if 'score' in step_output and step_output['score'].requires_grad:
         return True
     return False
+
+
+def _set_column_values(
+    df: pd.DataFrame,
+    column: str,
+    rows: Any,
+    values: Any,
+) -> None:
+    r"""Sets ``df.loc[rows, column] = values``. DiskGraph attaches primary
+    keys as an object array; a numeric column is widened to ``object``
+    first, as pandas did implicitly with a deprecation warning before
+    pandas 3 rejects the assignment."""
+    if getattr(values, 'dtype', None) == object and df[column].dtype != object:
+        df[column] = df[column].astype(object)
+    df.loc[rows, column] = values
 
 
 def _tf_to_df(

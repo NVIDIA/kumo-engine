@@ -29,7 +29,7 @@ DEFAULT_DISKGRAPH_MANIFEST = (DISKGRAPH_ROOT / "third_party" /
 DEFAULT_DISKGRAPH_PROVENANCE = (DISKGRAPH_ROOT / "third_party" /
                                 "source-provenance.json")
 DEFAULT_NOTICE = REPO_ROOT / "THIRD-PARTY.txt"
-# Matches the notice step of .github/workflows/sync-diskgraph.yml.
+# Refresh the inventory and notice after DiskGraph dependency changes.
 DISKGRAPH_REFRESH_COMMANDS = (
     "cargo fetch --locked --manifest-path packages/diskgraph/Cargo.toml && "
     "python scripts/refresh_diskgraph_notice_inventory.py && "
@@ -49,6 +49,7 @@ FIRST_PARTY_DISTRIBUTIONS = {
     "kumo-core",
     "kumo-databricks",
     "kumo-gcs",
+    "kumo-adls",
     "kumo-pql",
     "kumo-s3",
     "kumo-snowflake",

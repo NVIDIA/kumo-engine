@@ -8,8 +8,7 @@ identity through `kumo_core`'s own process-wide `PrincipalStore`, addressed by
 name (`kumo_core.sources.principals.IdentityRef = Union[str, Named]`). That's
 a registry, and a caller who wants to pass credentials directly would
 otherwise have to register them under a name first and then pass the name --
-exactly the indirection this package avoids elsewhere (see "Object model" in
-the package README).
+exactly the indirection this package avoids elsewhere.
 
 `Identity` (and its five per-provider subclasses below) hides that: a caller
 builds e.g. `SnowflakeIdentity(account=..., username=..., password=...)` and
@@ -46,6 +45,8 @@ from typing import Optional
 
 from kumo_core.sources.principals import store
 from kumoapi.data_source import (
+    ADLSIdentityConfig,
+    AzureCloud,
     BigQueryIdentityConfig,
     CreateIdentityArgs,
     DatabricksAuthenticationKind,
@@ -321,3 +322,18 @@ class DatabricksIdentity(Identity):
             authentication=authentication,
         )
         super().__init__(config, credentials)
+
+
+class ADLSIdentity(Identity):
+    """An Azure application authenticated through a projected workload token.
+
+    ``AZURE_FEDERATED_TOKEN_FILE`` supplies the assertion. No secrets are
+    stored. Omit the connector identity to use Azure's ambient credentials.
+    Identity probing validates token acquisition, not storage permissions.
+    """
+
+    def __init__(self, *, tenant_id: str, client_id: str,
+                 cloud: AzureCloud = AzureCloud.PUBLIC) -> None:
+        super().__init__(
+            ADLSIdentityConfig(tenant_id=tenant_id, client_id=client_id,
+                               cloud=cloud))

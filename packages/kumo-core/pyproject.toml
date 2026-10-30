@@ -48,7 +48,7 @@ dependencies = [
   # `packages/kumo-core/tests/test_custom_sql_golden.py`.
   "sqlglot==30.17.*",
   "torch>=2.7.0,<3",
-  "pytorch-lightning==2.6.5",
+  "pytorch-lightning==2.6.6",
   "psutil==7.2.2",
   "tabulate==0.8.10",
   "tensorboard>=2.16.2,<3",
@@ -68,7 +68,7 @@ documentation = "https://kumo.ai/docs"
 # `uv sync --all-packages --extra cpu` applies a same-named extra to every
 # workspace member that defines one -- a bare "cpu" extra here would pull
 # in faiss-cpu alongside whatever faiss build root's own install chose.
-faiss-cpu = ["faiss-cpu==1.14.2"]
+faiss-cpu = ["faiss-cpu==1.14.3"]
 faiss-gpu = ["faiss-gpu==1.14.3"]
 text = ["kumo-glove-6b-50d>=1.0.0,<2"]
 test = [

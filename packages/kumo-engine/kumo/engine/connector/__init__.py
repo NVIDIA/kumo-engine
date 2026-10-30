@@ -15,16 +15,16 @@ Provider argument lists mirror the equivalent cloud SDK classes
 (`kumoai/connector/{snowflake,s3,gcs,bigquery,databricks}_connector.py`)
 minus the server-registry-only fields (`name`, `description`, `project_id`,
 `_response`) and the `_bind_connector` round-trip. See `kumo.engine.connector.base`.
-
-For `FileConnector`, see the package README's "Local files" section.
 """
 
+from kumo.engine.connector.adls import ADLSConnector
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.bigquery import BigQueryConnector
 from kumo.engine.connector.databricks import DatabricksConnector
 from kumo.engine.connector.file import FileConnector
 from kumo.engine.connector.gcs import GCSConnector
 from kumo.engine.connector.identity import (
+    ADLSIdentity,
     BigQueryIdentity,
     DatabricksIdentity,
     GCSIdentity,
@@ -37,6 +37,8 @@ from kumo.engine.connector.snowflake import SnowflakeConnector
 from kumo.engine.connector.source_table import SourceTable, SQLSourceTable
 
 __all__ = [
+    "ADLSConnector",
+    "ADLSIdentity",
     "Connector",
     "FileConnector",
     "SnowflakeConnector",

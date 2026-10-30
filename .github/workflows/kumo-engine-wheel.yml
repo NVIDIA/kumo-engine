@@ -2,17 +2,17 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Builds the x86_64 `kumo-engine` wheel (packages/kumo-engine/scripts/
-# build_wheel.sh).
+# Builds Linux x86_64 and macOS ARM64 `kumo-engine` wheels with
+# packages/kumo-engine/scripts/build_wheel.sh.
 #
 # Release flow:
 #   1. Change the root VERSION file and run scripts/stamp_version.py, merge it.
 #   2. Create and publish a GitHub release tagged `kumo-engine-v<version>`.
 #   3. This workflow builds the wheels at that tag and attaches them to the
-#      release once `check-requirements` shows the x86_64 wheel installs from
+#      release once `check-requirements` shows each wheel installs from
 #      PyPI, alone and with each extra, on every Python version it claims.
 #   4. Once the `kumo-engine-release` environment approves it, `kitmaker`
-#      publishes the attached x86_64 wheel to PyPI and pypi.nvidia.com through
+#      publishes the attached wheels to PyPI and pypi.nvidia.com through
 #      Kitmaker (scripts/kitmaker_release.py).
 # A manual run only builds the wheel (as `<version>+<commit>`) and stores it as
 # a workflow artifact. The wheel bundles kumo-api, kumo-pql, kumo-core and
@@ -53,8 +53,13 @@ jobs:
         include:
           - arch: x86_64
             runner: ubuntu-22.04
+            platform: manylinux_2_34_x86_64
+          - arch: arm64
+            runner: macos-15
+            platform: macosx_14_0_arm64
           # - arch: aarch64
           #   runner: ubuntu-24.04-arm
+          #   platform: manylinux_2_34_aarch64
     runs-on: ${{ matrix.runner }}
 
     steps:
@@ -88,6 +93,7 @@ jobs:
       # cargo-zigbuild shells out to `zig`; without it on PATH it falls back
       # to `python -m ziglang`, which needs the ziglang package installed.
       - name: Install zig
+        if: ${{ runner.os == 'Linux' }}
         run: pip install ziglang
 
       - name: Cache Stanford's glove.6B.zip
@@ -101,9 +107,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
           IS_RELEASE: ${{ github.event_name == 'release' }}
           WHEEL_ARCH: ${{ matrix.arch }}
+          WHEEL_PLATFORM: ${{ matrix.platform }}
+          MACOSX_DEPLOYMENT_TARGET: '14.0'
         run: |
           test "$(uname -m)" = "${WHEEL_ARCH}"
-          args=(--platform-tag "manylinux_2_34_${WHEEL_ARCH}")
+          args=()
+          if [[ "${WHEEL_PLATFORM}" == manylinux_* ]]; then
+            args+=(--platform-tag "${WHEEL_PLATFORM}")
+          fi
           if [ "${IS_RELEASE}" = "true" ]; then
             args+=(--release)
           fi
@@ -120,6 +131,14 @@ jobs:
 
   check-requirements:
     needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: x86_64-manylinux_2_34
+          - arch: arm64
+            platform: aarch64-apple-darwin
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
@@ -130,7 +149,7 @@ jobs:
       - name: Download wheel
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: kumo-engine-wheel-x86_64-${{ github.sha }}
+          name: kumo-engine-wheel-${{ matrix.arch }}-${{ github.sha }}
           path: dist
 
       - name: Install uv
@@ -139,9 +158,12 @@ jobs:
           enable-cache: false
 
       - name: Resolve the wheel and each extra from PyPI
+        env:
+          WHEEL_PLATFORM: ${{ matrix.platform }}
+          MACOSX_DEPLOYMENT_TARGET: '14.0'
         run: >-
           python3 packages/kumo-engine/scripts/check_pypi_requirements.py
-          dist/kumo_engine-*.whl --platform x86_64-manylinux_2_34
+          dist/kumo_engine-*.whl --platform "${WHEEL_PLATFORM}"
 
   attach-to-release:
     needs: [build, check-requirements]
@@ -167,6 +189,14 @@ jobs:
   kitmaker:
     needs: [attach-to-release]
     if: ${{ github.event_name == 'release' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: manylinux_2_34_x86_64
+          - arch: arm64
+            platform: macosx_14_0_arm64
     runs-on: linux-amd64-cpu8
     timeout-minutes: 180
     environment: kumo-engine-release
@@ -181,7 +211,7 @@ jobs:
       - name: Download wheel
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: kumo-engine-wheel-x86_64-${{ github.sha }}
+          name: kumo-engine-wheel-${{ matrix.arch }}-${{ github.sha }}
           path: dist
 
       - name: Publish through Kitmaker
@@ -191,7 +221,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          WHEEL_PLATFORM: ${{ matrix.platform }}
         run: >-
           python3 scripts/kitmaker_release.py --project-id 6903
-          --project kumo-engine --platform manylinux_2_34_x86_64
+          --project kumo-engine --platform "${WHEEL_PLATFORM}"
           --repo "${REPO}" --tag "${RELEASE_TAG}" dist/kumo_engine-*.whl

@@ -4,7 +4,7 @@
 r"""Local, in-process relational deep learning with Kumo.
 
 No `Backend` protocol, no `set_backend`, no remote/hosted mode, no
-hosted project -- see "Object model" in the package README.
+hosted project.
 There is nothing to call analogous to the cloud SDK's
 `kumoai_studio.init(url=..., api_key=...)`: connectors and tables are constructed
 and threaded through directly (`Table`, `Graph`, `Connector` subclasses), and
@@ -28,6 +28,8 @@ from kumoapi.table import Column
 from kumo.engine._version import __version__
 from kumo.engine.config import configure
 from kumo.engine.connector import (
+    ADLSConnector,
+    ADLSIdentity,
     BigQueryConnector,
     BigQueryIdentity,
     Connector,
@@ -57,6 +59,8 @@ from kumo.engine.trainer import (
 )
 
 __all__ = [
+    "ADLSConnector",
+    "ADLSIdentity",
     "__version__",
     "configure",
     "EmbeddingModelStore",

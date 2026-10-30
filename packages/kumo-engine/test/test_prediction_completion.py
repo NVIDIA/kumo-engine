@@ -57,7 +57,7 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
                         lambda *a, **kw: None)
     monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
                         lambda *_: None)
-    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda n:
+    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda n, accelerator=None:
                         (None, ) * n)
     # Real process startup/error propagation is covered by test_prediction_workers;
     # run the same worker functions here so the real writers/manifests compose.

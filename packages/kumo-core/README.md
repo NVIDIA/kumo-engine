@@ -58,6 +58,20 @@ Materialization accepts the selected graph in `TrainingWorkflowRequest`, a `Task
 
 Use `kumo_core.types` for value types, `kumo_core.training` for workflow contracts, and `kumo_core.train` for the numerical stack. These initializers expose deliberate lazy APIs without loading PyTorch during package discovery.
 
+`MIPSFaiss` uses PyTorch's `MIPSBruteForce` for CPU tensors on macOS, avoiding
+Faiss CPU search and its OpenMP runtime conflict with PyTorch.
+Brute-force search materializes the full query-by-key score matrix, so large
+CPU workloads need additional memory.
+Linux CPU and CUDA tensors retain their Faiss search paths.
+
+For MPS embeddings on Apple Silicon, `MIPSFaiss` uses Faiss's Metal backend.
+It requires a Metal-enabled Faiss build, provided by `faiss-cpu==1.14.3` on
+macOS ARM64. Keys are copied into the Metal index once; queries pass through
+CPU float32 arrays, and scores and indices return to the original MPS device.
+Scores retain the input dtype, exclusions are applied on MPS, and query
+gradients are computed with PyTorch. This retrieval path does not establish
+support for the full training pipeline on MPS.
+
 ## Development and validation
 
 Run commands from the repository worktree after installing the normal Kumo development environment with `make install-venv`. `make test-kumo-core` runs the complete package-owned CPU suite, and `make check-kumo-core` runs Flake8's Pyflakes rules across the full package, ty across the migrated capability tree, and package metadata validation. The package remains temporarily excluded from the root YAPF/isort/full-Flake8 formatting policy pending the planned repository-wide Ruff migration.

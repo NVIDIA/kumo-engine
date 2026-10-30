@@ -23,7 +23,7 @@ during a transfer.
 | `parquet` | [`packages/kumo-core/tests/sources/parquet`](../packages/kumo-core/tests/sources/parquet) | Covers reads, writes, columns, row counts, versions, partitions, cleanup after failure, and limits on file paths. |
 | `s3` | [`packages/kumo-s3/tests`](../packages/kumo-s3/tests) | Covers credentials, errors, sessions, regions, service addresses, connection probes, imports, and downloads that preserve files on failure. |
 | `gcs` | [`packages/kumo-gcs/tests`](../packages/kumo-gcs/tests) | Covers downloads, object versions, credential renewal, concurrent transfers, cleanup, billing configuration, and imports. |
-| `adls` | [`test/io_utils/fsutil/adls`](../test/io_utils/fsutil/adls) | Covers file listing, limits on Parquet preview reads, missing paths, read-only mode, and storage addresses. |
+| `adls` | [`packages/kumo-adls/tests`](../packages/kumo-adls/tests), [`test/io_utils/fsutil/adls`](../test/io_utils/fsutil/adls) | Provider identity binding, CSV/Parquet ingestion, rooted output, version checks, URI fencing, and filesystem preview behavior. |
 | `bigquery` | [`packages/kumo-bigquery/tests`](../packages/kumo-bigquery/tests) | Covers queries, streamed and staged reads, versions, row counts, errors, cleanup, and rules that enable cloud tests. |
 | `databricks` | [`packages/kumo-databricks/tests`](../packages/kumo-databricks/tests) | Covers catalogs, versions, queries, reads, write helpers, and limits on cloud file downloads called CloudFetch. |
 | `snowflake` | [`packages/kumo-snowflake/tests`](../packages/kumo-snowflake/tests) | Covers catalogs, types, queries, staged reads, concurrent downloads, retries, cleanup, write helpers, and hiding sensitive values. |
@@ -35,7 +35,7 @@ need separate tests.
 The selected tests also have these limits:
 
 - Snowflake tests use fake download bytes without decoding them as Parquet. It includes local output-writer and Snowflake Container Services (SPCS) tests. Native ingestion runs in `shared-sql`.
-- ADLS tests the code that presents cloud storage as a filesystem. It does not test connector identity or writes.
+- ADLS provider tests use offline Azure responses for identities, reads, and writes. Filesystem tests cover preview and addressing; live credentials and Azure permissions remain separate checks.
 - Parquet tests do not prove detection of corrupt Parquet data pages or every timestamp conversion.
 - BigQuery tests use fake clients to test rules that enable real cloud tests. Pytest loads the cloud test file, but does not run its cloud tests.
 - The BigQuery, Snowflake, and Databricks groups test their live-test gates with fake credentials and blocked provider imports.
