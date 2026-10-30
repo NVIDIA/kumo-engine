@@ -493,7 +493,7 @@ def test_tracking_records_the_run_and_never_changes_it(graph, classifier,
     assert recorder.records == [prediction_record(
         tracked.manifest, model=trainer.result,
         summaries=_scoring_summaries(tracked.manifest, settings, snapshot))]
-    assert any(getattr(summary, 'name', None) == 'graph/tables'
+    assert any(getattr(summary, 'name', None) == 'data/health'
                for summary in recorder.records[0].summaries)
     assert 'tracker down' in caplog.text
 

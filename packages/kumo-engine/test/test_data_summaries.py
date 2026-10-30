@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from kumo_core.summaries import Dataset, Scalar, Table, Tag
+from kumo_core.summaries import Dataset, Note, Table, Tag
 
 import kumo.engine as kumo
 from kumo.engine._data_summaries import (
@@ -60,34 +60,42 @@ def test_summaries_match_the_snapshot_and_training_table(scratch):
         graph, 'PREDICT COUNT(orders.*, 0, 7, days) > 0 FOR EACH users.USER_ID'
     ).generate_training_table(snapshot)
 
-    splits = {summary.name: summary.value
-              for summary in split_summaries(table.staging_dir)}
-    for split in ('train', 'val', 'test'):
+    splits, = split_summaries(table.staging_dir)
+    assert splits.brief and splits.columns == (
+        'split', 'rows', 'entities≈', 'positive rate')
+    for split, row in zip(('train', 'val', 'test'), splits.rows):
         seeds = pd.read_parquet(table.staging_dir / f'{split}_seeds')
-        assert splits[f'data/{split}/rows'] == len(seeds)
-        assert splits[f'data/{split}/positive_rate'] == pytest.approx(
-            seeds['TARGET1'].mean())
+        assert row[:2] == (split, len(seeds))
+        assert row[3] == pytest.approx(seeds['TARGET1'].mean())
 
-    summaries = snapshot_summaries(Path(snapshot.index_path),
-                                   snapshot.graph_config)
+    summaries = {s.name: s for s in snapshot_summaries(
+        Path(snapshot.index_path), snapshot.graph_config)}
+    assert set(summaries) == {'data/health', 'data/columns'}
     matched = orders['USER_ID'] < 300
-    relation = 'graph/edges/orders_USER_ID_to_users_USER_ID'
-    scalars = {s.name: s.value for s in summaries if isinstance(s, Scalar)}
-    assert scalars == {
-        'graph/rows/users': 300, 'graph/rows/orders': 6000,
-        f'{relation}/count': matched.sum(),
-        f'{relation}/src_match_frac': pytest.approx(matched.mean()),
-        f'{relation}/dst_match_frac': pytest.approx(
-            orders.loc[matched, 'USER_ID'].nunique() / 300),
-        f'{relation}/fk_lookup_failures': (~matched).sum(),
-        **{f'graph/{table}/{name}': 0 for table in ('users', 'orders')
-           for name in ('duplicate_pks', 'dropped_rows', 'null_time_dropped')},
-        'graph/tables': 2, 'graph/edge_types': 1}
-    assert not [s for s in summaries if isinstance(s, Tag)]
-    stats, = (s for s in summaries if isinstance(s, Table))
+    health = summaries['data/health']
+    assert [dict(zip(health.columns, row)) for row in health.rows] == [
+        {'table or link': 'users', 'rows': 300, 'columns': 2,
+         'dropped rows': 0, 'duplicate keys': 0, 'rows without time': None,
+         'edges': None, 'source rows matched': None,
+         'target rows matched': None, 'failed lookups': None},
+        {'table or link': 'orders', 'rows': 6000, 'columns': 3,
+         'dropped rows': 0, 'duplicate keys': 0, 'rows without time': 0,
+         'edges': None, 'source rows matched': None,
+         'target rows matched': None, 'failed lookups': None},
+        {'table or link': 'orders.USER_ID → users', 'rows': None,
+         'columns': None, 'dropped rows': None, 'duplicate keys': None,
+         'rows without time': None, 'edges': matched.sum(),
+         'source rows matched': pytest.approx(matched.mean()),
+         'target rows matched': pytest.approx(
+             orders.loc[matched, 'USER_ID'].nunique() / 300),
+         'failed lookups': (~matched).sum()}]
+    stats = summaries['data/columns']
+    assert stats.columns[3:] == (
+        'count', 'null rate', 'distinct≈', 'min', 'max', 'mean', 'std',
+        'q25≈', 'q50≈', 'q75≈', 'avg tokens≈', 'max tokens≈', 'top values≈')
     age = next(dict(zip(stats.columns, row)) for row in stats.rows
                if row[:2] == ('users', 'AGE'))
-    assert (age['stype'], age['count'], age['null_rate'], age['min'],
+    assert (age['stype'], age['count'], age['null rate'], age['min'],
             age['max']) == ('numerical', 300, 1 / 300, users['AGE'].min(),
                             users['AGE'].max())
     assert age['mean'] == pytest.approx(users['AGE'].mean())
@@ -139,23 +147,37 @@ def test_data_warnings_name_each_table_that_breaks_a_check(tmp_path):
                     'dst_key': 'USER_ID'}]},
     ]}
 
-    tag, = (s for s in snapshot_summaries(tmp_path, config)
-            if isinstance(s, Tag))
-    assert tag == Tag('kumo.data_warnings', '; '.join([
-        'users: 1 missing or invalid primary keys',
-        'users: 2 duplicate primary keys',
-        'users: 9 rows',
-        'orders: 5.0% missing or invalid time',
-        'orders.AMOUNT: at least 10% invalid values',
-        'orders.USER_ID -> users: 10.0% of orders rows match',
-    ]))
+    summaries = snapshot_summaries(tmp_path, config)
+    assert [s for s in summaries if isinstance(s, (Note, Tag))] == [
+        Note('problems', '`users`: 1 missing or invalid primary keys'),
+        Note('problems', '`users`: 2 duplicate primary keys'),
+        Note('problems', '`users`: only 9 rows'),
+        Note('problems',
+             '`orders`: 5.0% of rows have a missing or invalid time'),
+        Note('problems', '`orders.AMOUNT`: at least 10% invalid values'),
+        Note('problems',
+             'link `orders.USER_ID → users`: 10.0% of `orders` rows match'),
+        Tag('kumo.data_warnings', '6'),
+    ]
 
 
 def test_target_edges_are_even_bins_without_a_histogram(tmp_path):
     target = {'target_min': 0, 'target_percentile_25': 0, 'target_median': 0,
-              'target_percentile_75': 25, 'target_max': 200}
-    (tmp_path / 'split_stats.json').write_text(json.dumps(
-        {'train_table_stats': {'target_distribution': target}}))
+              'target_percentile_75': 25, 'target_max': 200,
+              'target_mean': 30.5}
+    (tmp_path / 'split_stats.json').write_text(json.dumps({
+        'train_table_stats': {'num_train_rows': 80, 'num_entities': 20,
+                              'target_distribution': target},
+        'test_table_stats': {'num_train_rows': 10, 'target_distribution': {
+            'target_mean': 1.5, 'target_min': -1, 'target_max': 9}}}))
 
-    assert target_edges(tmp_path) == tuple(
-        sorted({*(4.0 * i for i in range(51)), 25.0}))
+    edges = tuple(sorted({*(4.0 * i for i in range(51)), 25.0}))
+    assert target_edges(tmp_path) == edges
+    assert split_summaries(tmp_path) == [
+        Table('data/splits', ('split', 'rows', 'mean', 'min', 'max'),
+              (('train', 80, 30.5, 0.0, 200.0), ('test', 10, 1.5, -1.0, 9.0)),
+              brief=True),
+        Note('notes', "Target histograms cut at 50 even bins from the "
+             "training target's minimum to its maximum and its quartiles "
+             "(53 bins)."),
+    ]
