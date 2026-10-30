@@ -562,14 +562,14 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
 
     evaluating = isinstance(report, EvaluationResult)
     manifest = getattr(run, 'manifest', None)
+    model = (None if report.bundle_matches is False else
+             getattr(trainer, 'result', None))
     identity: Mapping[str, Optional[str]] = {
         'kumo.prediction_id': getattr(run, 'id', None),
         'kumo.bundle_id': getattr(run, 'bundle_id', None)}
     label = None
     if manifest is not None:
-        prediction = prediction_record(manifest, model=(
-            None if report.bundle_matches is False else
-            getattr(trainer, 'result', None)))
+        prediction = prediction_record(manifest, model=model)
         identity, label = prediction.tags, prediction.model_label
     platform = getattr(tracking, 'platform', None)
     ref = getattr(run, 'tracking', None)
@@ -579,8 +579,7 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
         kind='monitoring',
         parents={'monitor': 'evaluate' if evaluating else 'drift'},
         summaries=(_evaluation_summaries(
-            report, labels,
-            None if report.bundle_matches is False else _tune_metric(trainer),
+            report, labels, model,
             getattr(getattr(manifest, 'prediction_table', None), 'rows', None))
             if evaluating else _drift_summaries(report, (
                        earlier.run_name if earlier is not None
@@ -644,13 +643,14 @@ def _drift_summaries(report: 'DriftReport',
 
 
 def _evaluation_summaries(result: EvaluationResult, labels: Any,
-                          tune: Optional[str] = None,
+                          model: Any = None,
                           scored: Optional[int] = None) -> List[Summary]:
-    r"""What a tracker logs of ``result``: its metrics as ``realized/<m>``,
-    the ``tune`` metric first, the labelled share, the ``labels`` snapshot
-    (as a dataset when stored) and notes on the realized values, maturity
-    and what is missing; for a task without realized metrics, a note with
-    the run's ``scored`` rows."""
+    r"""What a tracker logs of ``result``: its metrics as ``realized/<m>``
+    and, beside ``model``'s holdout values, as ``realized/metrics``, its
+    tune metric first; the labelled share, the ``labels`` snapshot (as a
+    dataset when stored) and notes on the labels, maturity and what is
+    missing; for a task without realized metrics, a note with the run's
+    ``scored`` rows."""
     from kumo.engine._manifest import artifact_summaries
 
     manifest = getattr(labels, 'manifest', None)
@@ -660,9 +660,11 @@ def _evaluation_summaries(result: EvaluationResult, labels: Any,
         for summary in artifact_summaries(manifest, 'labels')
         if isinstance(summary, Dataset)
         and summary.name == (name or manifest.id)]
+    tune = _tune_metric(model)
     metrics = dict(sorted(((metric, value) for metric, value
                            in result.metrics.items() if value is not None),
                           key=lambda item: item[0] != tune))
+    holdout = _holdout(model)
     summaries: List[Summary] = [
         Tag('kumo.labels_snapshot_id', result.snapshot_id), *datasets,
         *(Scalar(f'realized/{metric}', value)
@@ -679,25 +681,41 @@ def _evaluation_summaries(result: EvaluationResult, labels: Any,
     elif result.labelled_fraction is not None:
         summaries.append(Scalar('realized/labelled_share',
                                 result.labelled_fraction))
-        counts = f'{result.labelled:,} of {result.rows:,} scored rows'
-        text = (f'Realized {_values(metrics)} · '
-                f'{number(result.labelled_fraction * 100)} % labelled '
-                f'({counts})' if metrics else f'Labelled {counts}')
-        summaries.append(Note('notes', text + (
-            f', with labels from {name}' if name else '') + '.'))
+        if metrics:
+            summaries.append(Table(
+                'realized/metrics', ('metric', 'realized', 'holdout'),
+                tuple((metric, value, holdout.get(metric))
+                      for metric, value in metrics.items()), brief=True))
+        summaries.append(Note('notes', (
+            f'{number(result.labelled_fraction * 100)} % labelled '
+            f'({result.labelled:,} of {result.rows:,} scored rows)'
+            + (f', with labels from {name}' if name else '') + '.')))
     if result.matured is False:
         summaries.append(Note('notes', 'Labels are not mature yet: the '
                               'label window ends after the snapshot data.'))
     return summaries + _reason_notes(reasons)
 
 
-def _tune_metric(trainer: Any) -> Optional[str]:
-    path = (getattr(getattr(trainer, 'result', None), 'artifact_paths', None)
+def _tune_metric(model: Any) -> Optional[str]:
+    path = (getattr(model, 'artifact_paths', None)
             or {}).get('resolved_model_plan')
     if not path or not Path(path).is_file():
         return None
     plan = json.loads(Path(path).read_text())
     return (plan.get('training_job') or {}).get('tune_metric')
+
+
+def _holdout(model: Any) -> Dict[str, float]:
+    r"""The shipped ``model``'s holdout metrics: its refit's when it was
+    refit on train and validation data, none when refit on all data."""
+    metrics = getattr(model, 'metrics', None) or {}
+    if getattr(getattr(model, 'manifest', None), 'fit_mode',
+               None) == 'refit_full':
+        return {}
+    prefix = ('test_refit_' if any(name.startswith('test_refit_')
+                                   for name in metrics) else 'test_')
+    return {name.removeprefix(prefix): value
+            for name, value in metrics.items() if name.startswith(prefix)}
 
 
 _REASONS = {'holdout': 'Score drift vs holdout', 'previous':

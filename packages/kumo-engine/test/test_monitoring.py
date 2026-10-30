@@ -624,12 +624,16 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
     name = (f'snapshot-{labels.created_at[:10]}-'
             f"{labels.id.partition('@')[2][:6]}")
     auroc, ap = evaluation.metrics['auroc'], evaluation.metrics['ap']
+    holdout = trainer.result.metrics
     assert evaluated.summaries == (
         Tag('kumo.labels_snapshot_id', snapshots.after.id),
         Scalar('realized/auroc', auroc), Scalar('realized/ap', ap),
         Scalar('realized/labelled_share', 1.0),
-        Note('notes', f'Realized auroc {auroc:.3g} · ap {ap:.3g} · 100 % '
-             f'labelled (60 of 60 scored rows), with labels from {name}.'))
+        Table('realized/metrics', ('metric', 'realized', 'holdout'),
+              (('auroc', auroc, holdout['test_refit_auroc']),
+               ('ap', ap, holdout['test_refit_ap'])), brief=True),
+        Note('notes', '100 % labelled (60 of 60 scored rows), with labels '
+             f'from {name}.'))
 
 
 def test_drift_summaries_log_the_previous_run_and_explain_gaps():
@@ -737,7 +741,9 @@ def test_evaluation_summaries_name_the_labels_snapshot(tmp_path):
     track(result, SimpleNamespace(id='p', bundle_id='b', manifest=None),
           SimpleNamespace(tracking=tracker, on_error='raise'),
           SimpleNamespace(result=SimpleNamespace(
-              artifact_paths={'resolved_model_plan': str(plan)})),
+              artifact_paths={'resolved_model_plan': str(plan)},
+              metrics={'test_auroc': 0.8, 'test_refit_auroc': 0.85,
+                       'val_ap': 0.6})),
           PREDICTED_AT.to_pydatetime(),
           SimpleNamespace(manifest=SnapshotManifest(
               id='g@023b25a5', location='s3://b/snapshots/g/2',
@@ -753,17 +759,24 @@ def test_evaluation_summaries_name_the_labels_snapshot(tmp_path):
             'labels'),
         Scalar('realized/auroc', 0.75), Scalar('realized/ap', 0.5),
         Scalar('realized/labelled_share', 0.75),
-        Note('notes', 'Realized auroc 0.75 · ap 0.5 · 75 % labelled (3 of 4 '
-             'scored rows), with labels from snapshot-2024-06-08-023b25.'),
+        Table('realized/metrics', ('metric', 'realized', 'holdout'),
+              (('auroc', 0.75, 0.85), ('ap', 0.5, None)), brief=True),
+        Note('notes', '75 % labelled (3 of 4 scored rows), with labels from '
+             'snapshot-2024-06-08-023b25.'),
         Note('notes', 'Labels are not mature yet: the label window ends '
              'after the snapshot data.'),
         Note('notes', 'Realized metrics: a metric is undefined for these '
              'labels.'))
 
+    refit_full = SimpleNamespace(metrics={'test_auroc': 0.8},
+                                 manifest=SimpleNamespace(fit_mode='refit_full'))
+    assert _evaluation_summaries(result, None, refit_full)[4] == Table(
+        'realized/metrics', ('metric', 'realized', 'holdout'),
+        (('ap', 0.5, None), ('auroc', 0.75, None)), brief=True)
     assert _evaluation_summaries(replace(
         result, metrics={}, labelled=0, labelled_fraction=0.0), None)[1:] == [
         Scalar('realized/labelled_share', 0.0),
-        Note('notes', 'Labelled 0 of 4 scored rows.'),
+        Note('notes', '0 % labelled (0 of 4 scored rows).'),
         Note('notes', 'Labels are not mature yet: the label window ends '
              'after the snapshot data.'),
         Note('notes', 'Realized metrics: a metric is undefined for these '
