@@ -17,6 +17,7 @@ default = []
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
+diskgraph-runtime = { path = "../diskgraph-runtime" }
 # abi3-py311: build a single stable-ABI (limited API) extension whose
 # floor is CPython 3.11 (the org-wide minimum). One `cp311-abi3` wheel
 # loads unchanged on 3.11, 3.12, 3.13 and 3.14+ — no per-version
@@ -39,8 +40,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 crossbeam-channel = "0.5"
-rand = "0.8"
-memmap2 = "0.9"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 anyhow = { workspace = true }
 tokio = { version = "1.33", features = ["full"] }

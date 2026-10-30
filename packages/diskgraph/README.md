@@ -147,6 +147,13 @@ The base package installs the native extension and bundled standalone ingest
 binary. Use the `kumo` extra only when calling Kumo compiler APIs outside an
 environment that already installs `kumo-api`.
 
+## Native batch runtime
+
+[`diskgraph-runtime`](diskgraph-runtime/README.md) provides reusable index ownership
+and worker-sharded batch generation without Python or transport dependencies. The
+Python binding uses this runtime and converts its batches to Arrow-backed Python
+objects.
+
 ## Contributing notes
 
 ### Error handling and logging conventions (required)
