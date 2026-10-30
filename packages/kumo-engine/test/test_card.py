@@ -15,14 +15,14 @@ def test_a_fit_headline_leads_with_the_tuned_holdout_metric():
             'kumo.task_type': 'binary_classification'}
     params = {'training_job.num_experiments': '3'}
 
-    assert _card.headline('fit', {'auroc': 0.7871, 'ap': 0.5}, tags, params,
+    assert _card.headline('fit', {'test/auroc': 0.7871, 'test/ap': 0.5}, tags, params,
                           QUERY) == (
         'holdout auroc 0.787 · 2 data problems · v6 kumo-demo-churn · best '
         'of 3 trials · binary classification of users')
-    assert _card.headline('fit', {'holdout_loss': 0.25}, {
+    assert _card.headline('fit', {'test/loss': 0.25}, {
         'kumo.tune_metric': 'loss', 'kumo.data_warnings': '0',
         'kumo.error': 'ValueError: stop'}, {}) == (
-            'failed: ValueError: stop · holdout_loss 0.25')
+            'failed: ValueError: stop · holdout loss 0.25')
 
 
 def test_a_prediction_headline_leads_with_its_watch_numbers():
@@ -84,12 +84,12 @@ def test_a_prediction_names_the_model_and_its_fit_run():
 
 
 def test_a_version_headline_leads_with_the_tuned_metric():
-    metrics = {'mae': 0.25, 'before_refit/mae': 0.3, 'holdout_loss': 0.5,
-               'mse': 1.0, 'rmse': 1.0, 'map@10': 0.125}
+    metrics = {'test/mae': 0.25, 'before_refit/mae': 0.3, 'test/loss': 0.5,
+               'test/mse': 1.0, 'test/rmse': 1.0, 'test/map_at_10': 0.125}
     assert _card.version_headline(metrics, 'loss') == (
-        'holdout_loss 0.5 · mae 0.25 · mse 1 · rmse 1')
+        'test/loss 0.5 · test/mae 0.25 · test/mse 1 · test/rmse 1')
     assert _card.version_headline(metrics, 'map@10') == (
-        'map_at_10 0.125 · mae 0.25 · holdout_loss 0.5 · mse 1')
+        'test/map_at_10 0.125 · test/mae 0.25 · test/loss 0.5 · test/mse 1')
 
 
 def test_a_prediction_headline_leads_with_the_tuned_realized_metric():

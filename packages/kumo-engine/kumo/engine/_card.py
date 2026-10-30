@@ -27,11 +27,9 @@ def headline(kind: str, metrics: Mapping[str, float], tags: Mapping[str, str],
     `HEADLINE_CHARS` characters, zero counts left out."""
     parts = [f"failed: {tags['kumo.error']}"] if 'kumo.error' in tags else []
     if kind == 'fit':
-        tune = tags.get('kumo.tune_metric')
-        name = 'holdout_loss' if tune == 'loss' else _key(tune or '')
-        if name in metrics:
-            label = name if name.startswith('holdout') else f'holdout {name}'
-            parts.append(f'{label} {number(metrics[name])}')
+        tune = _key(tags.get('kumo.tune_metric') or '')
+        if f'test/{tune}' in metrics:
+            parts.append(f"holdout {tune} {number(metrics[f'test/{tune}'])}")
     else:
         tuned = f"realized/{_key(tags.get('kumo.tune_metric') or '')}"
         realized = sorted((name for name in metrics
@@ -74,8 +72,8 @@ def version_headline(metrics: Mapping[str, float],
                      tune: Optional[str]) -> str:
     r"""A registered version's metrics line: the tuned metric, then the
     next three holdout metrics."""
-    tuned = 'holdout_loss' if tune == 'loss' else tune
-    names = [name for name in metrics if '/' not in name]
+    tuned = f"test/{_key(tune or '')}"
+    names = [name for name in metrics if name.startswith('test/')]
     names.sort(key=lambda name: name != tuned)
     return ' · '.join(f'{_key(name)} {number(metrics[name])}'
                       for name in names[:4])

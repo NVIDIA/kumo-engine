@@ -155,9 +155,9 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     tested = {name: value for name, value in logged_names(
         result.metrics).items() if not name.startswith(('train/', 'val/'))}
     assert {name for name in metrics
-            if '/' not in name.removeprefix('before_refit/')} == {
+            if name.startswith(('test/', 'before_refit/'))} == {
         *tested, *(summary.name for summary in result._summaries
-                   if isinstance(summary, Scalar) and '/' not in summary.name)}
+                   if isinstance(summary, Scalar) and summary.role == 'model')}
     health = json.loads(mlflow.artifacts.load_text(
         f'{parent.info.artifact_uri}/data/health.json'))
     assert health['data'][0][:2] == ['ents', 400]
@@ -744,7 +744,7 @@ def _fit_with_a_card(tracker, summaries=(), note=None):
     record = RunRecord(
         name='r', tags={'kumo.kind': 'fit', 'kumo.tune_metric': 'mae',
                         'kumo.task_type': 'regression'},
-        metrics={'mae': 0.25}, description=f'`{QUERY}`',
+        metrics={'test/mae': 0.25}, description=f'`{QUERY}`',
         artifacts={PROVENANCE_FILE: '{}'}, summaries=summaries)
     tracker.start(record)
     if note is not None:

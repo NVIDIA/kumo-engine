@@ -205,7 +205,7 @@ def test_metric_and_param_limits(fake, monkeypatch):
     run, = fake._instance.runs.values()
     assert sorted({name for name, _, _ in run['metrics']}) == [
         'TRIAL_1/val/best_mae', 'TRIAL_2_ATTEMPT_2/val/best_mae',
-        'duration_seconds', 'mae'
+        'duration_seconds', 'test/mae'
     ]
     assert run['params']['kumo.dropped_metrics'] == '2'
     assert run['params']['kumo.dropped_params'] == '1'
@@ -322,7 +322,7 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
                       started=STARTED)
     tracking = _tracking()
     tracking.start(start)
-    tracking.finish(replace(start, metrics={'mae': 0.32}, tags={
+    tracking.finish(replace(start, metrics={'test/mae': 0.32}, tags={
         **tags, 'kumo.data_warnings': '1'}, summaries=(
             Note('problems', 'link `ents.ID → users`: 14 % of rows match'),
             Note('locations', 'bundle `models/b/`'),

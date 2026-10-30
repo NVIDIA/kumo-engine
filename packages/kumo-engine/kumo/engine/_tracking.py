@@ -173,11 +173,10 @@ def logged_name(name: str) -> str:
 def logged_names(metrics: Mapping[str, Any],
                  refit_full: bool = False) -> Dict[str, Any]:
     r"""`logged_name` of each metric, and the holdout's ``test_<m>`` as the
-    shipped model's ``<m>`` (``test_loss`` as ``holdout_loss``). After a
-    train-and-validation refit, its ``test_refit_<m>`` are, and the model
-    before it is ``before_refit/<m>``. After a refit on all data (``refit_full``)
-    no holdout describes the shipped model: the last model tested is
-    ``before_refit/<m>``."""
+    shipped model's ``test/<m>``. After a train-and-validation refit, its
+    ``test_refit_<m>`` are, and the model before it is ``before_refit/<m>``.
+    After a refit on all data (``refit_full``) no holdout describes the
+    shipped model: the last model tested is ``before_refit/<m>``."""
     refit = any(name.startswith('test_refit_') for name in metrics)
     named = {}
     for name, value in metrics.items():
@@ -187,10 +186,9 @@ def logged_names(metrics: Mapping[str, Any],
         metric = name.removeprefix('test_')
         latest = metric.startswith('refit_') == refit
         metric = metric.removeprefix('refit_')
-        metric = 'holdout_loss' if metric == 'loss' else metric
         if not latest and refit_full:
             continue
-        named[metric if latest and not refit_full else
+        named[f'test/{metric}' if latest and not refit_full else
               f'before_refit/{metric}'] = value
     return named
 

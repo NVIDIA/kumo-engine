@@ -262,7 +262,7 @@ def test_finish_fit_forwards_publication_details_and_returns_assigned_version(
     assert calls[0][1] == str(bundle)
     assert calls[0][2]['path'] == path
     assert calls[0][2]['location'] == location
-    assert calls[0][2]['metrics'] == {'auroc': .8}
+    assert calls[0][2]['metrics'] == {'test/auroc': .8}
     assert calls[0][2]['metadata']['kumo_bundle_id'] == result.bundle_id
     assert result.published_model is published
     assert result.metrics == original.metrics

@@ -778,15 +778,17 @@ def _target_window(workflow: Any) -> Optional[Tuple[int, int, int, str]]:
 
 def _unlogged(summaries: Sequence[Summary], metrics: Mapping[str, float],
               refit_full: bool = False) -> Tuple[Summary, ...]:
-    r"""``summaries`` without the scalars ``metrics`` already logs, which
-    stay the trainer's own. After a refit on all data no holdout describes
-    the shipped model, so its scalars are ``before_refit/<name>``."""
+    r"""``summaries`` with the model's scalars named as `logged_names`
+    names the holdout's, ``test/<name>``, less those ``metrics`` already
+    logs, which stay the trainer's own. After a refit on all data no
+    holdout describes the shipped model, so its scalars are
+    ``before_refit/<name>``."""
     logged = set(logged_names(metrics, refit_full))
-    if refit_full:
-        summaries = (*(replace(summary, name=f'before_refit/{summary.name}')
-                       if isinstance(summary, Scalar)
-                       and summary.role == 'model' else summary
-                       for summary in summaries), Note('notes', _REFIT_FULL))
+    split = 'before_refit' if refit_full else 'test'
+    summaries = (*(replace(summary, name=f'{split}/{summary.name}')
+                   if isinstance(summary, Scalar) and summary.role == 'model'
+                   else summary for summary in summaries),
+                 *([Note('notes', _REFIT_FULL)] if refit_full else []))
     return tuple(summary for summary in summaries
                  if not (isinstance(summary, Scalar) and summary.name in logged))
 
