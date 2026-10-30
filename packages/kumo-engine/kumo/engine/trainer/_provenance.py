@@ -77,8 +77,7 @@ def parent_model(bundle_dir: Path, bundle_id: Optional[str]
     manifest = read_provenance(bundle_dir)
     if manifest is not None:
         return manifest
-    return None if bundle_id is None else ModelManifest(id=bundle_id,
-                                                        reconstructed=True)
+    return None if bundle_id is None else stub('model', bundle_id)
 
 
 def read_provenance(bundle_dir: Path) -> Optional[ModelManifest]:
