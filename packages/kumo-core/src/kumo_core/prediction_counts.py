@@ -209,7 +209,7 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
     if drift is not None:
         summaries += [Scalar(f'drift/{name}', value)
                       for name, value in drift.items()]
-        summaries.append(Note('notes', _drift_note(counts, score)))
+        summaries.append(Note('drift', _drift_note(counts, score)))
     return summaries
 
 

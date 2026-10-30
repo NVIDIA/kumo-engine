@@ -156,7 +156,7 @@ def test_regression_counts_on_the_target_bins_and_drift():
             for name in ('psi', 'ks', 'wasserstein')} == score_drift(
                 counts, reference)
     assert summaries[-1] == Note(
-        'notes', "Score drift compares `predicted` with the model's holdout "
+        'drift', "Score drift compares `predicted` with the model's holdout "
         "scores at training, on the training target's histogram bins. PSI "
         "groups those bins at the holdout's deciles, into up to 10 groups. "
         'PSI rule of thumb: 0 identical, < 0.1 small, 0.1–0.25 moderate, > '
