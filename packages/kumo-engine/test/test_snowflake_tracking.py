@@ -343,7 +343,7 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
 
     run, = fake._instance.runs.values()
     assert run['artifacts']['run_card.md'] == '\n'.join([
-        'mae 0.32 · 1 data problem · regression of ents',
+        'holdout mae 0.32 · 1 data problem · regression of ents',
         f'`{QUERY}`', '',
         '**Problems:** link `ents.ID → users`: 14 % of rows match', '',
         '**Training data:**', '', '| split | rows |', '| --- | ---: |',
