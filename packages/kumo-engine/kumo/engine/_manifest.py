@@ -47,8 +47,8 @@ def omit_none() -> Any:
 @dataclass(frozen=True)
 class Artifact:
     r"""An artifact a manifest names, stored at ``location``, which tracked
-    runs tag as ``tag``. A dataset is data a run reads, or writes when its
-    ``context`` is ``output``."""
+    runs tag as ``tag`` and name ``label``. A dataset is data a run reads,
+    or writes when its ``context`` is ``output``."""
 
     kind: str
     id: str
@@ -59,6 +59,7 @@ class Artifact:
     version: Optional[str] = None
     version_kind: Optional[str] = None
     context: Optional[str] = None
+    label: Optional[str] = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -184,7 +185,9 @@ class Manifest(Record):
 
     def as_artifact(self, key: str) -> Artifact:
         return Artifact(self.kind, self.id, self.location, self.IS_DATASET,
-                        self.URI_TAG, version=self.id, version_kind='exact')
+                        self.URI_TAG, version=self.id, version_kind='exact',
+                        label=self.created_at and
+                        f"{self.kind.replace('_', '-')}-{self.created_at[:10]}")
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
@@ -249,8 +252,8 @@ def artifact_summaries(manifest: Manifest, context: str,
                   'location': location, 'version': item.version,
                   'version_kind': item.version_kind}
         schema, profile = (details or {}).get(item.id, ({}, {}))
-        summaries.append(Dataset(item.id, source, schema, profile,
-                                 item.context or context))
+        summaries.append(Dataset(item.label or item.id, source, schema,
+                                 profile, item.context or context))
     return summaries
 
 
