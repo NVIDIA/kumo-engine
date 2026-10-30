@@ -132,6 +132,16 @@ def test_a_block_names_the_files_of_tables_moved_for_size():
         '- Moved to files for size: `drift/link_edges.json`.'])
 
 
+def test_the_chart_note_says_what_each_step_is():
+    assert _card.charts({'pred/rows': 5}) == []
+    assert _card.charts({'pred/True_PROB_count_by_score_pct': 1,
+                         'pred/recommendations_by_item_rank': 2}) == [Note(
+        'notes', 'Charts: `pred/True_PROB_count_by_score_pct`: step = score '
+        '× 100 (step 37 = scores 0.37–0.38); '
+        '`pred/recommendations_by_item_rank`: step = item rank '
+        '(1 = most recommended).')]
+
+
 def test_a_prediction_names_the_model_and_its_fit_run():
     assert _card.model_line(MODEL, 'v6-churn', '#/experiments/1/runs/r') == (
         'Scores of `kumo-demo-churn` v6, trained by '
