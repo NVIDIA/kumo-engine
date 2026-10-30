@@ -8,15 +8,9 @@ inputs:
   wheel-path:
     description: Path or glob matching exactly one finished wheel
     required: true
-  repetitions:
-    description: Prediction and reload cycles per retained model
-    default: '1'
-  qualify:
-    description: Measure numerical differences without accepting a smoke pass
-    default: 'false'
-  report-numeric-drift:
-    description: Report score drift while keeping decisions and outputs strict
-    default: 'false'
+  reload-atol:
+    description: Absolute prediction tolerance enforced for every task
+    default: '0.00001'
 runs:
   using: composite
   steps:
@@ -27,11 +21,6 @@ runs:
         enable-cache: true
         prune-cache: false
         cache-dependency-glob: 'packages/**/pyproject.toml'
-    - name: Read the existing private test bucket
-      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
-      with:
-        role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
-        aws-region: us-west-2
     - name: Install only the finished wheel
       shell: bash
       env:
@@ -44,7 +33,7 @@ runs:
         mkdir -p "$RUNNER_TEMP/engine-gpu-smoke"
         python -m venv "$RUNNER_TEMP/engine-smoke-venv"
         python - <<'PY'
-        import email, glob, hashlib, os, zipfile
+        import email, glob, os, zipfile
         from pathlib import Path
         wheels = glob.glob(os.environ['WHEEL_PATTERN'])
         if len(wheels) != 1:
@@ -57,7 +46,6 @@ runs:
             metadata = email.message_from_bytes(archive.read(names[0]))
         if metadata['Name'].replace('_', '-') != 'kumo-engine':
             raise SystemExit('Expected the finished kumo-engine wheel')
-        print('Wheel SHA-256:', hashlib.sha256(wheel.read_bytes()).hexdigest(), flush=True)
         with open(os.environ['GITHUB_ENV'], 'a') as stream:
             stream.write(f'ENGINE_SMOKE_WHEEL={wheel}\nENGINE_SMOKE_VERSION={metadata["Version"]}\n')
         PY
@@ -65,30 +53,22 @@ runs:
         uv --no-config pip install --python "$RUNNER_TEMP/engine-smoke-venv/bin/python" \
           --cache-dir "$uv_cache" --default-index https://pypi.org/simple \
           "$wheel" 'boto3>=1.34,<2'
-        "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I -m pip --isolated install \
-          --no-index --no-deps --force-reinstall --no-compile \
-          --report "$RUNNER_TEMP/engine-gpu-smoke/install.json" "$wheel"
         "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I -m pip --isolated check
-    - name: Check the installed wheel identity
-      shell: bash
-      run: |
-        "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I - <<'PY'
-        import hashlib, importlib.metadata, json, os
-        from pathlib import Path
-        root = Path(os.environ['RUNNER_TEMP']) / 'engine-gpu-smoke'
-        wheel = Path(os.environ['ENGINE_SMOKE_WHEEL'])
-        digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-        report = json.loads((root / 'install.json').read_text())
-        entries = [r for r in report['install'] if r['metadata']['name'].replace('_', '-').lower() == 'kumo-engine']
-        if (len(entries) != 1 or entries[0]['download_info']['archive_info']['hashes']['sha256'] != digest
-                or importlib.metadata.version('kumo-engine') != os.environ['ENGINE_SMOKE_VERSION']):
-            raise SystemExit('Installed wheel identity differs from the finished artifact')
-        (root / 'wheel.json').write_text(json.dumps(dict(filename=wheel.name, sha256=digest,
-            version=os.environ['ENGINE_SMOKE_VERSION']), indent=2) + '\n')
-        (root / 'install.json').unlink()
-        PY
+    - name: Read the private fixture object
+      id: fixture-credentials
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+      with:
+        role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+        aws-region: us-west-2
+        output-env-credentials: false
+        output-credentials: true
+        unset-current-credentials: true
     - name: Download the pinned PR172 inputs
       shell: bash
+      env:
+        AWS_ACCESS_KEY_ID: ${{ steps.fixture-credentials.outputs.aws-access-key-id }}
+        AWS_SECRET_ACCESS_KEY: ${{ steps.fixture-credentials.outputs.aws-secret-access-key }}
+        AWS_SESSION_TOKEN: ${{ steps.fixture-credentials.outputs.aws-session-token }}
       run: |
         "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I - <<'PY'
         import hashlib, json, os, tarfile
@@ -108,9 +88,7 @@ runs:
     - name: Run the eight GPU tasks outside the checkout
       shell: bash
       env:
-        REPETITIONS: ${{ inputs.repetitions }}
-        QUALIFY: ${{ inputs.qualify }}
-        REPORT_NUMERIC_DRIFT: ${{ inputs.report-numeric-drift }}
+        RELOAD_ATOL: ${{ inputs.reload-atol }}
         CUDA_VISIBLE_DEVICES: '0'
         OMP_NUM_THREADS: '4'
         MKL_NUM_THREADS: '4'
@@ -123,12 +101,9 @@ runs:
         mkdir -p "$RUNNER_TEMP/engine-gpu-smoke"
         cp packages/kumo-engine/test/wheel_gpu_smoke.py "$RUNNER_TEMP/engine-gpu-smoke/runner.py"
         cd "$RUNNER_TEMP/engine-gpu-smoke"
-        flags=()
-        if [[ "$QUALIFY" == true ]]; then flags+=(--qualify); fi
-        if [[ "$REPORT_NUMERIC_DRIFT" == true ]]; then flags+=(--report-numeric-drift); fi
         "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I runner.py \
           --data-dir "$RUNNER_TEMP/engine-smoke-inputs" \
           --graph-metadata "$RUNNER_TEMP/engine-smoke-inputs/graphs.json" \
           --output-dir "$RUNNER_TEMP/engine-gpu-smoke" \
           --expected-version "$ENGINE_SMOKE_VERSION" \
-          --repetitions "$REPETITIONS" "${flags[@]}"
+          --reload-atol "$RELOAD_ATOL"

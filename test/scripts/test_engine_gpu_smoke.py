@@ -10,7 +10,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-pytestmark = pytest.mark.agent_local
 RUNNER = (Path(__file__).resolve().parents[2] /
           'packages/kumo-engine/test/wheel_gpu_smoke.py')
 
@@ -114,115 +113,99 @@ def test_links_require_the_complete_catalog_without_repeated_pairs():
             check('static_link', broken, [10], classes=[1, 2])
 
 
-def test_reload_comparison_measures_drift_and_rejects_unqualified_passes():
+def test_reload_tolerance_accepts_boundary_and_rejects_larger_or_invalid_values(
+):
     compare = runner().compare_predictions
-    result = compare([[0., 1.]], [[0., 1.000001]], atol=0., rtol=0.,
-                     qualify=True)
-    assert result['max_abs_difference'] == pytest.approx(1e-6)
-    assert result['within_tolerance'] is False
-    with pytest.raises(ValueError):
-        compare([[0., 1.]], [[0., 1.000001]], atol=0., rtol=0.)
-    assert compare([[0., 1.]], [[0., 1.000001]], atol=2e-6,
-                   rtol=0.)['within_tolerance']
-    for before, after in (([], []), ([[1.]], [[1., 2.]]), ([[1.]], [[np.inf]])):
+    assert compare([[0.]], [[1e-5]])['within_tolerance']
+    for before, after in (
+        ([[0.]], [[np.nextafter(1e-5, np.inf)]]),
+        ([[1.]], [[1.00002]]),
+        ([], []),
+        ([[1.]], [[1., 2.]]),
+        ([[np.nan]], [[1.]]),
+        ([[1.]], [[np.inf]]),
+    ):
         with pytest.raises(ValueError):
-            compare(before, after, atol=1., rtol=1., qualify=True)
+            compare(before, after)
 
 
-def test_report_numeric_drift_keeps_measurements_and_default_enforcement():
+def test_training_proof_rejects_zero_work_and_incomplete_fits():
+    check = runner().verify_training_work
+    valid = dict(fits=1, completed_fits=1, training_batches=2,
+                 optimizer_steps=4)
+    check(valid, 3)
+    for field in valid:
+        with pytest.raises(ValueError,
+                           match='optimizer updates or CUDA batches'):
+            check(dict(valid, **{field: 0}), 3)
+    for steps in (None, 0, 5):
+        with pytest.raises(ValueError):
+            check(valid, steps)
+
+
+def test_custom_reload_tolerance_stays_enforced_and_rejects_invalid_bounds():
     compare = runner().compare_predictions
-    before, after = [[1., 2.]], [[1.125, 2.25]]
-    options = dict(atol=1e-5, rtol=0., before_decisions=[[True, False]],
-                   after_decisions=[[True, False]])
+    assert compare([[0.]], [[.004]], atol=.005)['within_tolerance']
     with pytest.raises(ValueError, match='exceeds'):
-        compare(before, after, **options)
-    measured = compare(before, after, report_numeric_drift=True, **options)
-    assert measured == dict(decisions_equal=True, max_abs_difference=.25,
-                            max_relative_difference=.125,
-                            within_tolerance=False)
-    for invalid in ([], [[1.]], [[np.nan, 2.]], [[np.inf, 2.]]):
-        with pytest.raises(ValueError, match='equal finite'):
-            compare(before, invalid, report_numeric_drift=True, **options)
+        compare([[0.]], [[.006]], atol=.005)
+    with pytest.raises(ValueError, match='decisions'):
+        compare([[0.]], [[.004]], atol=.005, before_decisions=[True],
+                after_decisions=[False])
+    for bound in (-1., np.nan, np.inf, -np.inf):
+        with pytest.raises(ValueError, match='finite and nonnegative'):
+            compare([[0.]], [[0.]], atol=bound)
 
 
-@pytest.mark.parametrize('task', ['binary', 'multiclass', 'multilabel'])
-@pytest.mark.parametrize('report_numeric_drift', [False, True])
-def test_reload_rejects_changed_labels_even_with_close_scores(
-        task, report_numeric_drift):
+@pytest.mark.parametrize('task', [
+    'binary', 'multiclass', 'multilabel', 'multilabel_ranking', 'regression',
+    'forecasting', 'static_link', 'temporal_link'
+])
+def test_every_task_rejects_corrupted_reload_values_with_unchanged_decisions(
+        task):
+    width = 12 if task == 'forecasting' else 2
+    before = np.ones((1, width))
+    after = before.copy()
+    after[0, 0] += .01
+    decisions = None if task in ('regression', 'forecasting') else [[0, 1]]
+    with pytest.raises(ValueError, match='exceeds'):
+        runner().compare_predictions(before, after, before_decisions=decisions,
+                                     after_decisions=decisions)
+
+
+@pytest.mark.parametrize('task', [
+    'binary', 'multiclass', 'multilabel', 'multilabel_ranking', 'static_link',
+    'temporal_link'
+])
+def test_changed_labels_or_ranks_fail_even_when_scores_are_within_tolerance(
+        task):
     smoke = runner()
     if task == 'binary':
-        before = pd.DataFrame({
-            'ENTITY': [10],
-            'False_PROB': [.5000001],
-            'True_PROB': [.4999999],
-            'TARGET_PRED': [False]
-        })
-        after = pd.DataFrame({
-            'ENTITY': [10],
-            'False_PROB': [.4999999],
-            'True_PROB': [.5000001],
-            'TARGET_PRED': [True]
-        })
+        before = pd.DataFrame(
+            dict(ENTITY=[10], False_PROB=[.5000001], True_PROB=[.4999999],
+                 TARGET_PRED=[False]))
+        after = before.assign(False_PROB=.4999999, True_PROB=.5000001,
+                              TARGET_PRED=True)
         classes = []
     else:
-        scores = [.5, .5] if task == 'multiclass' else [.4999999, .5000001]
-        before = pd.DataFrame({
-            'ENTITY': [10, 10],
-            'CLASS': ['a', 'b'],
-            'SCORE':
-            scores,
-            'PREDICTED':
-            [True, False] if task == 'multiclass' else [False, True]
-        })
-        after = before.assign(
-            PREDICTED=[False, True] if task == 'multiclass' else [True, True],
-            SCORE=scores if task == 'multiclass' else [.5000001, .5000001])
+        before = pd.DataFrame(
+            dict(ENTITY=[10, 10], CLASS=['a', 'b'], SCORE=[.5, .5],
+                 PREDICTED=[True, False], RANK=[0, 1]))
+        if task == 'multilabel':
+            before['SCORE'] = [.5000001, .4999999]
+        after = before.assign(PREDICTED=[False, True], RANK=[1, 0])
+        if task == 'multilabel':
+            after['SCORE'] = [.4999999, .5000001]
         classes = ['a', 'b']
     before['ANCHOR_TIMESTAMP'] = after['ANCHOR_TIMESTAMP'] = '2025-01-01'
+    options = dict(classes=classes, anchor='2025-01-01')
     values = [
-        smoke.prediction_values(task, frame, [10], classes=classes,
-                                anchor='2025-01-01')
+        smoke.prediction_values(task, frame, [10], **options)
         for frame in (before, after)
     ]
     decisions = [
         smoke.prediction_decisions(task, frame, [10], classes=classes)
         for frame in (before, after)
     ]
-    options = dict(atol=1e-5, rtol=0., before_decisions=decisions[0],
-                   after_decisions=decisions[1],
-                   report_numeric_drift=report_numeric_drift)
-    assert smoke.compare_predictions(*values, qualify=True,
-                                     **options)['decisions_equal'] is False
     with pytest.raises(ValueError, match='decisions'):
-        smoke.compare_predictions(*values, **options)
-
-
-@pytest.mark.parametrize('task',
-                         ['multilabel_ranking', 'static_link', 'temporal_link'])
-@pytest.mark.parametrize('report_numeric_drift', [False, True])
-def test_reload_rejects_changed_ranks_even_with_identical_aligned_scores(
-        task, report_numeric_drift):
-    smoke = runner()
-    before = pd.DataFrame({
-        'ENTITY': [20, 20, 10, 10],
-        'CLASS': [1, 2, 1, 2],
-        'SCORE': [.6, .4, .7, .3],
-        'ANCHOR_TIMESTAMP': ['2025-01-01'] * 4
-    })
-    after = before.iloc[[1, 0, 2, 3]]
-    options = dict(classes=[1, 2], anchor='2025-01-01')
-    values = [
-        smoke.prediction_values(task, frame, [10, 20], **options)
-        for frame in (before, after)
-    ]
-    decisions = [
-        smoke.prediction_decisions(task, frame, [10, 20], classes=[1, 2])
-        for frame in (before, after)
-    ]
-    assert decisions[0].tolist() == [[0, 1], [0, 1]]
-    np.testing.assert_array_equal(values[0], values[1])
-    with pytest.raises(ValueError, match='decisions'):
-        smoke.compare_predictions(*values, atol=0., rtol=0.,
-                                  before_decisions=decisions[0],
-                                  after_decisions=decisions[1],
-                                  report_numeric_drift=report_numeric_drift)
+        smoke.compare_predictions(*values, before_decisions=decisions[0],
+                                  after_decisions=decisions[1])
