@@ -127,7 +127,9 @@ def test_bundles_round_trip_through_a_filesystem_only_sink(
     assert published.uri == '@stage/models/m'
     store = connector.sink_backend.store
     assert list(store.objects)[-1] == '@stage/models/m/_provenance.json'
-    assert '@stage/models/m/sub/weights.bin.chunks/_SUCCESS' in store.objects
+    assert any(
+        name.startswith('@stage/models/m/sub/weights.bin.chunks/')
+        and name.endswith('/_SUCCESS') for name in store.objects)
     files.fetch_model(connector, str(tmp_path / 'fetched'),
                       path='@stage/models/m')
     for name in ('_provenance.json', 'sub/weights.bin'):
@@ -163,7 +165,9 @@ def test_parquet_writes_stay_plain_up_to_one_part(tmp_path, connector):
                       pd.DataFrame({'x': [os.urandom(50).hex() for _ in range(100)]}))
     store = connector.sink_backend.store
     assert '@stage/small.parquet' in store.objects
-    assert '@stage/big.parquet.chunks/_SUCCESS' in store.objects
+    assert any(
+        name.startswith('@stage/big.parquet.chunks/')
+        and name.endswith('/_SUCCESS') for name in store.objects)
     assert pd.read_parquet(
         '@stage/big.parquet',
         filesystem=PyFileSystem(store)).shape == (100, 1)

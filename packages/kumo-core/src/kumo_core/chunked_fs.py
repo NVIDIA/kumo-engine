@@ -4,9 +4,12 @@
 r"""A pyarrow filesystem over stores that only put, list, read and remove.
 
 A file larger than :attr:`ChunkedFileHandler.part_bytes` is stored as
-``<name>.chunks/00000 ... NNNNN`` followed by an empty ``_SUCCESS``; anything
-smaller is one plain object. Readers see one logical file either way. A write
-removes the other form; if a crash leaves both, the plain object wins. A writer
+``<name>.chunks/<generation>/00000 ... NNNNN`` followed by an empty
+``_SUCCESS``; anything smaller is one plain object. Readers see one logical
+file either way. A write removes the other form and older generations only
+once its own is committed, and a write that failed commits nothing; if a
+crash leaves both forms, the plain object wins, and of several committed
+generations the newest. A writer
 spools one part at a time on local disk, under :func:`spool_root`. A handler
 that can stream an upload implements ``_stream``: a writer told the size
 (:data:`SIZE_KEY` in the stream metadata) streams a file of up to
@@ -14,11 +17,14 @@ that can stream an upload implements ``_stream``: a writer told the size
 disk; without a size, up to ``plain_bytes`` is spooled and stays plain.
 """
 
+import contextlib
 import io
 import os
 import posixpath
 import shutil
 import tempfile
+import time
+import uuid
 from typing import (
     BinaryIO,
     Callable,
@@ -209,10 +215,17 @@ class ChunkedFileHandler(FileSystemHandler):
 
 def _logical_parts(objects: Dict[str, int],
                    directory: str) -> Optional[List[Tuple[str, int]]]:
-    if f'{directory}/{DONE}' not in objects:
+    committed = [
+        posixpath.dirname(path) for path in objects
+        if posixpath.basename(path) == DONE
+        and posixpath.dirname(posixpath.dirname(path)) == directory
+    ]
+    if not committed:
         return None
+    generation = max(committed)
     return sorted((path, size) for path, size in objects.items()
-                  if posixpath.basename(path) != DONE)
+                  if posixpath.dirname(path) == generation
+                  and posixpath.basename(path) != DONE)
 
 
 def _logical_files(objects: Dict[str, int]) -> Dict[str, int]:
@@ -220,7 +233,7 @@ def _logical_files(objects: Dict[str, int]) -> Dict[str, int]:
     files: Dict[str, int] = {}
     chunked: Dict[str, Dict[str, int]] = {}
     for path, size in objects.items():
-        directory = posixpath.dirname(path)
+        directory = posixpath.dirname(posixpath.dirname(path))
         if directory.endswith(CHUNKS):
             chunked.setdefault(directory, {})[path] = size
         else:
@@ -322,6 +335,8 @@ class _Writer(io.RawIOBase):
                  size: Optional[int] = None) -> None:
         self._handler = handler
         self._path = path
+        self._chunks = (f'{path}{CHUNKS}/{time.time_ns():020d}-'
+                        f'{uuid.uuid4().hex[:8]}')
         self._dir = tempfile.mkdtemp(prefix='kumo-chunked-',
                                      dir=spool_root(handler))
         self._spool = open(os.path.join(self._dir, 'spool'), 'wb')
@@ -333,11 +348,11 @@ class _Writer(io.RawIOBase):
         self._limit = (min(handler.plain_bytes, handler.part_bytes)
                        if self._streams else handler.part_bytes)
         self._plain: Optional[BinaryIO] = None
+        self._failed = False
         if self._streams and size is not None:
             if size <= handler.part_bytes:
                 self._plain = handler._stream(path)
             else:
-                self._clear()
                 self._part = self._open_part()
 
     def writable(self):
@@ -347,7 +362,13 @@ class _Writer(io.RawIOBase):
         return self._written
 
     def write(self, data):
-        view = memoryview(data).cast('B')
+        try:
+            return self._write(memoryview(data).cast('B'))
+        except BaseException:
+            self._failed = True
+            raise
+
+    def _write(self, view: memoryview) -> int:
         total = len(view)
         if self._plain is not None:
             self._plain.write(view)
@@ -383,23 +404,25 @@ class _Writer(io.RawIOBase):
         self._spool = open(os.path.join(self._dir, 'spool'), 'wb')
         self._filled = 0
 
-    def _clear(self) -> None:
-        self._handler._remove(self._path + CHUNKS, tree=True)
+    def _commit_parts(self) -> None:
+        self._upload(f'{self._chunks}/{DONE}')
         if self._handler._size(self._path) is not None:
             self._handler._remove(self._path, tree=False)
+        stale = {
+            posixpath.dirname(path)
+            for path in self._handler._list(self._path + CHUNKS)
+        } - {self._chunks}
+        for generation in stale:
+            self._handler._remove(generation, tree=True)
 
     def _flush_part(self) -> None:
-        if not self._parts:
-            self._clear()
-        self._upload(f'{self._path}{CHUNKS}/{self._parts:05d}')
+        self._upload(f'{self._chunks}/{self._parts:05d}')
         self._parts += 1
 
     def _open_part(self) -> BinaryIO:
-        return self._handler._stream(
-            f'{self._path}{CHUNKS}/{self._parts:05d}')
+        return self._handler._stream(f'{self._chunks}/{self._parts:05d}')
 
     def _start_stream(self) -> None:
-        self._clear()
         self._spool.close()
         spooled = os.path.join(self._dir, 'spool')
         self._part = self._open_part()
@@ -418,7 +441,11 @@ class _Writer(io.RawIOBase):
         if self.closed:
             return
         try:
-            if self._plain is not None:
+            if self._failed:
+                with contextlib.suppress(Exception):
+                    if self._part is not None:
+                        self._part.close()
+            elif self._plain is not None:
                 self._plain.close()
                 self._plain = None
                 if self._handler._list(self._path + CHUNKS):
@@ -426,10 +453,10 @@ class _Writer(io.RawIOBase):
             elif self._part is not None:
                 self._part.close()
                 self._part = None
-                self._upload(f'{self._path}{CHUNKS}/{DONE}')
+                self._commit_parts()
             elif self._parts:
                 self._flush_part()
-                self._upload(f'{self._path}{CHUNKS}/{DONE}')
+                self._commit_parts()
             else:
                 self._upload(self._path)
                 if self._handler._list(self._path + CHUNKS):

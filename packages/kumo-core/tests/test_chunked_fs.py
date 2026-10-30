@@ -77,6 +77,14 @@ def _read(fs, path):
         return reader.readall()
 
 
+def _generations(handler):
+    parts = {}
+    for name in sorted(handler.objects):
+        directory, _, part = name.rpartition('/')
+        parts.setdefault(directory, []).append(part)
+    return parts
+
+
 @pytest.mark.parametrize('size', [0, 3, PART])
 def test_files_up_to_one_part_are_one_plain_object(store, size):
     handler, fs = store
@@ -93,10 +101,9 @@ def test_larger_files_are_parts_committed_last_and_read_back_exactly(
     handler, fs = store
     data = os.urandom(size)
     _write(fs, 'root/a.bin', data)
-    assert sorted(handler.objects) == [
-        'root/a.bin.chunks/00000', 'root/a.bin.chunks/00001',
-        'root/a.bin.chunks/00002', 'root/a.bin.chunks/_SUCCESS'
-    ]
+    (generation, parts), = _generations(handler).items()
+    assert generation.startswith('root/a.bin.chunks/')
+    assert parts == ['00000', '00001', '00002', '_SUCCESS']
     info = fs.get_file_info('root/a.bin')
     assert (info.type, info.size) == (FileType.File, len(data))
     assert _read(fs, 'root/a.bin') == data
@@ -110,7 +117,7 @@ def test_larger_files_are_parts_committed_last_and_read_back_exactly(
 
 def test_an_uncommitted_chunked_write_is_not_a_file(store):
     handler, fs = store
-    handler.objects['root/a.bin.chunks/00000'] = b'x' * PART
+    handler.objects['root/a.bin.chunks/1/00000'] = b'x' * PART
     assert fs.get_file_info('root/a.bin').type is not FileType.File
     with pytest.raises(FileNotFoundError):
         fs.open_input_file('root/a.bin')
@@ -125,6 +132,49 @@ def test_a_write_removes_the_other_form(store, first, second):
     plain = 'root/a.bin' in handler.objects
     assert plain == (second <= PART)
     assert any('.chunks/' in name for name in handler.objects) != plain
+
+
+@pytest.mark.parametrize('sized', [False, True])
+@pytest.mark.parametrize('streams', [False, True])
+@pytest.mark.parametrize('old', [3, 2 * PART])
+def test_a_failed_chunked_write_leaves_the_old_file(monkeypatch, streams,
+                                                     sized, old):
+    from kumo_core.object_store_sink import open_sized
+
+    handler = StreamingHandler() if streams else MemoryHandler()
+    fs = PyFileSystem(handler)
+    _write(fs, 'root/a.bin', b'o' * old)
+    upload = '_stream' if streams else '_put'
+    original = getattr(handler, upload)
+
+    def second_part_fails(*args):
+        if args[-1].endswith('/00001'):
+            raise OSError('upload failed')
+        return original(*args)
+
+    monkeypatch.setattr(handler, upload, second_part_fails)
+    with pytest.raises(OSError, match='upload failed'):
+        with (open_sized(fs, 'root/a.bin', 3 * PART)
+              if sized else fs.open_output_stream('root/a.bin')) as writer:
+            writer.write(b'n' * (3 * PART))
+    assert _read(PyFileSystem(handler), 'root/a.bin') == b'o' * old
+
+    monkeypatch.setattr(handler, upload, original)
+    _write(fs, 'root/a.bin', b'n' * (3 * PART))
+    assert _read(PyFileSystem(handler), 'root/a.bin') == b'n' * (3 * PART)
+    assert list(_generations(handler).values()) == [
+        ['00000', '00001', '00002', '_SUCCESS']
+    ]
+
+
+def test_the_newest_committed_generation_is_read(store):
+    handler, fs = store
+    _write(fs, 'root/a.bin', b'1' * (2 * PART))
+    old = dict(handler.objects)
+    _write(fs, 'root/a.bin', b'2' * (2 * PART))
+    handler.objects.update(old)
+    handler._forget('root/a.bin')
+    assert _read(fs, 'root/a.bin') == b'2' * (2 * PART)
 
 
 def test_plain_wins_when_a_crash_left_both_forms(store):
@@ -223,12 +273,11 @@ def test_a_streaming_handler_streams_parts_and_spools_only_small_files(size):
     if size <= 6:
         assert handler.objects == {'root/a.bin': data}
         return
-    parts = -(-size // PART)
-    assert sorted(handler.objects) == [
-        f'root/a.bin.chunks/{i:05d}' for i in range(parts)
-    ] + ['root/a.bin.chunks/_SUCCESS']
-    assert handler.streamed[-parts:] == [
-        f'root/a.bin.chunks/{i:05d}' for i in range(parts)
+    parts = [f'{i:05d}' for i in range(-(-size // PART))]
+    (generation, stored), = _generations(handler).items()
+    assert stored == parts + ['_SUCCESS']
+    assert handler.streamed[-len(parts):] == [
+        f'{generation}/{part}' for part in parts
     ]
     assert len(handler.spooled) == 2
     with fs.open_input_file('root/a.bin') as reader:
