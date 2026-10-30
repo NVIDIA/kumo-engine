@@ -23,9 +23,10 @@ Training metrics report only; they do not set a learning-quality gate.
 
 The runner measures repeated and reloaded prediction differences. GPU results
 can contain small numeric differences despite identical saved weights.
-Three repetitions of all eight tasks produce 24 fits for tolerance qualification.
+The manual qualification fits eight models and repeats prediction and reload
+three times on each retained model. It adds no training block for those repeats.
 Qualification returns `MEASURED`, not a normal CI pass. A normal run has eight
-fits and enforces its numeric comparison limits. Final limits and the new
+fits, one prediction/reload cycle, and enforced numeric comparison limits. Final limits and the new
 GPU runtime remain unverified until qualification and a fresh normal run finish.
 This smoke check sets no learning-quality score or baseline requirement.
 
@@ -61,8 +62,8 @@ parent fixture discovery. A parent process stops the suite at 300 seconds.
 Failures, skips, empty or incomplete selection, timeouts, and elapsed time of
 300 seconds or more return failure. The printed directory retains the pytest
 log, counts, and elapsed time. The local suite requires no GPU or cloud access.
-The complete command passed all fourteen selected cases with no skips in
-0.79 seconds on macOS ARM64 with Python 3.12.13. Setup was excluded.
+The complete command passed all nineteen selected cases with no skips in
+0.70 seconds on macOS ARM64 with Python 3.12.13. Setup was excluded.
 
 ## Scope and timing
 
