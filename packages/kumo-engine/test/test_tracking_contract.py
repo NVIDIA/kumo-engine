@@ -443,6 +443,7 @@ def test_records_of_the_recorded_fit():
         name='trial-2-attempt-1',
         params={'optimization.base_lr': '0.001', 'attempt': '1'}, tags={
             'kumo.kind': 'trial',
+            'kumo.engine_version': __version__,
             'kumo.status': 'failed',
             'kumo.error': 'OutOfMemoryError: CUDA out of memory',
         })
@@ -607,6 +608,7 @@ def test_prediction_record_of_the_recorded_run():
           for q in (1, 5, 25, 50, 75, 95, 99)),
         Scalar('pred/positive_rate', 0.62))
     assert record.tags == {'kumo.kind': 'prediction',
+                           'kumo.engine_version': __version__,
                            'kumo.prediction_id': PREDICTION_RUN,
                            'kumo.bundle_id': BUNDLE,
                            'kumo.snapshot_id': 'g@d'}

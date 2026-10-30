@@ -13,7 +13,6 @@ from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.summaries import Summary
 
 from kumo.engine._tracking import RunSpec, _flatten
-from kumo.engine._version import __version__
 
 
 @dataclass(frozen=True)
@@ -41,8 +40,7 @@ def fit_spec(context: FitContext, *,
         parents={'snapshot_id': context.snapshot_id,
                  'task_type': context.task_type,
                  'tune_metric': (context.model_plan.get('training_job')
-                                 or {}).get('tune_metric'),
-                 'engine_version': __version__},
+                                 or {}).get('tune_metric')},
         tags=dict(tags or {}),
         inputs=dict(context.inputs),
         artifacts={

@@ -35,6 +35,7 @@ from kumo.engine._deps import Dependencies, FileAsset, MissingDependencyError
 from kumo.engine._manifest import ModelManifest, read_manifest, write_manifest
 from kumo.engine._predictor import load_predictor
 from kumo.engine._tracking import RunSpec, TrackingSession, run_record
+from kumo.engine._version import __version__
 from kumo.engine.tracking import Event
 from kumo.engine.trainer._spec import MANIFEST_FILE, PROVENANCE_ROLE
 from kumo.engine.trainer.trainer import _store_and_register
@@ -98,9 +99,10 @@ def test_any_run_is_tracked_from_its_spec():
     started, trial, finished = (record for _, record in tracker.calls)
     assert started == run_record(spec)
     assert trial.name == 'trial-1-attempt-1'
-    assert trial.tags == {'kumo.kind': 'trial'}
+    assert trial.tags == {'kumo.kind': 'trial', 'kumo.engine_version': __version__}
     assert finished.metrics == {'auc': 0.9}
-    assert finished.tags == {'kumo.kind': 'custom', 'kumo.bundle_id': 'b'}
+    assert finished.tags == {'kumo.kind': 'custom', 'kumo.bundle_id': 'b',
+                             'kumo.engine_version': __version__}
 
 
 class _RegistryTracker(_Tracker):

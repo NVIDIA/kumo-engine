@@ -22,6 +22,7 @@ import kumo.engine as kumo
 from kumo.engine._manifest import ArtifactStats
 from kumo.engine._monitoring import _ks, _psi, _wasserstein, evaluate
 from kumo.engine._scratch import get_scratch_dir
+from kumo.engine._version import __version__
 from kumo.engine.trainer.trainer import PredictionResult, TrainingResult
 
 CUTOFF = pd.Timestamp('2024-03-31')
@@ -567,6 +568,10 @@ def test_tracked_monitoring_logs_a_new_run(snapshots, classifier, tmp_path):
         assert record.tags['kumo.kind'] == 'monitoring'
         assert record.tags['kumo.monitors'] == run.id
         assert record.tags['kumo.bundle_id'] == run.bundle_id
+        assert record.tags.items() >= {
+            'kumo.snapshot_id': run.snapshot_id,
+            'kumo.task_type': 'binary_classification',
+            'kumo.engine_version': __version__}.items()
     assert drift.metrics['drift/score_psi'] == report.psi
     assert drift.metrics['drift/score_wasserstein'] == report.wasserstein
     assert {'eval/auroc', 'eval/rows'} <= set(evaluation.metrics)

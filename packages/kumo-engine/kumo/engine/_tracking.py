@@ -34,6 +34,7 @@ from kumo_core.instrumentation import format_error
 
 from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
+from kumo.engine._version import __version__
 
 if TYPE_CHECKING:
     from kumo_core.summaries import Summary
@@ -178,6 +179,7 @@ def run_record(spec: RunSpec) -> RunRecord:
         tags={
             **_user_tags(spec.tags, params),
             'kumo.kind': spec.kind,
+            'kumo.engine_version': __version__,
             **{f'kumo.{name}': str(value)
                for name, value in spec.parents.items() if value},
             **({} if spec.status is None else {'kumo.status': spec.status}),
@@ -246,8 +248,6 @@ def prediction_record(manifest: 'PredictionManifest',
 
     table = manifest.prediction_table
     params = {**manifest.scoring.to_dict(), 'anchors': table.anchors}
-    training_table = getattr(_parents(manifest.parents.model),
-                             'training_table', None)
     model_manifest = getattr(model, 'manifest', None)
     return run_record(
         RunSpec(
@@ -260,8 +260,7 @@ def prediction_record(manifest: 'PredictionManifest',
             parents={
                 'bundle_id': manifest.parents.model.id,
                 'prediction_id': manifest.id,
-                'snapshot_id': manifest.parents.snapshot.id,
-                'task_type': getattr(training_table, 'task_type', None),
+                **prediction_parents(manifest),
                 'fit_run_id': fit_run_id(model_manifest),
                 **registered_parents(model),
             },
@@ -277,6 +276,18 @@ def prediction_record(manifest: 'PredictionManifest',
             description=_unlabelled(getattr(model_manifest, 'tracking',
                                             None)),
         ))
+
+
+def prediction_parents(manifest: Optional['PredictionManifest']
+                       ) -> Mapping[str, Any]:
+    r"""Pointer tags to the scoring snapshot and the task type of the
+    prediction run ``manifest`` records."""
+    if manifest is None:
+        return {}
+    training_table = getattr(_parents(manifest.parents.model),
+                             'training_table', None)
+    return {'snapshot_id': manifest.parents.snapshot.id,
+            'task_type': getattr(training_table, 'task_type', None)}
 
 
 def run_name(kind: str, model: Any, started: datetime) -> str:
