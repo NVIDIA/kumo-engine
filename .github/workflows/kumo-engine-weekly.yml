@@ -1,0 +1,224 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Kumo Engine weekly
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Candidate commit in the default branch history
+        type: string
+        required: false
+      mode:
+        description: Compare a candidate or prepare a reference for review
+        type: choice
+        options: [candidate, reference]
+        default: candidate
+  pull_request:
+    paths:
+      - '.github/workflows/kumo-engine-weekly.yml'
+      - 'packages/kumo-engine/scripts/weekly_*.py'
+      - 'packages/kumo-engine/test/test_weekly_*.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-weekly-${{ github.repository }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  cpu:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip --isolated install duckdb pandas pyarrow
+      - run: python packages/kumo-engine/test/test_weekly_check.py
+
+  wheel:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate'
+    needs: cpu
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.receipt.outputs.version }}
+      sha256: ${{ steps.receipt.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: product
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Admit only a commit in the default branch history
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          python - <<'PY'
+          import os, runpy, subprocess
+          from pathlib import Path
+          api = runpy.run_path('harness/packages/kumo-engine/scripts/weekly_check.py')
+          revision = api['trusted_revision'](Path('product'), os.environ['REQUESTED_REVISION'],
+              'refs/remotes/origin/' + os.environ['DEFAULT_BRANCH'])
+          subprocess.run(['git', '-C', 'product', 'checkout', '--detach', revision], check=True)
+          PY
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+      - name: Build the selected wheel
+        env:
+          CARGO_BUILD_JOBS: '4'
+        run: |
+          set -euo pipefail
+          python -m pip --isolated install ziglang
+          mkdir -p "$RUNNER_TEMP/weekly-wheel"
+          git -C product rev-parse HEAD 'HEAD^{tree}' > "$RUNNER_TEMP/weekly-wheel/source.txt"
+          (cd product && packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/weekly-wheel")
+          cmp "$RUNNER_TEMP/weekly-wheel/source.txt" <(git -C product rev-parse HEAD 'HEAD^{tree}')
+          test -z "$(git -C product status --porcelain)"
+      - name: Record source and wheel identity
+        id: receipt
+        run: |
+          python - <<'PY'
+          import email, hashlib, json, os, zipfile
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'weekly-wheel'
+          revision, tree = (root / 'source.txt').read_text().splitlines()
+          [wheel] = root.glob('*.whl')
+          with zipfile.ZipFile(wheel) as archive:
+              [member] = [n for n in archive.namelist() if n.endswith('.dist-info/METADATA')]
+              metadata = email.message_from_bytes(archive.read(member))
+          if metadata['Name'].replace('_', '-') != 'kumo-engine':
+              raise SystemExit('The built wheel has a different package name')
+          checksum = hashlib.sha256(wheel.read_bytes()).hexdigest()
+          (root / 'build.json').write_text(json.dumps(dict(revision=revision, tree=tree,
+              version=metadata['Version'], wheel_sha256=checksum), indent=2))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={metadata["Version"]}\nsha256={checksum}\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: weekly-wheel
+          path: ${{ runner.temp }}/weekly-wheel
+          compression-level: 0
+          retention-days: 7
+
+  gpu:
+    needs: [cpu, wheel]
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && needs.cpu.result == 'success' && (inputs.mode == 'reference' || needs.wheel.result == 'success') }}
+    runs-on:
+      group: nv-gpu-amd64-rtxpro6000-1gpu
+      labels: linux-amd64-gpu-rtxpro6000-latest-1
+    timeout-minutes: 720
+    env:
+      MODE: ${{ inputs.mode }}
+      WEEKLY_CONFIG: ${{ vars.KUMO_ENGINE_WEEKLY_CONFIG }}
+      CUDA_VISIBLE_DEVICES: '0'
+      KUMO_ACCELERATOR: gpu
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+      OPENBLAS_NUM_THREADS: '4'
+      PIP_CONFIG_FILE: /dev/null
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: env.MODE == 'candidate'
+        with:
+          name: weekly-wheel
+          path: ${{ runner.temp }}/weekly-wheel
+      - name: Admit inputs and prepare temporary storage
+        run: |
+          python - <<'PY'
+          import json, os, runpy
+          from pathlib import Path
+          config = json.loads(os.environ['WEEKLY_CONFIG'])
+          api = runpy.run_path('packages/kumo-engine/scripts/weekly_check.py')
+          for key in ('input_root', 'reference_root', 'host_lock'):
+              if not Path(config[key]).is_absolute() or any(c in config[key] for c in '\r\n'):
+                  raise SystemExit('Bind absolute data paths and the shared host lock')
+          manifest = api['load_manifest'](Path(config['input_root']), config['manifest_sha256'])
+          if os.environ['MODE'] == 'candidate':
+              api['load_reference'](Path(config['reference_root']), config['reference_sha256'],
+                  manifest, config['manifest_sha256'])
+          root = Path(os.environ['RUNNER_TEMP']) / ('weekly-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          root.mkdir(exist_ok=False)
+          api['save'](root / 'configuration.json', config)
+          api['save'](root / 'reference-wheel.json', manifest['reference'])
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'WEEKLY_ROOT={root}\n')
+          PY
+      - name: Download the manifest-approved reference wheel
+        if: env.MODE == 'reference'
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          root = Path(os.environ['WEEKLY_ROOT'])
+          approved = json.loads((root / 'reference-wheel.json').read_text())
+          subprocess.run(['python', '-m', 'pip', '--isolated', 'download', '--only-binary=:all:',
+              '--no-deps', '--dest', str(Path(os.environ['RUNNER_TEMP']) / 'weekly-wheel'),
+              'kumo-engine==' + approved['version']], check=True)
+          PY
+      - name: Install and execute the eleven fixed cases
+        run: |
+          set -euo pipefail
+          python -m venv "$WEEKLY_ROOT/venv"
+          python - <<'PY'
+          import json, os, runpy, subprocess
+          from pathlib import Path
+          root = Path(os.environ['WEEKLY_ROOT'])
+          config = json.loads((root / 'configuration.json').read_text())
+          api = runpy.run_path('packages/kumo-engine/scripts/weekly_check.py')
+          [wheel] = (Path(os.environ['RUNNER_TEMP']) / 'weekly-wheel').glob('*.whl')
+          build = json.loads((wheel.parent / 'build.json').read_text()) if os.environ['MODE'] == 'candidate' else json.loads((root / 'reference-wheel.json').read_text())
+          if api['digest'](wheel) != build['wheel_sha256']:
+              raise SystemExit('Selected wheel archive checksum differs')
+          python = str(root / 'venv/bin/python')
+          subprocess.run([python, '-I', '-m', 'pip', '--isolated', 'install', str(wheel), 'duckdb'], check=True)
+          command = [python, '-I', 'packages/kumo-engine/scripts/weekly_check.py', '--mode', os.environ['MODE'],
+              '--input-root', config['input_root'], '--manifest-sha256', config['manifest_sha256'],
+              '--host-lock', config['host_lock'], '--output', str(root / 'evidence'), '--scratch', str(root / 'scratch'),
+              '--wheel', str(wheel), '--version', build['version'], '--wheel-sha256', build['wheel_sha256']]
+          if os.environ['MODE'] == 'candidate':
+              command += ['--reference-root', config['reference_root'], '--reference-sha256', config['reference_sha256'], '--build-receipt', str(wheel.parent / 'build.json')]
+          subprocess.run(command, check=True)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always() && env.WEEKLY_ROOT != ''
+        with:
+          name: weekly-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.WEEKLY_ROOT }}/evidence
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove this job's temporary files
+        if: always() && env.WEEKLY_ROOT != ''
+        run: |
+          python - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          temporary = Path(os.environ['RUNNER_TEMP']).resolve()
+          root = Path(os.environ['WEEKLY_ROOT']).resolve()
+          if root.parent != temporary or not root.name.startswith('weekly-'):
+              raise SystemExit('Unexpected cleanup directory')
+          shutil.rmtree(root)
+          shutil.rmtree(temporary / 'weekly-wheel', ignore_errors=True)
+          PY
