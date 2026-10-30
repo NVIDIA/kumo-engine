@@ -863,9 +863,9 @@ def log_run(tracking: Any, hook: str,
     worker.start()
     worker.join(FINISH_SECONDS)
     if worker.is_alive():
-        logger.warning(
-            'Experiment tracking did not finish within %ss; it goes on in '
-            'the background', FINISH_SECONDS)
+        return TimeoutError(
+            f'experiment tracking did not finish within {FINISH_SECONDS:g}s; '
+            f'it goes on in the background')
     return failed[0] if failed else None
 
 

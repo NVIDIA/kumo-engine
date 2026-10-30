@@ -5,6 +5,7 @@
 import gc
 import math
 import os
+import threading
 import time
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
@@ -739,6 +740,35 @@ def test_a_monitoring_tracking_failure_warns_or_raises(classifier, tmp_path,
             assert isinstance(raised.value.__cause__, ConnectionError)
     assert ('Experiment tracking failed: ConnectionError: tracking server '
             'down; the monitoring run is not tracked') in caplog.messages
+
+
+@pytest.mark.parametrize('on_error', ['warn', 'raise'])
+def test_an_unfinished_monitoring_hook_warns_or_raises(classifier, tmp_path,
+                                                       monkeypatch, on_error):
+    import kumo.engine._tracking as tracking
+
+    trainer, run = classifier
+    monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.2)
+    release = threading.Event()
+
+    class Blocked:
+        def log_monitoring(self, record):
+            release.wait(30)
+
+    cfg = kumo.MLOps(str(tmp_path / 'root'), tracking=Blocked(),
+                     on_error=on_error)
+    try:
+        if on_error == 'warn':
+            with pytest.warns(UserWarning, match='TimeoutError: experiment '
+                              'tracking did not finish within 0.2s'):
+                report = trainer.score_drift(run, mlops=cfg)
+            assert report.psi is not None and report.tracking is None
+        else:
+            with pytest.raises(RuntimeError) as raised:
+                trainer.score_drift(run, mlops=cfg)
+            assert isinstance(raised.value.__cause__, TimeoutError)
+    finally:
+        release.set()
 
 
 def test_drift_reads_snapshot_statistics_from_the_artifact_root(
