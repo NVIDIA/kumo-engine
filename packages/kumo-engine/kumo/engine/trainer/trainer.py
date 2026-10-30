@@ -157,15 +157,17 @@ class PredictionResult:
         self._export(output_config)
 
     def _export(self, output_config: PredictionOutputConfig) -> None:
-        for destination in output_config.destinations().values():
-            output_config.writer(destination)
+        writers = {
+            destination: output_config.writer(destination)
+            for destination in output_config.destinations().values()
+        }
         outputs = []
         for name, destination in output_config.destinations().items():
             kind = PredictionArtifactType(name.upper())
             files = PredictionResult(self.selection, kind).files
             outputs.append((kind, destination, files))
         for kind, destination, files in outputs:
-            output_config.writer(destination).write_files(
+            writers[destination].write_files(
                 output_config.connector, destination, list(files),
                 output_config.write_mode,
                 export_id=f'{self.selection.job_id}-{kind.value}')
