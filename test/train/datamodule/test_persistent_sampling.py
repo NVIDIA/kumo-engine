@@ -12,10 +12,7 @@ from unittest.mock import MagicMock
 import pyarrow as pa
 import pytest
 from kumo_core.diskgraph import remote_sampling as remote
-from kumo_core.diskgraph.sampling_protocol import (
-    decode_frame,
-    encode_frame,
-)
+from kumo_core.diskgraph.sampling_protocol import decode_frame, encode_frame
 
 
 @pytest.fixture

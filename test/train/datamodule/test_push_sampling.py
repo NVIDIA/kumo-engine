@@ -12,6 +12,7 @@ from collections import deque
 from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
+from test.train.datamodule import test_remote_sampling_integration as parity
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -19,17 +20,21 @@ import diskgraph
 import orjson
 import pyarrow as pa
 import pytest
-from kumo_core.diskgraph.remote_sampling import RemoteRuntimeIndex, RemoteTaskIterator
+from kumo_core.diskgraph.remote_sampling import (
+    RemoteRuntimeIndex,
+    RemoteTaskIterator,
+)
 from kumo_core.diskgraph.sampling_protocol import (
     ENVELOPE_SCHEMA,
     decode_frame,
     encode_frame,
 )
-from kumo_core.diskgraph.sampling_service import SamplingService, SamplingServiceConfig
+from kumo_core.diskgraph.sampling_service import (
+    SamplingService,
+    SamplingServiceConfig,
+)
 from kumo_core.diskgraph.sampling_task import task_files, upload_task
 from pyarrow import flight
-
-from test.train.datamodule import test_remote_sampling_integration as parity
 
 prepared_task = parity.prepared_task
 

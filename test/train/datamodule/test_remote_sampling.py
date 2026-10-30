@@ -18,7 +18,9 @@ from kumo_core.diskgraph.lightning_data import (
     DiskgraphTaskBatchIterable,
     _ShuffleStreamState,
 )
-from kumo_core.train.diskgraph_nested_trainer import _runtime_options_from_sampler
+from kumo_core.train.diskgraph_nested_trainer import (
+    _runtime_options_from_sampler,
+)
 from kumo_core.training.config import SamplerKwargs
 
 
