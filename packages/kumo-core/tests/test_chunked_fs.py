@@ -167,6 +167,27 @@ def test_a_failed_chunked_write_leaves_the_old_file(
     ]
 
 
+def test_a_failed_plain_stream_is_aborted_not_committed(monkeypatch):
+    from kumo_core.object_store_sink import open_sized
+
+    def fail(self, data):
+        raise OSError('upload failed')
+
+    def abort(self):
+        aborted.append(self.path)
+        io.BytesIO.close(self)
+
+    handler = StreamingHandler()
+    aborted = []
+    monkeypatch.setattr(_Upload, 'write', fail)
+    monkeypatch.setattr(_Upload, 'abort', abort, raising=False)
+    with pytest.raises(OSError, match='upload failed'):
+        with open_sized(PyFileSystem(handler), 'root/a.bin', 3) as writer:
+            writer.write(b'abc')
+    assert aborted == ['root/a.bin']
+    assert handler.objects == {}
+
+
 def test_the_newest_committed_generation_is_read(store):
     handler, fs = store
     _write(fs, 'root/a.bin', b'1' * (2 * PART))

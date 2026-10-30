@@ -59,7 +59,7 @@ class ChunkedFileHandler(FileSystemHandler):
     plain_bytes = PART_BYTES
 
     def _stream(self, path: str) -> BinaryIO:
-        r"""Optional: a writable whose ``close`` commits ``path``."""
+        r"""Optional: a writable committed by ``close``, dropped by ``abort``."""
         raise NotImplementedError
 
     def _size(self, path: str) -> Optional[int]:
@@ -301,6 +301,15 @@ class _Reader(io.RawIOBase):
         super().close()
 
 
+def _abandon(stream: Optional[BinaryIO], close: bool = False) -> None:
+    if stream is None:
+        return
+    abort = getattr(stream, 'abort', stream.close if close else None)
+    if abort is not None:
+        with contextlib.suppress(Exception):
+            abort()
+
+
 class _Writer(io.RawIOBase):
     def __init__(self, handler: ChunkedFileHandler, path: str,
                  size: Optional[int] = None) -> None:
@@ -413,9 +422,8 @@ class _Writer(io.RawIOBase):
             return
         try:
             if self._failed:
-                with contextlib.suppress(Exception):
-                    if self._part is not None:
-                        self._part.close()
+                _abandon(self._plain)
+                _abandon(self._part, close=True)
             elif self._plain is not None:
                 self._plain.close()
                 self._plain = None
