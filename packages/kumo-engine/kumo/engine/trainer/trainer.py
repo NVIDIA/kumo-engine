@@ -1806,7 +1806,8 @@ class Trainer:
                              training_snapshot=training_snapshot,
                              root=None if settings is None else
                              settings.root)
-        return track(report, run, settings, self, started)
+        return track(report, run, settings, self, started,
+                     previous=previous)
 
     @classmethod
     def load(

@@ -601,7 +601,9 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
         id='p', bundle_id='b', manifest=None,
         tracking=TrackingRef(platform='fake', run_id='run-7')),
         SimpleNamespace(tracking=tracker, on_error='raise'),
-        SimpleNamespace(result=None), PREDICTED_AT.to_pydatetime())
+        SimpleNamespace(result=None), PREDICTED_AT.to_pydatetime(),
+        previous=SimpleNamespace(tracking=TrackingRef(
+            platform='fake', run_id='run-0', run_name='2026-10-28-v6-churn')))
 
     assert tracked == replace(report, tracking=TrackingRef(platform='fake',
                                                            run_id='run-1'))
@@ -611,8 +613,8 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
         Tag('kumo.drift_previous', 'p0'),
         Scalar('drift/psi_prev', 0.01), Scalar('drift/ks_prev', 0.02),
         Scalar('drift/wasserstein_prev', 0.03),
-        Note('notes', 'Drift since `p0`: psi 0.01 · ks 0.02 · '
-             'wasserstein 0.03.'),
+        Note('notes', 'Drift vs training: psi 0.5 · ks 0.25 · vs '
+             '2026-10-28-v6-churn: psi 0.01 · ks 0.02.'),
         Table('drift/input_changes', ('table or link', 'at training', 'now',
                                       'change %'),
               (('orders', 100, 104, 4.0), ('edges.orders_users', 100, None,
@@ -631,14 +633,14 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
              'users.TS (timestamp).'))
 
     tracker.records.clear()
-    track(replace(report, bundle_matches=False, previous_psi=None),
+    track(replace(report, bundle_matches=False),
           SimpleNamespace(id='p', bundle_id='b', manifest=None),
           SimpleNamespace(tracking=tracker, on_error='raise'),
           SimpleNamespace(result=None), PREDICTED_AT.to_pydatetime())
     record, = tracker.records
     assert record.prediction_run is None
-    assert record.summaries == (
-        Tag('kumo.drift_previous', 'p0'),
+    assert record.summaries[4:] == (
+        Note('notes', 'Drift vs p0: psi 0.01 · ks 0.02.'),
         Note('notes', "This trainer's model did not score this run, so its "
              'drift since training is not logged here; against its '
              'holdout: psi 0.5 · ks 0.25 · wasserstein 0.125.'))

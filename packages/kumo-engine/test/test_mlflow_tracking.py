@@ -446,6 +446,9 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
     from kumo.engine._tracking import RunRecord, log_run
     from kumo.engine.integrations.mlflow import MlflowTracking
 
+    MlflowTracking('scores', log_system_metrics=False).log_prediction_run(
+        RunRecord(name='2026-10-28-v6-churn', tags={
+            'kumo.kind': 'prediction', 'kumo.prediction_id': 'pred-0'}))
     tracker = MlflowTracking('scores', log_system_metrics=False)
     tracker.log_prediction_run(RunRecord(name='p', tags={
         'kumo.kind': 'prediction', 'kumo.prediction_id': 'pred-1',
@@ -460,7 +463,8 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
         tags={**monitoring, 'kumo.monitor': 'drift'}, summaries=(
             Tag('kumo.drift_previous', 'pred-0'),
             Scalar('drift/psi_prev', 0.01),
-            Note('notes', 'Drift since `pred-0`: psi 0.01.'),
+            Note('notes', 'Drift vs training: psi 0.03 · vs pred-0: psi '
+                 '0.01.'),
             Table('drift/input_changes', ('table or link', 'at training',
                                           'now', 'change %'),
                   (('orders', 100, 104, 4.0),), brief=True),
@@ -476,7 +480,7 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
             Scalar('realized/map@10', 0.5),
             Note('notes', 'Labelled 3 of 4 scored rows with `g@2`.')))) is None
 
-    run, = _runs(client)
+    run = client.get_run(predicted.info.run_id)
     assert (run.info.run_id, run.info.status, run.info.end_time) == (
         predicted.info.run_id, 'FINISHED', predicted.info.end_time)
     assert run.data.metrics == {'pred/rows': 50, 'drift/psi': 0.03,
@@ -497,7 +501,8 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
         'realized map_at_10 0.5 · psi 0.03 vs training · 50 rows as of '
         '2026-10-29', 'Model: bundle `bbbbbbbb`.', '',
         'Full lineage: `_provenance.json`.', '',
-        '<!-- kumo:drift -->', 'Drift since `pred-0`: psi 0.01.',
+        '<!-- kumo:drift -->',
+        'Drift vs training: psi 0.03 · vs 2026-10-28-v6-churn: psi 0.01.',
         '**Input changes:** orders: at training 100 · now 104 · change % 4',
         '<!-- /kumo:drift -->',
         '<!-- kumo:realized -->', 'Labelled 3 of 4 scored rows with `g@2`.',

@@ -487,31 +487,53 @@ class MlflowTracking:
     def log_monitoring(self, record: RunRecord) -> None:
         r"""Folds a monitoring call into the prediction run it checks: the
         record's ``prediction_run``, else the run tagged with its
-        ``kumo.prediction_id`` in this tracker's experiment. MLflow retries
-        each request twice."""
+        ``kumo.prediction_id`` in this tracker's experiment. Notes name the
+        previous run of a drift check by its run name. MLflow retries each
+        request twice."""
         self.run_id = None
         prediction_id = record.tags.get('kumo.prediction_id')
         with _limited_http(frozenset(name for name in _HTTP_LIMITS
                                      if name not in os.environ)):
-            self._client = client = self.target.client()
+            self._client = self.target.client()
             run_id = record.prediction_run
             if run_id is None:
-                with self.target.scope():
-                    experiment = (None if self.experiment_name is None else
-                                  client.get_experiment_by_name(
-                                      self.experiment_name))
-                    found = client.search_runs(
-                        [experiment.experiment_id if experiment else
-                         self._default_experiment or '0'],
-                        filter_string=("tags.`kumo.kind` = 'prediction' AND "
-                                       "tags.`kumo.prediction_id` = "
-                                       f"'{prediction_id}'"),
-                        max_results=1)
-                if not found:
+                found = self._prediction_run(prediction_id)
+                if found is None:
                     raise LookupError(f'No MLflow prediction run has '
                                       f'kumo.prediction_id {prediction_id}')
-                run_id = found[0].info.run_id
-            self.fold(run_id, record)
+                run_id = found.info.run_id
+            self.fold(run_id, self._name_previous(record))
+
+    def _prediction_run(self, prediction_id: Optional[str]) -> Optional[Any]:
+        with self.target.scope():
+            experiment = (None if self.experiment_name is None else
+                          self._client.get_experiment_by_name(
+                              self.experiment_name))
+            found = self._client.search_runs(
+                [experiment.experiment_id if experiment else
+                 self._default_experiment or '0'],
+                filter_string=("tags.`kumo.kind` = 'prediction' AND "
+                               "tags.`kumo.prediction_id` = "
+                               f"'{prediction_id}'"),
+                max_results=1)
+        return found[0] if found else None
+
+    def _name_previous(self, record: RunRecord) -> RunRecord:
+        previous = next((summary.value for summary in record.summaries
+                         if isinstance(summary, Tag)
+                         and summary.name == 'kumo.drift_previous'), None)
+        if previous is None or not any(
+                isinstance(summary, Note) and previous in summary.text
+                for summary in record.summaries):
+            return record
+        found = self._prediction_run(previous)
+        if found is None:
+            return record
+        return replace(record, summaries=tuple(
+            replace(summary, text=summary.text.replace(
+                previous, found.info.run_name))
+            if isinstance(summary, Note) else summary
+            for summary in record.summaries))
 
     def fold(self, run_id: str, record: RunRecord) -> None:
         r"""Adds a monitoring call's ``record`` to the finished run

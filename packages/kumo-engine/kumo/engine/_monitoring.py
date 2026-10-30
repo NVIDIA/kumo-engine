@@ -506,9 +506,10 @@ def _drift(counts: Optional[Counts], reference: Optional[Counts], name: str,
 
 
 def track(report: Any, run: Any, settings: Any, trainer: Any,
-          started: datetime, labels: Any = None) -> Any:
+          started: datetime, labels: Any = None, previous: Any = None) -> Any:
     r"""``report``, a monitoring call of ``run`` that started at ``started``
-    (an evaluation against the ``labels`` snapshot), with the ``tracking``
+    (an evaluation against the ``labels`` snapshot, or drift since the
+    ``previous`` run), with the ``tracking``
     of the run the tracker's ``log_monitoring`` wrote it into; a failure
     warns, or raises under ``on_error='raise'``."""
     tracking = None if settings is None else settings.tracking
@@ -519,7 +520,8 @@ def track(report: Any, run: Any, settings: Any, trainer: Any,
     from kumo.engine._tracking import log_run
 
     try:
-        record = _record(report, run, tracking, trainer, started, labels)
+        record = _record(report, run, tracking, trainer, started, labels,
+                         previous)
     except Exception as error:
         if settings.on_error == 'warn':
             warn_failure(
@@ -544,7 +546,7 @@ _IDENTITY = ('kumo.prediction_id', 'kumo.bundle_id', 'kumo.as_of',
 
 
 def _record(report: Any, run: Any, tracking: Any, trainer: Any,
-            started: datetime, labels: Any) -> Any:
+            started: datetime, labels: Any, previous: Any) -> Any:
     r"""``report`` as summaries, tagged like ``run``'s prediction run, which
     the tracker writes them into or names a run after."""
     from kumo.engine._tracking import RunSpec, prediction_record, run_record
@@ -560,14 +562,17 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
             None if report.bundle_matches is False else
             getattr(trainer, 'result', None)))
         identity, label = prediction.tags, prediction.model_label
+    platform = getattr(tracking, 'platform', None)
+    ref = getattr(run, 'tracking', None)
+    tracked = ref is not None and ref.platform == platform
+    earlier = getattr(previous, 'tracking', None)
     record = run_record(RunSpec(
         kind='monitoring',
         parents={'monitor': 'evaluate' if evaluating else 'drift'},
         summaries=(_evaluation_summaries(report, labels) if evaluating else
-                   _drift_summaries(report))))
-    ref = getattr(run, 'tracking', None)
-    tracked = ref is not None and ref.platform == getattr(tracking,
-                                                          'platform', None)
+                   _drift_summaries(report, (
+                       earlier.run_name if earlier is not None
+                       and earlier.platform == platform else None)))))
     return replace(
         record, tags={**record.tags, **{
             name: value for name, value in identity.items()
@@ -577,11 +582,13 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
         prediction_run=ref.run_id if tracked else None)
 
 
-def _drift_summaries(report: 'DriftReport') -> List[Summary]:
-    r"""What a tracker logs of ``report``: drift since the previous run, and,
-    when the run's model is the trainer's, the input changes and column
-    drift since training (its score drift since training is the prediction
-    run's own); notes on what is missing and why."""
+def _drift_summaries(report: 'DriftReport',
+                     previous_name: Optional[str] = None) -> List[Summary]:
+    r"""What a tracker logs of ``report``: drift since training and since
+    the previous run, named ``previous_name`` (else by its id), and, when the
+    run's model is the trainer's, the input changes and column drift since
+    training (its score drift since training is the prediction run's own);
+    notes on what is missing and why."""
     summaries: List[Summary] = []
     reasons = report.reasons
     previous = {'psi': report.previous_psi, 'ks': report.previous_ks,
@@ -592,9 +599,14 @@ def _drift_summaries(report: 'DriftReport') -> List[Summary]:
     if report.previous_psi is not None:
         summaries += [Scalar(f'drift/{name}_prev', value)
                       for name, value in previous.items()]
-        summaries.append(Note('notes', f'Drift since '
-                              f'`{report.previous_prediction_id}`: '
-                              f'{_values(previous)}.'))
+    sides = [] if report.bundle_matches is False else [
+        ('training', report.psi, report.ks)]
+    sides.append((previous_name or report.previous_prediction_id,
+                  report.previous_psi, report.previous_ks))
+    drift = [f"vs {side}: {_values({'psi': psi, 'ks': ks})}"
+             for side, psi, ks in sides if psi is not None]
+    if drift:
+        summaries.append(Note('notes', f"Drift {' · '.join(drift)}."))
     if report.bundle_matches is False:
         against = {'psi': report.psi, 'ks': report.ks,
                    'wasserstein': report.wasserstein}
