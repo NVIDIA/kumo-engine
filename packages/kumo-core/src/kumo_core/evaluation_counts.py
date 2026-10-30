@@ -32,6 +32,7 @@ _TOP_CLASSES = 20
 _RESIDUAL_BINS = 40
 _HORIZONS = 12
 _TOP_SCORE_BINS = 100
+_FORECAST_ROWS = 'rows (entity × horizon)'
 #: The arrays a prediction run's score distribution is compared with.
 BASELINE = ('True_PROB', 'confidence', 'top_score', 'classes', 'TARGET_PRED')
 #: A forecast's target window: its first horizon's ``(start, end)`` offsets,
@@ -107,7 +108,7 @@ def evaluation_summaries(task_type: TaskType, counts: Counts,
     if task_type is TaskType.REGRESSION:
         return _regression_summaries(counts)
     if task_type is TaskType.FORECASTING:
-        return [*_regression_summaries(counts),
+        return [*_regression_summaries(counts, _FORECAST_ROWS),
                 *_horizon_summaries(counts, timeframe)]
     return []
 
@@ -271,7 +272,8 @@ def _regression(pred: np.ndarray, target: np.ndarray,
     return counts
 
 
-def _regression_summaries(counts: Counts) -> List[Summary]:
+def _regression_summaries(counts: Counts, rows_title: str = 'rows'
+                          ) -> List[Summary]:
     r"""With ``mae`` and ``rmse``, which the trainer's own metrics of the
     same names replace."""
     arrays = counts.arrays
@@ -294,7 +296,8 @@ def _regression_summaries(counts: Counts) -> List[Summary]:
         counts.summary('residual', 'residual', 'holdout/residuals/rows'),
         _calibration(edges, counts.extents.get('TARGET_PRED'),
                      arrays['TARGET_PRED'], arrays['pred_sum'],
-                     arrays['target_sum'], ('mean predicted', 'mean actual')),
+                     arrays['target_sum'], ('mean predicted', 'mean actual'),
+                     rows_title),
     ]
 
 
@@ -373,7 +376,7 @@ def _horizon_summaries(counts: Counts,
                   1 - arrays['horizon_squared_error'] / np.maximum(spread,
                                                                    _EPS), 0.0)
     columns = {
-        'rows': arrays['horizon_rows'].astype(np.int64),
+        _FORECAST_ROWS: arrays['horizon_rows'].astype(np.int64),
         'mae': arrays['horizon_abs_error'] / rows,
         'rmse': np.sqrt(arrays['horizon_squared_error'] / rows),
         'bias': arrays['horizon_error'] / rows,
@@ -438,10 +441,10 @@ def _by_threshold(positive: np.ndarray, negative: np.ndarray) -> Table:
 def _calibration(edges: Sequence[float],
                  extent: Optional[Tuple[float, float]], rows: np.ndarray,
                  x_sum: np.ndarray, y_sum: np.ndarray,
-                 names: Tuple[str, str]) -> Table:
+                 names: Tuple[str, str], rows_title: str = 'rows') -> Table:
     r"""Per non-empty bin, its rows and their mean ``x`` and ``y``."""
     bounds = bin_bounds(edges, extent)
-    return Table('holdout/calibration', ('from', 'to', 'rows', *names),
+    return Table('holdout/calibration', ('from', 'to', rows_title, *names),
                  tuple((bounds[b].item(), bounds[b + 1].item(), int(rows[b]),
                         (x_sum[b] / rows[b]).item(),
                         (y_sum[b] / rows[b]).item())

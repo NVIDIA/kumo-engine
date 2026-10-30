@@ -249,13 +249,17 @@ def test_forecasting_summaries_are_per_horizon(timeframe, windows):
         assert row == pytest.approx({
             'horizon': h + 1, **({} if timeframe is None else
                                  {'window': windows[h]}),
-            'rows': kept.sum(), 'mae': np.abs(error).mean(),
+            'rows (entity × horizon)': kept.sum(),
+            'mae': np.abs(error).mean(),
             'rmse': np.sqrt((error**2).mean()), 'bias': error.mean(),
             'r2': 1 - (error**2).sum() / (
                 (target[kept] - target[kept].mean())**2).sum()})
         assert sum(summaries[f'holdout/histogram/predicted, {windows[h]}']
                    .counts) == kept.sum()
     assert len(rows) == 3
+    assert summaries['holdout/calibration'].columns == (
+        'from', 'to', 'rows (entity × horizon)', 'mean predicted',
+        'mean actual')
     assert summaries['mae'].value == pytest.approx(
         np.abs(pred - target).mean())
 
