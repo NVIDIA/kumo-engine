@@ -121,13 +121,29 @@ Graphs are limited to 30 tables and require valid declared schemas without self-
 `layout="auto"` chooses Standard or Compact from graph structure; either is also selectable in the notebook.
 Drag to pan, use the controls or Ctrl/Cmd+wheel to zoom, and choose Fit to reset the view.
 Hover or focus a header or column for details without moving the graph.
-The notebook view follows the browser’s light or dark appearance; SVG and PDF exports use the light palette.
-Interactive output requires trusted HTML; fullscreen also needs permission from the notebook host.
+The default notebook view follows the browser’s light or dark appearance; SVG and PDF exports use the light palette.
+Default interactive output requires trusted HTML; fullscreen also needs permission from the notebook host.
+Saved HTML output includes the complete, sample-free SVG image in the requested initial layout and “Rerun this cell to activate animation.”
+Rerun the visualization cell once after upgrading and save the notebook to store this fallback; VS Code Restricted Mode can refuse HTML/SVG output entirely.
+For notebook hosts with anywidget support, display `graph.visualize().as_widget()` using the environment's `anywidget>=0.9,<1` and `ipywidgets` packages.
+Snowflake Workspace Runtime 2.6 and later supplies these packages, including the documented GPU Runtime 2.9 target; Runtime 2.5 and earlier requires installation according to your environment's package policy.
+See [Snowflake's widget installation guidance](https://docs.snowflake.com/en/user-guide/ui-snowsight/notebooks-in-workspaces/notebooks-in-workspaces-interactive-widgets#installation).
+Kumo Engine does not install these packages as base dependencies or connector extras.
+This opt-in view uses the same controls through the widget protocol; host selection is not automatic, and widget restoration still depends on the notebook host.
+It inherits a host color scheme declared when mounted, with browser appearance as the fallback.
+Each displayed view has its own camera; redisplay after restarting the kernel.
 SVG exports contain the initial arrangement and native tooltips.
-Use the download button to save the entire selected layout as a PDF on your computer.
+The Export commands button reveals a selectable PDF save command followed by a Markdown save command.
+Run the desired command with your graph variable to save the file in the notebook filesystem.
+Opening the panel does not generate a PDF, start a download, or write a file.
 The PDF includes a paginated index of all declared tables, columns, data types, key/time roles, and connections, including columns omitted from the diagram.
 Passing a `.pdf` path to `visualize` saves the same document on the filesystem where Kumo Engine runs, using the requested initial layout; it overwrites an existing file.
 PDF export uses Matplotlib and its embedded DejaVu fonts; unsupported characters are shown as explicit Unicode escapes.
+For example, `_ = graph.visualize("graph.pdf", layout="standard")` saves a PDF in the notebook's working directory; use `layout="compact"` for Compact.
+Use `_ = graph.visualize("graph.md")` to save Markdown.
+The assignment suppresses automatic display of the returned SVG.
+In Snowflake Workspaces, retrieve the resulting file through the workspace file browser; saving requires write access to the directory.
+This writes a notebook-side file and does not start a browser download.
 
 Passing a `.md` or `.markdown` path writes a Mermaid relationship diagram and Markdown tables containing every declared column, data type, key/time role, and outgoing connection.
 The file is saved on the machine running Kumo Engine and overwrites an existing file.
@@ -138,30 +154,67 @@ The schema tables are readable without Mermaid support.
 The default `show_samples=False` hides samples and reads no source data.
 Previews can run warehouse queries and incur costs; the row limit does not bound bytes scanned.
 Unavailable or empty previews are labeled.
-Sample values are saved in notebook HTML, but never included in SVG, PDF, or Markdown exports.
+Sample values are saved in notebook HTML or widget state, but never included in SVG, PDF, or Markdown exports.
 
 ### Developing another notebook widget
 
-Use the private `_widget` helpers for shared styling and per-output cleanup.
-This minimal chart uses the shared theme and shell:
+Use the private `_widget` helpers to define one feature specification for both notebook transports.
+The shared shell supplies theme tokens, controls, view identity, and disposal; keep feature behavior inside its initializer.
+This chart uses the same specification with trusted HTML and with real widget MIME:
 
 ```python
 from IPython.display import HTML, display
-from kumo.engine._widget import CSS_THEME, render_widget
-
-body = (
-    '<svg width="320" height="48" role="img" aria-label="Contribution: 75%">'
-    f'<rect y="8" width="225" height="24" fill="{CSS_THEME["accent"]}"/>'
-    '</svg>'
+from kumo.engine._widget import (
+    CSS_THEME, button, render_anywidget, render_widget,
 )
-display(HTML(render_widget(body)))
+
+chart = dict(
+    class_name="kumo-contribution",
+    body=(
+        '<div class="kumo-widget-toolbar">'
+        + button("chart-toggle", "Toggle contribution", text="↔")
+        + '</div><svg width="320" height="48" role="img" '
+        'aria-label="Contribution"><rect y="8" height="24"/></svg>'
+    ),
+    style=f'.kumo-contribution rect{{fill:{CSS_THEME["accent"]}}}',
+    data={"fraction": 0.75},
+    script="""
+const svg=host.querySelector('svg'),bar=svg.querySelector('rect');
+const toggle=host.querySelector('.chart-toggle');
+let fraction=data.fraction;
+const update=()=>{bar.setAttribute('width',300*fraction);
+svg.setAttribute('aria-label','Contribution: '+Math.round(100*fraction)+'%')};
+toggle.addEventListener('click',()=>{fraction=1-fraction;update()},{signal});
+update();toggle.disabled=false;
+""",
+)
+display(HTML(render_widget(**chart)))
+display(render_anywidget(**chart))  # uses environment-provided widget packages
 ```
 
-For interactive controls, use `button(...)` and enable it after attaching handlers.
-Initializer scripts receive `host`, `widgetId`, `data`, `signal`, and `onDispose(callback)`.
-Scope DOM queries to `host`, use `signal` for listeners, and register timers and observers with `onDispose`.
-`body`, `style`, and `script` are trusted code: escape user text, pass structured values through `data=`, and scope feature CSS under its own root class.
-Each render creates a new instance; removed outputs must be rendered again.
+`render_anywidget` lazily imports the optional dependency and provides an AFM `render({model, el})` entry point.
+It transports markup and structured `data` in model state; executable feature code stays in the module.
+Each view initializes its own closure, so repeated displays of one model have independent controls and camera state.
+The specification is a snapshot; updating Python dictionaries does not update existing views.
+
+- Escape user text in markup and use `data` for values; never interpret model state as code or include executable scripts in `body`.
+  Keep frontend code self-contained, without CDN imports, `eval`, or `new Function`.
+- Initializers receive `host`, `widgetId`, `data`, `signal`, and `onDispose(callback)`.
+  Scope queries to `host`, attach listeners with `signal`, and enable controls after initialization.
+  Register timer/animation cancellation, observer disconnection, pointer release, and object-URL revocation with `onDispose`; the shell invokes cleanup on HTML removal or AFM disposal.
+- Scope CSS under the feature's root class and use `CSS_THEME` for interactive colors.
+  Both shells retain `nodarkmode`; the widget transport inherits a declared host color scheme available at mount and otherwise follows browser appearance.
+  Redisplay to inherit a scheme that becomes available only after mounting.
+- Use `widgetId` for IDs created by the initializer; for IDs and references already in SVG markup, pass their shared unique prefix as `namespace` so each view rewrites it independently.
+- Keep static export serialization in the feature, using the resolved `THEME` palette for light exports.
+  Notebook-only sample values may enter saved HTML or widget state, but must stay out of static exports.
+- HTML needs a trusted execution surface; anywidget needs a compatible active notebook host.
+  Request fullscreen directly from a user action and handle rejection; use `host.matches(":fullscreen")` to recognize the actual fullscreen element inside Shadow DOM.
+  Fullscreen remains subject to host permissions, and widget support alone does not prove that capability.
+  Show explicit notebook-file export commands with accurate destinations; keep file generation outside display initialization.
+
+AFM initializes once attached; temporary host detachment preserves the view until the host calls its disposer.
+Disposed views must be rendered again.
 
 ## Documentation
 

@@ -4,6 +4,7 @@
 
 import json
 import re
+from base64 import b64decode
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, PropertyMock, patch
@@ -255,7 +256,14 @@ def test_visualize_exports_escaped_svg_without_source_access(
                   ElementTree.tostring(embedded)) == re.sub(
                       rb'kumo-[0-9a-f]{32}', b'kumo-ID',
                       ElementTree.tostring(root))
-    assert html.find('.//div[@role="region"]').get('tabindex') == '0'
+    assert html.find('.//div[@role="region"]').get('tabindex') is None
+    assert html.find('./div[@class="kumo-graph-live"]').get('style') == (
+        'display:none')
+    assert 'hidden' in html.find(
+        './/div[@class="kumo-widget-toolbar kumo-graph-toolbar"]').attrib
+    assert 'hidden' in html.find('.//div[@role="region"]').attrib
+    assert html.find('./div[@class="kumo-graph-static"]/p').text == (
+        'Rerun this cell to activate animation.')
     text = ''.join(element.text or ''
                    for element in root.iter('{http://www.w3.org/2000/svg}text')
                    if element.get('{http://www.w3.org/XML/1998/namespace}space')
@@ -471,6 +479,55 @@ def test_widget_shell_composes_non_graph_content_and_escapes_data():
     assert '<script>alert(' not in html
 
 
+def test_visualize_optional_widget_preserves_notebook_state():
+    from kumo.engine._widget import render_anywidget
+
+    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
+                      side_effect=AssertionError('source accessed')):
+        svg = Graph(_s3_tables(), [Edge('events', 'user_id', 'users')]).visualize()
+        with patch.dict('sys.modules', {'anywidget': None, 'ipywidgets': None}):
+            with patch.object(type(svg), '_pdf', side_effect=AssertionError(
+                    'display rendered a PDF')):
+                html = svg._repr_html_()
+            assert svg._repr_svg_() == str(svg)
+            assert svg._pdf('standard').startswith(b'%PDF-')
+            assert 'table_0' in svg._markdown()
+            with pytest.raises(ImportError, match=r'anywidget>=0.9,<1'):
+                svg.as_widget()
+        anywidget = pytest.importorskip('anywidget')
+        with patch.object(type(svg), '_pdf', side_effect=AssertionError(
+                'display rendered a PDF')):
+            widget = svg.as_widget()
+    try:
+        assert isinstance(widget, anywidget.AnyWidget)
+        bundle = widget._repr_mimebundle_()
+        if isinstance(bundle, tuple):
+            bundle = bundle[0]
+        assert bundle['application/vnd.jupyter.widget-view+json'][
+            'model_id'] == widget.model_id
+        assert 'text/html' not in bundle
+        payload = ElementTree.fromstring(html).find(
+            './script[@type="application/json"]')
+        assert json.loads(json.dumps(widget.data)) == json.loads(payload.text)
+        root = ElementTree.fromstring('<div>' + widget.body + '</div>')
+        assert root.find('.//{http://www.w3.org/2000/svg}svg') is not None
+        assert root.find('./div[@class="kumo-graph-static"]/p').text == (
+            'Rerun this cell to activate animation.')
+        assert not root.findall('.//script')
+        chart = render_anywidget('<p>Chart</p>', style='.chart{padding:24px}',
+                                 class_name='chart')
+        repeated = svg.as_widget()
+        try:
+            identity = widget.get_state()['_anywidget_id']
+            assert chart.get_state()['_anywidget_id'] != identity
+            assert repeated.get_state()['_anywidget_id'] == identity
+        finally:
+            chart.close()
+            repeated.close()
+    finally:
+        widget.close()
+
+
 @pytest.mark.parametrize('layout',
                          [None, [], 'original', 'circular'])
 def test_visualize_rejects_invalid_layout_before_source_access(layout):
@@ -492,8 +549,11 @@ def test_visualize_layouts_preserve_schema_and_export_selection(tmp_path):
             svg = graph.visualize(destination, layout=layout, show_cols=True)
         assert destination.read_text(encoding='utf-8') == svg
         root = ElementTree.fromstring(svg)
-        payload = json.loads(ElementTree.fromstring(svg._repr_html_()).find(
+        html = ElementTree.fromstring(svg._repr_html_())
+        payload = json.loads(html.find(
             './script[@type="application/json"]').text)
+        image = html.find('./div[@class="kumo-graph-static"]/img')
+        assert b64decode(image.get('src').split(',', 1)[1]).decode() == svg
         assert payload['initial'] == layout
         selected = payload['layouts'][layout]
         pdf = svg._pdf(layout)
@@ -661,6 +721,9 @@ def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
         assert call.kwargs['sql'] == (sql if table.table_name == 'users' else None)
         assert call.kwargs['timeout'] > 0
     assert 'Sample values' not in svg
+    image = ElementTree.fromstring(html).find(
+        './div[@class="kumo-graph-static"]/img')
+    assert b64decode(image.get('src').split(',', 1)[1]).decode() == svg
     markdown = svg._markdown()
     assert 'private sample' not in markdown and 'credential secret' not in markdown
     assert svg._repr_svg_() == destination.read_text(encoding='utf-8') == str(svg)

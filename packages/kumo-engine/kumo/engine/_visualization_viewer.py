@@ -3,9 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Self-contained notebook viewer; layout geometry is computed in Python."""
 
+from base64 import b64encode
 from string import Template
 
-from kumo.engine._widget import CSS_THEME, button, render_widget
+from kumo.engine._widget import CSS_THEME, button
 
 _STYLE = Template(r"""
 .kumo-graph{container:kumo-graph/inline-size;padding:16px;overflow:clip}
@@ -48,7 +49,14 @@ transparent .8px) 0 0/16px 16px}
 .kumo-graph-view[data-dragging],.kumo-graph-view[data-dragging] *{cursor:grabbing}
 .kumo-graph-view svg{display:block;flex:none;max-width:none!important;
 max-height:none!important}
-.kumo-graph-status{font-size:13px;color:$muted;padding:6px 0}
+.kumo-graph-status{font-size:13px;color:$muted;padding:6px 0;
+white-space:pre-line;user-select:text;-webkit-user-select:text}
+.kumo-graph-export-options{display:grid;gap:8px;
+padding:10px 12px;margin-bottom:12px;background:$surface;border-radius:10px}
+.kumo-graph-export-options,.kumo-graph-export-options *{
+user-select:text;-webkit-user-select:text}
+.kumo-graph-export-options code{display:block;margin:8px 0;white-space:pre-wrap;
+overflow-wrap:anywhere}
 .kumo-graph-view svg>rect{fill:transparent}
 .kumo-graph-tooltip{position:absolute;top:0;left:0;z-index:10;
 box-sizing:border-box;
@@ -420,7 +428,7 @@ ArrowUp:[0,40],ArrowDown:[0,-40]}[e.key];
 if(delta){e.preventDefault();hide();panBy(...delta)}
 },{signal});
 selector.addEventListener('change',event=>{
-applyLayout(event.target.value);if(!full)view.style.height=inlineHeight()+'px';fit();
+status.hidden=true;applyLayout(event.target.value);if(!full)view.style.height=inlineHeight()+'px';fit();
 },{signal});
 host.querySelector('.kumo-graph-fit').addEventListener('click',fit,{signal});
 host.querySelector('.kumo-graph-zoom-in').addEventListener('click',()=>zoom(scale*1.25),{signal});
@@ -437,15 +445,16 @@ enter.addEventListener('click',()=>{
 status.hidden=true;
 // Capture the inline camera before fullscreen changes viewport dimensions.
 inlineCamera={selected,scale,fitted,panX,panY};
-const denied=()=>{status.hidden=false;inlineCamera=null};
+const denied=()=>{status.textContent='Browser full screen is unavailable in this notebook. '+
+'Use the graph controls here.';status.hidden=false;inlineCamera=null};
 try{Promise.resolve(host.requestFullscreen()).catch(denied)}
 catch(error){denied()}
 },{signal});
 exit.addEventListener('click',()=>{
-if(document.fullscreenElement===host)document.exitFullscreen();
+if(host.matches(':fullscreen'))document.exitFullscreen();
 },{signal});
 host.addEventListener('fullscreenchange',()=>{
-const entering=document.fullscreenElement===host;
+const entering=host.matches(':fullscreen');
 if(entering===full)return;
 hide();full=entering;
 if(full){
@@ -479,24 +488,29 @@ fit();resizeObserver.observe(view);controls.forEach(el=>el.disabled=false);
 """
 
 
-_DOWNLOAD = r"""
-const download=host.querySelector('.kumo-graph-download');
-const pdfURLs=new Map();
-download.addEventListener('click',()=>{
-if(!pdfURLs.has(selected)){
-const bytes=Uint8Array.from(atob(data.pdfs[selected]),char=>char.charCodeAt(0));
-pdfURLs.set(selected,URL.createObjectURL(new Blob([bytes],{type:'application/pdf'})));
-}
-const link=document.createElement('a');link.href=pdfURLs.get(selected);
-link.download='graph-'+selected+'.pdf';host.append(link);link.click();link.remove();
+_EXPORT = r"""
+const exportButton=host.querySelector('.kumo-graph-export');
+const options=host.querySelector('.kumo-graph-export-options');
+const command=options.querySelector('code');
+options.id=widgetId+'-exports';exportButton.setAttribute('aria-controls',options.id);
+exportButton.setAttribute('aria-expanded','false');
+const closeExport=()=>{options.hidden=true;exportButton.setAttribute('aria-expanded','false')};
+exportButton.addEventListener('click',()=>{
+if(!options.hidden){closeExport();return}
+status.hidden=true;
+command.textContent=`_ = graph.visualize('graph.pdf', layout='${selected}')`;
+options.hidden=false;exportButton.setAttribute('aria-expanded','true');
+command.focus({preventScroll:true});
 },{signal});
-onDispose(()=>{for(const url of pdfURLs.values())URL.revokeObjectURL(url)});
+selector.addEventListener('change',closeExport,{signal});
+host.addEventListener('keydown',event=>{
+if(event.key==='Escape'&&!options.hidden){closeExport();exportButton.focus()}
+},{signal});
 """
 
 
-def render_html(svg: str, layouts: dict, initial_layout: str,
-                pdfs: dict | None = None) -> str:
-    """Wrap one SVG with controls and serialized, precomputed geometries."""
+def viewer(svg: str, layouts: dict, initial_layout: str, static_svg: str) -> dict:
+    """Prepare shared controls, behavior, and precomputed geometries."""
     options = ''.join(
         '<label><input type="radio" '
         f'value="{name}" disabled=""/><span>{label}</span></label>'
@@ -511,11 +525,12 @@ def render_html(svg: str, layouts: dict, initial_layout: str,
                   'M 21 15 V 21 H 15')
     exit_icon = ('M 3 9 H 9 V 3 M 15 3 V 9 H 21 M 9 21 V 15 H 3 '
                  'M 21 15 H 15 V 21')
-    download_icon = ('M 12 3 V 15 M 7 10 L 12 15 L 17 10 '
-                     'M 4 16 V 21 H 20 V 16')
+    export_icon = ('M 12 3 V 15 M 7 10 L 12 15 L 17 10 '
+                   'M 4 16 V 21 H 20 V 16')
 
     body = (
-        '<div class="kumo-widget-toolbar kumo-graph-toolbar">'
+        '<div class="kumo-graph-live" style="display:none">'
+        '<div class="kumo-widget-toolbar kumo-graph-toolbar" hidden="">'
         '<div class="kumo-graph-actions">'
         + button('kumo-graph-enter', 'Enter full screen', enter_icon)
         + button('kumo-graph-exit', 'Exit full screen', exit_icon)
@@ -525,22 +540,38 @@ def render_html(svg: str, layouts: dict, initial_layout: str,
         + button('kumo-graph-zoom-out', 'Zoom out', text='−')
         + button('kumo-graph-zoom-in', 'Zoom in', text='+')
         + '</div>'
-        + (button('kumo-graph-download', 'Download PDF', download_icon)
-           if pdfs else '')
+        + button('kumo-graph-export', 'Export commands', export_icon)
         + '</div><div class="kumo-graph-layout" role="radiogroup" '
         f'aria-label="Graph layout">{options}</div></div>'
-        '<span class="kumo-graph-status" role="status" hidden="">'
-        'Full screen is unavailable in this notebook. Use the graph controls '
-        'here or open the exported SVG.</span>'
-        '<div class="kumo-graph-view" tabindex="0" role="region" '
-        'aria-label="Pannable graph visualization">'
-        f'<div class="kumo-graph-scene">{svg}</div></div>')
+        '<div class="kumo-graph-export-options" hidden="">'
+        '<div>PDF<code tabindex="0"></code></div>'
+        '<div>Markdown (.md)<code tabindex="0">'
+        "_ = graph.visualize('graph.md')</code></div>"
+        '<div>Run a command to save in the notebook filesystem. '
+        'Replace graph with your graph variable.</div></div>'
+        + '<span class="kumo-graph-status" role="status" hidden=""></span>'
+        '<div class="kumo-graph-view" role="region" hidden="" '
+        'aria-label="Graph visualization">'
+        f'<div class="kumo-graph-scene">{svg}</div></div></div>'
+        '<div class="kumo-graph-static"><img alt="Table relationships" '
+        'style="display:block;max-width:100%;height:auto" '
+        'src="data:image/svg+xml;base64,'
+        + b64encode(static_svg.encode()).decode() + '"/>'
+        '<p>Rerun this cell to activate animation.</p></div>')
     script = (
         'const view=host.querySelector(".kumo-graph-view");'
         'const svg=view.querySelector("svg"),scene=view.firstElementChild;'
+        'const live=host.querySelector(".kumo-graph-live");'
+        'const fallback=host.querySelector(".kumo-graph-static");'
+        'onDispose(()=>{live.style.display="none";fallback.hidden=false;'
+        'host.querySelector(".kumo-graph-toolbar").hidden=true;'
+        'host.querySelector(".kumo-graph-export-options").hidden=true});'
+        'live.style.display="contents";view.hidden=false;'
         'const edges=Array.from(view.querySelectorAll(".kumo-edge"));'
-        + _HOVER + _CAMERA + (_DOWNLOAD if pdfs else ''))
-    return render_widget(body, style=_STYLE, script=script,
-                         data={'layouts': layouts, 'initial': initial_layout,
-                               'pdfs': pdfs or {}},
-                         class_name='kumo-graph')
+        + _HOVER + _CAMERA + _EXPORT
+        + 'host.querySelector(".kumo-graph-toolbar").hidden=false;'
+        'fallback.hidden=true;'
+        'view.tabIndex=0;view.setAttribute("aria-label","Pannable graph visualization");')
+    return dict(body=body, style=_STYLE, script=script,
+                data={'layouts': layouts, 'initial': initial_layout},
+                class_name='kumo-graph')

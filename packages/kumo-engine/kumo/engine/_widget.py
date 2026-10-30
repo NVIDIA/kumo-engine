@@ -4,6 +4,7 @@
 """Shared notebook theme, controls, and output cleanup."""
 
 import json
+from hashlib import sha256
 from html import escape
 from string import Template
 from types import MappingProxyType
@@ -85,14 +86,85 @@ def button(cls: str, label: str, icon: str = '', text: str = '') -> str:
             '</button>')
 
 
+_INITIALIZE = r"""
+function initialize(host,data,feature,observeRemoval=true){
+const widgetId=host.id,controller=new AbortController(),signal=controller.signal;
+const cleanups=[],onDispose=callback=>cleanups.push(callback);
+let disposed=false;
+const dispose=()=>{if(disposed)return;disposed=true;
+controller.abort();removalObserver.disconnect();
+host.dataset.disposed="true";
+for(const cleanup of cleanups.splice(0)){try{cleanup()}catch(error){console.error(error)}}};
+const removalObserver=new MutationObserver(records=>{
+if(records.some(record=>record.removedNodes.length)&&!host.isConnected)dispose();});
+if(observeRemoval)removalObserver.observe(host.getRootNode(),{childList:true,subtree:true});
+try{feature({host,widgetId,data,signal,onDispose})}catch(error){dispose();throw error}
+return dispose;
+}
+"""
+
+
+def render_anywidget(body: str, *, style: str = '', script: str = '',
+                     data: dict | None = None, class_name: str = '',
+                     namespace: str = ''):
+    """Create an optional AFM widget with independent state for each view."""
+    try:
+        import anywidget
+        import traitlets
+    except ImportError as error:
+        raise ImportError(
+            'Interactive widget display requires anywidget>=0.9,<1 and '
+            'ipywidgets. Snowflake Workspace Runtime 2.6+ supplies these '
+            'packages; restore the runtime packages or install compatible '
+            'versions according to your environment policy. Static SVG, PDF, '
+            'and Markdown exports remain available through '
+            'graph.visualize("graph.svg"), graph.visualize("graph.pdf"), '
+            'or graph.visualize("graph.md").') from error
+
+    class NotebookWidget(anywidget.AnyWidget):
+        _css = (_STYLE + style +
+                ':where(.kumo-widget-inherit-theme){color-scheme:inherit}')
+        _esm = (_INITIALIZE + 'export default {render({model,el}){'
+                'const host=document.createElement("div");'
+                'host.id="kumo-"+crypto.randomUUID();'
+                'host.className=' + json.dumps(
+                    'kumo-widget nodarkmode ' + class_name) + ';'
+                'const namespace=model.get("namespace"),body=model.get("body");'
+                'host.innerHTML=namespace?body.replaceAll(namespace,host.id):body;'
+                'el.append(host);'
+                'let initialized=false,dispose;const mount=()=>{'
+                'if(initialized||!host.isConnected)return;initialized=true;'
+                'mounted.disconnect();'
+                'const scheme=getComputedStyle(el).colorScheme;'
+                'if(scheme&&scheme!=="normal")'
+                'host.classList.add("kumo-widget-inherit-theme");'
+                'try{dispose=initialize(host,model.get("data"),'
+                '({host,widgetId,data,signal,onDispose})=>{' + script + '},false);}'
+                'catch(error){host.remove();throw error}};'
+                'const mounted=new ResizeObserver(mount);mounted.observe(host);mount();'
+                'return()=>{initialized=true;mounted.disconnect();'
+                'dispose?.();host.remove()};}};')
+        body = traitlets.Unicode().tag(sync=True)
+        data = traitlets.Dict().tag(sync=True)
+        namespace = traitlets.Unicode().tag(sync=True)
+
+    NotebookWidget.__name__ += '_' + sha256(
+        (NotebookWidget._esm + NotebookWidget._css).encode()).hexdigest()
+    return NotebookWidget(body=body, data=data or {}, namespace=namespace)
+
+
 def render_widget(body: str, *, style: str = '', script: str = '',
                   data: dict | None = None, class_name: str = '',
-                  attributes: dict[str, str] | None = None) -> str:
+                  attributes: dict[str, str] | None = None,
+                  namespace: str = '') -> str:
     """Compose trusted feature markup/code with escaped data and local cleanup.
 
     Feature scripts use host, widgetId, data, signal and onDispose(callback).
     Root attributes are data-* or aria-* names; controls are enabled by features.
     """
+    widget_id = 'kumo-' + uuid4().hex
+    if namespace:
+        body = body.replace(namespace, widget_id)
     attributes = attributes or {}
     if any(not name.startswith(('data-', 'aria-')) or not all(
             c.isascii() and (c.isalnum() or c == '-') for c in name)
@@ -104,22 +176,16 @@ def render_widget(body: str, *, style: str = '', script: str = '',
     for char, encoded in [('<', r'\u003c'), ('>', r'\u003e'), ('&', r'\u0026')]:
         payload = payload.replace(char, encoded)
     return (
-        f'<div id="kumo-{uuid4().hex}" '
+        f'<div id="{widget_id}" '
         f'class="kumo-widget nodarkmode {escape(class_name)}"{attrs}>'
         f'<style>{_STYLE}{style}</style>{body}'
         f'<script type="application/json" class="kumo-widget-data">'
         f'{payload}</script><script>//<![CDATA[\n(()=>{{'
-        'const host=document.currentScript.parentElement,widgetId=host.id;'
+        'const parent=document.currentScript.parentElement;'
+        f'const host=parent.id==="{widget_id}"?parent:'
+        f'parent.querySelector("#{widget_id}");'
         'const data=JSON.parse(host.querySelector(":scope>.kumo-widget-data").textContent);'
-        'const controller=new AbortController(),signal=controller.signal;'
-        'const cleanups=[],onDispose=callback=>cleanups.push(callback);'
-        'let disposed=false;'
-        'const dispose=()=>{if(disposed)return;disposed=true;'
-        'controller.abort();removalObserver.disconnect();'
-        'host.dataset.disposed="true";'
-        'for(const cleanup of cleanups.splice(0)){try{cleanup()}catch(error){console.error(error)}}};'
-        'const removalObserver=new MutationObserver(records=>{'
-        'if(records.some(record=>record.removedNodes.length)&&!host.isConnected)dispose();});'
-        'removalObserver.observe(host.getRootNode(),{childList:true,subtree:true});'
-        'try{' + script + '}catch(error){dispose();throw error}'
+        + _INITIALIZE +
+        'initialize(host,data,({host,widgetId,data,signal,onDispose})=>{'
+        + script + '});'
         '})();\n//]]>\n</script></div>')

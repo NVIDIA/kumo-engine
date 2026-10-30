@@ -368,7 +368,7 @@ class Graph:
                 source data. Previews may
                 run warehouse queries and incur costs; returned row limits
                 do not bound bytes scanned. Unavailable previews are labeled.
-                Samples become part of saved notebook HTML, never file exports.
+                Samples become part of saved notebook output, never file exports.
             layout: Initial arrangement: auto, standard, or compact.
                 Auto chooses from graph structure, independently of viewport
                 size. Standard preserves the layered relationship view;
@@ -377,12 +377,14 @@ class Graph:
 
         Uses declared schemas. More than 30 tables, self-relations,
         and missing schema/key definitions raise ValueError.
-        Trusted HTML output offers full screen when the notebook host permits it.
+        Call as_widget() on the result for hosts supporting anywidget;
+        this uses the environment's widget packages. Default output uses HTML.
+        Full screen is available when the notebook host permits it.
         Dragging, full screen, Fit, and zoom preserve the selected arrangement.
         SVG exports use the initial layout and contain no interactive controls.
-        The PDF download button exports the selected layout to the browser's
-        download location. PDF exports include all declared columns in the
-        index, even when the diagram omits them.
+        The export control shows Python commands to save PDF and Markdown
+        files in the notebook filesystem. PDF exports include all declared
+        columns in the index, even when the diagram omits them.
         Markdown diagrams use the Markdown viewer's Mermaid layout rather than
         the notebook arrangement; schema tables remain readable without Mermaid.
         """

@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """SVG rendering of declared table relationships."""
 
-import base64
 import json
 import re
 from datetime import date
@@ -18,7 +17,7 @@ from kumoapi.graph import Edge, validate_edge_endpoints
 from kumoapi.source_table import CustomSQLSourceTable
 from kumoapi.table import TableDefinition
 
-from kumo.engine._widget import THEME
+from kumo.engine._widget import THEME, render_anywidget, render_widget
 from kumo.engine.table import Table
 
 _COLUMN_LIMIT = 10
@@ -97,17 +96,21 @@ class SVG(str):
             lines.append('')
         return '\n'.join(lines)
 
+    def as_widget(self):
+        """Return an anywidget view using the environment's widget packages."""
+        return render_anywidget(**self._viewer())
+
     def _repr_html_(self) -> str:
-        from kumo.engine._visualization_viewer import render_html
+        return render_widget(**self._viewer())
+
+    def _viewer(self) -> dict:
+        from kumo.engine._visualization_viewer import viewer
 
         svg = str(self)
         for metadata, sampled in self._samples.items():
             svg = svg.replace(metadata, sampled)
-        if self._namespace:
-            svg = svg.replace(self._namespace, 'kumo-' + uuid4().hex)
-        pdfs = {name: base64.b64encode(self._pdf(name)).decode('ascii')
-                for name in self._layouts}
-        return render_html(svg, self._layouts, self._initial_layout, pdfs)
+        return dict(viewer(svg, self._layouts, self._initial_layout, str(self)),
+                    namespace=self._namespace)
 
 
 def _wrap(text: str, width: int) -> list[str]:
