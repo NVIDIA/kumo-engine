@@ -240,20 +240,9 @@ class DatabricksSinkBackend(DatabricksModelRegistryMixin):
     def preflight_write_files(self, connector: SourceConnector,
                               table_name: str,
                               write_mode: Optional[WriteMode] = None) -> None:
-        """Refuse an occupied volume directory before scoring, unless
-        ``write_mode`` is ``OVERWRITE``; tables are not checked."""
-        from kumo_core.artifact_export import ArtifactDestinationConflict
-        from pyarrow.fs import FileSelector
-
-        if (write_mode is WriteMode.OVERWRITE or not table_name.endswith('/')
-                or not self.holds_files(connector, table_name)):
-            return
-        filesystem, path = self.filesystem(connector, table_name)
-        if filesystem.get_file_info(FileSelector(path, allow_not_found=True)):
-            raise ArtifactDestinationConflict(
-                f"Output directory '{path}/' already contains data from "
-                f"another export. Choose an empty destination path, or "
-                f"replace it with write_mode=WriteMode.OVERWRITE.")
+        """Refuse an occupied volume directory; tables are not checked."""
+        if self.holds_files(connector, table_name):
+            FilesystemSink(self).preflight_write_files(connector, table_name)
 
     def holds_files(self, connector: SourceConnector, path: str) -> bool:
         """``/Volumes/<catalog>/<schema>/<volume>/...``; anything else is a
