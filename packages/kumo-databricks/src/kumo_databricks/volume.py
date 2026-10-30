@@ -16,10 +16,12 @@ from urllib.parse import quote
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import DatabricksError, NotFound, PermissionDenied
 from kumo_core.chunked_fs import ChunkedFileHandler
+from kumo_core.sources.diagnostics import safe_summary
+from kumo_databricks.staging import clear_volume
 from pyarrow.fs import FileSystem, PyFileSystem
 
 _FILES = '/api/2.0/fs/files'
-_READ = 8 << 20
+_BUFFER = 8 << 20
 
 
 def is_volume_path(path: str) -> bool:
@@ -34,10 +36,7 @@ def volume_filesystem(client: WorkspaceClient) -> FileSystem:
 
 @contextmanager
 def _translated(path: str) -> Iterator[None]:
-    """Nothing is chained, and only SDK errors keep their text: transport
-    errors from presigned uploads carry the signed URL."""
-    from kumo_core.sources.diagnostics import safe_summary
-
+    """OS errors, unchained; non-SDK text may hold a signed URL."""
     try:
         yield
     except NotFound as error:
@@ -51,22 +50,11 @@ def _translated(path: str) -> Iterator[None]:
 
 
 class VolumeHandler(ChunkedFileHandler):
-    """``/Volumes/<catalog>/<schema>/<volume>/...`` through ``client.files``.
-
-    Parts stay under the Files API's 5 GiB single-upload cap.
-    """
-    part_bytes = 4 << 30
+    part_bytes = 4 << 30  # under the Files API's 5 GiB upload cap
     plain_bytes = 256 << 20
 
     def __init__(self, client: WorkspaceClient) -> None:
         self._client = client
-
-    def __eq__(self, other: object) -> bool:
-        return (isinstance(other, VolumeHandler)
-                and other._client is self._client)
-
-    def __ne__(self, other: object) -> bool:
-        return not self == other
 
     def get_type_name(self) -> str:
         return 'databricks-volume'
@@ -107,8 +95,6 @@ class VolumeHandler(ChunkedFileHandler):
         return _Part(self._client, path)
 
     def _remove(self, path: str, *, tree: bool) -> None:
-        from kumo_databricks.staging import clear_volume
-
         path = path.rstrip('/')
         with _translated(path):
             if tree:
@@ -135,13 +121,13 @@ class _Part:
         with _translated(self._path):
             pieces, got = [], 0
             while got < length:
-                piece = self._stream.read(min(_READ, length - got))
+                piece = self._stream.read(min(_BUFFER, length - got))
                 if not piece:
                     break
                 pieces.append(piece)
                 got += len(piece)
         self._at += got
-        return pieces[0] if len(pieces) == 1 else b''.join(pieces)
+        return b''.join(pieces)
 
     def _open(self, offset: int) -> None:
         self.close()
@@ -158,7 +144,7 @@ class _Part:
             self.close()
             raise OSError(f'{self._path}: asked for bytes from {offset}, '
                           f'got {served or "the whole file"}')
-        self._stream.set_chunk_size(_READ)
+        self._stream.set_chunk_size(_BUFFER)
         self._at = offset
 
     def close(self) -> None:
@@ -195,7 +181,7 @@ class _Upload(io.RawIOBase):
         self._path = path
         self._feed = _Feed()
         self._error: Optional[BaseException] = None
-        source = io.BufferedReader(self._feed, 8 << 20)
+        source = io.BufferedReader(self._feed, _BUFFER)
 
         def upload() -> None:
             try:
