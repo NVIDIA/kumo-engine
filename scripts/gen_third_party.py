@@ -918,7 +918,9 @@ def _diskgraph_manifest_errors(inventory: dict[str, Any],
         item.get("id"): item
         for item in manifest.get("artifacts", [])
     }
-    for artifact_id in ("diskgraph-extension", "diskgraph-ingest"):
+    for artifact_id in ("diskgraph-extension", "diskgraph-ingest",
+                        "diskgraph-extension-windows",
+                        "diskgraph-ingest-windows"):
         artifact = inventory_artifacts.get(artifact_id)
         resolved = manifest_artifacts.get(artifact_id)
         if artifact is None or resolved is None:

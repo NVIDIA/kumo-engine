@@ -29,10 +29,11 @@ uses by default to encode text columns; without it, a text column cannot be
 encoded and the error asks for `pip install "kumo-engine[text]"`.
 `torch-geometric>=2.8.1,<3` is also resolved separately at install time.
 
-Faiss is selected at install time: `faiss-gpu==1.14.3` on Linux and
+Faiss is selected at install time: `faiss-gpu==1.14.3` on Linux x86-64 and
 `faiss-cpu==1.14.3` on macOS. These markers live on the engine's direct
 dependencies so merging bundled packages preserves them. This dependency
-selection does not establish macOS wheel or runtime support.
+selection does not establish wheel or runtime support. Faiss is optional on
+Windows and Linux ARM64; the `cpu` extra opts into CPU Faiss there.
 
 Releases are cut from `NVIDIA/kumo-engine`: its GitHub releases trigger the
 workflows below, which attach the wheels to the release. Their `kitmaker` job
@@ -40,9 +41,17 @@ then has Kitmaker, NVIDIA's release service, fetch the attached wheels and
 publish them to PyPI and pypi.nvidia.com. No workflow here uploads to PyPI or
 holds PyPI credentials.
 
-The wheels are `cp311-abi3-manylinux_2_34_x86_64` for Linux x86_64 with glibc
->= 2.34 and `cp311-abi3-macosx_14_0_arm64` for Apple Silicon with macOS >= 14.0.
-Both require CPython >= 3.11 (DiskGraph's stable-ABI floor). The merger reads
+The build matrix targets `cp311-abi3-manylinux_2_34_x86_64` and
+`cp311-abi3-manylinux_2_34_aarch64` for Linux with glibc >= 2.34,
+`cp311-abi3-win_amd64` for native Windows x86-64, and
+`cp311-abi3-macosx_14_0_arm64` for Apple Silicon with macOS >= 14.0.
+WSL uses the Linux x86-64 wheel. All require CPython >= 3.11
+(DiskGraph's stable-ABI floor), with classifiers for 3.11–3.14. Adding build
+targets does not establish published availability or installed-wheel runtime
+qualification. Release attachment and publication currently allow only Linux
+x86-64 and macOS ARM64. Linux ARM64 remains a CI artifact until installed-wheel
+qualification is integrated; native Windows remains experimental and CI-only.
+Windows release support uses WSL with the Linux x86-64 wheel. The merger reads
 every bundled wheel's `Requires-Python` and writes their intersection into the
 final wheel.
 Stricter minimums, upper bounds, and exclusions are retained; incompatible
@@ -107,12 +116,13 @@ platform's `release-version`.
    - builds the wheels with `--release`, so the version is exactly the tag's;
    - resolves each platform's wheel against PyPI, alone and with each extra, on
      every Python version it claims, and stops if any fails;
-   - attaches the Linux x86_64 and macOS ARM64 wheels to the GitHub release.
+   - attaches only the Linux x86-64 and macOS ARM64 wheels to the GitHub
+     release; ARM64 Linux and experimental native Windows builds stay in CI.
 5. **Approve the publication.** The `kitmaker` job waits for approval on the
    `kumo-engine-release` environment. It then checks that the Portal project
    has the expected name and owner and that the attached wheel is the one this
    run built, has Kitmaker dry-run it, and only then publishes it to PyPI and
-   pypi.nvidia.com, where it confirms both serve exactly those bytes. Both
+   pypi.nvidia.com, where it confirms both serve exactly those bytes. All enabled
    platform wheels are published. A publication cannot be recalled, and PyPI never
    accepts the same file name twice.
 6. **Smoke-test the published wheel** in a clean virtualenv:
@@ -166,6 +176,27 @@ to match the Faiss dependency. It disables Zig and glibc checks
 and takes the final platform tag from the built DiskGraph wheel. Rust, Xcode
 Command Line Tools, and CMake are required. The release workflow builds this
 wheel on a macOS ARM64 runner with the same deployment target.
+
+For experimental native Windows builds, run the builder in Git Bash with
+native Windows Python, the Rust MSVC toolchain, CMake, and an activated
+Visual Studio x64 C++/Windows SDK environment. Set `PYTHON=python` if `python3`
+is not available. Zig and ELF/glibc checks are disabled; the builder requires
+DiskGraph's `win_amd64`
+tag. `--verify-image` is not supported for Windows: qualify the installed
+wheel natively. The workflow activates the image's existing MSVC tools;
+it does not install system toolchains.
+The checkout must preserve committed LF line endings: notice and Cargo lock
+hashes verify exact source bytes. For a fresh local clone, use
+`git -c core.autocrlf=false clone <repository-url>`. CI applies this setting
+only to the checkout action's Git processes, without changing repository or
+user Git configuration files or weakening the integrity checks.
+
+Linux ARM64 uses the same Zig build and glibc checks as Linux x86-64,
+with `--platform-tag manylinux_2_34_aarch64`. The workflow validates the
+assembled native payload before retaining it as a CI artifact. Clean
+installed-wheel CPU ingestion, training, and prediction are a separate
+qualification requirement; GPU execution is not required for these platform
+wheels.
 
 ## PyPI projects
 

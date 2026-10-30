@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from io_utils.fsutil.api import read_binary, rm, write_binary
+
 WORKFLOW = Path(__file__).resolve().parents[2] / (
     '.github/workflows/kumo-engine-wheel.yml')
 JOBS = yaml.safe_load(WORKFLOW.read_text())['jobs']
@@ -31,6 +33,35 @@ def _capture_command(path, capture):
     path.chmod(0o755)
 
 
+def test_checkout_preserves_notice_bytes(tmp_path):
+    """Override a Windows-style checkout policy without changing Git config."""
+    source = tmp_path / 'notice.txt'
+    canonical = b'Copyright example\nLicense text\n'
+    subprocess.run(['git', 'init', str(tmp_path)], check=True,
+                   capture_output=True)
+    write_binary(str(tmp_path / '.gitattributes'),
+                 read_binary(str(WORKFLOW.parents[2] / '.gitattributes')))
+    write_binary(str(source), canonical)
+    subprocess.run(['git', '-c', 'core.autocrlf=false', 'add', 'notice.txt'],
+                   cwd=tmp_path, check=True)
+    subprocess.run(['git', 'config', '--local', 'core.autocrlf', 'true'],
+                   cwd=tmp_path, check=True)
+    rm(str(source))
+    subprocess.run(['git', 'checkout-index', '--force', 'notice.txt'],
+                   cwd=tmp_path, check=True)
+    assert read_binary(str(source)) == canonical.replace(b'\n', b'\r\n')
+
+    checkout_env = _step('build', 'Checkout repository')['env']
+    rm(str(source))
+    subprocess.run(['git', 'checkout-index', '--force', 'notice.txt'],
+                   cwd=tmp_path, env=dict(os.environ, **checkout_env),
+                   check=True)
+    assert read_binary(str(source)) == canonical
+    configured = subprocess.check_output(
+        ['git', 'config', '--local', 'core.autocrlf'], cwd=tmp_path, text=True)
+    assert configured.strip() == 'true'
+
+
 @pytest.mark.parametrize('build', BUILDS, ids=lambda build: build['platform'])
 @pytest.mark.parametrize('release', [False, True])
 def test_build_step_selects_native_platform_and_release_mode(
@@ -39,13 +70,13 @@ def test_build_step_selects_native_platform_and_release_mode(
     _capture_command(tmp_path / 'packages/kumo-engine/scripts/build_wheel.sh',
                      capture)
     uname = tmp_path / 'uname'
-    uname.write_text(f'#!/bin/sh\necho {build["arch"]}\n')
+    uname.write_text(f'#!/bin/sh\necho {build["machine"]}\n')
     uname.chmod(0o755)
     step = _step('build', 'Build wheel')
     subprocess.run(
         ['bash', '-e', '-c', step['run']], cwd=tmp_path,
         env=dict(os.environ, PATH=f'{tmp_path}:{os.environ["PATH"]}',
-                 WHEEL_ARCH=build['arch'], WHEEL_PLATFORM=build['platform'],
+                 WHEEL_ARCH=build['machine'], WHEEL_PLATFORM=build['platform'],
                  MACOSX_DEPLOYMENT_TARGET=step['env'][
                      'MACOSX_DEPLOYMENT_TARGET'],
                  IS_RELEASE=str(release).lower()), check=True)
@@ -58,11 +89,16 @@ def test_build_step_selects_native_platform_and_release_mode(
         assert command['target'] == '14.0'
 
 
-@pytest.mark.parametrize('job,step_name', [
-    ('check-requirements', 'Resolve the wheel and each extra from PyPI'),
-    ('kitmaker', 'Publish through Kitmaker'),
+@pytest.mark.parametrize('job,step_name,build', [
+    (job, step_name, build)
+    for job, step_name in [
+        ('check-requirements', 'Resolve the wheel and each extra from PyPI'),
+        ('kitmaker', 'Publish through Kitmaker'),
+    ]
+    for build in BUILDS
+    if build['arch'] in {row['arch'] for row in JOBS[job][
+        'strategy']['matrix']['include']}
 ])
-@pytest.mark.parametrize('build', BUILDS, ids=lambda build: build['platform'])
 def test_release_steps_use_the_matching_platform_and_wheel(
         tmp_path, job, step_name, build):
     row = next(row for row in JOBS[job]['strategy']['matrix']['include']
@@ -98,14 +134,29 @@ def test_release_steps_use_the_matching_platform_and_wheel(
 def test_all_platforms_require_validation_and_release_approval():
     arches = {build['arch'] for build in BUILDS}
     assert len(arches) == len(BUILDS)
-    for job in ['check-requirements', 'kitmaker']:
-        assert {row['arch'] for row in JOBS[job]['strategy']['matrix'][
-            'include']} == arches
+    assert {row['arch'] for row in JOBS['check-requirements'][
+        'strategy']['matrix']['include']} == arches
+    assert 'windows-x86_64' in arches
+    release_arches = {row['arch'] for row in JOBS['attach-to-release'][
+        'strategy']['matrix']['include']}
+    assert {'x86_64', 'arm64'} <= release_arches
+    assert release_arches <= {'x86_64', 'arm64', 'aarch64'}
+    if 'aarch64' in release_arches:
+        assert 'platform-qualification' in JOBS['attach-to-release']['needs']
+    for job in ['attach-to-release', 'kitmaker']:
+        published = {row['arch'] for row in JOBS[job]['strategy']['matrix'][
+            'include']}
+        assert published == release_arches
+        download = _step(job, 'Download wheel')['with']
+        assert 'pattern' not in download
+        assert download['name'] == _step('build', 'Upload wheel')['with']['name']
     assert JOBS['check-requirements']['needs'] == ['build']
-    assert set(JOBS['attach-to-release']['needs']) == {
+    assert set(JOBS['attach-to-release']['needs']) >= {
         'build', 'check-requirements'
     }
     assert JOBS['kitmaker']['needs'] == ['attach-to-release']
     assert JOBS['kitmaker']['environment'] == 'kumo-engine-release'
+    assert _step('build', 'Checkout repository')['with'][
+        'persist-credentials'] is False
     for job in ['attach-to-release', 'kitmaker']:
         assert JOBS[job]['if'] == "${{ github.event_name == 'release' }}"
