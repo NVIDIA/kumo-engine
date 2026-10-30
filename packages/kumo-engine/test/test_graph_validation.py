@@ -19,7 +19,9 @@ from kumoapi.source_table import (
 )
 from kumoapi.table import Column, TableDefinition
 from kumoapi.typing import Dtype, Stype
+from matplotlib import rc_context, rcParams, style
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.colors import to_rgba
 from matplotlib.text import Text
 
 from kumo.engine import FileConnector, Graph, S3Connector, Table
@@ -78,6 +80,11 @@ def pdf_pages(monkeypatch):
     savefig = PdfPages.savefig
 
     def record(document, figure, *args, **kwargs):
+        assert figure.get_facecolor() == (1, 1, 1, 1)
+        facecolor = kwargs.get('facecolor', rcParams['savefig.facecolor'])
+        assert to_rgba(figure.get_facecolor() if facecolor == 'auto'
+                       else facecolor) == (1, 1, 1, 1)
+        assert not kwargs.get('transparent', rcParams['savefig.transparent'])
         pages.append('\n'.join(text.get_text() for text in
                                figure.findobj(match=Text)))
         return savefig(document, figure, *args, **kwargs)
@@ -188,15 +195,19 @@ def test_omitted_self_relation_preserves_column_type(tables, original_stype):
                 if col.name == 'user_id').stype == original_stype
 
 
-@pytest.mark.parametrize('alias, key', [
-    ('<script>alert("账户")</script> & customers', 'customer<&"账户'),
-    ('PURCHASES_AND_TRANSACTIONS', 'O' * 22),
-    ('Ж' * 27, 'Ш' * 22),
-    ('sales  data', 'order  id'),
+@pytest.mark.parametrize('alias, key, collision', [
+    ('<script>alert("账户")</script> & customers', 'customer<&"账户', False),
+    ('PURCHASES_AND_TRANSACTIONS', 'O' * 22, False),
+    ('Ж' * 27, 'Ш' * 22, False),
+    ('sales  data', 'order  id', False),
+    ('sales\tdata', 'order\tid', False),
+    ('sales\rdata', 'order\rid', False),
+    ('sales\ndata', 'order\nid', False),
+    ('sales\tdata', 'order\tid', True),
 ])
 @pytest.mark.parametrize('suffix', ['svg', 'pdf'])
 def test_visualize_exports_escaped_svg_without_source_access(
-        tmp_path, alias, key, suffix, pdf_pages):
+        tmp_path, alias, key, collision, suffix, pdf_pages):
     users, events = _s3_tables()
     events = replace(
         events, definition=replace(
@@ -204,10 +215,10 @@ def test_visualize_exports_escaped_svg_without_source_access(
                 events.definition.cols[0],
                 Column(key, Stype.ID, Dtype.int64)
             ]))
-    graph = Graph({
-        'purchases': events,
-        alias: users
-    }, [Edge('purchases', key, alias)])
+    tables = {'purchases': events, alias: users}
+    if collision:
+        tables[alias.replace('\t', ' ').replace('\r', ' ')] = users
+    graph = Graph(tables, [Edge('purchases', key, alias)])
     destination = tmp_path / f'relationships.{suffix}'
     with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
                       side_effect=AssertionError('source accessed')), \
@@ -222,14 +233,20 @@ def test_visualize_exports_escaped_svg_without_source_access(
         data = destination.read_bytes()
         assert data.startswith(b'%PDF-') and data.rstrip().endswith(b'%%EOF')
         assert len(re.findall(rb'/Type /Page\b', data)) == len(pdf_pages) >= 2
+        assert '\t' not in pdf_pages[0]
         index = '\n'.join(pdf_pages[1:])
-        pdf_alias = alias.replace('账户', r'\u8d26\u6237')
-        pdf_key = key.replace('账户', r'\u8d26\u6237')
-        assert pdf_alias in index and pdf_key in index
-        assert f'purchases.{pdf_key} → {pdf_alias}.id' in index.replace('\n', '')
+        pdf_alias = alias.replace('账户', r'\u8d26\u6237').replace(
+            '\r', r'\r').expandtabs(4).replace('\n', '')
+        pdf_key = key.replace('账户', r'\u8d26\u6237').replace(
+            '\r', r'\r').expandtabs(4).replace('\n', '')
+        assert pdf_alias in index.replace('\n', '')
+        assert pdf_key in index.replace('\n', '')
+        connection = f'purchases.{key} → {alias}.id'.replace(
+            '账户', r'\u8d26\u6237').replace('\r', r'\r').expandtabs(4)
+        assert connection.replace('\n', '') in index.replace('\n', '')
         assert 's3://schema-only-fixture' not in index
     else:
-        assert destination.read_text(encoding='utf-8') == svg
+        assert destination.read_bytes().decode('utf-8') == svg
     root = ElementTree.fromstring(svg)
     assert root.tag == '{http://www.w3.org/2000/svg}svg'
     html = ElementTree.fromstring(svg._repr_html_())
@@ -243,7 +260,8 @@ def test_visualize_exports_escaped_svg_without_source_access(
                    for element in root.iter('{http://www.w3.org/2000/svg}text')
                    if element.get('{http://www.w3.org/XML/1998/namespace}space')
                    == 'preserve')
-    assert alias in text and key in text
+    assert alias.replace('\r', '\n') in text
+    assert key.replace('\r', '\n') in text
     if alias.isupper():
         visible = [
             element.text
@@ -254,7 +272,7 @@ def test_visualize_exports_escaped_svg_without_source_access(
     assert all(not name.lower().startswith('on') for element in root.iter()
                for name in element.attrib)
     tips = root.findall('.//{http://www.w3.org/2000/svg}g[@data-kumo-tip]')
-    assert len(tips) == 5  # Two headers, three visible key rows.
+    assert len(tips) == 5 + 2 * collision  # Each extra table has a PK row.
     assert all(tip.get('tabindex') == '0' for tip in tips)
     details = [tip.get('data-kumo-tip') for tip in tips]
     assert any(f'References: {alias}.id' in tip for tip in details)
@@ -264,6 +282,12 @@ def test_visualize_exports_escaped_svg_without_source_access(
     edge = root.find('.//{http://www.w3.org/2000/svg}path[@class="kumo-edge"]')
     assert edge.get('data-dst-table') == alias
     assert edge.get('data-src-column') == key
+    ids = {table['name']: f'table_{i}'
+           for i, table in enumerate(svg._index)}
+    relationship = next(line for line in svg._markdown().splitlines()
+                        if ' -->|' in line)
+    assert relationship.startswith(f'    {ids["purchases"]} -->|')
+    assert relationship.endswith(f'| {ids[alias]}')
     assert 's3://schema-only-fixture' not in svg
 
 
@@ -465,7 +489,7 @@ def test_visualize_layouts_preserve_schema_and_export_selection(tmp_path):
                           new_callable=PropertyMock,
                           side_effect=AssertionError('source accessed')):
             svg = graph.visualize(destination, layout=layout, show_cols=True)
-        assert destination.read_text() == svg
+        assert destination.read_text(encoding='utf-8') == svg
         root = ElementTree.fromstring(svg)
         payload = json.loads(ElementTree.fromstring(svg._repr_html_()).find(
             './script[@type="application/json"]').text)
@@ -500,9 +524,15 @@ def test_visualize_pdf_indexes_hidden_columns(tmp_path, pdf_pages):
         ]))
     graph = Graph([users, events], [Edge('events', 'user_id', 'users')])
     destination = tmp_path / 'graph.PDF'
-    with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
-                      side_effect=AssertionError('source accessed')):
+    with style.context('dark_background'), rc_context({
+            'savefig.transparent': True, 'savefig.facecolor': 'red',
+            'savefig.edgecolor': 'blue',
+    }), patch.object(S3Connector, 'source_backend',
+                     new_callable=PropertyMock,
+                     side_effect=AssertionError('source accessed')):
+        ambient = dict(rcParams)
         svg = graph.visualize(destination, show_cols=False)
+        assert dict(rcParams) == ambient
     data = destination.read_bytes()
     assert len(re.findall(rb'/Type /Page\b', data)) == len(pdf_pages) > 2
     index = '\n'.join(pdf_pages[1:])
@@ -632,7 +662,7 @@ def test_visualize_samples_once_and_keeps_svg_metadata_only(tmp_path, outcome):
     assert 'Sample values' not in svg
     markdown = svg._markdown()
     assert 'private sample' not in markdown and 'credential secret' not in markdown
-    assert svg._repr_svg_() == destination.read_text() == str(svg)
+    assert svg._repr_svg_() == destination.read_text(encoding='utf-8') == str(svg)
     assert 'credential secret' not in html
     assert '<script>alert' not in html
     tips = ElementTree.fromstring(html).findall(

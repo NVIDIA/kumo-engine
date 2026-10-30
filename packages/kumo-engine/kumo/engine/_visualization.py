@@ -148,14 +148,19 @@ def _squircle(width: float, height: float, radius: float = 18,
             f'{bottom}V {r} C 0 0 0 0 {r} 0 Z')
 
 
+def _attribute(value: str) -> str:
+    return (escape(value).replace('\t', '&#9;').replace('\n', '&#10;')
+            .replace('\r', '&#13;'))
+
+
 def _tooltip(text: str, row: str = '', table: str = '',
              column: str = '',
              connected_tables: Sequence[str] = ()) -> str:
     connections = escape(json.dumps(list(connected_tables)))
+    attr = _attribute(text)
     text = escape(text)
-    attr = text.replace('\n', '&#10;')
-    table = escape(table).replace('\n', '&#10;')
-    column = escape(column).replace('\n', '&#10;')
+    table = _attribute(table)
+    column = _attribute(column)
     return (f'<g tabindex="0" role="group" data-kumo-row="{row}" '
             f'data-kumo-table="{table}" data-kumo-column="{column}" '
             f'data-kumo-connections="{connections}" '
@@ -442,10 +447,11 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
                    'No tables</text>')
     for index, edge in enumerate(edges):
         path = geometry['paths'][index]
-        label = escape(f'{edge.src_table}.{edge.fkey} → '
-                       f'{edge.dst_table}.{definitions[edge.dst_table].pkey}')
+        label = _attribute(
+            f'{edge.src_table}.{edge.fkey} → '
+            f'{edge.dst_table}.{definitions[edge.dst_table].pkey}')
         endpoints = ' '.join(
-            f'data-{key}="{escape(value).replace(chr(10), "&#10;")}"'
+            f'data-{key}="{_attribute(value)}"'
             for key, value in [('src-table',
                                 edge.src_table), (
                                     'src-column',
@@ -472,7 +478,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
             summary += '\nNo connected tables'
         shape = _squircle(card_width, card_height)
         clip = f'{uid}-card-{node_ids[name]}'
-        svg.append(f'<g data-kumo-card="{escape(name).replace(chr(10), "&#10;")}" '
+        svg.append(f'<g data-kumo-card="{_attribute(name)}" '
                    f'transform="translate({x} {y})">'
                    f'<defs><clipPath id="{clip}"><path d="{shape}"/>'
                    '</clipPath></defs>'

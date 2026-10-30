@@ -147,11 +147,11 @@ This minimal chart uses the shared theme and shell:
 
 ```python
 from IPython.display import HTML, display
-from kumo.engine._widget import THEME, render_widget
+from kumo.engine._widget import CSS_THEME, render_widget
 
 body = (
     '<svg width="320" height="48" role="img" aria-label="Contribution: 75%">'
-    f'<rect y="8" width="225" height="24" fill="{THEME["accent"]}"/>'
+    f'<rect y="8" width="225" height="24" fill="{CSS_THEME["accent"]}"/>'
     '</svg>'
 )
 display(HTML(render_widget(body)))

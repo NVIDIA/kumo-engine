@@ -40,7 +40,7 @@ CSS_THEME = {key: f'var(--kumo-{key.replace("_", "-")})'
 
 
 _STYLE = Template(r"""
-.kumo-widget{position:relative;display:flex;flex-direction:column;
+:where(.kumo-widget){position:relative;display:flex;flex-direction:column;
 max-width:100%;padding:8px;box-sizing:border-box;background:$background;
 color:$foreground;font:14px $font}
 .kumo-widget [hidden]{display:none!important}
@@ -60,7 +60,7 @@ outline:2px solid $focus;outline-offset:2px}
 width:18px!important;height:18px!important}
 """).substitute(CSS_THEME)
 _STYLE = (
-    '.kumo-widget{color-scheme:light dark;' + ''.join(
+    ':where(.kumo-widget){color-scheme:light dark;' + ''.join(
         f'--kumo-{key.replace("_", "-")}:light-dark({THEME[key]},{dark});'
         for key, dark in _DARK.items()) +
     '--kumo-chrome-shadow:0 1px 4px light-dark(#0000001a,#00000040);'

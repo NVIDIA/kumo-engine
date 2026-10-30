@@ -89,7 +89,12 @@ def render_pdf(svg: str, geometry: dict, index: list[dict]) -> bytes:
         return figure, axes
 
     output = BytesIO()
-    with rc_context({'pdf.fonttype': 42}), PdfPages(
+    with rc_context({
+            'pdf.fonttype': 42, 'figure.facecolor': THEME['background'],
+            'savefig.facecolor': THEME['background'],
+            'savefig.edgecolor': THEME['background'],
+            'savefig.transparent': False,
+    }), PdfPages(
             output, metadata={
                 'Title': 'Kumo graph and schema index',
                 'Author': 'Kumo Engine'
@@ -136,7 +141,7 @@ def render_pdf(svg: str, geometry: dict, index: list[dict]) -> bytes:
                 axes.add_patch(patch)
             elif tag == 'text':
                 original = node.text or ''
-                value = safe(original)
+                value = safe(original).expandtabs(4)
                 size = float(node.get('font-size', 16))
                 bold = node.get('font-weight') == '700'
                 if value != original:
@@ -180,6 +185,9 @@ def render_pdf(svg: str, geometry: dict, index: list[dict]) -> bytes:
                 if not part:
                     lines.append('')
                 while part:
+                    if width(part, size, bold) <= limit:
+                        lines.append(part)
+                        break
                     lo, hi = 1, len(part)
                     while lo < hi:
                         mid = (lo + hi + 1) // 2

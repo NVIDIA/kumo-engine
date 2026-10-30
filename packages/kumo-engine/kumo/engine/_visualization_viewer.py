@@ -8,7 +8,7 @@ from string import Template
 from kumo.engine._widget import CSS_THEME, button, render_widget
 
 _STYLE = Template(r"""
-.kumo-graph{container:kumo-graph/inline-size;padding:16px}
+.kumo-graph{container:kumo-graph/inline-size;padding:16px;overflow:clip}
 .kumo-graph,.kumo-graph *{user-select:none;-webkit-user-select:none}
 .kumo-graph:fullscreen{width:100%;height:100%;max-height:none}
 .kumo-graph-toolbar{display:grid;
@@ -145,8 +145,9 @@ for(const [prefix,label] of [['Type: ','Data type: '],
 ['Semantic type: ','Semantic type: ']]){
 const value=lines.find(x=>x.startsWith(prefix))?.slice(prefix.length);
 if(value)body.append(element('type',label+value))}
-for(const ref of lines.filter(x=>x.startsWith('References: ')))
-body.append(element('ref','↗ '+ref.slice(12)));
+for(const edge of edges){const d=edge.dataset;
+if(d.srcTable===table&&d.srcColumn===name)
+body.append(element('ref','↗ '+d.dstTable+'.'+d.dstColumn))}
 const index=lines.findIndex(x=>x.startsWith('Sample values:'));
 if(index>=0){body.append(element('label','Sample values'));
 const status=lines[index].slice(14).trim(), samples=element('samples','');
@@ -245,7 +246,7 @@ const visible=Array.from(svg.querySelectorAll(':scope>[data-kumo-card]'),
 x=>x.getBoundingClientRect()).filter(r=>intersects(r,b));
 const leftmost=c.left<=Math.min(...visible.map(r=>r.left))+1;
 const rightmost=c.right>=Math.max(...visible.map(r=>r.right))-1;
-const role=active.dataset.kumoTip.split('\n').find(x=>x.startsWith('Role: '))||'';
+const role=tip.querySelector('.kumo-tip-key')?.textContent||'';
 const pk=/\bPK\b/.test(role),fk=/\bFK\b/.test(role);
 const incident=edges.filter(e=>e.dataset.srcTable===table||e.dataset.dstTable===table);
 const selected=incident.filter(e=>e.classList.contains('kumo-edge-active'));
@@ -260,11 +261,7 @@ let left=0,right=0;for(const e of relevant){const r=extent(e);if(!r)continue;
 if(r[0]<c.left-1)left++;if(r[1]>c.right+1)right++}
 side=left===right?(c.left-b.left>=b.right-c.right?'left':'right'):
 (left<right?'left':'right')}
-if(active.dataset.kumoRow)return{side,offset:0};
-let boundary=side==='left'?c.left:c.right;
-for(const e of leftmost!==rightmost?edges:relevant){const r=extent(e);if(!r)continue;
-boundary=side==='left'?Math.min(boundary,r[0]):Math.max(boundary,r[1])}
-return{side,offset:(boundary-(side==='left'?c.left:c.right))/b.sx}};
+return{side,offset:0}};
 const place=(clearRoutes=false)=>{
 if(!active||!placement)return;
 const b=viewport(),a=active.getBoundingClientRect(),c=card.getBoundingClientRect();
@@ -287,8 +284,7 @@ for(const span of spans)if(x<span[1]&&x+t.width>span[0])
 x=left?span[0]-t.width-12*b.sx:span[1]+12*b.sx;
 placement.offset+=(x-adjacent)/b.sx}
 if(!intersects(a,b)){hide();return}
-const raw=x;x=Math.max(b.left,Math.min(x,b.right-t.width));
-tip.dataset.side=placement.side;tip.dataset.clamped=String(x!==raw||y!==a.top);
+tip.dataset.side=placement.side;tip.dataset.clamped=String(y!==a.top);
 tip.style.left=(x-b.h.left)/b.sx+'px';tip.style.top=(y-b.h.top)/b.sy+'px'};
 const show=el=>{if(drag)return;
 cancelHide();if(active===el)return;
