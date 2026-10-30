@@ -49,22 +49,18 @@ def _file_sink(connector: Any, path: str) -> Any:
 
 
 def is_file_destination(connector: Any, path: str) -> bool:
-    r"""Whether ``path`` is a file location of ``connector``'s sink
-    (`kumoapi.plugin.FileStoreSink`) rather than a table; no I/O."""
+    r"""Whether ``path`` is a file location rather than a table."""
     return _file_sink(connector, path) is not None
 
 
 def file_store(connector: Any, path: str) -> Optional[Tuple[Any, str]]:
-    r"""``connector``'s ``(pyarrow filesystem, resolved path)`` for a file
-    destination; None for a table."""
+    r"""The ``(filesystem, path)`` of a file destination; None for a table."""
     sink = _file_sink(connector, path)
     return None if sink is None else sink.filesystem(connector, path)
 
 
 def model_sink(connector: Any, path: Optional[str]) -> Any:
-    r"""The sink that publishes or fetches a model at ``path``: the file
-    writers over ``connector``'s sink (`FilesystemSink`) for a file path of
-    a sink without its own, else the sink."""
+    r"""The sink that writes files at ``path``."""
     from kumo_core.object_store_sink import (
         FilesystemSink,
         ObjectStoreSinkBackend,

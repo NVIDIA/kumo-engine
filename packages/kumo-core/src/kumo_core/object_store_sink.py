@@ -31,8 +31,7 @@ def _chunked(filesystem: FileSystem) -> bool:
 
 
 def open_sized(filesystem: FileSystem, path: str, size: int) -> Any:
-    """``open_output_stream(path)``, telling a chunked filesystem the size
-    the file will have."""
+    """``open_output_stream`` that tells a chunked filesystem the size."""
     if _chunked(filesystem):
         from kumo_core.chunked_fs import SIZE_KEY
 
@@ -43,8 +42,7 @@ def open_sized(filesystem: FileSystem, path: str, size: int) -> Any:
 
 def upload_bundle(filesystem: FileSystem, destination: str,
                   bundle_dir: str) -> None:
-    """Copy every file of ``bundle_dir`` under ``destination``, the
-    provenance file last."""
+    """Copy ``bundle_dir`` under ``destination``, provenance last."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
     root = Path(bundle_dir)
@@ -60,8 +58,7 @@ def upload_bundle(filesystem: FileSystem, destination: str,
 
 def download_bundle(filesystem: FileSystem, source: str,
                     local_dir: str) -> bool:
-    """Replace ``local_dir`` with the files under ``source``; False if there
-    are none."""
+    """Replace ``local_dir`` with ``source``; False if it is empty."""
     from kumo_core.sources.layout import confined
     from pyarrow.fs import FileSelector, FileType
 
@@ -75,8 +72,7 @@ def download_bundle(filesystem: FileSystem, source: str,
         if info.type is not FileType.File:
             continue
         found = True
-        # Remote keys are untrusted; each relative path must stay inside
-        # the local bundle, even when it contains parent components.
+        # Remote keys are untrusted.
         target = destination / confined(info.path[len(source) + 1:])
         target.parent.mkdir(parents=True, exist_ok=True)
         with filesystem.open_input_stream(info.path) as reader, \
@@ -96,12 +92,10 @@ class ObjectStoreSinkBackend(ABC):
         raise NotImplementedError
 
     def holds_files(self, connector: SourceConnector, path: str) -> bool:
-        """Every path of an object store is a file location."""
         return True
 
     def filesystem(self, connector: SourceConnector,
                    path: str) -> Tuple[FileSystem, str]:
-        """The authenticated filesystem and resolved ``path``."""
         filesystem, resolved = self._destination(connector, path)
         return filesystem, resolved.rstrip('/')
 
@@ -286,7 +280,7 @@ def _write_one(filesystem: FileSystem, frame: pd.DataFrame, path: str,
     import tempfile
 
     from kumo_core.chunked_fs import spool_root
-    # Spool so the size is known and a file up to one part stays plain.
+    # Spool to learn the size.
     with tempfile.TemporaryDirectory(
             dir=spool_root(filesystem.handler)) as spool:
         local = os.path.join(spool, 'frame.parquet')

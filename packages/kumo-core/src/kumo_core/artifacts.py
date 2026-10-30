@@ -19,8 +19,6 @@ from .io.filesystem import local_path
 from .io.json import load_json, save_json
 from .manifest import RunManifest, RunPaths
 
-#: Every engine artifact's manifest file; underscore-prefixed so Parquet
-#: readers skip it.
 PROVENANCE_FILE = '_provenance.json'
 
 
