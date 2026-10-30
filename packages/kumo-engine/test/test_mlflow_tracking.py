@@ -604,19 +604,18 @@ def test_system_metrics_skip_a_failed_log_and_stop_after_repeated_ones(
     assert 'stopped after 6 failed logs in a row' in caplog.text
 
 
-def test_system_metrics_sample_every_second_then_every_ten(monkeypatch):
+def test_system_metrics_sample_every_second_unless_the_environment_says(
+        monkeypatch):
     from kumo.engine.integrations import mlflow as integration
 
     monkeypatch.setattr(integration, '_metric_monitors', lambda: [_Monitor()])
     batches = []
     with integration._SystemMetrics(batches.append) as metrics:
         pass
-    monkeypatch.setenv('MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL', '2')
-
     assert batches == []  # fewer than 10 readings
-    assert [metrics._wait(elapsed) for elapsed in (0, 599, 600)] == [
-        1.0, 1.0, 10.0]
-    assert integration._SystemMetrics(batches.append)._wait(0) == 2.0
+    assert metrics._interval == 1.0
+    monkeypatch.setenv('MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL', '2')
+    assert integration._SystemMetrics(batches.append)._interval == 2.0
 
 
 @pytest.mark.parametrize('enabled,environment', [

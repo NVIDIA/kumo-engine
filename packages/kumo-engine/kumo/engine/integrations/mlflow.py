@@ -1144,25 +1144,23 @@ _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
 
 
 _Reading = Tuple[Mapping[str, float], int, int]  # values, second, time
-_FAST_SECONDS = 600
 _FLUSH_SECONDS = 10.0
 _MIN_READINGS = 10
 
 
 class _SystemMetrics:
     r"""Samples MLflow's CPU, disk, network and GPU monitors on its own
-    thread, every second for the first ten minutes and then every 10
-    (``MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL`` fixes the interval), and
-    hands ``log`` the readings, each with its elapsed second as step and its
-    time, every 10 seconds once there are 10, so a short run logs none and
-    no run's metrics draw as a bar. (MLflow's own ``SystemMetricsMonitor``
+    thread every second (``MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL`` sets
+    the interval) and hands ``log`` the readings, each with its elapsed
+    second as step and its time, every 10 seconds once there are 10, so a
+    run shorter than that logs none and no run's metrics draw as a bar. (MLflow's own ``SystemMetricsMonitor``
     logs with process-wide credentials.)"""
 
     def __init__(self, log: Callable[[List[_Reading]], None],
                  interval: Optional[float] = None) -> None:
         fixed = os.environ.get('MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL')
         self._log = log
-        self._interval = interval or (float(fixed) if fixed else None)
+        self._interval = interval or float(fixed or 1)
         self._monitors = _metric_monitors()
         self._failed = False
         self._stop = threading.Event()
@@ -1179,16 +1177,13 @@ class _SystemMetrics:
         if self._thread.is_alive():
             self._thread.join(_FLUSH_SECONDS + 5)
 
-    def _wait(self, elapsed: float) -> float:
-        return self._interval or (1.0 if elapsed < _FAST_SECONDS else 10.0)
-
     def _run(self) -> None:
         began = flushed = time.monotonic()
         readings: List[_Reading] = []
         taken = failures = 0
         stopped = False
         while not stopped:  # and a last reading when the run ends
-            stopped = self._stop.wait(self._wait(time.monotonic() - began))
+            stopped = self._stop.wait(self._interval)
             metrics: Dict[str, float] = {}
             for monitor in self._monitors:
                 monitor.collect_metrics()
