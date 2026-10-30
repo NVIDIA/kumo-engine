@@ -17,6 +17,13 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Set up the cached wheel installer
+      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      with:
+        version: '0.11.28'
+        enable-cache: true
+        prune-cache: false
+        cache-dependency-glob: 'packages/**/pyproject.toml'
     - name: Read the existing private test bucket
       uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
       with:
@@ -28,7 +35,8 @@ runs:
         WHEEL_PATTERN: ${{ inputs.wheel-path }}
       run: |
         set -euo pipefail
-        for name in ${!PIP_@}; do unset "$name"; done
+        uv_cache="${UV_CACHE_DIR:-$RUNNER_TEMP/setup-uv-cache}"
+        for name in ${!PIP_@} ${!UV_@}; do unset "$name"; done
         export PIP_CONFIG_FILE=/dev/null
         mkdir -p "$RUNNER_TEMP/engine-gpu-smoke"
         python -m venv "$RUNNER_TEMP/engine-smoke-venv"
@@ -51,9 +59,12 @@ runs:
             stream.write(f'ENGINE_SMOKE_WHEEL={wheel}\nENGINE_SMOKE_VERSION={metadata["Version"]}\n')
         PY
         wheel="$(python -c 'import glob,os; print(glob.glob(os.environ["WHEEL_PATTERN"])[0])')"
-        "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I -m pip --isolated install \
-          --index-url https://pypi.org/simple --report "$RUNNER_TEMP/engine-gpu-smoke/install.json" \
+        uv --no-config pip install --python "$RUNNER_TEMP/engine-smoke-venv/bin/python" \
+          --cache-dir "$uv_cache" --default-index https://pypi.org/simple \
           "$wheel" 'boto3>=1.34,<2'
+        "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I -m pip --isolated install \
+          --no-index --no-deps --force-reinstall --no-compile \
+          --report "$RUNNER_TEMP/engine-gpu-smoke/install.json" "$wheel"
         "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I -m pip --isolated check
     - name: Check the installed wheel identity
       shell: bash

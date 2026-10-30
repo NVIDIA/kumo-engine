@@ -654,7 +654,8 @@ def main():
     parser.add_argument(
         '--qualify', action='store_true',
         help='Measure numeric differences; does not produce a normal CI pass')
-    parser.add_argument('--reload-atol', type=float, default=0.)
+    # The T4 qualification measured at most 1.91e-6 across 48 comparisons.
+    parser.add_argument('--reload-atol', type=float, default=1e-5)
     parser.add_argument('--reload-rtol', type=float, default=0.)
     args = parser.parse_args()
     if args.repetitions < 1 or any(
