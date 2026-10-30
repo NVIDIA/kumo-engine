@@ -23,6 +23,7 @@ import kumo.engine as kumo
 from kumo.engine import _card
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._tracking import logged_names
+from kumo.engine.trainer._run_spec import model_metrics
 
 mlflow = pytest.importorskip('mlflow')
 
@@ -80,7 +81,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     assert result.registered_model == PublishedModel(
         name='m', version=str(version.version),
         uri=f'models:/m/{version.version}',
-        metadata={'kumo_bundle_id': result.id}, metrics=result.metrics)
+        metadata={'kumo_bundle_id': result.id}, metrics=model_metrics(result))
     assert version.tags == {'kumo_bundle_id': result.id}
     assert version.description == '\n'.join([
         'Mine.', '', '<!-- kumo:version -->',
@@ -130,6 +131,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
                        registry=kumo.ModelRegistryLocation('m2'))
     first = champion.export(other)
     assert first.version == '1' and champion.export(other) == first
+    assert len(mlflow.search_logged_models(output_format='list')) == 1
     assert load_model('models:/m2/1').result.id == result.id
 
     original = mlflow.models.Model.load
@@ -162,9 +164,11 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
     requirements = mlflow.pyfunc.get_model_dependencies(info.model_uri)
     assert f'kumo-engine[gcs,s3]=={kumo.__version__}' in open(
         requirements).read().splitlines()
-    assert {metric.key
+    assert {metric.key: metric.value
             for metric in mlflow.get_logged_model(info.model_id).metrics
-            } == set(trainer.result.metrics)
+            } == model_metrics(trainer.result)
+    assert mlflow.get_logged_model(info.model_id).name == (
+        'ents-binary_classification')
     assert [c['name'] for c in info.signature.outputs.to_dict()
             ] == ['ENTITY', 'TARGET_PRED', 'False_PROB', 'True_PROB']
     pyfunc = mlflow.pyfunc.load_model(info.model_uri)
@@ -559,3 +563,40 @@ def test_a_logged_model_is_named_after_its_model():
     assert logged_model_name('a/b:c%d"e\'f', None) == 'a-b-c-d-e-f'
     assert logged_model_name(None, manifest) == 'users-binary_classification'
     assert logged_model_name(None, None) == 'model'
+
+
+def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
+        table_and_snapshot, tmp_path, tracking_uri):
+    from kumo.engine.integrations.mlflow import MlflowTracking
+    from kumo.engine.trainer._run_spec import holdout_metrics
+
+    table, snapshot = table_and_snapshot
+    tracking = MlflowTracking('fits', log_system_metrics=False)
+    result = kumo.Trainer(_plan()).fit(table, snapshot=snapshot, mlops=(
+        kumo.MLOps(str(tmp_path / 'root'), tracking=tracking)))
+    fits = [mlflow.get_experiment_by_name('fits').experiment_id]
+    assert mlflow.MlflowClient().search_logged_models(fits) == []
+    published = tracking.register(result, kumo.ModelRegistryLocation('m'))
+
+    fit = mlflow.get_run(result.tracking.run_id)
+    model, = mlflow.MlflowClient().search_logged_models(fits)
+    assert (published.version, fit.info.run_name, model.source_run_id,
+            model.name) == ('1', 'v1-m', fit.info.run_id, 'm')
+    assert {m.key: m.value for m in model.metrics} == model_metrics(result)
+    assert fit.data.tags['kumo.model_version'] == '1'
+    assert ' · v1 m · ' in fit.data.tags['mlflow.note.content'].split('\n')[0]
+
+    other = f'sqlite:///{tmp_path / "other.db"}'
+    mlflow.set_tracking_uri(other)
+    untracked = MlflowTracking(log_system_metrics=False)
+    assert untracked.register(result, kumo.ModelRegistryLocation('m')) == (
+        published)
+    client = mlflow.MlflowClient(other)
+    experiment = client.get_experiment_by_name('m').experiment_id
+    model, = client.search_logged_models([experiment])
+    assert (model.source_run_id, client.search_runs([experiment])) == (
+        None, [])
+    assert client.get_model_version('m', '1').description == (
+        '<!-- kumo:version -->\n'
+        f'{_card.version_headline(holdout_metrics(result), None)}\n'
+        '<!-- /kumo:version -->')

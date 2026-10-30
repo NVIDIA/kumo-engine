@@ -108,7 +108,12 @@ from kumo.engine.graph import GraphSnapshot, report_other_graph
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer import _run_manifest
-from kumo.engine.trainer._run_spec import FitContext, fit_spec, fitted_spec
+from kumo.engine.trainer._run_spec import (
+    FitContext,
+    fit_spec,
+    fitted_spec,
+    model_metrics,
+)
 from kumo.engine.trainer._scoring import (
     ScoringDefaults,
     normalized_scoring_defaults,
@@ -210,7 +215,8 @@ class TrainingResult:
         if isinstance(config, MLOps):
             return _register_result(self, config)
         _require_publisher(config)
-        return _publish(self.bundle_dir, self.bundle_id, self.metrics, config)
+        return _publish(self.bundle_dir, self.bundle_id, model_metrics(self),
+                        config)
 
     def with_scoring_defaults(self,
                               defaults: ScoringDefaults) -> 'TrainingResult':
@@ -736,11 +742,11 @@ def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
     register = getattr(settings.tracking, 'register', None)
     if callable(register):
         return cast(PublishedModel, _with_metrics(
-            register(result, settings.registry), result.metrics))
+            register(result, settings.registry), model_metrics(result)))
     registry = cast(ModelOutputConfig, _connector_registry(settings))
     _require_publisher(registry)
-    return _publish(result.bundle_dir, result.bundle_id, result.metrics,
-                    registry)
+    return _publish(result.bundle_dir, result.bundle_id,
+                    model_metrics(result), registry)
 
 
 def _unlogged(summaries: Sequence[Summary], metrics: Mapping[str, float],
@@ -1053,7 +1059,7 @@ class Trainer:
             result.bundle_dir, result.manifest or (
                 None if result.bundle_id is None else stub(
                     'model', result.bundle_id)), settings, session=session,
-            snapshot=snapshot, metrics=result.metrics, warn=warn,
+            snapshot=snapshot, metrics=model_metrics(result), warn=warn,
             stored=(deps.errors or [None])[0])
         if registered is not None:
             result = replace(result, registered_model=registered,
@@ -1379,7 +1385,7 @@ class Trainer:
             training_result = replace(
                 training_result, published_model=_publish(
                     training_result.bundle_dir, training_result.bundle_id,
-                    training_result.metrics, export_config))
+                    model_metrics(training_result), export_config))
 
         training_result = replace(training_result, _trainer=self)
         self._training_result = training_result

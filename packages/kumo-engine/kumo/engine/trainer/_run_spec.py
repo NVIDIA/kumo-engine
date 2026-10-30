@@ -6,17 +6,12 @@ r"""A `Trainer.fit` as a tracked run's `RunSpec`."""
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 from kumo_core.artifacts import PROVENANCE_FILE
-from kumo_core.summaries import Summary
+from kumo_core.summaries import Scalar, Summary
 
-from kumo.engine._tracking import (
-    RunSpec,
-    _flatten,
-    logged_names,
-    model_label,
-)
+from kumo.engine._tracking import RunSpec, _flatten, logged_names, model_label
 
 
 @dataclass(frozen=True)
@@ -63,16 +58,32 @@ def fitted_spec(spec: RunSpec, result: Any,
     provenance = Path(result.bundle_dir) / PROVENANCE_FILE
     if provenance.is_file():
         artifacts[PROVENANCE_FILE] = provenance.read_text(encoding='utf-8')
-    tested = logged_names({
-        name: value for name, value in result.metrics.items()
-        if not name.startswith(('train_', 'val_'))
-    }, refit_full=_fit_mode(result) == 'refit_full')
     return replace(
-        spec, metrics=tested,
+        spec, metrics=holdout_metrics(result),
         parents={**spec.parents, 'bundle_id': result.id,
                  **_registered(result.registered_model,
                                result.registered_alias)},
         artifacts=artifacts, summaries=summaries)
+
+
+def holdout_metrics(result: Any) -> Dict[str, float]:
+    r"""The trainer's test metrics of ``result``, a `TrainingResult`, as
+    `logged_names` names them."""
+    return logged_names({
+        name: value for name, value in result.metrics.items()
+        if not name.startswith(('train_', 'val_'))
+    }, refit_full=_fit_mode(result) == 'refit_full')
+
+
+def model_metrics(result: Any) -> Dict[str, float]:
+    r"""The model's own quality, as a logged model and every registry
+    record it: `holdout_metrics` and the ``role='model'`` summaries."""
+    return {name.replace('@', '_at_'): value for name, value in {
+        **holdout_metrics(result),
+        **{summary.name: summary.value
+           for summary in getattr(result, '_summaries', ())
+           if isinstance(summary, Scalar) and summary.role == 'model'}
+    }.items()}
 
 
 def _fit_mode(result: Any) -> Optional[str]:

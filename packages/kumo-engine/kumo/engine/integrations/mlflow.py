@@ -18,6 +18,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -185,7 +186,7 @@ class MlflowTracking:
         self._pending = _Pending()
         self._model_id: Optional[str] = None
         self._published: Optional[PublishedModel] = None
-        self._fit: Optional[Tuple[Any, Any]] = None
+        self._fit: Tuple[Any, Any] = (None, None)
         self._http_owned: FrozenSet[str] = frozenset()
         self._guard = ExitStack()
 
@@ -297,47 +298,109 @@ class MlflowTracking:
                  location: ModelRegistryLocation) -> PublishedModel:
         r"""Registers a fitted or loaded model (a `TrainingResult`) at
         ``location``: the version that already holds its bundle, else a new
-        version of the model logged in a new run of this experiment."""
+        version of the model its fit run logged, else of one logged now in
+        that run, with its metrics, else of one logged in no run, in this
+        experiment (default: one named after the model). The fit run is
+        renamed after its first version."""
         from kumo.engine._manifest import stub
         from kumo.engine.graph import GraphSnapshot
+        from kumo.engine.trainer._run_spec import (
+            holdout_metrics,
+            model_metrics,
+        )
         from kumo.engine.trainer._spec import read_training_spec
         from kumo.engine.trainer.trainer import registry_pointers
 
         self._require_experiment()
-        client = self.target.client()
+        self._client = client = self.target.client()
         pointers = registry_pointers(result.id)
         with _limited_http(frozenset(name for name in _HTTP_LIMITS
                                      if name not in os.environ)):
             with self.target.scope():
                 held = _registered_version(client, location.model_name,
                                            pointers)
-            info = None
-            if held is None:
+            tracking = getattr(result.manifest, 'tracking', None)
+            fit, model = self._fit_of(getattr(tracking, 'run_id', None))
+            info = None if model is None else SimpleNamespace(
+                model_uri=f'models:/{model.model_id}', run_id=fit.run_id,
+                model_id=model.model_id)
+            if held is None and info is None:
                 spec = read_training_spec(result.bundle_dir)
                 snapshot = GraphSnapshot(spec.snapshot_id, Path(),
                                          spec.graph_config or {})
+                info = _log_model(
+                    self.target, client, result.bundle_dir,
+                    result.manifest or stub('model', result.id), snapshot,
+                    name=logged_model_name(location.model_name,
+                                           result.manifest),
+                    run_id=None if fit is None else fit.run_id,
+                    experiment_id=(self._registry_experiment(
+                        location.model_name) if fit is None else
+                                   fit.experiment_id), serving_snapshot=None)
+                if fit is not None:
+                    self._log_metrics(fit.run_id, model_metrics(result),
+                                      model_id=info.model_id)
+            published = _register(self.target, client, info, location,
+                                  pointers)
+            if fit is None:
+                text = _version_text(holdout_metrics(result), None, None,
+                                     None, True)
+            else:
+                if held is None:
+                    self._rename_fit(fit, published)
                 with self.target.scope():
-                    experiment_id = self._default_experiment or '0'
-                    if self.experiment_name is not None:
-                        experiment = client.get_experiment_by_name(
-                            self.experiment_name)
-                        experiment_id = (experiment.experiment_id
-                                         if experiment else
-                                         client.create_experiment(
-                                             self.experiment_name))
-                    run_id = client.create_run(
-                        experiment_id,
-                        tags={'kumo.bundle_id': str(result.id)}).info.run_id
-                info = _log_model(self.target, client, result.bundle_dir,
-                                  result.manifest or stub('model', result.id),
-                                  snapshot, name=logged_model_name(
-                                      location.model_name, result.manifest),
-                                  run_id=run_id,
-                                  experiment_id=experiment_id,
-                                  serving_snapshot=None)
-                with self.target.scope():
-                    client.set_terminated(run_id, 'FINISHED')
-            return _register(self.target, client, info, location, pointers)
+                    run = client.get_run(fit.run_id)
+                text = _version_text(
+                    holdout_metrics(result), run.data.tags.get(
+                        'kumo.tune_metric'), run.info.run_name,
+                    run.data.tags.get('kumo.bundle_uri'), not self._unity())
+            _describe_version(self.target, client, published, text)
+            return published
+
+    def _logged_model(self, fit: Any) -> Any:
+        r"""The model the fit run ``fit`` logged, if any."""
+        try:
+            with self.target.scope():
+                models = self._client.search_logged_models(
+                    [fit.experiment_id],
+                    filter_string=f"source_run_id = '{fit.run_id}'",
+                    max_results=1)
+        except Exception:
+            logger.debug('No logged model of %s', fit.run_id, exc_info=True)
+            return None
+        return models[0] if models else None
+
+    def _registry_experiment(self, model_name: str) -> str:
+        r"""The experiment of a model logged in no run: this tracker's,
+        else one named after the model (``/Shared/kumo/<model>`` on
+        Databricks), never MLflow's Default."""
+        name = self.experiment_name or model_label(model_name, None, None)
+        if self.experiment_name is None and self.platform == 'databricks':
+            name = f'/Shared/kumo/{name}'
+        with self.target.scope():
+            experiment = self._client.get_experiment_by_name(name)
+            return (experiment.experiment_id if experiment else
+                    self._client.create_experiment(name))
+
+    def _rename_fit(self, fit: Any, published: PublishedModel) -> None:
+        r"""On its first registration, names the fit run, still named
+        ``fit-…``, ``v<version>-<model>`` with its trials, tags the version
+        on it and regenerates its card's first line."""
+        if not fit.run_name.startswith('fit-'):
+            return
+        name = (f'v{published.version}-'
+                f'{model_label(published.name, None, None)}')
+        with self.target.scope():
+            self._client.update_run(fit.run_id, name=name)
+            for trial in self._client.search_runs(
+                    [fit.experiment_id], filter_string=(
+                        f"tags.mlflow.parentRunId = '{fit.run_id}'")):
+                self._client.update_run(
+                    trial.info.run_id,
+                    name=trial.info.run_name.replace(fit.run_name, name, 1))
+        self._log_tags(fit.run_id, {'kumo.model_name': published.name,
+                                    'kumo.model_version': published.version})
+        self.update_card(fit.run_id)
 
     def start(self, record: RunRecord) -> None:
         self._require_experiment()
@@ -507,7 +570,7 @@ class MlflowTracking:
                 self._log_tags(self._parent, record.tags)
                 self._log_artifacts(record.artifacts)
                 if kind == 'prediction':
-                    self._fit = self._fit_of(record.tags)
+                    self._fit = self._fit_of(record.tags.get('kumo.fit_run_id'))
                     self._log_model_input()
                 if fit_run and not self.run_name:
                     self._rename(record)
@@ -663,48 +726,41 @@ class MlflowTracking:
         the description of the version it registered, after the user's
         comment."""
         published = cast(PublishedModel, self._published)
-        uri = import_provider('mlflow.utils.uri', 'mlflow')
-        shown = uri.is_databricks_unity_catalog_uri(
-            self.target.registry_uri or '')
         try:
             with self.target.scope():
                 run = self._client.get_run(self._parent)
-            bundle = run.data.tags.get('kumo.bundle_uri')
-            _describe_version(self.target, self._client, published, '\n'.join([
-                *([] if shown else [_card.version_headline(
-                    record.metrics, record.tags.get('kumo.tune_metric'))]),
-                f'Trained by `{run.info.run_name}`.'
-                + (f' Bundle `{bundle}`.' if bundle else '')]))
+            _describe_version(self.target, self._client, published,
+                              _version_text(
+                                  record.metrics,
+                                  record.tags.get('kumo.tune_metric'),
+                                  run.info.run_name,
+                                  run.data.tags.get('kumo.bundle_uri'),
+                                  not self._unity()))
         except Exception as error:
             logger.warning('Could not describe %s version %s: %s',
                            published.name, published.version,
                            format_error(error))
 
-    def _fit_of(self, tags: Mapping[str, str]) -> Optional[Tuple[Any, Any]]:
-        r"""The run info of the fit that trained a prediction's model, and
-        the model it logged, if any."""
-        fit_id = tags.get('kumo.fit_run_id')
+    def _fit_of(self, fit_id: Optional[str]) -> Tuple[Any, Any]:
+        r"""The run info of fit run ``fit_id`` on this server and the
+        model it logged, each `None` if missing."""
         if not fit_id:
-            return None
+            return None, None
         try:
             with self.target.scope():
                 fit = self._client.get_run(fit_id).info
         except Exception:
-            logger.debug('No fit run %s', fit_id, exc_info=True)
-            return None
-        try:
-            with self.target.scope():
-                models = self._client.search_logged_models(
-                    [fit.experiment_id],
-                    filter_string=f"source_run_id = '{fit_id}'",
-                    max_results=1)
-        except Exception:
-            logger.debug('No logged model of %s', fit_id, exc_info=True)
-            models = []
-        return fit, (models[0] if models else None)
+            logger.debug('No fit run %s here', fit_id, exc_info=True)
+            return None, None
+        return fit, self._logged_model(fit)
+
+    def _unity(self) -> bool:
+        return import_provider('mlflow.utils.uri', 'mlflow'
+                               ).is_databricks_unity_catalog_uri(
+                                   self.target.registry_uri or '')
 
     def _log_model_input(self) -> None:
-        if self._fit is None or self._fit[1] is None:
+        if self._fit[1] is None:
             return
         entities = self._mlflow.entities
         with self.target.scope():
@@ -713,8 +769,8 @@ class MlflowTracking:
 
     def _model_line(self, tags: Mapping[str, str]) -> str:
         name = link = None
-        if self._fit is not None:
-            fit = self._fit[0]
+        fit = self._fit[0]
+        if fit is not None:
             name = fit.run_name
             link = (self.target.run_url(fit.experiment_id, fit.run_id)
                     if self.platform == 'databricks' else
@@ -1155,15 +1211,16 @@ def log_model(
     trainer: 'Trainer',
     *,
     snapshot: 'GraphSnapshot',
-    name: str = 'model',
+    name: Optional[str] = None,
     run_id: Optional[str] = None,
     serving_snapshot: Any = None,
     target: Any = None,
     experiment_name: Optional[str] = None,
 ) -> Any:
-    r"""Log a trainer's bundle as an MLflow pyfunc model in ``run_id`` (or
+    r"""Log a trainer's bundle as an MLflow pyfunc model named ``name``
+    (default: after its registered model, else its query) in ``run_id`` (or
     the active run, else a new one in ``experiment_name``) with its source
-    tables as run inputs; returns its `ModelInfo`. ``target`` says where,
+    tables as run inputs and its holdout metrics; returns its `ModelInfo`. ``target`` says where,
     with what credentials, as in `MlflowTracking`; `None` uses MLflow's own
     tracking URI. Scores with ``predict(entities, params={'snapshot':
     uri})``; with ``serving_snapshot`` (an exported snapshot URI, or a
@@ -1174,6 +1231,7 @@ def log_model(
     from kumo.engine._manifest import stub
     from kumo.engine._mlops import snapshot_uri
     from kumo.engine._tracking import fit_inputs
+    from kumo.engine.trainer._run_spec import model_metrics
 
     mlflow = import_provider('mlflow', 'mlflow')
     result = trainer.result
@@ -1199,18 +1257,21 @@ def log_model(
                 tracking._default_experiment or '0').info.run_id
         experiment_id = client.get_run(run_id).info.experiment_id
         _log_inputs(mlflow, client, run_id, fit_inputs(result.manifest))
+    registered = getattr(result.registered_model, 'name', None)
     info = _log_model(target, client, result.bundle_dir, result.manifest or
                       (None if result.id is None else stub('model', result.id)),
-                      snapshot, name=name, run_id=run_id,
+                      snapshot, name=name or logged_model_name(
+                          registered, result.manifest), run_id=run_id,
                       experiment_id=experiment_id,
                       serving_snapshot=snapshot_uri(serving_snapshot))
+    metrics = model_metrics(result)
     with target.scope():
-        if result.metrics:
+        if metrics:
             client.log_batch(run_id, metrics=[
-                mlflow.entities.Metric(metric_key(key), float(value),
+                mlflow.entities.Metric(key, float(value),
                                        int(time.time() * 1000), 0,
                                        model_id=info.model_id)
-                for key, value in result.metrics.items()
+                for key, value in metrics.items()
             ])
         if created:
             client.set_terminated(run_id, 'FINISHED')
@@ -1278,12 +1339,13 @@ def logged_model_name(registered: Optional[str], manifest: Any) -> str:
 
 def _log_model(target: Any, client: Any, bundle_dir: Path,
                manifest: Optional['ModelManifest'],
-               snapshot: Optional['GraphSnapshot'], *, name: str, run_id: str,
-               experiment_id: Optional[str],
+               snapshot: Optional['GraphSnapshot'], *, name: str,
+               run_id: Optional[str], experiment_id: Optional[str],
                serving_snapshot: Optional[str]) -> Any:
     r"""What ``mlflow.pyfunc.log_model`` does, through ``client``: it only
     logs to the process-wide tracking URI. A bundle without a training spec
-    is logged without a signature."""
+    is logged without a signature; a model of no run (``run_id`` `None`)
+    in ``experiment_id``, without params."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
     from kumo.engine.integrations import _mlflow_model, _mlflow_model_code
@@ -1306,10 +1368,11 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
     pointers = registry_pointers(_id(manifest))
     provenance = bundle_dir / PROVENANCE_FILE
     with target.scope():
+        run = None if run_id is None else client.get_run(run_id)
         model = client.create_logged_model(
-            experiment_id or client.get_run(run_id).info.experiment_id,
-            name=name, source_run_id=run_id,
-            params=dict(client.get_run(run_id).data.params))
+            experiment_id or run.info.experiment_id, name=name,
+            source_run_id=run_id,
+            params=None if run is None else dict(run.data.params))
     mlflow_model = mlflow.models.Model(
         artifact_path=model.artifact_location, model_uuid=model.model_id,
         run_id=run_id, metadata=pointers, model_id=model.model_id)
@@ -1347,9 +1410,10 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
                     repository.log_artifacts(local)
                 logged = client.finalize_logged_model(model.model_id,
                                                       'READY')
-                client.log_outputs(run_id, [
-                    mlflow.entities.LoggedModelOutput(model.model_id, 0)
-                ])
+                if run_id is not None:
+                    client.log_outputs(run_id, [
+                        mlflow.entities.LoggedModelOutput(model.model_id, 0)
+                    ])
     except BaseException:
         with target.scope():
             _quietly(client.finalize_logged_model, model.model_id, 'FAILED')
@@ -1430,6 +1494,16 @@ def _register(target: Any, client: Any, info: Any,
     return PublishedModel(name=name, version=version,
                           uri=f'models:/{name}/{version}',
                           metadata=dict(metadata))
+
+
+def _version_text(metrics: Mapping[str, float], tune: Optional[str],
+                  fit: Optional[str], bundle: Optional[str],
+                  with_metrics: bool) -> str:
+    trained = ' '.join([*([f'Trained by `{fit}`.'] if fit else []),
+                        *([f'Bundle `{bundle}`.'] if bundle else [])])
+    return '\n'.join(filter(None, [
+        _card.version_headline(metrics, tune) if with_metrics else '',
+        trained]))
 
 
 def _describe_version(target: Any, client: Any, published: PublishedModel,
