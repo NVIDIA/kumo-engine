@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+from kumo_core.score_counts import Counts
 from kumo_core.summaries import Scalar
 from kumo_core.types import TaskType
 
@@ -48,7 +49,8 @@ def _run(tmp_path, name, seed):
 def test_any_models_prediction_run_is_recorded_and_monitored(tmp_path):
     run = _run(tmp_path, 'run-2', 1)
     stats = run.manifest.stats['predictions']
-    assert stats.rows == 200 and stats.columns['True_PROB']['count'] == 200
+    assert stats.rows == 200
+    assert Counts.from_dict(stats.counts).arrays['True_PROB'].sum() == 200
     assert run.manifest.parents.model == MODEL
 
     record = prediction_record(run.manifest)

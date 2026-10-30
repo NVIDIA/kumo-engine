@@ -9,9 +9,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
+from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumoapi.graph import Edge
 from kumoapi.jobs import PredictionArtifactType
 from kumoapi.model_plan import ModelPlan
@@ -79,17 +78,6 @@ def classifier(graph):
     return trainer, pquery.generate_prediction_table(snapshot)
 
 
-def _quantiles_match(summary, values):
-    values = np.sort(values)
-    levels = np.arange(1, 100) / 100
-    low, high = (np.quantile(values, np.clip(levels + d, 0, 1))
-                 for d in (-.03, .03))
-    assert ((low <= summary['percentiles'])
-            & (summary['percentiles'] <= high)).all()
-    assert summary['count'] == len(values)
-    assert (summary['min'], summary['max']) == (values[0], values[-1])
-
-
 def test_manifest_records_run_and_directory_export(graph, classifier,
                                                    tmp_path, recwarn):
     _, snapshot = graph
@@ -131,9 +119,12 @@ def test_manifest_records_run_and_directory_export(graph, classifier,
     frame = result.frame
     stats = manifest.stats['predictions']
     assert stats.rows == len(frame)
-    _quantiles_match(stats.columns['True_PROB'], frame['True_PROB'])
-    assert stats.predicted_positive_rate == pytest.approx(
-        (frame['True_PROB'] > 0.4).mean())
+    counts = Counts.from_dict(stats.counts)
+    assert counts.arrays['True_PROB'].tolist() == np.bincount(
+        np.searchsorted(PROBABILITY_EDGES, frame['True_PROB'], 'right'),
+        minlength=len(PROBABILITY_EDGES) + 1).tolist()
+    assert counts.arrays['predicted_positive'] == (
+        frame['True_PROB'] > 0.4).sum()
 
     for name in ('preds', 'embs'):
         sidecar = json.loads(
@@ -183,19 +174,20 @@ def test_mlops_stores_the_run_after_its_export(graph, classifier, tmp_path):
 
 def test_mlops_runs_record_their_exact_score_counts(graph, classifier,
                                                     tmp_path, monkeypatch):
-    from kumo_core.score_counts import PROBABILITY_EDGES, Counts
     from kumo_core.score_drift import psi
     from kumo_core.summaries import Dataset, Histogram, Scalar, Tag
 
     _, snapshot = graph
     trainer, table = classifier
-    plain = trainer.predict(table, snapshot=snapshot,
-                            binary_classification_threshold=0.4)
-    assert plain.manifest.stats['predictions'].counts is None
 
     def histogram(values):
         return np.bincount(np.searchsorted(PROBABILITY_EDGES, values, 'right'),
                            minlength=102)
+
+    plain = trainer.predict(table, snapshot=snapshot,
+                            binary_classification_threshold=0.4)
+    assert Counts.from_dict(plain.manifest.stats['predictions'].counts).arrays[
+        'True_PROB'].tolist() == histogram(plain.frame['True_PROB']).tolist()
 
     holdout = trainer.result.holdout_df()['True_PROB'].to_numpy()
     baseline = Counts({'score': PROBABILITY_EDGES})
@@ -296,34 +288,6 @@ def test_manifest_records_bundle_scoring_defaults_as_bundle(
             scoring.threshold_source) == (argument or 0.3, source)
 
 
-def test_top_scores_per_entity_and_anchor_across_files(tmp_path):
-    from kumo_core.types import TaskType
-
-    from kumo.engine.trainer._run_manifest import output_stats
-
-    rng = np.random.default_rng(1)
-    entity = np.repeat(np.arange(200), 6)
-    frame = pd.DataFrame({
-        'ENTITY': entity,
-        'ANCHOR_TIMESTAMP': pd.to_datetime(
-            np.tile(np.repeat(['2024-01-01', '2024-02-01'], 3), 200)),
-        'CLASS': rng.integers(0, 50, entity.size),
-        'SCORE': rng.random(entity.size),
-    })
-    paths = []
-    for index, part in enumerate((frame.iloc[:601], frame.iloc[601:])):
-        paths.append(str(tmp_path / f'part-{index}.parquet'))
-        pq.write_table(pa.Table.from_pandas(part, preserve_index=False),
-                       paths[-1], row_group_size=100)
-
-    stats = output_stats(paths, TaskType.MULTICLASS_CLASSIFICATION)
-    link = output_stats(paths, TaskType.TEMPORAL_LINK_PREDICTION)
-
-    tops = frame.groupby(['ENTITY', 'ANCHOR_TIMESTAMP'])['SCORE'].max()
-    _quantiles_match(stats['columns']['top_score'], tops)
-    assert link == stats
-
-
 def test_plain_export_records_nothing_and_skips_non_parquet_sidecars(
         graph, classifier, tmp_path):
     _, snapshot = graph
@@ -380,8 +344,8 @@ def test_manifest_failures_warn_and_keep_outputs(graph, classifier, tmp_path,
         raise RuntimeError('unavailable')
 
     _, exported = run('baseline')
-    monkeypatch.setattr(_run_manifest, 'output_stats', fail)
-    with pytest.warns(UserWarning, match='without output score statistics'):
+    monkeypatch.setattr(_run_manifest, 'output_counts', fail)
+    with pytest.warns(UserWarning, match='without score counts'):
         partial, partial_exported = run('partial')
     assert partial.manifest.stats == {
         'predictions': ArtifactStats(rows=table.row_count)

@@ -38,7 +38,8 @@ from kumo.engine._manifest import (
     stamp,
     stub,
 )
-from kumo.engine.trainer._provenance import embedded_model
+from kumo.engine._score_stats import output_counts
+from kumo.engine.trainer._provenance import count_edges, embedded_model
 
 # Object stores locate a path themselves; other sinks' file paths are kept.
 _OBJECT_STORES = frozenset({'LOCAL_FILE', 'S3', 'GCS'})
@@ -231,22 +232,24 @@ def _record_predictions(
     r"""The manifest of prediction run ``run_id`` of any ``model``:
     ``outputs`` maps each artifact (``predictions``, ``embeddings``) to its
     row count and a call listing its Parquet files; the predictions record
-    ``counts``, their scores' exact `Counts`, if the scorers counted, and
-    else their scores' statistics for ``task_type`` (see the column
+    ``counts``, their scores' exact `Counts`: the scorers', else counted
+    from the files for ``task_type`` on ``model``'s bins (see the column
     contract in mlops.md); ``table`` holds the requested, scored and
     skipped counts."""
     stats: Dict[str, Dict[str, Any]] = {}
     for name, (rows, files) in outputs.items():
         stats[name] = {'rows': rows}
-        if name == 'predictions' and counts is not None:
-            stats[name]['counts'] = counts
-        elif name == 'predictions':
+        if name == 'predictions' and counts is None:
             try:
-                stats[name].update(output_stats(files(), task_type))
+                counted = output_counts(files(), task_type,
+                                        count_edges(model, task_type))
+                counts = None if counted is None else counted.to_dict()
             except Exception as error:
                 warnings.warn(
-                    f"Recording the prediction manifest without output "
-                    f"score statistics: {error}", UserWarning, stacklevel=5)
+                    f"Recording the prediction manifest without score "
+                    f"counts: {error}", UserWarning, stacklevel=5)
+        if name == 'predictions' and counts is not None:
+            stats[name]['counts'] = counts
     return PredictionManifest(
         id=run_id,
         parents=PredictionParents(
@@ -301,24 +304,3 @@ def destination_record(connector: Any, destination: str) -> OutputDestination:
     else:
         location = source_location(connector, destination)
     return OutputDestination(connector=kind, location=location)
-
-
-def output_stats(files: Sequence[str],
-                 task_type: TaskType) -> Dict[str, Any]:
-    from kumo.engine._score_stats import (
-        SCORE_COLUMNS,
-        TOP_SCORE,
-        parquet_stats,
-        positive_rate,
-        top_score_stats,
-    )
-
-    if not files or task_type not in SCORE_COLUMNS:
-        return {}
-    if task_type is TaskType.BINARY_CLASSIFICATION:
-        stats = parquet_stats(files, ['True_PROB', 'TARGET_PRED'])
-        return {'columns': {'True_PROB': stats['True_PROB']},
-                'predicted_positive_rate': positive_rate(stats['TARGET_PRED'])}
-    if task_type.has_numerical_target:
-        return {'columns': parquet_stats(files, ['TARGET_PRED'])}
-    return {'columns': {TOP_SCORE: top_score_stats(files)}}
