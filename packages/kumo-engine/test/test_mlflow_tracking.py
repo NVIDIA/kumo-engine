@@ -471,6 +471,8 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
         tags={**monitoring, 'kumo.monitor': 'evaluate'},
         prediction_run=predicted.info.run_id, summaries=(
             Tag('kumo.labels_snapshot_id', 'g@2'),
+            Dataset('g@2', {'connector': 'S3', 'location': 's3://b/g/2'}, {},
+                    {}, 'labels'),
             Scalar('realized/map@10', 0.5),
             Note('notes', 'Labelled 3 of 4 scored rows with `g@2`.')))) is None
 
@@ -484,6 +486,9 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
         'kumo.kind': 'prediction', 'kumo.drift_previous': 'pred-0',
         'kumo.labels_snapshot_id': 'g@2'}.items()
     assert not {'kumo.monitored', 'kumo.monitors'} & set(run.data.tags)
+    labels, = run.inputs.dataset_inputs
+    assert (labels.dataset.name, labels.dataset.source, labels.tags[0].value
+            ) == ('g@2', '{"uri": "s3://b/g/2"}', 'labels')
     assert json.loads(mlflow.artifacts.load_text(
         f'{run.info.artifact_uri}/drift/features.json')) == {
             'columns': ['table', 'column', 'psi'],

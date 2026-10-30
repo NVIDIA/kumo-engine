@@ -20,7 +20,7 @@ import pandas as pd
 from kumo_core.score_counts import Counts
 from kumo_core.score_drift import drift_column
 from kumo_core.score_drift import score_drift as exact_drift
-from kumo_core.summaries import Note, Scalar, Summary, Table, Tag
+from kumo_core.summaries import Dataset, Note, Scalar, Summary, Table, Tag
 
 from kumo.engine._card import number
 from kumo.engine._manifest import PredictionManifest
@@ -502,10 +502,11 @@ def _drift(counts: Optional[Counts], reference: Optional[Counts], name: str,
 
 
 def track(report: Any, run: Any, settings: Any, trainer: Any,
-          started: datetime) -> None:
+          started: datetime, labels: Any = None) -> None:
     r"""Log ``report``, a monitoring call of ``run`` that started at
-    ``started``, with the tracker's ``log_monitoring``; a failure warns, or
-    raises under ``on_error='raise'``."""
+    ``started`` (an evaluation against the ``labels`` snapshot), with the
+    tracker's ``log_monitoring``; a failure warns, or raises under
+    ``on_error='raise'``."""
     tracking = None if settings is None else settings.tracking
     if tracking is None:
         return
@@ -514,7 +515,7 @@ def track(report: Any, run: Any, settings: Any, trainer: Any,
     from kumo.engine._tracking import log_run
 
     try:
-        record = _record(report, run, tracking, trainer, started)
+        record = _record(report, run, tracking, trainer, started, labels)
     except Exception as error:
         if settings.on_error == 'warn':
             warn_failure(
@@ -533,7 +534,7 @@ _IDENTITY = ('kumo.prediction_id', 'kumo.bundle_id', 'kumo.as_of',
 
 
 def _record(report: Any, run: Any, tracking: Any, trainer: Any,
-            started: datetime) -> Any:
+            started: datetime, labels: Any) -> Any:
     r"""``report`` as summaries, tagged like ``run``'s prediction run, which
     the tracker writes them into or names a run after."""
     from kumo.engine._tracking import RunSpec, prediction_record, run_record
@@ -552,8 +553,8 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
     record = run_record(RunSpec(
         kind='monitoring',
         parents={'monitor': 'evaluate' if evaluating else 'drift'},
-        summaries=(evaluation_summaries(report) if evaluating else
-                   drift_summaries(report))))
+        summaries=(_evaluation_summaries(report, labels) if evaluating else
+                   _drift_summaries(report))))
     ref = getattr(run, 'tracking', None)
     tracked = ref is not None and ref.platform == getattr(tracking,
                                                           'platform', None)
@@ -566,7 +567,7 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
         prediction_run=ref.run_id if tracked else None)
 
 
-def drift_summaries(report: 'DriftReport') -> List[Summary]:
+def _drift_summaries(report: 'DriftReport') -> List[Summary]:
     r"""What a tracker logs of ``report``: drift since the previous run, and,
     when the run's model is the trainer's, the input changes and column
     drift since training (its score drift since training is the prediction
@@ -603,12 +604,20 @@ def drift_summaries(report: 'DriftReport') -> List[Summary]:
     return summaries + _reason_notes(reasons)
 
 
-def evaluation_summaries(result: EvaluationResult) -> List[Summary]:
+def _evaluation_summaries(result: EvaluationResult,
+                          labels: Any) -> List[Summary]:
     r"""What a tracker logs of ``result``: its metrics as ``realized/<m>``,
-    the labelled share, the labels snapshot and notes on maturity and on
-    what is missing."""
+    the labelled share, the ``labels`` snapshot (as a dataset when stored)
+    and notes on maturity and on what is missing."""
+    from kumo.engine._manifest import artifact_summaries
+
+    manifest = getattr(labels, 'manifest', None)
+    datasets = [] if manifest is None else [
+        replace(summary, context='labels')
+        for summary in artifact_summaries(manifest, 'labels')
+        if isinstance(summary, Dataset) and summary.name == manifest.id]
     summaries: List[Summary] = [
-        Tag('kumo.labels_snapshot_id', result.snapshot_id),
+        Tag('kumo.labels_snapshot_id', result.snapshot_id), *datasets,
         *(Scalar(f'realized/{name}', value)
           for name, value in result.metrics.items() if value is not None),
     ]

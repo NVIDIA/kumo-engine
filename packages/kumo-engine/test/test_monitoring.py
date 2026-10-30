@@ -13,7 +13,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 import pytest
-from kumo_core.summaries import Note, Scalar, Table, Tag
+from kumo_core.summaries import Dataset, Note, Scalar, Table, Tag
 from kumoapi.graph import Edge
 from kumoapi.model_plan import ModelPlan
 from kumoapi.typing import Stype
@@ -637,6 +637,39 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
         Note('notes', "This trainer's model did not score this run, so its "
              'drift since training is not logged here; against its '
              'holdout: psi 0.5 · ks 0.25 · wasserstein 0.125.'))
+
+
+def test_evaluation_summaries_name_the_labels_snapshot():
+    from kumo.engine._manifest import SnapshotManifest
+    from kumo.engine._monitoring import EvaluationResult, track
+
+    result = EvaluationResult(
+        prediction_id='p', bundle_id='b', snapshot_id='g@2',
+        task_type='binary_classification', anchors=(),
+        metrics={'auroc': 0.75, 'ap': None}, rows=4, labelled=3,
+        labelled_fraction=0.75, matured=False, bundle_matches=True,
+        reasons={'metrics': 'a metric is undefined for these labels'})
+    tracker = _Tracker()
+    track(result, SimpleNamespace(id='p', bundle_id='b', manifest=None),
+          SimpleNamespace(tracking=tracker, on_error='raise'),
+          SimpleNamespace(result=None), PREDICTED_AT.to_pydatetime(),
+          SimpleNamespace(manifest=SnapshotManifest(
+              id='g@2', location='s3://b/snapshots/g/2')))
+
+    record, = tracker.records
+    assert record.tags['kumo.monitor'] == 'evaluate'
+    assert record.summaries == (
+        Tag('kumo.labels_snapshot_id', 'g@2'),
+        Dataset('g@2', {'connector': 'S3', 'location': 's3://b/snapshots/g/2',
+                        'version': 'g@2', 'version_kind': 'exact'}, {}, {},
+                'labels'),
+        Scalar('realized/auroc', 0.75),
+        Scalar('realized/labelled_share', 0.75),
+        Note('notes', 'Labelled 3 of 4 scored rows with `g@2`.'),
+        Note('notes', 'Labels are not mature yet: the label window ends '
+             'after the snapshot data.'),
+        Note('notes', 'Realized metrics: a metric is undefined for these '
+             'labels.'))
 
 
 def test_a_monitoring_tracking_failure_warns_or_raises(classifier, tmp_path,
