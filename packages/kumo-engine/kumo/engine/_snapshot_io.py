@@ -235,8 +235,7 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
         entry['rel_path']: int(entry['size_bytes'])
         for entry in json.loads(index_manifest)['files']
     }
-    # Each export writes its own generation; the marker, written last,
-    # names the one that loads. Concurrent exports never share a file.
+    # One generation per export; the marker, written last, names it.
     generation = uuid.uuid4().hex
     filesystem, root = _location(connector, location)
     base = f'{root}/{generation}'
@@ -412,7 +411,6 @@ def holds_export(index: Path, manifest: dict) -> bool:
 def _download(root: str, staging: Path, client: FileSystem,
               item: Tuple[str, int, int], stop: threading.Event) -> None:
     name, offset, length = item
-    # Each open is a HEAD: pyarrow cannot open a file from a known size.
     with client.open_input_file(f'{root}/index/{name}') as reader:
         fd = os.open(staging / name, os.O_WRONLY)
         try:
