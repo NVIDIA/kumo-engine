@@ -251,12 +251,14 @@ class Adapter:
     nested_runs: bool = False
     step_metrics: bool = False
     artifacts: bool = False
-    run_name: Callable[[str], str] = str
+    run_name: Callable[[str], Optional[str]] = str
+    expected: Callable[[Dict[str, RunRecord]], Dict[str, RunRecord]] = dict
 
 
 def gaps(expected: Dict[str, RunRecord], observed: Dict[str, Observed],
          adapter: Adapter) -> List[str]:
     kept_params = adapter.kept_params
+    expected = adapter.expected(expected)
     found = []
     if set(observed) != set(expected):
         return [f'runs {sorted(observed)} != {sorted(expected)}']
@@ -369,7 +371,7 @@ def snowflake_adapter(monkeypatch):
 
             def bucket(key):
                 prefix, _, name = key.partition('/')
-                if not prefix.startswith('trial-'):
+                if not prefix.startswith('TRIAL_'):
                     prefix, name = '', key
                 return names.setdefault(prefix or None, {
                     'params': {}, 'tags': {}, 'metrics': {}, 'steps': {}
@@ -401,12 +403,30 @@ def snowflake_adapter(monkeypatch):
                     **runs)
         return observed
 
+    def expected(records):
+        r"""What Snowflake keeps of a trial: its params, status, error and
+        best tuned validation metric, under ``TRIAL_<i>`` (a retry under
+        ``TRIAL_<i>_ATTEMPT_<j>``)."""
+        kept = {}
+        for key, record in records.items():
+            if record.tags['kumo.kind'] == 'trial':
+                trial, attempt = key.split('-')[1::2]
+                key = f'TRIAL_{trial}' + (
+                    f'_ATTEMPT_{attempt}' if attempt != '1' else '')
+                record = replace(record, steps={}, metrics={
+                    name: value for name, value in record.metrics.items()
+                    if name == 'val/best_mae'}, tags={
+                        name: value for name, value in record.tags.items()
+                        if name in ('kumo.status', 'kumo.error')})
+            kept[key] = record
+        return kept
+
     return Adapter(
         make=lambda: SnowflakeTracking(_snowflake_experiment_fake.FakeSession(),
                                        experiment_name='ents', tags=USER_TAGS),
         observe=observe, step_metrics=True, artifacts=True,
         # Snowflake names are checked in test_snowflake_tracking.
-        run_name=lambda name: None)
+        run_name=lambda name: None, expected=expected)
 
 
 @pytest.fixture(params=['mlflow', 'snowflake'])

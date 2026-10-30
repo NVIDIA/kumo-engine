@@ -21,7 +21,6 @@ from typing import (
     Optional,
     Sequence,
     Set,
-    Tuple,
 )
 
 from kumo_core.instrumentation import format_error
@@ -65,9 +64,11 @@ _WARN_RUNS = 450
 
 
 class SnowflakeTracking:
-    r"""Records `Trainer.fit` in Snowflake Experiment Tracking as one run;
-    trial attempts are logged in it under ``trial-<n>-attempt-<m>/`` names and
-    tags are logged as params. Snowflake has no dataset inputs, so a fit's
+    r"""Records `Trainer.fit` in Snowflake Experiment Tracking as one run
+    with the selected trial's epochs; each trial of a search adds its
+    params, status and best tuned validation metric under ``TRIAL_<n>/``
+    names (``TRIAL_<n>_ATTEMPT_<m>/`` for a retry). Tags are logged as
+    params. Snowflake has no dataset inputs, so a fit's
     source tables are not recorded as inputs. The Snowpark session's
     parameters are not changed. As ``kumo.MLOps(tracking=...)``, it also
     records each prediction run and each monitoring call as one run named
@@ -131,7 +132,7 @@ class SnowflakeTracking:
         self._tracking: Any = None
         self._run: Any = None
         self._run_context = ExitStack()
-        self._trial_tags: Dict[Tuple[int, int], Set[str]] = {}
+        self._tune = 'loss'
         self._metrics: Set[str] = set()
         self._values: Dict[str, float] = {}
         self._started = _now()
@@ -215,6 +216,7 @@ class SnowflakeTracking:
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)
+        self._tune = record.tags.get('kumo.tune_metric', 'loss')
         self._log_params({**record.params, **record.tags,
                           **_model_param(record)})
         self._log_artifacts(record.artifacts)
@@ -230,25 +232,18 @@ class SnowflakeTracking:
     def on_trial(self, record: RunRecord, event: Event) -> None:
         if self._run is None:
             return
-        prefix = f'{record.name}/'
-        key = (event.trial or 0, int(event.params['attempt']))
+        attempt = int(event.params['attempt'])
+        prefix = f'TRIAL_{event.trial or 0}' + (
+            f'_ATTEMPT_{attempt}/' if attempt > 1 else '/')
         if event.name == 'trial_started':
-            self._trial_tags[key] = set(record.tags)
-            self._log_params({prefix + k: v
-                              for k, v in {**record.params,
-                                           **record.tags}.items()})
-        elif event.name == 'epoch_ended':
-            self._log_metrics({prefix + k: v
-                               for k, v in event.metrics.items()},
-                              _EPOCH_METRICS, step=event.epoch or 0)
+            self._log_params({prefix + k: v for k, v in record.params.items()})
         elif event.name == 'trial_ended':
-            self._log_metrics({prefix + k: v
-                               for k, v in record.metrics.items()},
-                              _SUMMARY_METRICS)
-            logged = self._trial_tags.pop(key, set())
-            self._log_params({prefix + k: v
-                              for k, v in record.tags.items()
-                              if k not in logged})
+            best = f'val/best_{self._tune}'
+            self._log_metrics({prefix + best: value
+                               for name, value in record.metrics.items()
+                               if name == best}, _SUMMARY_METRICS)
+            self._log_params({prefix + k: v for k, v in record.tags.items()
+                              if k in ('kumo.status', 'kumo.error')})
 
     def finish(self, record: Optional[RunRecord],
                error: Optional[BaseException]) -> None:
