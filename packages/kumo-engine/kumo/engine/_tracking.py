@@ -168,6 +168,10 @@ def by_step(steps: Mapping[str, Sequence[Tuple[int, float]]]
     return sorted(grouped.items())
 
 
+#: The fit's pointer tags its trial runs share.
+_TRIAL_PARENTS = ('snapshot_id', 'task_type')
+
+
 def run_record(spec: RunSpec) -> RunRecord:
     params = {key: _param_value(value) for key, value in spec.params.items()}
     return RunRecord(
@@ -572,7 +576,11 @@ class TrackingSession:
                 **event.params, 'attempt': events[0].params['attempt']
             })
         events.append(event)
-        record = run_record(trial_spec(events))
+        trial = trial_spec(events)
+        record = run_record(dataclasses.replace(trial, parents={
+            **{name: self.spec.parents.get(name) for name in _TRIAL_PARENTS},
+            **trial.parents
+        }))
         logged = dataclasses.replace(event,
                                      metrics=logged_names(event.metrics))
         self._submit(lambda: self._call(
