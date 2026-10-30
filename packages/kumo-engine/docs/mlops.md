@@ -161,7 +161,7 @@ An alias is a letter or underscore followed by letters, digits or underscores; `
 
 ### Promote a model
 
-Register every fit under a candidate alias and move the serving alias yourself once the new model is better, comparing `result.metrics` with the champion's:
+Register every fit under a candidate alias and move the serving alias yourself once the new model is better, comparing `result.metrics` (the holdout's `test_<metric>`, logged to MLflow as `test/<metric>`) with the champion's:
 
 ```python
 with cfg.tracking.client() as client:          # the tracker's MLflow server, as its identity
@@ -207,7 +207,9 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 - The Models tab's narrow version column can cut `v10` to `v1…`; widen it or read the version in the fit's run name, or its tag `kumo.model_version`.
 
 **The card.** Each run's description (the Overview on MLflow, `run_card.md` on Snowflake) starts with a card.
-- Line 1 is the run's status and watch numbers. For a fit: the tuned holdout metric, data problems, the model version, the number of trials and the task. For a prediction: realized quality, `psi` against training, the entities scored and their date, when their labels mature (tag `kumo.labels_mature`, until `evaluate` logs realized quality), skipped share and the model version.
+- Line 1 is the run's status and watch numbers. For a fit: the tuned holdout metric, data problems, the model version, the number of trials and the task, and which trial and epoch the curves and holdout come from. For a prediction: realized quality, score `psi` vs holdout with its verdict (small, moderate or large shift), the entities scored and their date, when their labels mature (tag `kumo.labels_mature`, until `evaluate` logs realized quality), skipped share and the model version.
+- Every comparison names its reference: "vs holdout" (the model's holdout scores at training), "vs previous" (the previous run) or "vs training data" (input columns).
+<!-- TODO lead: card agent: line 1 wording (trial/epoch, PSI verdict, 'vs holdout') and the Data preparation line are written from the plan, not yet from the code -->
 - Then the model and the fit run that trained it, data problems, small tables, where things are, and the run's files.
 - Write your own notes below the card's last line ("Notes below this line are kept"). Editing above it stops kumo-engine updating that card; the run is then tagged `kumo.card_frozen`.
 
@@ -216,8 +218,11 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 - The `test/` values are also logged on the fit's logged model, against the training table dataset, so the model page, the Models tab and the registry's Compare versions view show them; they are also in the registered version's description. After a refit they describe the refit model the bundle ships; the model before the refit is `before_refit/<metric>`.
 - `loss` (`train/loss`, `val/loss`, `test/loss`) is the training objective, the model plan's `optimization.loss` (weighted when the plan weights examples), averaged as the trainer averages it. `logloss` is the plain log loss of the shipped probabilities over every holdout row. Compare models on `test/logloss`; `loss` compares only fits with the same objective.
 - `ap` is average precision, the precision at each threshold weighted by the recall it adds; `auprc` is the area under the precision-recall curve by trapezoids, which runs slightly higher on few distinct scores. They usually agree to two digits; `ap` is the one to compare.
-- Prediction: `pred/rows`, `pred/skipped_share`, `pred/positive_rate` (binary, with a threshold), `pred/item_coverage` and `pred/top_1pct_items_share` (ranking and link prediction); `drift/psi`, `drift/ks` and `drift/wasserstein` against the model's holdout scores at training. After `score_drift`: `drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev` against the previous run. After `evaluate`: `realized/<metric>` and `realized/labelled_share`. A prediction run shows "Model metrics (0)": the model's own quality is on its fit run.
-- System metrics: `system/*`, step = seconds since the start, every second for 10 minutes and then every 10 seconds. A run with fewer than 10 readings logs none.
+- Prediction: `pred/rows`, `pred/skipped_share`, `pred/positive_rate` (binary, with a threshold), `pred/item_coverage` and `pred/top_1pct_items_share` (ranking and link prediction); `drift/psi`, `drift/ks` and `drift/wasserstein` vs the model's holdout scores at training ([definitions](#drift-statistics)). After `score_drift`: `drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev` against the previous run (`_vs_prev` always means the previous run, never training), and `drift/inputs_max_psi`, the largest input-column PSI. After `evaluate`: `realized/<metric>` and `realized/labelled_share`. A prediction run shows "Model metrics (0)": the model's own quality is on its fit run.
+- `pred/<column>_count_by_score_pct`: step = the score in hundredths, so step 37 counts the entities scored from 0.37 to under 0.38 (step 99 includes 1.0). Logged for the 20 most predicted classes' probability columns; not on Snowflake, whose histogram tables carry the same counts.
+- `pred/recommendations_by_item_rank`: step = an item's rank by how often it was recommended (1 = most recommended, up to 100); the value is how many times it was recommended.
+- Data preparation: a fit's or prediction's card shows how long the graph snapshot and the training table took to build and their size on disk, read from their manifests. A snapshot or table built in an earlier process shows its original build, marked "(built earlier, reused)". On Snowflake the same numbers are the run params `prep.<step>.seconds` and `prep.<step>.disk_gib`.
+- System metrics: `system/*`, step = seconds since the start, sampled every second and logged every 10 seconds and once more when the run ends, on fit and prediction runs. A run with fewer than 2 readings logs none, and monitoring work written into a prediction run does not sample separately. They cover the run's own work (training or scoring), not data preparation.
 - A series is logged once it has two points, so a one-epoch fit or trial logs no epoch curves; the fit's card lists that epoch's values instead.
 - Read one run's numbers in its Overview's Metrics table, below Details. The Model metrics tab is for the epoch and system curves; MLflow draws every other metric there as a single bar.
 
@@ -227,7 +232,7 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 |---|---|
 | fit | `holdout/by_threshold` (binary: threshold, share at or above, tp, fp, fn, tn, precision, recall, fpr), `holdout/calibration`, `holdout/confusion` (multiclass), `holdout/by_class` or `holdout/by_label`, `holdout/by_k`, `holdout/by_label_count` (multilabel), `holdout/by_horizon` (forecast), `holdout/histogram` and `holdout/residuals` (regression, forecast) |
 | fit, prediction | `data/health` (each table and link: rows, dropped rows, duplicate keys, matched rows, failed lookups), `data/columns` (column statistics; `≈` marks approximate ones) |
-| prediction | `pred/histogram`, `pred/by_class` (multiclass, multilabel), `pred/by_label_count` (multilabel), `pred/item_frequency` (ranking, link prediction); after `score_drift`, `drift/features` (every column the model encodes, by how far it moved) |
+| prediction | `pred/histogram`, `pred/by_class` (multiclass, multilabel), `pred/by_label_count` (multilabel), `pred/item_frequency` (ranking, link prediction); after `score_drift`, `drift/inputs/<table>` (one per source table: its encoded columns, most shifted first), `drift/table_rows` and `drift/link_edges` (each table's rows and each link's edges at training and now, for those whose size changed; in the card up to 12 rows) |
 
 A histogram table has a row per bin with `from` and `to` (the end bins are open), then a count and a cumulative share per column.
 
@@ -264,8 +269,8 @@ run.id, run.bundle_id, run.snapshot_id, run.scored_rows, run.skipped_rows
 ```
 
 - **`PredictionOutputConfig(connector, path=...)`**: a directory or file on a file destination (local, S3, GCS, a volume or stage), else a table. `output_paths={"predictions": ..., "embeddings": ...}` writes embeddings too.
-- The destination is written the same way with MLOps on or off: a **table** is replaced, and **files** go to exactly `path`, with the run's `_provenance.json` next to the Parquet parts. A directory holding another export is refused; `write_mode=WriteMode.OVERWRITE` replaces it.
-- `write_mode=WriteMode.APPEND` (`from kumoapi.jobs import WriteMode`) adds each run's rows to a table with two columns, `PREDICTION_ID` (`run.id`) and `BUNDLE_ID`, so the runs in one table can be told apart.
+- Your destination keeps the defaults it always had, with MLOps on or off: a **table** is replaced with exactly the columns of the [output contract](#prediction-output-contract), and **files** go to exactly `path` as given, with the run's `_provenance.json` next to the Parquet parts. History is not kept there; it lives under the artifact root (below). A directory holding another export is refused; `write_mode=WriteMode.OVERWRITE` replaces it.
+- `write_mode=WriteMode.APPEND` (`from kumoapi.jobs import WriteMode`) adds each run's rows to a table with two extra columns, the only case that adds columns: `PREDICTION_ID` (`run.id`) and `BUNDLE_ID`, so the runs in one table can be told apart.
 - With MLOps on, each run is also kept, never overwritten, under `<root>/predictions/<id>/`, which `evaluate`, `score_drift` and `kumo.output_uri` point at, and recorded as a tracker run named after its id: scoring options as params, row counts and score percentiles as metrics, the scoring snapshot's source tables as inputs. A failed export still records the run, ended failed with `kumo.error`.
 - Entities the snapshot does not hold are skipped and counted (`run.skipped_rows`, the `data/skipped_fraction` metric), never refused.
 - A scoring job needs no `Graph` code: `GraphSnapshot.load_from_connector(cfg, id=...)` and `Trainer.load_from_connector(cfg, ...)`, then `predict`. It warns when the snapshot was taken of a different graph than the model's, naming the schema changes (tables, columns, types, keys, edges); under `on_error="raise"` it raises instead, before scoring.
@@ -289,7 +294,7 @@ scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
 
 ## Monitor
 
-`score_drift` compares a run's predicted-score distribution with the model's own holdout scores at training and with a previous run's, and its input columns with the training data; `evaluate` scores a run once its outcomes are in a newer snapshot. With tracking on, both write into the prediction run they check: its `drift/*` and `realized/*` metrics, `drift/features`, tags and card (on Snowflake, a `<prediction>_DRIFT` or `<prediction>_EVAL` run instead). `drift.tracking` and `evaluation.tracking` name that run. The card shows `drift/score`, each comparison's PSI with its shift, KS and Wasserstein, and `realized/metrics`, each realized metric beside the model's holdout value.
+`score_drift` compares a run's predicted-score distribution with the model's own holdout scores at training and with a previous run's, and its input columns with the training data; `evaluate` scores a run once its outcomes are in a newer snapshot. With tracking on, both write into the prediction run they check: its `drift/*` and `realized/*` metrics, the `drift/inputs/<table>` tables, tags and card (on Snowflake, a `DRIFT_...` or `EVAL_...` run instead). `drift.tracking` and `evaluation.tracking` name that run. The card shows `drift/score`, each comparison's PSI with its shift, KS and Wasserstein, and `realized/metrics`, each realized metric beside the model's holdout value.
 
 ```python
 with kumo.mlops(cfg):
@@ -334,7 +339,7 @@ On a stage root, `LIST @DB.SCHEMA.STAGE/kumo/predictions/` names the same direct
 
 ### Warehouse model monitors
 
-Both platforms monitor the evaluated rows exported to a table with `write_mode=WriteMode.APPEND`, so the table keeps every evaluation and its `PREDICTION_ID` and `BUNDLE_ID`; neither monitors link prediction or ranking outputs.
+Both platforms monitor the evaluated rows exported to a table with `write_mode=WriteMode.APPEND` (required for both: it adds `PREDICTION_ID` and `BUNDLE_ID`, so the table keeps every evaluation); neither monitors link prediction or ranking outputs.
 
 **Databricks (Data Quality Monitoring, inference log; the `databricks` extra installs a databricks-sdk with this API).** The classification monitor reads `TARGET_PRED`, so the run needs a threshold (passed or stored):
 
@@ -367,13 +372,15 @@ champion.result.holdout_evaluation(binary_classification_threshold=threshold).ex
 ```sql
 CREATE MODEL MONITOR churn_monitor WITH MODEL=churn_gnn VERSION=<version> FUNCTION=predict
   SOURCE=churn_evaluated BASELINE=churn_holdout_evaluated WAREHOUSE=wh REFRESH_INTERVAL='1 day'
-  AGGREGATION_WINDOW='1 day' TIMESTAMP_COLUMN=EVALUATED_AT ID_COLUMNS=('ENTITY')
+  AGGREGATION_WINDOW='1 day' TIMESTAMP_COLUMN=ANCHOR_TIMESTAMP ID_COLUMNS=('ENTITY')
   PREDICTION_SCORE_COLUMNS=('True_PROB') ACTUAL_CLASS_COLUMNS=('TARGET');
 ```
 
 Snowflake allows one model monitor per model version: drop the old monitor (`DROP MODEL MONITOR churn_monitor`) before creating another on that version.
 
 Details per task type: [Warehouse monitor columns](#warehouse-monitor-columns).
+
+Snowflake's metric functions take the score column quoted: `MODEL_MONITOR_DRIFT_METRIC('CHURN_MONITOR', 'JENSEN_SHANNON', '"True_PROB"', '1 DAY', <start>, <end>)`. A null `TARGET` is allowed: performance stays null until labels arrive, while drift computes. Export the baseline once per version, to a new table with `write_mode=WriteMode.APPEND`: the monitor needs the source's `PREDICTION_ID` and `BUNDLE_ID` in it too. `snowflake-ml-python`'s `Registry.add_monitor` cannot reference `True_PROB`, so use SQL; `TARGET_PRED` is boolean, so use `JENSEN_SHANNON` on it.
 
 ## Credentials and running off-platform
 
@@ -477,13 +484,13 @@ A text column `infer_metadata()` reads as categorical (short values from a small
 
 ### Drift statistics
 
-Score drift compares the distribution of a prediction run's scores with the model's own holdout scores at training (`drift/psi`, `drift/ks`, `drift/wasserstein`, logged with the prediction) and, after `score_drift(previous=...)`, with the previous run's (`drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev`).
+Score drift is the distribution of a prediction run's scores compared with the model's own holdout scores at training ("vs holdout": `drift/psi`, `drift/ks`, `drift/wasserstein`, logged with the prediction) and, after `score_drift(previous=...)`, with the previous run's ("vs previous": `drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev`; `_vs_prev` never means training).
 
 | statistic | definition | reading |
 |---|---|---|
-| `psi` | population stability, the sum of (p − q) ln(p / q) over up to 10 groups of bins, cut where the reference side's cumulative share reaches each decile; shares are floored at 1e-6 | rule of thumb: 0 identical, < 0.1 small, 0.1–0.25 moderate, > 0.25 large shift (`kumo_core.score_drift.psi_shift`) |
-| `ks` | the largest gap between the two cumulative distributions at bin edges | 0 to 1 |
-| `wasserstein` | how far the scores moved on average: the mean absolute gap over bin midpoints, the end bins closed at each side's recorded minimum and maximum | in score units |
+| `psi` | population stability index, the sum of (p − q) ln(p / q) over up to 10 groups of bins, cut where the reference side's cumulative share reaches each decile; shares are floored at 1e-6 | rule of thumb: 0 identical, < 0.1 small, 0.1–0.25 moderate, > 0.25 large shift ; the card shows the verdict (`kumo_core.score_drift.psi_shift`) |
+| `ks` | Kolmogorov–Smirnov: the largest gap between the two cumulative distributions at bin edges | 0 (same) to 1 (disjoint) |
+| `wasserstein` | Wasserstein-1 (earth mover's) distance, how far the scores moved on average: the mean absolute gap over bin midpoints, the end bins closed at each side's recorded minimum and maximum | in score units |
 
 The score is `True_PROB` (binary), `confidence`, the top class's probability (multiclass), each entity's top score (multilabel, ranking and link prediction), or the prediction (regression, forecasting). Each statistic is an exact function of the counts both sides stored on the same bins:
 
@@ -493,7 +500,28 @@ The score is `True_PROB` (binary), `confidence`, the top class's probability (mu
 
 A statistic is absent, with a note, when the two sides counted on different bins, as for a previous run of another model version.
 
-**Input columns vs training data.** `DriftReport.features` compares, per column the model encodes (by its stype in the model plan), the statistics DiskGraph wrote when the training and scoring snapshots were built: numeric deltas of mean, std, min, max, quartiles, skewness, kurtosis, null rate and distinct count plus `standardized_mean_shift`; categorical null rate, distinct count, PSI and Jensen-Shannon divergence (`category_counts_capped` flags truncated counts); timestamp min and max shift; text null rate, distinct count, average and maximum tokens per value and `glove_overlap`, the share of tokens the default GloVe vocabulary covers (new words lower it). Other columns are not compared and are named in `reasons["features"]`. Distinct counts are DiskGraph's approximate counts (within a few percent). These are whole-snapshot statistics, so a slow change in a large event table is diluted. A tracked `score_drift` writes the table `drift/features`, one row per column: `table`, `column`, `type`, `measure` and `value` (`psi` for a categorical column, `mean shift (sd)` in training standard deviations for a numerical one, blank for other types), and `null-rate change`. Rows are sorted by how far the column moved, and the card names the three that moved most (by 0.1 or more).
+**Input columns vs training data.** `score_drift` compares each column the model encodes using the statistics
+DiskGraph wrote when the training and scoring snapshots were built. It reads no data again. A tracked
+`score_drift` writes one table per source table, `drift/inputs/<table>.json`: one row per column, most shifted
+first (by PSI, then by null-rate change). A table leaves out measures that none of its rows has.
+
+| column | types | meaning |
+|---|---|---|
+| `psi` | numerical, categorical | Numerical: over up to 10 groups of DiskGraph's fixed value bins (eight per power of two, the same in every snapshot), cut where the training snapshot's cumulative share reaches each decile. Exact. Categorical: over the categories; approximate when DiskGraph capped or sampled them (`category_counts_capped`). Shares floored at 1e-6. |
+| `shift` | numerical, categorical | The PSI rule of thumb: < 0.1 small, 0.1–0.25 moderate, > 0.25 large |
+| `mean change (training sd)` | numerical | (mean now − mean at training) / training standard deviation |
+| `null rate change (pp)` | all | in percentage points |
+| `distinct values change ≈ (%)` | numerical, categorical, text | DiskGraph's approximate distinct counts (within a few percent) |
+| `newest value change (days)` | timestamp | how much later the newest value is now |
+| `mean tokens change ≈ (%)` | text | from DiskGraph's text sample of about 10K rows |
+
+A column whose type changed shows only `old → new`. `drift/inputs_max_psi` is the largest column PSI, for sorting
+runs and alerts, for example ``metrics.`drift/inputs_max_psi` > 0.25``. The card names the three columns with the
+largest PSI and links the tables. Snapshots built before value bins were counted have no numerical PSI, and
+`reasons["features"]` names those columns. These are whole-snapshot statistics, so a slow change in a large event
+table is diluted.
+
+**Input sizes.** `drift/table_rows` lists each source table whose row count changed since the training snapshot (`rows at training`, `rows now`, `change (%)`); `drift/link_edges` lists each link (`orders.USER_ID → users`) whose edge count changed (`edges at training`, `edges now`, `change (%)`). Both come from the snapshots' ingest statistics; `DriftReport.input_changes` holds the same counts.
 
 ### Warehouse monitor columns
 
