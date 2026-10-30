@@ -5,6 +5,9 @@ T4 GPU runner. Vedaant Jain requested this smaller check. One job builds the
 wheel, installs it in a fresh environment, and runs the shared smoke action.
 The release-wheel workflow in PR40 uses the same action with its finished wheel.
 No runner or cloud instance is created.
+The action uses a cached parallel dependency installer. Pip then reinstalls
+only the candidate wheel offline and verifies its archive hash. The environment
+stays fresh, and dependency downloads use public PyPI.
 
 ## Eight task checks
 
@@ -26,8 +29,15 @@ can contain small numeric differences despite identical saved weights.
 The manual qualification fits eight models and repeats prediction and reload
 three times on each retained model. It adds no training block for those repeats.
 Qualification returns `MEASURED`, not a normal CI pass. A normal run has eight
-fits, one prediction/reload cycle, and enforced numeric comparison limits. Final limits and the new
-GPU runtime remain unverified until qualification and a fresh normal run finish.
+fits, one prediction/reload cycle, and enforced numeric comparison limits.
+The [T4 qualification](https://github.com/NVIDIA/kumo-engine/actions/runs/40975805986)
+completed all eight fits and 48 repeat/reload comparisons. Its largest absolute
+difference was 0.00000190735. We use an absolute limit of 0.00001 with zero
+relative tolerance, about 5.2 times that measured maximum. Absolute comparison
+also handles values close to zero. Weights, chosen labels, and ranks stay exact.
+This empirical limit covers the fixed PR172 inputs on Tesla T4 with
+PyTorch 2.15.0 and CUDA 13.2. It does not qualify another device or a
+learning-quality limit. Fresh normal and finished-wheel verification remain pending.
 This smoke check sets no learning-quality score or baseline requirement.
 
 ## Shared inputs
@@ -79,3 +89,8 @@ The earlier 21m17s result belongs to the larger 47-fit implementation. It does
 not establish the timing of this smaller job. GitHub job times and the short
 GPU summary provide the new evidence. Nightly, weekly, and release policies
 remain separate.
+
+The three-cycle qualification took 37m55s overall. Its cold build took 14m16s,
+dependency installation took 11m51s, and the GPU worker took 9m29s. This is not
+a normal-run budget pass. The normal run still needs measurement with the
+verified native cache and the cached parallel installer.
