@@ -55,7 +55,11 @@ settings.
 ## Privileges for the run-as principal
 
 - `USE CATALOG`, `USE SCHEMA` and `SELECT` on the three tables; `CREATE TABLE`
-  and `MODIFY` on the schema for predictions.
+  on the schema. The score job creates `<predictions_table>` and a staging
+  table it drops, and owns both, so it needs no `MODIFY`. If the predictions
+  table already exists under another owner, grant `SELECT` and `MODIFY` on
+  that table only: `MODIFY` on the schema extends to every table in it,
+  including the sources.
 - `READ VOLUME`/`WRITE VOLUME` on `<volume>`, and `CREATE VOLUME` on the
   schema (or a pre-created `<catalog>.<schema>._kumo_staging` volume) for
   staged table writes.
