@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import secrets
+import shlex
 import signal
 import subprocess
 import sys
@@ -18,10 +19,10 @@ REGION = 'us-east-2'
 INSTANCE = 'i-06dd0e3c558780731'
 BUCKET = 'kumo-unit-test'
 PREFIX = 'diskgraph-profiles/engine-nightly/ssm-integration'
-DOCUMENT = 'KumoEngineNightlyIntegration'
-DOCUMENT_VERSION = '2'
+DOCUMENT = 'AWS-RunShellScript'
+DOCUMENT_VERSION = '1'
 
-# This fixed document reads data only. It never downloads executable code.
+# This fixed probe reads data only. It never downloads executable code.
 REMOTE = r'''set -eu
 exec runuser -u ubuntu -- env -i HOME=/home/ubuntu PATH=/usr/local/bin:/usr/bin:/bin CUDA_VISIBLE_DEVICES=0 SSM_RunId="$SSM_RunId" SSM_RequestSha256="$SSM_RequestSha256" python3 - <<'PY'
 import csv, hashlib, json, os, pathlib, subprocess, tempfile
@@ -64,21 +65,6 @@ def aws(*args, region=REGION):
     if result.returncode:
         raise RuntimeError(result.stderr.strip())
     return json.loads(result.stdout) if result.stdout.strip() else {}
-
-
-def document():
-    return dict(
-        schemaVersion='2.2',
-        description='Nightly integration only; zero model fits',
-        parameters=dict(
-            RunId=dict(type='String', allowedPattern='^[0-9]{1,20}-[0-9]{1,5}$',
-                       interpolationType='ENV_VAR'),
-            RequestSha256=dict(type='String', allowedPattern='^[a-f0-9]{64}$',
-                               interpolationType='ENV_VAR')),
-        mainSteps=[
-            dict(action='aws:runShellScript', name='nightlyIntegration',
-                 inputs=dict(timeoutSeconds='150', runCommand=[REMOTE]))
-        ])
 
 
 def wait_for_command(command_id, output, timeout):
@@ -134,12 +120,14 @@ def run(args):
     aws('s3api', 'put-object', '--bucket', BUCKET, '--key',
         key + '/request.json', '--body', str(path), '--server-side-encryption',
         'AES256', region='us-west-2')
-    command = aws(
-        'ssm', 'send-command', '--instance-ids', INSTANCE, '--document-name',
-        DOCUMENT, '--document-version', DOCUMENT_VERSION, '--parameters',
-        json.dumps(dict(RunId=[args.run_id],
-                        RequestSha256=[checksum])), '--timeout-seconds', '60',
-        '--comment', 'Nightly integration only; zero model fits')
+    script = (f'export SSM_RunId={shlex.quote(args.run_id)}\n'
+              f'export SSM_RequestSha256={shlex.quote(checksum)}\n{REMOTE}')
+    command = aws('ssm', 'send-command', '--instance-ids', INSTANCE,
+                  '--document-name', DOCUMENT, '--document-version',
+                  DOCUMENT_VERSION, '--parameters',
+                  json.dumps(dict(commands=[script], executionTimeout=['150'])),
+                  '--timeout-seconds', '60', '--comment',
+                  'Nightly integration only; zero model fits')
     command_id = command['Command']['CommandId']
     (output / 'command-id.txt').write_text(command_id + '\n')
     try:
@@ -172,18 +160,14 @@ def interrupt(_signum, _frame):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    commands.add_parser('document')
     probe = commands.add_parser('run')
     probe.add_argument('--run-id', required=True)
     probe.add_argument('--source-sha', required=True)
     probe.add_argument('--output-dir', type=Path, required=True)
     probe.add_argument('--timeout', type=int, default=240)
     args = parser.parse_args()
-    if args.command == 'document':
-        print(json.dumps(document(), indent=2))
-    else:
-        signal.signal(signal.SIGTERM, interrupt)
-        run(args)
+    signal.signal(signal.SIGTERM, interrupt)
+    run(args)
 
 
 if __name__ == '__main__':

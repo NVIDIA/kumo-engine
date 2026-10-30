@@ -4,7 +4,9 @@
 """Check remote failure propagation and integration-result identity."""
 
 import argparse
+import hashlib
 import importlib.util
+import json
 import subprocess
 import tempfile
 import unittest
@@ -87,6 +89,42 @@ class NightlySSMTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,
                                             'Remote process failed'):
                     controller.run(args)
+
+    def test_dispatch_matches_the_granted_shell_document_and_transfers_ids(
+            self):
+        sent = []
+
+        def invoke(*args, **kwargs):
+            if args[:2] == ('ssm', 'send-command'):
+                sent.append(args)
+                return {'Command': {'CommandId': 'command'}}
+            return {}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = argparse.Namespace(run_id='123-1', source_sha='a' * 40,
+                                      output_dir=root, timeout=10)
+            with patch.object(controller, 'aws', side_effect=invoke), \
+                    patch.object(controller, 'wait_for_command',
+                                 side_effect=RuntimeError('Stop after dispatch')):
+                with self.assertRaisesRegex(RuntimeError,
+                                            'Stop after dispatch'):
+                    controller.run(args)
+            [request] = sent
+            self.assertEqual(request[request.index('--document-name') + 1],
+                             'AWS-RunShellScript')
+            parameters = json.loads(request[request.index('--parameters') + 1])
+            self.assertEqual(set(parameters), {'commands', 'executionTimeout'})
+            prefix = parameters['commands'][0].split('exec runuser', 1)[0]
+            observed = subprocess.check_output([
+                'bash', '-c',
+                prefix + 'printf "%s\\n%s\\n" "$SSM_RunId" "$SSM_RequestSha256"'
+            ], text=True).splitlines()
+            self.assertEqual(observed, [
+                '123-1',
+                hashlib.sha256(
+                    (root / 'request.json').read_bytes()).hexdigest()
+            ])
 
 
 if __name__ == '__main__':

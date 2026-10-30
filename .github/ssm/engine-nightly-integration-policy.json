@@ -7,7 +7,7 @@
       "Action": "ssm:SendCommand",
       "Resource": [
         "arn:aws:ec2:us-east-2:926922431314:instance/i-06dd0e3c558780731",
-        "arn:aws:ssm:us-east-2:926922431314:document/KumoEngineNightlyIntegration"
+        "arn:aws:ssm:us-east-2::document/AWS-RunShellScript"
       ]
     },
     {
