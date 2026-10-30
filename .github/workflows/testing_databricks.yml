@@ -177,7 +177,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.ARTIFACT_NAME_SAFE }}
           path: ${{ env.ARTIFACT_NAME_SAFE }}
@@ -185,7 +185,7 @@ jobs:
 
       - name: Upload durations artifact
         if: success() && env.STORE_DURATIONS == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: durations-${{ github.run_id }}-${{ strategy.job-index }}-of-${{ strategy.job-total }}
           path: .test_durations
