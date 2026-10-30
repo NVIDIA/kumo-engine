@@ -63,27 +63,32 @@ def upload_bundle(filesystem: FileSystem, destination: str,
 
 def holds_bundle(filesystem: FileSystem, destination: str,
                  bundle_dir: str) -> bool:
-    """Whether ``destination`` holds a complete copy of ``bundle_dir``: the
-    same files and sizes, and the same provenance file, written last."""
+    """Whether ``destination`` holds the same files, sizes and provenance."""
     from kumo_core.artifacts import PROVENANCE_FILE
-    from pyarrow.fs import FileSelector, FileType
 
     root = Path(bundle_dir)
     local = {
         path.relative_to(root).as_posix(): path.stat().st_size
         for path in root.rglob('*') if path.is_file()
     }
-    remote = {
-        info.path[len(destination) + 1:]: info.size
-        for info in filesystem.get_file_info(
-            FileSelector(destination, recursive=True, allow_not_found=True))
-        if info.type is FileType.File
-    }
+    remote = file_sizes(filesystem, destination)
     if remote != local or PROVENANCE_FILE not in local:
         return False
     with filesystem.open_input_stream(
             f'{destination}/{PROVENANCE_FILE}') as reader:
         return reader.readall() == (root / PROVENANCE_FILE).read_bytes()
+
+
+def file_sizes(filesystem: FileSystem, directory: str) -> dict[str, int]:
+    """The size of each file under ``directory``, by relative path."""
+    from pyarrow.fs import FileSelector, FileType
+
+    return {
+        info.path[len(directory) + 1:]: info.size
+        for info in filesystem.get_file_info(
+            FileSelector(directory, recursive=True, allow_not_found=True))
+        if info.type is FileType.File
+    }
 
 
 def download_bundle(filesystem: FileSystem, source: str,

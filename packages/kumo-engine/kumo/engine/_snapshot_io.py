@@ -284,10 +284,8 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
 
 def _holds_copy(connector: Any, location: str, snapshot_id: str,
                 index: Path, snapshot_manifest: bytes) -> bool:
-    r"""Whether ``location`` holds a complete export of this snapshot: the
-    local index's bytes, every index file at its size, and the same
-    ``_provenance.json``."""
-    from pyarrow.fs import FileSelector, FileType
+    r"""Whether ``location`` holds this index's bytes and manifest."""
+    from kumo_core.object_store_sink import file_sizes
 
     from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
 
@@ -297,12 +295,7 @@ def _holds_copy(connector: Any, location: str, snapshot_id: str,
                 or not holds_export(index, manifest)):
             return False
         filesystem, _ = _location(connector, location)
-        remote = {
-            info.path[len(root) + 1:]: info.size
-            for info in filesystem.get_file_info(
-                FileSelector(root, recursive=True, allow_not_found=True))
-            if info.type is FileType.File
-        }
+        remote = file_sizes(filesystem, root)
         listed = json.loads((index / _INDEX_MANIFEST).read_bytes())['files']
         if (_DONE not in remote
                 or f'index/{_INDEX_MANIFEST}' not in remote) or any(
