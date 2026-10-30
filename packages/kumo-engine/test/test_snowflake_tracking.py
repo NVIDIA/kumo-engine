@@ -77,6 +77,7 @@ def _replay(tracking, result=RESULT, error=None, during=None):
         None if result is None else
         lambda: fitted_spec(session.spec, result, EVENTS[-1].metrics['seconds']),
         error)
+    return session
 
 
 def test_native_model_lineage_holds_the_run_open_during_the_fit(fake):
@@ -200,8 +201,7 @@ def test_the_users_session_is_not_altered(fake):
     assert session.statements == []
 
 
-def test_a_hung_snowflake_call_does_not_stall_the_fit(fake, monkeypatch,
-                                                      caplog):
+def test_a_hung_snowflake_call_does_not_stall_the_fit(fake, monkeypatch):
     import kumo.engine._tracking as tracking
 
     monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.5)
@@ -210,14 +210,14 @@ def test_a_hung_snowflake_call_does_not_stall_the_fit(fake, monkeypatch,
                         lambda *args, **kwargs: release.wait(30))
     began = time.monotonic()
     try:
-        _replay(_tracking())
+        session = _replay(_tracking())
         elapsed = time.monotonic() - began
     finally:
         release.set()
         join_tracking_threads()
 
     assert elapsed < 1.5
-    assert 'did not finish within' in caplog.text
+    assert isinstance(session.error, TimeoutError)
     run, = fake._instance.runs.values()
     assert run['status'] == 'FINISHED'
 

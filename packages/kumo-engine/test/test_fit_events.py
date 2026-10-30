@@ -4,6 +4,7 @@
 
 import json
 import logging
+import threading
 
 import numpy as np
 import pandas as pd
@@ -119,6 +120,48 @@ def test_failed_fit_reports_fit_ended(table_and_snapshot, monkeypatch):
         'status': 'failed',
         'error': 'ValueError: stop'
     }
+
+
+@pytest.mark.parametrize('on_error', ['warn', 'raise'])
+def test_an_unfinished_tracker_is_reported_by_the_error_policy(
+        table_and_snapshot, tmp_path, monkeypatch, on_error):
+    import kumo.engine._tracking as tracking
+
+    monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.5)
+    release = threading.Event()
+
+    class Blocked:
+        def start(self, record):
+            pass
+
+        def on_trial(self, record, event):
+            pass
+
+        def finish(self, record, error):
+            release.wait(30)
+
+    table, snapshot = table_and_snapshot
+    plan = ModelPlan()
+    plan.training_job.num_experiments = 1
+    plan.training_job.disable_explain = True
+    plan.optimization.max_epochs = 2
+    plan.optimization.max_steps_per_epoch = 2
+    trainer = kumo.Trainer(plan)
+    cfg = kumo.MLOps(str(tmp_path / 'root'), tracking=Blocked(), store=False,
+                     on_error=on_error)
+    try:
+        if on_error == 'warn':
+            with pytest.warns(UserWarning, match='TimeoutError: experiment '
+                              'tracking did not finish within 0.5s'):
+                assert trainer.fit(table, snapshot=snapshot,
+                                   mlops=cfg) is trainer.result
+        else:
+            with pytest.raises(RuntimeError) as raised:
+                trainer.fit(table, snapshot=snapshot, mlops=cfg)
+            assert isinstance(raised.value.__cause__, TimeoutError)
+    finally:
+        release.set()
+    assert trainer.result.bundle_dir is not None
 
 
 def test_event_metrics_keep_finite_numbers():

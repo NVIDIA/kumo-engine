@@ -503,7 +503,7 @@ def test_only_rank_zero_tracks(monkeypatch):
     assert recorder.calls == []
 
 
-def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch, caplog):
+def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch):
     import kumo.engine._tracking as tracking
 
     monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.5)
@@ -514,14 +514,15 @@ def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch, caplog):
             super().start(record)
             release.wait(30)
 
-    hung = Hung()
+    session = TrackingSession(Hung())
     began = time.monotonic()
     try:
-        replay(hung)
+        session.start(lambda: fit_spec(CONTEXT))
+        session.finish(None, None)
         elapsed = time.monotonic() - began
     finally:
         release.set()
         join_tracking_threads()
 
     assert elapsed < 1.5
-    assert 'did not finish within' in caplog.text
+    assert isinstance(session.error, TimeoutError)

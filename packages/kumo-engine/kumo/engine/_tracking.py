@@ -477,9 +477,9 @@ class TrackingSession:
             pass
         worker.join(max(0.0, deadline - time.monotonic()))
         if worker.is_alive():
-            logger.warning(
-                'Experiment tracking did not finish within %ss; it goes on '
-                'in the background and the fit returns', FINISH_SECONDS)
+            self._fail(TimeoutError(
+                f'experiment tracking did not finish within '
+                f'{FINISH_SECONDS:g}s; it goes on in the background'))
 
     def _submit(self, job: Callable[[], Any]) -> bool:
         if self._behind:
