@@ -4,10 +4,15 @@
 r"""Series and histograms as the tables every tracker logs: the parent path
 of a summary's name names its table, the last segment its column."""
 
+import json
+import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from kumo_core.summaries import Curve, Histogram, Series, Table
+
+#: Columns that define bins or thresholds rather than measure anything.
+_DEFINITIONS = frozenset({'from', 'to', 'threshold'})
 
 
 @dataclass
@@ -52,9 +57,13 @@ def _series_table(name: str, x_label: str,
 
 def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
     r"""Histograms ``<name>/<column>`` over the same edges as one table: a
-    bin per row from ``from`` to ``to`` (open at both ends), a count and a
+    bin per row from ``from`` to ``to``, the end bins closed at the values'
+    recorded minimum and maximum (open without one), a count and a
     cumulative share per histogram."""
     edges = histograms[0].edges
+    extents = [h.extent for h in histograms if h.extent is not None]
+    first = min((extent[0] for extent in extents), default=None)
+    last = max((extent[1] for extent in extents), default=None)
     columns = [h.name.rpartition('/')[2] for h in histograms]
     shares = []
     for histogram in histograms:
@@ -69,5 +78,21 @@ def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
         *(f'{column} cumulative share' for column in columns)), tuple(
             (low, high, *(h.counts[i] for h in histograms),
              *(share[i] for share in shares))
-            for i, (low, high) in enumerate(zip((None, *edges),
-                                                (*edges, None)))))
+            for i, (low, high) in enumerate(zip((first, *edges),
+                                                (*edges, last)))))
+
+
+def table_json(table: Table) -> str:
+    r"""``table`` as the JSON the trackers' table views read: bin edges and
+    thresholds to 10 significant digits, other floats to 6, integers and
+    text as they are."""
+    digits = [10 if column in _DEFINITIONS else 6 for column in table.columns]
+    return json.dumps({'columns': list(table.columns), 'data': [
+        [_rounded(value, places) for value, places in zip(row, digits)]
+        for row in table.rows]}, default=str)
+
+
+def _rounded(value: Any, digits: int) -> Any:
+    if not isinstance(value, float) or not math.isfinite(value) or not value:
+        return value
+    return round(value, digits - 1 - math.floor(math.log10(abs(value))))

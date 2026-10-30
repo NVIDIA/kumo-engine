@@ -4,7 +4,6 @@
 r"""Snowflake Experiment Tracking for `Trainer.fit`, `Trainer.predict` and
 monitoring (``pip install 'kumo-engine[snowflake]'``)."""
 
-import json
 import logging
 import posixpath
 import re
@@ -31,7 +30,7 @@ from kumo_core.summaries import (
 
 from kumo.engine import _card
 from kumo.engine._events import Event
-from kumo.engine._summary_tables import SummaryTables
+from kumo.engine._summary_tables import SummaryTables, table_json
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
@@ -352,10 +351,7 @@ class SnowflakeTracking:
         if summary.brief:
             self._card.append(summary)
             return
-        self._log_artifacts({f'{summary.name}.json': json.dumps({
-            'columns': list(summary.columns),
-            'data': [list(row) for row in summary.rows],
-        }, default=str)})
+        self._log_artifacts({f'{summary.name}.json': table_json(summary)})
 
     def _log_note(self, summary: Note) -> None:
         self._card.append(summary)

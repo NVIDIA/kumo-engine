@@ -43,7 +43,8 @@ def test_batches_and_workers_add_up_to_the_brute_force_counts():
     assert total.extents['score'] == (np.nanmin(values), np.nanmax(values))
     assert total.summary('score', 'score', 'pred/True_PROB/hist') == Histogram(
         'pred/True_PROB/hist', PROBABILITY_EDGES,
-        tuple(_brute_histogram(values, PROBABILITY_EDGES)))
+        tuple(_brute_histogram(values, PROBABILITY_EDGES)),
+        (np.nanmin(values), np.nanmax(values)))
 
 
 def test_counts_over_other_bins_or_classes_are_refused():

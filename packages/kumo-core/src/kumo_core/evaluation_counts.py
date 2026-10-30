@@ -247,7 +247,9 @@ def _regression(pred: np.ndarray, target: np.ndarray,
     counts.histogram('pred_sum', 'target', pred, weights=pred)
     counts.histogram('target_sum', 'target', pred, weights=target)
     counts.histogram('residual', 'residual', error)
-    counts.extent('TARGET_PRED', pred)
+    for name, values in (('TARGET_PRED', pred), ('TARGET', target),
+                         ('residual', error)):
+        counts.extent(name, values)
     nonzero = target != 0
     scale = np.abs(target) + np.abs(pred)
     for name, value in (

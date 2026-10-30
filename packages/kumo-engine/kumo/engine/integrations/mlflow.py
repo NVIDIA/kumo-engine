@@ -55,7 +55,7 @@ from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 from kumo.engine import _card
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
-from kumo.engine._summary_tables import SummaryTables
+from kumo.engine._summary_tables import SummaryTables, table_json
 from kumo.engine._tracking import (
     DROPPED_PARAMS,
     RegistrationError,
@@ -935,10 +935,7 @@ class MlflowTracking:
         if not tables:
             return
         for table in tables:
-            self._write_text(run_id, f'{table.name}.json', json.dumps({
-                'columns': list(table.columns),
-                'data': [list(row) for row in table.rows],
-            }, default=str))
+            self._write_text(run_id, f'{table.name}.json', table_json(table))
         with self.target.scope():
             tags = self._client.get_run(run_id).data.tags
             logged = json.loads(tags.get('mlflow.loggedArtifacts', '[]'))

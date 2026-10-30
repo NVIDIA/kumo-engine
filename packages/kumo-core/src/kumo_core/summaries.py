@@ -50,11 +50,13 @@ class Curve:
 @dataclass(frozen=True)
 class Histogram:
     r"""``counts[i]`` values in ``[edges[i - 1], edges[i])``: ``counts[0]``
-    below ``edges[0]`` and ``counts[-1]`` at or above ``edges[-1]``."""
+    below ``edges[0]`` and ``counts[-1]`` at or above ``edges[-1]``, all
+    within ``extent``, the values' minimum and maximum, when known."""
 
     name: str
     edges: Tuple[float, ...]
     counts: Tuple[float, ...]
+    extent: Optional[Tuple[float, float]] = None
 
 
 @dataclass(frozen=True)

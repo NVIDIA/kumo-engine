@@ -71,9 +71,11 @@ class Counts:
 
     def summary(self, name: str, axis: str,
                 label: Optional[str] = None) -> Histogram:
-        r"""The ``name`` counts as a `Histogram` named ``label``."""
+        r"""The ``name`` counts as a `Histogram` named ``label``, within
+        their extent if it was recorded."""
         return Histogram(label or name, self.edges[axis],
-                         tuple(self.arrays[name].tolist()))
+                         tuple(self.arrays[name].tolist()),
+                         self.extents.get(name))
 
     def to_dict(self) -> Dict[str, Any]:
         return {'edges': {name: list(edges)

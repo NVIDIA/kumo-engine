@@ -71,7 +71,7 @@ def test_binary_counts_match_brute_force():
                               'pred/summary']
     assert logged['pred/histogram/True_PROB'] == Histogram(
         'pred/histogram/True_PROB', PROBABILITY_EDGES,
-        _brute_histogram(true, PROBABILITY_EDGES))
+        _brute_histogram(true, PROBABILITY_EDGES), (true.min(), true.max()))
     summary = logged['pred/summary']
     assert summary.brief and summary.columns == ('column', 'mean', 'min', 'max')
     assert summary.rows == (_summary_row('True_PROB', true),)

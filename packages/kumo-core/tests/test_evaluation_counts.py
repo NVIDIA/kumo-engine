@@ -173,7 +173,8 @@ def test_regression_summaries_match_brute_force():
     for name, values in (('actual', target), ('predicted', pred)):
         assert summaries[f'holdout/histogram/{name}'] == Histogram(
             f'holdout/histogram/{name}', edges, tuple(np.bincount(
-                [_bin(v, edges) for v in values], minlength=14).tolist()))
+                [_bin(v, edges) for v in values], minlength=14).tolist()),
+            (values.min(), values.max()))
     bins = np.array([_bin(v, edges) for v in pred])
     bounds = [pred.min(), *edges, pred.max()]
     _approx_rows(summaries['holdout/calibration'], [

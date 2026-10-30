@@ -213,7 +213,7 @@ def test_mlops_runs_record_their_exact_score_counts(graph, classifier,
               for summary in recorder.records[0].summaries}
     assert logged['pred/histogram/True_PROB'] == Histogram(
         'pred/histogram/True_PROB', PROBABILITY_EDGES,
-        tuple(histogram(values).tolist()))
+        tuple(histogram(values).tolist()), (values.min(), values.max()))
     assert logged['pred/positive_rate'] == Scalar(
         'pred/positive_rate', frame['TARGET_PRED'].mean())
     assert logged['drift/psi'].value == pytest.approx(
