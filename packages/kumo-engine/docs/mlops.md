@@ -197,11 +197,14 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 
 Every value comes from exact counts over all rows, with no sampling. kumo-engine draws no figures of its own: numbers you compare across runs are metrics, curves and grids are tables, and the rest is in the run's card. Every artifact's location and how to load it is in the run's `_provenance.json`.
 
-**Run kinds and names.** `kumo.kind` is `fit` or `prediction`.
-- A fit is `fit-<YYYYMMDD-HHMMSS>-<model>` while it runs, and becomes `v<version>-<model>` when it registers a version. `<model>` is the registered name (the last part of a Unity Catalog name), else `<entity table>-<task type>`. A search's trials nest under it as `trial-<i>-<fit name>`; a single-trial fit has no trial run.
-- A prediction is `<as of>-v<version>-<model>`, or `<as of>-<model>-<bundle id prefix>` when the model is not registered. `<as of>` is the date the rows were scored at (tag `kumo.as_of`; `<first>..<last>` for several). A `-2`, `-3` suffix marks a repeated run of the same day and model; it is not part of the model name.
+**Run kinds and names.** `kumo.kind` is `fit` or `prediction`. A run's name is its kind, its model, the model's version and the date, in that order.
+- A fit is `fit-<model>-<YYYYMMDD-HHMMSS>` (its UTC start) while it runs, and becomes `fit-<model>-v<version>` when it registers a version. `<model>` is the registered name (the last part of a Unity Catalog name), else `<entity table>-<task type>`. A search's trials nest under it as `trial-<i>-<fit name>` (`-attempt-<n>` for a retry); a single-trial fit has no trial run.
+- A prediction is `predict-<model>-v<version>-<as of>`, or `predict-<model>-<bundle id prefix>-<as of>` when the model is not registered. `<as of>` is the date the rows were scored at (tag `kumo.as_of`; `<first>..<last>` for several anchors). A static query has no anchor: its date is the scored snapshot's, followed by `-<HHMMSS>` of the run's start.
+- A `-2`, `-3` suffix marks a repeated name, such as a second scoring of the same day and model.
+- The tracker's `run_name` replaces `<model>-v<version>` in every run's name: `fit-<run_name>` and `predict-<run_name>-<as of>`. A `run_name` that already starts with the kind (`fit-nightly`) does not get it twice, and a named fit keeps its name when it registers.
 - `score_drift` and `evaluate` write into the prediction run they check, so one run holds one day of scoring.
-- Snowflake names are upper-case identifiers: `<MODEL>_FIT_<YYYYMMDD_HHMMSS>` and `AS_OF_<YYYYMMDD>_V<version>_<MODEL>` (`_2` for a repeat). Finished Snowflake runs cannot change, so `score_drift` and `evaluate` add `<prediction>_DRIFT` and `<prediction>_EVAL` runs.
+- Snowflake names are the same, as upper-case identifiers: `FIT_<MODEL>_<YYYYMMDD_HHMMSS>` and `PREDICT_<MODEL>_V<version>_<YYYY_MM_DD>` (`_2` for a repeat). Snowflake runs cannot be renamed, so a fit keeps its first name; its version is the param `kumo.model_version`. Finished Snowflake runs cannot change either, so `score_drift` and `evaluate` add their own runs, `DRIFT_<MODEL>_V<version>_<as of>` and `EVAL_<MODEL>_V<version>_<as of>` (`kumo.kind` = `monitoring`); `run_name` replaces `<MODEL>_V<version>` in those too.
+- The Models tab's narrow version column can cut `v10` to `v1…`; widen it or read the version in the fit's run name, or its tag `kumo.model_version`.
 
 **The card.** Each run's description (the Overview on MLflow, `run_card.md` on Snowflake) starts with a card.
 - Line 1 is the run's status and watch numbers. For a fit: the tuned holdout metric, data problems, the model version, the number of trials and the task. For a prediction: realized quality, `psi` against training, the entities scored and their date, when their labels mature (tag `kumo.labels_mature`, until `evaluate` logs realized quality), skipped share and the model version.
@@ -209,7 +212,10 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 - Write your own notes below the card's last line ("Notes below this line are kept"). Editing above it stops kumo-engine updating that card; the run is then tagged `kumo.card_frozen`.
 
 **Metrics.**
-- Fit: the holdout quality unprefixed (`auroc`, `ap`, `acc`, `mae`, `map_at_10`, `holdout_loss` for the training objective, and `logloss`, `brier`, `f1`, `r2` and the like from exact counts). They fill MLflow's "Model metrics" section, the logged model's metrics (Models tab) and the registered version's description. After a refit they describe the refit model the bundle ships; the model before the refit is `before_refit/<metric>`. Per-epoch `train/<metric>` and `val/<metric>`, step = epoch.
+- Fit: per-epoch `train/<metric>` and `val/<metric>`, step = epoch, and the holdout quality as `test/<metric>`: the trainer's `test/auroc`, `test/ap`, `test/acc`, `test/mae`, `test/map_at_10`, `test/loss` and the like, and `test/logloss`, `test/brier`, `test/f1`, `test/r2` and the like from exact counts. The holdout is the training table's test split. MLflow's Model metrics tab shows them as `train`, `val` and `test` sections.
+- The `test/` values are also logged on the fit's logged model, against the training table dataset, so the model page, the Models tab and the registry's Compare versions view show them; they are also in the registered version's description. After a refit they describe the refit model the bundle ships; the model before the refit is `before_refit/<metric>`.
+- `loss` (`train/loss`, `val/loss`, `test/loss`) is the training objective, the model plan's `optimization.loss` (weighted when the plan weights examples), averaged as the trainer averages it. `logloss` is the plain log loss of the shipped probabilities over every holdout row. Compare models on `test/logloss`; `loss` compares only fits with the same objective.
+- `ap` is average precision, the precision at each threshold weighted by the recall it adds; `auprc` is the area under the precision-recall curve by trapezoids, which runs slightly higher on few distinct scores. They usually agree to two digits; `ap` is the one to compare.
 - Prediction: `pred/rows`, `pred/skipped_share`, `pred/positive_rate` (binary, with a threshold), `pred/item_coverage` and `pred/top_1pct_items_share` (ranking and link prediction); `drift/psi`, `drift/ks` and `drift/wasserstein` against the model's holdout scores at training. After `score_drift`: `drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev` against the previous run. After `evaluate`: `realized/<metric>` and `realized/labelled_share`. A prediction run shows "Model metrics (0)": the model's own quality is on its fit run.
 - System metrics: `system/*`, step = seconds since the start, every second for 10 minutes and then every 10 seconds. A run with fewer than 10 readings logs none.
 - A series is logged once it has two points, so a one-epoch fit or trial logs no epoch curves; the fit's card lists that epoch's values instead.
@@ -229,11 +235,13 @@ A histogram table has a row per bin with `from` and `to` (the end bins are open)
 - Every run: `kumo.kind`, `kumo.engine_version`.
 - Fit: `kumo.task_type`, `kumo.tune_metric`, `kumo.snapshot_id`, `kumo.bundle_id`, `kumo.bundle_uri`, `kumo.model_name`, `kumo.model_version`, `kumo.best_trial`, and `kumo.data_warnings`, the number of data problems the card lists.
 - Prediction: `kumo.prediction_id`, `kumo.as_of`, `kumo.entity`, `kumo.tune_metric`, `kumo.labels_mature` (temporal queries), `kumo.bundle_id`, `kumo.fit_run_id`, `kumo.model_name`, `kumo.model_version`, and `kumo.output_uri` or `kumo.output_table`. After `score_drift`: `kumo.drift_previous`; after `evaluate`: `kumo.labels_snapshot_id`.
-- Datasets: the snapshot, then each source table, at their real locations; after `evaluate`, the labels snapshot (context `labels`). A prediction of a model its fit logged lists that model under "Logged models", Type Input.
+- Datasets: the snapshot, the training table (fits), then each source table, at their real locations; after `evaluate`, the labels snapshot. Each dataset's context says its role: `training` on a fit, `scoring` on a prediction, `labels` for the labels snapshot. A prediction of a model its fit logged lists that model under "Logged models", Type Input.
+- MLflow's chips cut long tag keys (`kum…`); hover a chip or read the Tags list on the run's Overview for the full key.
+- Params are the model plan's own names. In the plan an experiment is one trial: `training_job.num_experiments` is the number of trials, and `pruning.*` settings stop unpromising trials of a search early.
 
 **Finding runs.** Keys with a `/` or `.` need backticks:
 - a model's fits: ``tags.`kumo.kind` = 'fit' and tags.`kumo.model_name` = 'churn'``;
-- its scoring history, one row per day: ``tags.`kumo.kind` = 'prediction' and tags.`kumo.model_name` = 'churn'``, sorted by Run Name, with the columns `pred/rows`, `drift/psi`, `drift/psi_vs_prev` and `realized/auroc`;
+- its scoring history, one row per day: ``tags.`kumo.kind` = 'prediction' and tags.`kumo.model_name` = 'churn'``, sorted by the tag `kumo.as_of`, with the columns `pred/rows`, `drift/psi`, `drift/psi_vs_prev` and `realized/auroc`;
 - drifted days (a large shift): ``metrics.`drift/psi` > 0.25``;
 - everything one model version scored: ``tags.`kumo.bundle_id` = '<bundle id>'``.
 
@@ -503,6 +511,6 @@ Other systems plug in through `kumo.engine.tracking.Tracking`, which receives re
 ### Limits
 
 - Tracker calls run on a background thread; `fit` waits at most 30 s for tracking to finish, and up to an hour for model logging and registration (600 s MLflow HTTP timeout during the upload). During a fit MLflow HTTP calls use 2 retries and a 30 s timeout unless `MLFLOW_HTTP_REQUEST_MAX_RETRIES` / `MLFLOW_HTTP_REQUEST_TIMEOUT` are set. Only global rank 0 tracks.
-- MLflow rejects `@` in metric names: `test_map@10` is logged as `test_map_at_10`. Params MLflow rejects are counted in `kumo.dropped_params`.
-- Snowflake keeps 200 metrics and 1000 params per run; the rest are counted in `kumo.dropped_metrics` / `kumo.dropped_params`. Snowflake has no tags (they are params of the same name), no child runs and no dataset inputs. A taken `run_name` gets a random suffix; an active run elsewhere in the process is never resumed.
+- MLflow rejects `@` in metric names: the trainer's `test_map@10` is logged as `test/map_at_10`. Params MLflow rejects are counted in `kumo.dropped_params`.
+- Snowflake keeps 200 metrics and 1000 params per run; the rest are counted in `kumo.dropped_metrics` / `kumo.dropped_params`. Snowflake has no tags (they are params of the same name), no child runs and no dataset inputs. A taken run name gets `_2`, `_3` and so on; an active run elsewhere in the process is never resumed.
 - The fit's source tables are MLflow run inputs: Databricks tables as Delta tables at the snapshot's version (so Unity Catalog links them to the registered model), file sources by URI.
