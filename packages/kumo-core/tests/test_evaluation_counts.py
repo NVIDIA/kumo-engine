@@ -79,9 +79,9 @@ def test_binary_summaries_match_brute_force():
     hit = p > 0.42
     tp, fp = (hit & y).sum(), (hit & ~y).sum()
     fn, tn = (~hit & y).sum(), (~hit & ~y).sum()
-    assert summaries['holdout/at_threshold'] == Table(
-        'holdout/at_threshold', ('threshold', 'tp', 'fp', 'fn', 'tn'),
-        ((0.42, tp, fp, fn, tn),), brief=True)
+    assert summaries['holdout/at_threshold_0.42'] == Table(
+        'holdout/at_threshold_0.42', ('tp', 'fp', 'fn', 'tn'),
+        ((tp, fp, fn, tn),), brief=True)
     precision, recall = tp / (tp + fp), tp / (tp + fn)
     assert _scalars(summaries) == pytest.approx({
         'logloss': -np.mean(y * np.log(clipped) +
@@ -91,6 +91,15 @@ def test_binary_summaries_match_brute_force():
         'precision': precision, 'recall': recall,
         'f1': 2 * precision * recall / (precision + recall),
     })
+
+
+@pytest.mark.parametrize('threshold, title', [
+    (0.5, '0.50'), (0.07, '0.07'), (0.375, '0.375'), (0.123456, '0.1235')])
+def test_the_at_threshold_table_is_titled_by_its_threshold(threshold, title):
+    p = np.array([0.1, 0.4, 0.6, 0.9])
+    summaries = _summaries(TaskType.BINARY_CLASSIFICATION, threshold,
+                           prob=p, target=np.array([0, 1, 0, 1]))
+    assert f'holdout/at_threshold_{title}' in summaries
 
 
 @pytest.mark.parametrize('size', [4, 25])

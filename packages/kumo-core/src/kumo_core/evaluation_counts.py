@@ -166,14 +166,20 @@ def _binary_summaries(counts: Counts,
                                                          'tn'))
         precision, recall = _ratio(tp, tp + fp), _ratio(tp, tp + fn)
         summaries += [
-            Table('holdout/at_threshold', ('threshold', 'tp', 'fp', 'fn', 'tn'),
-                  ((threshold, tp, fp, fn, tn),), brief=True),
+            Table(f'holdout/at_threshold_{_threshold(threshold)}',
+                  ('tp', 'fp', 'fn', 'tn'), ((tp, fp, fn, tn),), brief=True),
             _model('accuracy', (tp + tn) / rows),
             _model('precision', precision),
             _model('recall', recall),
             _model('f1', _ratio(2 * precision * recall, precision + recall)),
         ]
     return summaries
+
+
+def _threshold(value: float) -> str:
+    r"""``value`` exactly to two decimals when it is in hundredths, else
+    to 4 significant digits."""
+    return f'{value:.2f}' if round(value, 2) == value else f'{value:.4g}'
 
 
 def _multiclass(prob: np.ndarray, target: np.ndarray) -> Counts:
