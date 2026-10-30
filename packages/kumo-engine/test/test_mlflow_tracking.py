@@ -612,9 +612,10 @@ def test_system_metrics_skip_a_failed_log_and_stop_after_repeated_ones(
     with integration._SystemMetrics(log, interval=0.001) as metrics:
         metrics._thread.join(10)
 
-    reading = ({'system/cpu': 1.0}, 0)
-    assert batches == [[reading] * 2, *[[reading]] * (
-        1 + integration._SYSTEM_METRICS_FAILURES)]
+    reading = {'system/cpu': 1.0}
+    assert batches == [[(reading, 0), (reading, 1)], *[
+        [(reading, step)]
+        for step in range(2, 3 + integration._SYSTEM_METRICS_FAILURES)]]
     assert caplog.text.count('Could not log system metrics') == 1
     assert 'ConnectionError: blip' in caplog.text
     assert 'stopped after 6 failed logs in a row' in caplog.text
@@ -672,10 +673,13 @@ def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
 
     client = mlflow.MlflowClient()
     run, = _runs(client)
-    values = sorted(point.value for point in client.get_metric_history(
-        run.info.run_id, 'system/cpu_utilization_percentage'))
+    history = sorted(client.get_metric_history(
+        run.info.run_id, 'system/cpu_utilization_percentage'),
+                     key=lambda point: point.value)
+    values = [point.value for point in history]
     assert values == ([] if environment or not enabled else [
         float(sample) for sample in range(1, monitor.samples + 1)])
+    assert [point.step for point in history] == list(range(len(history)))
     assert monitor.samples >= (10 if values else 0)
 
 

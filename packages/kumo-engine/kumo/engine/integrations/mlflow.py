@@ -1193,9 +1193,9 @@ class _SystemMetrics:
     r"""Samples MLflow's CPU, disk, network and GPU monitors on its own
     thread every second (``MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL`` sets
     the interval) and hands ``log`` the readings, each with its elapsed
-    second as step and its time, every 10 seconds and once more when the
-    run ends, so a run with fewer than 2 readings logs none and no metric
-    draws as a bar. (MLflow's own ``SystemMetricsMonitor`` logs with
+    second as step (one more than the last reading's, if not past it) and
+    its time, every 10 seconds and once more when the run ends, so a run
+    with fewer than 2 readings logs none and no metric draws as a bar. (MLflow's own ``SystemMetricsMonitor`` logs with
     process-wide credentials.)"""
 
     def __init__(self, log: Callable[[List[_Reading]], None],
@@ -1223,6 +1223,7 @@ class _SystemMetrics:
         began = flushed = time.monotonic()
         readings: List[_Reading] = []
         taken = failures = 0
+        step = -1
         stopped = False
         while not stopped:  # and a last reading when the run ends
             stopped = self._stop.wait(self._interval)
@@ -1231,9 +1232,9 @@ class _SystemMetrics:
                 monitor.collect_metrics()
                 metrics.update(monitor.aggregate_metrics())
                 monitor.clear_metrics()
+            step = max(round(time.monotonic() - began), step + 1)
             readings.append(({f'system/{k}': v for k, v in metrics.items()},
-                             round(time.monotonic() - began),
-                             int(time.time() * 1000)))
+                             step, int(time.time() * 1000)))
             taken += 1
             if taken < _MIN_READINGS or not (
                     stopped or time.monotonic() - flushed >= _FLUSH_SECONDS):
