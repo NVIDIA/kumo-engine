@@ -281,7 +281,7 @@ scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
 
 ## Monitor
 
-`score_drift` compares a run's scores with the model's holdout and a previous run; `evaluate` scores a run once its outcomes are in a newer snapshot. With tracking on, both write into the prediction run they check: its `drift/*` and `realized/*` metrics, `drift/features`, tags and card (on Snowflake, a `<prediction>_DRIFT` or `<prediction>_EVAL` run instead). `drift.tracking` and `evaluation.tracking` name that run.
+`score_drift` compares a run's predicted-score distribution with the model's own holdout scores at training and with a previous run's, and its input columns with the training data; `evaluate` scores a run once its outcomes are in a newer snapshot. With tracking on, both write into the prediction run they check: its `drift/*` and `realized/*` metrics, `drift/features`, tags and card (on Snowflake, a `<prediction>_DRIFT` or `<prediction>_EVAL` run instead). `drift.tracking` and `evaluation.tracking` name that run. The card shows `drift/score`, each comparison's PSI with its shift, KS and Wasserstein, and `realized/metrics`, each realized metric beside the model's holdout value.
 
 ```python
 with kumo.mlops(cfg):
@@ -469,13 +469,23 @@ A text column `infer_metadata()` reads as categorical (short values from a small
 
 ### Drift statistics
 
-| statistic | definition |
-|---|---|
-| `psi` | population stability over up to 10 groups of bins, cut at the reference side's deciles (the holdout for `drift/psi`, the previous run for `drift/psi_prev`); shares are floored at 1e-6 |
-| `ks` | the largest gap between the two CDFs at bin edges |
-| `wasserstein` | the mean absolute gap over bin midpoints, in score units; the end bins are closed at each side's recorded minimum and maximum |
+Score drift compares the distribution of a prediction run's scores with the model's own holdout scores at training (`drift/psi`, `drift/ks`, `drift/wasserstein`, logged with the prediction) and, after `score_drift(previous=...)`, with the previous run's (`drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev`).
 
-Each is an exact function of the score counts both sides stored on the same bins: probability hundredths, the training target's bins, or 101 quantile edges of the holdout's top scores (ranking and link prediction). It is absent, with a note, when the two sides counted on different bins, as for a previous run of another model version. `DriftReport.features` compares, per column the model encodes (by its stype in the model plan), the statistics DiskGraph wrote when both snapshots were built: numeric deltas of mean, std, min, max, quartiles, skewness, kurtosis, null rate and distinct count plus `standardized_mean_shift`; categorical null rate, distinct count, PSI and Jensen-Shannon divergence (`category_counts_capped` flags truncated counts); timestamp min and max shift; text null rate, distinct count, average and maximum tokens per value and `glove_overlap`, the share of tokens the default GloVe vocabulary covers (new words lower it). Other columns are not compared and are named in `reasons["features"]`. Distinct counts are DiskGraph's approximate counts (within a few percent). These are whole-snapshot statistics, so a slow change in a large event table is diluted. A tracked `score_drift` writes the full comparison into the prediction run as `drift/features`, sorted by PSI, and names the three most moved columns in its card.
+| statistic | definition | reading |
+|---|---|---|
+| `psi` | population stability, the sum of (p − q) ln(p / q) over up to 10 groups of bins, cut where the reference side's cumulative share reaches each decile; shares are floored at 1e-6 | rule of thumb: 0 identical, < 0.1 small, 0.1–0.25 moderate, > 0.25 large shift (`kumo_core.score_drift.psi_shift`) |
+| `ks` | the largest gap between the two cumulative distributions at bin edges | 0 to 1 |
+| `wasserstein` | how far the scores moved on average: the mean absolute gap over bin midpoints, the end bins closed at each side's recorded minimum and maximum | in score units |
+
+The score is `True_PROB` (binary), `confidence`, the top class's probability (multiclass), each entity's top score (multilabel, ranking and link prediction), or the prediction (regression, forecasting). Each statistic is an exact function of the counts both sides stored on the same bins:
+
+- probabilities, a multilabel entity's top score included: 100 bins of width 0.01, `[0, 0.01)` to `[0.99, 1)`, and one for a score of exactly 1;
+- a numerical prediction: the training target's histogram bins, or 50 equal bins from its minimum to its maximum, with its quartiles as extra edges;
+- a ranking's or link prediction's top scores, which have no fixed range: the holdout's top-score percentiles (0th to 100th) as edges.
+
+A statistic is absent, with a note, when the two sides counted on different bins, as for a previous run of another model version.
+
+**Input columns vs training data.** `DriftReport.features` compares, per column the model encodes (by its stype in the model plan), the statistics DiskGraph wrote when the training and scoring snapshots were built: numeric deltas of mean, std, min, max, quartiles, skewness, kurtosis, null rate and distinct count plus `standardized_mean_shift`; categorical null rate, distinct count, PSI and Jensen-Shannon divergence (`category_counts_capped` flags truncated counts); timestamp min and max shift; text null rate, distinct count, average and maximum tokens per value and `glove_overlap`, the share of tokens the default GloVe vocabulary covers (new words lower it). Other columns are not compared and are named in `reasons["features"]`. Distinct counts are DiskGraph's approximate counts (within a few percent). These are whole-snapshot statistics, so a slow change in a large event table is diluted. A tracked `score_drift` writes the table `drift/features`, one row per column: `table`, `column`, `type`, `measure` and `value` (`psi` for a categorical column, `mean shift (sd)` in training standard deviations for a numerical one, blank for other types), and `null-rate change`. Rows are sorted by how far the column moved, and the card names the three that moved most (by 0.1 or more).
 
 ### Warehouse monitor columns
 
