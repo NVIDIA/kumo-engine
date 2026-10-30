@@ -901,10 +901,7 @@ class MlflowTracking:
         scalars = pending.scalars
         if pending.datasets:
             with self.target.scope():
-                self._client.log_inputs(run_id, datasets=sorted(
-                    pending.datasets,
-                    key=lambda item: not item.dataset.name.startswith(
-                        'snapshot')))
+                self._client.log_inputs(run_id, datasets=pending.datasets)
         self._holdout = _holdout_dataset(pending.datasets)
         self._log_metrics(run_id, {s.name: s.value for s in scalars
                                    if s.role == 'model'},
