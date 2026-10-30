@@ -289,7 +289,9 @@ def destination_record(connector: Any, destination: str) -> OutputDestination:
 
     kind = str(getattr(connector.source_type, 'value', connector.source_type))
     root = getattr(getattr(connector, 'config', None), 'root_dir', None)
-    if root is not None:
+    if '://' in destination or destination.startswith(('/', '@')):
+        location = destination.rstrip('/')
+    elif root is not None:
         location = (f"{root.rstrip('/')}/{destination}" if '://' in root
                     else str(Path(root, destination)))
     elif (kind not in _OBJECT_STORES

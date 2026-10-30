@@ -497,3 +497,20 @@ def test_tracking_records_the_run_and_never_changes_it(graph, classifier,
     assert any(summary.name == 'graph/tables'
                for summary in recorder.records[0].summaries)
     assert 'tracker down' in caplog.text
+
+
+@pytest.mark.parametrize('destination, location', [
+    ('predictions/r/predictions/', 's3://b/root/predictions/r/predictions/'),
+    ('s3://b/root/predictions/r/predictions/',
+     's3://b/root/predictions/r/predictions'),
+    ('/Volumes/c/s/v/predictions/r', '/Volumes/c/s/v/predictions/r'),
+    ('@ML.KUMO.STAGE/predictions/r/', '@ML.KUMO.STAGE/predictions/r'),
+])
+def test_an_output_location_joins_only_a_relative_path_to_the_root(
+        destination, location):
+    from kumo.engine.trainer._run_manifest import destination_record
+
+    connector = SimpleNamespace(source_type='S3', config=SimpleNamespace(
+        root_dir='s3://b/root'))
+
+    assert destination_record(connector, destination).location == location
