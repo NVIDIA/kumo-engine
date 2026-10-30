@@ -256,7 +256,8 @@ def _install_genie(pkg: Path, client: Any = None) -> str:
     folder, and running the install again completes it.
     """
     from databricks.sdk import WorkspaceClient
-    from databricks.sdk.service.workspace import ExportFormat, ImportFormat
+    from databricks.sdk.service.workspace import (ExportFormat, ImportFormat,
+                                                  ObjectType)
 
     w = client or WorkspaceClient()
     target = (f'{GENIE_SKILLS.format(user=w.current_user.me().user_name)}'
@@ -276,22 +277,24 @@ def _install_genie(pkg: Path, client: Any = None) -> str:
     if bad:
         raise RuntimeError(f'{len(bad)} file(s) did not read back intact, '
                            f'e.g. {bad[0]}')
-    # Delete, for each file not shipped, the highest folder under `target`
-    # that holds nothing shipped; the listing yields files, not folders.
+    # Take the whole inventory before deleting anything: walk only the
+    # folders the package ships, so every entry found that is not shipped is
+    # the highest unshipped file or folder under `target`, empty ones too.
     shipped = {target}
     for path in remote:
         while (path := path.rsplit('/', 1)[0]) not in shipped:
             shipped.add(path)
-    deleted: list[str] = []
-    for obj in w.workspace.list(target, recursive=True):
-        if obj.path in remote:
-            continue
-        top = obj.path
-        while (parent := top.rsplit('/', 1)[0]) not in shipped:
-            top = parent
-        if not any(top == d or top.startswith(d + '/') for d in deleted):
-            w.workspace.delete(top, recursive=True)
-            deleted.append(top)
+    stale: list[str] = []
+    queue = [target]
+    while queue:
+        for obj in w.workspace.list(queue.pop()):
+            if obj.path in shipped:
+                if obj.object_type == ObjectType.DIRECTORY:
+                    queue.append(obj.path)
+            elif obj.path not in remote:
+                stale.append(obj.path)
+    for path in stale:
+        w.workspace.delete(path, recursive=True)
     return target
 
 
@@ -331,7 +334,8 @@ def _workspace_name(session: Any, workspace: str) -> str:
         return workspace
     user = session.sql('SELECT CURRENT_USER()').collect()[0][0]
     name = workspace.replace('"', '""')
-    return f'USER${user}.PUBLIC."{name}"'
+    user = user.replace('"', '""')
+    return f'"USER${user}".PUBLIC."{name}"'
 
 
 def _rows(session: Any, text: str) -> list[dict[str, Any]]:

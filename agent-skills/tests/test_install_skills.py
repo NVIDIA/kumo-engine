@@ -126,24 +126,51 @@ def test_the_bundled_copy_is_used_outside_a_checkout(
 class FakeDatabricks:
     """A `WorkspaceClient` holding files in a dict, plus the `databricks.sdk` modules it needs."""
 
-    def __init__(self, files: dict[str, bytes], fail_after: int = -1) -> None:
+    def __init__(self, files: dict[str, bytes], fail_after: int = -1,
+                 folders: tuple[str, ...] = ()) -> None:
         self.files = files
+        self.folders = set(folders)   # folders beyond those holding a file, e.g. empty ones
         self.fail_after = fail_after   # uploads that succeed before one raises; -1 never
         self.deleted: list[str] = []
         self.current_user = types.SimpleNamespace(
             me=lambda: types.SimpleNamespace(user_name='someone@example.com'))
         self.workspace = self
 
+    def dirs(self) -> set[str]:
+        out = set(self.folders)
+        for p in self.files:
+            while (p := p.rsplit('/', 1)[0]):
+                out.add(p)
+        return out
+
     def delete(self, path: str, recursive: bool = False) -> None:
         assert recursive
+        if path not in self.files and path not in self.dirs():
+            raise LookupError(f'Path ({path}) doesn\'t exist.')
         for p in [p for p in self.files if p == path or p.startswith(path + '/')]:
             del self.files[p]
+        self.folders = {d for d in self.folders if d != path and not d.startswith(path + '/')}
         self.deleted.append(path)
 
     def list(self, path: str, recursive: bool = False):
-        # Like the SDK: a recursive listing yields files, never folders.
-        assert recursive
-        return [types.SimpleNamespace(path=p) for p in self.files if p.startswith(path + '/')]
+        # Like the SDK: a recursive listing is a lazy breadth-first walk that
+        # lists each folder only when it reaches it, and yields files only.
+        queue = [path]
+        while queue:
+            path = queue.pop(0)
+            dirs = self.dirs()
+            if path not in dirs:
+                raise LookupError(f'Path ({path}) doesn\'t exist.')
+            children = sorted({p for p in [*self.files, *dirs]
+                               if p.rsplit('/', 1)[0] == path})
+            for p in children:
+                if p in dirs:
+                    if recursive:
+                        queue.append(p)
+                        continue
+                    yield types.SimpleNamespace(path=p, object_type='DIRECTORY')
+                else:
+                    yield types.SimpleNamespace(path=p, object_type='FILE')
 
     def mkdirs(self, path: str) -> None:
         pass
@@ -165,7 +192,8 @@ class FakeDatabricks:
             'databricks.sdk.service': types.ModuleType('databricks.sdk.service'),
             'databricks.sdk.service.workspace': types.SimpleNamespace(
                 ImportFormat=types.SimpleNamespace(AUTO='AUTO'),
-                ExportFormat=types.SimpleNamespace(AUTO='AUTO')),
+                ExportFormat=types.SimpleNamespace(AUTO='AUTO'),
+                ObjectType=types.SimpleNamespace(DIRECTORY='DIRECTORY')),
         }
         for name, mod in mods.items():
             monkeypatch.setitem(sys.modules, name, mod)
@@ -191,6 +219,21 @@ def test_genie_on_databricks(home: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     # The stale host goes as one folder; nothing outside kumo-data-science/ is touched.
     assert sorted(ws.deleted) == [f'{GENIE}/kumo-data-science/hosts/generic',
                                   f'{GENIE}/kumo-data-science/old-notes.md']
+    assert ws.files[f'{GENIE}/tabular/SKILL.md'] == b'another skill'
+
+
+def test_genie_removes_nested_and_empty_stale_folders(
+        home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base = f'{GENIE}/kumo-data-science'
+    ws = FakeDatabricks({f'{base}/hosts/old/a.md': b'stale',
+                         f'{base}/hosts/old/sub/b.md': b'stale',
+                         f'{GENIE}/tabular/SKILL.md': b'another skill'},
+                        folders=(f'{base}/hosts/empty', f'{base}/hosts/old/sub/deeper'))
+    ws.install(monkeypatch)
+    skills.install_skills('genie')
+    assert sorted(ws.deleted) == [f'{base}/hosts/empty', f'{base}/hosts/old']
+    assert {p.rsplit('/', 1)[1] for p in ws.dirs() if p.startswith(f'{base}/hosts/')} == {
+        'databricks-genie'}
     assert ws.files[f'{GENIE}/tabular/SKILL.md'] == b'another skill'
 
 
@@ -230,10 +273,12 @@ class FakeRow(tuple):
 
 
 class FakeSession:
-    r"""Answers CURRENT_USER, SHOW VERSIONS (live unless ``live=False``) and
+    r"""Answers CURRENT_USER (``user``), SHOW VERSIONS (live unless ``live=False``) and
     LIST (``listed``, names relative to the workspace's live version)."""
 
-    def __init__(self, live: bool = True, listed: tuple[str, ...] = ()) -> None:
+    def __init__(self, live: bool = True, listed: tuple[str, ...] = (),
+                 user: str = 'ME') -> None:
+        self.user = user
         self.sql_log: list[str] = []
         self.live = live
         self.listed = listed
@@ -246,7 +291,7 @@ class FakeSession:
         elif text.startswith('LIST'):
             rows = [FakeRow(name=f'/versions/live/{n}') for n in self.listed]
         else:
-            rows = [FakeRow(user='ME')]
+            rows = [FakeRow(user=self.user)]
         return types.SimpleNamespace(collect=lambda: rows)
 
 
@@ -293,13 +338,13 @@ def test_no_agent_forwards_the_snowflake_destination(home: Path) -> None:
                                  stage='MY_STAGE') == ['MY_EXT']
     assert session.sql_log[-2].startswith('ALTER CORTEX EXTENSION MY_EXT ADD VERSION FROM @MY_STAGE/')
     [root] = skills.install_skills(scope='workspace', session=FakeSession(), workspace='WS')
-    assert root.startswith('snow://workspace/USER$ME.PUBLIC."WS"/')
+    assert root.startswith('snow://workspace/"USER$ME".PUBLIC."WS"/')
 
 
 def test_coco_workspace(home: Path) -> None:
     session = FakeSession()
     [root] = skills.install_skills('coco', scope='workspace', session=session, workspace='MY_WS')
-    assert root == ('snow://workspace/USER$ME.PUBLIC."MY_WS"/versions/live/'
+    assert root == ('snow://workspace/"USER$ME".PUBLIC."MY_WS"/versions/live/'
                     '.snowflake/cortex/skills/kumo-data-science')
     assert all(f"'{root}" in s for s in session.sql_log if s.startswith('PUT'))
     assert not any(s.startswith(('ALTER', 'REMOVE')) for s in session.sql_log)
@@ -311,17 +356,18 @@ def test_coco_workspace_without_a_live_version_gets_one(home: Path) -> None:
     session = FakeSession(live=False)
     skills.install_skills('coco', scope='workspace', session=session, workspace='NEW')
     log = session.sql_log
-    add = log.index('ALTER WORKSPACE USER$ME.PUBLIC."NEW" ADD LIVE VERSION FROM LAST')
-    assert log[add - 1] == 'SHOW VERSIONS IN WORKSPACE USER$ME.PUBLIC."NEW"'
+    add = log.index('ALTER WORKSPACE "USER$ME".PUBLIC."NEW" ADD LIVE VERSION FROM LAST')
+    assert log[add - 1] == 'SHOW VERSIONS IN WORKSPACE "USER$ME".PUBLIC."NEW"'
     assert add < min(i for i, s in enumerate(log) if s.startswith('PUT'))
 
 
 @pytest.mark.parametrize('given, sql_name', [
-    ('UAT_testing', 'USER$ME.PUBLIC."UAT_testing"'),
-    ('my.ws', 'USER$ME.PUBLIC."my.ws"'),
-    ('say "hi"', 'USER$ME.PUBLIC."say ""hi"""'),
+    ('UAT_testing', '"USER$ME".PUBLIC."UAT_testing"'),
+    ('my.ws', '"USER$ME".PUBLIC."my.ws"'),
+    ('say "hi"', '"USER$ME".PUBLIC."say ""hi"""'),
     ('DB.SCH.WS', 'DB.SCH.WS'),
     ('USER$ME.PUBLIC."My Ws"', 'USER$ME.PUBLIC."My Ws"'),
+    ('"USER$ME".PUBLIC."My Ws"', '"USER$ME".PUBLIC."My Ws"'),
 ])
 def test_coco_workspace_names(home: Path, given: str, sql_name: str) -> None:
     session = FakeSession()
@@ -330,11 +376,18 @@ def test_coco_workspace_names(home: Path, given: str, sql_name: str) -> None:
     assert f'SHOW VERSIONS IN WORKSPACE {sql_name}' in session.sql_log
 
 
+def test_coco_workspace_quotes_an_email_user(home: Path) -> None:
+    session = FakeSession(user='A.B@NVIDIA.COM')
+    [root] = skills.install_skills('coco', scope='workspace', session=session, workspace='WS')
+    assert root.startswith('snow://workspace/"USER$A.B@NVIDIA.COM".PUBLIC."WS"/versions/live/')
+    assert 'SHOW VERSIONS IN WORKSPACE "USER$A.B@NVIDIA.COM".PUBLIC."WS"' in session.sql_log
+
+
 def test_sql_literals_are_escaped(home: Path) -> None:
     session = FakeSession()
     skills.install_skills('coco', scope='workspace', session=session, workspace="it's")
     put = next(s for s in session.sql_log if s.startswith('PUT'))
-    assert """'snow://workspace/USER$ME.PUBLIC."it\\'s"/versions/live/""" in put
+    assert """'snow://workspace/"USER$ME".PUBLIC."it\\'s"/versions/live/""" in put
     assert skills._lit('a\\b') == 'a\\\\b'
 
 
