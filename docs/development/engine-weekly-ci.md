@@ -54,6 +54,10 @@ Each case declares `dataset`, `metric`, `arm`, `seed`, `query`, `gpu_class`,
 `tolerance` contains finite nonnegative `atol` and `rtol` values. GPU identifiers
 and driver versions are observations. They do not restrict host replacement.
 
+`query` binds the training query. If prediction uses a different frozen query,
+declare `prediction_query` as well. P2 uses a bounded training query and the
+registered prediction query. Both retain the stored prediction population.
+
 Each case also binds these relative data paths:
 
 | Field | Contents |

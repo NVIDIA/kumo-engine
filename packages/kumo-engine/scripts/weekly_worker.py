@@ -207,7 +207,7 @@ def prepared(root, files, case, scratch):
         weekly.data_file(root, case['prediction_table'], files))
     staging = data_directory(root, descriptor['staging_dir'], files)
     table = kumo.PredictionTable(
-        query=case['query'], staging_dir=staging,
+        query=case.get('prediction_query', case['query']), staging_dir=staging,
         table_path=table_path(root, descriptor['table_path'],
                               files), row_count=descriptor['row_count'],
         tt_id=descriptor['tt_id'], timestamps=tuple(descriptor['timestamps']),

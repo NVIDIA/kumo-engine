@@ -68,10 +68,13 @@ def test_saved_model_replay_uses_frozen_native_inputs_without_a_fit(
             timestamps=list(prediction.timestamps),
             required_stages=list(prediction.required_stages)))
     files = weekly.inventory(inputs)
-    case = dict(query=prediction.query, snapshot='snapshot.json',
-                prediction_table='prediction.json')
+    case = dict(
+        query=prediction.query + ' WHERE COUNT(events.*, -7, 0, days) > 0',
+        prediction_query=prediction.query, snapshot='snapshot.json',
+        prediction_table='prediction.json')
     imported_snapshot, imported_table = worker.prepared(inputs, files, case,
                                                         tmp_path / 'scratch')
+    assert imported_table.query == prediction.query
 
     def predict(model, table, graph):
         result = model.predict(table, snapshot=graph,
