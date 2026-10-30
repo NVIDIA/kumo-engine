@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 from kumo_core.score_counts import Counts
+from kumo_core.score_drift import score_drift as exact_drift
 from kumo_core.summaries import Scalar
 from kumo_core.types import TaskType
 
@@ -57,11 +58,14 @@ def test_any_models_prediction_run_is_recorded_and_monitored(tmp_path):
     assert Scalar('pred/skipped_share', 5 / 205) in record.summaries
     assert record.tags['kumo.bundle_id'] == 'toy-model'
 
+    previous = _run(tmp_path, 'run-1', 2)
     report = score_drift(SimpleNamespace(result=SimpleNamespace(
-        manifest=MODEL, id=MODEL.id)), run,
-                         previous=_run(tmp_path, 'run-1', 2), snapshot=None,
+        manifest=MODEL, id=MODEL.id)), run, previous=previous, snapshot=None,
                          training_snapshot=None)
-    assert report.reasons['holdout'] == ('the model records no holdout '
-                                         'score statistics')
-    assert report.psi is None and report.previous_psi is not None
-    assert report.bundle_matches is True
+    assert report.reasons['holdout'] == (
+        "the model's holdout records no score counts")
+    assert report.psi is None and report.bundle_matches is True
+    assert (report.previous_psi, report.previous_ks,
+            report.previous_wasserstein) == tuple(exact_drift(*(
+                Counts.from_dict(r.manifest.stats['predictions'].counts)
+                for r in (run, previous))).values())

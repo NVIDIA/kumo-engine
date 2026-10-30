@@ -20,7 +20,7 @@ from kumoapi.typing import Stype
 
 import kumo.engine as kumo
 from kumo.engine._manifest import ArtifactStats
-from kumo.engine._monitoring import _ks, _psi, _wasserstein, evaluate
+from kumo.engine._monitoring import evaluate, score_drift
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._version import __version__
 from kumo.engine.trainer.trainer import PredictionResult, TrainingResult
@@ -409,43 +409,41 @@ def test_realized_metrics_match_fit_time_definitions(tmp_path):
     assert joined['labelled'] == entities
 
 
-def _summary(values):
-    return {'count': len(values), 'min': float(np.min(values)),
-            'max': float(np.max(values)),
-            'percentiles': list(np.quantile(values, np.arange(1, 100) / 100))}
+def _counted(scores, edges=(0.0, 0.5, 1.0), id='r'):
+    counts = {'edges': {'score': list(edges)},
+              'arrays': {'True_PROB': list(scores)}}
+    return SimpleNamespace(id=id, bundle_id='b', manifest=SimpleNamespace(
+        stats={'predictions': ArtifactStats(rows=sum(scores), counts=counts)}))
 
 
-def test_psi_reads_percentile_curves():
-    rng = np.random.default_rng(0)
-    baseline = _summary(rng.beta(2, 5, 50_000))
+def test_score_drift_is_exact_on_the_counted_bins():
+    holdout = _counted((0, 3, 1, 0)).manifest.stats['predictions'].counts
+    trainer = SimpleNamespace(result=SimpleNamespace(
+        id='b', artifact_paths={}, manifest=SimpleNamespace(
+            holdout=SimpleNamespace(counts=holdout, truncated=False))))
+    run = _counted((0, 1, 3, 0))
 
-    assert _psi(baseline, baseline) == 0
-    assert _psi(_summary(rng.beta(2, 5, 50_000)), baseline) < .01
-    assert _psi(_summary(rng.beta(5, 2, 50_000)), baseline) > .2
-    tied = _summary(np.r_[np.zeros(40_000), rng.random(10_000)])
-    assert _psi(tied, tied) == 0
-    assert _psi({'quantiles': {'q50': .5}}, baseline) is None
+    report = score_drift(trainer, run, previous=run, snapshot=None,
+                         training_snapshot=None)
+    assert report.score == 'True_PROB' and report.bundle_matches
+    assert (report.psi, report.ks, report.wasserstein) == (
+        pytest.approx(math.log(3)), 0.5, 0.25)
+    assert (report.previous_psi, report.previous_ks,
+            report.previous_wasserstein) == (0, 0, 0)
 
-
-def test_ks_and_wasserstein_from_percentile_curves():
-    rng = np.random.default_rng(0)
-    a, b = rng.normal(0, 1, 100_000), rng.normal(0.5, 2, 100_000)
-    ks = max(abs(np.searchsorted(np.sort(a), x, 'right') / len(a) -
-                 np.searchsorted(np.sort(b), x, 'right') / len(b))
-             for x in np.linspace(-6, 6, 4001))
-    levels = (np.arange(10_000) + .5) / 10_000
-    w1 = np.mean(np.abs(np.quantile(a, levels) - np.quantile(b, levels)))
-
-    assert _ks(_summary(a), _summary(b)) == pytest.approx(ks, abs=0.02)
-    assert _wasserstein(_summary(a), _summary(b)) == pytest.approx(w1, rel=.02)
-    assert _ks(_summary(a), _summary(a)) == _wasserstein(
-        _summary(a), _summary(a)) == 0
-    # Point masses: 30% more ones moves the CDF jump at 0 by 0.3.
-    zeros = _summary(np.r_[np.zeros(500), np.ones(500)])
-    ones = _summary(np.r_[np.zeros(200), np.ones(800)])
-    assert _ks(zeros, ones) == pytest.approx(0.3, abs=0.02)
-    assert _wasserstein(zeros, ones) == pytest.approx(0.3, abs=0.02)
-    assert _ks(zeros, None) is None and _wasserstein({}, zeros) is None
+    report = score_drift(trainer, run, previous=_counted((1, 3), (0.5,)),
+                         snapshot=None, training_snapshot=None)
+    assert report.previous_psi is report.previous_ks is None
+    assert report.reasons['previous'] == (
+        'the run and the previous run did not count the same score on the '
+        'same bins')
+    report = score_drift(SimpleNamespace(result=None),
+                         SimpleNamespace(manifest=None), previous=run,
+                         snapshot=None, training_snapshot=None)
+    assert (report.prediction_id, report.score, report.psi) == (None, None,
+                                                                None)
+    assert report.reasons['holdout'] == report.reasons['previous'] == (
+        'the run records no score counts')
 
 
 def test_score_drift(snapshots, classifier, monkeypatch):
@@ -473,22 +471,11 @@ def test_score_drift(snapshots, classifier, monkeypatch):
     assert (report.prediction_id, report.previous_prediction_id) == (run.id,
                                                                      run.id)
 
-    shifted = _summary(np.full(500, 0.999))
-    report = trainer.score_drift(
-        SimpleNamespace(id='r', bundle_id=None, manifest=SimpleNamespace(
-            stats={'predictions': ArtifactStats(
-                rows=500, columns={'True_PROB': shifted})})))
-    assert report.psi > 0.2 and report.ks > 0.5
-    assert report.bundle_matches is None
-    assert 'input_changes' in report.reasons
-
-    report = trainer.score_drift(SimpleNamespace(manifest=None))
-    assert (report.prediction_id, report.psi) == (None, None)
-    assert report.reasons
     monkeypatch.setattr(TrainingResult, 'manifest', property(lambda self: None))
     report = trainer.score_drift(run)
     assert (report.psi, report.ks) == (None, None)
-    assert 'holdout' in report.reasons['holdout']
+    assert report.reasons['holdout'] == (
+        "the model's holdout records no score counts")
 
 
 def test_monitoring_a_run_loaded_from_its_export(snapshots, classifier,

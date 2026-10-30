@@ -17,6 +17,9 @@ from uuid import uuid4
 
 import numpy as np
 import pandas as pd
+from kumo_core.score_counts import Counts
+from kumo_core.score_drift import drift_column
+from kumo_core.score_drift import score_drift as exact_drift
 
 from kumo.engine._manifest import PredictionManifest
 
@@ -190,10 +193,11 @@ class DriftReport:
 
     ``psi``, ``ks`` and ``wasserstein`` compare the run's scores with the
     holdout's; ``previous_*`` with ``previous_prediction_id``'s run. All are
-    computed from the recorded percentile curves (``wasserstein`` is in score
-    units). ``features`` compares, per table and column the model encodes,
-    the column statistics DiskGraph wrote when each snapshot was built
-    (training snapshot, then scoring snapshot).
+    exact functions of both sides' score counts over the same bins
+    (`kumo_core.score_drift`; ``wasserstein`` is in score units), and None
+    when the bins differ. ``features`` compares, per table and column the
+    model encodes, the column statistics DiskGraph wrote when each snapshot
+    was built (training snapshot, then scoring snapshot).
     """
 
     prediction_id: Optional[str]
@@ -430,61 +434,69 @@ def _actuals_dir(run: Any, snapshot: Any) -> Path:
 
 def score_drift(trainer: Any, run: Any, *, previous: Any, snapshot: Any,
                 training_snapshot: Any, root: Any = None) -> DriftReport:
-    reasons: Dict[str, str] = {}
-    score, summary = _score_summary(run)
-    result = getattr(trainer, 'result', None)
-    model = None if result is None else result.manifest
-    holdout = getattr(model, 'holdout', None)
-    baseline = None
-    if summary is None:
-        reasons['holdout'] = 'the run records no output score statistics'
-    elif holdout is None:
-        reasons['holdout'] = 'the model records no holdout score statistics'
-    else:
-        baseline = holdout.columns.get(score)
-        if _curves(summary, baseline) is None:
-            reasons['holdout'] = f'the holdout records no percentiles for {score}'
+    from kumo.engine.trainer._provenance import holdout_counts
 
-    earlier = None
-    if previous is not None:
-        previous_score, earlier = _score_summary(previous)
-        if summary is None or earlier is None:
-            reasons['previous'] = 'a run records no score statistics'
-        elif previous_score != score:
-            reasons['previous'] = 'the runs record different scores'
-            earlier = None
-        elif _curves(summary, earlier) is None:
-            reasons['previous'] = 'a run records no percentiles'
+    reasons: Dict[str, str] = {}
+    counts = _score_counts(run)
+    model = getattr(getattr(trainer, 'result', None), 'manifest', None)
+    holdout = getattr(model, 'holdout', None)
+    against = _drift(counts, holdout_counts(model), "the model's holdout",
+                     'holdout', reasons)
+    earlier = {} if previous is None else _drift(
+        counts, _score_counts(previous), 'the previous run', 'previous',
+        reasons)
 
     sides = _snapshot_stats(trainer, run, snapshot, training_snapshot, root)
-    counts = [side['counts'] for side in sides.values()]
+    totals = [side['counts'] for side in sides.values()]
     input_changes = None
-    if all(isinstance(count, dict) for count in counts):
-        input_changes = _count_changes(*counts)
+    if all(isinstance(total, dict) for total in totals):
+        input_changes = _count_changes(*totals)
     else:
         reasons['input_changes'] = _missing('ingest statistics', sides,
                                             'counts')
     run_bundle = getattr(run, 'bundle_id', None)
-    stats = (_psi, _ks, _wasserstein)
-    against = [[None if b is None or summary is None else stat(summary, b)
-                for stat in stats] for b in (baseline, earlier)]
     return DriftReport(
         prediction_id=getattr(run, 'id', None),
         bundle_id=run_bundle,
-        score=score,
-        psi=against[0][0],
-        ks=against[0][1],
-        wasserstein=against[0][2],
+        score=None if counts is None else drift_column(counts),
+        psi=against.get('psi'),
+        ks=against.get('ks'),
+        wasserstein=against.get('wasserstein'),
         holdout_truncated=None if holdout is None else holdout.truncated,
         bundle_matches=_same(run_bundle, _bundle_id(trainer)),
         previous_prediction_id=getattr(previous, 'id', None),
-        previous_psi=against[1][0],
-        previous_ks=against[1][1],
-        previous_wasserstein=against[1][2],
+        previous_psi=earlier.get('psi'),
+        previous_ks=earlier.get('ks'),
+        previous_wasserstein=earlier.get('wasserstein'),
         input_changes=input_changes,
         reasons=reasons,
         features=_features(trainer, sides, reasons),
     )
+
+
+def _score_counts(run: Any) -> Optional[Counts]:
+    stats = (getattr(getattr(run, 'manifest', None), 'stats', None)
+             or {}).get('predictions')
+    counts = getattr(stats, 'counts', None)
+    return None if counts is None else Counts.from_dict(counts)
+
+
+def _drift(counts: Optional[Counts], reference: Optional[Counts], name: str,
+           side: str, reasons: Dict[str, str]) -> Dict[str, float]:
+    r"""The exact drift of ``counts`` from ``reference``, ``name``'s counts;
+    empty, with why in ``reasons[side]``, unless both counted the same score
+    on the same bins."""
+    if counts is None:
+        reasons[side] = 'the run records no score counts'
+    elif reference is None:
+        reasons[side] = f'{name} records no score counts'
+    else:
+        drift = exact_drift(counts, reference)
+        if drift is not None:
+            return drift
+        reasons[side] = (f'the run and {name} did not count the same score '
+                         f'on the same bins')
+    return {}
 
 
 #: Score-drift fields under their logged names.
@@ -577,98 +589,6 @@ def _count_changes(before: Mapping[str, Mapping[str, int]],
             if not name.endswith('_reverse') and old.get(name) != new.get(name):
                 changes[key.format(name)] = (old.get(name), new.get(name))
     return changes
-
-
-def _score_summary(run: Any) -> Tuple[Optional[str], Optional[Mapping]]:
-    try:
-        columns = run.manifest.stats['predictions'].columns
-        return next(iter(columns.items()))
-    except Exception:
-        return None, None
-
-
-def _psi(actual: Mapping[str, Any],
-         expected: Optional[Mapping[str, Any]]) -> Optional[float]:
-    r"""PSI over ``expected``'s deciles; each side's bin shares are read off
-    its percentile curve (linear between min, q01..q99 and max)."""
-    curves = _curves(actual, expected)
-    if curves is None:
-        return None
-    edges = np.unique(curves[1][0][10:91:10])
-
-    def shares(values: np.ndarray, levels: np.ndarray) -> np.ndarray:
-        upper = np.searchsorted(values, edges, side='right')
-        lower = np.maximum(upper - 1, 0)
-        upper = np.minimum(upper, len(values) - 1)
-        width = values[upper] - values[lower]
-        step = np.divide(edges - values[lower], width,
-                         out=np.ones_like(edges), where=width > 0)
-        cdf = levels[lower] + np.clip(step, 0, 1) * (levels[upper] -
-                                                     levels[lower])
-        return np.maximum(np.diff(np.concatenate([[0], cdf, [1]])), 1e-6)
-
-    actual_shares, expected_shares = shares(*curves[0]), shares(*curves[1])
-    return _finite(
-        np.sum((actual_shares - expected_shares) *
-               np.log(actual_shares / expected_shares)))
-
-
-def _ks(a: Mapping[str, Any], b: Optional[Mapping[str, Any]]) -> Optional[float]:
-    r"""sup |F_a - F_b| of the percentile curves, at every knot from both
-    sides (point masses at repeated knots)."""
-    curves = _curves(a, b)
-    if curves is None:
-        return None
-    points = np.union1d(curves[0][0], curves[1][0])
-
-    def cdf(values: np.ndarray, levels: np.ndarray, side: str) -> np.ndarray:
-        index = np.searchsorted(values, points, side=side)
-        lower = np.clip(index - 1, 0, len(values) - 1)
-        upper = np.clip(index, 0, len(values) - 1)
-        width = values[upper] - values[lower]
-        step = np.divide(points - values[lower], width,
-                         out=np.zeros_like(points), where=width > 0)
-        inside = levels[lower] + step * (levels[upper] - levels[lower])
-        return np.where(index == 0, 0.0,
-                        np.where(index == len(values), 1.0, inside))
-
-    return _finite(
-        max(
-            np.max(np.abs(cdf(*curves[0], side) - cdf(*curves[1], side)))
-            for side in ('left', 'right')))
-
-
-def _wasserstein(a: Mapping[str, Any],
-                 b: Optional[Mapping[str, Any]]) -> Optional[float]:
-    r"""Integral of |Q_a - Q_b| over levels, exact for the linear curves."""
-    curves = _curves(a, b)
-    if curves is None:
-        return None
-    d = curves[0][0] - curves[1][0]
-    left, right = d[:-1], d[1:]
-    size = np.abs(left) + np.abs(right)
-    crossing = np.divide(left**2 + right**2, 2 * size, out=np.zeros_like(size),
-                         where=size > 0)
-    segments = np.where(left * right >= 0, size / 2, crossing)
-    return _finite(0.01 * np.sum(segments))
-
-
-def _curves(a: Mapping[str, Any],
-            b: Optional[Mapping[str, Any]]) -> Optional[tuple]:
-    try:
-        curves = (_percentile_curve(a), _percentile_curve(b))
-    except Exception:
-        return None
-    return None if None in curves else curves
-
-
-def _percentile_curve(summary: Optional[Mapping[str, Any]]) -> Optional[tuple]:
-    percentiles = (summary or {}).get('percentiles')
-    if not percentiles or len(percentiles) != 99:
-        return None
-    values = np.maximum.accumulate(
-        np.array([summary['min'], *percentiles, summary['max']], dtype=float))
-    return values, np.linspace(0, 1, 101)
 
 
 def _ns(value: Any) -> int:
