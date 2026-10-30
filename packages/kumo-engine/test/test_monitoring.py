@@ -987,7 +987,7 @@ def test_feature_drift_detects_a_numeric_and_a_categorical_shift(shifted):
                                  'q75', 'skewness', 'kurtosis', 'null_rate',
                                  'num_unique'}
     assert plan['type'] == 'categorical' and plan['psi'] > 0.5
-    assert 0 < plan['js'] <= 1 and plan['category_counts_capped'] is False
+    assert plan['category_counts_capped'] is False
 
     same = _compare(_encoding(root, ['AGE', 'PLAN']), before, before, {})
     assert same['users']['AGE']['standardized_mean_shift'] == 0

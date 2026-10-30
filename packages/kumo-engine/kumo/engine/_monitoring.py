@@ -1070,7 +1070,6 @@ def _column_change(old: Mapping[str, Any],
         change = _deltas(old, new, _CATEGORY_STATS)
         p, q = _distribution(old), _distribution(new)
         change['psi'] = _category_psi(p, q)
-        change['js'] = _js(p, q)
         change['category_counts_capped'] = bool(
             old.get('category_counts_capped')
             or new.get('category_counts_capped'))
@@ -1148,11 +1147,3 @@ def _category_psi(p: Mapping[str, float],
         return None
     a, b = _smoothed(p, q)
     return float(np.sum((b - a) * np.log(b / a)))
-
-
-def _js(p: Mapping[str, float], q: Mapping[str, float]) -> Optional[float]:
-    if not p or not q:
-        return None
-    a, b = _smoothed(p, q)
-    m = (a + b) / 2
-    return float((np.sum(a * np.log2(a / m)) + np.sum(b * np.log2(b / m))) / 2)
