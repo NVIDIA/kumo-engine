@@ -4,6 +4,7 @@
 r"""A run's card: a short Markdown summary of a fit or prediction run,
 from its metrics, tags, params, notes and brief tables, for any tracker."""
 
+import math
 import re
 from typing import Any, List, Mapping, Optional, Sequence
 
@@ -29,11 +30,14 @@ def headline(kind: str, metrics: Mapping[str, float], tags: Mapping[str, str],
         tune = tags.get('kumo.tune_metric')
         name = 'holdout_loss' if tune == 'loss' else _key(tune or '')
         if name in metrics:
-            parts.append(f'{name} {number(metrics[name])}')
+            label = name if name.startswith('holdout') else f'holdout {name}'
+            parts.append(f'{label} {number(metrics[name])}')
     else:
-        realized = sorted(name for name in metrics
-                          if name.startswith('realized/')
-                          and name != 'realized/labelled_share')
+        tuned = f"realized/{_key(tags.get('kumo.tune_metric') or '')}"
+        realized = sorted((name for name in metrics
+                           if name.startswith('realized/')
+                           and name != 'realized/labelled_share'),
+                          key=lambda name: (name != tuned, name))
         if realized:
             parts.append(f"realized {realized[0].partition('/')[2]} "
                          f'{number(metrics[realized[0]])}')
@@ -148,7 +152,10 @@ def number(value: Any) -> str:
         return str(value)
     if float(value).is_integer() and abs(value) < 1e15:
         return f'{int(value):,}'
-    return f'{value:,.0f}' if abs(value) >= 1000 else f'{value:.3g}'
+    if not math.isfinite(value) or abs(value) >= 1000:
+        return f'{value:,.0f}'
+    digits = 2 - math.floor(math.log10(abs(value)))
+    return f'{value:.{digits}f}'.rstrip('0').rstrip('.')
 
 
 def _inline(columns: Sequence[str], row: Sequence[Any]) -> str:

@@ -17,8 +17,8 @@ def test_a_fit_headline_leads_with_the_tuned_holdout_metric():
 
     assert _card.headline('fit', {'auroc': 0.7871, 'ap': 0.5}, tags, params,
                           QUERY) == (
-        'auroc 0.787 · 2 data problems · v6 kumo-demo-churn · best of 3 '
-        'trials · binary classification of users')
+        'holdout auroc 0.787 · 2 data problems · v6 kumo-demo-churn · best '
+        'of 3 trials · binary classification of users')
     assert _card.headline('fit', {'holdout_loss': 0.25}, {
         'kumo.tune_metric': 'loss', 'kumo.data_warnings': '0',
         'kumo.error': 'ValueError: stop'}, {}) == (
@@ -90,3 +90,12 @@ def test_a_version_headline_leads_with_the_tuned_metric():
         'holdout_loss 0.5 · mae 0.25 · mse 1 · rmse 1')
     assert _card.version_headline(metrics, 'map@10') == (
         'map_at_10 0.125 · mae 0.25 · holdout_loss 0.5 · mse 1')
+
+
+def test_a_prediction_headline_leads_with_the_tuned_realized_metric():
+    metrics = {'realized/ap': 0.71, 'realized/auroc': 0.78}
+
+    assert _card.headline('prediction', metrics,
+                          {'kumo.tune_metric': 'auroc'}, {}) == (
+        'realized auroc 0.78')
+    assert _card.headline('prediction', metrics, {}, {}) == 'realized ap 0.71'

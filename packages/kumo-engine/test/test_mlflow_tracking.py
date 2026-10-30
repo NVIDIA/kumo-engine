@@ -733,7 +733,7 @@ def test_a_fit_run_gets_a_card_before_the_users_notes(tracking_uri):
         Note('locations', 'root `/r/`')), note='Mine.')
 
     assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
-        'mae 0.25 · regression of ents', f'`{QUERY}`', '',
+        'holdout mae 0.25 · regression of ents', f'`{QUERY}`', '',
         '**Problems:** table `ents`: 2 duplicate keys', '',
         '**Training data:** train: rows 3', '', '**Where things are**',
         '- root `/r/`', '',
@@ -805,7 +805,7 @@ def test_a_card_over_its_budget_moves_tables_to_files_then_shrinks(
     moved = _fit_with_a_card(tracker, summaries, note='n' * 4500)
     shrunk = _fit_with_a_card(tracker, summaries, note='n' * 4800)
 
-    head = ['mae 0.25 · regression of ents', f'`{QUERY}`', '']
+    head = ['holdout mae 0.25 · regression of ents', f'`{QUERY}`', '']
     lineage = ('Full lineage: `_provenance.json`. Tables: '
                '`data/splits.json`.')
     assert moved.data.tags['mlflow.note.content'] == _sealed('\n'.join([

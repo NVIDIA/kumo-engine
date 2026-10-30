@@ -226,7 +226,7 @@ A histogram table has a row per bin with `from` and `to` (the end bins are open)
 **Tags and datasets.**
 - Every run: `kumo.kind`, `kumo.engine_version`.
 - Fit: `kumo.task_type`, `kumo.tune_metric`, `kumo.snapshot_id`, `kumo.bundle_id`, `kumo.bundle_uri`, `kumo.model_name`, `kumo.model_version`, `kumo.best_trial`, and `kumo.data_warnings`, the number of data problems the card lists.
-- Prediction: `kumo.prediction_id`, `kumo.as_of`, `kumo.entity`, `kumo.labels_mature` (temporal queries), `kumo.bundle_id`, `kumo.fit_run_id`, `kumo.model_name`, `kumo.model_version`, and `kumo.output_uri` or `kumo.output_table`. After `score_drift`: `kumo.drift_previous`; after `evaluate`: `kumo.labels_snapshot_id`.
+- Prediction: `kumo.prediction_id`, `kumo.as_of`, `kumo.entity`, `kumo.tune_metric`, `kumo.labels_mature` (temporal queries), `kumo.bundle_id`, `kumo.fit_run_id`, `kumo.model_name`, `kumo.model_version`, and `kumo.output_uri` or `kumo.output_table`. After `score_drift`: `kumo.drift_previous`; after `evaluate`: `kumo.labels_snapshot_id`.
 - Datasets: the snapshot, then each source table, at their real locations; after `evaluate`, the labels snapshot (context `labels`). A prediction of a model its fit logged lists that model under "Logged models", Type Input.
 
 **Finding runs.** Keys with a `/` or `.` need backticks:
@@ -235,7 +235,7 @@ A histogram table has a row per bin with `from` and `to` (the end bins are open)
 - drifted days: ``metrics.`drift/psi` > 0.2``;
 - everything one model version scored: ``tags.`kumo.bundle_id` = '<bundle id>'``.
 
-Compare registered versions with the registry's Compare versions view. On MLflow 3.10 and later, including SageMaker MLflow Apps, the UI opens on GenAI pages: choose "Model training" in the sidebar, or add `?workflowType=machine_learning` to the URL. A new, empty experiment gets a description with the two run kinds and their filters.
+In a Chart view of fits only, the empty `drift/`, `pred/` and `realized/` sections go away with the chart settings' "Hide charts with no data". If the Models tab shows no metric columns, add them with its Columns selector. Compare registered versions with the registry's Compare versions view. On MLflow 3.10 and later, including SageMaker MLflow Apps, the UI opens on GenAI pages: choose "Model training" in the sidebar, or add `?workflowType=machine_learning` to the URL. A new, empty experiment gets a description with the two run kinds and their filters.
 
 **Per platform.**
 - Databricks: the Unity Catalog version page shows the logged model's metrics; the version comment names the fit run and the bundle.

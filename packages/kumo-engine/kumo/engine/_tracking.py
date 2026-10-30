@@ -328,6 +328,7 @@ def prediction_record(manifest: 'PredictionManifest',
                 'prediction_id': manifest.id,
                 'as_of': as_of,
                 'entity': entity(getattr(trained, 'query', None)),
+                'tune_metric': _tune_metric(model),
                 'labels_mature': _labels_mature(manifest, window),
                 **prediction_parents(manifest),
                 'fit_run_id': fit_run_id(model_manifest),
@@ -399,6 +400,14 @@ def _as_of(manifest: 'PredictionManifest') -> str:
         dates = [(_utc(created) if created else _started(manifest)
                   ).date().isoformat()]
     return dates[0] if len(dates) == 1 else f'{dates[0]}..{dates[-1]}'
+
+
+def _tune_metric(model: Any) -> Optional[str]:
+    r"""The metric ``model``, a `TrainingResult`, was tuned on, if known."""
+    plan = getattr(getattr(model, '_trainer', None), 'model_plan', None)
+    metric = getattr(getattr(plan, 'training_job', None), 'tune_metric', None)
+    text = None if metric is None else str(getattr(metric, 'value', metric))
+    return None if text in (None, '', '???') else text
 
 
 def _labels_mature(manifest: 'PredictionManifest',
