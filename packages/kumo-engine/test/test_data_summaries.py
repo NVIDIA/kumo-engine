@@ -161,6 +161,25 @@ def test_data_warnings_name_each_table_that_breaks_a_check(tmp_path):
     ]
 
 
+def test_approximate_counts_never_exceed_the_exact_ones(tmp_path):
+    (tmp_path / 'split_stats.json').write_text(json.dumps({
+        'val_table_stats': {'num_train_rows': 947, 'num_entities': 944},
+        'test_table_stats': {'num_train_rows': 976, 'num_entities': 985}}))
+    (tmp_path / 'col_stats.json').write_text(json.dumps({'users': {
+        'BIO': {'semantic_type': 'text', 'count': 2000, 'num_unique': 2007},
+        'AGE': {'semantic_type': 'numerical', 'count': 2000,
+                'num_unique': 61}}}))
+
+    assert split_summaries(tmp_path) == [Table(
+        'data/splits', ('split', 'rows', 'entities≈'),
+        (('val', 947, 944), ('test', 976, 976)), brief=True)]
+    columns = {s.name: s for s in snapshot_summaries(tmp_path, {})}[
+        'data/columns']
+    distinct = columns.columns.index('distinct≈')
+    assert [(row[1], row[distinct]) for row in columns.rows] == [
+        ('BIO', 2000), ('AGE', 61)]
+
+
 def test_target_edges_are_even_bins_without_a_histogram(tmp_path):
     target = {'target_min': 0, 'target_percentile_25': 0, 'target_median': 0,
               'target_percentile_75': 25, 'target_max': 200,

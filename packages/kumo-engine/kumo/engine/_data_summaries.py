@@ -75,7 +75,8 @@ def split_summaries(staging_dir: Path) -> List[Summary]:
 def _value(table: Mapping[str, Any], target: Mapping[str, Any], name: str,
            label: Mapping[str, str]) -> Optional[float]:
     if name == 'entities≈':
-        return _whole(table.get('num_entities'))
+        return _at_most(_whole(table.get('num_entities')),
+                        _whole(table.get('num_train_rows')))
     if name == 'positive rate':
         counts = target.get('count') or {}
         total = sum(counts.values())
@@ -336,6 +337,7 @@ def _profile(stats: Mapping[str, Any]) -> Dict[str, Any]:
         value = (stats.get('null_count', 0) / count if count else None) \
             if name == 'null_rate' else _number(stats.get(name))
         profile[name] = value
+    profile['num_unique'] = _at_most(profile['num_unique'], count)
     top = () if stats.get('semantic_type') == 'id' else (
         stats.get('category_counts') or ())
     profile['top'] = ', '.join(f'{value}: {n}'
@@ -347,6 +349,12 @@ def _number(value: Any) -> Optional[float]:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _at_most(estimate: Optional[float],
+             exact: Optional[float]) -> Optional[float]:
+    return None if estimate is None else (
+        estimate if exact is None else min(estimate, exact))
 
 
 def _whole(value: Any) -> Optional[int]:
