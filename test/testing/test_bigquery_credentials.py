@@ -10,10 +10,11 @@ from unittest import mock
 import kumoapi.data_source as data_source_api
 import pytest
 
-from io_utils import fsutil
+from io_utils import fsutil, secrets
 from kumo.connector import bigquery_connector
 from kumo.connector.bigquery_connector import BigQueryConnector
 from kumo.testing import bigquery as testing_bigquery
+from kumo.testing.bigquery import BigQueryIdentity
 from kumo.testing.rest import (
     bigquery_test_identity,
     invalid_bigquery_key_test_identity_config,
@@ -21,101 +22,114 @@ from kumo.testing.rest import (
 
 _ENV_NAMES = (
     *testing_bigquery._CREDENTIAL_ENV_VARS,
-    'GOOGLE_CLOUD_PROJECT',
+    'GOOGLE_CLOUD_PROJECT', 'KUMO_TEST_PROFILE',
+    'KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED',
     testing_bigquery.ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT,
     testing_bigquery.ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT,
-    'KUMO_TEST_PROFILE',
+    testing_bigquery.ENV_BIGQUERY_NO_TABLE_CREDENTIALS,
+    testing_bigquery.ENV_BIGQUERY_NO_JOB_CREDENTIALS,
 )
-_RESTRICTED_KEYS = (
-    (testing_bigquery.FAIL_TABLE_PERMISSION_BIGQUERY_KEY,
-     testing_bigquery.ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT),
-    (testing_bigquery.FAIL_PROJECT_PERMISSION_BIGQUERY_KEY,
-     testing_bigquery.ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT),
+_RESTRICTED_IDENTITIES = (
+    (BigQueryIdentity.NO_TABLE,
+     testing_bigquery.ENV_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT,
+     testing_bigquery.ENV_BIGQUERY_NO_TABLE_CREDENTIALS),
+    (BigQueryIdentity.NO_JOB,
+     testing_bigquery.ENV_BIGQUERY_NO_JOB_SERVICE_ACCOUNT,
+     testing_bigquery.ENV_BIGQUERY_NO_JOB_CREDENTIALS),
 )
 
 
 @pytest.fixture(autouse=True)
-def isolated_credentials(monkeypatch, tmp_path):
+def isolated_credentials(monkeypatch):
     for name in _ENV_NAMES:
         monkeypatch.setenv(name, '')
         monkeypatch.delenv(name)
-    monkeypatch.setattr(testing_bigquery, 'ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH',
-                        str(tmp_path / 'absent-home-credentials.json'))
-    # No focused test may reach a real secret provider.
-    monkeypatch.setattr(testing_bigquery, 'get_secrets', mock.Mock(
-        side_effect=AssertionError('unexpected secret access')))
+    secret_read = mock.Mock(side_effect=AssertionError('unexpected secret access'))
+    monkeypatch.setattr(secrets, 'get_secrets', secret_read)
+    monkeypatch.setattr(secrets.AWSSecretProvider, 'get_secret', secret_read)
+    yield
+    secret_read.assert_not_called()
 
 
-def write_credentials(tmp_path, kind):
-    path = str(tmp_path / 'input-credentials.json')
+def write_credentials(tmp_path, kind, filename='input-credentials.json'):
+    path = str(tmp_path / filename)
     fsutil.write_text(path, json.dumps({'type': kind}))
     return path
 
 
 @pytest.mark.parametrize('kind', ['external_account', 'authorized_user',
                                   'impersonated_service_account'])
-@pytest.mark.parametrize(('key', 'target_env'), _RESTRICTED_KEYS)
-def test_adc_identity_sequence(monkeypatch, tmp_path, kind, key, target_env):
+@pytest.mark.parametrize(('identity', 'target_env', 'file_env'), _RESTRICTED_IDENTITIES)
+def test_adc_identity_sequence(monkeypatch, tmp_path, kind, identity,
+                               target_env, file_env):
     path = write_credentials(tmp_path, kind)
     original = fsutil.read_text(path)
     monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', path)
-    monkeypatch.setenv(testing_bigquery.ENV_GOOGLE_CREDENTIALS_JSON,
-                       'original-connector-input')
+    monkeypatch.setenv(testing_bigquery.ENV_GOOGLE_CREDENTIALS_JSON, 'original-input')
     monkeypatch.setenv(target_env, 'restricted@example.test')
     monkeypatch.setenv('GOOGLE_CLOUD_PROJECT', 'example-project')
     monkeypatch.setenv(testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT,
                        'original@example.test')
     before = {name: os.environ.get(name) for name in _ENV_NAMES}
-
-    for selected in (None, key, None):
+    for selected in (BigQueryIdentity.DEFAULT, identity, BigQueryIdentity.DEFAULT):
         with testing_bigquery.setup_bigquery_credentials(selected):
             assert os.environ[bigquery_connector.ENV_GOOGLE_CREDENTIALS_JSON] == path
             assert os.environ['GCP_PROJECT_ID'] == 'example-project'
             assert os.environ.get(
                 testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT) == (
-                    'restricted@example.test' if selected else None)
+                    None if selected == BigQueryIdentity.DEFAULT
+                    else 'restricted@example.test')
         assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
     assert fsutil.read_text(path) == original
-    testing_bigquery.get_secrets.assert_not_called()
 
 
-@pytest.mark.parametrize(('key', 'target_env'), _RESTRICTED_KEYS)
-def test_key_identity_sequence(monkeypatch, tmp_path, key, target_env):
+@pytest.mark.parametrize(('identity', 'target_env', 'file_env'), _RESTRICTED_IDENTITIES)
+def test_key_identity_sequence(monkeypatch, tmp_path, identity, target_env, file_env):
     path = write_credentials(tmp_path, 'service_account')
-    original = fsutil.read_text(path)
+    restricted = write_credentials(tmp_path, 'service_account', 'restricted.json')
     monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', path)
-    # An unrelated WIF mode flag must not relabel an explicit stored key.
-    monkeypatch.setenv('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', 'true')
-    secrets = mock.Mock(return_value={'type': 'service_account', 'identity': key})
-    monkeypatch.setattr(testing_bigquery, 'get_secrets', secrets)
+    monkeypatch.setenv(file_env, restricted)
+    monkeypatch.setenv(target_env, 'must-not-impersonate@example.test')
     before = {name: os.environ.get(name) for name in _ENV_NAMES}
-    temporary_paths = []
-    for selected in (None, key, None):
+    original_files = {path: fsutil.read_text(path), restricted: fsutil.read_text(restricted)}
+    for selected in (BigQueryIdentity.DEFAULT, identity, BigQueryIdentity.DEFAULT):
         with testing_bigquery.setup_bigquery_credentials(selected):
-            configured = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
+            expected = path if selected == BigQueryIdentity.DEFAULT else restricted
+            assert os.environ['GOOGLE_APPLICATION_CREDENTIALS'] == expected
+            assert os.environ[bigquery_connector.ENV_GOOGLE_CREDENTIALS_JSON] == expected
             assert testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT not in os.environ
-            if selected:
-                assert configured != path
-                assert json.loads(fsutil.read_text(configured))['identity'] == key
-                temporary_paths.append(configured)
-            else:
-                assert configured == path
         assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
-    secrets.assert_called_once_with(key)
-    assert all(not fsutil.exists(path) for path in temporary_paths)
-    assert fsutil.read_text(path) == original
+    assert {path: fsutil.read_text(path) for path in original_files} == original_files
 
 
-@pytest.mark.parametrize(('key', 'target_env'), _RESTRICTED_KEYS)
-def test_adc_requires_restricted_target(monkeypatch, tmp_path, key, target_env):
-    path = write_credentials(tmp_path, 'external_account')
+@pytest.mark.parametrize('kind', ['external_account', 'service_account'])
+@pytest.mark.parametrize(('identity', 'target_env', 'file_env'), _RESTRICTED_IDENTITIES)
+def test_restricted_requires_explicit_input(monkeypatch, tmp_path, kind, identity,
+                                            target_env, file_env):
+    path = write_credentials(tmp_path, kind)
     monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', path)
     before = {name: os.environ.get(name) for name in _ENV_NAMES}
-    with pytest.raises(RuntimeError, match=target_env):
-        with testing_bigquery.setup_bigquery_credentials(key):
+    required = file_env if kind == 'service_account' else target_env
+    with pytest.raises(RuntimeError, match=required):
+        with testing_bigquery.setup_bigquery_credentials(identity):
             pytest.fail('missing identity must fail during setup')
     assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
-    testing_bigquery.get_secrets.assert_not_called()
+
+
+@pytest.mark.parametrize('restricted_kind', [None, 'external_account'])
+def test_restricted_key_requires_valid_file(monkeypatch, tmp_path, restricted_kind):
+    path = write_credentials(tmp_path, 'service_account')
+    restricted = str(tmp_path / 'restricted.json')
+    if restricted_kind:
+        fsutil.write_text(restricted, json.dumps({'type': restricted_kind}))
+    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', path)
+    monkeypatch.setenv(testing_bigquery.ENV_BIGQUERY_NO_JOB_CREDENTIALS, restricted)
+    before = {name: os.environ.get(name) for name in _ENV_NAMES}
+    message = 'service_account credentials' if restricted_kind else 'does not exist'
+    with pytest.raises(RuntimeError, match=message):
+        with testing_bigquery.setup_bigquery_credentials(BigQueryIdentity.NO_JOB):
+            pytest.fail('invalid restricted key must fail during setup')
+    assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
 
 
 @pytest.mark.parametrize('contents', ['not-json', '[]', '{}',
@@ -128,152 +142,89 @@ def test_invalid_adc_fails(monkeypatch, tmp_path, contents):
         with testing_bigquery.setup_bigquery_credentials():
             pytest.fail('invalid input must fail during setup')
     assert fsutil.read_text(path) == contents
-    testing_bigquery.get_secrets.assert_not_called()
 
 
-def test_missing_adc_fails(monkeypatch, tmp_path):
-    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS',
-                       str(tmp_path / 'missing.json'))
+@pytest.mark.parametrize('profile', [None, 'gcp', 'gcp-aws'])
+def test_requires_explicit_adc(monkeypatch, tmp_path, profile):
+    if profile:
+        monkeypatch.setenv('KUMO_TEST_PROFILE', profile)
+    path = write_credentials(tmp_path, 'external_account')
+    monkeypatch.setenv(testing_bigquery.ENV_GOOGLE_CREDENTIALS_JSON, path)
+    with pytest.raises(RuntimeError, match='require explicit GOOGLE_APPLICATION_CREDENTIALS'):
+        with testing_bigquery.setup_bigquery_credentials():
+            pytest.fail('other credential inputs must not activate BigQuery')
+
+
+def test_missing_adc_file(monkeypatch, tmp_path):
+    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', str(tmp_path / 'missing'))
     with pytest.raises(RuntimeError, match='does not exist'):
         with testing_bigquery.setup_bigquery_credentials():
-            pytest.fail('missing input must fail during setup')
-    testing_bigquery.get_secrets.assert_not_called()
+            pytest.fail('missing file must fail')
 
 
-@pytest.mark.parametrize('asynchronous', [False, True])
-@pytest.mark.parametrize('outcome', ['pass', 'fail', 'skip'])
-@pytest.mark.parametrize('prior_values', [False, True])
-def test_fallback_lifetime(monkeypatch, tmp_path, asynchronous, outcome,
-                           prior_values):
-    # Preserve a preexisting legacy home file without letting it select ADC.
-    untouched = str(tmp_path / 'home-key.json')
-    fsutil.write_text(untouched, 'leave unchanged')
-    if prior_values:
-        for name in (testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT,
-                     testing_bigquery.ENV_GCS_KUMO_BUCKET.name, 'GCP_PROJECT_ID'):
-            monkeypatch.setenv(name, 'original')
-    before = {name: os.environ.get(name) for name in _ENV_NAMES}
-    secrets = mock.Mock(return_value={'type': 'service_account'})
-    monkeypatch.setattr(testing_bigquery, 'get_secrets', secrets)
-    created = []
-
-    def body():
-        path = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
-        created.append(path)
-        assert fsutil.exists(path)
-        assert os.environ[bigquery_connector.ENV_GOOGLE_CREDENTIALS_JSON] == path
-        for name in testing_bigquery._CREDENTIAL_ENV_VARS:
-            os.environ[name] = 'test mutation'
-        if outcome == 'fail':
-            raise ValueError('test failed')
-        if outcome == 'skip':
-            pytest.skip('intentional skip')
-        return 'result'
-
-    async def async_body():
-        return body()
-
-    wrapped = testing_bigquery.withBigQueryCredentials(
-        async_body if asynchronous else body)
-
-    def invoke():
-        return asyncio.run(wrapped()) if asynchronous else wrapped()
-
-    if outcome == 'pass':
-        assert invoke() == 'result'
-    else:
-        error = ValueError if outcome == 'fail' else pytest.skip.Exception
-        with pytest.raises(error):
-            invoke()
-    assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
-    assert len(created) == 1
-    assert not fsutil.exists(os.path.dirname(created[0]))
-    assert fsutil.read_text(untouched) == 'leave unchanged'
-    secrets.assert_called_once_with(testing_bigquery.DEFAULT_BIGQUERY_KEY)
-
-
-def test_fallback_setup_failure_cleans(monkeypatch):
-    secrets = mock.Mock(return_value={'type': 'unsupported'})
-    monkeypatch.setattr(testing_bigquery, 'get_secrets', secrets)
-    original_mkdtemp = fsutil.mkdtemp
-    created = []
-
-    def record_tempdir():
-        path = original_mkdtemp()
-        created.append(path)
-        return path
-
-    monkeypatch.setattr(fsutil, 'mkdtemp', record_tempdir)
-    before = {name: os.environ.get(name) for name in _ENV_NAMES}
-    with pytest.raises(RuntimeError, match='unsupported'):
-        with testing_bigquery.setup_bigquery_credentials():
-            pytest.fail('bad stored key must fail during setup')
-    assert len(created) == 1
-    assert not fsutil.exists(created[0])
-    assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
-
-
-def test_missing_credentials_skip(monkeypatch):
-    monkeypatch.setattr(testing_bigquery, 'get_secrets', mock.Mock(
-        side_effect=RuntimeError('secret unavailable')))
-    before = {name: os.environ.get(name) for name in _ENV_NAMES}
-    with pytest.raises(pytest.skip.Exception, match='No BigQuery credentials'):
-        with testing_bigquery.setup_bigquery_credentials():
-            pytest.fail('missing credentials must skip')
-    assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
-
-
-def test_fallback_identity_sequence(monkeypatch):
-    secrets = mock.Mock(side_effect=lambda key: {
-        'type': 'service_account', 'identity': key})
-    monkeypatch.setattr(testing_bigquery, 'get_secrets', secrets)
-    keys = [testing_bigquery.DEFAULT_BIGQUERY_KEY,
-            testing_bigquery.FAIL_TABLE_PERMISSION_BIGQUERY_KEY,
-            testing_bigquery.DEFAULT_BIGQUERY_KEY]
-    before = {name: os.environ.get(name) for name in _ENV_NAMES}
-    paths = []
-    for key in keys:
-        with testing_bigquery.setup_bigquery_credentials(key):
-            path = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
-            paths.append(path)
-            assert json.loads(fsutil.read_text(path))['identity'] == key
-            assert testing_bigquery.ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT not in os.environ
-        assert not fsutil.exists(path)
-        assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
-    assert len(set(paths)) == len(keys)
-    assert secrets.call_args_list == [mock.call(key) for key in keys]
-
-
-@pytest.mark.parametrize('profile', ['gcp', 'gcp-aws'])
+@pytest.mark.parametrize('mode', ['gcp', 'gcp-aws', 'workload'])
 @pytest.mark.parametrize('kind', ['service_account', 'authorized_user',
                                   'impersonated_service_account'])
-def test_profile_rejects_nonfederated(monkeypatch, tmp_path, profile, kind):
-    monkeypatch.setenv('KUMO_TEST_PROFILE', profile)
+def test_wif_rejects_nonfederated(monkeypatch, tmp_path, mode, kind):
+    if mode == 'workload':
+        monkeypatch.setenv('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', 'true')
+    else:
+        monkeypatch.setenv('KUMO_TEST_PROFILE', mode)
     path = write_credentials(tmp_path, kind)
     monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', path)
     before = {name: os.environ.get(name) for name in _ENV_NAMES}
     with pytest.raises(RuntimeError, match='external_account ADC'):
         with testing_bigquery.setup_bigquery_credentials():
-            pytest.fail('nonfederated ADC must fail before test setup')
-    testing_bigquery.get_secrets.assert_not_called()
+            pytest.fail('nonfederated input must fail')
     assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
 
 
-@pytest.mark.parametrize('profile', ['gcp', 'gcp-aws'])
-def test_profile_requires_explicit_adc(monkeypatch, tmp_path, profile):
-    monkeypatch.setenv('KUMO_TEST_PROFILE', profile)
+@pytest.mark.parametrize('asynchronous', [False, True])
+@pytest.mark.parametrize('outcome', ['pass', 'fail', 'skip'])
+def test_explicit_scope_restores(monkeypatch, tmp_path, asynchronous, outcome):
     path = write_credentials(tmp_path, 'external_account')
-    monkeypatch.setenv(testing_bigquery.ENV_GOOGLE_CREDENTIALS_JSON, path)
-    monkeypatch.setattr(testing_bigquery, 'ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH',
-                        path)
-    with pytest.raises(RuntimeError, match='GOOGLE_APPLICATION_CREDENTIALS'):
+    original = fsutil.read_text(path)
+    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', path)
+    monkeypatch.setenv(testing_bigquery.ENV_GOOGLE_CREDENTIALS_JSON, 'previous-input')
+    before = {name: os.environ.get(name) for name in _ENV_NAMES}
+    writes = mock.Mock(side_effect=AssertionError('input files must be read-only'))
+    monkeypatch.setattr(fsutil, 'write_text', writes)
+
+    def body():
+        for name in testing_bigquery._CREDENTIAL_ENV_VARS:
+            os.environ[name] = 'test mutation'
+        if outcome == 'fail':
+            raise ValueError('test failure')
+        if outcome == 'skip':
+            pytest.skip('intentional skip')
+
+    async def invoke_async():
         with testing_bigquery.setup_bigquery_credentials():
-            pytest.fail('ambient files must not activate profiled tests')
-    testing_bigquery.get_secrets.assert_not_called()
+            await asyncio.sleep(0)
+            body()
+
+    def invoke():
+        if asynchronous:
+            asyncio.run(invoke_async())
+        else:
+            with testing_bigquery.setup_bigquery_credentials():
+                body()
+
+    if outcome == 'pass':
+        invoke()
+    else:
+        error = ValueError if outcome == 'fail' else pytest.skip.Exception
+        with pytest.raises(error):
+            invoke()
+    assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
+    assert fsutil.read_text(path) == original
+    writes.assert_not_called()
 
 
-def test_profile_decorator_only_marks(monkeypatch):
-    monkeypatch.setenv('KUMO_TEST_PROFILE', 'gcp')
+@pytest.mark.parametrize('profile', [None, 'gcp'])
+def test_decorator_only_marks(monkeypatch, profile):
+    if profile:
+        monkeypatch.setenv('KUMO_TEST_PROFILE', profile)
     read = mock.Mock(side_effect=AssertionError('credential I/O during import'))
     monkeypatch.setattr(fsutil, 'read_text', read)
 
@@ -285,7 +236,6 @@ def test_profile_decorator_only_marks(monkeypatch):
     assert {mark.name for mark in decorated.pytestmark} == {
         'requires_credentials', 'bigquery_credentials'}
     read.assert_not_called()
-    testing_bigquery.get_secrets.assert_not_called()
 
 
 def test_bigquery_rest_identity_uses_workload_exchange(monkeypatch):

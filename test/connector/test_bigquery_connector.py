@@ -27,11 +27,7 @@ from kumo.connector.connector import (
     SourceTableNotFoundError,
 )
 from kumo.stats.compute_stats_python import compute_col_stats_python
-from kumo.testing.bigquery import (
-    FAIL_PROJECT_PERMISSION_BIGQUERY_KEY,
-    FAIL_TABLE_PERMISSION_BIGQUERY_KEY,
-    withBigQueryCredentials,
-)
+from kumo.testing.bigquery import BigQueryIdentity, withBigQueryCredentials
 
 
 def _write_df_to_bigquery(connector, table_name, df, replace=False):
@@ -367,7 +363,7 @@ def test_set_credentials_and_open():
     connector.open()
 
 
-@withBigQueryCredentials(service_account_key=FAIL_TABLE_PERMISSION_BIGQUERY_KEY)
+@withBigQueryCredentials(identity=BigQueryIdentity.NO_TABLE)
 def test_bigquery_table_permission_fail_read_table():
     connector = BigQueryConnector(
         name='bigquery_fail',
@@ -385,8 +381,7 @@ def test_bigquery_table_permission_fail_read_table():
     assert 'LOAN' not in message
 
 
-@withBigQueryCredentials(
-    service_account_key=FAIL_PROJECT_PERMISSION_BIGQUERY_KEY)
+@withBigQueryCredentials(identity=BigQueryIdentity.NO_JOB)
 def test_bigquery_project_permission_fail_read_table():
     connector = BigQueryConnector(
         name='bigquery_fail',

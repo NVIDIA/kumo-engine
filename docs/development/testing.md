@@ -76,6 +76,30 @@ Missing required credentials fail setup. The
 launcher copies ADC into its temporary directory and preserves its external
 token-source references, which must remain accessible for the run.
 
+Direct local BigQuery tests also require an explicit
+`GOOGLE_APPLICATION_CREDENTIALS` file. Supported local ADC types are
+`service_account`, `authorized_user`, `impersonated_service_account`, and
+`external_account`. Enabling `KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED` requires
+`external_account` even outside a profile. BigQuery test setup does not fetch
+AWS secrets, search home-directory credentials, or write credential files.
+Missing or invalid inputs fail before dependent resources start.
+
+For local restricted-permission tests using a service-account key, provide
+separate key files through `GCP_BIGQUERY_NO_TABLE_CREDENTIALS` and
+`GCP_BIGQUERY_NO_JOB_CREDENTIALS`. For user, impersonated, or federated ADC,
+provide the two `GCP_BIGQUERY_NO_*_SERVICE_ACCOUNT` targets instead; the source
+identity needs permission to impersonate them. The test identities must have
+the intended restricted permissions. The helper validates the credential type
+and explicit configuration; the live tests verify the actual permissions.
+
+Use `@withBigQueryCredentials` for the default identity, or
+`@withBigQueryCredentials(identity=BigQueryIdentity.NO_TABLE)` /
+`BigQueryIdentity.NO_JOB` for restricted tests. These decorators only declare
+requirements. Shared pytest fixtures prepare the base identity before session
+resources and scope each test's identity until its dependent fixtures finish.
+Explicit input files remain unchanged, and environment changes are restored
+after success, failure, or skip.
+
 The GCP-only runtime removes AWS secret fallback and uses a local artifact
 directory. The GCP+AWS profile retains S3 because the training test actually
 uses it. Credentials are prepared before worker startup; function-specific

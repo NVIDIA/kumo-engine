@@ -20,6 +20,7 @@ _ENV_NAMES = (
     'GOOGLE_CREDENTIALS_JSON', 'GOOGLE_CREDENTIALS_STR_JSON', 'GCS_TEST_BUCKET',
     'GCP_PROJECT_ID', 'GOOGLE_IMPERSONATE_SERVICE_ACCOUNT',
     'GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT', 'GCP_STORAGE_TRANSFER_BUCKET',
+    'KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', 'GCP_BIGQUERY_NO_JOB_CREDENTIALS',
 )
 
 
@@ -99,10 +100,12 @@ def test_unprofiled_key_lifetime(monkeypatch, failure):
 
 
 @pytest.mark.parametrize('failure', [False, True])
-def test_profile_fixture_order(pytester, monkeypatch, tmp_path, failure):
+@pytest.mark.parametrize('profile', [None, 'gcp'])
+def test_profile_fixture_order(pytester, monkeypatch, tmp_path, failure, profile):
     path = str(tmp_path / 'adc.json')
     fsutil.write_text(path, '{"type":"external_account"}')
-    monkeypatch.setenv('KUMO_TEST_PROFILE', 'gcp')
+    if profile:
+        monkeypatch.setenv('KUMO_TEST_PROFILE', profile)
     monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', path)
     monkeypatch.setenv('GOOGLE_CREDENTIALS_JSON', 'before-scope')
     monkeypatch.setenv('GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT', 'no-job@example.test')
@@ -117,7 +120,7 @@ markers =
     pytester.makepyfile('''
 import os
 import pytest
-from kumo.testing.bigquery import withBigQueryCredentials, FAIL_PROJECT_PERMISSION_BIGQUERY_KEY
+from kumo.testing.bigquery import withBigQueryCredentials, BigQueryIdentity
 from kumo.testing.gcs import withGCSCredentials
 
 @pytest.fixture(scope='session')
@@ -133,7 +136,7 @@ def cloud_resource(workers):
     yield
     assert os.environ['GOOGLE_IMPERSONATE_SERVICE_ACCOUNT'] == 'no-job@example.test'
 
-@withBigQueryCredentials(service_account_key=FAIL_PROJECT_PERMISSION_BIGQUERY_KEY)
+@withBigQueryCredentials(identity=BigQueryIdentity.NO_JOB)
 def test_restricted(cloud_resource):
     os.environ['GOOGLE_CREDENTIALS_JSON'] = 'test mutation'
     ''' + ("raise ValueError('expected failure')" if failure else "pass") + '''
@@ -239,3 +242,77 @@ def test_local():
     result = pytester.runpytest_inprocess(
         '-q', '-o', 'addopts=', plugins=[testing_bigquery, testing_gcs])
     result.assert_outcomes(passed=1, skipped=1)
+
+
+def test_local_key_fixture_order(pytester, monkeypatch, tmp_path):
+    default = str(tmp_path / 'default.json')
+    restricted = str(tmp_path / 'restricted.json')
+    fsutil.write_text(default, '{"type":"service_account"}')
+    fsutil.write_text(restricted, '{"type":"service_account"}')
+    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', default)
+    monkeypatch.setenv('GCP_BIGQUERY_NO_JOB_CREDENTIALS', restricted)
+    before = {name: os.environ.get(name) for name in _ENV_NAMES}
+    pytester.makeini('''
+[pytest]
+markers =
+    requires_credentials: external capabilities
+    bigquery_credentials: BigQuery identity
+''')
+    pytester.makepyfile('''
+import os
+import pytest
+from kumo.testing.bigquery import BigQueryIdentity, withBigQueryCredentials
+
+@pytest.fixture(scope='session')
+def workers(configure_profile_credentials):
+    base = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
+    assert base != os.environ['GCP_BIGQUERY_NO_JOB_CREDENTIALS']
+    yield base
+    assert os.environ['GOOGLE_APPLICATION_CREDENTIALS'] == base
+
+@pytest.fixture
+def resource(workers):
+    assert os.environ['GOOGLE_APPLICATION_CREDENTIALS'] == os.environ['GCP_BIGQUERY_NO_JOB_CREDENTIALS']
+    assert 'GOOGLE_IMPERSONATE_SERVICE_ACCOUNT' not in os.environ
+    yield
+    assert os.environ['GOOGLE_APPLICATION_CREDENTIALS'] == os.environ['GCP_BIGQUERY_NO_JOB_CREDENTIALS']
+
+@withBigQueryCredentials(identity=BigQueryIdentity.NO_JOB)
+def test_restricted(resource):
+    pass
+
+@withBigQueryCredentials
+def test_default(workers):
+    assert os.environ['GOOGLE_APPLICATION_CREDENTIALS'] == workers
+''')
+    result = pytester.runpytest_inprocess(
+        '-q', '-o', 'addopts=', plugins=[testing_bigquery])
+    result.assert_outcomes(passed=2)
+    assert {name: os.environ.get(name) for name in _ENV_NAMES} == before
+    assert fsutil.read_text(default) == '{"type":"service_account"}'
+    assert fsutil.read_text(restricted) == '{"type":"service_account"}'
+
+
+def test_local_bigquery_missing_input(pytester):
+    pytester.makeini('''
+[pytest]
+markers =
+    requires_credentials: external capabilities
+    bigquery_credentials: BigQuery identity
+''')
+    pytester.makepyfile('''
+import pytest
+from kumo.testing.bigquery import withBigQueryCredentials
+
+@pytest.fixture(scope='session')
+def workers(configure_profile_credentials):
+    raise AssertionError('worker must not start without explicit credentials')
+
+@withBigQueryCredentials
+def test_bigquery(workers):
+    pass
+''')
+    result = pytester.runpytest_inprocess(
+        '-q', '-o', 'addopts=', plugins=[testing_bigquery])
+    result.assert_outcomes(errors=1)
+    result.stdout.fnmatch_lines(['*require explicit*GOOGLE_APPLICATION_CREDENTIALS*'])
