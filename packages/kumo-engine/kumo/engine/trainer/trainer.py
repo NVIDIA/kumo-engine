@@ -215,8 +215,9 @@ class TrainingResult:
 
     def export(self, config: Any) -> PublishedModel:
         """Publish this model's bundle to a ``ModelOutputConfig``, or
-        register it at a `kumo.MLOps` ``registry`` through its tracker; a
-        registry that already holds the bundle returns that version."""
+        register it at a `kumo.MLOps` ``registry`` through its tracker; an
+        MLflow or Unity Catalog registry that already holds the bundle
+        returns that version, while Snowflake adds a new one."""
         from kumo.engine._mlops import MLOps
 
         if isinstance(config, MLOps):
