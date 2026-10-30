@@ -676,8 +676,9 @@ class MlflowTracking:
 
     def update_card(self, run_id: str, block: Optional[str] = None,
                     summaries: Sequence[Summary] = ()) -> None:
-        r"""Regenerates line 1 of run ``run_id``'s card from the run's
-        metrics and tags and, given ``block`` (``drift``, ``realized``),
+        r"""Regenerates the heading of run ``run_id``'s card from the run's
+        metrics and tags, and a fit's sentence, and, given ``block``
+        (``drift``, ``realized``),
         replaces that part of the card with the notes and brief tables in
         ``summaries``. A card the user edited is left as it is."""
         self._client = self._client or self.target.client()
@@ -688,10 +689,12 @@ class MlflowTracking:
             return
         card, user = split
         lines = card.split('\n')
-        kind = run.data.tags.get('kumo.kind', '')
-        query = lines[1].strip('`') if kind == 'fit' and len(lines) > 1 else None
-        lines[0] = _card.headline(kind, run.data.metrics, run.data.tags,
-                                  run.data.params, query)
+        tags = run.data.tags
+        kind = tags.get('kumo.kind', '')
+        lines[:2] = _card.heading(kind, run.data.metrics, tags)
+        if kind == 'fit' and len(lines) > 3:
+            lines[3] = _card.fit_line(tags, run.data.params,
+                                      lines[5] if len(lines) > 5 else None)
         card = '\n'.join(lines)
         items = [s for s in summaries if isinstance(s, Note)
                  or isinstance(s, Table) and s.brief]
@@ -701,8 +704,8 @@ class MlflowTracking:
                 card, block, _card.block(kept))
 
         def minimal(files: Sequence[str]) -> str:
-            return '\n'.join([*lines[:2], '', _card.files_line(files),
-                              _NOTES_LINE])
+            return '\n'.join([*lines[:4], '', _card.files_line(files),
+                              *_card.TAIL])
 
         self._set_card(run, render, minimal, items, user, _budget(user))
 
@@ -717,24 +720,24 @@ class MlflowTracking:
             if split is None:
                 return
             tags = run.data.tags
-            line = _card.headline(kind, run.data.metrics, tags,
-                                  run.data.params, record.description)
-            intro = (record.description if kind == 'fit' else
-                     self._model_line(tags))
+            line = _card.heading(kind, run.data.metrics, tags)
+            intro = _card.intro(kind, tags, run.data.params,
+                                record.description, *self._fit_link())
+            items = [*_card.holdout(kind, record.metrics, tags), *self._card]
             blocks = ([_part(name, '') for name in _BLOCKS]
                       if kind == 'prediction' else [])
-            tail = [*([''] + blocks if blocks else []), _NOTES_LINE]
+            tail = [*([''] + blocks if blocks else []), *_card.TAIL]
 
             def render(kept: Sequence[Summary], files: Sequence[str]) -> str:
-                return '\n'.join([line, *_card.body(intro, kept, files),
+                return '\n'.join([*line, *_card.body(intro, kept, files),
                                   *tail])
 
             def minimal(files: Sequence[str]) -> str:
-                return '\n'.join([line, *([intro] if intro else []), '',
+                return '\n'.join([*line, '', intro, '',
                                   _card.files_line(files), *tail])
 
             user = split[1]
-            self._set_card(run, render, minimal, self._card, user,
+            self._set_card(run, render, minimal, items, user,
                            _budget(user) - (_BLOCK_BYTES if blocks else 0))
         except Exception as error:
             logger.warning('Could not write the description of MLflow run '
@@ -850,17 +853,14 @@ class MlflowTracking:
             self._client.log_inputs(self._parent, models=[
                 entities.LoggedModelInput(self._fit[1].model_id)])
 
-    def _model_line(self, tags: Mapping[str, str]) -> str:
-        name = link = None
+    def _fit_link(self) -> Tuple[Optional[str], Optional[str]]:
         fit = self._fit[0]
-        if fit is not None:
-            name = fit.run_name
-            link = (self.target.run_url(fit.experiment_id, fit.run_id)
-                    if self.platform == 'databricks' else
-                    f'#/experiments/{fit.experiment_id}/runs/{fit.run_id}')
-        return _card.model_line(tags.get('kumo.model_name'),
-                                tags.get('kumo.model_version'),
-                                tags.get('kumo.bundle_id'), name, link)
+        if fit is None:
+            return None, None
+        return fit.run_name, (
+            self.target.run_url(fit.experiment_id, fit.run_id)
+            if self.platform == 'databricks' else
+            f'#/experiments/{fit.experiment_id}/runs/{fit.run_id}')
 
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         self._log_metrics(self._parent, metrics, step)
@@ -1097,7 +1097,6 @@ _EXPERIMENT_NOTE = '\n'.join([
     "Each run's description starts with its card; add notes below the "
     "card's last line."])
 _CARD_END = re.compile(r'<!-- /kumo:card sha256=([0-9a-f]{16}) -->')
-_NOTES_LINE = "Notes below this line are kept; edits above it stop kumo's updates."
 _BLOCKS = ('drift', 'realized')
 _BLOCK_BYTES = 800  # kept free at predict time for the monitoring parts
 
@@ -1148,7 +1147,7 @@ def _trial_name(trial: int, attempt: int, fit: str) -> str:
 
 
 def _part(name: str, text: str) -> str:
-    return (f'<!-- kumo:{name} -->\n{text}\n<!-- /kumo:{name} -->' if text
+    return (f'<!-- kumo:{name} -->\n\n{text}\n\n<!-- /kumo:{name} -->' if text
             else f'<!-- kumo:{name} --><!-- /kumo:{name} -->')
 
 
@@ -1160,8 +1159,8 @@ def _with_block(card: str, name: str, text: str) -> str:
                           re.DOTALL)
     if existing.search(card):
         return existing.sub(lambda _: part, card, count=1)
-    head, notes, rest = card.rpartition(_NOTES_LINE)
-    return f'{head}{part}\n{notes}{rest}' if notes else f'{card}\n{part}'
+    head, notes, rest = card.rpartition(_card.NOTES_LINE)
+    return f'{head}{part}\n\n{notes}{rest}' if notes else f'{card}\n{part}'
 
 
 _SINKS: Dict[type, Callable[[MlflowTracking, Any], None]] = {

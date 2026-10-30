@@ -619,7 +619,8 @@ def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
             model.name) == ('1', 'fit-m-v1', fit.info.run_id, 'm')
     assert {m.key: m.value for m in model.metrics} == model_metrics(result)
     assert fit.data.tags['kumo.model_version'] == '1'
-    assert ' · v1 m · ' in fit.data.tags['mlflow.note.content'].split('\n')[0]
+    assert fit.data.tags['mlflow.note.content'].split('\n')[3].startswith(
+        'Fit of `m` v1 for ')
 
     other = f'sqlite:///{tmp_path / "other.db"}'
     mlflow.set_tracking_uri(other)

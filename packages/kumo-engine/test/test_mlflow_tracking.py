@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from kumo_core.artifacts import PROVENANCE_FILE
-from kumo_core.summaries import Dataset, Scalar
+from kumo_core.summaries import Dataset, Scalar, Table
 from kumoapi.encoder import Numerical
 from kumoapi.model_plan import ModelPlan
 from test_tracking_contract import (
@@ -512,18 +512,18 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
             'columns': ['column', 'psi'],
             'data': [['AMOUNT', 0.12]]}
     assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
-        'realized map_at_10 0.5 · psi 0.03 vs training · 50 rows as of '
-        '2026-10-29', 'Model: bundle `bbbbbbbb`.', '',
+        'realized map_at_10 0.5, psi 0.03 vs holdout (small shift), 50 rows '
+        'as of 2026-10-29', '===', '', 'Scores of bundle `bbbbbbbb`.', '',
         'Full lineage: `_provenance.json`.', '',
-        '<!-- kumo:drift -->',
-        'Drift vs training: psi 0.03 · vs 2026-10-28-v6-churn: psi 0.01.',
-        '**Table rows:** orders: rows at training 100 · rows now 104 · '
-        'change (%) 4',
-        '<!-- /kumo:drift -->',
-        '<!-- kumo:realized -->',
-        'Realized map@10 0.5 · 75 % labelled (3 of 4 scored rows), with '
-        'labels from snapshot-2026-10-30-2.',
-        '<!-- /kumo:realized -->', NOTES]))
+        '<!-- kumo:drift -->', '', '**Table rows**', '',
+        '| table | rows at training | rows now | change (%) |',
+        '| --- | ---: | ---: | ---: |', '| orders | 100 | 104 | 4 |', '',
+        '- Drift vs training: psi 0.03 · vs 2026-10-28-v6-churn: psi 0.01.',
+        '', '<!-- /kumo:drift -->',
+        '<!-- kumo:realized -->', '',
+        '- Realized map@10 0.5 · 75 % labelled (3 of 4 scored rows), with '
+        'labels from snapshot-2026-10-30-2.', '',
+        '<!-- /kumo:realized -->', *TAIL]))
 
     failure = log_run(later, 'log_monitoring', RunRecord(
         tags={**monitoring, 'kumo.prediction_id': 'pred-2'}))
@@ -739,7 +739,16 @@ def test_charted_series_become_metrics_over_their_steps(tracking_uri):
     assert 'mlflow.loggedArtifacts' not in run.data.tags
 
 
-NOTES = "Notes below this line are kept; edits above it stop kumo's updates."
+NOTES = "*Add notes below this line; edits above it stop kumo's updates.*"
+TAIL = ['', NOTES, '', '---']
+LOCATIONS = Table('locations', ('kind', 'id', 'location'),
+                  (('model', 'm', '/r/m'),), brief=True)
+FIT_HEAD = ['holdout mae 0.25', '===', '', 'Fit for regression of ents.', '',
+            f'`{QUERY}`', '']
+MAE = ['**Holdout metrics**', '', '| metric | value |', '| --- | ---: |',
+       '| test/mae | 0.25 |', '']
+WHERE = ['**Where things are**', '', '| Artifact | Location |',
+         '| --- | --- |', '| model bundle `m` | `/r/m` |', '']
 
 
 def _sealed(card):
@@ -772,15 +781,14 @@ def test_a_fit_run_gets_a_card_before_the_users_notes(tracking_uri):
         Note('problems', 'table `ents`: 2 duplicate keys'),
         Table('data/splits', ('split', 'rows'), (('train', 3),), brief=True),
         Table('data/health', ('table', 'rows'), (('ents', 3),)),
-        Note('locations', 'root `/r/`')), note='Mine.')
+        LOCATIONS), note='Mine.')
 
     assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
-        'holdout mae 0.25 · regression of ents', f'`{QUERY}`', '',
-        '**Problems:** table `ents`: 2 duplicate keys', '',
-        '**Training data:** train: rows 3', '', '**Where things are**',
-        '- root `/r/`', '',
+        *FIT_HEAD, '**Problems**', '', '- table `ents`: 2 duplicate keys', '',
+        *MAE, '**Training data**', '', '| split | rows |', '| --- | ---: |',
+        '| train | 3 |', '', *WHERE,
         'Full lineage: `_provenance.json`. Tables: `data/health.json`.',
-        NOTES])) + '\n\nMine.'
+        *TAIL])) + '\n\nMine.'
 
 
 def test_an_edited_card_is_frozen_with_one_warning(tracking_uri):
@@ -821,16 +829,18 @@ def test_monitoring_fills_its_part_of_a_prediction_card(tracking_uri):
 
     tracker.update_card(run_id, 'drift', [Note('notes', 'psi 0.01 since')])
 
-    head = ['50 rows as of 2026-10-29', 'Model: bundle `bbbbbbbb`.', '',
+    head = ['50 rows as of 2026-10-29', '===', '',
+            'Scores of bundle `bbbbbbbb`.', '',
             'Full lineage: `_provenance.json`.', '']
     assert card == _sealed('\n'.join([
         *head, '<!-- kumo:drift --><!-- /kumo:drift -->',
-        '<!-- kumo:realized --><!-- /kumo:realized -->', NOTES]))
+        '<!-- kumo:realized --><!-- /kumo:realized -->', *TAIL]))
     assert client.get_run(run_id).data.tags['mlflow.note.content'] == (
         _sealed('\n'.join([
-            'psi 0.03 vs training · ' + head[0], *head[1:],
-            '<!-- kumo:drift -->', 'psi 0.01 since', '<!-- /kumo:drift -->',
-            '<!-- kumo:realized --><!-- /kumo:realized -->', NOTES]))
+            'psi 0.03 vs holdout (small shift), ' + head[0], *head[1:],
+            '<!-- kumo:drift -->', '', '- psi 0.01 since', '',
+            '<!-- /kumo:drift -->',
+            '<!-- kumo:realized --><!-- /kumo:realized -->', *TAIL]))
         + '\n\nMine.')
 
 
@@ -842,22 +852,21 @@ def test_a_card_over_its_budget_moves_tables_to_files_then_shrinks(
 
     summaries = (Table('data/splits', ('split', 'rows'), tuple(
         (f'split-number-{i}', i) for i in range(12)), brief=True),
-        Note('locations', 'root `/r/`'))
+        LOCATIONS)
     tracker = MlflowTracking('e', log_system_metrics=False)
     moved = _fit_with_a_card(tracker, summaries, note='n' * 4500)
     shrunk = _fit_with_a_card(tracker, summaries, note='n' * 4800)
 
-    head = ['holdout mae 0.25 · regression of ents', f'`{QUERY}`', '']
     lineage = ('Full lineage: `_provenance.json`. Tables: '
                '`data/splits.json`.')
     assert moved.data.tags['mlflow.note.content'] == _sealed('\n'.join([
-        *head, '**Where things are**', '- root `/r/`', '', lineage, NOTES])
-    ) + '\n\n' + 'n' * 4500
+        *FIT_HEAD, *MAE, *WHERE, lineage, *TAIL])) + '\n\n' + 'n' * 4500
     assert json.loads(mlflow.artifacts.load_text(
         f'{moved.info.artifact_uri}/data/splits.json'))['data'][11] == [
             'split-number-11', 11]
     assert shrunk.data.tags['mlflow.note.content'] == _sealed('\n'.join([
-        *head, lineage, NOTES])) + '\n\n' + 'n' * 4800
+        *FIT_HEAD, lineage[:-1] + ', `locations.json`, '
+        '`holdout/metrics.json`.', *TAIL])) + '\n\n' + 'n' * 4800
 
 
 def test_a_fit_that_registers_is_renamed_with_its_trials(tracking_uri):
@@ -908,8 +917,8 @@ def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
         model.model_id]
     assert [item.dataset.name for item in run.inputs.dataset_inputs] == [
         'snapshot']
-    assert run.data.tags['mlflow.note.content'].split('\n')[1] == (
-        'Model: bundle `bbbbbbbb`, trained by '
+    assert run.data.tags['mlflow.note.content'].split('\n')[3] == (
+        'Scores of bundle `bbbbbbbb`, trained by '
         f'[fit-churn-v3](#/experiments/{experiment}/runs/{fit}).')
 
 

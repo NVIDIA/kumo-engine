@@ -317,21 +317,20 @@ class SnowflakeTracking:
             self._log_table(table)
 
     def _log_card(self, record: RunRecord) -> None:
-        r"""Writes ``run_card.md``: the run's status line, the fit's query
-        or the prediction's model, its notes and brief tables, and its
+        r"""Writes ``run_card.md``: the run's heading and sentence, the
+        fit's query and holdout metrics, its notes and brief tables, and its
         files."""
         tags = record.tags
         kind = tags.get('kumo.kind', '')
         try:
-            intro = record.description if kind == 'fit' else _card.model_line(
-                tags.get('kumo.model_name'), tags.get('kumo.model_version'),
-                tags.get('kumo.bundle_id'), tags.get('kumo.fit_run_id'))
+            intro = _card.intro(kind, tags, record.params, record.description,
+                                tags.get('kumo.fit_run_id'))
             files = sorted(name for name in self._artifacts
                            if name.endswith('.json'))
             self._log_artifacts({_CARD_FILE: '\n'.join([
-                _card.headline(kind, self._values, tags, record.params,
-                               record.description),
-                *_card.body(intro, self._card, files)])})
+                *_card.heading(kind, self._values, tags),
+                *_card.body(intro, [*_card.holdout(kind, record.metrics, tags),
+                                    *self._card], files)])})
         except Exception as error:
             logger.warning('Could not write the card of Snowflake run %s: %s',
                            self.run_id, format_error(error))

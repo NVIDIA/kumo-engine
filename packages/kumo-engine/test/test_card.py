@@ -10,77 +10,94 @@ MODEL = {'kumo.model_name': 'kumo-demo-churn', 'kumo.model_version': '6'}
 QUERY = '`PREDICT COUNT(orders.*, 0, 7, days) > 0 FOR EACH users.USER_ID`'
 
 
-def test_a_fit_headline_leads_with_the_tuned_holdout_metric():
-    tags = {**MODEL, 'kumo.tune_metric': 'auroc', 'kumo.data_warnings': '2',
-            'kumo.task_type': 'binary_classification'}
-    params = {'training_job.num_experiments': '3'}
+def test_a_fit_heading_leads_with_the_tuned_holdout_metric():
+    tags = {**MODEL, 'kumo.tune_metric': 'auroc', 'kumo.data_warnings': '2'}
 
-    assert _card.headline('fit', {'test/auroc': 0.7871, 'test/ap': 0.5}, tags, params,
-                          QUERY) == (
-        'holdout auroc 0.787 · 2 data problems · v6 kumo-demo-churn · best '
-        'of 3 trials · binary classification of users')
-    assert _card.headline('fit', {'test/loss': 0.25}, {
+    assert _card.heading('fit', {'test/auroc': 0.7871, 'test/ap': 0.5},
+                         tags) == [
+        'holdout auroc 0.787, 2 data problems', '===']
+    assert _card.heading('fit', {'test/loss': 0.25}, {
         'kumo.tune_metric': 'loss', 'kumo.data_warnings': '0',
-        'kumo.error': 'ValueError: stop'}, {}) == (
-            'failed: ValueError: stop · holdout loss 0.25')
+        'kumo.error': 'ValueError: stop'})[0] == (
+            'failed: ValueError: stop, holdout loss 0.25')
 
 
-def test_a_prediction_headline_leads_with_its_watch_numbers():
+def test_a_prediction_heading_leads_with_its_watch_numbers():
     metrics = {'drift/psi': 0.031, 'pred/rows': 10000,
                'pred/skipped_share': 0.0125, 'realized/auroc': 0.7,
                'realized/labelled_share': 1.0}
     tags = {**MODEL, 'kumo.as_of': '2026-10-29', 'kumo.data_warnings': '1'}
 
-    assert _card.headline('prediction', metrics, tags, {}) == (
-        'realized auroc 0.7 · psi 0.031 vs training · 10,000 rows as of '
-        '2026-10-29 · 1.2% skipped · 1 data problem · v6 kumo-demo-churn')
+    assert _card.heading('prediction', metrics, tags)[0] == (
+        'realized auroc 0.7, psi 0.031 vs holdout (small shift), 10,000 rows '
+        'as of 2026-10-29, 1.2% skipped, 1 data problem')
     unlabelled = {name: value for name, value in metrics.items()
                   if not name.startswith('realized/')}
-    assert _card.headline('prediction', unlabelled, {
+    assert _card.heading('prediction', {**unlabelled, 'drift/psi': 0.3}, {
         **tags, 'kumo.entity': 'users',
-        'kumo.labels_mature': '2026-11-05'}, {}) == (
-        'psi 0.031 vs training · 10,000 users as of 2026-10-29 · labels '
-        'mature 2026-11-05 · 1.2% skipped · 1 data problem · v6 '
-        'kumo-demo-churn')
-    assert _card.headline('prediction', {}, {}, {}) == 'prediction'
-    long = _card.headline('prediction', {}, {'kumo.error': 'x' * 200}, {})
+        'kumo.labels_mature': '2026-11-05'})[0] == (
+        'psi 0.3 vs holdout (large shift), 10,000 users as of 2026-10-29, '
+        'labels mature 2026-11-05, 1.2% skipped, 1 data problem')
+    assert _card.heading('prediction', {}, {}) == ['prediction', '===']
+    long = _card.heading('prediction', {}, {'kumo.error': 'x' * 200})[0]
     assert len(long) == _card.HEADLINE_CHARS and long.endswith('x…')
+
+
+def test_a_fit_says_what_it_trained_and_where_its_numbers_come_from():
+    tags = {**MODEL, 'kumo.task_type': 'binary_classification',
+            'kumo.tune_metric': 'auroc', 'kumo.best_trial': '2',
+            'kumo.best_epoch': '4'}
+
+    assert _card.intro('fit', tags, {'training_job.num_experiments': '3'},
+                       QUERY) == (
+        'Fit of `kumo-demo-churn` v6 for binary classification of users; its '
+        'curves and holdout metrics are from trial 2 of 3, epoch 4, the best '
+        f'by val auroc.\n\n{QUERY}')
+    assert _card.intro('fit', {'kumo.best_epoch': '1'}, {}, None) == (
+        'Fit; its holdout metrics are from epoch 1, the best by val loss.')
 
 
 def test_the_body_holds_problems_tables_notes_and_locations():
     summaries = (
-        Note('problems', 'link `orders.ITEM_ID → items`: 14 % match'),
+        *_card.holdout('fit', {'test/ap': 0.5, 'test/auroc': 0.75,
+                               'val/auroc': 0.7},
+                       {'kumo.tune_metric': 'auroc'}),
         Note('problems', 'table `users`: 12 duplicate keys'),
         Table('data/splits', ('split', 'rows', 'positive rate'),
-              (('train', 26000, 0.498), ('val', 2000, 0.491),
-               ('test', 2000, None)), brief=True),
-        Table('pred/summary', ('column', 'mean', 'min'),
-              (('True_PROB', 0.4834, 0.012),), brief=True),
+              (('train', 26000, 0.498), ('test', 2000, None)), brief=True),
         Note('notes', 'bins are the test target quantiles'),
-        Note('locations', 'root `s3://bucket/root/`'),
-        Note('locations', 'bundle `models/abc/`'),
+        Table('locations', ('kind', 'id', 'location'), (
+            ('model', 'a' * 64, f"s3://bucket/root/models/{'a' * 64}"),
+            ('source_table', 'orders', '/data/orders')), brief=True),
     )
 
-    assert _card.body(QUERY, summaries, [
-        '_provenance.json', 'data/health.json']) == [
-        QUERY, '',
-        '**Problems:** link `orders.ITEM_ID → items`: 14 % match · table '
-        '`users`: 12 duplicate keys', '',
-        '**Training data:**\n\n| split | rows | positive rate |\n'
-        '| --- | ---: | ---: |\n| train | 26,000 | 0.498 |\n'
-        '| val | 2,000 | 0.491 |\n| test | 2,000 |  |', '',
-        '**Scores:** True_PROB: mean 0.483 · min 0.012', '',
-        '**Notes:** bins are the test target quantiles', '',
-        '**Where things are**', '- root `s3://bucket/root/`',
-        '- bundle `models/abc/`', '',
-        'Full lineage: `_provenance.json`. Tables: `data/health.json`.']
+    assert '\n'.join(_card.body('Fit.', summaries, [
+        '_provenance.json', 'data/health.json'])) == '\n'.join([
+        '', 'Fit.', '', '**Problems**', '',
+        '- table `users`: 12 duplicate keys', '', '**Holdout metrics**', '',
+        '| metric | value |', '| --- | ---: |', '| test/auroc | 0.75 |',
+        '| test/ap (average precision) | 0.5 |', '', '**Training data**', '',
+        '| split | rows | positive rate |', '| --- | ---: | ---: |',
+        '| train | 26,000 | 0.498 |', '| test | 2,000 |  |', '',
+        '**Notes**', '', '- bins are the test target quantiles', '',
+        '**Where things are**', '', '| Artifact | Location |',
+        '| --- | --- |',
+        f"| model bundle `aaaaaaaa` | [`s3://bucket/root/models/{'a' * 64}`]"
+        '(https://s3.console.aws.amazon.com/s3/buckets/bucket?prefix=root/'
+        f"models/{'a' * 64}/) |",
+        '| source table `orders` | `/data/orders` |', '',
+        'Full lineage: `_provenance.json`. Tables: `data/health.json`.'])
+    assert _card.holdout('prediction', {'test/ap': 0.5}, {}) == []
 
 
 def test_a_prediction_names_the_model_and_its_fit_run():
-    assert _card.model_line('churn', '6', 'b' * 64, 'v6-churn',
-                            '#/experiments/1/runs/r') == (
-        'Model: `churn` v6, trained by [v6-churn](#/experiments/1/runs/r).')
-    assert _card.model_line(None, None, 'b' * 64) == 'Model: bundle `bbbbbbbb`.'
+    assert _card.model_line(MODEL, 'v6-churn', '#/experiments/1/runs/r') == (
+        'Scores of `kumo-demo-churn` v6, trained by '
+        '[v6-churn](#/experiments/1/runs/r).')
+    assert _card.model_line({'kumo.kind': 'monitoring',
+                             'kumo.monitor': 'drift',
+                             'kumo.bundle_id': 'b' * 64}) == (
+        'Drift check of the scores of bundle `bbbbbbbb`.')
 
 
 def test_a_version_headline_leads_with_the_tuned_metric():
@@ -92,13 +109,13 @@ def test_a_version_headline_leads_with_the_tuned_metric():
         'test/map_at_10 0.125 · test/mae 0.25 · test/loss 0.5 · test/mse 1')
 
 
-def test_a_prediction_headline_leads_with_the_tuned_realized_metric():
+def test_a_prediction_heading_leads_with_the_tuned_realized_metric():
     metrics = {'realized/ap': 0.71, 'realized/auroc': 0.78}
 
-    assert _card.headline('prediction', metrics,
-                          {'kumo.tune_metric': 'auroc'}, {}) == (
+    assert _card.heading('prediction', metrics,
+                         {'kumo.tune_metric': 'auroc'})[0] == (
         'realized auroc 0.78')
-    assert _card.headline('prediction', metrics, {}, {}) == 'realized ap 0.71'
+    assert _card.heading('prediction', metrics, {})[0] == 'realized ap 0.71'
 
 
 def test_data_preparation_marks_a_snapshot_built_by_another_process(
@@ -120,8 +137,9 @@ def test_data_preparation_marks_a_snapshot_built_by_another_process(
             started_at='', finished_at='', seconds=12.5,
             disk_bytes=1024**3 // 2)))
 
-    assert _card.table_text(table) == (
-        '**Data preparation:** Graph snapshot (built earlier, reused): '
-        'time (s) 90 · disk (GiB) 3; Training table: time (s) 12.5 · '
-        'disk (GiB) 0.5')
+    assert _card.table_text(table) == '\n'.join([
+        '**Data preparation**', '', '| step | time (s) | disk (GiB) |',
+        '| --- | ---: | ---: |',
+        '| Graph snapshot (built earlier, reused) | 90 | 3 |',
+        '| Training table | 12.5 | 0.5 |'])
     assert _prep_cost.prep_summaries(SnapshotManifest(id='old')) == []
