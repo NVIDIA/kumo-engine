@@ -37,10 +37,8 @@ def headline(kind: str, metrics: Mapping[str, float], tags: Mapping[str, str],
         if realized:
             parts.append(f"realized {realized[0].partition('/')[2]} "
                          f'{number(metrics[realized[0]])}')
-        for key, label in (('drift/psi', 'psi'), ('drift/psi_approx', 'psi≈')):
-            if key in metrics:
-                parts.append(f'{label} {number(metrics[key])} vs training')
-                break
+        if 'drift/psi' in metrics:
+            parts.append(f"psi {number(metrics['drift/psi'])} vs training")
         if 'pred/rows' in metrics:
             as_of = tags.get('kumo.as_of')
             parts.append(f"{number(metrics['pred/rows'])} rows"

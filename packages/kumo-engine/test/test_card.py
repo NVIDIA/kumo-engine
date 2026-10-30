@@ -26,13 +26,13 @@ def test_a_fit_headline_leads_with_the_tuned_holdout_metric():
 
 
 def test_a_prediction_headline_leads_with_its_watch_numbers():
-    metrics = {'drift/psi_approx': 0.031, 'pred/rows': 10000,
+    metrics = {'drift/psi': 0.031, 'pred/rows': 10000,
                'pred/skipped_share': 0.0125, 'realized/auroc': 0.7,
                'realized/labelled_share': 1.0}
     tags = {**MODEL, 'kumo.as_of': '2026-10-29', 'kumo.data_warnings': '1'}
 
     assert _card.headline('prediction', metrics, tags, {}) == (
-        'realized auroc 0.7 · psi≈ 0.031 vs training · 10,000 rows as of '
+        'realized auroc 0.7 · psi 0.031 vs training · 10,000 rows as of '
         '2026-10-29 · 1.2% skipped · 1 data problem · v6 kumo-demo-churn')
     assert _card.headline('prediction', {}, {}, {}) == 'prediction'
     long = _card.headline('prediction', {}, {'kumo.error': 'x' * 200}, {})
