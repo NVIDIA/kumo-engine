@@ -27,6 +27,80 @@ For connector changes, start with the [public test command](public-tests.md).
 It builds its prerequisites and runs without cloud credentials. The
 [test matrix](../connector-test-matrix.md) lists coverage and CI limits.
 
+## Credential profiles
+
+The opt-in [profile registry and launcher](../../tools/ci_test_profiles.py)
+separate test selection from isolated execution. GCP profiles start pytest
+with an allowlisted environment and temporary credential/configuration
+directories. General and Snowflake profiles currently support only collection
+through this launcher: their remaining Azure and Databricks dependencies have
+not been partitioned, so isolated execution fails before setup rather than
+silently removing credentials and losing live coverage.
+
+| Profile | Credentials and ownership |
+| --- | --- |
+| `general` | Non-GCP selection; isolated launcher is collection-only during migration |
+| `snowflake` | Non-GCP selection with `--runsnowflake`; isolated launcher is collection-only during migration |
+| `gcp` | GCS/BigQuery tests with federated ADC; local storage for REST integration tests |
+| `gcp-aws` | BigQuery training integration test with federated ADC and the S3 dataplane |
+
+Run from the checkout root with its test dependencies installed:
+
+```bash
+.venv/bin/python -m tools.ci_test_profiles run gcp \
+  test/io_utils/fsutil/test_gcs.py -q
+.venv/bin/python -m tools.ci_test_profiles run gcp-aws
+```
+
+During migration, general and Snowflake execution uses pytest directly with
+the selection plugin, preserving the existing credential supply:
+
+```bash
+.venv/bin/python -m pytest -p tools.pytest_test_profiles \
+  --test-profile general test/connector/
+.venv/bin/python -m pytest -p tools.pytest_test_profiles \
+  --test-profile snowflake --runsnowflake test/connector/
+```
+
+These direct commands select tests but do not scrub the environment or isolate
+credential files. They are a transitional coverage-preserving path, not a
+claim that general and Snowflake processes already have minimal credentials.
+
+GCP execution requires an explicit `GOOGLE_APPLICATION_CREDENTIALS` file of
+type `external_account`; ambient user credentials and stored service-account
+keys do not activate these profiles. Set `GCP_TEST_SERVICE_ACCOUNT` and
+`GCP_PROJECT_ID` for identity-backed REST tests, plus
+`GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT` and
+`GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT` for BigQuery permission tests.
+Missing required credentials fail setup. The
+launcher copies ADC into its temporary directory and preserves its external
+token-source references, which must remain accessible for the run.
+
+The GCP-only runtime removes AWS secret fallback and uses a local artifact
+directory. The GCP+AWS profile retains S3 because the training test actually
+uses it. Credentials are prepared before worker startup; function-specific
+identity changes are restored during teardown. These profiles constrain
+credential inputs, not network access. Use the public Docker suites when
+network isolation is required.
+
+For a collection audit, `--manifest` saves the selected node IDs without
+running fixtures:
+
+```bash
+.venv/bin/python -m tools.ci_test_profiles run gcp \
+  --manifest /tmp/gcp-nodes.json --collect-only
+```
+
+For the unpartitioned baseline, run pytest over the same source revision and
+target scope with `-p tools.pytest_test_profiles --collect-only
+--test-profile-manifest` and no profile. Its output contains a
+`KUMO_TEST_PROFILE_MANIFEST=` JSON record. Compare its `nodeids` with the union
+of the `general`, `gcp`, and `gcp-aws` manifests, checking both missing nodes
+and overlaps. Audit the Snowflake mode separately with `--runsnowflake`;
+existing Snowflake skip rules are independent of GCP ownership. Collection
+still imports shared conftests and requires their dependencies. A collection
+manifest or local plugin test does not verify live provider access.
+
 ## Report evidence
 
 Record the command, environment, result, and any untested dependency. Keep

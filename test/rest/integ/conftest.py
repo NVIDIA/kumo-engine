@@ -234,7 +234,10 @@ def storage_backend(request):
 
 @pytest.fixture(scope="session")
 def _diskgraph_deploy_config(tmp_path_factory, storage_backend, request,
-                             temporal_workflow_env):
+                             temporal_workflow_env,
+                             configure_test_glove_artifacts,
+                             configure_profile_credentials,
+                             configure_gcs_session):
     """Load diskgraph JSON config, override storage root, and set
     DEPLOY_ENV_CONFIG_JSON so deploy_env() picks it up.
 

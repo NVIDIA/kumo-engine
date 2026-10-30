@@ -20,6 +20,7 @@ from kumo.connector.bigquery_connector import (
     ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH,
     ENV_GOOGLE_CREDENTIALS_JSON,
 )
+from tools.ci_test_profiles import TestProfile, profile_for
 
 DEFAULT_BIGQUERY_KEY = 'kumo-test-bigquery-service-account-key'
 FAIL_TABLE_PERMISSION_BIGQUERY_KEY = 'kumo-test-permission-fail-bigquery-service-account-key-2'
@@ -47,6 +48,11 @@ class CredentialKind(Enum):
     USER = 'authorized_user'
     IMPERSONATED = 'impersonated_service_account'
     KEY = 'service_account'
+
+
+def configured_profile() -> TestProfile | None:
+    name = os.environ.get('KUMO_TEST_PROFILE')
+    return profile_for(name) if name else None
 
 
 def credential_kind(path: str) -> CredentialKind:
@@ -83,11 +89,20 @@ def setup_bigquery_credentials(
             if previous is None:
                 environment.delenv(name)
 
-        path = (os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
-                or os.environ.get(ENV_GOOGLE_CREDENTIALS_JSON))
-        if not path and fsutil.exists(ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH):
+        profile = configured_profile()
+        profiled_gcp = profile is not None and 'gcp' in profile.capabilities
+        path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+        if profiled_gcp and not path:
+            raise RuntimeError('GCP test profiles require explicit '
+                               'GOOGLE_APPLICATION_CREDENTIALS')
+        if not profiled_gcp:
+            path = path or os.environ.get(ENV_GOOGLE_CREDENTIALS_JSON)
+        if (not profiled_gcp and not path
+                and fsutil.exists(ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH)):
             path = ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH
         kind = credential_kind(path) if path else None
+        if profiled_gcp and kind != CredentialKind.FEDERATED:
+            raise RuntimeError('GCP test profiles require external_account ADC')
         target_variable = _IMPERSONATION_ENV_BY_KEY.get(key)
         target = None
         if kind is not None and kind != CredentialKind.KEY and target_variable:
@@ -131,9 +146,42 @@ def setup_bigquery_credentials(
                 fsutil.rm(temporary_dir)
 
 
+@pytest.fixture(scope='session', autouse=True)
+def configure_profile_credentials():
+    """Prepare ADC before session resources and worker processes start."""
+    profile = configured_profile()
+    if profile is None or 'gcp' not in profile.capabilities:
+        yield
+        return
+    with setup_bigquery_credentials():
+        yield
+
+
+@pytest.fixture(autouse=True)
+def configure_bigquery_credentials(
+    request: pytest.FixtureRequest,
+    configure_profile_credentials,
+):
+    marker = request.node.get_closest_marker('bigquery_credentials')
+    if configured_profile() is None or marker is None:
+        yield
+        return
+    key, = marker.args
+    if key is not None and not isinstance(key, str):
+        raise TypeError('bigquery_credentials requires a string identity key')
+    with setup_bigquery_credentials(key):
+        yield
+
+
 def withBigQueryCredentials(func: Optional[Callable] = None,
                             service_account_key: Optional[str] = None):
     def decorator(inner_func: Callable):
+        marked = pytest.mark.requires_credentials('gcp')(
+            pytest.mark.bigquery_credentials(service_account_key)(inner_func))
+        if configured_profile() is not None:
+            return marked
+        # Temporary unprofiled path: existing workflows retain phase-one
+        # behavior until all invocations use the profile launcher.
         if asyncio.iscoroutinefunction(inner_func):
 
             async def async_wrapper(*args, **kwargs):
@@ -148,6 +196,6 @@ def withBigQueryCredentials(func: Optional[Callable] = None,
                     return inner_func(*args, **kwargs)
 
             wrapper = sync_wrapper
-        return functools.wraps(inner_func)(wrapper)
+        return functools.wraps(marked)(wrapper)
 
     return decorator if func is None else decorator(func)

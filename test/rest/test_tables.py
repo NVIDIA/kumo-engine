@@ -191,6 +191,7 @@ def _compare_stats(a: List[ColumnSummary], b: List[ColumnSummary]):
 
 
 @withBigQueryCredentials
+@pytest.mark.requires_credentials('gcp')
 def test_validate_size(client: TestClient):
     endpoint = "/v1/tables/validate"
 
