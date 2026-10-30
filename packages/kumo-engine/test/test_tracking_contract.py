@@ -633,7 +633,7 @@ def test_prediction_record_of_the_recorded_run():
                            'kumo.prediction_id': PREDICTION_RUN,
                            'kumo.bundle_id': BUNDLE,
                            'kumo.snapshot_id': 'g@d'}
-    assert record.description.startswith('Scores of unlabelled rows')
+    assert record.description is None
     assert record.inputs == INPUTS
     assert json.loads(record.artifacts[PROVENANCE_FILE]) == manifest.to_dict()
 
@@ -672,8 +672,6 @@ def test_prediction_run_is_named_and_tagged_after_its_registered_model():
     assert record.tags.items() >= {
         'kumo.model_name': 'churn', 'kumo.model_version': '3',
         'kumo.model_alias': 'champion', 'kumo.fit_run_id': 'r1'}.items()
-    assert record.description.endswith(
-        'Fit run: [r1](https://mlflow/#/runs/r1).')
 
 
 def test_adapter_records_the_same_prediction_run(adapter):

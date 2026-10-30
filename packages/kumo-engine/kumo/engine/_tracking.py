@@ -63,8 +63,8 @@ class RunRecord:
     histories, ``artifacts`` map file names to text, ``inputs`` map
     source table names to their ``connector``, ``location``, ``version`` and
     ``version_kind``, ``summaries`` are `kumo_core.summaries` results,
-    which each tracker logs in its own way, and ``description`` is Markdown
-    for trackers that describe runs."""
+    which each tracker logs in its own way, and ``description`` is the
+    Markdown line under line 1 of the run's card (a fit's query)."""
 
     name: Optional[str] = None
     params: Mapping[str, str] = field(default_factory=dict)
@@ -298,8 +298,6 @@ def prediction_record(manifest: 'PredictionManifest',
             summaries=(*_prediction_summaries(
                 manifest, holdout_counts(model_manifest)), *summaries),
             error=None if error is None else format_error(error),
-            description=_unlabelled(getattr(model_manifest, 'tracking',
-                                            None)),
         ))
 
 
@@ -347,16 +345,6 @@ def _started(manifest: 'PredictionManifest') -> datetime:
     timings = manifest.timings
     return (datetime.now(timezone.utc) if timings is None else
             datetime.fromisoformat(timings.started_at))
-
-
-def _unlabelled(fit: Optional['TrackingRef']) -> str:
-    text = ('Scores of unlabelled rows: this run records their distribution '
-            'and its drift from the holdout, not accuracy, which '
-            '`Trainer.evaluate` logs once the outcomes are known.')
-    if fit is None:
-        return text
-    link = f'[{fit.run_id}]({fit.url})' if fit.url else fit.run_id
-    return f'{text} Fit run: {link}.'
 
 
 def _prediction_summaries(manifest: 'PredictionManifest',

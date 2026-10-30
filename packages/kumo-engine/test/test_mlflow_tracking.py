@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import json
 import os
 import re
@@ -485,8 +486,6 @@ def test_prediction_run_nests_under_the_active_run(tracking_uri):
     assert client.get_experiment(top.info.experiment_id).name == 'scores'
     assert (top.info.run_name, top.info.status) == ('predict-20261021-0000',
                                                     'FINISHED')
-    assert top.data.tags['mlflow.note.content'].startswith(
-        'Scores of unlabelled rows')
 
 
 def test_link_prediction_metric_names_are_logged(tracking_uri):
@@ -658,3 +657,124 @@ def test_series_and_histograms_become_one_table_per_name_prefix(
     assert table('holdout/histogram/other') == {
         'columns': ['from', 'to', 'other', 'other cumulative share'],
         'data': [[None, 5.0, 2, 0.5], [5.0, None, 2, 1.0]]}
+
+
+NOTES = "Notes below this line are kept; edits above it stop kumo's updates."
+
+
+def _sealed(card):
+    digest = hashlib.sha256(card.encode()).hexdigest()[:16]
+    return f'{card}\n<!-- /kumo:card sha256={digest} -->'
+
+
+def _fit_with_a_card(tracker, summaries=(), note=None):
+    from kumo.engine._tracking import RunRecord
+
+    record = RunRecord(
+        name='r', tags={'kumo.kind': 'fit', 'kumo.tune_metric': 'mae',
+                        'kumo.task_type': 'regression'},
+        metrics={'mae': 0.25}, description=f'`{QUERY}`',
+        artifacts={PROVENANCE_FILE: '{}'}, summaries=summaries)
+    tracker.start(record)
+    if note is not None:
+        mlflow.MlflowClient().set_tag(tracker.run_id, 'mlflow.note.content',
+                                      note)
+    tracker.finish(record, None)
+    return mlflow.get_run(tracker.run_id)
+
+
+def test_a_fit_run_gets_a_card_before_the_users_notes(tracking_uri):
+    from kumo_core.summaries import Note, Table
+
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    run = _fit_with_a_card(MlflowTracking('e', log_system_metrics=False), (
+        Note('problems', 'table `ents`: 2 duplicate keys'),
+        Table('data/splits', ('split', 'rows'), (('train', 3),), brief=True),
+        Table('data/health', ('table', 'rows'), (('ents', 3),)),
+        Note('locations', 'root `/r/`')), note='Mine.')
+
+    assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
+        'mae 0.25 · regression of ents', f'`{QUERY}`', '',
+        '**Problems:** table `ents`: 2 duplicate keys', '',
+        '**Training data:** train: rows 3', '', '**Where things are**',
+        '- root `/r/`', '',
+        'Full lineage: `_provenance.json`. Tables: `data/health.json`.',
+        NOTES])) + '\n\nMine.'
+
+
+def test_an_edited_card_is_frozen_with_one_warning(tracking_uri):
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    tracker = MlflowTracking('e', log_system_metrics=False)
+    run = _fit_with_a_card(tracker)
+    client = mlflow.MlflowClient()
+    edited = run.data.tags['mlflow.note.content'].replace('0.25', '0.2')
+    client.set_tag(run.info.run_id, 'mlflow.note.content', edited)
+
+    with pytest.warns(UserWarning, match="run 'r' was edited above kumo's"):
+        tracker.update_card(run.info.run_id)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        tracker.update_card(run.info.run_id)
+    tags = client.get_run(run.info.run_id).data.tags
+    assert (tags['mlflow.note.content'], tags['kumo.card_frozen']) == (
+        edited, 'true')
+
+
+def test_monitoring_fills_its_part_of_a_prediction_card(tracking_uri):
+    from kumo_core.summaries import Note, Scalar
+
+    from kumo.engine._tracking import RunRecord
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    tracker = MlflowTracking('e', log_system_metrics=False)
+    record = RunRecord(name='p', tags={
+        'kumo.kind': 'prediction', 'kumo.as_of': '2026-10-29',
+        'kumo.bundle_id': 'b' * 64}, summaries=(Scalar('pred/rows', 50),))
+    tracker.log_prediction_run(record)
+    run_id = tracker.run_id
+    client = mlflow.MlflowClient()
+    card = client.get_run(run_id).data.tags['mlflow.note.content']
+    client.set_tag(run_id, 'mlflow.note.content', card + '\n\nMine.')
+    client.log_metric(run_id, 'drift/psi', 0.03)
+
+    tracker.update_card(run_id, 'drift', [Note('notes', 'psi 0.01 since')])
+
+    head = ['50 rows as of 2026-10-29', 'Model: bundle `bbbbbbbb`.', '',
+            'Full lineage: `_provenance.json`.', '']
+    assert card == _sealed('\n'.join([
+        *head, '<!-- kumo:drift --><!-- /kumo:drift -->',
+        '<!-- kumo:realized --><!-- /kumo:realized -->', NOTES]))
+    assert client.get_run(run_id).data.tags['mlflow.note.content'] == (
+        _sealed('\n'.join([
+            'psi 0.03 vs training · ' + head[0], *head[1:],
+            '<!-- kumo:drift -->', 'psi 0.01 since', '<!-- /kumo:drift -->',
+            '<!-- kumo:realized --><!-- /kumo:realized -->', NOTES]))
+        + '\n\nMine.')
+
+
+def test_a_card_over_its_budget_moves_tables_to_files_then_shrinks(
+        tracking_uri):
+    from kumo_core.summaries import Note, Table
+
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    summaries = (Table('data/splits', ('split', 'rows'), tuple(
+        (f'split-number-{i}', i) for i in range(12)), brief=True),
+        Note('locations', 'root `/r/`'))
+    tracker = MlflowTracking('e', log_system_metrics=False)
+    moved = _fit_with_a_card(tracker, summaries, note='n' * 4500)
+    shrunk = _fit_with_a_card(tracker, summaries, note='n' * 4800)
+
+    head = ['mae 0.25 · regression of ents', f'`{QUERY}`', '']
+    lineage = ('Full lineage: `_provenance.json`. Tables: '
+               '`data/splits.json`.')
+    assert moved.data.tags['mlflow.note.content'] == _sealed('\n'.join([
+        *head, '**Where things are**', '- root `/r/`', '', lineage, NOTES])
+    ) + '\n\n' + 'n' * 4500
+    assert json.loads(mlflow.artifacts.load_text(
+        f'{moved.info.artifact_uri}/data/splits.json'))['data'][11] == [
+            'split-number-11', 11]
+    assert shrunk.data.tags['mlflow.note.content'] == _sealed('\n'.join([
+        *head, lineage, NOTES])) + '\n\n' + 'n' * 4800

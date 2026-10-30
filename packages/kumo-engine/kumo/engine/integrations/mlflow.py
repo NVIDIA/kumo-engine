@@ -15,7 +15,7 @@ import threading
 import time
 import warnings
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -49,6 +49,7 @@ from kumo_core.summaries import (
 )
 from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
+from kumo.engine import _card
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
 from kumo.engine._tracking import (
@@ -359,8 +360,6 @@ class MlflowTracking:
             tags = dict(record.tags)
             if self._outer is not None:
                 tags['mlflow.parentRunId'] = self._outer
-            if record.description is not None:
-                tags['mlflow.note.content'] = record.description
             run = client.create_run(
                 experiment_id or '0',
                 run_name=(self.run_name if self.run_name
@@ -482,6 +481,7 @@ class MlflowTracking:
                                   model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
                 self._log_artifacts(record.artifacts)
+                self._write_card(record)
                 if error is None:
                     status = 'FINISHED'
         finally:
@@ -496,6 +496,138 @@ class MlflowTracking:
         hint = _sagemaker_ui_hint(self.target.tracking_uri)
         if fit_run and hint:
             warnings.warn(hint, UserWarning, stacklevel=2)
+
+    def update_card(self, run_id: str, block: Optional[str] = None,
+                    summaries: Sequence[Summary] = ()) -> None:
+        r"""Regenerates line 1 of run ``run_id``'s card from the run's
+        metrics and tags and, given ``block`` (``drift``, ``realized``),
+        replaces that part of the card with the notes and brief tables in
+        ``summaries``. A card the user edited is left as it is."""
+        self._client = self._client or self.target.client()
+        with self.target.scope():
+            run = self._client.get_run(run_id)
+        split = self._editable(run, first=False)
+        if split is None:
+            return
+        card, user = split
+        lines = card.split('\n')
+        kind = run.data.tags.get('kumo.kind', '')
+        query = lines[1].strip('`') if kind == 'fit' and len(lines) > 1 else None
+        lines[0] = _card.headline(kind, run.data.metrics, run.data.tags,
+                                  run.data.params, query)
+        card = '\n'.join(lines)
+        items = [s for s in summaries if isinstance(s, Note)
+                 or isinstance(s, Table) and s.brief]
+
+        def render(kept: Sequence[Summary], files: Sequence[str]) -> str:
+            return card if block is None else _with_block(
+                card, block, _card.block(kept))
+
+        def minimal(files: Sequence[str]) -> str:
+            return '\n'.join([*lines[:2], '', _card.files_line(files),
+                              _NOTES_LINE])
+
+        self._set_card(run, render, minimal, items, user, _budget(user))
+
+    def _write_card(self, record: RunRecord) -> None:
+        kind = record.tags.get('kumo.kind')
+        if kind not in ('fit', 'prediction'):
+            return
+        try:
+            with self.target.scope():
+                run = self._client.get_run(self._parent)
+            split = self._editable(run, first=True)
+            if split is None:
+                return
+            tags = run.data.tags
+            line = _card.headline(kind, run.data.metrics, tags,
+                                  run.data.params, record.description)
+            intro = (record.description if kind == 'fit' else
+                     self._model_line(tags))
+            blocks = ([_part(name, '') for name in _BLOCKS]
+                      if kind == 'prediction' else [])
+            tail = [*([''] + blocks if blocks else []), _NOTES_LINE]
+
+            def render(kept: Sequence[Summary], files: Sequence[str]) -> str:
+                return '\n'.join([line, *_card.body(intro, kept, files),
+                                  *tail])
+
+            def minimal(files: Sequence[str]) -> str:
+                return '\n'.join([line, *([intro] if intro else []), '',
+                                  _card.files_line(files), *tail])
+
+            user = split[1]
+            self._set_card(run, render, minimal, self._card, user,
+                           _budget(user) - (_BLOCK_BYTES if blocks else 0))
+        except Exception as error:
+            logger.warning('Could not write the description of MLflow run '
+                           '%s: %s', self._parent, format_error(error))
+
+    def _editable(self, run: Any, first: bool) -> Optional[Tuple[str, str]]:
+        r"""The run's card and the user's text after it, or `None` once the
+        user edited the card: then the run is tagged ``kumo.card_frozen``
+        and, the first time, a warning names it. Before kumo's first card,
+        any description is the user's."""
+        tags = run.data.tags
+        if tags.get('kumo.card_frozen') == 'true':
+            return None
+        description = tags.get('mlflow.note.content', '')
+        end = _CARD_END.search(description)
+        if end and _card_hash(description[:end.start()]) == end.group(1):
+            return description[:end.start()].rstrip('\n'), description[
+                end.end():]
+        if first and end is None:
+            return '', description and f'\n\n{description}'
+        with self.target.scope():
+            self._client.set_tag(run.info.run_id, 'kumo.card_frozen', 'true')
+        warnings.warn(
+            f'The description of MLflow run {run.info.run_name!r} was edited '
+            f"above kumo's card, so kumo no longer updates it. Notes after "
+            f"the card's last line are kept.", UserWarning, stacklevel=2)
+        return None
+
+    def _set_card(self, run: Any,
+                  render: Callable[[Sequence[Summary], Sequence[str]], str],
+                  minimal: Callable[[Sequence[str]], str],
+                  items: Sequence[Summary], user: str, budget: int) -> None:
+        r"""Writes the card ``render`` gives within ``budget`` bytes: moves
+        the largest brief table to a file until it fits, else writes the
+        ``minimal`` card."""
+        run_id = run.info.run_id
+        files = [entry['path'] for entry in json.loads(
+            run.data.tags.get('mlflow.loggedArtifacts', '[]'))]
+        kept = list(items)
+        while True:
+            card = render(kept, files)
+            tables = [item for item in kept if isinstance(item, Table)]
+            if _size(card) <= budget or not tables:
+                break
+            largest = max(tables, key=lambda t: len(_card.table_text(t)))
+            kept.remove(largest)
+            self._write_tables(run_id, [replace(largest, brief=False)])
+            files.append(f'{largest.name}.json')
+        if _size(card) > budget:
+            card = minimal(files)
+        with self.target.scope():
+            self._client.set_tag(run_id, 'mlflow.note.content',
+                                 _sealed(card) + user)
+
+    def _model_line(self, tags: Mapping[str, str]) -> str:
+        fit_id = tags.get('kumo.fit_run_id')
+        name = link = None
+        if fit_id:
+            try:
+                with self.target.scope():
+                    fit = self._client.get_run(fit_id).info
+                name = fit.run_name
+                link = (self.target.run_url(fit.experiment_id, fit_id)
+                        if self.platform == 'databricks' else
+                        f'#/experiments/{fit.experiment_id}/runs/{fit_id}')
+            except Exception:
+                logger.debug('No fit run %s', fit_id, exc_info=True)
+        return _card.model_line(tags.get('kumo.model_name'),
+                                tags.get('kumo.model_version'),
+                                tags.get('kumo.bundle_id'), name, link)
 
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         self._log_metrics(self._parent, metrics, step)
@@ -744,6 +876,51 @@ def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
              *(share[i] for share in shares))
             for i, (low, high) in enumerate(zip((None, *edges),
                                                 (*edges, None)))))
+
+
+_CARD_END = re.compile(r'<!-- /kumo:card sha256=([0-9a-f]{16}) -->')
+_NOTES_LINE = "Notes below this line are kept; edits above it stop kumo's updates."
+_BLOCKS = ('drift', 'realized')
+_BLOCK_BYTES = 800  # kept free at predict time for the monitoring parts
+
+
+def _card_hash(card: str) -> str:
+    r"""The first 16 hex digits of the SHA-256 of ``card``, with LF line
+    endings and each line's trailing whitespace stripped, so the editor
+    saving it unchanged keeps it."""
+    lines = card.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    text = '\n'.join(line.rstrip() for line in lines).strip('\n')
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _sealed(card: str) -> str:
+    return f'{card}\n<!-- /kumo:card sha256={_card_hash(card)} -->'
+
+
+def _size(card: str) -> int:
+    return len(_sealed(card).encode())
+
+
+def _budget(user: str) -> int:
+    r"""Bytes for the card: MLflow guarantees 5000 per tag value."""
+    return min(4500, 5000 - len(user.encode()))
+
+
+def _part(name: str, text: str) -> str:
+    return (f'<!-- kumo:{name} -->\n{text}\n<!-- /kumo:{name} -->' if text
+            else f'<!-- kumo:{name} --><!-- /kumo:{name} -->')
+
+
+def _with_block(card: str, name: str, text: str) -> str:
+    r"""``card`` with its ``kumo:<name>`` part holding ``text``, added
+    before the notes line if missing."""
+    part = _part(name, text)
+    existing = re.compile(f'<!-- kumo:{name} -->.*?<!-- /kumo:{name} -->',
+                          re.DOTALL)
+    if existing.search(card):
+        return existing.sub(lambda _: part, card, count=1)
+    head, notes, rest = card.rpartition(_NOTES_LINE)
+    return f'{head}{part}\n{notes}{rest}' if notes else f'{card}\n{part}'
 
 
 _SINKS: Dict[type, Callable[[MlflowTracking, Any], None]] = {
