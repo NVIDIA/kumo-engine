@@ -37,7 +37,7 @@ no learning-quality requirement. Source and package workflows remain separate.
 ## Finished Kumo Engine wheel
 
 After each manual or release build, `wheel-smoke` downloads the finished Linux
-x86_64 wheel from that run. It uses Python 3.12 and the existing T4 GPU runner.
+x86_64 wheel from that run. It uses Python 3.12 and the authorized RTX PRO 6000 runner.
 It does not rebuild the wheel. Failure blocks release attachment and Kitmaker
 publication. The macOS wheel has no GPU smoke check. The GPU job has a 22-minute
 limit.

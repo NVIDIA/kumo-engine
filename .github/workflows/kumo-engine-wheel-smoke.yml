@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   smoke:
-    runs-on: linux-amd64-gpu-t4-latest-1
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     timeout-minutes: 22
     environment:
       name: gha-kumo-workflow-tests
