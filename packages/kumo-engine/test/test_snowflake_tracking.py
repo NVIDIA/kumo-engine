@@ -14,7 +14,7 @@ from unittest import mock
 import _snowflake_experiment_fake
 import pytest
 from _snowflake_experiment_fake import FakeExperimentTracking, FakeSession
-from kumo_core.summaries import Note, Series, Table
+from kumo_core.summaries import Note, Scalar, Series, Table
 from kumoapi.model_plan import ModelPlan
 from kumoapi.plugin import PublishedModel
 from test_fit_events import table_and_snapshot  # noqa: F401
@@ -452,3 +452,43 @@ def test_a_full_experiment_is_not_tracked_into(fake, caplog):
         'this prediction run is not tracked; track into a new experiment, '
         "e.g. SnowflakeTracking(..., experiment_name='ents_2')")
     assert 'the prediction run is not tracked' in caplog.text
+
+
+@dataclass(frozen=True)
+class _Monitoring(_Named):
+    prediction_run: Optional[str] = None
+
+
+def _monitoring(monitor, prediction_run=None):
+    return _Monitoring(
+        tags={'kumo.kind': 'monitoring', 'kumo.monitor': monitor,
+              'kumo.as_of': '2026-10-29', 'kumo.model_name': 'churn',
+              'kumo.model_version': '6', 'kumo.bundle_id': 'b' * 64},
+        model_label='churn', prediction_run=prediction_run, summaries=(
+            Scalar('drift/psi_prev', 0.01),
+            Table('drift/features', ('table', 'column', 'psi'),
+                  (('orders', 'AMOUNT', 0.12),)),
+            Table('drift/input_changes', ('table', 'at training', 'now'),
+                  (('orders', 100, 104),), brief=True),
+            Note('notes', 'Labels mature 2026-11-05.')))
+
+
+def test_each_monitoring_call_is_a_run_named_after_its_prediction(fake):
+    tracking = _tracking()
+    tracking.log_monitoring(_monitoring('drift', 'AS_OF_20261029_V6_CHURN_2'))
+    tracking.log_monitoring(_monitoring('evaluate'))
+    tracking.log_monitoring(_monitoring('drift'))
+    tracking.log_monitoring(_monitoring('drift'))
+
+    assert list(fake._instance.runs) == [
+        'AS_OF_20261029_V6_CHURN_2_DRIFT', 'AS_OF_20261029_V6_CHURN_EVAL',
+        'AS_OF_20261029_V6_CHURN_DRIFT', 'AS_OF_20261029_V6_CHURN_DRIFT_2']
+    run = fake._instance.runs['AS_OF_20261029_V6_CHURN_2_DRIFT']
+    assert run['status'] == 'FINISHED'
+    assert ('drift/psi_prev', 0.01, 0) in run['metrics']
+    assert set(run['artifacts']) == {'drift/features.json', 'run_card.md'}
+    assert run['artifacts']['run_card.md'] == '\n'.join([
+        'v6 churn', 'Model: `churn` v6.', '',
+        '**Input changes:** orders: at training 100 · now 104', '',
+        '**Notes:** Labels mature 2026-11-05.', '',
+        'Full lineage: `_provenance.json`. Tables: `drift/features.json`.'])

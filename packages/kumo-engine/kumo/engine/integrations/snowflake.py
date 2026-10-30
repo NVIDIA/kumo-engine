@@ -71,8 +71,9 @@ class SnowflakeTracking:
     params. Snowflake has no dataset inputs, so a fit's
     source tables are not recorded as inputs. The Snowpark session's
     parameters are not changed. As ``kumo.MLOps(tracking=...)``, it also
-    records each prediction run and each monitoring call as one run named
-    after it; ``run_name`` and ``tags`` apply to fit runs only.
+    records each prediction run as one run, and each monitoring call as one
+    run named after the prediction run it checks, with ``_DRIFT`` or
+    ``_EVAL``; ``run_name`` and ``tags`` apply to fit runs only.
 
     Args:
         source: a ``SnowflakeConnector``, whose identity opens the session
@@ -445,18 +446,28 @@ def _snowflake_name(record: RunRecord, started: datetime) -> str:
     r"""``<MODEL>_FIT_<YYYYMMDD_HHMMSS>`` for a fit started at
     ``started``; ``AS_OF_<YYYYMMDD>_V<version>_<MODEL>`` for a prediction,
     ``AS_OF_<YYYYMMDD>_<MODEL>_<bundle id[:8]>`` if its model is not
-    registered, and ``AS_OF_<first>_<last>_...`` for several anchors."""
+    registered, and ``AS_OF_<first>_<last>_...`` for several anchors; for
+    a monitoring call, the name of the prediction run it checks with
+    ``_DRIFT`` or ``_EVAL``."""
     tags = record.tags
+    kind = tags.get('kumo.kind')
     model = (getattr(record, 'model_label', None) or 'model').replace('"', '')
-    if tags.get('kumo.kind') == 'fit':
-        parts = [model, 'FIT',
-                 started.astimezone(timezone.utc).strftime('%Y%m%d_%H%M%S')]
-    else:
-        version = tags.get('kumo.model_version')
-        parts = ['AS_OF',
-                 tags.get('kumo.as_of', '').replace('-', '').replace('..', '_'),
-                 *([f'V{version}' if version.isdigit() else version, model]
-                   if version else [model, tags.get('kumo.bundle_id', '')[:8]])]
+    if kind == 'fit':
+        return _identifier(
+            model, 'FIT',
+            started.astimezone(timezone.utc).strftime('%Y%m%d_%H%M%S'))
+    version = tags.get('kumo.model_version')
+    prediction = getattr(record, 'prediction_run', None) or _identifier(
+        'AS_OF', tags.get('kumo.as_of', '').replace('-', '').replace('..', '_'),
+        *([f'V{version}' if version.isdigit() else version, model]
+          if version else [model, tags.get('kumo.bundle_id', '')[:8]]))
+    if kind != 'monitoring':
+        return prediction
+    return _identifier(prediction, 'EVAL' if tags.get('kumo.monitor')
+                       == 'evaluate' else 'DRIFT')
+
+
+def _identifier(*parts: str) -> str:
     return _run_identifier('_'.join(filter(None, parts))).upper()
 
 
