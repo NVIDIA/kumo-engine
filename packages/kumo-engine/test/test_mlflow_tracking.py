@@ -513,7 +513,7 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
             'data': [['AMOUNT', 0.12]]}
     assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
         'realized map_at_10 0.5, psi 0.03 vs holdout (small shift), 50 rows '
-        'as of 2026-10-29', '===', '', 'Scores of bundle `bbbbbbbb`.', '',
+        'as of 2026-10-29', '', '', 'Scores of bundle `bbbbbbbb`.', '',
         'Full lineage: `_provenance.json`.', '',
         '<!-- kumo:drift -->', '', '**Table rows**', '',
         '| table | rows at training | rows now | change (%) |',
@@ -743,7 +743,7 @@ NOTES = "*Add notes below this line; edits above it stop kumo's updates.*"
 TAIL = ['', NOTES, '', '---']
 LOCATIONS = Table('locations', ('kind', 'id', 'location'),
                   (('model', 'm', '/r/m'),), brief=True)
-FIT_HEAD = ['holdout mae 0.25', '===', '', 'Fit for regression of ents.', '',
+FIT_HEAD = ['holdout mae 0.25', '', '', 'Fit for regression of ents.', '',
             f'`{QUERY}`', '']
 MAE = ['**Holdout metrics**', '', '| metric | value |', '| --- | ---: |',
        '| test/mae | 0.25 |', '']
@@ -829,7 +829,7 @@ def test_monitoring_fills_its_part_of_a_prediction_card(tracking_uri):
 
     tracker.update_card(run_id, 'drift', [Note('notes', 'psi 0.01 since')])
 
-    head = ['50 rows as of 2026-10-29', '===', '',
+    head = ['50 rows as of 2026-10-29', '', '',
             'Scores of bundle `bbbbbbbb`.', '',
             'Full lineage: `_provenance.json`.', '']
     assert card == _sealed('\n'.join([

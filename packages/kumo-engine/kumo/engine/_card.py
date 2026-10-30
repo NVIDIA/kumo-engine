@@ -74,9 +74,9 @@ def heading(kind: str, metrics: Mapping[str, float],
     problems = int(tags.get('kumo.data_warnings') or 0)
     if problems:
         parts.append(f"{problems} data problem{'s' * (problems > 1)}")
-    line = ', '.join(parts) or kind
+    line = ' '.join(', '.join(parts).split()) or kind
     return [line if len(line) <= HEADLINE_CHARS else
-            line[:HEADLINE_CHARS - 1] + '…', '===']
+            line[:HEADLINE_CHARS - 1] + '…', '']
 
 
 def intro(kind: str, tags: Mapping[str, str], params: Mapping[str, str],

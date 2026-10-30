@@ -15,10 +15,10 @@ def test_a_fit_heading_leads_with_the_tuned_holdout_metric():
 
     assert _card.heading('fit', {'test/auroc': 0.7871, 'test/ap': 0.5},
                          tags) == [
-        'holdout auroc 0.787, 2 data problems', '===']
+        'holdout auroc 0.787, 2 data problems', '']
     assert _card.heading('fit', {'test/loss': 0.25}, {
         'kumo.tune_metric': 'loss', 'kumo.data_warnings': '0',
-        'kumo.error': 'ValueError: stop'})[0] == (
+        'kumo.error': 'ValueError:\n  stop'})[0] == (
             'failed: ValueError: stop, holdout loss 0.25')
 
 
@@ -38,7 +38,7 @@ def test_a_prediction_heading_leads_with_its_watch_numbers():
         'kumo.labels_mature': '2026-11-05'})[0] == (
         'psi 0.3 vs holdout (large shift), 10,000 users as of 2026-10-29, '
         'labels mature 2026-11-05, 1.2% skipped, 1 data problem')
-    assert _card.heading('prediction', {}, {}) == ['prediction', '===']
+    assert _card.heading('prediction', {}, {}) == ['prediction', '']
     long = _card.heading('prediction', {}, {'kumo.error': 'x' * 200})[0]
     assert len(long) == _card.HEADLINE_CHARS and long.endswith('x…')
 

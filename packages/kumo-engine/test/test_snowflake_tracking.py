@@ -338,7 +338,7 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
 
     run, = fake._instance.runs.values()
     assert run['artifacts']['run_card.md'] == '\n'.join([
-        'holdout mae 0.32, 1 data problem', '===', '',
+        'holdout mae 0.32, 1 data problem', '', '',
         'Fit for regression of ents.', '', f'`{QUERY}`', '', '**Problems**',
         '', '- link `ents.ID → users`: 14 % of rows match', '',
         '**Holdout metrics**', '', '| metric | value |', '| --- | ---: |',
@@ -365,7 +365,7 @@ def test_a_prediction_run_names_its_model_and_lasts_as_long_as_it_ran(fake):
     run, = fake._instance.runs.values()
     assert run['params']['kumo.model'] == 'churn/3'
     assert run['artifacts']['run_card.md'] == (
-        '50 rows as of 2024-04-29\n===\n\n'
+        '50 rows as of 2024-04-29\n\n\n'
         'Scores of `churn` v3, trained by `FIT_CHURN_20261029_061800`.\n\n'
         'Full lineage: `_provenance.json`.')
     assert ('duration_seconds', 60.0, 0) in run['metrics']
@@ -486,7 +486,7 @@ def test_each_monitoring_call_is_a_run_named_like_its_prediction(fake):
     assert ('drift/psi_prev', 0.01, 0) in run['metrics']
     assert set(run['artifacts']) == {'drift/inputs/orders.json', 'run_card.md'}
     assert run['artifacts']['run_card.md'] == '\n'.join([
-        'as of 2026-10-29', '===', '',
+        'as of 2026-10-29', '', '',
         'Drift check of the scores of `churn` v6.', '', '**Table rows**', '',
         '| table | rows at training | rows now |', '| --- | ---: | ---: |',
         '| orders | 100 | 104 |', '', '**Notes**', '',
