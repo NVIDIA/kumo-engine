@@ -13,17 +13,22 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
+import numpy as np
 import pytest
 from kumo_core.artifacts import PROVENANCE_FILE
+from kumo_core.prediction_counts import count_predictions
+from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.summaries import (
     Confusion,
     Curve,
     Dataset,
     Histogram,
+    Note,
     Scalar,
     Series,
     Table,
 )
+from kumo_core.types import TaskType
 from kumoapi.plugin import PublishedModel
 
 from kumo.engine._manifest import (
@@ -111,6 +116,18 @@ RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
 
 
 PREDICTION_RUN = 'trainer-predict-1'
+SCORES = np.array([0.2] * 19 + [0.6] * 31)
+
+
+def _counted(scores):
+    counts = Counts({'score': PROBABILITY_EDGES})
+    count_predictions(counts, TaskType.BINARY_CLASSIFICATION,
+                      prob=np.stack([1 - scores, scores], axis=1),
+                      pred=scores > 0.4, target_pred=None,
+                      columns=['False_PROB', 'True_PROB'])
+    return counts.to_dict()
+
+
 PREDICTION_MANIFEST = PredictionManifest.from_dict({
     'kind': 'prediction',
     'schema_version': 1,
@@ -143,16 +160,7 @@ PREDICTION_MANIFEST = PredictionManifest.from_dict({
     'timings': {'started_at': '2026-10-21T00:00:00+00:00',
                 'finished_at': '2026-10-21T00:01:00+00:00'},
     'stats': {
-        'predictions': {
-            'rows': 50,
-            'columns': {
-                'True_PROB': {
-                    'count': 50,
-                    'percentiles': [q / 100 for q in range(1, 100)],
-                }
-            },
-            'predicted_positive_rate': 0.62,
-        },
+        'predictions': {'rows': 50},
     },
 })
 
@@ -594,7 +602,9 @@ def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch):
 
 
 def test_prediction_record_of_the_recorded_run():
-    record = prediction_record(PREDICTION_MANIFEST)
+    manifest = replace(PREDICTION_MANIFEST, stats={
+        'predictions': ArtifactStats(rows=50, counts=_counted(SCORES))})
+    record = prediction_record(manifest)
 
     assert record.name == 'predict-20261021-0000'
     assert record.params == {
@@ -605,9 +615,12 @@ def test_prediction_record_of_the_recorded_run():
     }
     assert record.metrics == {}
     assert record.summaries == (
-        Scalar('data/rows', 50), Scalar('data/predictions/rows', 50),
-        *(Scalar(f'pred/True_PROB/q{q:02d}', q / 100)
-          for q in (1, 5, 25, 50, 75, 95, 99)),
+        Scalar('pred/rows', 50),
+        Histogram('pred/histogram/True_PROB', PROBABILITY_EDGES, tuple(
+            np.bincount(np.searchsorted(PROBABILITY_EDGES, SCORES, 'right'),
+                        minlength=102).tolist())),
+        Table('pred/summary', ('column', 'mean', 'min', 'max'),
+              (('True_PROB', SCORES.sum() / 50, 0.2, 0.6),), brief=True),
         Scalar('pred/positive_rate', 0.62))
     assert record.tags == {'kumo.kind': 'prediction',
                            'kumo.engine_version': __version__,
@@ -616,8 +629,7 @@ def test_prediction_record_of_the_recorded_run():
                            'kumo.snapshot_id': 'g@d'}
     assert record.description.startswith('Scores of unlabelled rows')
     assert record.inputs == INPUTS
-    assert json.loads(record.artifacts[PROVENANCE_FILE]) == (
-        PREDICTION_MANIFEST.to_dict())
+    assert json.loads(record.artifacts[PROVENANCE_FILE]) == manifest.to_dict()
 
 
 def test_prediction_record_of_a_partial_manifest():
@@ -625,19 +637,19 @@ def test_prediction_record_of_a_partial_manifest():
         replace(PREDICTION_MANIFEST,
                 parents=PredictionParents(model=stub('model', BUNDLE),
                                           snapshot=stub('snapshot', 'g@d')),
+                prediction_table=replace(PREDICTION_MANIFEST.prediction_table,
+                                         requested_rows=55, skipped_rows=5,
+                                         skip_reason='no history'),
                 scoring=replace(PREDICTION_MANIFEST.scoring,
                                 num_classes_to_return=3),
-                stats={'predictions': ArtifactStats(rows=150, columns={
-                    'top_score': {'count': 150, 'percentiles': []}},
-                    predicted_positive_rate=0.5),
+                stats={'predictions': ArtifactStats(rows=150),
                        'embeddings': ArtifactStats(rows=150)}),
         RuntimeError('disk full'))
 
     assert record.params['num_classes_to_return'] == '3'
-    assert record.summaries == (Scalar('data/rows', 50),
-                                Scalar('data/predictions/rows', 150),
-                                Scalar('pred/positive_rate', 0.5),
-                                Scalar('data/embeddings/rows', 150))
+    assert record.summaries == (
+        Scalar('pred/rows', 50), Scalar('pred/skipped_share', 5 / 55),
+        Note('notes', '5 requested rows were not scored: no history.'))
     assert record.inputs == {}
     assert record.tags['kumo.error'] == 'RuntimeError: disk full'
 

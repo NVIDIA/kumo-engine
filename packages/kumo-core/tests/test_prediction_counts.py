@@ -1,22 +1,28 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-import math
+import json
 
 import numpy as np
 import pytest
+from kumo_core.evaluation_counts import (
+    baseline,
+    evaluation_counts,
+    top_score_counts,
+)
 from kumo_core.prediction_counts import (
     MAX_CLASS_HISTOGRAMS,
-    QUANTILES,
     count_predictions,
     count_recommendations,
+    count_top_scores,
     item_counts,
     load_counts,
     prediction_summaries,
     save_counts,
 )
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts, merged
-from kumo_core.summaries import Histogram, Scalar, Series, Table
+from kumo_core.score_drift import score_drift
+from kumo_core.summaries import Histogram, Note, Scalar, Series, Table
 from kumo_core.types import TaskType
 
 
@@ -42,21 +48,12 @@ def _batches(task_type, edges, columns, prob=None, pred=None, values=None):
 
 
 def _by_name(summaries):
-    return {summary.name: summary for summary in summaries}
+    return {summary.name: summary for summary in summaries
+            if not isinstance(summary, Note)}
 
 
-def _check_column(logged, prefix, values, edges):
-    assert logged[f'{prefix}/hist'] == Histogram(
-        f'{prefix}/hist', edges, _brute_histogram(values, edges))
-    assert logged[f'{prefix}/mean'].value == pytest.approx(values.mean())
-    assert logged[f'{prefix}/min'] == Scalar(f'{prefix}/min', values.min())
-    assert logged[f'{prefix}/max'] == Scalar(f'{prefix}/max', values.max())
-    edges = np.array(edges)
-    for q in QUANTILES:
-        exact = np.quantile(values, q / 100, method='inverted_cdf')
-        low = max([values.min(), *edges[edges <= exact]])
-        high = min([values.max(), *edges[edges > exact]])
-        assert low <= logged[f'{prefix}/q{q:02d}'].value <= high
+def _summary_row(column, values):
+    return (column, pytest.approx(values.mean()), values.min(), values.max())
 
 
 def test_binary_counts_match_brute_force():
@@ -70,19 +67,20 @@ def test_binary_counts_match_brute_force():
 
     logged = _by_name(prediction_summaries(counts, threshold=0.4,
                                            baseline=None))
-    assert sorted(logged) == sorted([
-        f'pred/{column}/{stat}' for column in ('False_PROB', 'True_PROB')
-        for stat in ('hist', 'mean', 'min', 'max', *(f'q{q:02d}'
-                                                     for q in QUANTILES))
-    ] + ['pred/positive_rate'])
-    _check_column(logged, 'pred/True_PROB', true, PROBABILITY_EDGES)
-    _check_column(logged, 'pred/False_PROB', 1 - true, PROBABILITY_EDGES)
+    assert sorted(logged) == ['pred/histogram/True_PROB', 'pred/positive_rate',
+                              'pred/summary']
+    assert logged['pred/histogram/True_PROB'] == Histogram(
+        'pred/histogram/True_PROB', PROBABILITY_EDGES,
+        _brute_histogram(true, PROBABILITY_EDGES))
+    summary = logged['pred/summary']
+    assert summary.brief and summary.columns == ('column', 'mean', 'min', 'max')
+    assert summary.rows == (_summary_row('True_PROB', true),)
     assert logged['pred/positive_rate'].value == pred.mean()
     assert 'pred/positive_rate' not in _by_name(
         prediction_summaries(counts, threshold=None, baseline=None))
 
 
-def test_multiclass_summarizes_the_most_predicted_classes():
+def test_multiclass_summarizes_each_class_and_the_most_predicted():
     rng = np.random.default_rng(1)
     prob = rng.dirichlet(np.arange(1, 26) / 5, size=400)
     columns = [f'c{index}_PROB' for index in range(25)]
@@ -93,17 +91,18 @@ def test_multiclass_summarizes_the_most_predicted_classes():
         prediction_summaries(counts, threshold=None, baseline=None))
     top = np.bincount(prob.argmax(axis=1), minlength=25)
     order = sorted(range(25), key=lambda index: -top[index])
-    assert {name.split('/')[1]
-            for name in logged if name.endswith('/hist')
-            } == {'confidence', *(columns[index] for index in order[:20])}
-    _check_column(logged, 'pred/confidence', prob.max(axis=1),
-                  PROBABILITY_EDGES)
-    _check_column(logged, f'pred/{columns[order[0]]}', prob[:, order[0]],
-                  PROBABILITY_EDGES)
-    assert logged['pred/classes'] == Table(
-        'pred/classes', ('class', 'rows', 'share'),
-        tuple((f'c{index}', int(top[index]), top[index] / 400)
-              for index in order))
+    assert [name for name in logged if name.startswith('pred/histogram/')] == [
+        'pred/histogram/confidence',
+        *(f'pred/histogram/{columns[index]}' for index in order[:20])]
+    assert logged['pred/histogram/confidence'].counts == _brute_histogram(
+        prob.max(axis=1), PROBABILITY_EDGES)
+    assert logged['pred/by_class'].columns == (
+        'class', 'share predicted', 'mean', 'min', 'max')
+    assert logged['pred/by_class'].rows == tuple(
+        (f'c{index}', top[index] / 400,
+         *_summary_row(None, prob[:, index])[1:]) for index in order)
+    assert logged['pred/summary'].rows == (
+        _summary_row('confidence', prob.max(axis=1)),)
 
 
 def test_many_classes_keep_only_their_tally_and_confidence():
@@ -117,11 +116,11 @@ def test_many_classes_keep_only_their_tally_and_confidence():
     assert set(counts.extents) == {'confidence'}
     logged = _by_name(prediction_summaries(counts, threshold=None,
                                            baseline=None))
-    assert [name for name in logged if name.endswith('/hist')] == [
-        'pred/confidence/hist']
+    assert [name for name in logged if name.startswith('pred/histogram/')
+            ] == ['pred/histogram/confidence']
     top = np.bincount(prob.argmax(axis=1), minlength=size)
-    assert logged['pred/classes'].rows[0] == (
-        str(top.argmax()), top.max(), top.max() / 300)
+    assert logged['pred/by_class'].rows[0] == (
+        str(top.argmax()), top.max() / 300, None, None, None)
 
 
 def test_regression_counts_on_the_target_bins_and_drift():
@@ -130,19 +129,22 @@ def test_regression_counts_on_the_target_bins_and_drift():
     edges = (0.0, 1.0, 1.5, 2.0, 3.0, 5.0)
     counts = _batches(TaskType.REGRESSION, {'target': edges}, [], values=values)
     holdout = rng.normal(1.5, 1.0, 300)
-    baseline = Counts({'target': edges})
-    baseline.histogram('TARGET_PRED', 'target', holdout)
+    reference = Counts({'target': edges})
+    reference.histogram('TARGET_PRED', 'target', holdout)
+    reference.extent('TARGET_PRED', holdout)
 
-    logged = _by_name(
-        prediction_summaries(counts, threshold=None, baseline=baseline))
-    _check_column(logged, 'pred', values, edges)
-    p = [count / 500 for count in _brute_histogram(values, edges)]
-    q = [count / 300 for count in _brute_histogram(holdout, edges)]
-    assert logged['drift/score_ks'].value == pytest.approx(
-        max(abs(sum(p[:i + 1]) - sum(q[:i + 1])) for i in range(len(p))))
-    p, q = ([max(share, 1e-6) for share in shares] for shares in (p, q))
-    assert logged['drift/score_psi'].value == pytest.approx(
-        sum((a - b) * math.log(a / b) for a, b in zip(p, q)))
+    summaries = prediction_summaries(counts, threshold=None,
+                                     baseline=reference)
+    logged = _by_name(summaries)
+    assert logged['pred/histogram/predicted'].counts == _brute_histogram(
+        values, edges)
+    assert logged['pred/summary'].rows == (_summary_row('predicted', values),)
+    assert {name: logged[f'drift/{name}'].value
+            for name in ('psi', 'ks', 'wasserstein')} == score_drift(
+                counts, reference)
+    assert summaries[-1] == Note(
+        'notes', "Drift compares `predicted` with the holdout over the "
+        "training target's 7 bins; PSI groups them at the holdout's deciles.")
     other = Counts({'target': (0.0, 1.0)})
     other.histogram('TARGET_PRED', 'target', holdout)
     assert not any(
@@ -150,26 +152,31 @@ def test_regression_counts_on_the_target_bins_and_drift():
             prediction_summaries(counts, threshold=None, baseline=other)))
 
 
-def test_class_names_are_safe_metric_names():
+def test_class_names_are_safe_column_names():
     prob = np.array([[0.7, 0.3], [0.4, 0.6]])
     counts = _batches(TaskType.MULTICLASS_CLASSIFICATION,
                       {'score': PROBABILITY_EDGES}, ['a/b_PROB', 'c@d_PROB'],
                       prob=prob)
 
     names = {name for name in _by_name(prediction_summaries(
-        counts, threshold=None, baseline=None)) if name.endswith('/hist')}
-    assert names == {'pred/confidence/hist', 'pred/a_b_PROB/hist',
-                     'pred/c_d_PROB/hist'}
+        counts, threshold=None, baseline=None))
+        if name.startswith('pred/histogram/')}
+    assert names == {'pred/histogram/confidence', 'pred/histogram/a_b_PROB',
+                     'pred/histogram/c@d_PROB'}
 
 
 @pytest.mark.parametrize('steps', [3, 30])
-def test_forecasts_count_each_kept_horizon_on_the_target_bins(steps):
+def test_forecasts_count_each_kept_horizon_and_drift_from_the_holdout(steps):
     from kumo_core.evaluation_counts import _horizons
 
     rng = np.random.default_rng(4)
     values = rng.normal(size=40 * steps)
     horizon = np.tile(np.arange(steps), 40)
-    edges = (-1.0, 0.0, 1.0)
+    holdout = baseline(evaluation_counts(
+        TaskType.FORECASTING, pred=values[::-1], target=values,
+        target_edges=(-1.0, 0.0, 1.0), horizon=horizon))
+    holdout = Counts.from_dict(json.loads(json.dumps(holdout.to_dict())))
+    edges = holdout.edges['target']
     parts = []
     for part in np.array_split(np.arange(40), 4):
         rows = np.concatenate([np.arange(i * steps, (i + 1) * steps)
@@ -181,80 +188,84 @@ def test_forecasts_count_each_kept_horizon_on_the_target_bins(steps):
         parts.append(counts)
 
     logged = _by_name(prediction_summaries(merged(parts), threshold=None,
-                                           baseline=None))
+                                           baseline=holdout))
     kept = _horizons(steps)
     assert len(kept) == min(steps, 12)
-    assert [name for name in logged if name.endswith('/hist')] == [
-        'pred/hist', *(f'pred/h{h + 1}/hist' for h in kept)]
+    assert [name for name in logged if name.startswith('pred/histogram/')] == [
+        'pred/histogram/predicted',
+        *(f'pred/histogram/predicted, horizon {h + 1}' for h in kept)]
     for h in kept:
-        assert logged[f'pred/h{h + 1}/hist'].counts == _brute_histogram(
-            values[horizon == h], edges)
-    _check_column(logged, 'pred', values, edges)
+        assert logged[f'pred/histogram/predicted, horizon {h + 1}'].counts == \
+            _brute_histogram(values[horizon == h], edges)
+    assert logged['drift/psi'].value == pytest.approx(0.0)
 
 
-def test_a_quantile_at_a_bin_edge_stays_in_the_bin_that_reaches_it():
-    values = np.array([0.105] * 99 + [0.505])
-    counts = Counts({'score': PROBABILITY_EDGES})
-    count_predictions(counts, TaskType.BINARY_CLASSIFICATION,
-                      prob=np.stack([1 - values, values], axis=1),
-                      pred=values > 0.5, target_pred=None,
-                      columns=['False_PROB', 'True_PROB'])
-
-    logged = _by_name(prediction_summaries(counts, threshold=None,
-                                           baseline=None))
-    _check_column(logged, 'pred/True_PROB', values, PROBABILITY_EDGES)
-    assert logged['pred/True_PROB/q99'].value == pytest.approx(0.11)
-
-
-def test_multilabel_counts_each_labels_predicted_rows():
+def test_multilabel_counts_each_labels_predicted_rows_and_top_score():
     rng = np.random.default_rng(5)
     prob = rng.random((300, 25)) * np.linspace(0.2, 1.0, 25)
     pred = prob > 0.5
     columns = [f'l{index}_PROB' for index in range(25)]
     counts = _batches(TaskType.MULTILABEL_CLASSIFICATION,
-                      {'score': PROBABILITY_EDGES}, columns, prob=prob,
+                      {'score': PROBABILITY_EDGES,
+                       'top_score': PROBABILITY_EDGES}, columns, prob=prob,
                       pred=pred)
 
     logged = _by_name(prediction_summaries(counts, threshold=None,
                                            baseline=None))
     positives = pred.sum(axis=0)
-    top = sorted(range(25), key=lambda index: -positives[index])[:20]
-    assert {name.split('/')[1] for name in logged if name.endswith('/hist')
-            } == {columns[index] for index in top}
-    _check_column(logged, f'pred/{columns[top[0]]}', prob[:, top[0]],
-                  PROBABILITY_EDGES)
+    order = sorted(range(25), key=lambda index: -positives[index])
+    assert [name for name in logged if name.startswith('pred/histogram/')] == [
+        'pred/histogram/top score',
+        *(f'pred/histogram/{columns[index]}' for index in order[:20])]
+    assert logged['pred/histogram/top score'].counts == _brute_histogram(
+        prob.max(axis=1), PROBABILITY_EDGES)
+    assert logged['pred/summary'].rows == (
+        _summary_row('top score', prob.max(axis=1)),)
+    assert [row[:2] for row in logged['pred/by_class'].rows] == [
+        (f'l{index}', positives[index] / 300) for index in order]
     per_row = np.bincount(pred.sum(axis=1))
-    assert logged['pred/labels_per_entity'] == Series(
-        'pred/labels_per_entity',
-        tuple((k, float(rows)) for k, rows in enumerate(per_row)), 'labels')
-    assert {name: summary.value for name, summary in logged.items()
-            if name.startswith('pred/label/')} == {
-        f'pred/label/l{index}/share': positives[index] / 300
-        for index in top}
+    assert logged['pred/by_label_count/entities'] == Series(
+        'pred/by_label_count/entities',
+        tuple((k, float(rows)) for k, rows in enumerate(per_row) if rows),
+        'labels')
 
 
-def test_recommendations_count_items_exactly_across_saved_workers(tmp_path):
+def test_recommendations_count_items_and_top_scores_across_workers(tmp_path):
     rng = np.random.default_rng(6)
     catalogue = 1000
     items = np.minimum(rng.zipf(1.5, size=(500, 5)) - 1, catalogue)
     items[::7, -1] = -1
+    scores = rng.normal(size=500)
+    holdout = top_score_counts(rng.normal(size=300))
     parts = []
     for worker, rows in enumerate(np.array_split(np.arange(500), 3)):
-        counts = Counts({})
+        counts = Counts({'top_score': holdout.edges['top_score']})
         for batch in np.array_split(rows, 4):
             count_recommendations(counts, items[batch], catalogue)
+            count_top_scores(counts, scores[batch])
         save_counts(counts, tmp_path / f'{worker}.json')
         parts.append(load_counts(tmp_path / f'{worker}.json'))
     assert {path.suffix for path in tmp_path.iterdir()} == {'.json', '.npy'}
 
-    logged = _by_name(prediction_summaries(item_counts(merged(parts)),
-                                           threshold=None, baseline=None))
+    total = item_counts(merged(parts))
+    logged = _by_name(prediction_summaries(total, threshold=None,
+                                           baseline=holdout))
     valid = items[(items >= 0) & (items < catalogue)]
     per_item = np.bincount(valid, minlength=catalogue)
-    edges = tuple(2.0**power for power in range(
-        int(np.log2(per_item.max())) + 1))
-    assert logged['pred/item_frequency/hist'] == Histogram(
-        'pred/item_frequency/hist', edges, _brute_histogram(per_item, edges))
+    bounds = [0, *(2**power for power in range(
+        int(np.log2(per_item.max())) + 1)), per_item.max() + 1]
+    assert logged['pred/item_frequency'] == Table(
+        'pred/item_frequency',
+        ('times recommended', 'items', 'share of recommendations'),
+        tuple((str(low) if high - 1 <= low else f'{low}–{high - 1}',
+               int(np.sum((per_item >= low) & (per_item < high))),
+               pytest.approx(per_item[(per_item >= low) & (per_item < high)]
+                             .sum() / valid.size))
+              for low, high in zip(bounds, bounds[1:])))
     assert logged['pred/item_coverage'].value == np.unique(valid).size / 1000
-    assert logged['pred/top1pct_share'].value == pytest.approx(
+    assert logged['pred/top_1pct_items_share'].value == pytest.approx(
         np.sort(per_item)[-10:].sum() / valid.size)
+    assert logged['pred/histogram/top score'].counts == _brute_histogram(
+        scores, holdout.edges['top_score'])
+    assert logged['drift/ks'] == Scalar(
+        'drift/ks', score_drift(total, holdout)['ks'])

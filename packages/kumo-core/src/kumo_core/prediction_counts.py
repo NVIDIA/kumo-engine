@@ -4,34 +4,34 @@
 r"""Exact counts of a prediction run's scores, and the summaries a tracker
 logs from them.
 
-Each probability column (``False_PROB`` and ``True_PROB``; each class's,
-for at most `MAX_CLASS_HISTOGRAMS` classes; and ``confidence``, the top
-class's probability) is counted on the ``score`` axis, and ``TARGET_PRED``
-on the ``target`` axis, the training target's bins: a column ``c`` has the
-counts ``c``, the sum ``c/sum`` and the extent ``c``. ``classes`` tallies
-each row's top class, ``predicted_positive`` the rows ``TARGET_PRED``
-labels positive, ``label_positive`` the rows predicting each label,
-``predicted_labels`` the rows per number of predicted labels and ``items``
-each catalogue item's recommendations.
+Each probability column (``True_PROB``; each class's, for at most
+`MAX_CLASS_HISTOGRAMS` classes; and ``confidence``, the top class's
+probability) is counted on the ``score`` axis, ``TARGET_PRED`` on the
+``target`` axis, the training target's bins, and each entity's top score,
+when the holdout counted it, on its ``top_score`` axis: a column ``c`` has
+the counts ``c``, the sum ``c/sum`` and the extent ``c``. ``classes``
+tallies each row's top class, ``predicted_positive`` the rows
+``TARGET_PRED`` labels positive, ``label_positive`` the rows predicting each
+label, ``predicted_labels`` the rows per number of predicted labels and
+``items`` each catalogue item's recommendations.
 """
 
 import json
 import math
-import re
 from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
 import numpy as np
-from kumo_core.evaluation_counts import _horizons
-from kumo_core.score_counts import Counts
-from kumo_core.summaries import Scalar, Series, Summary, Table
+from kumo_core.evaluation_counts import _horizons, horizon_label
+from kumo_core.score_counts import PROBABILITY_EDGES, Counts
+from kumo_core.score_drift import axis, drift_column, score_drift
+from kumo_core.summaries import Note, Scalar, Series, Summary, Table
 from kumo_core.types import TaskType
 
-QUANTILES = (1, 5, 25, 50, 75, 95, 99)
 TOP_CLASSES = 20
 ITEMS = 'items'
 MAX_CLASS_HISTOGRAMS = 100
-_EPSILON = 1e-6
+_SCORES = ('confidence', 'top_score', 'TARGET_PRED')
 
 
 def count_predictions(counts: Counts, task_type: TaskType, *, prob: Any,
@@ -60,12 +60,21 @@ def count_predictions(counts: Counts, task_type: TaskType, *, prob: Any,
         counts.tally('label_positive', np.nonzero(positive)[1], prob.shape[1])
         counts.tally('predicted_labels', positive.sum(axis=1),
                      prob.shape[1] + 1)
+        count_top_scores(counts, prob.max(axis=1))
     else:
         counts.tally('classes', prob.argmax(axis=1), prob.shape[1])
         _column(counts, 'confidence', 'score', prob.max(axis=1))
     if len(columns) <= MAX_CLASS_HISTOGRAMS:
         for index, name in enumerate(columns):
-            _column(counts, name, 'score', prob[:, index])
+            if name != 'False_PROB':
+                _column(counts, name, 'score', prob[:, index])
+
+
+def count_top_scores(counts: Counts, scores: Any) -> None:
+    r"""Adds each entity's top score of one batch, if ``counts`` has the
+    holdout's ``top_score`` bins."""
+    if 'top_score' in counts.edges:
+        _column(counts, 'top_score', 'top_score', scores)
 
 
 def count_recommendations(counts: Counts, items: Any, catalogue: int) -> None:
@@ -79,10 +88,11 @@ def count_recommendations(counts: Counts, items: Any, catalogue: int) -> None:
 def item_counts(counts: Counts) -> Counts:
     r"""``counts`` with its ``items`` tally replaced by what is logged of
     it, which is as small for any catalogue: ``item_frequency``, items per
-    number of recommendations on powers of two, and the totals
-    ``catalogue``, ``items_recommended``, ``recommendations`` and
-    ``top1pct_recommendations``, those of the most recommended 1% of
-    items."""
+    number of recommendations on powers of two, and ``item_frequency/sum``,
+    their recommendations; and the totals ``catalogue``,
+    ``items_recommended``, ``recommendations``, ``most_recommendations``,
+    those of the most recommended item, and ``top1pct_recommendations``,
+    those of the most recommended 1% of items."""
     arrays = dict(counts.arrays)
     tally = arrays.pop(ITEMS)
     top = max(1, math.ceil(tally.size / 100))
@@ -91,9 +101,12 @@ def item_counts(counts: Counts) -> Counts:
     summary = Counts({**counts.edges, 'recommendations': edges}, arrays,
                      dict(counts.extents))
     summary.histogram('item_frequency', 'recommendations', tally)
+    summary.histogram('item_frequency/sum', 'recommendations', tally,
+                      weights=tally)
     for name, value in (('catalogue', tally.size),
                         ('items_recommended', np.count_nonzero(tally)),
                         ('recommendations', tally.sum()),
+                        ('most_recommendations', tally.max(initial=0)),
                         ('top1pct_recommendations',
                          np.partition(tally, tally.size - top)[-top:].sum()
                          if tally.size else 0)):
@@ -128,172 +141,123 @@ def _column(counts: Counts, name: str, axis: str, values: Any) -> None:
 
 def prediction_summaries(counts: Counts, *, threshold: Optional[float],
                          baseline: Optional[Counts]) -> List[Summary]:
-    r"""``pred/<column>/hist`` and its ``mean``, ``min``, ``max`` and
-    quantiles (``pred/...`` for ``TARGET_PRED``) for each column, of only
-    the `TOP_CLASSES` most predicted classes; ``pred/positive_rate`` at a
-    binary ``threshold``; ``pred/h<step>/hist`` per forecast horizon;
-    ``pred/classes``, each class's rows and share; for labels,
-    ``pred/labels_per_entity``, rows per number of predicted labels, and
-    ``pred/label/<label>/share``, the rows predicting each top label; for
-    recommendations, ``pred/item_frequency/hist``, ``pred/item_coverage``
-    and ``pred/top1pct_share``;
-    and ``drift/score_psi`` and ``drift/score_ks`` against ``baseline``,
-    the training holdout's counts."""
-    columns = list(counts.extents)
+    r"""``pred/histogram`` of each score column, of only the `TOP_CLASSES`
+    most predicted classes, and of each forecast horizon; ``pred/summary``,
+    the mean, minimum and maximum of the score that drift is measured on;
+    ``pred/positive_rate`` at a binary ``threshold``; ``pred/by_class``
+    and, for labels, ``pred/by_label_count``; for recommendations,
+    ``pred/item_frequency``, ``pred/item_coverage`` and
+    ``pred/top_1pct_items_share``; and ``drift/psi``, ``drift/ks`` and
+    ``drift/wasserstein`` against ``baseline``, the training holdout's
+    counts, when it counted the same score on the same bins."""
+    summaries: List[Summary] = []
+    scores = [name for name in counts.extents if name in _SCORES]
+    columns = [name for name in counts.extents if name not in _SCORES]
     ranked = next((name for name in ('classes', 'label_positive')
                    if name in counts.arrays), None)
     if ranked is not None:
-        tally = counts.arrays[ranked]
-        labels = [name for name in columns if name != 'confidence']
-        top = np.argsort(-tally, kind='stable')
-        columns = [
-            *(name for name in columns if name == 'confidence'),
-            *(labels[i] for i in top[:TOP_CLASSES] if labels)
-        ]
-    summaries = [
-        summary for name in columns
-        for summary in _column_summaries(counts, name)
-    ]
-    if threshold is not None and 'predicted_positive' in counts.arrays:
-        summaries.append(
-            Scalar(
-                'pred/positive_rate',
-                float(counts.arrays['predicted_positive'] /
-                      counts.arrays['True_PROB'].sum())))
+        order = np.argsort(-counts.arrays[ranked], kind='stable').tolist()
+        summaries.append(_by_class(counts, ranked, order, columns))
+        columns = [columns[i] for i in order[:TOP_CLASSES] if columns]
     summaries += [
-        counts.summary(name, 'target',
-                       f"pred/{name.removeprefix('TARGET_PRED_')}/hist")
+        counts.summary(name, axis(name), f'pred/histogram/{_label(name)}')
+        for name in (*scores, *columns)
+    ]
+    summaries += [
+        counts.summary(name, 'target', 'pred/histogram/predicted, ' +
+                       horizon_label(int(name.removeprefix('TARGET_PRED_h'))
+                                     - 1))
         for name in counts.arrays if name.startswith('TARGET_PRED_h')
     ]
-    if ranked == 'classes':
-        summaries.append(_class_shares(tally, top, labels))
+    score = drift_column(counts)
+    if score is not None and score in counts.extents:
+        low, high = counts.extents[score]
+        summaries.append(Table(
+            'pred/summary', ('column', 'mean', 'min', 'max'),
+            ((_label(score), float(counts.arrays[f'{score}/sum'] /
+                                   counts.arrays[score].sum()), low, high),),
+            brief=True))
+    if threshold is not None and 'predicted_positive' in counts.arrays:
+        summaries.append(Scalar(
+            'pred/positive_rate', float(counts.arrays['predicted_positive'] /
+                                        counts.arrays['True_PROB'].sum())))
     if ranked == 'label_positive':
-        summaries += _label_summaries(counts, top[:TOP_CLASSES], labels)
+        per_row = counts.arrays['predicted_labels']
+        summaries.append(Series(
+            'pred/by_label_count/entities',
+            tuple((int(n), float(per_row[n])) for n in np.flatnonzero(per_row)),
+            'labels'))
     if 'item_frequency' in counts.arrays:
         summaries += _item_summaries(counts)
-    score = next((name for name in ('True_PROB', 'confidence', 'TARGET_PRED')
-                  if name in counts.extents), None)
-    if score is not None and baseline is not None:
-        summaries += _drift(counts, baseline, score)
+    drift = None if baseline is None else score_drift(counts, baseline)
+    if drift is not None:
+        summaries += [Scalar(f'drift/{name}', value)
+                      for name, value in drift.items()]
+        summaries.append(Note('notes', _drift_note(counts, score)))
     return summaries
 
 
-def _class_shares(tally: np.ndarray, order: Sequence[int],
-                  labels: Sequence[str]) -> Table:
+def _by_class(counts: Counts, ranked: str, order: Sequence[int],
+              columns: Sequence[str]) -> Table:
+    r"""Each class's or label's share of the rows predicting it, and the
+    mean, minimum and maximum of its probability, if counted."""
+    tally = counts.arrays[ranked]
+    rows = (tally.sum() if ranked == 'classes' else
+            counts.arrays['predicted_labels'].sum())
+
+    def stats(name: Optional[str]) -> tuple:
+        if name is None:
+            return (None, None, None)
+        low, high = counts.extents[name]
+        return (float(counts.arrays[f'{name}/sum'] /
+                      counts.arrays[name].sum()), low, high)
+
+    label = 'class' if ranked == 'classes' else 'label'
     return Table(
-        'pred/classes', ('class', 'rows', 'share'),
-        tuple((labels[i].removesuffix('_PROB') if labels else str(i),
-               int(tally[i]), tally[i] / tally.sum()) for i in order))
-
-
-def _label_summaries(counts: Counts, top: Sequence[int],
-                     labels: Sequence[str]) -> List[Summary]:
-    per_row = counts.arrays['predicted_labels']
-    rows = per_row.sum()
-    last = int(np.flatnonzero(per_row).max()) if rows else 0
-    names = [_metric_part(labels[i].removesuffix('_PROB')) if labels else
-             str(i) for i in top]
-    return [
-        Series('pred/labels_per_entity',
-               tuple((k, float(per_row[k])) for k in range(last + 1)),
-               'labels'),
-        *(Scalar(f'pred/label/{name}/share',
-                 float(counts.arrays['label_positive'][i] / rows))
-          for name, i in zip(names, top)),
-    ]
+        'pred/by_class', (label, 'share predicted', 'mean', 'min', 'max'),
+        tuple((columns[i].removesuffix('_PROB') if columns else str(i),
+               float(tally[i] / rows) if rows else 0.0,
+               *stats(columns[i] if columns else None)) for i in order))
 
 
 def _item_summaries(counts: Counts) -> List[Summary]:
-    total = {name: float(counts.arrays[name])
+    arrays = counts.arrays
+    total = {name: float(arrays[name])
              for name in ('catalogue', 'items_recommended', 'recommendations',
-                          'top1pct_recommendations')}
+                          'most_recommendations', 'top1pct_recommendations')}
+    edges = counts.edges['recommendations']
+    bounds = [0, *(int(edge) for edge in edges),
+              int(total['most_recommendations']) + 1]
     return [
-        counts.summary('item_frequency', 'recommendations',
-                       'pred/item_frequency/hist'),
+        Table('pred/item_frequency',
+              ('times recommended', 'items', 'share of recommendations'),
+              tuple((_range(bounds[b], bounds[b + 1] - 1),
+                     int(arrays['item_frequency'][b]),
+                     float(arrays['item_frequency/sum'][b] /
+                           max(total['recommendations'], 1)))
+                    for b in range(len(edges) + 1))),
         Scalar('pred/item_coverage',
                total['items_recommended'] / max(total['catalogue'], 1)),
-        Scalar('pred/top1pct_share', total['top1pct_recommendations'] /
+        Scalar('pred/top_1pct_items_share', total['top1pct_recommendations'] /
                max(total['recommendations'], 1)),
     ]
 
 
-def _drift(counts: Counts, baseline: Counts, score: str) -> List[Summary]:
-    axis = _axis(score)
-    if (score not in baseline.arrays
-            or baseline.edges.get(axis) != counts.edges[axis]):
-        return []
-    actual, expected = counts.arrays[score], baseline.arrays[score]
-    return [
-        Scalar('drift/score_psi', psi(actual, expected)),
-        Scalar('drift/score_ks', ks(actual, expected))
-    ]
+def _range(low: int, high: int) -> str:
+    return str(low) if high <= low else f'{low}–{high}'
 
 
-def summary_prefix(column: str) -> str:
-    r"""Where a score column's summaries go: ``pred/<column>``, with
-    characters metric names reject replaced by ``_``, or ``pred`` for
-    ``TARGET_PRED``."""
-    return 'pred' if column == 'TARGET_PRED' else f'pred/{_metric_part(column)}'
+def _drift_note(counts: Counts, score: str) -> str:
+    edges = counts.edges[axis(score)]
+    bins = ('probability hundredths' if edges == PROBABILITY_EDGES else
+            f'the training target\'s {len(edges) + 1} bins'
+            if score == 'TARGET_PRED' else
+            f'{len(edges) + 1} bins at the holdout top scores\' percentiles')
+    return (f'Drift compares `{_label(score)}` with the holdout over {bins}; '
+            f'PSI groups them at the holdout\'s deciles.')
 
 
-def _column_summaries(counts: Counts, name: str) -> List[Summary]:
-    prefix = summary_prefix(name)
-    axis = _axis(name)
-    histogram = counts.arrays[name]
-    low, high = counts.extents[name]
-    values = quantiles(histogram, counts.edges[axis], low, high)
-    return [
-        counts.summary(name, axis, f'{prefix}/hist'),
-        Scalar(f'{prefix}/mean',
-               float(counts.arrays[f'{name}/sum'] / histogram.sum())),
-        Scalar(f'{prefix}/min', low),
-        Scalar(f'{prefix}/max', high),
-        *(Scalar(f'{prefix}/q{q:02d}', value)
-          for q, value in zip(QUANTILES, values)),
-    ]
-
-
-def _axis(name: str) -> str:
-    return 'target' if name == 'TARGET_PRED' else 'score'
-
-
-def quantiles(histogram: np.ndarray, edges: Sequence[float], low: float,
-              high: float) -> List[float]:
-    r"""`QUANTILES` of counted values from their ``histogram`` over
-    ``edges``, linear within a bin, the end bins closed by the values'
-    exact ``low`` and ``high``: each is within its bin of the exact
-    quantile."""
-    bounds = np.clip([low, *edges, high], low, high)
-    cdf = np.concatenate([[0.0], np.cumsum(histogram)]) / histogram.sum()
-    levels = np.array(QUANTILES) / 100
-    reached = np.clip(np.searchsorted(cdf, levels), 1, len(cdf) - 1)
-    below, above = cdf[reached - 1], cdf[reached]
-    step = np.divide(levels - below, above - below, out=np.ones_like(levels),
-                     where=above > below)
-    return (bounds[reached - 1] + step *
-            (bounds[reached] - bounds[reached - 1])).tolist()
-
-
-def psi(actual: np.ndarray, expected: np.ndarray) -> float:
-    r"""Population stability index of two histograms over the same bins,
-    each bin's share at least ``1e-6``."""
-    p, q = _shares(actual), _shares(expected)
-    return float(np.sum((p - q) * np.log(p / q)))
-
-
-def ks(actual: np.ndarray, expected: np.ndarray) -> float:
-    r"""The largest gap between two histograms' cumulative shares, at the
-    bin edges."""
-    return float(
-        np.max(
-            np.abs(
-                np.cumsum(actual) / actual.sum() -
-                np.cumsum(expected) / expected.sum())))
-
-
-def _shares(histogram: np.ndarray) -> np.ndarray:
-    return np.maximum(histogram / histogram.sum(), _EPSILON)
-
-
-def _metric_part(name: str) -> str:
-    return re.sub(r'[^A-Za-z0-9_.\- ]', '_', name)
+def _label(column: str) -> str:
+    r"""A score column's name as a table column."""
+    return {'TARGET_PRED': 'predicted', 'top_score': 'top score'}.get(
+        column, column.replace('/', '_'))

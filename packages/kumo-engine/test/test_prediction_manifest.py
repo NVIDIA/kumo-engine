@@ -183,8 +183,8 @@ def test_mlops_stores_the_run_after_its_export(graph, classifier, tmp_path):
 
 def test_mlops_runs_record_their_exact_score_counts(graph, classifier,
                                                     tmp_path, monkeypatch):
-    from kumo_core.prediction_counts import psi
     from kumo_core.score_counts import PROBABILITY_EDGES, Counts
+    from kumo_core.score_drift import psi
     from kumo_core.summaries import Dataset, Histogram, Scalar, Tag
 
     _, snapshot = graph
@@ -208,25 +208,24 @@ def test_mlops_runs_record_their_exact_score_counts(graph, classifier,
         mlops=kumo.MLOps(str(tmp_path / 'root'), tracking=recorder))
     counts = Counts.from_dict(result.manifest.stats['predictions'].counts)
     frame = result.frame
-    for column in ('False_PROB', 'True_PROB'):
-        values = frame[column].to_numpy()
-        assert counts.arrays[column].tolist() == histogram(values).tolist()
-        assert counts.arrays[f'{column}/sum'] == pytest.approx(values.sum())
-        assert counts.extents[column] == (values.min(), values.max())
+    values = frame['True_PROB'].to_numpy()
+    assert counts.arrays['True_PROB'].tolist() == histogram(values).tolist()
+    assert counts.arrays['True_PROB/sum'] == pytest.approx(values.sum())
+    assert counts.extents == {'True_PROB': (values.min(), values.max())}
     assert counts.arrays['predicted_positive'] == frame['TARGET_PRED'].sum()
 
     assert recorder.records[0].tags.items() >= {
         'kumo.task_type': 'binary_classification',
         'kumo.snapshot_id': snapshot.id}.items()
-    logged = {summary.name: summary
+    logged = {getattr(summary, 'name', None): summary
               for summary in recorder.records[0].summaries}
-    assert logged['pred/True_PROB/hist'] == Histogram(
-        'pred/True_PROB/hist', PROBABILITY_EDGES,
-        tuple(histogram(frame['True_PROB']).tolist()))
+    assert logged['pred/histogram/True_PROB'] == Histogram(
+        'pred/histogram/True_PROB', PROBABILITY_EDGES,
+        tuple(histogram(values).tolist()))
     assert logged['pred/positive_rate'] == Scalar(
         'pred/positive_rate', frame['TARGET_PRED'].mean())
-    assert logged['drift/score_psi'].value == pytest.approx(
-        psi(histogram(frame['True_PROB']), histogram(holdout)))
+    assert logged['drift/psi'].value == pytest.approx(
+        psi(histogram(values), histogram(holdout)))
     output = str(tmp_path / 'root' / 'predictions' / result.id / 'predictions')
     assert logged['kumo.output_uri'] == Tag('kumo.output_uri', output)
     assert [summary.source['location']
@@ -494,7 +493,7 @@ def test_tracking_records_the_run_and_never_changes_it(graph, classifier,
     assert recorder.records == [prediction_record(
         tracked.manifest, model=trainer.result,
         summaries=_scoring_summaries(tracked.manifest, settings, snapshot))]
-    assert any(summary.name == 'graph/tables'
+    assert any(getattr(summary, 'name', None) == 'graph/tables'
                for summary in recorder.records[0].summaries)
     assert 'tracker down' in caplog.text
 

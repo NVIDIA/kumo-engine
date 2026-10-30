@@ -340,45 +340,33 @@ def _unlabelled(fit: Optional['TrackingRef']) -> str:
 
 def _prediction_summaries(manifest: 'PredictionManifest',
                           baseline: Any) -> List['Summary']:
-    r"""``data/rows``, ``data/skipped_rows``, ``data/skipped_fraction`` and
-    each artifact's ``data/<artifact>/rows``; the scores' ``pred/``
-    summaries from their exact counts, else their DiskGraph statistics."""
-    from kumo_core.prediction_counts import (
-        prediction_summaries,
-        summary_prefix,
-    )
+    r"""``pred/rows``, ``pred/skipped_share`` and a note of the rows not
+    scored; the scores' summaries from their exact counts, with their drift
+    from ``baseline``, the holdout's."""
+    from kumo_core.prediction_counts import prediction_summaries
     from kumo_core.score_counts import Counts
-    from kumo_core.summaries import Scalar
+    from kumo_core.summaries import Note, Scalar
 
     table = manifest.prediction_table
-    values: Dict[str, Any] = {'data/rows': table.rows}
+    summaries: List['Summary'] = []
+    if table.rows is not None:
+        summaries.append(Scalar('pred/rows', table.rows))
     if table.skipped_rows is not None:
-        values['data/skipped_rows'] = table.skipped_rows
-        values['data/skipped_fraction'] = (
-            table.skipped_rows / table.requested_rows
-            if table.requested_rows else 0.0)
-    counted: List['Summary'] = []
-    for artifact, stats in (manifest.stats or {}).items():
-        values[f'data/{artifact}/rows'] = stats.rows
-        for column, summary in (stats.columns or {}).items():
-            prefix = summary_prefix(column)
-            values.update({f'{prefix}/{key}': summary.get(key)
-                           for key in ('mean', 'min', 'max')})
-            values.update(_logged_percentiles(f'{prefix}/percentiles',
-                                              summary.get('percentiles')))
-        if stats.predicted_positive_rate is not None:
-            values['pred/positive_rate'] = stats.predicted_positive_rate
-        if stats.counts is not None:
-            counted += prediction_summaries(
-                Counts.from_dict(stats.counts),
-                threshold=manifest.scoring.binary_classification_threshold,
-                baseline=baseline)
-    scalars = [
-        Scalar(name, value) for name, value in values.items()
-        if isinstance(value, (int, float)) and not isinstance(value, bool)
-    ]
-    return list({summary.name: summary
-                 for summary in (*scalars, *counted)}.values())
+        requested = table.requested_rows
+        summaries.append(Scalar('pred/skipped_share', table.skipped_rows /
+                                requested if requested else 0.0))
+        if table.skipped_rows:
+            reason = f': {table.skip_reason}' if table.skip_reason else ''
+            summaries.append(Note(
+                'notes', f'{table.skipped_rows:,} requested rows were not '
+                f'scored{reason}.'))
+    stats = (manifest.stats or {}).get('predictions')
+    if stats is not None and stats.counts is not None:
+        summaries += prediction_summaries(
+            Counts.from_dict(stats.counts),
+            threshold=manifest.scoring.binary_classification_threshold,
+            baseline=baseline)
+    return summaries
 
 
 @contextmanager
@@ -419,15 +407,6 @@ def track_prediction(
                        'is not tracked', full_error(failure), exc_info=_debug())
         return failure
     return log_run(tracking, 'log_prediction_run', record)
-
-
-def _logged_percentiles(key: str, values: Any) -> Dict[str, Any]:
-    from kumo_core.prediction_counts import QUANTILES
-
-    if not isinstance(values, list) or len(values) != 99:
-        return {}
-    column = key[:-len('percentiles')]
-    return {f'{column}q{q:02d}': values[q - 1] for q in QUANTILES}
 
 
 class Tracking(Protocol):

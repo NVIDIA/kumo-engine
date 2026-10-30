@@ -52,7 +52,7 @@ def test_any_models_prediction_run_is_recorded_and_monitored(tmp_path):
     assert run.manifest.parents.model == MODEL
 
     record = prediction_record(run.manifest)
-    assert Scalar('data/skipped_rows', 5) in record.summaries
+    assert Scalar('pred/skipped_share', 5 / 205) in record.summaries
     assert record.tags['kumo.bundle_id'] == 'toy-model'
 
     report = score_drift(SimpleNamespace(result=SimpleNamespace(
