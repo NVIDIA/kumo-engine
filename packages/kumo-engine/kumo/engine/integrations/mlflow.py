@@ -561,7 +561,8 @@ class MlflowTracking:
                error: Optional[BaseException]) -> None:
         status = 'FAILED'
         kind = None if record is None else record.tags.get('kumo.kind')
-        fit_run = self._parent is not None and kind == 'fit'
+        started = self._parent is not None
+        fit_run = started and kind == 'fit'
         ended = None if record is None else _millis(record.finished)
         try:
             if record is not None and self._parent is not None:
@@ -592,8 +593,10 @@ class MlflowTracking:
                              status, ended)
             self._reset()
         hint = _sagemaker_ui_hint(self.target.tracking_uri)
-        if fit_run and hint:
-            warnings.warn(hint, UserWarning, stacklevel=2)
+        if hint and started and kind in ('fit', 'prediction'):
+            warnings.warn(f'MLflow run {self.logged_run_name!r} in experiment '
+                          f'{self.experiment!r}: {hint}', UserWarning,
+                          stacklevel=2)
 
     def update_card(self, run_id: str, block: Optional[str] = None,
                     summaries: Sequence[Summary] = ()) -> None:

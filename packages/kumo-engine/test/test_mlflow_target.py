@@ -212,6 +212,29 @@ def test_ambient_sagemaker_calls_see_its_uri_and_restore_the_global_one(
     assert mlflow.get_tracking_uri() == tracking_uri
 
 
+NO_LINKS = 'MLFLOW_SUPPRESS_PRINTING_URL_TO_STDOUT'
+
+
+def test_sagemaker_calls_print_no_mlflow_run_links(monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.delenv(NO_LINKS, raising=False)
+    seen = []
+    for uri in (ARN, 'http://mlflow'):
+        with target_module.Target(uri, uri, swap=nullcontext).scope():
+            seen.append(os.environ.get(NO_LINKS))
+
+    assert (seen, os.environ.get(NO_LINKS)) == (['true', None], None)
+
+
+def test_pin_mlflow_reads_its_run_link_switch_per_call():
+    from mlflow.environment_variables import (
+        MLFLOW_SUPPRESS_PRINTING_URL_TO_STDOUT,
+    )
+
+    assert MLFLOW_SUPPRESS_PRINTING_URL_TO_STDOUT.name == NO_LINKS
+
+
 def test_an_unreachable_server_fails_when_mlops_is_built(
         tmp_path, monkeypatch):
     from kumo.engine.integrations.mlflow import MlflowTracking

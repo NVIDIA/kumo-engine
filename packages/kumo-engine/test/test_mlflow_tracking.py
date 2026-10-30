@@ -309,8 +309,9 @@ def test_a_tracked_fit_on_sagemaker_says_how_to_open_the_ui(
         tracker.finish(run_record(fit_spec(CONTEXT)), None)
     hints = [str(w.message) for w in caught if 'Studio' in str(w.message)]
     assert hints == ([] if command is None else [
-        "MLflow's run links do not open on SageMaker: open the MLflow UI "
-        f'from SageMaker Studio or at the URL `{command}` prints.'])
+        "MLflow run 'fit-20261029-061800-ents-regression' in experiment "
+        "'Default': MLflow's run links do not open on SageMaker: open the "
+        f'MLflow UI from SageMaker Studio or at the URL `{command}` prints.'])
 
 
 def test_user_disabled_autologging_stays_disabled(tracking_uri):
