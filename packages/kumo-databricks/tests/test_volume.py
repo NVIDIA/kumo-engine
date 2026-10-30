@@ -51,7 +51,8 @@ def test_sized_writes_stay_plain_up_to_a_part():
             assert reader.readall() == body
     assert volume.objects[f'{ROOT}/plain'] == BODY[:1000]
     assert f'{ROOT}/parts' not in volume.objects
-    assert f'{ROOT}/parts.chunks/_SUCCESS' in volume.objects
+    assert any(path.startswith(f'{ROOT}/parts.chunks/')
+               and path.endswith('/_SUCCESS') for path in volume.objects)
 
 
 def test_a_failed_upload_raises_without_the_signed_url():
