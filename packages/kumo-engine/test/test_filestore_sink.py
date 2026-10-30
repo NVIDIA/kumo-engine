@@ -68,8 +68,6 @@ class MemoryStore(ChunkedFileHandler):
 
 
 class StageSink:
-    r"""Not an object store: holds '@stage/...' paths through
-    ``filesystem``; anything else is a table."""
     def __init__(self):
         self.store = MemoryStore()
 
