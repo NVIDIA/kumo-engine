@@ -33,6 +33,13 @@ def task_sql(*, task_name: str, warehouse: str, schedule: str,
             f"AS\n{execute_ml_job_sql}")
 
 
+def _started(session: Any, database: str, schema: str, task: str) -> bool:
+    rows = session.sql(
+        f"SHOW TASKS LIKE '{task}' IN SCHEMA {database}.{schema}").collect()
+    return any(row['name'] == task and row['state'] == 'started'
+               for row in rows)
+
+
 def register(session: Any, *, compute_pool: str, stage: str, database: str,
              schema: str, warehouse: str, artifact_root: str,
              requirements: List[str],
@@ -41,6 +48,8 @@ def register(session: Any, *, compute_pool: str, stage: str, database: str,
              predictions_table: str = 'USERS_CHURN_PREDICTIONS',
              table_prefix: str = '',
              on_error: str = 'raise') -> Dict[str, str]:
+    r"""Returns each task's state: a task that was started before it was
+    replaced is resumed; a new one is suspended."""
     from snowflake.ml.jobs import MLJobDefinition
 
     flags = [
@@ -70,7 +79,9 @@ def register(session: Any, *, compute_pool: str, stage: str, database: str,
             schema=schema,
             overwrite=True,
         )
-        name = f'{database}.{schema}.KUMO_{kind.upper()}_TASK'
+        task = f'KUMO_{kind.upper()}_TASK'
+        name = f'{database}.{schema}.{task}'
+        started = _started(session, database, schema, task)
         session.sql(
             task_sql(
                 task_name=name, warehouse=warehouse,
@@ -79,7 +90,9 @@ def register(session: Any, *, compute_pool: str, stage: str, database: str,
                 execute_ml_job_sql=definition.to_sql(
                     job_args=job_args[kind], use_async=False),
             )).collect()
-        tasks[kind] = name
+        if started:
+            session.sql(f'ALTER TASK {name} RESUME').collect()
+        tasks[name] = 'started' if started else 'suspended'
     return tasks
 
 
@@ -113,8 +126,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         external_access_integrations=args.external_access_integration,
         model_name=args.model_name, predictions_table=args.predictions_table,
         table_prefix=args.table_prefix, on_error=args.on_error)
-    for kind, name in tasks.items():
-        print(f'{kind}: {name} (suspended; ALTER TASK {name} RESUME)')
+    for name, state in tasks.items():
+        print(f'{name}: {state}' + ('' if state == 'started' else
+                                    f' (ALTER TASK {name} RESUME)'))
 
 
 if __name__ == '__main__':

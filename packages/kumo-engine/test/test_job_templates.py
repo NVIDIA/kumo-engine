@@ -249,7 +249,8 @@ def test_sagemaker_steps_take_their_own_instance_types_and_the_alias(
         '--model-path-file', '/opt/ml/processing/input/model/model_path']
 
 
-def test_snowflake_tasks_pass_names_and_strict_mode(monkeypatch):
+@pytest.fixture
+def ml_job_args(monkeypatch):
     calls = []
 
     class Definition:
@@ -263,16 +264,44 @@ def test_snowflake_tasks_pass_names_and_strict_mode(monkeypatch):
 
     monkeypatch.setitem(sys.modules, 'snowflake.ml.jobs',
                         SimpleNamespace(MLJobDefinition=Definition))
+    return calls
+
+
+def test_snowflake_tasks_pass_names_and_strict_mode(ml_job_args):
     session = SimpleNamespace(
-        sql=lambda sql: SimpleNamespace(collect=lambda: None))
+        sql=lambda sql: SimpleNamespace(collect=lambda: []))
     _module('snowflake/register_jobs').register(
         session, compute_pool='p', stage='s', database='D', schema='S',
         warehouse='W', artifact_root='s3://b/k/', requirements=[],
         external_access_integrations=[], model_name='CHURN',
         predictions_table='CHURN_OUT', table_prefix='DEMO_')
-    train, score = calls
+    train, score = ml_job_args
     for arguments in (train, score):
         assert arguments[arguments.index('--model-name') + 1] == 'CHURN'
         assert arguments[arguments.index('--on-error') + 1] == 'raise'
         assert '--table-prefix=DEMO_' in arguments
     assert score[score.index('--predictions-table') + 1] == 'CHURN_OUT'
+
+
+def test_registering_again_resumes_the_tasks_that_were_started(ml_job_args):
+    statements = []
+
+    def sql(statement):
+        statements.append(statement)
+        rows = ([{'name': 'KUMO_TRAIN_TASK', 'state': 'started'}]
+                if 'LIKE' in statement and 'TRAIN' in statement else [])
+        return SimpleNamespace(collect=lambda: rows)
+
+    tasks = _module('snowflake/register_jobs').register(
+        SimpleNamespace(sql=sql), compute_pool='p', stage='s', database='D',
+        schema='S', warehouse='W', artifact_root='s3://b/k/',
+        requirements=[], external_access_integrations=[])
+    assert tasks == {'D.S.KUMO_TRAIN_TASK': 'started',
+                     'D.S.KUMO_SCORE_TASK': 'suspended'}
+    assert [s.split('\n')[0] for s in statements] == [
+        "SHOW TASKS LIKE 'KUMO_TRAIN_TASK' IN SCHEMA D.S",
+        'CREATE OR REPLACE TASK D.S.KUMO_TRAIN_TASK',
+        'ALTER TASK D.S.KUMO_TRAIN_TASK RESUME',
+        "SHOW TASKS LIKE 'KUMO_SCORE_TASK' IN SCHEMA D.S",
+        'CREATE OR REPLACE TASK D.S.KUMO_SCORE_TASK',
+    ]

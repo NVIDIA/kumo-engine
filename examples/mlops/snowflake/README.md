@@ -64,8 +64,9 @@ Each Task runs its job synchronously with the statement
    `ITEMS` and `ORDERS`) are passed to the jobs, as is `--on-error`
    (default `raise`: a failed registration or tracking call fails the job and
    its Task run).
-4. Tasks are created suspended: `ALTER TASK <name> RESUME`, or
-   `EXECUTE TASK <name>` to run one now.
+4. New tasks are created suspended: `ALTER TASK <name> RESUME`, or
+   `EXECUTE TASK <name>` to run one now. Running `register_jobs.py` again
+   replaces both tasks and resumes each one that was started.
 
 ## Privileges for the role that owns the tasks
 
