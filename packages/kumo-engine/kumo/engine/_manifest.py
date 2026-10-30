@@ -36,8 +36,7 @@ M = TypeVar('M', bound='Manifest')
 
 
 def omit_none() -> Any:
-    """A field written only when it is not None, or read as an explicit
-    null (kept in ``extra``)."""
+    """A field left out of the JSON while it is None."""
     return field(default=None, metadata={_OMIT_NONE: True})
 
 
@@ -66,8 +65,7 @@ class Record:
                                      compare=False)
 
     def as_artifact(self, key: str) -> Optional[Artifact]:
-        r"""The artifact this record names, if any, as ``key`` in its
-        parent."""
+        r"""The artifact this record names as ``key``, if any."""
         return None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -161,8 +159,7 @@ KINDS = ('snapshot', 'training_table', 'model')
 
 @dataclass(frozen=True, kw_only=True)
 class Manifest(Record):
-    """An artifact's record. A stub (a parent with no record of its own)
-    sets only ``kind``, ``id`` and ``reconstructed``."""
+    """An artifact's record; a stub sets only kind, id and reconstructed."""
 
     kind: str = ''
     schema_version: int = SCHEMA_VERSION
@@ -186,10 +183,7 @@ class Manifest(Record):
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
-    r"""``manifest``'s artifact, then each one it names (parents, their
-    source tables, dependencies, outputs), depth first, each once. A named
-    manifest that is not a dataset, such as a warm-start model, is listed
-    but not opened: its own manifest names what it was made from."""
+    r"""``manifest``'s artifact and those it names, depth first, once each."""
     found: Dict[Any, Artifact] = {}
     for artifact in _walk(manifest, manifest.kind, manifest):
         found.setdefault((artifact.kind, artifact.id), artifact)
@@ -245,8 +239,7 @@ def stub(kind: str, id: str) -> 'Manifest':
 
 
 def embedded(manifest: M) -> M:
-    """``manifest`` as a child embeds it: without its statistics and the
-    fields that change after it is written."""
+    """``manifest`` without the fields a child's copy leaves out."""
     return replace(manifest, **{
         name: None
         for name in manifest.EMBED_OMITS
@@ -270,8 +263,7 @@ class SnapshotParents(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class SnapshotManifest(Manifest):
-    """What a graph snapshot was built from: each source table's connector,
-    location and version, and the engine build that wrote it."""
+    """The source tables and engine build a snapshot was made from."""
 
     kind: str = 'snapshot'
     IS_DATASET: ClassVar[bool] = True
@@ -287,8 +279,7 @@ class TrainingTableParents(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class TrainingTableManifest(Manifest):
-    """How a training table was generated: from which snapshot (embedded)
-    and, for caller-supplied rows, which source table."""
+    """The snapshot, query and rows a training table was made from."""
 
     kind: str = 'training_table'
     IS_DATASET: ClassVar[bool] = True

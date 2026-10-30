@@ -415,14 +415,12 @@ class GraphSnapshot:
 
     @property
     def _data_version(self) -> str:
-        """The full fingerprint of the source versions the index was built
-        from; `id` carries its first 16 characters."""
+        """The full source-version fingerprint; `id` holds its first 16."""
         return Path(self.index_path).name
 
     @cached_property
     def _native_graph(self) -> NativeGraph:
-        """`graph_config` in `kumo_core`'s normalized form, as
-        `Graph.native_graph`."""
+        """`graph_config` normalized, as `Graph.native_graph`."""
         return normalize_graph(self.graph_config)
 
     def export(self, output_config: 'SnapshotOutputConfig') -> str:

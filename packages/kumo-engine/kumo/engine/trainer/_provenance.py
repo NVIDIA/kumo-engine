@@ -56,8 +56,7 @@ def write_provenance(
 
 
 def embedded_model(manifest: ModelManifest) -> ModelManifest:
-    r"""``manifest`` as a child model embeds it: its own model parents cut
-    to stubs, so a chain of retrains does not grow each manifest."""
+    r"""``manifest`` for embedding, its own model parents cut to stubs."""
     copy = embedded(manifest)
     parents = copy.parents
     if parents is None:

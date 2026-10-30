@@ -311,8 +311,7 @@ def _holds_copy(connector: Any, location: str, snapshot_id: str,
 
 def _commit(filesystem: FileSystem, root: str, generation: str,
             marker: bytes) -> None:
-    r"""Writes the marker in one step: a rename on a local filesystem (an
-    in-place write there truncates first), a single object put elsewhere."""
+    r"""Writes the marker atomically: a local rename, else one object put."""
     if filesystem.type_name == 'local':
         staged = f'{root}/{generation}/{_MANIFEST}'
         _write(filesystem, staged, marker)
@@ -324,9 +323,7 @@ def _commit(filesystem: FileSystem, root: str, generation: str,
 
 
 def _clean(filesystem: FileSystem, root: str) -> None:
-    r"""Best effort: remove generations that a later commit superseded, and
-    abandoned ones. A generation is marked done only after its commit, so
-    one listed done before the marker is re-read lost to a later one."""
+    r"""Removes superseded and abandoned generations, best effort."""
     from pyarrow.fs import FileSelector, FileType
 
     try:
@@ -390,17 +387,14 @@ def read(connector: Any, path: str) -> Tuple[str, dict]:
 
 
 def export_identity(manifest: dict) -> str:
-    r"""What makes one export's bytes differ from another's of the same
-    snapshot: its range checksums and index manifest."""
+    r"""A hash of an export's range checksums and index manifest."""
     return hashlib.sha256(json.dumps(
         [manifest['range_bytes'], manifest['crc32'],
          manifest['index_manifest']], sort_keys=True).encode()).hexdigest()
 
 
 def holds_export(index: Path, manifest: dict) -> bool:
-    r"""Whether the local index at ``index`` has the export's bytes. An
-    index without a recorded export identity (built here, or loaded by an
-    older engine) is checksummed once."""
+    r"""Whether the local ``index`` has the export's bytes."""
     from diskgraph import snapshot_range_checksums
 
     identity = export_identity(manifest)
