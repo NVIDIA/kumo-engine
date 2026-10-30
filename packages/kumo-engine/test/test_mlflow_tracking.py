@@ -514,16 +514,17 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
     assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
         'realized map_at_10 0.5, psi 0.03 vs holdout (small shift), 50 rows '
         'as of 2026-10-29', '', '', 'Scores of bundle `bbbbbbbb`.', '',
-        'Full lineage: `_provenance.json`.', '',
         '<!-- kumo:drift -->', '', '**Table rows**', '',
         '| table | rows at training | rows now | change (%) |',
         '| --- | ---: | ---: | ---: |', '| orders | 100 | 104 | 4 |', '',
+        '**Notes**', '',
         '- Drift vs training: psi 0.03 · vs 2026-10-28-v6-churn: psi 0.01.',
         '', '<!-- /kumo:drift -->',
-        '<!-- kumo:realized -->', '',
+        '<!-- kumo:realized -->', '', '**Notes**', '',
         '- Realized map@10 0.5 · 75 % labelled (3 of 4 scored rows), with '
         'labels from snapshot-2026-10-30-2.', '',
-        '<!-- /kumo:realized -->', *TAIL]))
+        '<!-- /kumo:realized -->', '', 'Full lineage: `_provenance.json`.',
+        *TAIL]))
 
     failure = log_run(later, 'log_monitoring', RunRecord(
         tags={**monitoring, 'kumo.prediction_id': 'pred-2'}))
@@ -830,17 +831,16 @@ def test_monitoring_fills_its_part_of_a_prediction_card(tracking_uri):
     tracker.update_card(run_id, 'drift', [Note('notes', 'psi 0.01 since')])
 
     head = ['50 rows as of 2026-10-29', '', '',
-            'Scores of bundle `bbbbbbbb`.', '',
-            'Full lineage: `_provenance.json`.', '']
+            'Scores of bundle `bbbbbbbb`.', '']
+    tail = ['<!-- kumo:realized --><!-- /kumo:realized -->', '',
+            'Full lineage: `_provenance.json`.', *TAIL]
     assert card == _sealed('\n'.join([
-        *head, '<!-- kumo:drift --><!-- /kumo:drift -->',
-        '<!-- kumo:realized --><!-- /kumo:realized -->', *TAIL]))
+        *head, '<!-- kumo:drift --><!-- /kumo:drift -->', *tail]))
     assert client.get_run(run_id).data.tags['mlflow.note.content'] == (
         _sealed('\n'.join([
             'psi 0.03 vs holdout (small shift), ' + head[0], *head[1:],
-            '<!-- kumo:drift -->', '', '- psi 0.01 since', '',
-            '<!-- /kumo:drift -->',
-            '<!-- kumo:realized --><!-- /kumo:realized -->', *TAIL]))
+            '<!-- kumo:drift -->', '', '**Notes**', '', '- psi 0.01 since',
+            '', '<!-- /kumo:drift -->', *tail]))
         + '\n\nMine.')
 
 

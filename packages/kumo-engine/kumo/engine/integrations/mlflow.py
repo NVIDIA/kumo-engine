@@ -701,7 +701,9 @@ class MlflowTracking:
 
         def render(kept: Sequence[Summary], files: Sequence[str]) -> str:
             return card if block is None else _with_block(
-                card, block, _card.block(kept))
+                card, block, _card.block(kept, [
+                    item for item in items
+                    if isinstance(item, Table) and item not in kept]))
 
         def minimal(files: Sequence[str]) -> str:
             return '\n'.join([*lines[:4], '', _card.files_line(files),
@@ -723,18 +725,19 @@ class MlflowTracking:
             line = _card.heading(kind, run.data.metrics, tags)
             intro = _card.intro(kind, tags, run.data.params,
                                 record.description, *self._fit_link())
-            items = [*_card.holdout(kind, record.metrics, tags), *self._card]
+            items = [*_card.holdout(kind, record.metrics, tags), *self._card,
+                     *_card.charts(run.data.metrics)]
             blocks = ([_part(name, '') for name in _BLOCKS]
                       if kind == 'prediction' else [])
-            tail = [*([''] + blocks if blocks else []), *_card.TAIL]
 
             def render(kept: Sequence[Summary], files: Sequence[str]) -> str:
-                return '\n'.join([*line, *_card.body(intro, kept, files),
-                                  *tail])
+                return '\n'.join([*line, *_card.body(
+                    intro, kept, files, blocks), *_card.TAIL])
 
             def minimal(files: Sequence[str]) -> str:
-                return '\n'.join([*line, '', intro, '',
-                                  _card.files_line(files), *tail])
+                return '\n'.join([*line, '', intro,
+                                  *(['', *blocks] if blocks else []), '',
+                                  _card.files_line(files), *_card.TAIL])
 
             user = split[1]
             self._set_card(run, render, minimal, items, user,
