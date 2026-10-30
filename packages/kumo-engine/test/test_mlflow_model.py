@@ -21,6 +21,7 @@ from test_mlflow_tracking import (  # noqa: F401
 
 import kumo.engine as kumo
 from kumo.engine import _card
+from kumo.engine._mlops import resolve
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._tracking import logged_names
 from kumo.engine.integrations.mlflow import _card_hash
@@ -53,6 +54,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
                      tracking=MlflowTracking(log_system_metrics=False),
                      registry=kumo.ModelRegistryLocation(
                          'm', alias='champion', comment='Mine.'))
+    table._store(resolve(cfg))
     trainer = kumo.Trainer(plan)
     result = trainer.fit(table, snapshot=snapshot, mlops=cfg)
 
@@ -74,8 +76,10 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         **holdout,
         **{summary.name: summary.value for summary in result._summaries
            if isinstance(summary, Scalar) and summary.role == 'model'}}
+    training, = (item.dataset for item in parent.inputs.dataset_inputs
+                 if item.dataset.name.startswith('training-table'))
     assert {(metric.dataset_name, metric.dataset_digest)
-            for metric in model.metrics} == {(None, None)}
+            for metric in model.metrics} == {(training.name, training.digest)}
     assert version.source == model.model_uri
     assert parent.data.tags.items() >= {
         'kumo.kind': 'fit', 'kumo.bundle_id': result.id,
