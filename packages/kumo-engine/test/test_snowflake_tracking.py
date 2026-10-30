@@ -313,12 +313,6 @@ def test_mlops_loads_a_registered_model_through_the_tracker(
         _tracking().load_model(location)
 
 
-@dataclass(frozen=True)
-class _Timed(RunRecord):
-    started: Optional[datetime] = None
-    finished: Optional[datetime] = None
-
-
 STARTED = datetime(2026, 10, 29, 6, 18, tzinfo=timezone.utc)
 REGISTERED = SimpleNamespace(
     registered_model=PublishedModel('churn', '3', 'DB.ML.CHURN/3'),
@@ -334,8 +328,8 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
                         lambda: STARTED + timedelta(seconds=90))
     tags = {'kumo.kind': 'fit', 'kumo.task_type': 'regression',
             'kumo.tune_metric': 'mae'}
-    start = _Timed(name='fit', tags=tags, description=f'`{QUERY}`',
-                   started=STARTED)
+    start = RunRecord(name='fit', tags=tags, description=f'`{QUERY}`',
+                      started=STARTED)
     tracking = _tracking()
     tracking.start(start)
     tracking.finish(replace(start, metrics={'mae': 0.32}, tags={
@@ -361,35 +355,30 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
 
 def test_a_prediction_run_names_its_model_and_lasts_as_long_as_it_ran(fake):
     record = prediction_record(PREDICTION_MANIFEST, model=REGISTERED)
-    timed = _Timed(**vars(record), started=STARTED,
-                   finished=STARTED + timedelta(seconds=60))
+    timed = replace(record, started=STARTED,
+                    finished=STARTED + timedelta(seconds=60))
 
     _tracking().log_prediction_run(timed)
 
     run, = fake._instance.runs.values()
     assert run['params']['kumo.model'] == 'churn/3'
     assert run['artifacts']['run_card.md'] == (
-        'v3 churn\n'
+        '50 rows as of 2024-04-29 · v3 churn\n'
         'Model: `churn` v3, trained by `CHURN_FIT_20261029_061800`.\n\n'
         'Full lineage: `_provenance.json`.')
     assert ('duration_seconds', 60.0, 0) in run['metrics']
-
-
-@dataclass(frozen=True)
-class _Named(_Timed):
-    model_label: Optional[str] = None
 
 
 def _prediction(as_of, version=None, label='churn'):
     tags = {'kumo.kind': 'prediction', 'kumo.as_of': as_of,
             'kumo.bundle_id': 'b' * 64,
             **({'kumo.model_version': version} if version else {})}
-    return _Named(tags=tags, model_label=label)
+    return RunRecord(tags=tags, model_label=label)
 
 
 @pytest.mark.parametrize('record, name', [
-    (_Named(tags={'kumo.kind': 'fit'}, model_label='kumo-demo-churn',
-            started=datetime(2026, 10, 29, 6, 18, 5, tzinfo=timezone.utc)),
+    (RunRecord(tags={'kumo.kind': 'fit'}, model_label='kumo-demo-churn',
+               started=datetime(2026, 10, 29, 6, 18, 5, tzinfo=timezone.utc)),
      'KUMO_DEMO_CHURN_FIT_20261029_061805'),
     (_prediction('2026-10-29', '6', 'kumo-demo-churn'),
      'AS_OF_20261029_V6_KUMO_DEMO_CHURN'),
@@ -455,7 +444,7 @@ def test_a_full_experiment_is_not_tracked_into(fake, caplog):
 
 
 @dataclass(frozen=True)
-class _Monitoring(_Named):
+class _Monitoring(RunRecord):
     prediction_run: Optional[str] = None
 
 

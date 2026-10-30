@@ -127,8 +127,7 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     assert {k for k in parent.data.tags if k.startswith('kumo.')} == {
         'kumo.kind', 'kumo.bundle_id', 'kumo.dropped_params',
         'kumo.snapshot_id', 'kumo.task_type', 'kumo.tune_metric',
-        'kumo.engine_version', 'kumo.best_trial', 'kumo.bundle_uri',
-        'kumo.artifact_root'}
+        'kumo.engine_version', 'kumo.best_trial', 'kumo.bundle_uri'}
     assert parent.data.tags['kumo.bundle_uri'] == str(
         tmp_path / 'root' / 'models' / result.id)
     assert parent.data.tags['kumo.snapshot_id'] == snapshot.id
@@ -159,7 +158,9 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
             if '/' not in name.removeprefix('before_refit/')} == {
         *tested, *(summary.name for summary in result._summaries
                    if isinstance(summary, Scalar) and '/' not in summary.name)}
-    assert metrics['graph/rows/ents'] == 400
+    health = json.loads(mlflow.artifacts.load_text(
+        f'{parent.info.artifact_uri}/data/health.json'))
+    assert health['data'][0][:2] == ['ents', 400]
     assert {name: metrics[name] for name in tested} == tested
     assert 'off for the rest of this run' not in caplog.text
     ents, = parent.inputs.dataset_inputs
