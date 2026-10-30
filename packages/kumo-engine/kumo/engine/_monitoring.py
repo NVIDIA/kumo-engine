@@ -759,7 +759,7 @@ def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
             continue
         brief = len(rows) <= 12
         summaries.append(Table(
-            name, ('link' if links else 'table', f'{unit} at training',
+            name, ('link' if links else 'table', f'training {unit}',
                    f'{unit} now', 'change (%)'), rows, brief=brief))
         if not brief:
             summaries.append(Note('notes', f'{len(rows)} '
