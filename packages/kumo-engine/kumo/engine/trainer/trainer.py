@@ -761,6 +761,18 @@ def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
                     model_metrics(result), registry)
 
 
+def _forecast_timeframe(workflow: Any) -> Optional[Tuple[int, int, int, str]]:
+    r"""A forecast's target window, step and unit, to name its horizons."""
+    if workflow.query.task_type != 'forecasting':
+        return None
+    offset = workflow.query.query.get_combined_date_offset_range()
+    start, end = int(offset.start or 0), int(offset.end)
+    step = inferred_or_missing_type_to_none(
+        workflow.training_table_generation_plan.timeframe_step)
+    return (start, end, end - start if step is None else int(step),
+            str(getattr(offset.unit, 'value', offset.unit)))
+
+
 def _unlogged(summaries: Sequence[Summary], metrics: Mapping[str, float],
               refit_full: bool = False) -> Tuple[Summary, ...]:
     r"""``summaries`` without the scalars ``metrics`` already logs, which
@@ -1312,7 +1324,8 @@ class Trainer:
                 *(() if result.published_counts is None else
                   evaluation_summaries(
                       task_type, result.published_counts, threshold,
-                      class_names(result.best_trainer.target_encoder))),
+                      class_names(result.best_trainer.target_encoder),
+                      _forecast_timeframe(workflow))),
                 *at_k_summaries(result.metrics)), result.metrics,
                 refit_full=fit_mode == 'refit_full'),
         )
