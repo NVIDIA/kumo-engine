@@ -165,8 +165,9 @@ class FakeExperimentTracking:
             raise RuntimeError(f'Run "{self._run.name}" does not exist in '
                                f'Experiment {self.experiment}.')
         with open(local_path, encoding='utf-8') as file:
-            self._active()['artifacts'][os.path.basename(local_path)] = (
-                file.read())
+            self._active()['artifacts'][os.path.join(
+                artifact_path or '', os.path.basename(local_path))] = (
+                    file.read())
 
 
 class FakeSession:

@@ -40,6 +40,7 @@ from kumo_core.summaries import (
 )
 
 from kumo.engine._events import Event
+from kumo.engine._summary_tables import SummaryTables
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
@@ -132,6 +133,7 @@ class SnowflakeTracking:
         self._artifacts: Set[str] = set()
         # The run's notes and brief tables, for its description.
         self._card: List[Summary] = []
+        self._grouped = SummaryTables()
         self._dropped_metrics: Set[str] = set()
         self._dropped_params = 0
 
@@ -294,11 +296,16 @@ class SnowflakeTracking:
 
     def log_summaries(self, summaries: Sequence[Summary]) -> None:
         r"""Logs each summary on the run through its type's call in
-        `_SINKS`: values as metrics within the name budget, tables as JSON
-        artifacts; Snowflake has no datasets."""
-        if self._run is not None:
-            for summary in summaries:
-                _SINKS[type(summary)](self, summary)
+        `_SINKS`: values as metrics within the name budget; series,
+        histograms and tables as JSON artifacts, one per name prefix; brief
+        tables and notes for the run's card. Snowflake has no datasets."""
+        if self._run is None:
+            return
+        self._grouped = SummaryTables()
+        for summary in summaries:
+            _SINKS[type(summary)](self, summary)
+        for table in self._grouped.tables():
+            self._log_table(table)
 
     def _log_scalar(self, summary: Scalar) -> None:
         self._log_metrics({summary.name: summary.value}, _MAX_METRICS)
@@ -307,17 +314,13 @@ class SnowflakeTracking:
         self._log_params({summary.name: summary.value})
 
     def _log_series(self, summary: Series) -> None:
-        self._log_points({summary.name: summary.points})
+        self._grouped.add_series(summary)
 
     def _log_curve(self, summary: Curve) -> None:
-        self._log_points({summary.x.name: summary.x.points,
-                          summary.y.name: summary.y.points})
+        self._grouped.add_curve(summary)
 
     def _log_histogram(self, summary: Histogram) -> None:
-        self._log_points({
-            f'{summary.name}/count': tuple(enumerate(summary.counts)),
-            f'{summary.name}/lower_edge': tuple(enumerate(summary.edges, 1)),
-        })
+        self._grouped.add_histogram(summary)
 
     def _log_table(self, summary: Table) -> None:
         if summary.brief:
@@ -336,11 +339,6 @@ class SnowflakeTracking:
             summary.name, ('actual', *summary.labels),
             tuple((label, *row)
                   for label, row in zip(summary.labels, summary.counts))))
-
-    def _log_points(self, series: Mapping[str, Sequence[Tuple[int, float]]]
-                    ) -> None:
-        for step, metrics in by_step(series):
-            self._log_metrics(metrics, _SUMMARY_METRICS, step=step)
 
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         with tempfile.TemporaryDirectory() as directory:

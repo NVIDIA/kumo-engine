@@ -508,17 +508,19 @@ def test_adapter_logs_each_summary_type(adapter, mlflow_adapter):
               'confusion.json': {'columns': ['actual', 'a', 'b'],
                                  'data': [['a', 5, 1], ['b', 2, 7]]}}
     if adapter is not mlflow_adapter:
-        assert {name: fit.steps[name] for name in (
-            'test/brier', 'search/trials', 'test/roc/fpr', 'test/roc/tpr',
-            'pred/True_PROB/hist/count', 'pred/True_PROB/hist/lower_edge')
-        } == {
-            'test/brier': ((0, 0.25),), 'search/trials': ((1, 3.0), (2, 4.0)),
-            'test/roc/fpr': ((0, 1.0), (1, 0.5)),
-            'test/roc/tpr': ((0, 1.0), (1, 0.75)),
-            'pred/True_PROB/hist/count': ((0, 3.0), (1, 4.0)),
-            'pred/True_PROB/hist/lower_edge': ((1, 0.5),)}
-        assert {name: json.loads(fit.artifacts[name])
-                for name in tables} == tables
+        assert {name for name in fit.steps if not name.startswith((
+            'train/', 'val/', 'search/best'))} == {'mae', 'test/brier'}
+        assert {path: json.loads(text)
+                for path, text in fit.artifacts.items()} == {
+            'search.json': {'columns': ['trial', 'trials'],
+                            'data': [[1, 3.0], [2, 4.0]]},
+            'test/roc.json': {'columns': ['step', 'fpr', 'tpr'],
+                              'data': [[0, 1.0, 1.0], [1, 0.5, 0.75]]},
+            'pred/True_PROB.json': {
+                'columns': ['from', 'to', 'hist', 'hist cumulative share'],
+                'data': [[None, 0.5, 3, 3 / 7], [0.5, None, 4, 1.0]]},
+            'graph/col_stats.json': tables['col_stats.json'],
+            'test/confusion.json': tables['confusion.json']}
         return
     import mlflow
 
