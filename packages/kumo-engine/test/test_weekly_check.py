@@ -504,6 +504,28 @@ class WeeklyChecks(unittest.TestCase):
                 worker.prediction_values([path], population, case,
                                          root / 'sort', root)
 
+    def test_ranked_reader_preserves_approved_public_topk_ties(self):
+        worker = importlib.util.module_from_spec(WORKER_SPEC)
+        WORKER_SPEC.loader.exec_module(worker)
+        import pandas as pd
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pd.DataFrame(dict(CLASS=[10, 11, 12, 13])).to_parquet(
+                root / 'catalog.parquet')
+            path = root / 'raw.parquet'
+            pd.DataFrame(
+                dict(ENTITY=[1, 1, 1], CLASS=[12, 10, 11],
+                     SCORE=[.1, .3, .1])).to_parquet(path)
+            case = dict(metric='recall@2', raw_limit=3,
+                        catalog='catalog.parquet')
+            result = worker.prediction_values([path],
+                                              pd.DataFrame(dict(ENTITY1=[1])),
+                                              case, root / 'sort', root)
+            self.assertEqual(
+                result,
+                dict(entity_ids=[1], ranked_ids=[[10, 11]], values=[[.3, .1]]))
+
     def test_gpu_class_accepts_a_host_or_driver_replacement(self):
         self.assertTrue(SOURCE.with_name('weekly_worker.py').is_file())
         worker = importlib.util.module_from_spec(WORKER_SPEC)

@@ -70,7 +70,9 @@ Each case also binds these relative data paths:
 Ranking cases also declare `raw_limit`. The reader sorts raw Parquet by entity,
 descending score, and class. It uses one thread and a 2 GB memory limit, with
 spill outside the evidence tree. It rejects incomplete populations, invalid
-catalog keys, duplicate coordinates, and an ambiguous cutoff in capped output.
+catalog keys, and duplicate coordinates. It keeps the approved public top-K
+behavior when the returned boundary has ties. Reference replay still requires
+the same stored item order and score tolerance.
 
 All immutable files under the prepared snapshot and staging directories must
 appear in the checksum map and the case's file list. Exclude the native index's

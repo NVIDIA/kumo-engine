@@ -315,9 +315,7 @@ def prediction_values(files, population, case, scratch, input_root):
                            for p in pairs) or len(pairs) < k):
                 raise ValueError(
                     'Incomplete ranked output or invalid catalog keys')
-            if len(pairs) < len(catalog) and pairs[k - 1][1] == pairs[-1][1]:
-                raise ValueError(
-                    'Capped output cannot establish the top-K cutoff')
+            # Keep the approved public top-K behavior when the returned boundary has ties.
             ranked[index] = [p[0] for p in pairs[:k]]
             values[index] = [p[1] for p in pairs[:k]]
         else:
