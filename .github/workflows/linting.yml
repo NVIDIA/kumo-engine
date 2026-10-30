@@ -30,7 +30,7 @@ jobs:
 
       - name: Check for lockfile-only changes
         id: lockfile-only
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             uv.lock
@@ -62,7 +62,7 @@ jobs:
 
       - name: Check for lockfile-only changes
         id: lockfile-only
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             uv.lock
@@ -94,7 +94,7 @@ jobs:
 
       - name: Check for lockfile-only changes
         id: lockfile-only
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             uv.lock
@@ -175,7 +175,7 @@ jobs:
 
       - name: Check for lockfile-only changes
         id: lockfile-only
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             uv.lock
@@ -208,14 +208,14 @@ jobs:
 
       - name: Check for deployment shell changes
         id: deploy-shell-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             deploy/**/*.sh
 
       - name: Check for deployment Terraform changes
         id: deploy-terraform-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             deploy/azure/terraform/**/*.tf
@@ -225,14 +225,14 @@ jobs:
 
       - name: Check for deployment Packer changes
         id: deploy-packer-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             deploy/**/*.pkr.hcl
 
       - name: Check for deployment test changes
         id: deploy-test-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             deploy/**
@@ -317,7 +317,7 @@ jobs:
 
       - name: Check for lockfile-only changes
         id: lockfile-only
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             uv.lock
@@ -329,7 +329,7 @@ jobs:
       # the entire workflow
       - name: Check for only ui file changes
         id: ui-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             ui/**
@@ -395,7 +395,7 @@ jobs:
 
       - name: Check for lockfile-only changes
         id: lockfile-only
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             uv.lock
@@ -407,7 +407,7 @@ jobs:
       # the entire workflow
       - name: Check for only ui related file changes
         id: ui-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
             ui/**
