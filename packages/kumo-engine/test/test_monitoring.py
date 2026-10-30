@@ -456,9 +456,10 @@ def test_score_drift(snapshots, classifier, monkeypatch):
     assert report.holdout_truncated is False and report.bundle_matches
     assert (report.previous_psi, report.previous_ks,
             report.previous_wasserstein) == (0, 0, 0)
-    assert report.input_changes['tables.orders.rows'] == (len(
-        snapshots.orders[snapshots.orders.TS < CUTOFF]), len(snapshots.orders))
-    assert not any(key.endswith('_reverse') for key in report.input_changes)
+    sizes = (len(snapshots.orders[snapshots.orders.TS < CUTOFF]),
+             len(snapshots.orders))
+    assert report.input_changes == {'orders': sizes,
+                                    'orders.USER_ID → users': sizes}
     assert report.reasons == {}
     amount = report.features['orders']['AMT']
     assert amount['type'] == 'numerical'
@@ -589,7 +590,7 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
         wasserstein=0.125, holdout_truncated=True, bundle_matches=True,
         previous_prediction_id='p0', previous_psi=0.01, previous_ks=0.02,
         previous_wasserstein=0.03, input_changes={
-            'tables.orders.rows': (100, 104), 'edges.orders_users': (100, None)},
+            'orders': (100, 104), 'orders.USER_ID → users': (100, None)},
         reasons={'features': 'no drift statistics for the type of users.TS '
                  '(timestamp)'},
         features={'users': {
@@ -620,8 +621,8 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
              '2026-10-28-v6-churn: psi 0.01 · ks 0.02.'),
         Table('drift/input_changes', ('table or link', 'at training', 'now',
                                       'change %'),
-              (('orders', 100, 104, 4.0), ('edges.orders_users', 100, None,
-                                           None)), brief=True),
+              (('orders', 100, 104, 4.0),
+               ('orders.USER_ID → users', 100, None, None)), brief=True),
         Table('drift/features', ('table', 'column', 'type', 'psi',
                                  'mean shift', 'null-rate change'),
               (('users', 'PLAN', 'categorical', 0.75, None, None),
@@ -769,7 +770,7 @@ def test_drift_reads_snapshot_statistics_from_the_artifact_root(
     assert found.features == passed.features
     assert found.features['orders']['AMT']['delta']['num_unique'] > 0
     assert found.input_changes == passed.input_changes
-    assert found.input_changes['tables.orders.rows'] == (len(
+    assert found.input_changes['orders'] == (len(
         snapshots.orders[snapshots.orders.TS < CUTOFF]), len(snapshots.orders))
     assert not (tmp_path / 'fresh' / 'snapshots').exists()
 
@@ -824,7 +825,7 @@ def _encoding(root, columns):
     save_json(EncodersConfig(encoders={'users': {
         column: Index() if column == 'PLAN' else Numerical()
         for column in columns
-    }}), str(path))
+    }, 'train_table': {'LABEL': Numerical()}}), str(path))
     return SimpleNamespace(result=SimpleNamespace(
         manifest=None, artifact_paths={'encoders': str(path)}))
 

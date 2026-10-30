@@ -199,7 +199,9 @@ class DriftReport:
     holdout's; ``previous_*`` with ``previous_prediction_id``'s run. All are
     exact functions of both sides' score counts over the same bins
     (`kumo_core.score_drift`; ``wasserstein`` is in score units), and None
-    when the bins differ. ``features`` compares, per table and column the
+    when the bins differ. ``input_changes`` maps each table and link
+    (``orders.USER_ID → users``) whose size changed to its row or edge count
+    at training and now. ``features`` compares, per table and column the
     model encodes, the column statistics DiskGraph wrote when each snapshot
     was built (training snapshot, then scoring snapshot). ``tracking`` is
     the tracked run the report was written into.
@@ -456,7 +458,8 @@ def score_drift(trainer: Any, run: Any, *, previous: Any, snapshot: Any,
     totals = [side['counts'] for side in sides.values()]
     input_changes = None
     if all(isinstance(total, dict) for total in totals):
-        input_changes = _count_changes(*totals)
+        input_changes = _count_changes(*totals, {
+            **sides['training']['links'], **sides['scoring']['links']})
     else:
         reasons['input_changes'] = _missing('ingest statistics', sides,
                                             'counts')
@@ -707,10 +710,10 @@ def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
     if not changes:
         return []
     rows = tuple(
-        (key.removeprefix('tables.').removesuffix('.rows'), before, after,
+        (name, before, after,
          (after - before) / before * 100 if before and after is not None
          else None)
-        for key, (before, after) in changes.items())
+        for name, (before, after) in changes.items())
     brief = len(rows) <= 12
     return [Table('drift/input_changes',
                   ('table or link', 'at training', 'now', 'change %'), rows,
@@ -744,15 +747,30 @@ def _feature_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
 
 
 def _count_changes(before: Mapping[str, Mapping[str, int]],
-                   after: Mapping[str, Mapping[str, int]]
-                   ) -> Dict[str, Tuple[Any, Any]]:
+                   after: Mapping[str, Mapping[str, int]],
+                   links: Mapping[str, str]) -> Dict[str, Tuple[Any, Any]]:
+    r"""The tables, then the ``links``, whose row or edge count changed."""
     changes = {}
-    for kind, key in (('rows', 'tables.{}.rows'), ('edges', 'edges.{}')):
+    for kind in ('rows', 'edges'):
         old, new = before.get(kind) or {}, after.get(kind) or {}
         for name in sorted(set(old) | set(new)):
             if not name.endswith('_reverse') and old.get(name) != new.get(name):
-                changes[key.format(name)] = (old.get(name), new.get(name))
+                changes[links.get(name, name)] = (old.get(name), new.get(name))
     return changes
+
+
+def _links(config: Any) -> Dict[str, str]:
+    r"""``<table>.<fkey> → <target>`` by DiskGraph's
+    ``<table>_<fkey>_to_<target>_<pkey>`` edge name."""
+    tables = (config.get('tables') if isinstance(config, dict) else None) or ()
+    keys = {table.get('name'): table.get('primary_key') for table in tables}
+    return {
+        f"{table.get('name')}_{fkey.get('src_column')}_to_"
+        f"{fkey.get('dst_table')}_{keys.get(fkey.get('dst_table'))}":
+        f"{table.get('name')}.{fkey.get('src_column')} → "
+        f"{fkey.get('dst_table')}"
+        for table in tables for fkey in table.get('fkeys') or ()
+    }
 
 
 def _ns(value: Any) -> int:
@@ -785,7 +803,7 @@ _SMOOTHING = 1e-6
 def _features(trainer: Any, sides: Mapping[str, Mapping[str, Any]],
               reasons: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
     r"""Per-column statistic changes between the build-time ``col_stats.json``
-    of the training and scoring snapshots, for the columns the model
+    of the training and scoring snapshots, for the snapshot columns the model
     encodes. Never raises; gaps go to ``reasons['features']``."""
     try:
         before, after = (side['col_stats'] for side in sides.values())
@@ -800,6 +818,8 @@ def _features(trainer: Any, sides: Mapping[str, Mapping[str, Any]],
         features: Dict[str, Dict[str, Any]] = {}
         absent, uncompared = [], []
         for table, columns in sorted(used.items()):
+            if table not in before and table not in after:
+                continue
             for column in sorted(columns):
                 old = (before.get(table) or {}).get(column)
                 new = (after.get(table) or {}).get(column)
@@ -845,8 +865,8 @@ _NAMED_BY = {'training': "the model's manifest", 'scoring': "the run's manifest"
 def _snapshot_stats(trainer: Any, run: Any, snapshot: Any,
                     training_snapshot: Any,
                     root: Any) -> Dict[str, Dict[str, Any]]:
-    r"""The build-time ``col_stats.json`` and ingest counts of the training
-    and scoring snapshots: those passed, else those the manifests name, from
+    r"""The build-time ``col_stats.json``, ingest counts and link names of
+    the training and scoring snapshots: those passed, else those the manifests name, from
     the local snapshot store or the artifact ``root``. Never raises."""
     model = getattr(getattr(trainer, 'result', None), 'manifest', None)
     sides = {}
@@ -861,6 +881,7 @@ def _snapshot_stats(trainer: Any, run: Any, snapshot: Any,
         sides[side] = {
             'named': passed is not None or snapshot_id is not None,
             'col_stats': read('col_stats.json'),
+            'links': _links(read('diskgraph_config.json')),
             'counts': {
                 'rows': dict(stats.get('source_rows_by_table', {})),
                 'edges': dict(stats.get('edge_counts', {})),
