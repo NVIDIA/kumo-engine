@@ -194,9 +194,9 @@ def test_target_edges_are_even_bins_without_a_histogram(tmp_path):
     edges = tuple(sorted({*(4.0 * i for i in range(51)), 25.0}))
     assert target_edges(tmp_path) == edges
     assert split_summaries(tmp_path) == [
-        Table('data/splits', ('split', 'rows', 'mean', 'min', 'max'),
-              (('train', 80, 30.5, 0.0, 200.0), ('test', 10, 1.5, -1.0, 9.0)),
-              brief=True),
+        Table('data/splits', ('split', 'rows', 'distinct entities (approx.)',
+                              'target mean'),
+              (('train', 80, 20, 30.5), ('test', 10, None, 1.5)), brief=True),
         Note('notes', 'Target histograms: 50 equal bins + 1 quartile edge.'),
     ]
     assert _bins_note({'histogram': {'bins': [0, 10, 20, 30]},

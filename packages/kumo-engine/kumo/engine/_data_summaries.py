@@ -46,8 +46,7 @@ _MIN_ROWS = 10
 def split_summaries(staging_dir: Path) -> List[Summary]:
     r"""The brief table ``data/splits``: each split's rows, entities (by
     the query's entity table) and label balance, its positive rate or the
-    label's mean, minimum and maximum; and a note naming a numerical
-    target's bins."""
+    label's mean; and a note naming a numerical target's bins."""
     stats = _read(staging_dir / 'split_stats.json')
     tables = {split: stats.get(f'{split}_table_stats') for split in _SPLITS}
     tables = {split: table for split, table in tables.items()
@@ -56,8 +55,8 @@ def split_summaries(staging_dir: Path) -> List[Summary]:
                for split, table in tables.items()}
     if any(_number(target.get('target_mean')) is not None
            for target in targets.values()):
-        columns = ('mean', 'min', 'max')
-        label = {name: f'target_{name}' for name in columns}
+        columns, label = ('entities', 'target mean'), {
+            'target mean': 'target_mean'}
     elif any(set(target.get('count') or {}) <= {'true', 'false'}
              and (target.get('count') or {}) for target in targets.values()):
         columns, label = ('entities', 'positive rate'), {}
