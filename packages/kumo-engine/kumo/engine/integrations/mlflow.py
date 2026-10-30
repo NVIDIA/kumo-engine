@@ -53,6 +53,7 @@ from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 from kumo.engine import _card
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
+from kumo.engine._summary_tables import SummaryTables
 from kumo.engine._tracking import (
     DROPPED_PARAMS,
     RegistrationError,
@@ -703,12 +704,8 @@ class MlflowTracking:
                                    if s.role != 'model'})
         if pending.tags:
             self._log_tags(run_id, pending.tags)
-        self._write_tables(run_id, [
-            *(_series_table(name, x_label, columns)
-              for name, (x_label, columns) in pending.series.items()),
-            *(_histogram_table(name, histograms)
-              for name, histograms in pending.histograms.items()),
-            *pending.tables])
+        self._write_tables(run_id, [*pending.grouped.tables(),
+                                    *pending.tables])
         if pending.datasets:
             with self.target.scope():
                 self._client.log_inputs(run_id, datasets=sorted(
@@ -723,21 +720,13 @@ class MlflowTracking:
         self._pending.tags[summary.name] = summary.value
 
     def _log_series(self, summary: Series) -> None:
-        parent, _, column = summary.name.rpartition('/')
-        x_label, columns = self._pending.series.setdefault(
-            parent or summary.name, (summary.x_label, {}))
-        columns[column] = dict(summary.points)
+        self._pending.grouped.add_series(summary)
 
     def _log_curve(self, summary: Curve) -> None:
-        self._log_series(summary.x)
-        self._log_series(summary.y)
+        self._pending.grouped.add_curve(summary)
 
     def _log_histogram(self, summary: Histogram) -> None:
-        name = summary.name.rpartition('/')[0] or summary.name
-        group = self._pending.histograms.get(name)
-        if group and group[0].edges != summary.edges:
-            name = summary.name
-        self._pending.histograms.setdefault(name, []).append(summary)
+        self._pending.grouped.add_histogram(summary)
 
     def _log_table(self, summary: Table) -> None:
         if summary.brief:
@@ -872,44 +861,9 @@ class _Pending:
 
     scalars: List[Scalar] = field(default_factory=list)
     tags: Dict[str, str] = field(default_factory=dict)
-    series: Dict[str, Tuple[str, Dict[str, Dict[int, float]]]] = field(
-        default_factory=dict)
-    histograms: Dict[str, List[Histogram]] = field(default_factory=dict)
+    grouped: SummaryTables = field(default_factory=SummaryTables)
     tables: List[Table] = field(default_factory=list)
     datasets: List[Any] = field(default_factory=list)
-
-
-def _series_table(name: str, x_label: str,
-                  columns: Mapping[str, Mapping[int, float]]) -> Table:
-    r"""Series ``<name>/<column>`` as one table: the step, then a column
-    per series, a row per step."""
-    steps = sorted({step for points in columns.values() for step in points})
-    return Table(name, (x_label, *columns), tuple(
-        (step, *(points.get(step) for points in columns.values()))
-        for step in steps))
-
-
-def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
-    r"""Histograms ``<name>/<column>`` over the same edges as one table: a
-    bin per row from ``from`` to ``to`` (open at both ends), a count and a
-    cumulative share per histogram."""
-    edges = histograms[0].edges
-    columns = [h.name.rpartition('/')[2] for h in histograms]
-    shares = []
-    for histogram in histograms:
-        total, running = sum(histogram.counts), 0.0
-        cumulative = []
-        for count in histogram.counts:
-            running += count
-            cumulative.append(running / total if total else None)
-        shares.append(cumulative)
-    return Table(name, (
-        'from', 'to', *columns,
-        *(f'{column} cumulative share' for column in columns)), tuple(
-            (low, high, *(h.counts[i] for h in histograms),
-             *(share[i] for share in shares))
-            for i, (low, high) in enumerate(zip((None, *edges),
-                                                (*edges, None)))))
 
 
 _CARD_END = re.compile(r'<!-- /kumo:card sha256=([0-9a-f]{16}) -->')
