@@ -445,7 +445,7 @@ def test_records_of_the_recorded_fit():
     records = replay()
 
     fit = records[FIT]
-    assert fit.name == 'fit-20261029-061800-ents-regression'
+    assert fit.name == 'fit-ents-regression-20261029-061800'
     assert (fit.model_label, fit.started) == ('ents-regression',
                                               CONTEXT.started)
     assert fit.tags == {'team': 'ents', 'kumo.kind': 'fit',
@@ -649,8 +649,8 @@ def test_prediction_record_of_the_recorded_run():
         'predictions': ArtifactStats(rows=50, counts=_counted(SCORES))})
     record = prediction_record(manifest)
 
-    assert (record.name, record.model_label) == ('2024-04-29-model-bbbbbbbb',
-                                                 'model')
+    assert (record.name, record.model_label) == (
+        'predict-model-bbbbbbbb-2024-04-29', 'model')
     assert (record.started, record.finished) == (
         datetime(2026, 10, 21, tzinfo=timezone.utc),
         datetime(2026, 10, 21, 0, 1, tzinfo=timezone.utc))
@@ -683,14 +683,15 @@ def test_prediction_record_of_the_recorded_run():
     assert json.loads(record.artifacts[PROVENANCE_FILE]) == manifest.to_dict()
 
 
-@pytest.mark.parametrize('anchors,snapshot,as_of', [
-    (['2026-10-28T23:00:00-02:00', '2026-10-28T00:00:00'], {}, '2026-10-28..'
-     '2026-10-29'),
-    ([], {'created_at': '2026-10-27T10:00:00+00:00'}, '2026-10-27'),
-    ([], {}, '2026-10-21'),
+@pytest.mark.parametrize('anchors,snapshot,as_of,name', [
+    (['2026-10-28T23:00:00-02:00', '2026-10-28T00:00:00'], {},
+     '2026-10-28..2026-10-29', 'predict-model-bbbbbbbb-2026-10-28..2026-10-29'),
+    ([], {'created_at': '2026-10-27T10:00:00+00:00'}, '2026-10-27',
+     'predict-model-bbbbbbbb-2026-10-27-000000'),
+    ([], {}, '2026-10-21', 'predict-model-bbbbbbbb-2026-10-21-000000'),
 ])
 def test_a_prediction_is_as_of_its_anchors_else_its_snapshot(
-        anchors, snapshot, as_of):
+        anchors, snapshot, as_of, name):
     manifest = PredictionManifest.from_dict({
         **PREDICTION_MANIFEST.to_dict(),
         'prediction_table': {**PREDICTION_MANIFEST.prediction_table.to_dict(),
@@ -699,7 +700,20 @@ def test_a_prediction_is_as_of_its_anchors_else_its_snapshot(
             'kind': 'snapshot', 'schema_version': 1, 'id': 'g@d',
             **snapshot}}})
 
-    assert prediction_record(manifest).tags['kumo.as_of'] == as_of
+    record = prediction_record(manifest)
+    assert (record.tags['kumo.as_of'], record.name) == (as_of, name)
+
+
+@pytest.mark.parametrize('kind,core,suffix,name', [
+    ('fit', 'Fit-nightly', None, 'Fit-nightly'),
+    ('fit', 'fitness', None, 'fit-fitness'),
+    ('prediction', 'PREDICT_nightly', '-2024-04-29',
+     'PREDICT_nightly-2024-04-29'),
+])
+def test_a_run_name_starts_with_its_kind_once(kind, core, suffix, name):
+    from kumo.engine._tracking import run_name
+
+    assert run_name(kind, core, suffix) == name
 
 
 def test_prediction_record_of_a_partial_manifest():
@@ -732,7 +746,7 @@ def test_prediction_run_is_named_and_tagged_after_its_registered_model():
             platform='mlflow', run_id='r1', url='https://mlflow/#/runs/r1')))
     record = prediction_record(PREDICTION_MANIFEST, model=model)
 
-    assert record.name == '2024-04-29-v3-churn'
+    assert record.name == 'predict-churn-v3-2024-04-29'
     assert record.tags.items() >= {
         'kumo.model_name': 'churn', 'kumo.model_version': '3',
         'kumo.fit_run_id': 'r1'}.items()

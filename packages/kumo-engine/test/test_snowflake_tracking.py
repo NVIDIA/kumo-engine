@@ -5,10 +5,9 @@
 import inspect
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import Optional
 from unittest import mock
 
 import _snowflake_experiment_fake
@@ -171,8 +170,9 @@ def test_location_defaults_to_the_session_not_the_last_fit(fake):
     assert not any(call[0].startswith('run.') for call in fake._instance.calls)
 
 
-@pytest.mark.parametrize('taken', ['FIT', 'MYXRUN'])
-def test_an_existing_run_is_never_resumed(fake, taken, caplog):
+@pytest.mark.parametrize('taken,run_name,new', [
+    ('FIT', 'fit', 'FIT_2'), ('FIT_MYXRUN', 'my_run', 'FIT_MY_RUN_2')])
+def test_an_existing_run_is_never_resumed(fake, taken, run_name, new, caplog):
     session = FakeSession()
     user = fake(session)
     user.set_experiment('ents')
@@ -181,13 +181,11 @@ def test_an_existing_run_is_never_resumed(fake, taken, caplog):
         user.end_run()
     else:
         user._run = None  # still running, in another process
-    run_name = 'fit' if taken == 'FIT' else 'my_run'
 
     tracking = _tracking(session, run_name=run_name)
     _replay(tracking)
 
-    new = tracking.run_id
-    assert new == f'{run_name}_2'.upper()
+    assert tracking.run_id == new
     assert set(user.runs) == {taken, new}
     assert user.runs[taken]['params'] == {}
     assert user.runs[new]['status'] == 'FINISHED'
@@ -213,14 +211,6 @@ def test_metric_and_param_limits(fake, monkeypatch):
     assert run['params']['kumo.dropped_params'] == '1'
     assert 'note' not in run['params']
     assert run['params']['level'] == '2'
-
-
-def test_quoted_run_names_are_taken_only_by_their_exact_name():
-    from kumo.engine.integrations.snowflake import _taken
-
-    assert _taken('"MyRun"', ['MyRun'])
-    assert not _taken('"MyRun"', ['MYRUN'])
-    assert _taken('my_run', ['MYXRUN'])
 
 
 def test_the_users_session_is_not_altered(fake):
@@ -318,7 +308,7 @@ REGISTERED = SimpleNamespace(
     registered_model=PublishedModel('churn', '3', 'DB.ML.CHURN/3'),
     registered_alias=None,
     manifest=SimpleNamespace(holdout=None, tracking=TrackingRef(
-        platform='snowflake', run_id='CHURN_FIT_20261029_061800', url=None)))
+        platform='snowflake', run_id='FIT_CHURN_20261029_061800', url=None)))
 
 
 def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
@@ -372,7 +362,7 @@ def test_a_prediction_run_names_its_model_and_lasts_as_long_as_it_ran(fake):
     assert run['params']['kumo.model'] == 'churn/3'
     assert run['artifacts']['run_card.md'] == (
         '50 rows as of 2024-04-29 · v3 churn\n'
-        'Model: `churn` v3, trained by `CHURN_FIT_20261029_061800`.\n\n'
+        'Model: `churn` v3, trained by `FIT_CHURN_20261029_061800`.\n\n'
         'Full lineage: `_provenance.json`.')
     assert ('duration_seconds', 60.0, 0) in run['metrics']
 
@@ -387,14 +377,14 @@ def _prediction(as_of, version=None, label='churn'):
 @pytest.mark.parametrize('record, name', [
     (RunRecord(tags={'kumo.kind': 'fit'}, model_label='kumo-demo-churn',
                started=datetime(2026, 10, 29, 6, 18, 5, tzinfo=timezone.utc)),
-     'KUMO_DEMO_CHURN_FIT_20261029_061805'),
+     'FIT_KUMO_DEMO_CHURN_20261029_061805'),
     (_prediction('2026-10-29', '6', 'kumo-demo-churn'),
-     'AS_OF_20261029_V6_KUMO_DEMO_CHURN'),
-    (_prediction('2026-10-29', 'V2'), 'AS_OF_20261029_V2_CHURN'),
+     'PREDICT_KUMO_DEMO_CHURN_V6_2026_10_29'),
+    (_prediction('2026-10-29', 'V2'), 'PREDICT_CHURN_V2_2026_10_29'),
     (_prediction('2026-10-28..2026-10-29', label='users-binary_classification'),
-     'AS_OF_20261028_20261029_USERS_BINARY_CLASSIFICATION_BBBBBBBB'),
+     'PREDICT_USERS_BINARY_CLASSIFICATION_BBBBBBBB_2026_10_28_2026_10_29'),
 ])
-def test_runs_are_named_by_what_differs(fake, record, name):
+def test_runs_are_named_by_kind_model_version_and_date(fake, record, name):
     tracking = _tracking()
     tracking.start(record)
     tracking.finish(record, None)
@@ -408,13 +398,13 @@ def test_a_repeated_prediction_run_gets_a_number(fake, caplog):
         tracking.log_prediction_run(_prediction('2026-10-29', '6'))
 
     assert list(fake._instance.runs) == [
-        'AS_OF_20261029_V6_CHURN', 'AS_OF_20261029_V6_CHURN_2',
-        'AS_OF_20261029_V6_CHURN_3']
+        'PREDICT_CHURN_V6_2026_10_29', 'PREDICT_CHURN_V6_2026_10_29_2',
+        'PREDICT_CHURN_V6_2026_10_29_3']
     assert {run['status'] for run in fake._instance.runs.values()} == {
         'FINISHED'}
-    assert ('Snowflake run AS_OF_20261029_V6_CHURN already exists in '
-            'experiment ents; recording this run as AS_OF_20261029_V6_CHURN_3'
-            ) in caplog.text
+    assert ('Snowflake run PREDICT_CHURN_V6_2026_10_29 already exists in '
+            'experiment ents; recording this run as '
+            'PREDICT_CHURN_V6_2026_10_29_3') in caplog.text
 
 
 def _with_runs(fake, count):
@@ -429,7 +419,7 @@ def test_an_experiment_near_its_run_limit_warns(fake, caplog):
 
     _tracking(session).log_prediction_run(_prediction('2026-10-29', '6'))
 
-    assert 'AS_OF_20261029_V6_CHURN' in fake._instance.runs
+    assert 'PREDICT_CHURN_V6_2026_10_29' in fake._instance.runs
     assert ('Snowflake experiment ents holds 450 of the 500 runs it can; '
             'track into a new experiment before it is full') in caplog.text
 
@@ -451,17 +441,12 @@ def test_a_full_experiment_is_not_tracked_into(fake, caplog):
     assert 'the prediction run is not tracked' in caplog.text
 
 
-@dataclass(frozen=True)
-class _Monitoring(RunRecord):
-    prediction_run: Optional[str] = None
-
-
-def _monitoring(monitor, prediction_run=None):
-    return _Monitoring(
+def _monitoring(monitor):
+    return RunRecord(
         tags={'kumo.kind': 'monitoring', 'kumo.monitor': monitor,
               'kumo.as_of': '2026-10-29', 'kumo.model_name': 'churn',
               'kumo.model_version': '6', 'kumo.bundle_id': 'b' * 64},
-        model_label='churn', prediction_run=prediction_run, summaries=(
+        model_label='churn', summaries=(
             Scalar('drift/psi_prev', 0.01),
             Table('drift/inputs/orders', ('column', 'psi'),
                   (('AMOUNT', 0.12),)),
@@ -470,17 +455,29 @@ def _monitoring(monitor, prediction_run=None):
             Note('notes', 'Labels mature 2026-11-05.')))
 
 
-def test_each_monitoring_call_is_a_run_named_after_its_prediction(fake):
+@pytest.mark.parametrize('record, name', [
+    (RunRecord(tags={'kumo.kind': 'fit'}), 'FIT_NIGHTLY'),
+    (_prediction('2026-10-29', '6'), 'PREDICT_NIGHTLY_2026_10_29'),
+    (_monitoring('drift'), 'DRIFT_NIGHTLY_2026_10_29'),
+    (_monitoring('evaluate'), 'EVAL_NIGHTLY_2026_10_29'),
+])
+def test_a_user_run_name_names_every_run(fake, record, name):
+    tracking = _tracking(run_name='nightly')
+    tracking.start(record)
+    tracking.finish(record, None)
+
+    assert list(fake._instance.runs) == [name]
+
+
+def test_each_monitoring_call_is_a_run_named_like_its_prediction(fake):
     tracking = _tracking()
-    tracking.log_monitoring(_monitoring('drift', 'AS_OF_20261029_V6_CHURN_2'))
-    tracking.log_monitoring(_monitoring('evaluate'))
-    tracking.log_monitoring(_monitoring('drift'))
-    tracking.log_monitoring(_monitoring('drift'))
+    for monitor in ('drift', 'evaluate', 'drift'):
+        tracking.log_monitoring(_monitoring(monitor))
 
     assert list(fake._instance.runs) == [
-        'AS_OF_20261029_V6_CHURN_2_DRIFT', 'AS_OF_20261029_V6_CHURN_EVAL',
-        'AS_OF_20261029_V6_CHURN_DRIFT', 'AS_OF_20261029_V6_CHURN_DRIFT_2']
-    run = fake._instance.runs['AS_OF_20261029_V6_CHURN_2_DRIFT']
+        'DRIFT_CHURN_V6_2026_10_29', 'EVAL_CHURN_V6_2026_10_29',
+        'DRIFT_CHURN_V6_2026_10_29_2']
+    run = fake._instance.runs['DRIFT_CHURN_V6_2026_10_29']
     assert run['status'] == 'FINISHED'
     assert ('drift/psi_prev', 0.01, 0) in run['metrics']
     assert set(run['artifacts']) == {'drift/inputs/orders.json', 'run_card.md'}

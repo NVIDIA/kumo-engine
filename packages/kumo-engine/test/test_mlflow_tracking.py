@@ -115,7 +115,7 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
         if run.data.tags.get('mlflow.parentRunId') == outer.info.run_id
     ]
     assert tracking.run_id == parent.info.run_id
-    assert re.fullmatch(r'fit-\d{8}-\d{6}-ents-regression',
+    assert re.fullmatch(r'fit-ents-regression-\d{8}-\d{6}',
                         parent.info.run_name)
     children = sorted(
         (run for run in runs
@@ -231,15 +231,20 @@ def test_mlflow_error_ends_runs_failed_and_is_not_raised(
     assert statuses == {'FAILED'}
 
 
-def test_a_user_run_name_wins_over_the_default(tracking_uri):
+def test_a_user_run_name_names_every_run(tracking_uri):
+    from test_tracking_contract import PREDICTION_MANIFEST
+
+    from kumo.engine._tracking import track_prediction
     from kumo.engine.integrations.mlflow import MlflowTracking
 
-    replay(MlflowTracking(run_name='nightly', log_system_metrics=False))
+    tracking = MlflowTracking(run_name='nightly', log_system_metrics=False)
+    replay(tracking)
     join_tracking_threads()
+    track_prediction(PREDICTION_MANIFEST, tracking)
 
     names = {run.info.run_name for run in _runs(mlflow.MlflowClient())
              if 'mlflow.parentRunId' not in run.data.tags}
-    assert names == {'nightly'}
+    assert names == {'fit-nightly', 'predict-nightly-2024-04-29'}
 
 
 SAGEMAKER = ('arn:aws:sagemaker:us-west-2:account:'
@@ -310,7 +315,7 @@ def test_a_tracked_fit_on_sagemaker_says_how_to_open_the_ui(
         tracker.finish(run_record(fit_spec(CONTEXT)), None)
     hints = [str(w.message) for w in caught if 'Studio' in str(w.message)]
     assert hints == ([] if command is None else [
-        "MLflow run 'fit-20261029-061800-ents-regression' in experiment "
+        "MLflow run 'fit-ents-regression-20261029-061800' in experiment "
         "'Default': MLflow's run links do not open on SageMaker: open the "
         f'MLflow UI from SageMaker Studio or at the URL `{command}` prints.'])
 
@@ -541,7 +546,8 @@ def test_prediction_run_nests_under_the_active_run(tracking_uri):
     assert 'mlflow.parentRunId' not in top.data.tags
     assert client.get_experiment(top.info.experiment_id).name == 'scores'
     assert (nested.info.run_name, top.info.run_name, top.info.status) == (
-        '2024-04-29-model-bbbbbbbb', '2024-04-29-model-bbbbbbbb-2',
+        'predict-model-bbbbbbbb-2024-04-29',
+        'predict-model-bbbbbbbb-2024-04-29-2',
         'FINISHED')
 
 
@@ -857,8 +863,8 @@ def test_a_fit_that_registers_is_renamed_with_its_trials(tracking_uri):
             name='main.ml.ents', version='3')}))
 
     assert sorted(run.info.run_name for run in _runs(mlflow.MlflowClient())
-                  ) == ['trial-1-v3-ents', 'trial-2-v3-ents',
-                        'trial-2-v3-ents-attempt-2', 'v3-ents']
+                  ) == ['fit-ents-v3', 'trial-1-fit-ents-v3',
+                        'trial-2-fit-ents-v3', 'trial-2-fit-ents-v3-attempt-2']
 
 
 def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
@@ -871,7 +877,7 @@ def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
 
     client = mlflow.MlflowClient()
     experiment = client.create_experiment('scores')
-    fit = client.create_run(experiment, run_name='v3-churn').info.run_id
+    fit = client.create_run(experiment, run_name='fit-churn-v3').info.run_id
     model = client.create_logged_model(experiment, source_run_id=fit)
     tracking = MlflowTracking('scores', log_system_metrics=False)
     trained = SimpleNamespace(
@@ -886,7 +892,7 @@ def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
     run = client.get_run(tracking.run_id)
     assert tracking_ref(tracking) == TrackingRef(
         platform='mlflow', run_id=run.info.run_id, experiment='scores',
-        run_name='2024-04-29-model-bbbbbbbb')
+        run_name='predict-model-bbbbbbbb-2024-04-29')
     assert (run.info.start_time, run.info.end_time) == (
         1792540800000, 1792540860000)
     assert [item.model_id for item in run.inputs.model_inputs] == [
@@ -895,7 +901,7 @@ def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
         'snapshot']
     assert run.data.tags['mlflow.note.content'].split('\n')[1] == (
         'Model: bundle `bbbbbbbb`, trained by '
-        f'[v3-churn](#/experiments/{experiment}/runs/{fit}).')
+        f'[fit-churn-v3](#/experiments/{experiment}/runs/{fit}).')
 
 
 def test_a_run_reference_shows_as_a_link_in_a_notebook():

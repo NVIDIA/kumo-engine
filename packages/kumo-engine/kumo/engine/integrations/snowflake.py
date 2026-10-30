@@ -38,6 +38,8 @@ from kumo.engine._tracking import (
     RunRecord,
     by_step,
     record_failure,
+    run_name,
+    versioned,
 )
 from kumo.engine.connector._extras import import_provider
 
@@ -62,9 +64,8 @@ class SnowflakeTracking:
     params. Snowflake has no dataset inputs, so a fit's
     source tables are not recorded as inputs. The Snowpark session's
     parameters are not changed. As ``kumo.MLOps(tracking=...)``, it also
-    records each prediction run as one run, and each monitoring call as one
-    run named after the prediction run it checks, with ``_DRIFT`` or
-    ``_EVAL``; ``run_name`` and ``tags`` apply to fit runs only.
+    records each prediction run and each monitoring call as one run;
+    ``tags`` apply to fit runs only.
 
     Args:
         source: a ``SnowflakeConnector``, whose identity opens the session
@@ -76,9 +77,13 @@ class SnowflakeTracking:
         database: `None` uses the session's current database.
         schema_name: `None` uses the session's current schema, or ``PUBLIC``
             when `database` is given or the session has none.
-        run_name: name of the fit run. `None` names it after its registry
-            model and UTC start, as ``CHURN_FIT_20261027_061800``; a taken
-            name gets ``_2``, ``_3`` and so on.
+        run_name: replaces ``<MODEL>_V<version>`` in each run's name:
+            ``FIT_<RUN_NAME>``, ``PREDICT_<RUN_NAME>_<as-of date>``, and
+            ``DRIFT_`` or ``EVAL_`` for a monitoring call. `None` names a
+            fit ``FIT_<MODEL>_<YYYYMMDD_HHMMSS>`` (its UTC start) and the
+            others ``PREDICT_<MODEL>_V<version>_<as-of date>``
+            (``<MODEL>_<bundle id[:8]>`` for a model not registered). A
+            taken name gets ``_2``, ``_3`` and so on.
         tags: extra tags for the fit run.
         native_model_lineage: keep the run open as a context for the whole
             fit, so models registered meanwhile are linked to it.
@@ -200,10 +205,8 @@ class SnowflakeTracking:
         ]
         self._check_room(len(existing), record.tags.get('kumo.kind'))
         self._started = getattr(record, 'started', None) or _now()
-        fit = record.tags.get('kumo.kind') == 'fit'
         self._run = tracking.start_run(self._new_run_name(
-            existing, self.run_name if fit and self.run_name else
-            _snowflake_name(record, self._started)))
+            existing, _snowflake_name(record, self._started, self.run_name)))
         self.run_id = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
@@ -293,7 +296,7 @@ class SnowflakeTracking:
         name, number = run_name, 1
         while _taken(name, existing):
             number += 1
-            name = _suffixed(run_name, str(number))
+            name = f'{run_name}_{number}'
         if number > 1:
             logger.warning(
                 'Snowflake run %s already exists in experiment %s; recording '
@@ -433,33 +436,25 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _snowflake_name(record: RunRecord, started: datetime) -> str:
-    r"""``<MODEL>_FIT_<YYYYMMDD_HHMMSS>`` for a fit started at
-    ``started``; ``AS_OF_<YYYYMMDD>_V<version>_<MODEL>`` for a prediction,
-    ``AS_OF_<YYYYMMDD>_<MODEL>_<bundle id[:8]>`` if its model is not
-    registered, and ``AS_OF_<first>_<last>_...`` for several anchors; for
-    a monitoring call, the name of the prediction run it checks with
-    ``_DRIFT`` or ``_EVAL``."""
+def _snowflake_name(record: RunRecord, started: datetime,
+                    named: Optional[str] = None) -> str:
+    r"""The run's name (see `SnowflakeTracking`) as an upper-case
+    identifier, for a fit started at ``started``; the tracker's ``named``
+    run name replaces the model and version."""
     tags = record.tags
     kind = tags.get('kumo.kind')
-    model = (getattr(record, 'model_label', None) or 'model').replace('"', '')
+    model = getattr(record, 'model_label', None) or 'model'
     if kind == 'fit':
-        return _identifier(
-            model, 'FIT',
-            started.astimezone(timezone.utc).strftime('%Y%m%d_%H%M%S'))
+        return _identifier(run_name('fit', named or (
+            f"{model}-{started.astimezone(timezone.utc):%Y%m%d-%H%M%S}")))
     version = tags.get('kumo.model_version')
-    prediction = getattr(record, 'prediction_run', None) or _identifier(
-        'AS_OF', tags.get('kumo.as_of', '').replace('-', '').replace('..', '_'),
-        *([f'V{version}' if version.isdigit() else version, model]
-          if version else [model, tags.get('kumo.bundle_id', '')[:8]]))
-    if kind != 'monitoring':
-        return prediction
-    return _identifier(prediction, 'EVAL' if tags.get('kumo.monitor')
-                       == 'evaluate' else 'DRIFT')
-
-
-def _identifier(*parts: str) -> str:
-    return _run_identifier('_'.join(filter(None, parts))).upper()
+    core = named or (versioned(model, version) if version else
+                     f"{model}-{tags.get('kumo.bundle_id', '')[:8]}")
+    suffix = record.name_suffix or (
+        f"-{tags['kumo.as_of']}" if tags.get('kumo.as_of') else '')
+    word = (kind if kind != 'monitoring' else
+            'eval' if tags.get('kumo.monitor') == 'evaluate' else 'drift')
+    return _identifier(run_name(word, core, suffix))
 
 
 def _model_param(record: RunRecord) -> Dict[str, str]:
@@ -473,24 +468,14 @@ def _model_param(record: RunRecord) -> Dict[str, str]:
             f"{tags['kumo.model_name']}/{tags['kumo.model_version']}"}
 
 
-def _run_identifier(name: str) -> str:
-    r"""``name`` as an unquoted identifier: snowflake-ml puts a run's name
-    into its artifact URIs, where a quoted name is not found."""
-    name = re.sub(r'[^A-Za-z0-9_]', '_', name)
-    return name if re.match(r'[A-Za-z_]', name) else f'_{name}'
-
-
-def _suffixed(name: str, suffix: str) -> str:
-    if len(name) > 1 and name[0] == name[-1] == '"':
-        return f'{name[:-1]}_{suffix}"'
-    return f'{name}_{suffix}'
+def _identifier(name: str) -> str:
+    r"""``name``, which starts with its kind, as an unquoted identifier:
+    snowflake-ml puts a run's name into its artifact URIs, where a quoted
+    name is not found."""
+    return re.sub(r'[^A-Za-z0-9_]+', '_', name).upper()
 
 
 def _taken(name: str, existing: List[str]) -> bool:
-    resolved = resolve_snowflake_identifier(name)
-    regex = ''.join('.*' if c == '%' else '.' if c == '_' else re.escape(c)
-                    for c in name)
-    return any(
-        other == resolved
-        or re.fullmatch(regex, other, re.IGNORECASE | re.DOTALL) is not None
-        for other in existing)
+    regex = ''.join('.' if c == '_' else re.escape(c) for c in name)
+    return any(re.fullmatch(regex, other, re.IGNORECASE | re.DOTALL)
+               for other in existing)

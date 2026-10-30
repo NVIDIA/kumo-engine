@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import warnings
@@ -67,10 +68,11 @@ class RunRecord:
     which each tracker logs in its own way, and ``description`` is the
     Markdown line under line 1 of the run's card (a fit's query). Trackers
     compose run names from ``model_label``, `model_label` of the model,
-    and from ``started`` and ``finished``, when the run's work started and
-    ended (UTC), known for a prediction run logged after its work. A
-    monitoring call's record names, in ``prediction_run``, the tracker's run
-    of the prediction it checks, when known."""
+    and ``name_suffix``, what follows the model in ``name`` (a prediction's
+    ``-<as-of date>``); ``started`` and ``finished`` are when the run's work
+    started and ended (UTC), known for a prediction run logged after its
+    work. A monitoring call's record names, in ``prediction_run``, the
+    tracker's run of the prediction it checks, when known."""
 
     name: Optional[str] = None
     params: Mapping[str, str] = field(default_factory=dict)
@@ -87,6 +89,7 @@ class RunRecord:
     started: Optional[datetime] = None
     finished: Optional[datetime] = None
     prediction_run: Optional[str] = None
+    name_suffix: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,7 @@ class RunSpec:
     model_label: Optional[str] = None
     started: Optional[datetime] = None
     finished: Optional[datetime] = None
+    name_suffix: Optional[str] = None
 
 
 INPUT_FIELDS = ('connector', 'location', 'version', 'version_kind')
@@ -240,6 +244,7 @@ def run_record(spec: RunSpec) -> RunRecord:
         model_label=spec.model_label,
         started=spec.started,
         finished=spec.finished,
+        name_suffix=spec.name_suffix,
     )
 
 
@@ -308,14 +313,17 @@ def prediction_record(manifest: 'PredictionManifest',
                         getattr(trained, 'query', None),
                         getattr(trained, 'task_type', None))
     as_of = _as_of(manifest)
+    suffix = f'-{as_of}' + ('' if table.anchors else
+                            f'-{_started(manifest):%H%M%S}')
     timings = manifest.timings
     window = getattr(getattr(model_manifest, 'holdout', None), 'window', None)
     return run_record(
         RunSpec(
             kind='prediction',
-            name=(f'{as_of}-{label}-{manifest.parents.model.id[:8]}'
-                  if registered is None else
-                  f'{as_of}-v{registered.version}-{label}'),
+            name=run_name('prediction', (
+                f'{label}-{manifest.parents.model.id[:8]}' if registered is None
+                else versioned(label, registered.version)), suffix),
+            name_suffix=suffix,
             model_label=label,
             started=_started(manifest),
             finished=(None if timings is None or not timings.finished_at
@@ -360,15 +368,21 @@ def prediction_parents(manifest: Optional['PredictionManifest']
             'task_type': getattr(training_table, 'task_type', None)}
 
 
-def run_name(kind: str, model: Any, started: datetime) -> str:
-    r"""``<kind>-<model>-v<version>-<YYYYMMDD-HHMM>`` (UTC) for a run
-    started at ``started`` with ``model``, a `TrainingResult`, or
-    ``<kind>-<YYYYMMDD-HHMM>`` if the model is not registered."""
-    registered = getattr(model, 'registered_model', None)
-    return '-'.join(filter(None, (
-        kind, None if registered is None else
-        f'{registered.name}-v{registered.version}',
-        started.astimezone(timezone.utc).strftime('%Y%m%d-%H%M'))))
+def run_name(kind: str, core: str, suffix: Optional[str] = None) -> str:
+    r"""``<kind>-<core><suffix>``: the kind as ``fit``, ``predict``, ``drift``
+    or ``eval``, not repeated when ``core`` already starts with it."""
+    word = _KIND_WORDS.get(kind, kind)
+    named = re.match(rf'{word}([-_]|$)', core, re.IGNORECASE)
+    return (core if named else f'{word}-{core}') + (suffix or '')
+
+
+_KIND_WORDS = {'prediction': 'predict'}
+
+
+def versioned(model: str, version: str) -> str:
+    r"""``<model>-v<version>``, or ``<model>-<version>`` for a version
+    named rather than numbered, as Snowflake's ``V2``."""
+    return f'{model}-v{version}' if version.isdigit() else f'{model}-{version}'
 
 
 def fit_run_id(manifest: Any) -> Optional[str]:

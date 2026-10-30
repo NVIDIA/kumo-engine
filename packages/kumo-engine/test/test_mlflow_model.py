@@ -64,7 +64,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     model, = mlflow.search_logged_models(output_format='list')
     assert (model.name, model.source_run_id) == ('m', parent.info.run_id)
     version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
-    assert parent.info.run_name == f'v{version.version}-m'
+    assert parent.info.run_name == f'fit-m-v{version.version}'
     assert (result.tracking.run_name, trainer.result.tracking.run_name) == (
         parent.info.run_name, parent.info.run_name)
     metrics = {metric.key: metric.value for metric in model.metrics}
@@ -612,7 +612,7 @@ def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
     fit = mlflow.get_run(result.tracking.run_id)
     model, = mlflow.MlflowClient().search_logged_models(fits)
     assert (published.version, fit.info.run_name, model.source_run_id,
-            model.name) == ('1', 'v1-m', fit.info.run_id, 'm')
+            model.name) == ('1', 'fit-m-v1', fit.info.run_id, 'm')
     assert {m.key: m.value for m in model.metrics} == model_metrics(result)
     assert fit.data.tags['kumo.model_version'] == '1'
     assert ' · v1 m · ' in fit.data.tags['mlflow.note.content'].split('\n')[0]

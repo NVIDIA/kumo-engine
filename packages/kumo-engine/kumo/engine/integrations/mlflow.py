@@ -63,6 +63,8 @@ from kumo.engine._tracking import (
     by_step,
     model_label,
     record_failure,
+    run_name,
+    versioned,
 )
 from kumo.engine._version import __version__
 from kumo.engine.connector._extras import import_provider
@@ -110,14 +112,18 @@ class MlflowTracking:
     not supported. As ``kumo.MLOps(tracking=...)``, it also records each
     prediction run as one run named after it, placed like a fit run, and
     writes each monitoring call into the prediction run it checks;
-    ``run_name`` and ``tags`` apply to fit runs only.
+    ``tags`` apply to fit runs only.
 
     Args:
         experiment_name: experiment for the fit run, created if missing.
             `None` uses MLflow's current experiment; required to record
             runs at a ``target``.
-        run_name: name of the fit run. `None` names it after its registry
-            model and UTC start, as ``fit-users-churn-20261027-0618``.
+        run_name: replaces ``<model>-v<version>`` in each run's name:
+            ``fit-<run_name>``, ``predict-<run_name>-<as-of date>``. `None`
+            names a fit ``fit-<model>-<YYYYMMDD-HHMMSS>`` (its UTC start),
+            then ``fit-<model>-v<version>`` once it registers a version, and
+            a prediction ``predict-<model>-v<version>-<as-of date>``
+            (``<model>-<bundle id[:8]>`` for a model not registered).
         log_system_metrics: sample CPU, memory, disk, network and (with
             ``nvidia-ml-py``) GPU usage on the fit run.
         tags: extra tags for the fit run.
@@ -382,13 +388,13 @@ class MlflowTracking:
                     self._client.create_experiment(name))
 
     def _rename_fit(self, fit: Any, published: PublishedModel) -> None:
-        r"""On its first registration, names the fit run, still named
-        ``fit-…``, ``v<version>-<model>`` with its trials, tags the version
-        on it and regenerates its card's first line."""
-        if not fit.run_name.startswith('fit-'):
+        r"""On its first registration, names the fit run, still named by
+        its start time, ``fit-<model>-v<version>`` with its trials, tags the
+        version on it and regenerates its card's first line."""
+        if not re.search(r'-\d{8}-\d{6}$', fit.run_name):
             return
-        name = (f'v{published.version}-'
-                f'{model_label(published.name, None, None)}')
+        name = run_name('fit', versioned(
+            model_label(published.name, None, None), published.version))
         with self.target.scope():
             self._client.update_run(fit.run_id, name=name)
             for trial in self._client.search_runs(
@@ -439,8 +445,9 @@ class MlflowTracking:
             if self._outer is not None:
                 tags['mlflow.parentRunId'] = self._outer
             kind = record.tags.get('kumo.kind')
-            name = (self.run_name if self.run_name and kind == 'fit' else
-                    record.name)
+            name = (run_name(kind, self.run_name, record.name_suffix)
+                    if self.run_name and kind in ('fit', 'prediction')
+                    else record.name)
             if kind == 'prediction' and name:
                 name = _free_name(client, experiment_id, name)
             run = client.create_run(
@@ -774,13 +781,13 @@ class MlflowTracking:
                                  _sealed(card) + user)
 
     def _rename(self, record: RunRecord) -> None:
-        r"""Names a fit that registered a version ``v<version>-<model>``,
+        r"""Names a fit that registered a version ``fit-<model>-v<version>``,
         and its trials after it."""
         version = record.tags.get('kumo.model_version')
         if version is None:
             return
         model = model_label(record.tags['kumo.model_name'], None, None)
-        name = f'v{version}-{model}'
+        name = run_name('fit', versioned(model, version))
         self.logged_run_name = name
         with self.target.scope():
             self._client.update_run(cast(str, self._parent), name=name)
@@ -1057,14 +1064,15 @@ class _Pending:
 
 _NOTE = 'mlflow.note.content'
 _EXPERIMENT_NOTE = '\n'.join([
-    "kumo-engine: v<N>-<model> = a fit · <date>-v<N>-<model> = one day's "
-    'scoring',
+    'kumo-engine: fit-<model>-v<N> = a fit · predict-<model>-v<N>-<date> = '
+    "one day's scoring",
     '',
-    '- **Fits**: `v<version>-<model>` once registered (`fit-<time>-<model>` '
-    "before), with a search's trials under them. Filter "
-    "`tags.kumo.kind = 'fit'`.",
-    '- **Predictions**: one per scoring day, `<date>-v<version>-<model>`. '
-    "Filter `tags.kumo.kind = 'prediction'` and sort by Run Name.",
+    '- **Fits**: `fit-<model>-v<version>` once registered '
+    "(`fit-<model>-<YYYYMMDD-HHMMSS>` before), with a search's trials under "
+    "them. Filter `tags.kumo.kind = 'fit'`.",
+    '- **Predictions**: one per scoring day, '
+    "`predict-<model>-v<version>-<as-of date>`. Filter "
+    "`tags.kumo.kind = 'prediction'` and sort by Run Name.",
     "Each run's description starts with its card; add notes below the "
     "card's last line."])
 _CARD_END = re.compile(r'<!-- /kumo:card sha256=([0-9a-f]{16}) -->')
