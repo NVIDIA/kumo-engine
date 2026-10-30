@@ -13,12 +13,6 @@ on:  # yamllint disable-line rule:truthy
         description: Artifact from this run containing the finished wheel.
         type: string
         required: true
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: Existing kumo-engine release to test on the GPU.
-        type: string
-        required: true
 
 permissions:
   contents: read
@@ -50,27 +44,16 @@ jobs:
           python-version: '3.12'
 
       - name: Download the finished wheel from this build
-        if: ${{ inputs.wheel_artifact != '' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           name: ${{ inputs.wheel_artifact }}
           path: ${{ runner.temp }}/wheel-smoke-input
 
-      - name: Download the selected release wheel
-        if: ${{ inputs.wheel_artifact == '' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          [[ "$RELEASE_TAG" == kumo-engine-v* ]]
-          gh release download "$RELEASE_TAG" --pattern 'kumo_engine-*x86_64.whl' --dir "$RUNNER_TEMP/wheel-smoke-input"
-
       - name: Test the finished wheel on all eight GPU tasks
         uses: ./.github/actions/engine-gpu-smoke
         with:
           wheel-path: ${{ runner.temp }}/wheel-smoke-input/*.whl
-          reload-atol: '0.005'
+          reload-atol: '0.00001'
 
       - name: Preserve GPU results and logs
         if: ${{ always() }}

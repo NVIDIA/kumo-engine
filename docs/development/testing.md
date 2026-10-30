@@ -31,20 +31,19 @@ The [Engine PR check](engine-pr-ci.md) builds the candidate wheel and runs eight
 small task checks on CUDA through one shared smoke action. It checks completed
 work, output structure, saved model state, and reloaded predictions. It sets no
 learning-quality score requirement. Source and package workflows remain separate.
-Numeric repeat/reload score drift reports only in PR135. Weights, labels,
-ranks, valid outputs, and CUDA execution remain strict. PR40 enforces its
-user-selected absolute score margin of 0.005 with zero relative tolerance.
-The [normal PR run at `99e9661`](https://github.com/NVIDIA/kumo-engine/actions/runs/40989739702)
-passed all eight tasks in 18m08s, including queue time and workflow finalization.
+Repeat and reload scores use the shared absolute tolerance of `1e-5` with
+zero relative tolerance. Weights, labels, ranks, valid outputs, and CUDA
+execution remain strict.
 
 ## Finished Kumo Engine wheel
 
-After each manual or release build, `wheel-smoke` downloads the finished x86_64
-wheel from that run. It uses Python 3.12 and an existing T4 GPU runner. It does
-not rebuild the wheel on the GPU. Failure blocks release attachment and Kitmaker
-publication. The GPU job has a 22-minute limit.
+After each manual or release build, `wheel-smoke` downloads the finished Linux
+x86_64 wheel from that run. It uses Python 3.12 and the existing T4 GPU runner.
+It does not rebuild the wheel. Failure blocks release attachment and Kitmaker
+publication. The macOS wheel has no GPU smoke check. The GPU job has a 22-minute
+limit.
 
-The job uses the same [GPU runner](../../packages/kumo-engine/test/wheel_gpu_smoke.py)
+The job uses the same [GPU test script](../../packages/kumo-engine/test/wheel_gpu_smoke.py)
 and [setup action](../../.github/actions/engine-gpu-smoke/action.yml) as the PR
 check. The action installs the selected wheel in a fresh environment outside the
 checkout. It uses public PyPI and ignores host pip settings. The installed version
@@ -54,24 +53,16 @@ pass `pip check`.
 Each of the eight task types trains one model with seed zero, predicts, and
 reloads the saved model on CUDA. Outputs must be finite and complete. Restored
 model weights, predicted labels, and rank order must match exactly. Repeat and
-reload scores must satisfy `abs(before - after) <= 0.005` at every coordinate,
+reload scores must satisfy `abs(before - after) <= 1e-5` at every coordinate,
 with zero relative tolerance. These comparisons use the same retained model.
-The user selected 0.005 as an operational margin. It is not a statistically
-established GPU guarantee or a learning-quality score requirement.
 
-The earlier finished-wheel GPU run at `2ac62b5` passed under the original
-absolute limit of 0.00001. The 0.005 setting has local comparison and
-configuration checks, but no fresh GPU run yet.
-
-Prepared PR 172 inputs come from the S3 object and checksum in the
-[input manifest](../../packages/kumo-engine/test/pr172/inputs.json). The workflow
-uses its existing AWS test role. It does not read a private GitHub repository.
+The [input manifest](../../packages/kumo-engine/test/pr172/inputs.json) pins
+the prepared S3 data and its checksum. The workflow uses its existing AWS test role.
 The job preserves GPU results and logs in the `kumo-engine-wheel-smoke-*` artifact.
 
 To test a new wheel without publication, run Kumo Engine - Build and publish
-wheel manually at the selected commit. To test an existing release, run
-Kumo Engine - Wheel smoke and set `release_tag` to its `kumo-engine-v<version>`
-tag. Candidate PR feedback runs separately through the trusted PR GPU workflow.
+wheel manually at the selected commit. Candidate PR feedback runs separately
+through the trusted PR GPU workflow.
 
 ## Report evidence
 
@@ -94,11 +85,4 @@ keep their existing tests and failure policies. The preferred full-CI timeline
 is 20 minutes. The accepted budget is about 22 minutes, with a strict
 under-25-minute guardrail. The first normal run reached the 22-minute job limit
 after a cold 14m22s build. Five task checks passed, but the run remained
-incomplete. The cached `18598be` attempt also reached the deadline after seven
-task checks passed.
-
-The later `99e9661` run passed all eight tasks with numeric drift set to
-report-only. Its conservative full duration was 18m08s, from 02:06:28 creation
-to 02:24:36 finalization UTC on October 30, 2026. The last job ended at
-02:24:35. Its GPU worker took 365.00 seconds. This records one timing pass.
-Future durations still depend on setup, cache state, and runner conditions.
+incomplete. A complete normal runtime is still unverified.

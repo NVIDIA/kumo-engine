@@ -67,9 +67,7 @@ an engine release is cut at the same version as the SDK's. PyPI never accepts a
 re-upload of a version, so a bad release is fixed by releasing the next
 version.
 
-During assembly, `merge_wheels.py` writes the final bundle version into
-`kumo.engine._version`. In manual builds, both wheel metadata and
-`kumo.engine.__version__` include the calculated commit suffix.
+`kumo.engine.__version__` is the stamped value.
 
 `kumo_core.version.get_kumo_version()` asks version providers, registered in the
 `kumo_core.version_providers` entry-point group, in entry-point name order and
@@ -112,9 +110,10 @@ platform's `release-version`.
    - runs the shared eight-task GPU check on the finished Linux x86_64 wheel
      with Python 3.12. Installation, CUDA training, prediction, and model reload
      must pass before attachment or publication. The GPU job downloads this
-     build's wheel without rebuilding it. Its user-selected score margin is
-     0.005 absolute with zero relative tolerance. Weights, labels, and ranks
-     remain exact. See the [test criteria](testing.md#finished-kumo-engine-wheel).
+     build's wheel without rebuilding it. Repeat and reload scores use the
+     shared absolute tolerance of `1e-5` with zero relative tolerance.
+     Weights, labels, and ranks remain exact. The macOS wheel has no GPU smoke
+     check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
    - attaches the Linux x86_64 and macOS ARM64 wheels to the GitHub release.
 5. **Approve the publication.** The `kitmaker` job waits for approval on the
    `kumo-engine-release` environment. It then checks that the Portal project
@@ -143,7 +142,7 @@ this workflow.
 | --- | --- |
 | Tag does not match `VERSION` | Delete the release and tag, fix the version (or the tag), publish again. Nothing was uploaded. |
 | `check-requirements` fails | A requirement is not on PyPI yet, usually `kumo-glove-6b-50d`. Publish it, then re-run the failed jobs. Nothing was attached or published. |
-| `wheel-smoke` fails | Read `summary.json` and the logs in the `kumo-engine-wheel-smoke-*` artifact. Fix the failure before release attachment or publication. See the [test procedure](testing.md#finished-kumo-engine-wheel). |
+| `wheel-smoke` fails | Read `summary.json` and the logs in the `kumo-engine-wheel-smoke-*` artifact. For a transient failure, re-run the failed jobs. For a code defect, fix the code. Delete the blocked GitHub release and tag, then recreate them at the fixed commit. Attachment and publication remain blocked. |
 | Build or glibc-floor check fails | Fix on the branch, delete the release and tag, then recreate the tag on the fixed commit. Nothing was uploaded. |
 | `kitmaker` fails before *publication* starts | Nothing was published. Fix the cause and re-run the failed job. |
 | `kitmaker` fails during *publication* | Check PyPI first: a file that reached it stays there. Re-run only if the file is missing. |
@@ -152,7 +151,7 @@ this workflow.
 ## Manual builds
 
 Running the workflow by hand (Actions, *Run workflow*) builds the wheel as
-`<version>+<commit>`, runs dependency and workflow checks, and keeps the wheel
+`<version>+<commit>`, runs dependency and GPU checks, and keeps the wheel
 as a workflow artifact for 30 days. It never
 attaches or publishes anything: attaching runs only for release events, and PyPI
 rejects local versions anyway.
