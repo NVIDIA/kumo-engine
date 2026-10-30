@@ -101,11 +101,9 @@ To serve only a better model, move its alias yourself: [Promote a model](#promot
 | `result.id` | a model (its bundle id) | `<root>/models/<id>/`; the `kumo.bundle_id` run tag; `kumo_bundle_id` on the registered version |
 | `run.id` | a prediction run | `<root>/predictions/<id>/`; the `kumo.prediction_id` run tag; the `PREDICTION_ID` column of a table output |
 | `result.registered_model.version` | the registered version | the registry |
-| `result.tracking` | the tracker's own run of the fit: `platform`, `run_id`, `url` | the tracker's UI |
+| `result.tracking`, `run.tracking` | the tracker's run of the fit or prediction: `platform`, `experiment`, `run_id`, `run_name`, `url` | the tracker's UI |
 
-Find runs with the platform's UI, or by tag: `kumo.kind` (`fit`, `trial`, `prediction`, `monitoring`), `kumo.bundle_id`, `kumo.prediction_id`.
-
-A prediction run is named `predict-<model>-v<version>-<YYYYMMDD-HHMM>` (UTC), or `predict-<YYYYMMDD-HHMM>` when its model is not registered. Its tags name the model's registered version and alias (`kumo.model_name`, `kumo.model_version`, `kumo.model_alias`), its fit run (`kumo.fit_run_id`), `kumo.snapshot_id`, `kumo.task_type` and `kumo.engine_version`, and each output's location (`kumo.output_uri` or `kumo.output_table`, and an `output` dataset). On MLflow its description says the rows are unlabelled and links the fit run. It logs `data/rows`, `data/skipped_rows`, and the scores of each probability column (or of `TARGET_PRED`, as `pred/...`): `pred/<column>/hist` over fixed bins, with mean, min, max and quantiles; `pred/positive_rate` at the threshold; `pred/classes`; a forecast's `pred/h<step>/hist` per horizon (up to 12); a multilabel run's `pred/labels_per_entity` and `pred/label/<label>/share`; a link-prediction or ranking run's `pred/item_frequency/hist` (items per number of recommendations, on powers of two), `pred/item_coverage` and `pred/top1pct_share`; and `drift/score_psi` and `drift/score_ks` against the holdout's counts on the same bins.
+Find runs with the platform's UI, or by tag: `kumo.kind` (`fit`, `prediction`), `kumo.bundle_id`, `kumo.prediction_id`. [What you'll see in MLflow and Snowsight](#what-youll-see-in-mlflow-and-snowsight) lists each run's names, metrics, tables and tags.
 
 ## Turning MLOps on
 
@@ -195,35 +193,56 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 - `database` and `schema_name` default to the session's (`PUBLIC` when only `database` is given). The fit is in Snowsight under AI & ML » Experiments.
 - The registered version carries the bundle; load it with `Trainer.load_from_connector`.
 
-### What each run shows
+### What you'll see in MLflow and Snowsight
 
-Every artifact's location and how to load it is in the run's `_provenance.json` (Artifacts tab). Metric names have `/` sections, and the MLflow UI groups a run's charts by section. MLflow picks each chart's type: a metric with one value draws a bar, a metric logged at several steps draws a line. kumo-engine draws no figures of its own; every value comes from exact counts over all rows, with no sampling.
+Every value comes from exact counts over all rows, with no sampling. kumo-engine draws no figures of its own: numbers you compare across runs are metrics, curves and grids are tables, and the rest is in the run's card. Every artifact's location and how to load it is in the run's `_provenance.json`.
 
-| Run | Section | What |
-|---|---|---|
-| fit | `train/`, `val/` | Per-epoch metrics, step = epoch, plus `train/epoch_seconds`. A single-trial fit logs them live; a search logs them for the selected trial once the fit picks it. |
-| fit | `search/` | `best_val_<tune metric>` after each trial, step = trial (searches only). |
-| fit | `test/` | The selected model's test metrics, also on the logged model (Models tab), and curves and metrics from exact counts over every test row. See below. |
-| fit | `data/` | `rows`, `entities` and the label balance (`positive_rate`, or `label_mean` and friends) per split. |
-| fit, prediction | `graph/` | `rows/<table>`; `edges/<relation>/{count,src_match_frac,dst_match_frac,fk_lookup_failures}`; `<table>/{duplicate_pks,dropped_rows,null_time_dropped}`; `tables`, `edge_types`; a `graph/col_stats` table with a row per column. |
-| trial | `train/`, `val/` | Live per-epoch metrics and `val/best_<metric>`, with the trial's sampled params (compare trials with MLflow's parallel coordinates). |
-| prediction | `pred/` | Per probability column, `pred/<column>/hist` with its `mean`, `min`, `max` and quantiles (`pred/hist`, `pred/mean`... for a regression); `pred/positive_rate` with a threshold; for multiclass, `pred/confidence/...` and a `pred/classes` table of class shares; for a forecast, `pred/h<step>/hist` per horizon; for multilabel, `pred/labels_per_entity` and `pred/label/<label>/share`; for link prediction and ranking, `pred/item_frequency/hist`, `pred/item_coverage` and `pred/top1pct_share`. |
-| prediction | `drift/` | `score_psi` and `score_ks` against the model's holdout, on the same bins. |
-| prediction | `data/` | `rows`, `skipped_rows` and `skipped_fraction`, and the system metrics of the call. |
-| monitoring | `drift/`, `eval/` | `score_drift`'s `drift/score_{psi,ks,wasserstein}`, `drift/features/{shift,psi}/<table>/<column>` and `drift/input/...`; `evaluate`'s `eval/<metric>` and `eval/rows`. |
+**Run kinds and names.** `kumo.kind` is `fit` or `prediction`.
+- A fit is `fit-<YYYYMMDD-HHMMSS>-<model>` while it runs, and becomes `v<version>-<model>` when it registers a version. `<model>` is the registered name (the last part of a Unity Catalog name), else `<entity table>-<task type>`. A search's trials nest under it as `trial-<i>-<fit name>`; a single-trial fit has no trial run.
+- A prediction is `<as of>-v<version>-<model>`, or `<as of>-<model>-<bundle id prefix>` when the model is not registered. `<as of>` is the date the rows were scored at (tag `kumo.as_of`; `<first>..<last>` for several). A `-2`, `-3` suffix marks a repeated run of the same day and model; it is not part of the model name.
+- `score_drift` and `evaluate` write into the prediction run they check, so one run holds one day of scoring.
+- Snowflake names are upper-case identifiers: `<MODEL>_FIT_<YYYYMMDD_HHMMSS>` and `AS_OF_<YYYYMMDD>_V<version>_<MODEL>` (`_2` for a repeat). Finished Snowflake runs cannot change, so `score_drift` and `evaluate` add `<prediction>_DRIFT` and `<prediction>_EVAL` runs.
 
-`test/` by task type, with curves as two series over the same steps:
-- **Binary:** `roc/{fpr,tpr}`, `pr/{recall,precision}` and `gain/{ppr,tpr}` over thresholds 0.00 to 1.00 (step = hundredths), `calibration/{predicted,observed}` per score bin, `logloss`, `brier`, `label/positive_rate`; with a stored threshold, `confusion/{tp,fp,fn,tn}`, `accuracy`, `precision`, `recall`, `f1`.
-- **Multiclass:** `accuracy`, `top_k_accuracy` (step = k), `f1_{macro,micro,weighted}`, `logloss`, `class/<class>/{precision,recall,f1}` for the 20 classes with the most rows, `reliability/{confidence,accuracy}`, and a `test/confusion` table (the 20 classes, then `other`).
-- **Multilabel:** `f1_{micro,macro}`, `precision_micro`, `recall_micro`, `label/<label>/{precision,recall,f1}` for 20 labels, a pooled `roc`, and `labels_per_entity`.
-- **Regression and forecasting:** `mae`, `rmse`, `r2`, `bias`, `mape`, `smape`, `residual/hist`, `TARGET_PRED/hist` and `TARGET/hist` on the training target's bins, `calibration/{predicted,actual}`; a forecast also `horizon/{mae,rmse,bias,r2}` (step = horizon) and `TARGET_PRED/h<n>/hist`.
-- **Ranking and link prediction:** `<metric>_at_k` (step = k) beside the scalars.
+**The card.** Each run's description (the Overview on MLflow, `run_card.md` on Snowflake) starts with a card.
+- Line 1 is the run's status and watch numbers. For a fit: the tuned holdout metric, data problems, the model version, the number of trials and the task. For a prediction: realized quality, `psi` against training, rows and date, skipped share and the model version.
+- Then the model and the fit run that trained it, data problems, small tables, where things are, and the run's files.
+- Write your own notes below the card's last line ("Notes below this line are kept"). Editing above it stops kumo-engine updating that card; the run is then tagged `kumo.card_frozen`.
 
-A histogram is two series over its bins: `<name>/count` and `<name>/lower_edge`. To draw a curve such as ROC, open `test/roc/tpr`'s chart, edit it, and set the X axis to the metric `test/roc/fpr` (MLflow 2.11 and later). Every run is tagged `kumo.kind` and `kumo.engine_version`, a trial also with its fit's `kumo.snapshot_id` and `kumo.task_type`; a fit's tags also carry `kumo.task_type`, `kumo.tune_metric`, `kumo.snapshot_id`, `kumo.bundle_id`, the registered `kumo.model_name`/`model_version`/`model_alias`, `kumo.best_trial`, `kumo.data_warnings` (each table that breaks a Kumo data check), and the artifacts' URIs. Each source table is a dataset (Datasets panel) with its schema and profile.
+**Metrics.**
+- Fit: the holdout quality unprefixed (`auroc`, `ap`, `acc`, `mae`, `map_at_10`, `holdout_loss` for the training objective, and `logloss`, `brier`, `f1`, `r2` and the like from exact counts). They fill MLflow's "Model metrics" section, the logged model's metrics (Models tab) and the registered version's description. After a refit they describe the refit model the bundle ships; the model before the refit is `before_refit/<metric>`. Per-epoch `train/<metric>` and `val/<metric>`, step = epoch.
+- Prediction: `pred/rows`, `pred/skipped_share`, `pred/positive_rate` (binary, with a threshold), `pred/item_coverage` and `pred/top_1pct_items_share` (ranking and link prediction); `drift/psi`, `drift/ks` and `drift/wasserstein` against the training holdout. After `score_drift`: `drift/psi_prev`, `drift/ks_prev`, `drift/wasserstein_prev` against the previous run. After `evaluate`: `realized/<metric>` and `realized/labelled_share`. A prediction run shows "Model metrics (0)": the model's own quality is on its fit run.
+- System metrics: `system/*`, step = seconds since the start, every second for 10 minutes and then every 10 seconds. A run with fewer than 10 readings logs none.
 
-MLflow shows no 2-D heatmap (regression predicted against actual), threshold slider, confusion picture (it is a table), reference lines (the ROC diagonal, a baseline), bar histograms (bins draw as a line), or labelled category charts (class shares are a table). Snowflake charts metrics against step only, so a curve shows as its two rates over thresholds; it has no datasets or tables (tables are JSON artifacts) and keeps 200 metric names per run.
+**Tables** (Artifacts tab, "View as table"; JSON files on Snowflake), one per grid whose x is not time:
 
-Where things are in the MLflow UI: the packaged model is in the experiment's Models tab (MLflow 3 logged models, `m-<id>`), with its files in MLflow's artifact store; a run's Artifacts tab holds `_provenance.json`, `model_plan.json`, `query.pql` and the tables; kumo-engine's bundle, snapshot, training table and scores are on the artifact root, linked by the `kumo.*_uri` tags. The Traces tab is for GenAI tracing, which kumo-engine does not use.
+| Run | Tables |
+|---|---|
+| fit | `holdout/by_threshold` (binary: threshold, share at or above, tp, fp, fn, tn, precision, recall, fpr), `holdout/calibration`, `holdout/confusion` (multiclass), `holdout/by_class` or `holdout/by_label`, `holdout/by_k`, `holdout/by_label_count` (multilabel), `holdout/by_horizon` (forecast), `holdout/histogram` and `holdout/residuals` (regression, forecast) |
+| fit, prediction | `data/health` (each table and link: rows, dropped rows, duplicate keys, matched rows, failed lookups), `data/columns` (column statistics; `≈` marks approximate ones) |
+| prediction | `pred/histogram`, `pred/by_class` (multiclass, multilabel), `pred/by_label_count` (multilabel), `pred/item_frequency` (ranking, link prediction); after `score_drift`, `drift/features` (every column the model encodes, sorted by PSI) |
+
+A histogram table has a row per bin with `from` and `to` (the end bins are open), then a count and a cumulative share per column.
+
+**Tags and datasets.**
+- Every run: `kumo.kind`, `kumo.engine_version`.
+- Fit: `kumo.task_type`, `kumo.tune_metric`, `kumo.snapshot_id`, `kumo.bundle_id`, `kumo.bundle_uri`, `kumo.model_name`, `kumo.model_version`, `kumo.best_trial`, and `kumo.data_warnings`, the number of data problems the card lists.
+- Prediction: `kumo.prediction_id`, `kumo.as_of`, `kumo.bundle_id`, `kumo.fit_run_id`, `kumo.model_name`, `kumo.model_version`, and `kumo.output_uri` or `kumo.output_table`. After `score_drift`: `kumo.drift_previous`; after `evaluate`: `kumo.labels_snapshot_id`.
+- Datasets: the snapshot, then each source table, at their real locations; after `evaluate`, the labels snapshot (context `labels`). A prediction of a model its fit logged lists that model under "Logged models", Type Input.
+
+**Finding runs.** Keys with a `/` or `.` need backticks:
+- a model's fits: ``tags.`kumo.kind` = 'fit' and tags.`kumo.model_name` = 'churn'``;
+- its scoring history, one row per day: ``tags.`kumo.kind` = 'prediction' and tags.`kumo.model_name` = 'churn'``, sorted by Run Name, with the columns `pred/rows`, `drift/psi`, `drift/psi_prev` and `realized/auroc`;
+- drifted days: ``metrics.`drift/psi` > 0.2``;
+- everything one model version scored: ``tags.`kumo.bundle_id` = '<bundle id>'``.
+
+Compare registered versions with the registry's Compare versions view. On MLflow 3.10 and later, including SageMaker MLflow Apps, the UI opens on GenAI pages: choose "Model training" in the sidebar, or add `?workflowType=machine_learning` to the URL. A new, empty experiment gets a description with the two run kinds and their filters.
+
+**Per platform.**
+- Databricks: the Unity Catalog version page shows the logged model's metrics; the version comment names the fit run and the bundle.
+- SageMaker Tracking Server (MLflow 3.0): the version page shows no metrics, so the version description carries the headline metrics. MLflow's printed run links do not open; kumo-engine prints how to open the UI instead.
+- Snowflake: metrics against step only; no tags (they are params), datasets or table views (tables are JSON artifacts); 200 metric names per run and 500 runs per experiment. kumo-engine warns at 450 runs and stops tracking at 500, so use one experiment per model.
+
+MLflow has no 2-D heatmap, threshold slider, confusion picture, reference line, bar histogram or labelled category chart; those views are tables here.
 
 ## Score
 
@@ -259,7 +278,7 @@ scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
 
 ## Monitor
 
-`score_drift` compares a run's scores with the model's holdout and a previous run; `evaluate` scores a run once its outcomes are in a newer snapshot. With tracking on, each call logs a monitoring run named `monitor-<model>-v<version>-<YYYYMMDD-HHMM>`, tagged `kumo.kind=monitoring`, `kumo.monitor=drift` or `evaluate`, `kumo.monitors=<prediction id>`, `kumo.bundle_id`, `kumo.fit_run_id`, the monitored run's `kumo.snapshot_id` and `kumo.task_type`, and `kumo.engine_version`, with its values under `drift/` or `eval/` and the system metrics of the call; on MLflow the prediction run also gets `kumo.monitored=<monitoring run id>`.
+`score_drift` compares a run's scores with the model's holdout and a previous run; `evaluate` scores a run once its outcomes are in a newer snapshot. With tracking on, both write into the prediction run they check: its `drift/*` and `realized/*` metrics, `drift/features`, tags and card (on Snowflake, a `<prediction>_DRIFT` or `<prediction>_EVAL` run instead). `drift.tracking` and `evaluation.tracking` name that run.
 
 ```python
 with kumo.mlops(cfg):
@@ -360,7 +379,7 @@ snowflake = SnowflakeTracking(SnowflakeConnector(warehouse="<wh>", database="ML"
 ### SageMaker managed MLflow
 
 1. Create a tracking server once (15-25 minutes): `aws sagemaker create-mlflow-tracking-server --tracking-server-name <name> --artifact-store-uri s3://<bucket>/mlflow --role-arn <server role ARN>`; the server role needs read and write on that prefix. A stopped server starts with `aws sagemaker start-mlflow-tracking-server --tracking-server-name <name>` (about 20 minutes); `kumo.MLOps` fails until `aws sagemaker describe-mlflow-tracking-server --tracking-server-name <name>` reports `Started`.
-2. Give the job's identity `sagemaker-mlflow:*` on the server ARN and S3 read and write on the artifact store and the kumo artifact root. Rights scoped to the root's prefix (`s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on `<bucket>/<prefix>/*`, `s3:ListBucket` limited to that prefix) suffice: kumo-engine makes no bucket-level calls.
+2. Give the job's identity `sagemaker-mlflow:*` on the server ARN (an MLflow App instead needs `sagemaker:CallMlflowAppApi` on the app ARN; the sample policy on AWS's MLflow Apps setup page lists the Tracking Server actions, which don't apply) and S3 read and write on the artifact store and the kumo artifact root. Rights scoped to the root's prefix (`s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on `<bucket>/<prefix>/*`, `s3:ListBucket` limited to that prefix) suffice: kumo-engine makes no bucket-level calls.
 3. Install `kumo-engine[mlflow,sagemaker]` and pass `MlflowTracking(..., target=SageMakerMLflow(arn))`; the registry is the same server.
 4. MLflow's run links do not open on SageMaker. A tracked fit warns with the command below, and `result.tracking.url` is `None`. To open the UI:
    - **SageMaker AI Studio** (not Studio Classic): Applications » MLflow, then Open MLflow on the server's menu. Studio acts as the domain's execution role, which needs `sagemaker-mlflow:AccessUI` on the server ARN (and `sagemaker:ListMlflowTrackingServers` to list it).
@@ -441,13 +460,13 @@ A text column `infer_metadata()` reads as categorical (short values from a small
 
 ### Drift statistics
 
-| statistic | definition | error from the stored curves |
-|---|---|---|
-| `psi` | population stability over the baseline's deciles | — |
-| `ks` | largest gap between the two CDFs | ≤ 0.02 + 2× the sketch's rank error |
-| `wasserstein` | mean absolute gap between the quantile functions, in score units | ≤ 0.01 × (sum of both score ranges) + sketch error |
+| statistic | definition |
+|---|---|
+| `psi` | population stability over up to 10 groups of bins, cut at the reference side's deciles (the holdout for `drift/psi`, the previous run for `drift/psi_prev`); shares are floored at 1e-6 |
+| `ks` | the largest gap between the two CDFs at bin edges |
+| `wasserstein` | the mean absolute gap over bin midpoints, in score units; the end bins are closed at each side's recorded minimum and maximum |
 
-The statistics are read off the recorded percentile curves (min, q01..q99, max), with no pass over the data. `DriftReport.features` compares, per column the model encodes (by its stype in the model plan), the statistics DiskGraph wrote when both snapshots were built: numeric deltas of mean, std, min, max, quartiles, skewness, kurtosis, null rate and distinct count plus `standardized_mean_shift`; categorical null rate, distinct count, PSI and Jensen-Shannon divergence (`category_counts_capped` flags truncated counts); timestamp min and max shift; text null rate, distinct count, average and maximum tokens per value and `glove_overlap`, the share of tokens the default GloVe vocabulary covers (new words lower it). Other columns are not compared and are named in `reasons["features"]`. Distinct counts are DiskGraph's approximate counts (within a few percent). These are whole-snapshot statistics, so a slow change in a large event table is diluted. A tracked monitoring run logs the top ten columns by standardized shift and by PSI and the full comparison as `feature_drift.json`.
+Each is an exact function of the score counts both sides stored on the same bins: probability hundredths, the training target's bins, or 101 quantile edges of the holdout's top scores (ranking and link prediction). It is absent, with a note, when the two sides counted on different bins, as for a previous run of another model version. `DriftReport.features` compares, per column the model encodes (by its stype in the model plan), the statistics DiskGraph wrote when both snapshots were built: numeric deltas of mean, std, min, max, quartiles, skewness, kurtosis, null rate and distinct count plus `standardized_mean_shift`; categorical null rate, distinct count, PSI and Jensen-Shannon divergence (`category_counts_capped` flags truncated counts); timestamp min and max shift; text null rate, distinct count, average and maximum tokens per value and `glove_overlap`, the share of tokens the default GloVe vocabulary covers (new words lower it). Other columns are not compared and are named in `reasons["features"]`. Distinct counts are DiskGraph's approximate counts (within a few percent). These are whole-snapshot statistics, so a slow change in a large event table is diluted. A tracked `score_drift` writes the full comparison into the prediction run as `drift/features`, sorted by PSI, and names the three most moved columns in its card.
 
 ### Warehouse monitor columns
 
