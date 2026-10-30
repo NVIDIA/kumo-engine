@@ -86,7 +86,7 @@ jobs:
       - name: Set up Rust
         # This org's Actions allowlist only permits dtolnay/rust-toolchain at
         # @master or a pinned SHA, not @stable.
-        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master, allowlisted
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, allowlisted
         with:
           toolchain: stable
 
