@@ -8,6 +8,11 @@ candidate branch. Manual runs upload artifacts; they do not publish a release.
 
 Qualification covers Python 3.11, 3.12, 3.13 and 3.14 on native Windows x86-64,
 Windows through WSL x86-64, and Linux ARM64: twelve independent CPU jobs.
+Native Windows jobs provide experimental build and runtime evidence only.
+For this release, Windows support is limited to WSL2; native Windows wheels
+are retained as CI artifacts but excluded from public release attachments and
+publication. A passing native job does not establish supported native Windows
+distribution.
 WSL installs the same Linux x86-64 wheel as ordinary Linux; it is not a
 separate wheel format. GPU availability is not a qualification requirement.
 The producer also retains the macOS ARM64 artifact and its existing checks;
@@ -37,13 +42,13 @@ compiler and rebuild no native artifacts: missing executables or libraries
 must fail the downloaded-wheel check. Logs, environment evidence and pytest
 results distinguish packaging failures from training failures.
 
-Historical [source smoke runs](https://github.com/NVIDIA/kumo-engine/actions/runs/39667658574)
-passed native Windows CPU and WSL CUDA ingestion/training/prediction. A local
-Linux ARM64 development wheel (`4e910365`) passed clean Python 3.12 CPU
-installation, dependency checks, origin auditing, and this smoke with four
-optimizer steps and 100 predictions, without Faiss. These
-results do not qualify the current candidate across the twelve installed-wheel
-jobs; current qualification requires successful runs for that candidate.
+The [installed-wheel qualification run](https://github.com/NVIDIA/kumo-engine/actions/runs/41101558418)
+at `8f6c496f` passed all twelve jobs, each with four CPU optimizer steps and
+100 finite predictions. Windows native and Linux ARM64 passed without Faiss.
+This establishes runtime evidence for those artifacts, including experimental
+native Windows coverage; it does not change the WSL-only Windows release
+boundary or publish a package. Later runtime or packaging changes require
+qualification of their candidate artifacts.
 
 PR checks remain a later decision after manual qualification is reliable.
 This change does not require an ARM GPU runner grant or change publication
