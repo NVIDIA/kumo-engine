@@ -309,12 +309,12 @@ def _sample_ids(conditions: Any, rows_path: Path) -> Tuple[Any, ...]:
                 part = part / found.group(1) if part.is_dir() else part
                 reader = pq.ParquetFile(part)
                 group, row = int(found.group(2)), int(found.group(3))
-                start = sum(reader.metadata.row_group(index).num_rows
-                            for index in range(group))
+                while row >= reader.metadata.row_group(group).num_rows:
+                    row -= reader.metadata.row_group(group).num_rows
+                    group += 1
                 column = reader.read_row_group(
                     group, columns=[entry['column']]).column(0)
-                ids.append(column[row - start if row >= start else row]
-                           .as_py())
+                ids.append(column[row].as_py())
     except Exception:
         pass
     return tuple(ids)
