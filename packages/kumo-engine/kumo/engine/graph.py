@@ -359,9 +359,9 @@ class Graph:
                 other paths receive UTF-8 SVG. Paths refer to the filesystem
                 where Kumo Engine runs.
             show_cols: Add columns up to 10 rows per table (5 above 10 tables).
-                Primary keys, foreign keys, and the declared time column (TS)
-                are always included, even above this limit. False shows only
-                these columns.
+                Primary keys, foreign keys, and declared time (TS) and end-time
+                (TE) columns are always included, even above this limit.
+                False shows only these columns.
             show_samples: Show up to six non-null examples per column in notebook
                 tooltips, in two columns and up to three rows, selected from
                 up to 30 preview rows per table. False (default) reads no

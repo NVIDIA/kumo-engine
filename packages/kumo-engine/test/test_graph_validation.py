@@ -21,7 +21,7 @@ from kumoapi.source_table import (
 from kumoapi.table import Column, TableDefinition
 from kumoapi.typing import Dtype, Stype
 from matplotlib import rc_context, rcParams, style
-from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.backends.backend_pdf import PdfPages, RendererPdf
 from matplotlib.colors import to_rgba
 from matplotlib.text import Text
 
@@ -86,6 +86,16 @@ def pdf_pages(monkeypatch):
         assert to_rgba(figure.get_facecolor() if facecolor == 'auto'
                        else facecolor) == (1, 1, 1, 1)
         assert not kwargs.get('transparent', rcParams['savefig.transparent'])
+        if not pages:
+            figure.set_dpi(72)  # PDF coordinates and font sizes are in points.
+            renderer = RendererPdf(None, 72, figure.get_figheight(),
+                                   figure.get_figwidth())
+            texts = figure.axes[0].texts
+            for role in texts:
+                if re.fullmatch(r'(PK|FK|TS|TE)(/(PK|FK|TS|TE))*', role.get_text()):
+                    bounds = role.get_window_extent(renderer)
+                    assert all(not bounds.overlaps(other.get_window_extent(renderer))
+                               for other in texts if other is not role)
         pages.append('\n'.join(text.get_text() for text in
                                figure.findobj(match=Text)))
         return savefig(document, figure, *args, **kwargs)
@@ -306,52 +316,72 @@ def test_visualize_bounds_column_detail(count, limit, show_cols):
     extras = [Column(f'feature_{i:02}', Stype.numerical, Dtype.int64)
               for i in range(17)]
     table = replace(users, definition=replace(
-        users.definition, time_col='event_time',
+        users.definition, time_col='event_time', end_time_col='zz_end_time',
         cols=[*users.definition.cols, *extras,
-              Column('event_time', Stype.timestamp, Dtype.date)]))
+              Column('event_time', Stype.timestamp, Dtype.date),
+              Column('zz_end_time', Stype.timestamp, Dtype.date)]))
     graph = Graph({f'table_{i:02}': table for i in range(count)})
     root = ElementTree.fromstring(graph.visualize(show_cols=show_cols))
-    visible = limit - 2 if show_cols else 0
-    expected = {'id', 'event_time'} | {col.name for col in extras[:visible]}
+    visible = limit - 3 if show_cols else 0
+    expected = {'id', 'event_time', 'zz_end_time'} | {
+        col.name for col in extras[:visible]}
     for card in root.findall('./{http://www.w3.org/2000/svg}g[@data-kumo-card]'):
         rows = card.findall('.//{http://www.w3.org/2000/svg}g[@data-kumo-column]')
         assert {row.get('data-kumo-column') for row in rows
                 if row.get('data-kumo-column')} == expected
         time = next(row for row in rows if row.get('data-kumo-column') == 'event_time')
         assert 'Role: TS' in time.get('data-kumo-tip')
+        end = next(row for row in rows if row.get('data-kumo-column') == 'zz_end_time')
+        assert 'Role: TE' in end.get('data-kumo-tip')
         assert re.search(rf'\+\s*{len(extras) - visible} (other )?columns',
                          ''.join(card.itertext()))
 
 
-@pytest.mark.parametrize('time_column, show_cols', [
-    (None, False), (None, True), ('occurred_at', False),
-    ('event_id', False), ('foreign_00', True),
+@pytest.mark.parametrize('time_column, end_time_column, show_cols, time_roles', [
+    (None, None, False, {}), (None, None, True, {}),
+    ('occurred_at', None, False, {'occurred_at': 'TS'}),
+    ('event_id', None, False, {'event_id': 'PK/FK/TS'}),
+    ('foreign_00', None, True, {'foreign_00': 'FK/TS'}),
+    (None, 'ended_at', False, {'ended_at': 'TE'}),
+    ('occurred_at', 'ended_at', True, {'occurred_at': 'TS', 'ended_at': 'TE'}),
+    ('event_id', 'event_id', False, {'event_id': 'PK/FK/TS/TE'}),
+    ('occurred_at', 'event_id', False, {'occurred_at': 'TS', 'event_id': 'PK/FK/TE'}),
+    ('occurred_at', 'foreign_00', True, {'occurred_at': 'TS', 'foreign_00': 'FK/TE'}),
+    ('n' * 21, 'n' * 21, False, {'n' * 21: 'PK/FK/TS/TE'}),
+    ('occurred_at', 'n' * 23, True, {'occurred_at': 'TS', 'n' * 23: 'PK/FK/TE'}),
+    ('账户' * 12, '账户' * 12, True, {'账户' * 12: 'PK/FK/TS/TE'}),
+    ('occurred_at', '账户' * 12, False, {'occurred_at': 'TS', '账户' * 12: 'PK/FK/TE'}),
 ])
-def test_visualize_retains_keys_beyond_column_limit(time_column, show_cols):
+def test_visualize_retains_keys_beyond_column_limit(
+        time_column, end_time_column, show_cols, time_roles, tmp_path, pdf_pages):
     users, events = _s3_tables()
+    pkey = next((name for name, role in time_roles.items() if 'PK' in role),
+                'event_id')
     keys = [Column(f'foreign_{i:02}', Stype.ID, Dtype.int64) for i in range(12)]
     events = replace(
         events, definition=replace(events.definition,
+                                   pkey=pkey,
                                    time_col=time_column,
-                                   cols=[events.definition.cols[0], *keys,
+                                   end_time_col=end_time_column,
+                                   cols=[Column(pkey, Stype.ID, Dtype.int64), *keys,
                                          Column('occurred_at', Stype.timestamp,
+                                                Dtype.date),
+                                         Column('ended_at', Stype.timestamp,
                                                 Dtype.date)]))
     edges = [Edge('events', column.name, 'users') for column in keys]
-    if time_column == 'event_id':
-        edges.append(Edge('events', 'event_id', 'users'))
+    if pkey in (time_column, end_time_column):
+        edges.append(Edge('events', pkey, 'users'))
     graph = Graph([users, events], edges)
-    root = ElementTree.fromstring(graph.visualize(show_cols=show_cols))
+    root = ElementTree.fromstring(
+        graph.visualize(tmp_path / 'roles.pdf', show_cols=show_cols))
     card = root.find('./{http://www.w3.org/2000/svg}g[@data-kumo-card="events"]')
     rows = card.findall('.//{http://www.w3.org/2000/svg}g[@data-kumo-column]')
-    expected = {'event_id'} | {column.name for column in keys}
-    if time_column:
-        expected.add(time_column)
+    expected = {pkey} | {column.name for column in keys} | time_roles.keys()
     assert {row.get('data-kumo-column') for row in rows
             if row.get('data-kumo-column')} == expected
-    if time_column:
+    for column, role in time_roles.items():
         row = root.find('.//{http://www.w3.org/2000/svg}g'
-                        f'[@data-kumo-column="{time_column}"]')
-        role = {'event_id': 'PK/FK/TS', 'foreign_00': 'FK/TS'}.get(time_column, 'TS')
+                        f'[@data-kumo-column="{column}"]')
         assert f'Role: {role}' in row.get('data-kumo-tip')
 
 
@@ -406,6 +436,7 @@ def test_visualize_layout_is_deterministic_with_cycles_and_isolates(layout):
     ('missing_primary_key', 'missing|primary key'),
     ('missing_foreign_key', 'missing|foreign key'),
     ('missing_time_column', 'Time column users.gone is missing'),
+    ('missing_end_time_column', 'End-time column users.gone is missing'),
     ('self_relation', '[Ss]elf'),
     ('duplicate_columns', 'duplicate column'),
     ('xml_control', 'valid XML'),
@@ -426,6 +457,8 @@ def test_visualize_rejects_invalid_metadata(case, message):
         edge = Edge('events', 'gone', 'users')
     elif case == 'missing_time_column':
         users = replace(users, definition=replace(users.definition, time_col='gone'))
+    elif case == 'missing_end_time_column':
+        users = replace(users, definition=replace(users.definition, end_time_col='gone'))
     elif case == 'self_relation':
         edge = Edge('events', 'user_id', 'events')
     elif case == 'duplicate_columns':
@@ -648,9 +681,10 @@ def test_visualize_layouts_preserve_schema_and_export_selection(tmp_path):
 def test_visualize_pdf_indexes_hidden_columns(tmp_path, pdf_pages):
     users, events = _s3_tables()
     users = replace(users, definition=replace(
-        users.definition, time_col='hidden_date', cols=[
+        users.definition, time_col='hidden_date', end_time_col='hidden_end_date', cols=[
             *users.definition.cols,
             Column('hidden_date', Stype.timestamp, Dtype.date),
+            Column('hidden_end_date', Stype.timestamp, Dtype.date),
             *(Column(f'hidden_{i}_é_Ω_账户', Stype.numerical, Dtype.float64)
               for i in range(100)),
         ]))
@@ -671,6 +705,8 @@ def test_visualize_pdf_indexes_hidden_columns(tmp_path, pdf_pages):
     assert 'hidden_99_é_Ω_账户' not in svg
     assert all(f'hidden_{i}_é_Ω_\\u8d26\\u6237' in index for i in range(100))
     assert 'hidden_date' in index and 'TS' in index
+    assert 'hidden_end_date\ndate\nTE' in index
+    assert '| hidden\\_end\\_date | date | TE |' in svg._markdown()
     assert 'float64' in index and 'events.user_id → users.id' in index
 
 

@@ -104,7 +104,8 @@ def render_pdf(svg: str, geometry: dict, index: list[dict]) -> bytes:
         figure, axes = page(pw, ph)
         text(axes, 32, 32, 'Table relationships', 16, True, THEME['accent'])
         text(axes, 32, ph - 20,
-             'PK: primary key   FK: foreign key   TS: time column')
+             'PK: primary key   FK: foreign key   TS: time column   '
+             'TE: end-time column')
         scale = min(1, (pw - 64) / w, (ph - 96) / h)
         origin = ((pw - w * scale) / 2, (ph - h * scale) / 2 + 8)
         root = ET.fromstring(svg)
@@ -114,7 +115,7 @@ def render_pdf(svg: str, geometry: dict, index: list[dict]) -> bytes:
         }
         edges = iter(geometry['paths'])
 
-        def draw(node, x: float = 0, y: float = 0):
+        def draw(node, x: float = 0, y: float = 0, column_limit=None):
             tag = node.tag.rsplit('}', 1)[-1]
             if tag in ('defs', 'title', 'desc', 'circle', 'rect'):
                 return
@@ -124,6 +125,11 @@ def render_pdf(svg: str, geometry: dict, index: list[dict]) -> bytes:
                 dx, dy = map(float,
                              re.findall(r'[-+]?[\d.]+', node.get('transform')))
                 x, y = x + dx, y + dy
+            for child in node:
+                if child.get('class') == 'kumo-role':
+                    # Match the PDF font, leaving a gap before this row's badge.
+                    column_limit = (float(child.get('x')) - 18 - 8
+                                    - width(child.text or '', 10, True))
             transform = Affine2D().translate(
                 x, y).scale(scale).translate(*origin) + axes.transData
             if tag == 'path':
@@ -144,15 +150,16 @@ def render_pdf(svg: str, geometry: dict, index: list[dict]) -> bytes:
                 value = safe(original).expandtabs(4)
                 size = float(node.get('font-size', 16))
                 bold = node.get('font-weight') == '700'
-                if value != original:
-                    limit = 210 if size == 16 else 272  # Leave room for PK/FK/TS.
+                if value != original or (column_limit is not None and
+                                         node.get('class') == 'kumo-column-name'):
+                    limit = (column_limit or 210) if size == 16 else 272
                     size *= min(1, limit / max(1, width(value, size, bold)))
                 text(axes, origin[0] + (x + float(node.get('x', 0))) * scale,
                      origin[1] + (y + float(node.get('y', 0))) * scale, value,
                      size * scale, bold, node.get('fill'),
                      'right' if node.get('text-anchor') == 'end' else 'left')
             for child in node:
-                draw(child, x, y)
+                draw(child, x, y, column_limit)
 
         draw(root)
         for x, y in geometry['handles']:

@@ -82,7 +82,7 @@ class SVG(str):
             lines.append(f'    {source} -->|"{label(columns, True)}"| {target}')
         lines += ['```', '', '## Schema', '',
                   'All declared columns are listed. PK: primary key; '
-                  'FK: foreign key; TS: time column.', '']
+                  'FK: foreign key; TS: time column; TE: end-time column.', '']
         for table in self._index:
             lines += [f'### {label(table["name"])}', '',
                       '| Column | Data type | Role |', '| --- | --- | --- |']
@@ -285,12 +285,15 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         neighbors[dst].add(src)
 
     for name, definition in definitions.items():
-        if definition.time_col is not None:
-            if definition.time_col not in {col.name for col in definition.cols}:
-                raise ValueError(f'Time column {name}.{definition.time_col} is '
-                                 'missing from the table columns.')
-            role = keys[name].get(definition.time_col, '')
-            keys[name][definition.time_col] = f'{role}/TS' if role else 'TS'
+        for column, marker, label in (
+                (definition.time_col, 'TS', 'Time'),
+                (definition.end_time_col, 'TE', 'End-time')):
+            if column is not None:
+                if column not in {col.name for col in definition.cols}:
+                    raise ValueError(f'{label} column {name}.{column} is '
+                                     'missing from the table columns.')
+                role = keys[name].get(column, '')
+                keys[name][column] = f'{role}/{marker}' if role else marker
 
     cards = {}
     for name in names:
@@ -308,7 +311,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         ports = {}
         y = header + 8
         for column in columns:
-            # Reserve extra room when a field carries all three role markers.
+            # Reserve extra room when a field carries multiple role markers.
             lines = _wrap(column, 23 if len(keys[name].get(column, '')) > 5
                           else 25)
             height = 12 + 20 * len(lines)
@@ -456,7 +459,7 @@ def render(tables: Mapping[str, Table], edges: Sequence[Edge], *,
         f'font-family="{THEME["font"]}">',
         '<title>Table relationships</title>',
         '<desc>Lines connect foreign keys (FK) to primary keys (PK).'
-        ' TS marks the declared time column.'
+        ' TS marks the declared time column; TE marks the end-time column.'
         '</desc>', f'<defs><pattern id="{uid}-grid" width="16" height="16" '
         'patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.7" '
         f'fill="{THEME["grid"]}"/></pattern></defs>',

@@ -114,7 +114,7 @@ graph.visualize(layout="compact")
 
 Visualization reads no source data by default and uses Kumo Engine's existing dependencies.
 The return value is SVG text with notebook display support.
-The default view includes primary keys, relationship foreign keys, and the declared time column (`TS`).
+The default view includes primary keys, relationship foreign keys, and declared time (`TS`) and end-time (`TE`) columns.
 `show_cols=True` adds other columns up to 10 rows per table, or 5 above 10 tables; key and time columns always remain visible.
 Graphs are limited to 30 tables and require valid declared schemas without self-relations.
 
