@@ -360,10 +360,7 @@ def snowflake_adapter(monkeypatch):
     import _snowflake_experiment_fake
 
     fake = _snowflake_experiment_fake.install(monkeypatch)
-    from kumo.engine.integrations.snowflake import (
-        SnowflakeTracking,
-        _run_identifier,
-    )
+    from kumo.engine.integrations.snowflake import SnowflakeTracking
 
     def observe():
         observed = {}
@@ -408,7 +405,8 @@ def snowflake_adapter(monkeypatch):
         make=lambda: SnowflakeTracking(_snowflake_experiment_fake.FakeSession(),
                                        experiment_name='ents', tags=USER_TAGS),
         observe=observe, step_metrics=True, artifacts=True,
-        run_name=lambda name: _run_identifier(name).upper())
+        # Snowflake names are checked in test_snowflake_tracking.
+        run_name=lambda name: None)
 
 
 @pytest.fixture(params=['mlflow', 'snowflake'])

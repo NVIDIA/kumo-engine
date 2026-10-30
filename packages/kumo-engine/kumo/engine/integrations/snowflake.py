@@ -9,7 +9,6 @@ import logging
 import posixpath
 import re
 import tempfile
-import uuid
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +60,8 @@ _EPOCH_METRICS = _MAX_METRICS - 60
 _SUMMARY_METRICS = _MAX_METRICS - 30
 _FINISH_PARAMS = 20
 _CARD_FILE = 'run_card.md'
+_MAX_RUNS = 500
+_WARN_RUNS = 450
 
 
 class SnowflakeTracking:
@@ -83,14 +84,15 @@ class SnowflakeTracking:
         schema_name: `None` uses the session's current schema, or ``PUBLIC``
             when `database` is given or the session has none.
         run_name: name of the fit run. `None` names it after its registry
-            model and UTC start, as ``fit_users_churn_20261027_0618``; a
-            taken name gets a random suffix.
+            model and UTC start, as ``CHURN_FIT_20261027_061800``; a taken
+            name gets ``_2``, ``_3`` and so on.
         tags: extra tags for the fit run.
         native_model_lineage: keep the run open as a context for the whole
             fit, so models registered meanwhile are linked to it.
 
     ``run_id`` is the most recent tracked run's name (Snowflake runs are
-    identified by name), once it has started.
+    identified by name), once it has started. An experiment holds at most
+    500 runs: from 450 each run warns, and at 500 runs are not tracked.
     """
 
     platform = 'snowflake'
@@ -198,14 +200,18 @@ class SnowflakeTracking:
         experiment = tracking.set_experiment(self.experiment_name,
                                              database_name=database,
                                              schema_name=schema or 'PUBLIC')
-        fit = record.tags.get('kumo.kind') == 'fit'
-        self._run = tracking.start_run(
-            self._new_run_name(
-                tracking, experiment.name,
-                self.run_name if fit and self.run_name else
-                _run_identifier(record.name or 'fit')))
-        self.run_id = str(self._run.name)
+        existing = [
+            str(row['name'])
+            for row in tracking._sql_client.show_runs_in_experiment(
+                experiment_name=experiment.name)
+        ]
+        self._check_room(len(existing), record.tags.get('kumo.kind'))
         self._started = getattr(record, 'started', None) or _now()
+        fit = record.tags.get('kumo.kind') == 'fit'
+        self._run = tracking.start_run(self._new_run_name(
+            existing, self.run_name if fit and self.run_name else
+            _snowflake_name(record, self._started)))
+        self.run_id = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)
@@ -279,30 +285,32 @@ class SnowflakeTracking:
         if self._run is not None:
             self._log_metrics(metrics, _EPOCH_METRICS, step=step)
 
-    def _new_run_name(self, tracking: Any, experiment: Any,
-                      run_name: Optional[str]) -> Optional[str]:
-        if run_name is None:
-            return None
+    def _check_room(self, runs: int, kind: Optional[str]) -> None:
+        if runs >= _MAX_RUNS:
+            raise RuntimeError(
+                f'Snowflake experiment {self.experiment_name} holds {runs} '
+                f'runs, the most it can ({_MAX_RUNS}), so this {kind} run is '
+                f'not tracked; track into a new experiment, e.g. '
+                f'SnowflakeTracking(..., experiment_name='
+                f"'{self.experiment_name}_2')")
+        if runs >= _WARN_RUNS:
+            logger.warning(
+                'Snowflake experiment %s holds %d of the %d runs it can; '
+                'track into a new experiment before it is full',
+                self.experiment_name, runs, _MAX_RUNS)
+
+    def _new_run_name(self, existing: List[str], run_name: str) -> str:
         # start_run(name) resumes, or raises on, any run matching name as a
         # SQL LIKE pattern and cannot create an existing run, so pick a name
         # that is neither.
-        existing = [
-            str(row['name'])
-            for row in tracking._sql_client.show_runs_in_experiment(
-                experiment_name=experiment)
-        ]
-        short = uuid.uuid4().hex
-        for name in (run_name, _suffixed(run_name, short[:8]),
-                     _suffixed(run_name, short)):
-            if not _taken(name, existing):
-                break
-        else:
-            name = None
-        if name != run_name:
+        name, number = run_name, 1
+        while _taken(name, existing):
+            number += 1
+            name = _suffixed(run_name, str(number))
+        if number > 1:
             logger.warning(
                 'Snowflake run %s already exists in experiment %s; recording '
-                'this run as %s', run_name, self.experiment_name,
-                name or 'a generated run name')
+                'this run as %s', run_name, self.experiment_name, name)
         return name
 
     def log_summaries(self, summaries: Sequence[Summary]) -> None:
@@ -436,6 +444,25 @@ _SINKS: Dict[type, Callable[[SnowflakeTracking, Any], None]] = {
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _snowflake_name(record: RunRecord, started: datetime) -> str:
+    r"""``<MODEL>_FIT_<YYYYMMDD_HHMMSS>`` for a fit started at
+    ``started``; ``AS_OF_<YYYYMMDD>_V<version>_<MODEL>`` for a prediction,
+    ``AS_OF_<YYYYMMDD>_<MODEL>_<bundle id[:8]>`` if its model is not
+    registered, and ``AS_OF_<first>_<last>_...`` for several anchors."""
+    tags = record.tags
+    model = (getattr(record, 'model_label', None) or 'model').replace('"', '')
+    if tags.get('kumo.kind') == 'fit':
+        parts = [model, 'FIT',
+                 started.astimezone(timezone.utc).strftime('%Y%m%d_%H%M%S')]
+    else:
+        version = tags.get('kumo.model_version')
+        parts = ['AS_OF',
+                 tags.get('kumo.as_of', '').replace('-', '').replace('..', '_'),
+                 *([f'V{version}' if version.isdigit() else version, model]
+                   if version else [model, tags.get('kumo.bundle_id', '')[:8]])]
+    return _run_identifier('_'.join(filter(None, parts))).upper()
 
 
 def _model_param(record: RunRecord) -> Dict[str, str]:

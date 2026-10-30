@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import inspect
-import re
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -188,7 +187,7 @@ def test_an_existing_run_is_never_resumed(fake, taken, caplog):
     _replay(tracking)
 
     new = tracking.run_id
-    assert re.fullmatch(f'{run_name}_[0-9a-f]{{8}}'.upper(), new)
+    assert new == f'{run_name}_2'.upper()
     assert set(user.runs) == {taken, new}
     assert user.runs[taken]['params'] == {}
     assert user.runs[new]['status'] == 'FINISHED'
@@ -251,20 +250,6 @@ def test_a_hung_snowflake_call_does_not_stall_the_fit(fake, monkeypatch):
     assert isinstance(session.error, TimeoutError)
     run, = fake._instance.runs.values()
     assert run['status'] == 'FINISHED'
-
-
-def test_prediction_runs_are_never_resumed(fake, caplog):
-    tracking = _tracking()
-    record = prediction_record(PREDICTION_MANIFEST)
-    tracking.log_prediction_run(record)
-    tracking.log_prediction_run(record)
-
-    first, second = fake._instance.runs
-    assert first == 'PREDICT_20261021_0000'
-    assert re.fullmatch('PREDICT_20261021_0000_[0-9A-F]{8}', second)
-    assert {run['status'] for run in fake._instance.runs.values()} == {
-        'FINISHED'}
-    assert 'already exists' in caplog.text
 
 
 class _SchemaSession:
@@ -388,3 +373,82 @@ def test_a_prediction_run_names_its_model_and_lasts_as_long_as_it_ran(fake):
         'Model: `churn` v3, trained by `CHURN_FIT_20261029_061800`.\n\n'
         'Full lineage: `_provenance.json`.')
     assert ('duration_seconds', 60.0, 0) in run['metrics']
+
+
+@dataclass(frozen=True)
+class _Named(_Timed):
+    model_label: Optional[str] = None
+
+
+def _prediction(as_of, version=None, label='churn'):
+    tags = {'kumo.kind': 'prediction', 'kumo.as_of': as_of,
+            'kumo.bundle_id': 'b' * 64,
+            **({'kumo.model_version': version} if version else {})}
+    return _Named(tags=tags, model_label=label)
+
+
+@pytest.mark.parametrize('record, name', [
+    (_Named(tags={'kumo.kind': 'fit'}, model_label='kumo-demo-churn',
+            started=datetime(2026, 10, 29, 6, 18, 5, tzinfo=timezone.utc)),
+     'KUMO_DEMO_CHURN_FIT_20261029_061805'),
+    (_prediction('2026-10-29', '6', 'kumo-demo-churn'),
+     'AS_OF_20261029_V6_KUMO_DEMO_CHURN'),
+    (_prediction('2026-10-29', 'V2'), 'AS_OF_20261029_V2_CHURN'),
+    (_prediction('2026-10-28..2026-10-29', label='users-binary_classification'),
+     'AS_OF_20261028_20261029_USERS_BINARY_CLASSIFICATION_BBBBBBBB'),
+])
+def test_runs_are_named_by_what_differs(fake, record, name):
+    tracking = _tracking()
+    tracking.start(record)
+    tracking.finish(record, None)
+
+    assert list(fake._instance.runs) == [name]
+
+
+def test_a_repeated_prediction_run_gets_a_number(fake, caplog):
+    tracking = _tracking()
+    for _ in range(3):
+        tracking.log_prediction_run(_prediction('2026-10-29', '6'))
+
+    assert list(fake._instance.runs) == [
+        'AS_OF_20261029_V6_CHURN', 'AS_OF_20261029_V6_CHURN_2',
+        'AS_OF_20261029_V6_CHURN_3']
+    assert {run['status'] for run in fake._instance.runs.values()} == {
+        'FINISHED'}
+    assert ('Snowflake run AS_OF_20261029_V6_CHURN already exists in '
+            'experiment ents; recording this run as AS_OF_20261029_V6_CHURN_3'
+            ) in caplog.text
+
+
+def _with_runs(fake, count):
+    session = FakeSession()
+    fake(session).runs = {f'R{i}': {'experiment': 'ENTS'}
+                          for i in range(count)}
+    return session
+
+
+def test_an_experiment_near_its_run_limit_warns(fake, caplog):
+    session = _with_runs(fake, 450)
+
+    _tracking(session).log_prediction_run(_prediction('2026-10-29', '6'))
+
+    assert 'AS_OF_20261029_V6_CHURN' in fake._instance.runs
+    assert ('Snowflake experiment ents holds 450 of the 500 runs it can; '
+            'track into a new experiment before it is full') in caplog.text
+
+
+def test_a_full_experiment_is_not_tracked_into(fake, caplog):
+    from kumo.engine._tracking import log_run
+
+    session = _with_runs(fake, 500)
+
+    failure = log_run(_tracking(session), 'log_prediction_run',
+                      _prediction('2026-10-29', '6'))
+
+    assert len(fake._instance.runs) == 500
+    assert fake._instance._run is None
+    assert str(failure) == (
+        'Snowflake experiment ents holds 500 runs, the most it can (500), so '
+        'this prediction run is not tracked; track into a new experiment, '
+        "e.g. SnowflakeTracking(..., experiment_name='ents_2')")
+    assert 'the prediction run is not tracked' in caplog.text
