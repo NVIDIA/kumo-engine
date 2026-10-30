@@ -5,6 +5,7 @@
 
 import html
 import json
+import re
 import types
 import warnings
 from collections.abc import Mapping as AbcMapping
@@ -187,7 +188,8 @@ class Manifest(Record):
         return Artifact(self.kind, self.id, self.location, self.IS_DATASET,
                         self.URI_TAG, version=self.id, version_kind='exact',
                         label=self.created_at and
-                        f"{self.kind.replace('_', '-')}-{self.created_at[:10]}")
+                        f"{self.kind.replace('_', '-')}-{self.created_at[:10]}-"
+                        f"{re.split('[@-]', self.id)[-1][:6]}")
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
@@ -244,7 +246,8 @@ def artifact_summaries(manifest: Manifest, context: str,
         *(Tag(name, value) for name, value in tags.items()),
         *(Note('locations', line) for line in _locations(located, root)),
     ]
-    for item in located:
+    for item in sorted(located, key=lambda item: _DATASET_ORDER.get(
+            item.kind, len(_DATASET_ORDER))):
         if not item.is_dataset:
             continue
         location = str(item.location)
@@ -274,6 +277,10 @@ def _label(item: Artifact) -> str:
     return {'model': 'bundle', 'source_table': f'source {item.id}',
             'prediction_output': item.id}.get(item.kind,
                                               item.kind.replace('_', ' '))
+
+
+#: Datasets lead with the snapshot, as the run list shows the first.
+_DATASET_ORDER = {'snapshot': 0, 'training_table': 1, 'source_table': 2}
 
 
 def _connector(location: str) -> Optional[str]:

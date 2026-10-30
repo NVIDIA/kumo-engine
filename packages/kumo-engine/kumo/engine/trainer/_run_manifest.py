@@ -131,7 +131,7 @@ def _scoring_summaries(manifest: Optional[PredictionManifest], settings: Any,
             Path(index), snapshot.graph_config)),
         *artifact_summaries(manifest, 'scoring', settings,
                             None if index is None else table_details(
-                                Path(index))),
+                                Path(index), snapshot.id)),
     ]
 
 

@@ -553,7 +553,7 @@ def test_adapter_logs_each_summary_type(adapter, mlflow_adapter):
                               'data': [[0, 1.0, 1.0], [1, 0.5, 0.75]]},
             'pred/True_PROB.json': {
                 'columns': ['from', 'to', 'hist', 'hist cumulative share'],
-                'data': [[None, 0.5, 3, 3 / 7], [0.5, None, 4, 1.0]]},
+                'data': [[None, 0.5, 3, 0.428571], [0.5, None, 4, 1.0]]},
             'graph/col_stats.json': tables['col_stats.json'],
             'test/confusion.json': tables['confusion.json']}
         return
@@ -665,7 +665,7 @@ def test_prediction_record_of_the_recorded_run():
         Scalar('pred/rows', 50),
         Histogram('pred/histogram/True_PROB', PROBABILITY_EDGES, tuple(
             np.bincount(np.searchsorted(PROBABILITY_EDGES, SCORES, 'right'),
-                        minlength=102).tolist())),
+                        minlength=102).tolist()), (min(SCORES), max(SCORES))),
         Table('pred/summary', ('column', 'mean', 'min', 'max'),
               (('True_PROB', SCORES.sum() / 50, 0.2, 0.6),), brief=True),
         Scalar('pred/positive_rate', 0.62))

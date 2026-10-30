@@ -266,21 +266,54 @@ def _problems(ingest: Mapping[str, Any], columns: Mapping[str, Any],
     return problems
 
 
-def table_details(index: Path) -> Details:
+def table_details(index: Path, snapshot_id: Optional[str] = None) -> Details:
     r"""Each source table's schema and profile, its rows and column
-    statistics, for its `Dataset`."""
+    statistics, for its `Dataset`; given ``snapshot_id``, the snapshot's
+    own profile too, its tables and rows."""
     rows = (_read(index / 'ingest_stats.json').get('stats')
             or {}).get('node_counts') or {}
     profiles = _profiles(_read(index / 'col_stats.json'))
-    return {
+    tables = _read(index / 'diskgraph_config.json').get('tables') or ()
+    snapshot = {} if snapshot_id is None else {snapshot_id: ({}, {
+        'tables': len(tables),
+        'rows': sum(rows.get(table.get('name'), 0) for table in tables)})}
+    return {**snapshot, **{
         table.get('kumo_source_table_name') or table.get('name'): (
             {column['name']: {'stype': column.get('semantic_type'),
                               'dtype': column.get('source_dtype')}
              for column in table.get('columns') or ()},
             {'rows': rows.get(table.get('name')),
              'columns': profiles.get(table.get('name'), {})})
-        for table in _read(index / 'diskgraph_config.json').get('tables') or ()
-    }
+        for table in tables
+    }}
+
+
+def training_table_details(table: Any) -> Details:
+    r"""A training table's schema and profile, its rows and columns, from
+    its Parquet metadata alone."""
+    from pyarrow import parquet
+
+    manifest = table.manifest
+    path = Path(table.train_table_path)
+    if manifest is None or not path.exists():
+        return {}
+    parts = sorted(path.rglob('*.parquet')) if path.is_dir() else [path]
+    if not parts:
+        return {}
+    schema = parquet.read_schema(parts[0])
+    return {manifest.id: (
+        {field.name: {'stype': None, 'dtype': _dtype(field.type)}
+         for field in schema},
+        {'rows': sum(parquet.ParquetFile(part).metadata.num_rows
+                     for part in parts),
+         'columns': len(schema)})}
+
+
+def _dtype(arrow_type: Any) -> str:
+    text = str(arrow_type)
+    return {'double': 'float64', 'float': 'float32'}.get(text, (
+        'time' if text.startswith('timestamp') else
+        'date' if text.startswith('date') else text))
 
 
 def _by_table(counts: Optional[Mapping[str, int]],

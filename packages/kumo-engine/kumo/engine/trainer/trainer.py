@@ -71,6 +71,7 @@ from kumo.engine._data_summaries import (
     split_summaries,
     table_details,
     target_edges,
+    training_table_details,
 )
 from kumo.engine._deps import Dependencies
 from kumo.engine._embeddings import (
@@ -1098,7 +1099,9 @@ class Trainer:
                                         snapshot.graph_config),
                     *([] if result.manifest is None else artifact_summaries(
                         result.manifest, 'training', settings,
-                        table_details(Path(snapshot.index_path)))),
+                        {**table_details(Path(snapshot.index_path),
+                                         snapshot.id),
+                         **training_table_details(train_table)})),
                     *split_summaries(train_table.staging_dir))), error)
         if session.final is not None:
             result = replace(result, _tracking=session.final)

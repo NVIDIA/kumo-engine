@@ -123,9 +123,6 @@ def test_a_new_kind_and_asset_reach_tags_and_datasets(tmp_path):
             'snapshot `snapshots/g/d`', 'bundle `models/m`',
             f'asset `assets/dummy/{dependency.sha256}`',
             'source orders `s3://data/orders`')),
-        Dataset('r', {'connector': 'LOCAL_FILE',
-                      'location': f'{root}/reports/r', 'version': 'r',
-                      'version_kind': 'exact'}, {}, {}, 'training'),
         Dataset('g@d', {'connector': 'LOCAL_FILE',
                         'location': f'{root}/snapshots/g/d',
                         'version': 'g@d', 'version_kind': 'exact'}, {}, {},
@@ -134,6 +131,9 @@ def test_a_new_kind_and_asset_reach_tags_and_datasets(tmp_path):
                            'version': '7', 'version_kind': 'exact'},
                 {'ID': {'stype': 'ID', 'dtype': 'int64'}}, {'rows': 3},
                 'training'),
+        Dataset('r', {'connector': 'LOCAL_FILE',
+                      'location': f'{root}/reports/r', 'version': 'r',
+                      'version_kind': 'exact'}, {}, {}, 'training'),
     ]
 
 
