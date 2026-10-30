@@ -59,6 +59,11 @@ def _read(fs, path):
         return reader.readall()
 
 
+def _chunks(names, path):
+    assert all(name.startswith(f'{path}.chunks/') for name in names)
+    return sorted(name.rsplit('/', 1)[1] for name in names)
+
+
 def test_the_sink_resolves_a_stage_path(filesystem, stage):
     fs, root = filesystem
     assert root == ROOT
@@ -155,9 +160,8 @@ def test_a_chunked_file_reads_exact_ranges_over_presigned_urls(
     fs, root = filesystem
     data = os.urandom(3 * PART)
     _write(fs, f'{root}/index.bin', data)
-    assert sorted(stage.objects) == [
-        f'runs/index.bin.chunks/{name}'
-        for name in ('00000', '00001', '00002', '_SUCCESS')
+    assert _chunks(stage.objects, 'runs/index.bin') == [
+        '00000', '00001', '00002', '_SUCCESS'
     ]
     with fs.open_input_file(f'{root}/index.bin') as reader:
         assert reader.read_at(PART, PART // 2) == data[PART // 2:PART * 3 // 2]
@@ -184,8 +188,7 @@ def test_a_stage_without_ranged_plaintext_reads_each_file_once_by_get(
             assert reader.read_at(PART,
                                   PART // 2) == data[PART // 2:PART * 3 // 2]
     assert _read(fs, f'{root}/a.bin') == data
-    assert sorted(
-        stage.gets) == ['runs/a.bin.chunks/00000', 'runs/a.bin.chunks/00001']
+    assert _chunks(stage.gets, 'runs/a.bin') == ['00000', '00001']
     assert [
         r.levelname for r in caplog.records
         if 'SNOWFLAKE_SSE' in r.getMessage()
