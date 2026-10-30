@@ -321,9 +321,9 @@ def _source_change(table: Table, recorded: Optional[SourceTableEntry],
         source = table.definition.source_table
         if not isinstance(source, CustomSQLSourceTable):
             connector = table.connector
-            stamp = connector.source_backend.get_data_version(
+            version = connector.source_backend.get_data_version(
                 connector, table.table_name)
-            now = source_table(connector, table.table_name, None, stamp,
+            now = source_table(connector, table.table_name, None, version,
                                record_sources=record_sources)
             current = now.version
             comparable = comparable and now.version_kind in _COMPARABLE
@@ -482,6 +482,8 @@ class GraphSnapshot:
     def source_changes(self, graph: 'Graph') -> Dict[str, Dict[str, Any]]:
         r"""Each of `graph`'s tables' source status since this snapshot:
         `unchanged`, `changed` or `unknown`. Never raises."""
+        from kumo_core.sources.parallel import run_in_parallel
+
         try:
             manifest = self.manifest
             recorded = ({} if manifest is None or manifest.reconstructed else
@@ -490,8 +492,6 @@ class GraphSnapshot:
                               or manifest.record_sources is not False)
         except Exception:
             recorded, record_sources = {}, True
-        from kumo_core.sources.parallel import run_in_parallel
-
         tables = graph._named_tables
         changes = run_in_parallel(
             [
