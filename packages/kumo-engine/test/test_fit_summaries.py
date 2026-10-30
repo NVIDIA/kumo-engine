@@ -77,7 +77,7 @@ def test_binary_test_summaries_count_every_holdout_row(graph):
         row = dict(zip(table.columns, row))
         assert row['recall'] == pytest.approx(np.mean(p[y] >= t))
         assert row['fpr'] == pytest.approx(np.mean(p[~y] >= t))
-    assert summaries['holdout/at_threshold_0.50'].rows[0][0] == (
+    assert summaries['holdout/at_threshold_0.50'].rows[0][1] == (
         (p > 0.5) & y).sum()
     assert summaries['test/brier'].value == pytest.approx(np.mean((p - y)**2))
     stored = Counts.from_dict(result.manifest.holdout.counts)

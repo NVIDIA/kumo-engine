@@ -87,8 +87,9 @@ def test_binary_summaries_match_brute_force():
     tp, fp = (hit & y).sum(), (hit & ~y).sum()
     fn, tn = (~hit & y).sum(), (~hit & ~y).sum()
     assert summaries['holdout/at_threshold_0.42'] == Table(
-        'holdout/at_threshold_0.42', ('tp', 'fp', 'fn', 'tn'),
-        ((tp, fp, fn, tn),), brief=True)
+        'holdout/at_threshold_0.42',
+        ('actual', 'predicted positive', 'predicted negative'),
+        (('positive', tp, fn), ('negative', fp, tn)), brief=True)
     precision, recall = tp / (tp + fp), tp / (tp + fn)
     assert _scalars(summaries) == pytest.approx({
         'logloss': -np.mean(y * np.log(clipped) +

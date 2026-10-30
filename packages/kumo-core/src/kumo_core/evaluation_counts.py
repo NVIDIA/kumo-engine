@@ -174,7 +174,8 @@ def _binary_summaries(counts: Counts,
         precision, recall = _ratio(tp, tp + fp), _ratio(tp, tp + fn)
         summaries += [
             Table(f'holdout/at_threshold_{_threshold(threshold)}',
-                  ('tp', 'fp', 'fn', 'tn'), ((tp, fp, fn, tn),), brief=True),
+                  ('actual', 'predicted positive', 'predicted negative'),
+                  (('positive', tp, fn), ('negative', fp, tn)), brief=True),
             _model('accuracy', (tp + tn) / rows),
             _model('precision', precision),
             _model('recall', recall),
