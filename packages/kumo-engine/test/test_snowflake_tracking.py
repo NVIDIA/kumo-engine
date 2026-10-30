@@ -339,6 +339,8 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
             Table('data/splits', ('split', 'rows'),
                   (('train', 8), ('val', 1), ('test', 1)), brief=True),
             Series('holdout/by_k/map', ((1, 0.5), (10, 0.25)), x_label='k'),
+            Series('pred/True_PROB_count_by_score_pct', ((0, 1.0), (1, 2.0)),
+                   'score_pct', chart=True),
             Table('data_preparation', ('step', 'time (s)', 'disk (GiB)'),
                   (('Training table', 12.5, 0.5),), brief=True),
         )), None)

@@ -340,7 +340,8 @@ class SnowflakeTracking:
         self._log_params({summary.name: summary.value})
 
     def _log_series(self, summary: Series) -> None:
-        self._grouped.add_series(summary)
+        if not summary.chart:
+            self._grouped.add_series(summary)
 
     def _log_curve(self, summary: Curve) -> None:
         self._grouped.add_curve(summary)
