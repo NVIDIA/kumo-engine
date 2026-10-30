@@ -8,6 +8,7 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - main
+      - "pull-request/[0-9]+"
     paths-ignore: ["ui/**"]
   pull_request:
   merge_group:
@@ -22,7 +23,15 @@ permissions:
   id-token: write
 
 jobs:
+  credentials:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/_credentials-gate.yml
+
   import:
+    needs: [credentials]
+    if: needs.credentials.outputs.run == 'true'
     environment: gha-kumo-workflow-tests
     runs-on: ubuntu-24.04
     env:
@@ -32,6 +41,12 @@ jobs:
       - name: Checkout repository and submodules
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
+      - name: Fetch the pull request's merge base
+        if: needs.credentials.outputs.base != ''
+        env:
+          BASE: ${{ needs.credentials.outputs.base }}
+        run: git fetch --no-tags --depth=1 origin "$BASE"
+
       # This enables us to skip the import test for ui-only changes. uv.lock
       # is deliberately excluded: a lock-only dependency bump is exactly what
       # this job's install + import smoke test needs to validate.
@@ -39,6 +54,7 @@ jobs:
         id: ui-changes
         uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
         with:
+          base_sha: ${{ needs.credentials.outputs.base }}
           files: |
             ui/**
 

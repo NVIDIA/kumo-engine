@@ -8,6 +8,7 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - main
+      - "pull-request/[0-9]+"
     paths-ignore: ["ui/**", "tools/**"]
   pull_request:
   merge_group:
@@ -52,11 +53,19 @@ env:
   GITHUB_REPOSITORY_OWNER: ${{secrets.GITHUB_REPOSITORY_OWNER}}
   GITHUB_RUN_ID: ${{secrets.GITHUB_RUN_ID}}
   STORE_DURATIONS: ${{ inputs.store_durations == true }}
-  RUN_FULL_TEST: ${{ github.event_name == 'push' || (inputs.full_test == true && inputs.store_durations != true) }}
+  RUN_FULL_TEST: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (inputs.full_test == true && inputs.store_durations != true) }}
   FORCE_RUN_TESTS: ${{ inputs.store_durations == true }}
 
 jobs:
+  credentials:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/_credentials-gate.yml
+
   pytest:
+    needs: [credentials]
+    if: needs.credentials.outputs.run == 'true'
     environment:
       name: gha-kumo-workflow-tests
       # This job uses environment-scoped OIDC; it does not deploy an application.
@@ -82,6 +91,12 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 40
 
+      - name: Fetch the pull request's merge base
+        if: needs.credentials.outputs.base != ''
+        env:
+          BASE: ${{ needs.credentials.outputs.base }}
+        run: git fetch --no-tags --depth=1 origin "$BASE"
+
       - name: Set up Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
@@ -94,6 +109,7 @@ jobs:
         id: non-pytest-changes
         uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
         with:
+          base_sha: ${{ needs.credentials.outputs.base }}
           files: |
             ui/**
             CHANGELOG.md
@@ -176,7 +192,7 @@ jobs:
           DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Upload coverage artifact
-        if: always()
+        if: always() && env.ARTIFACT_NAME_SAFE != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ env.ARTIFACT_NAME_SAFE }}
