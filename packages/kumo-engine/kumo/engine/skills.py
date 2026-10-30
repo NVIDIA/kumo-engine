@@ -255,10 +255,14 @@ def _install_genie(pkg: Path, client: Any = None) -> str:
     previous install and only then are the files it no longer ships deleted.
     A failure part way leaves old and new files together, never an empty
     folder, and running the install again completes it.
+
+    There is no lock, so the folder is checked again after the prune: the
+    install that changes it last checks the final state against its own
+    build. If every concurrent install succeeds, the folder holds exactly one
+    complete build, the last one's.
     """
     from databricks.sdk import WorkspaceClient
-    from databricks.sdk.service.workspace import (ExportFormat, ImportFormat,
-                                                  ObjectType)
+    from databricks.sdk.service.workspace import ImportFormat, ObjectType
 
     w = client or WorkspaceClient()
     target = (f'{GENIE_SKILLS.format(user=w.current_user.me().user_name)}'
@@ -271,32 +275,56 @@ def _install_genie(pkg: Path, client: Any = None) -> str:
         w.workspace.mkdirs(path.rsplit('/', 1)[0])
         w.workspace.upload(path, io.BytesIO(p.read_bytes()),
                            format=ImportFormat.AUTO, overwrite=True)
-    bad = [
-        path for path, p in remote.items() if w.workspace.download(
-            path, format=ExportFormat.AUTO).read() != p.read_bytes()
-    ]
+    bad = _genie_unequal(w, remote)
     if bad:
         raise RuntimeError(f'{len(bad)} file(s) did not read back intact, '
                            f'e.g. {bad[0]}')
-    # Take the whole inventory before deleting anything: walk only the
-    # folders the package ships, so every entry found that is not shipped is
-    # the highest unshipped file or folder under `target`, empty ones too.
+    # Take the whole inventory before deleting anything.
+    stale = _genie_walk(w, target, remote, ObjectType.DIRECTORY)[1]
+    for path in stale:
+        w.workspace.delete(path, recursive=True)
+    found, extra = _genie_walk(w, target, remote, ObjectType.DIRECTORY)
+    changed = sorted(set(remote) - found) + extra or _genie_unequal(w, remote)
+    if changed:
+        raise RuntimeError(f'Another install changed {target} while this one '
+                           f'ran (e.g. {changed[0]}); run install_skills '
+                           'again.')
+    return target
+
+
+def _genie_unequal(w: Any, remote: dict[str, Path]) -> list[str]:
+    r"""The files of ``remote`` whose workspace copy differs from the local
+    one.
+    """
+    from databricks.sdk.service.workspace import ExportFormat
+    return [
+        path for path, p in remote.items() if w.workspace.download(
+            path, format=ExportFormat.AUTO).read() != p.read_bytes()
+    ]
+
+
+def _genie_walk(w: Any, target: str, remote: dict[str, Path],
+                directory: Any) -> tuple[set[str], list[str]]:
+    r"""Walks the folders under ``target`` that ``remote`` ships. Returns the
+    shipped files found and every entry found that is not shipped: the
+    highest unshipped file or folder, empty ones too.
+    """
     shipped = {target}
     for path in remote:
         while (path := path.rsplit('/', 1)[0]) not in shipped:
             shipped.add(path)
-    stale: list[str] = []
+    found: set[str] = set()
+    unshipped: list[str] = []
     queue = [target]
     while queue:
         for obj in w.workspace.list(queue.pop()):
-            if obj.path in shipped:
-                if obj.object_type == ObjectType.DIRECTORY:
-                    queue.append(obj.path)
-            elif obj.path not in remote:
-                stale.append(obj.path)
-    for path in stale:
-        w.workspace.delete(path, recursive=True)
-    return target
+            if obj.path in remote:
+                found.add(obj.path)
+            elif obj.path not in shipped:
+                unshipped.append(obj.path)
+            elif obj.object_type == directory:
+                queue.append(obj.path)
+    return found, unshipped
 
 
 def _active_session() -> Any:

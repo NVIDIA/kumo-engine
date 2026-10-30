@@ -262,6 +262,44 @@ def test_genie_fails_when_a_file_does_not_read_back(
     assert ws.deleted == []   # nothing is pruned after a failed check
 
 
+def another_writer(ws: FakeDatabricks, monkeypatch: pytest.MonkeyPatch, walk: int,
+                   write: dict[str, bytes]) -> None:
+    """Writes `write` as the install starts its `walk`-th walk of the folder (1 is the prune)."""
+    walks, listing = [], ws.list
+
+    def list_(path: str, recursive: bool = False):
+        if path == f'{GENIE}/kumo-data-science':
+            walks.append(path)
+            if len(walks) == walk:
+                ws.files.update(write)
+        yield from listing(path, recursive)
+    monkeypatch.setattr(ws, 'list', list_)
+
+
+def test_a_concurrent_genie_install_of_another_build_fails_one(
+        home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # B uploads and verifies between A's verify and prune; B's router needs b-only.md, which
+    # A's prune deletes. A must not report success over a router missing its file.
+    base = f'{GENIE}/kumo-data-science'
+    ws = FakeDatabricks({})
+    ws.install(monkeypatch)
+    another_writer(ws, monkeypatch, 1, {f'{base}/SKILL.md': b'B router, see b-only.md',
+                                        f'{base}/b-only.md': b'B'})
+    with pytest.raises(RuntimeError, match='Another install changed'):
+        skills.install_skills('genie')
+    assert f'{base}/b-only.md' in ws.deleted
+
+
+def test_genie_fails_when_a_file_appears_after_the_prune(
+        home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base = f'{GENIE}/kumo-data-science'
+    ws = FakeDatabricks({})
+    ws.install(monkeypatch)
+    another_writer(ws, monkeypatch, 2, {f'{base}/hosts/other/x.md': b'stray'})
+    with pytest.raises(RuntimeError, match=f'changed {base} .*hosts/other'):
+        skills.install_skills('genie')
+
+
 class FakeRow(tuple):
     def __new__(cls, **fields: object) -> 'FakeRow':
         row = super().__new__(cls, fields.values())
