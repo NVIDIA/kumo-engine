@@ -14,7 +14,8 @@ from kumo_core.score_drift import psi_shift
 from kumo_core.summaries import Note, Summary, Table
 
 HEADLINE_CHARS = 140
-NOTES_LINE = "*Add notes below this line; edits above it stop kumo's updates.*"
+NOTES_LINE = ("*kumo rewrites everything above this line; editing it stops "
+              "kumo's updates.*")
 TAIL = ('', NOTES_LINE, '', '---')
 _TITLES = {'data/splits': 'Training data', 'pred/summary': 'Scores',
            'holdout/metrics': 'Holdout metrics', 'drift/score': 'Score drift',

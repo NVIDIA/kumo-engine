@@ -739,7 +739,7 @@ def test_charted_series_become_metrics_over_their_steps(tracking_uri):
     assert 'mlflow.loggedArtifacts' not in run.data.tags
 
 
-NOTES = "*Add notes below this line; edits above it stop kumo's updates.*"
+NOTES = "*kumo rewrites everything above this line; editing it stops kumo's updates.*"
 TAIL = ['', NOTES, '', '---']
 LOCATIONS = Table('locations', ('kind', 'id', 'location'),
                   (('model', 'm', '/r/m'),), brief=True)
