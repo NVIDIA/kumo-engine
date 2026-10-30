@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Realized performance and score drift of prediction runs."""
 
+import copy
 import dataclasses
 import json
 import math
@@ -312,6 +313,7 @@ def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
     from kumo_core.pquery import _target_maximum
     from kumo_core.training import custom_table
     from kumo_core.types import PredictionArtifactType
+    from kumoapi.pquery.AST import Filter
     from pyarrow import parquet
 
     from kumo.engine.pquery.predictive_query import PredictiveQuery
@@ -319,6 +321,11 @@ def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
     reasons = out['reasons']
     out['step'] = 'parsing the query'
     pquery = PredictiveQuery._from_snapshot(snapshot, query)
+    if isinstance(pquery._parsed.query.entity_ast, Filter):
+        unfiltered = copy.copy(pquery._parsed.query)
+        unfiltered.entity_ast = unfiltered.entity_ast.target
+        pquery = PredictiveQuery._from_snapshot(snapshot,
+                                                unfiltered.to_string())
     parsed = pquery._parsed
     static = parsed.query_type == 'static'
     out['task_type'] = parsed.task_type

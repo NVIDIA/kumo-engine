@@ -241,6 +241,19 @@ def test_evaluate_regression_and_static_queries(snapshots):
         result.export(None)
 
 
+@pytest.mark.parametrize('scored', [range(10, 60), range(5, 30)])
+def test_evaluate_labels_the_scored_cohort_not_the_training_one(
+        snapshots, scored):
+    frame = pd.DataFrame({'ENTITY': list(scored), 'TARGET_PRED': 10.0})
+    result = _evaluate(
+        snapshots, 'PREDICT SUM(orders.AMT, 0, 7, days) FOR EACH users.ID '
+        'WHERE users.ID < 10', frame, [ANCHOR])
+    sums = _window(snapshots.orders, ANCHOR)['AMT'].sum()
+    error = 10.0 - pd.Series({user: sums.get(user, 0.0) for user in scored})
+    assert result.rows == result.labelled == len(scored)
+    assert result.metrics['mae'] == pytest.approx(error.abs().mean(), rel=1e-5)
+
+
 def test_evaluation_exports_its_rows(snapshots, classifier, tmp_path):
     from kumo.engine._monitoring import EvaluationResult
     from kumo.engine.trainer.output_config import PredictionOutputConfig
