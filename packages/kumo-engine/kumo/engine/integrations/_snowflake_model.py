@@ -1,14 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""A Kumo model bundle as a Snowflake Model Registry version that scores in
-Snowpark Container Services, e.g. with ``ModelVersion.run_batch``.
-
-snowflake-ml pickles this module by value into the version, so the container
-must run the Python the version was registered from. kumo itself is embedded
-in the version as code, on the path before the model loads; its third-party
-requirements install from PyPI or a pip artifact repository.
-"""
+r"""A Kumo bundle as a Snowflake Model Registry version that scores in
+Snowpark Container Services."""
 
 import json
 import shutil
@@ -21,26 +15,20 @@ import pandas as pd
 from kumo.engine.connector._extras import import_provider
 
 custom_model = import_provider('snowflake.ml.model.custom_model', 'snowflake')
+_registry = import_provider('kumo_snowflake.registry', 'snowflake')
 
-#: The CUDA a version serves with when this installation's torch has none.
 CPU_TORCH_CUDA = '12.6'
 DEFAULTS = {
     'python_version': f'{sys.version_info.major}.{sys.version_info.minor}',
     'function_type': 'TABLE_FUNCTION',
 }
-#: Packages embedded as code: kumo's own, which are not on PyPI, and
-#: torchmetrics, whose pinned version the CUDA index the image installs from
-#: first does not carry.
+# torchmetrics: the image's CUDA index lacks the pinned version.
 EMBEDDED = ('kumo.engine', 'kumo_core', 'kumoapi', 'kumopql', 'kumo_snowflake',
             'diskgraph', 'torchmetrics')
 _EMBEDDED_DISTS = ('diskgraph', 'torchmetrics')
-#: Modules whose distributions' requirements the embedded code needs, with
-#: the distribution of a workspace install; a bundled kumo-engine wheel
-#: provides both modules itself.
 REQUIRING = (('kumo_core', 'kumo-core'), ('kumopql', 'kumo-pql'))
-#: kumo-engine's ``text`` extra, for models that embed text columns.
 TEXT_REQUIREMENT = 'kumo-glove-6b-50d>=1.0.0,<2'
-#: Installed by the Snowflake inference image; their own pins there win.
+# The inference image installs these; its pins win.
 PROVIDED = ('snowflake-snowpark-python', 'snowflake-connector-python')
 
 
@@ -68,9 +56,7 @@ class KumoModel(custom_model.CustomModel):
 def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
                    target: Mapping[str, Optional[str]],
                    workdir: str) -> Dict[str, Any]:
-    r"""``Registry.log_model`` arguments that register the bundle as a
-    :class:`KumoModel` for Snowpark Container Services on GPU. ``target`` is
-    the registering connector's warehouse, database and schema."""
+    r"""``Registry.log_model`` arguments for the bundle as a `KumoModel`."""
     from kumo.engine.integrations._serving import output_columns
     from kumo.engine.trainer._spec import read_bundle_artifact_paths
     from kumo.engine.trainer.output_config import (
@@ -94,14 +80,11 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
             if key.startswith(SERVING_OPTION_PREFIX)
         }
     }
-    ServingEnvironmentError = import_provider(
-        'kumo_snowflake.registry', 'snowflake').ServingEnvironmentError
-
     repository = options.pop('pip_repository', None)
     python = options.pop('python_version')
     options['cuda_version'] = cuda_version(options.get('cuda_version'))
     if python != DEFAULTS['python_version']:
-        raise ServingEnvironmentError(
+        raise _registry.ServingEnvironmentError(
             f"serving_options python_version={python!r} differs from the "
             f"registering Python {DEFAULTS['python_version']}: snowflake-ml "
             f"pickles the model by value, so the container must run the same "
@@ -128,12 +111,8 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
 
 
 def cuda_version(requested: Optional[str]) -> str:
-    r"""The CUDA the version's image installs torch for: this installation's
-    torch build's, which ``requested`` must equal, so the image resolves the
-    same torch minor version for it."""
+    r"""The installed torch's CUDA, which ``requested`` must equal."""
     import torch
-    ServingEnvironmentError = import_provider(
-        'kumo_snowflake.registry', 'snowflake').ServingEnvironmentError
 
     def minor(version: str) -> str:
         return '.'.join(version.split('.')[:2])
@@ -143,7 +122,7 @@ def cuda_version(requested: Optional[str]) -> str:
         return built or CPU_TORCH_CUDA
     if built is not None and minor(requested) != built:
         release = minor(torch.__version__.split('+')[0])
-        raise ServingEnvironmentError(
+        raise _registry.ServingEnvironmentError(
             f"serving_options cuda_version={requested!r}, but this "
             f"installation's torch {torch.__version__} is built for CUDA "
             f"{built}; the version's image would need torch {release} for "
@@ -158,8 +137,7 @@ def cuda_version(requested: Optional[str]) -> str:
 
 
 def embedded_code(directory: Path) -> List[str]:
-    r"""Copies the :data:`EMBEDDED` packages into ``directory``, without
-    caches and tests, and returns the package directories."""
+    r"""Copies the :data:`EMBEDDED` packages into ``directory``."""
     import importlib
 
     paths = []
@@ -176,10 +154,7 @@ def embedded_code(directory: Path) -> List[str]:
 
 
 def pip_requirements() -> List[str]:
-    r"""The third-party requirements of the distributions providing
-    :data:`REQUIRING`, in a form the Snowflake image build accepts: torch at
-    this installation's minor version, faiss-cpu for kumo's own faiss build,
-    one line per package, and no ``==X.*`` pins."""
+    r"""Third-party requirements of :data:`REQUIRING`, as the image takes."""
     from importlib.metadata import packages_distributions, requires, version
 
     from packaging.requirements import Requirement
@@ -215,8 +190,7 @@ def pip_requirements() -> List[str]:
 
 
 def text_requirements(encoders: Optional[str]) -> List[str]:
-    r"""The word-embedding package, from PyPI, when ``encoders`` embeds
-    text columns."""
+    r"""The word-embedding package, if ``encoders`` embeds text."""
     from kumo_core.encoders.config import EncodersConfig
     from kumo_core.io.json import load_json
     from kumoapi.encoder import TextEmbedding
