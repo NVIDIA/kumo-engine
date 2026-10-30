@@ -10,13 +10,22 @@ use crate::state::{
 };
 use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
-use diskgraph_core::tt_builder::{Value, WEIGHT_COL};
 use diskgraph_core::time::{abs_from_unit, Seconds, TimeUnit};
+use diskgraph_core::tt_builder::{Value, WEIGHT_COL};
 use diskgraph_index::layout::{EdgeListView, RelationSegment};
-use diskgraph_index::reader::ShardReader;
 use gxhash::HashMap as GxHashMap;
+use diskgraph_index::page_io::{
+    submit_prepared_page_batch, EdgeIoBackend, PreparedPages, PAGE_SIZE,
+};
+use diskgraph_index::reader::{
+    HeaderReadPlan, ParsedNodeHeader, PreparedHeaders, RangeReadPlan, RelationByteRange,
+    ShardReader,
+};
 use rayon::prelude::*;
+use smallvec::SmallVec;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::sync::Arc;
@@ -25,6 +34,46 @@ use tracing::{debug, info, warn};
 
 const DETERMINISTIC_UNIFORM_SEED_V1: u64 = 41;
 const FREQUENCY_COL: &str = "__kumo_internal_frequency_column__";
+
+#[allow(clippy::io_other_error)]
+fn other_io_error(message: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, message)
+}
+
+/// Preserve the existing seeded draws and visitation order across backends.
+fn sample_uniform_indices<R: rand::Rng + ?Sized>(
+    rng: &mut R,
+    population: usize,
+    amount: usize,
+) -> SmallVec<[usize; 16]> {
+    let mut selected: SmallVec<[usize; 16]> =
+        rand::seq::index::sample(rng, population, amount).into_iter().collect();
+    selected.sort_unstable();
+    selected
+}
+
+#[cfg(test)]
+mod uniform_index_tests {
+    use super::sample_uniform_indices;
+    use rand::SeedableRng;
+
+    #[test]
+    fn uniform_sample_preserves_seeded_results() {
+        let mut baseline_rng = rand_chacha::ChaCha8Rng::seed_from_u64(42);
+        assert_eq!(
+            sample_uniform_indices(&mut baseline_rng, 10_000, 10).as_slice(),
+            &[1462, 1643, 2884, 3079, 3144, 3785, 4272, 5364, 7367, 9495],
+        );
+        let mut first_rng = rand_chacha::ChaCha8Rng::seed_from_u64(73);
+        let mut second_rng = rand_chacha::ChaCha8Rng::seed_from_u64(73);
+        let first = sample_uniform_indices(&mut first_rng, 10_000, 10);
+        let second = sample_uniform_indices(&mut second_rng, 10_000, 10);
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 10);
+        assert!(first.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(first.iter().all(|&index| index < 10_000));
+    }
+}
 /// The customer-provided custom-TT split column (kumo baseline convention).
 /// It is dropped from the per-stage seed parquets at routing time (the primary
 /// guarantee), so it should never reach a seed rowpack; this is a cheap
@@ -59,6 +108,12 @@ pub(crate) fn is_reserved_feature_column(name: &str) -> bool {
 /// (e.g. `ENTITY1`, `TARGET12`) — the indexed reserved families. Rejects the
 /// bare prefix and any non-digit suffix (`ENTITY`, `TARGET_AUDIENCE`).
 #[inline]
+/// Measurement escape hatch — see the `HUB DEDUPING` site in `process_layer`.
+fn no_hub_dedup() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var("DG_NO_HUB_DEDUP").is_ok_and(|v| v == "1"))
+}
+
 fn is_indexed_reserved(name: &str, prefix: &str) -> bool {
     match name.strip_prefix(prefix) {
         Some(rest) => !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()),
@@ -134,7 +189,9 @@ pub fn choose_fused_mode(
     // ~128 B/row is the rough cost of a typical sampled row's feature footprint
     // (rowpack-decoded fields + small embedding columns). Coarse but stable.
     const BYTES_PER_ROW: usize = 128;
-    let working_set = batch_size.saturating_mul(nodes_per_seed).saturating_mul(BYTES_PER_ROW);
+    let working_set = batch_size
+        .saturating_mul(nodes_per_seed)
+        .saturating_mul(BYTES_PER_ROW);
     let threshold = std::env::var("DG_FUSED_L2_TARGET")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -244,10 +301,8 @@ where
     }
 
     // The rhs anchor array (one per positive) if this is a temporal task.
-    let rhs_anchors: Option<Vec<i64>> = seed_ts
-        .as_ref()
-        .and_then(|m| m.get(rhs_node_type))
-        .cloned();
+    let rhs_anchors: Option<Vec<i64>> =
+        seed_ts.as_ref().and_then(|m| m.get(rhs_node_type)).cloned();
     if let Some(anchors) = rhs_anchors.as_ref() {
         if anchors.len() != b {
             return Err(EngineError::InvalidRequest(format!(
@@ -344,9 +399,7 @@ where
         let mut thread;
         let rng: &mut dyn rand::RngCore = match rnd_seed {
             Some(base) => {
-                let rng_seed = base
-                    .wrapping_add(i as u64)
-                    .wrapping_add((m as u64) << 32);
+                let rng_seed = base.wrapping_add(i as u64).wrapping_add((m as u64) << 32);
                 chacha = rand_chacha::ChaCha8Rng::seed_from_u64(rng_seed);
                 &mut chacha
             }
@@ -462,6 +515,10 @@ pub struct DiskGraphEngine {
     pub local_to_merged_rel: Vec<Vec<u16>>,
     /// Optional global random seed for deterministic neighbor sampling.
     pub random_seed: Option<u64>,
+    /// Optional benchmark/prototype policy that stops adding distinct
+    /// neighbors after this many have been found for one root. Existing nodes
+    /// and edges among them remain valid; capped roots do not expand again.
+    pub max_neighbors_per_seed: Option<u32>,
     /// Local rayon thread pool for parallel sampling.
     /// Uses a per-instance pool (not the global pool) to avoid
     /// deadlocks when PyTorch DataLoader forks worker processes.
@@ -515,8 +572,54 @@ struct CompiledLayerSpec {
     default_fanout: Option<FanoutSpec>,
 }
 
+pub(crate) enum ExplicitSelection {
+    /// Span in `ExplicitShardPlan::selected_indices`.
+    Selected(std::ops::Range<usize>),
+    Full,
+}
+
+pub(crate) struct ExplicitRelationPlan {
+    range: RelationByteRange,
+    rel_id: usize,
+    dst_type_id: usize,
+    selection: ExplicitSelection,
+}
+
+pub(crate) struct ExplicitNodePlan {
+    node: NodeRecord,
+    relations: std::ops::Range<usize>,
+}
+
+#[derive(Default)]
+pub(crate) struct ExplicitShardPlan {
+    nodes: Vec<ExplicitNodePlan>,
+    relations: Vec<ExplicitRelationPlan>,
+    selected_indices: Vec<usize>,
+}
+
+impl ExplicitShardPlan {
+    pub(crate) fn clear(&mut self) {
+        self.nodes.clear();
+        self.relations.clear();
+        self.selected_indices.clear();
+    }
+}
 
 impl DiskGraphEngine {
+    pub fn set_max_neighbors_per_seed(&mut self, limit: Option<u32>) {
+        self.max_neighbors_per_seed = limit;
+    }
+
+    pub fn prefault_offsets(&self) -> u64 {
+        self.thread_pool.install(|| {
+            self.readers
+                .par_iter()
+                .flatten()
+                .map(|shard| shard.reader.prefault_offsets())
+                .reduce(|| 0, u64::wrapping_add)
+        })
+    }
+
     /// Build an engine directly from an already-opened `GraphIndexReader`.
     /// This is the canonical constructor; `load(path, ...)` is a thin
     /// wrapper that opens the reader first and forwards here.
@@ -537,9 +640,9 @@ impl DiskGraphEngine {
         let mut node_decoders_map: HashMap<String, RowPackDecoder> = HashMap::new();
 
         for name in &sorted_names {
-            let table = reader.table(name).ok_or_else(|| {
-                EngineError::Internal(format!("reader missing table {name}"))
-            })?;
+            let table = reader
+                .table(name)
+                .ok_or_else(|| EngineError::Internal(format!("reader missing table {name}")))?;
             let mut shards = Vec::with_capacity(table.shard_count());
             for s in 0..table.shard_count() {
                 let arc = table.shard_arc(s).unwrap();
@@ -568,7 +671,7 @@ impl DiskGraphEngine {
         for (rel_id, rel) in merged.iter().enumerate() {
             relation_info_map.insert(
                 rel_id,
-                (rel.name.clone(), rel.src_type.clone(), rel.dst_type.clone())
+                (rel.name.clone(), rel.src_type.clone(), rel.dst_type.clone()),
             );
             if let Some(dest_sort_key) = rel.dest_sort_key.as_ref() {
                 decoders_map.insert(rel_id, SortKeyDecoder::new(dest_sort_key));
@@ -587,7 +690,11 @@ impl DiskGraphEngine {
             relation_info_map,
             decoders_map,
             node_decoders_map,
-            if reverse_pairs.is_empty() { None } else { Some(reverse_pairs) },
+            if reverse_pairs.is_empty() {
+                None
+            } else {
+                Some(reverse_pairs)
+            },
             timestamp_unit,
             random_seed,
             num_threads,
@@ -595,7 +702,6 @@ impl DiskGraphEngine {
     }
 
     pub fn load(path: &Path, random_seed: Option<u64>, num_threads: Option<usize>) -> Result<Self> {
-
         let metadata_path = path.join("index_metadata.json");
         let metadata_bytes = std::fs::read(&metadata_path)
             .map_err(|e| EngineError::Internal(format!("failed to read metadata: {}", e)))?;
@@ -625,14 +731,11 @@ impl DiskGraphEngine {
                 .filter(|rel| rel.src_type == node_type.name)
                 .cloned()
                 .collect();
-            let type_layouts =
-                diskgraph_index::builder::compute_relation_layouts(
-                    &per_table_relations,
-                    &metadata.node_types,
-                )
-                .map_err(|e| {
-                    EngineError::Internal(format!("failed to compute layouts: {}", e))
-                })?;
+            let type_layouts = diskgraph_index::builder::compute_relation_layouts(
+                &per_table_relations,
+                &metadata.node_types,
+            )
+            .map_err(|e| EngineError::Internal(format!("failed to compute layouts: {}", e)))?;
             let type_layouts = Arc::new(type_layouts);
 
             // Ingest currently writes node shard directories in lowercase
@@ -889,6 +992,7 @@ impl DiskGraphEngine {
             timestamp_unit,
             local_to_merged_rel,
             random_seed,
+            max_neighbors_per_seed: None,
             thread_pool,
             legacy_recording: false,
             parallel_commit_min_edges: 1 << 15,
@@ -896,7 +1000,7 @@ impl DiskGraphEngine {
     }
 
     fn per_seed_recording(&self, fused: bool) -> bool {
-        !fused && !self.legacy_recording && self.readers.len() <= 256
+        !fused && !self.legacy_recording && self.max_neighbors_per_seed.is_none() && self.readers.len() <= 256
     }
 
     pub fn get_type_name_mapping(&self) -> TypeNameMapping {
@@ -1209,7 +1313,10 @@ impl DiskGraphEngine {
             .get(node_type_id)
             .and_then(|d| d.as_ref())
             .ok_or_else(|| {
-                EngineError::InvalidRequest(format!("no feature data for node type {}", node_type_id))
+                EngineError::InvalidRequest(format!(
+                    "no feature data for node type {}",
+                    node_type_id
+                ))
             })?;
         let context = decoder.context();
         // Full rowpack: every column, NO reserved filter.
@@ -1252,6 +1359,40 @@ impl DiskGraphEngine {
             .map_err(|_| {
                 EngineError::DataCorruption(format!("node id {} not found in any shard", global_id))
             })
+    }
+
+    /// Start the reads for a whole batch of global node ids before anything
+    /// walks it, so the batch's page faults overlap instead of each thread
+    /// blocking on one 4 KB read at a time (`diskgraph_index::prefetch`).
+    ///
+    /// The traversal already materializes each layer's frontier before
+    /// expanding it, so the batch is free — nothing has to be restructured.
+    /// A pure hint: sampling output is unchanged. No-op unless `DG_PREFETCH=1`.
+    ///
+    /// The `admit` check comes FIRST, before the per-shard grouping — that
+    /// grouping (an allocation per shard plus a binary search per id) is itself
+    /// more than the prefetch saves once the pages are cached.
+    fn prefetch_batch(&self, shards: &[ShardHandle], global_ids: impl Iterator<Item = u64>) {
+        let (do_work, probing) = diskgraph_index::prefetch::admit();
+        if !do_work || shards.is_empty() {
+            return;
+        }
+        // A probe while the gate is off only has to sample residency, so give
+        // it a handful of ids instead of the whole frontier.
+        let width = if probing && !diskgraph_index::prefetch::active() {
+            diskgraph_index::prefetch::PROBE_IDS
+        } else {
+            usize::MAX
+        };
+        let mut per_shard: Vec<Vec<u64>> = vec![Vec::new(); shards.len()];
+        for global_id in global_ids.take(width) {
+            if let Ok(idx) = self.find_shard(shards, global_id) {
+                per_shard[idx].push(global_id - shards[idx].min_id);
+            }
+        }
+        for (idx, local_ids) in per_shard.iter().enumerate() {
+            shards[idx].reader.prefetch_nodes(local_ids, probing);
+        }
     }
 
     /// Phase 3 convenience: turn a batch of seed-table row ids into the
@@ -1428,11 +1569,9 @@ impl DiskGraphEngine {
             let schema = seed_feat_out.schema.clone().ok_or_else(|| {
                 EngineError::Internal("seed feature schema missing after fetch".into())
             })?;
-            let combined = arrow_select::concat::concat_batches(
-                &schema,
-                seed_feat_out.feature_batches.iter(),
-            )
-            .map_err(|e| EngineError::Internal(format!("concat seed batches: {e}")))?;
+            let combined =
+                arrow_select::concat::concat_batches(&schema, seed_feat_out.feature_batches.iter())
+                    .map_err(|e| EngineError::Internal(format!("concat seed batches: {e}")))?;
             Some(combined)
         };
 
@@ -1470,8 +1609,7 @@ impl DiskGraphEngine {
                 ))
             })?;
         let col = rb.column(idx);
-        let ids: Vec<u64> = if let Some(a) =
-            col.as_any().downcast_ref::<arrow_array::UInt64Array>()
+        let ids: Vec<u64> = if let Some(a) = col.as_any().downcast_ref::<arrow_array::UInt64Array>()
         {
             (0..a.len()).map(|i| a.value(i)).collect()
         } else if let Some(a) = col.as_any().downcast_ref::<arrow_array::Int64Array>() {
@@ -1486,14 +1624,18 @@ impl DiskGraphEngine {
         seed_nodes.insert(entity_node_type.to_string(), ids);
 
         if seed_nodes.is_empty() {
-             return Err(EngineError::DataCorruption(format!(
-                 "seed table `{stage_table}` batch resolved no seed nodes"
-             )));
+            return Err(EngineError::DataCorruption(format!(
+                "seed table `{stage_table}` batch resolved no seed nodes"
+            )));
         }
 
         let seed_timestamps: Option<Vec<i64>> = if use_seed_timestamps {
             seed_target_batch.as_ref().and_then(|rb| {
-                let idx = rb.schema().fields().iter().position(|f| f.name() == "TIMESTAMP")?;
+                let idx = rb
+                    .schema()
+                    .fields()
+                    .iter()
+                    .position(|f| f.name() == "TIMESTAMP")?;
                 let col = rb.column(idx);
                 col.as_any()
                     .downcast_ref::<arrow_array::Int64Array>()
@@ -1511,13 +1653,14 @@ impl DiskGraphEngine {
         // 6. Build the sampling request: seed at the parent entity type(s)
         //    with the resolved ids, anchored at the seed timestamps when
         //    present (non-temporal tasks just pass None).
-        let mut request_seed_ts: Option<HashMap<String, Vec<i64>>> = seed_timestamps.as_ref().map(|ts| {
-            let mut m = HashMap::new();
-            for entity_type_name in seed_nodes.keys() {
-                m.insert(entity_type_name.clone(), ts.clone());
-            }
-            m
-        });
+        let mut request_seed_ts: Option<HashMap<String, Vec<i64>>> =
+            seed_timestamps.as_ref().map(|ts| {
+                let mut m = HashMap::new();
+                for entity_type_name in seed_nodes.keys() {
+                    m.insert(entity_type_name.clone(), ts.clone());
+                }
+                m
+            });
 
         // 6b. Global negative RHS injection. Snapshot the primary-entity ids
         //     BEFORE mutating `seed_nodes` so `task.seed_node_ids` stays the
@@ -1583,8 +1726,7 @@ impl DiskGraphEngine {
                 seed_nodes.insert(spec.rhs_node_type.clone(), pair.chosen_rhs);
                 // Align the rhs anchor timestamps (length B) so negatives can be
                 // temporally validated against the right anchor per row.
-                if let (Some(map), Some(ts)) =
-                    (request_seed_ts.as_mut(), seed_timestamps.as_ref())
+                if let (Some(map), Some(ts)) = (request_seed_ts.as_mut(), seed_timestamps.as_ref())
                 {
                     map.insert(spec.rhs_node_type.clone(), ts.clone());
                 }
@@ -1595,12 +1737,15 @@ impl DiskGraphEngine {
 
         if let Some(spec) = negatives {
             // Resolve the RHS dense type id from the merged catalog.
-            let rhs_type_id = *self.node_type_to_id.get(&spec.rhs_node_type).ok_or_else(|| {
-                EngineError::InvalidRequest(format!(
-                    "negative sampling: rhs_node_type `{}` not in engine catalog",
-                    spec.rhs_node_type
-                ))
-            })?;
+            let rhs_type_id = *self
+                .node_type_to_id
+                .get(&spec.rhs_node_type)
+                .ok_or_else(|| {
+                    EngineError::InvalidRequest(format!(
+                        "negative sampling: rhs_node_type `{}` not in engine catalog",
+                        spec.rhs_node_type
+                    ))
+                })?;
             // Dense global-id range across the type's concatenated shards.
             let shards = self.readers.get(rhs_type_id).ok_or_else(|| {
                 EngineError::InvalidRequest(format!(
@@ -1631,8 +1776,7 @@ impl DiskGraphEngine {
                 .as_ref()
                 .map(|t| t.temporal_col_indices())
                 .unwrap_or((None, None));
-            let do_temporal =
-                request_seed_ts.is_some() && (c_idx.is_some() || e_idx.is_some());
+            let do_temporal = request_seed_ts.is_some() && (c_idx.is_some() || e_idx.is_some());
 
             // Validator-factory: each parallel row-task calls this to get its
             // OWN validator owning a freshly-allocated `RowPackDecodeScratch`,
@@ -1707,7 +1851,12 @@ impl DiskGraphEngine {
         // duplicate batches.
         if !flags.fused_feature_fetching {
             for (type_id, type_state) in &state.type_states {
-                if self.node_decoders.get(*type_id).and_then(|d| d.as_ref()).is_none() {
+                if self
+                    .node_decoders
+                    .get(*type_id)
+                    .and_then(|d| d.as_ref())
+                    .is_none()
+                {
                     continue;
                 }
                 // The caller consumes NO column of this type: skip BEFORE
@@ -2136,7 +2285,9 @@ impl DiskGraphEngine {
 
         // 1. Initial Validation & Initialization
         if request.seed_nodes.is_empty() {
-            return Err(EngineError::InvalidRequest("no seed nodes provided".to_string()));
+            return Err(EngineError::InvalidRequest(
+                "no seed nodes provided".to_string(),
+            ));
         }
 
         debug!(
@@ -2153,6 +2304,25 @@ impl DiskGraphEngine {
         let num_rels = self.relation_info.len();
         let num_hops = request.plan.layers.len();
         state.stats.resize(num_types, num_rels, num_hops);
+
+        if self.max_neighbors_per_seed.is_some() {
+            if state.capped_neighbor_counts.len() < num_types {
+                state
+                    .capped_neighbor_counts
+                    .resize_with(num_types, Vec::new);
+            }
+            for counts in &mut state.capped_neighbor_counts {
+                counts.clear();
+            }
+            for (seed_type, seed_ids) in &request.seed_nodes {
+                let seed_type_id = *self.node_type_to_id.get(seed_type).ok_or_else(|| {
+                    EngineError::InvalidRequest(format!(
+                        "seed type `{seed_type}` not found in catalog"
+                    ))
+                })?;
+                state.capped_neighbor_counts[seed_type_id].resize(seed_ids.len(), 0);
+            }
+        }
 
         let fused = request.flags.fused_feature_fetching;
 
@@ -2389,6 +2559,8 @@ impl DiskGraphEngine {
             .and_then(|d| d.as_ref())
             .ok_or_else(|| EngineError::Internal(format!("no decoder for type {}", type_id)))?;
 
+        self.prefetch_batch(shards, node_ids.iter().copied());
+
         // No shard tracking/sorting for fused fetching to strictly preserve order
         for &global_id in node_ids {
             let shard_idx = self.find_shard(shards, global_id)?;
@@ -2413,6 +2585,171 @@ impl DiskGraphEngine {
 
     /// Feature fetching in standalone mode. Multi-threaded to speedup feature
     /// fetching for cases when sampled subgraph size is large.
+    fn fetch_explicit_feature_batch(
+        &self,
+        shards: &[ShardHandle],
+        unique_ids: &[u64],
+        col_indices: &[usize],
+        decoder: &RowPackDecoder,
+    ) -> Result<arrow_array::RecordBatch> {
+        debug_assert!(unique_ids.windows(2).all(|ids| ids[0] < ids[1]));
+        // IDs and shard ranges are both sorted. Retaining spans avoids one ID
+        // vector and one position vector for every nonempty shard.
+        let mut header_work: Vec<(usize, Range<usize>, HeaderReadPlan)> = Vec::new();
+        let mut header_requests = Vec::new();
+        let mut position = 0usize;
+        for (shard_idx, shard) in shards.iter().enumerate() {
+            if position == unique_ids.len() {
+                break;
+            }
+            if unique_ids[position] < shard.min_id {
+                return Err(EngineError::InvalidRequest(format!(
+                    "node id {} precedes shard {} minimum {}",
+                    unique_ids[position], shard_idx, shard.min_id
+                )));
+            }
+            let count =
+                unique_ids[position..].partition_point(|global_id| *global_id <= shard.max_id);
+            if count == 0 {
+                continue;
+            }
+            let positions = position..position + count;
+            let plan = shard
+                .reader
+                .plan_headers_sorted(
+                    unique_ids[positions.clone()]
+                        .iter()
+                        .map(|global_id| global_id - shard.min_id),
+                )
+                .map_err(|error| EngineError::Io(other_io_error(error.to_string())))?;
+            let request = shard
+                .reader
+                .page_read_request(&plan.page_numbers)
+                .map_err(|error| EngineError::Io(other_io_error(error.to_string())))?;
+            header_work.push((shard_idx, positions, plan));
+            header_requests.push(request);
+            position += count;
+        }
+        if position != unique_ids.len() {
+            return Err(EngineError::InvalidRequest(format!(
+                "node id {} is outside the indexed shard ranges",
+                unique_ids[position]
+            )));
+        }
+
+        let header_pages = submit_prepared_page_batch(header_requests)
+            .map_err(EngineError::Io)?
+            .finish()
+            .map_err(EngineError::Io)?;
+        let mut data_work: Vec<(usize, Range<usize>, Vec<ParsedNodeHeader>, RangeReadPlan)> =
+            Vec::with_capacity(header_work.len());
+        let mut data_requests = Vec::with_capacity(header_work.len());
+        for ((shard_idx, positions, plan), pages) in header_work.into_iter().zip(header_pages) {
+            let PreparedHeaders { headers, pages } = shards[shard_idx]
+                .reader
+                .finish_header_plan(plan, pages)
+                .map_err(|error| EngineError::DataCorruption(error.to_string()))?;
+            if headers.len() != positions.len() {
+                return Err(EngineError::DataCorruption(
+                    "explicit feature header count mismatch".into(),
+                ));
+            }
+            let ranges: Vec<(u64, u64)> = headers
+                .iter()
+                .map(|header| {
+                    header
+                        .node_data
+                        .as_ref()
+                        .map(|range| (range.start, range.end))
+                        .ok_or_else(|| {
+                            EngineError::DataCorruption(format!(
+                                "node {} has no feature data",
+                                header.local_id
+                            ))
+                        })
+                })
+                .collect::<Result<_>>()?;
+            let mut range_plan = shards[shard_idx]
+                .reader
+                .plan_ranges_reusing(&ranges, pages)
+                .map_err(|error| EngineError::Io(other_io_error(error.to_string())))?;
+            let request = shards[shard_idx]
+                .reader
+                .page_read_request_owned(std::mem::take(&mut range_plan.page_numbers))
+                .map_err(|error| EngineError::Io(other_io_error(error.to_string())))?;
+            data_work.push((shard_idx, positions, headers, range_plan));
+            data_requests.push(request);
+        }
+
+        let data_pages = submit_prepared_page_batch(data_requests)
+            .map_err(EngineError::Io)?
+            .finish()
+            .map_err(EngineError::Io)?;
+        let mut ready = Vec::with_capacity(data_work.len());
+        let mut row_locations = vec![(usize::MAX, usize::MAX); unique_ids.len()];
+        for ((shard_idx, positions, headers, plan), pages) in data_work.into_iter().zip(data_pages)
+        {
+            let pages = shards[shard_idx].reader.finish_range_plan(plan, pages);
+            let ready_idx = ready.len();
+            for (header_idx, position) in positions.enumerate() {
+                row_locations[position] = (ready_idx, header_idx);
+            }
+            ready.push((headers, pages));
+        }
+
+        // Multi-page rows share one arena; rows wholly inside one 4K page stay
+        // borrowed from the cache/page buffer and pay no copy or allocation.
+        let mut arena_capacity = 0usize;
+        for &(ready_idx, header_idx) in &row_locations {
+            let header = &ready[ready_idx].0[header_idx];
+            let range = header.node_data.as_ref().unwrap();
+            if range.start < range.end
+                && range.start / PAGE_SIZE as u64 != (range.end - 1) / PAGE_SIZE as u64
+            {
+                arena_capacity = arena_capacity
+                    .checked_add((range.end - range.start) as usize)
+                    .ok_or_else(|| EngineError::Internal("feature arena size overflow".into()))?;
+            }
+        }
+        let mut arena = Vec::with_capacity(arena_capacity);
+        let mut arena_ranges = vec![None; unique_ids.len()];
+        for (position, &(ready_idx, header_idx)) in row_locations.iter().enumerate() {
+            let header = &ready[ready_idx].0[header_idx];
+            let range = header.node_data.as_ref().unwrap();
+            if range.start < range.end
+                && range.start / PAGE_SIZE as u64 != (range.end - 1) / PAGE_SIZE as u64
+            {
+                let start = arena.len();
+                ready[ready_idx]
+                    .1
+                    .append_range(range.start, range.end, &mut arena)
+                    .map_err(|error| EngineError::Io(other_io_error(error.to_string())))?;
+                arena_ranges[position] = Some(start..arena.len());
+            }
+        }
+        let mut raw_rows = Vec::with_capacity(unique_ids.len());
+        for (position, &(ready_idx, header_idx)) in row_locations.iter().enumerate() {
+            if let Some(range) = &arena_ranges[position] {
+                raw_rows.push(&arena[range.clone()]);
+                continue;
+            }
+            let header = &ready[ready_idx].0[header_idx];
+            let range = header.node_data.as_ref().unwrap();
+            let row = ready[ready_idx]
+                .1
+                .contiguous_range(range.start, range.end)
+                .map_err(|error| EngineError::Io(other_io_error(error.to_string())))?
+                .ok_or_else(|| {
+                    EngineError::Internal("single-page feature unexpectedly straddled".into())
+                })?;
+            raw_rows.push(row);
+        }
+
+        decoder
+            .decode_batch_to_arrow::<&[u8]>(&raw_rows, col_indices)
+            .map_err(|error| EngineError::Internal(format!("decoding failed: {error}")))
+    }
+
     fn accumulate_features_from_ids_chunked(
         &self,
         type_id: usize,
@@ -2430,101 +2767,120 @@ impl DiskGraphEngine {
         let num_nodes = node_ids.len();
         let num_cores = self.thread_pool.current_num_threads();
         let ideal_chunks = num_cores * 2;
+        // Bound Arrow output buffers and keep RowPack decoding parallel. A
+        // type-wide explicit batch reduces plan allocations but makes large
+        // list buffers fault/reclaim on one worker and materially regresses
+        // end-to-end throughput.
         let chunk_size = (num_nodes / ideal_chunks).clamp(2048, 64_000);
         let chunks: Vec<_> = node_ids.chunks(chunk_size).collect();
 
-        let results: Vec<Result<arrow_array::RecordBatch>> = self.thread_pool.install(|| chunks
-            .into_par_iter()
-            .map(|chunk_ids| {
-                // 1. Deduplicate requested IDs to minimize Disk I/O and Decoding
-                let mut unique_ids_unsorted = Vec::new();
-                let mut dedup_map = HashMap::new();
-                let mut take_indices = vec![0u32; chunk_ids.len()];
+        let results: Vec<Result<arrow_array::RecordBatch>> = self.thread_pool.install(|| {
+            chunks
+                .into_par_iter()
+                .map(|chunk_ids| {
+                    // 1. Deduplicate requested IDs to minimize Disk I/O and Decoding
+                    let mut unique_ids_unsorted = Vec::new();
+                    let mut dedup_map = HashMap::new();
+                    let mut take_indices = vec![0u32; chunk_ids.len()];
 
-                for (pos, &global_id) in chunk_ids.iter().enumerate() {
-                    let idx = *dedup_map.entry(global_id).or_insert_with(|| {
-                        let new_idx = unique_ids_unsorted.len() as u32;
-                        unique_ids_unsorted.push(global_id);
-                        new_idx
-                    });
-                    take_indices[pos] = idx;
-                }
+                    for (pos, &global_id) in chunk_ids.iter().enumerate() {
+                        let idx = *dedup_map.entry(global_id).or_insert_with(|| {
+                            let new_idx = unique_ids_unsorted.len() as u32;
+                            unique_ids_unsorted.push(global_id);
+                            new_idx
+                        });
+                        take_indices[pos] = idx;
+                    }
 
-                // 2. Sort Unique IDs for Sequential Disk I/O
-                let mut sorted_pairs: Vec<(u64, u32)> = unique_ids_unsorted
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, id)| (id, i as u32))
-                    .collect();
-                sorted_pairs.sort_unstable_by_key(|x| x.0);
+                    // 2. Sort Unique IDs for Sequential Disk I/O
+                    let mut sorted_pairs: Vec<(u64, u32)> = unique_ids_unsorted
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, id)| (id, i as u32))
+                        .collect();
+                    sorted_pairs.sort_unstable_by_key(|x| x.0);
 
-                // 3. Create reverse mapping from old unique index to new sorted index
-                let mut old_to_new = vec![0u32; sorted_pairs.len()];
-                for (new_idx, &(_, old_idx)) in sorted_pairs.iter().enumerate() {
-                    old_to_new[old_idx as usize] = new_idx as u32;
-                }
+                    // 3. Create reverse mapping from old unique index to new sorted index
+                    let mut old_to_new = vec![0u32; sorted_pairs.len()];
+                    for (new_idx, &(_, old_idx)) in sorted_pairs.iter().enumerate() {
+                        old_to_new[old_idx as usize] = new_idx as u32;
+                    }
 
-                // 4. Update take_indices to point to the new sorted positions
-                for idx in &mut take_indices {
-                    *idx = old_to_new[*idx as usize];
-                }
-                let take_array = arrow_array::UInt32Array::from(take_indices);
+                    // 4. Update take_indices to point to the new sorted positions
+                    for idx in &mut take_indices {
+                        *idx = old_to_new[*idx as usize];
+                    }
+                    let take_array = arrow_array::UInt32Array::from(take_indices);
 
-                let unique_ids: Vec<u64> = sorted_pairs.into_iter().map(|x| x.0).collect();
+                    let unique_ids: Vec<u64> = sorted_pairs.into_iter().map(|x| x.0).collect();
 
-                // 5. Fetch and Decode ONLY unique IDs
-                let mut raw_rows = Vec::with_capacity(unique_ids.len());
-                let mut last_shard_idx = 0;
-
-                for &global_id in &unique_ids {
-                    let shard = if global_id >= shards[last_shard_idx].min_id
-                        && global_id <= shards[last_shard_idx].max_id
+                    // 5. Fetch and Decode ONLY unique IDs. Explicit backends
+                    // issue the header/data waves in batches; mmap retains the
+                    // exact legacy sorted lookup loop as the control.
+                    let unique_batch = if shards
+                        .first()
+                        .is_some_and(|shard| shard.reader.edge_backend() != EdgeIoBackend::Mmap)
                     {
-                        &shards[last_shard_idx]
+                        self.fetch_explicit_feature_batch(
+                            shards,
+                            &unique_ids,
+                            col_indices,
+                            decoder,
+                        )?
                     } else {
-                        last_shard_idx = self.find_shard(shards, global_id)?;
-                        &shards[last_shard_idx]
+                        self.prefetch_batch(shards, unique_ids.iter().copied());
+                        let mut raw_rows = Vec::with_capacity(unique_ids.len());
+                        let mut last_shard_idx = 0;
+
+                        for &global_id in &unique_ids {
+                            let shard = if global_id >= shards[last_shard_idx].min_id
+                                && global_id <= shards[last_shard_idx].max_id
+                            {
+                                &shards[last_shard_idx]
+                            } else {
+                                last_shard_idx = self.find_shard(shards, global_id)?;
+                                &shards[last_shard_idx]
+                            };
+
+                            let local_id = global_id - shard.min_id;
+                            let edges_view = shard
+                                .reader
+                                .edges_for_node(local_id)
+                                .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
+
+                            let data = edges_view
+                                .node_data()
+                                .map_err(|e| EngineError::DataCorruption(e.to_string()))?
+                                .ok_or_else(|| {
+                                    EngineError::DataCorruption(format!(
+                                        "node {} has no feature data",
+                                        global_id
+                                    ))
+                                })?;
+                            raw_rows.push(data);
+                        }
+
+                        decoder
+                            .decode_batch_to_arrow::<&[u8]>(&raw_rows, col_indices)
+                            .map_err(|e| EngineError::Internal(format!("decoding failed: {e}")))?
                     };
 
-                    let local_id = global_id - shard.min_id;
-                    let edges_view = shard
-                        .reader
-                        .edges_for_node(local_id)
-                        .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
+                    // 6. Broadcast (take) unique rows back to the requested redundant order
+                    let expanded_columns: std::result::Result<Vec<_>, arrow::error::ArrowError> =
+                        unique_batch
+                            .columns()
+                            .iter()
+                            .map(|col| arrow::compute::take(col, &take_array, None))
+                            .collect();
 
-                    let data = edges_view
-                        .node_data()
-                        .map_err(|e| EngineError::DataCorruption(e.to_string()))?
-                        .ok_or_else(|| {
-                            EngineError::DataCorruption(format!(
-                                "node {} has no feature data",
-                                global_id
-                            ))
-                        })?;
-                    raw_rows.push(data);
-                }
+                    let expanded_columns = expanded_columns
+                        .map_err(|e| EngineError::Internal(format!("arrow take failed: {}", e)))?;
 
-                let unique_batch = decoder
-                    .decode_batch_to_arrow::<&[u8]>(&raw_rows, col_indices)
-                    .map_err(|e| EngineError::Internal(format!("decoding failed: {}", e)))?;
-
-                // 6. Broadcast (take) unique rows back to the requested redundant order
-                let expanded_columns: std::result::Result<Vec<_>, arrow::error::ArrowError> = unique_batch
-                    .columns()
-                    .iter()
-                    .map(|col| {
-                        arrow::compute::take(col, &take_array, None)
-                    })
-                    .collect();
-
-                let expanded_columns = expanded_columns
-                    .map_err(|e| EngineError::Internal(format!("arrow take failed: {}", e)))?;
-
-                arrow_array::RecordBatch::try_new(unique_batch.schema(), expanded_columns)
-                    .map_err(|e| EngineError::Internal(format!("batch creation failed: {}", e)))
-            })
-            .collect()
-        );
+                    arrow_array::RecordBatch::try_new(unique_batch.schema(), expanded_columns)
+                        .map_err(|e| EngineError::Internal(format!("batch creation failed: {}", e)))
+                })
+                .collect()
+        });
 
         for res in results {
             let batch = res?;
@@ -2583,7 +2939,6 @@ impl DiskGraphEngine {
 
         Ok(())
     }
-
 
     #[inline]
     #[allow(clippy::too_many_arguments)]
@@ -2796,12 +3151,11 @@ impl DiskGraphEngine {
                         }
                     }
                 } else {
-                    let mut sorted_indices =
-                        self.uniform_indices(node, rel_id, &fanout_spec.mode, edge_count, k);
-                    sorted_indices.sort_unstable();
+                    let indices = self.explicit_uniform_indices(
+                        node, rel_id, edge_count, k, &fanout_spec.mode);
 
                     let mut current_pos = 0;
-                    for target_idx in sorted_indices {
+                    for target_idx in indices {
                         let to_skip = target_idx - current_pos;
                         if to_skip > 0 {
                             unpacker.advance(to_skip);
@@ -2844,22 +3198,403 @@ impl DiskGraphEngine {
         })
     }
 
-    fn uniform_indices(
+    fn explicit_uniform_indices(
         &self,
         node: &NodeRecord,
         rel_id: usize,
-        mode: &SamplingMode,
-        n: usize,
+        edge_count: usize,
         k: usize,
-    ) -> Vec<usize> {
-        use rand::seq::index::sample;
-        if let Some(rng_seed) = self.sampling_seed(node, rel_id, mode) {
+        mode: &SamplingMode,
+    ) -> SmallVec<[usize; 16]> {
+        let random_seed = match mode {
+            SamplingMode::DeterministicUniform => Some(DETERMINISTIC_UNIFORM_SEED_V1),
+            SamplingMode::Uniform => self.random_seed,
+            _ => None,
+        };
+        if let Some(seed) = random_seed {
             use rand::SeedableRng;
+            let rng_seed = seed
+                .wrapping_add(node.global_id)
+                .wrapping_add(rel_id as u64);
             let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(rng_seed);
-            sample(&mut rng, n, k).into_vec()
+            sample_uniform_indices(&mut rng, edge_count, k)
         } else {
-            sample(&mut rand::thread_rng(), n, k).into_vec()
+            let mut rng = rand::thread_rng();
+            sample_uniform_indices(&mut rng, edge_count, k)
         }
+    }
+
+    // Keep reusable hot-path buffers explicit; bundling them would only hide
+    // the sampler's allocation and ownership boundaries.
+    #[allow(clippy::too_many_arguments)]
+    fn plan_explicit_shard(
+        &self,
+        src_type_id: usize,
+        shard: &ShardHandle,
+        shard_nodes: &[NodeRecord],
+        layer_spec: &CompiledLayerSpec,
+        cutoff: Option<&NodeCutoff<'_>>,
+        headers: &[ParsedNodeHeader],
+        pages: PreparedPages,
+        plan: &mut ExplicitShardPlan,
+        read_ranges: &mut Vec<(u64, u64)>,
+    ) -> Result<PreparedPages> {
+        let type_local_map = self
+            .local_to_merged_rel
+            .get(src_type_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let relation_capacity = shard_nodes.len().saturating_mul(type_local_map.len());
+        // Most relations in real schemas have degree <= fanout and contribute
+        // one contiguous range. Reserving `relations * fanout` made a degree-1
+        // four-hop batch allocate several MiB of unused range storage on every
+        // layer. Start at the exact relation upper bound; genuinely sparse
+        // high-degree selections grow this vector only when they need to.
+        plan.clear();
+        plan.nodes.reserve(shard_nodes.len());
+        plan.relations.reserve(relation_capacity);
+        plan.selected_indices.reserve(relation_capacity);
+        read_ranges.clear();
+        read_ranges.reserve(relation_capacity);
+        let mut header_idx = 0usize;
+        for node in shard_nodes {
+            let local_id = node.global_id - shard.min_id;
+            while headers
+                .get(header_idx)
+                .is_some_and(|header| header.local_id < local_id)
+            {
+                header_idx += 1;
+            }
+            let header = headers
+                .get(header_idx)
+                .filter(|h| h.local_id == local_id)
+                .ok_or_else(|| {
+                    EngineError::Internal(format!(
+                        "missing prepared header for local node {local_id}"
+                    ))
+                })?;
+            let relation_start = plan.relations.len();
+            for range in &header.relations {
+                if range.count == 0 {
+                    continue;
+                }
+                let layout = shard.reader.layout(range.layout_index).ok_or_else(|| {
+                    EngineError::DataCorruption("prepared relation layout missing".into())
+                })?;
+                let local_rel_id = layout.relation_id as usize;
+                let merged_rel_u16 = type_local_map
+                    .get(local_rel_id)
+                    .copied()
+                    .unwrap_or(u16::MAX);
+                if merged_rel_u16 == u16::MAX {
+                    continue;
+                }
+                let rel_id = merged_rel_u16 as usize;
+                let Some(fanout_spec) = layer_spec
+                    .fanouts
+                    .get(&rel_id)
+                    .or(layer_spec.default_fanout.as_ref())
+                else {
+                    continue;
+                };
+                let dst_type_id = *self.relation_info.get(rel_id).unwrap_or(&usize::MAX);
+                if dst_type_id == usize::MAX {
+                    continue;
+                }
+                let edge_count = range.count as usize;
+                let k = fanout_spec.fanout as usize;
+                let selection = match fanout_spec.mode {
+                    SamplingMode::Uniform | SamplingMode::DeterministicUniform
+                        if k < edge_count && cutoff.is_none() =>
+                    {
+                        let indices = self.explicit_uniform_indices(
+                            node,
+                            rel_id,
+                            edge_count,
+                            k,
+                            &fanout_spec.mode,
+                        );
+                        for &index in &indices {
+                            let start = range.start + index as u64 * layout.entry_bytes as u64;
+                            read_ranges.push((start, start + layout.entry_bytes as u64));
+                        }
+                        let start = plan.selected_indices.len();
+                        plan.selected_indices.extend(indices);
+                        ExplicitSelection::Selected(start..plan.selected_indices.len())
+                    }
+                    SamplingMode::Uniform
+                    | SamplingMode::DeterministicUniform
+                    | SamplingMode::TemporalMostRecent => {
+                        read_ranges.push((range.start, range.end));
+                        ExplicitSelection::Full
+                    }
+                    _ => {
+                        return Err(EngineError::InvalidRequest(format!(
+                            "sampling mode {:?} not supported",
+                            fanout_spec.mode
+                        )))
+                    }
+                };
+                plan.relations.push(ExplicitRelationPlan {
+                    range: range.clone(),
+                    rel_id,
+                    dst_type_id,
+                    selection,
+                });
+            }
+            plan.nodes.push(ExplicitNodePlan {
+                node: *node,
+                relations: relation_start..plan.relations.len(),
+            });
+        }
+        Ok(pages)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn consume_explicit_shard(
+        &self,
+        shard: &ShardHandle,
+        plans: &ExplicitShardPlan,
+        prepared: PreparedPages,
+        layer_spec: &CompiledLayerSpec,
+        request: &BatchSamplingRequest,
+        anchors: &[Option<&[i64]>],
+        cutoff: Option<&NodeCutoff<'_>>,
+        raw_edges: &mut Vec<RawEdge>,
+        dst_scratch: &mut Vec<u64>,
+        key_scratch: &mut Vec<u64>,
+    ) -> Result<()> {
+        for node_plan in &plans.nodes {
+            for relation in &plans.relations[node_plan.relations.clone()] {
+                let layout = shard
+                    .reader
+                    .layout(relation.range.layout_index)
+                    .ok_or_else(|| EngineError::DataCorruption("relation layout missing".into()))?;
+                let mut emit = |dst_global_id| {
+                    raw_edges.push(RawEdge {
+                        src_local_id: node_plan.node.local_id,
+                        dst_global_id,
+                        dst_type_id: relation.dst_type_id,
+                        rel_id: relation.rel_id as u16,
+                        seed_index: node_plan.node.seed_index,
+                        seed_type_id: node_plan.node.seed_type_id,
+                        swap_edge_direction: request.flags.swap_edge_direction,
+                    });
+                    Ok(())
+                };
+                match &relation.selection {
+                    ExplicitSelection::Selected(indices) => {
+                        let mut page_cursor = prepared.cursor_at(relation.range.start);
+                        for &index in &plans.selected_indices[indices.clone()] {
+                            let start =
+                                relation.range.start + index as u64 * layout.entry_bytes as u64;
+                            let end = start + layout.entry_bytes as u64;
+                            let owned;
+                            let bytes = match page_cursor
+                                .contiguous_range(start, end)
+                                .map_err(EngineError::Io)?
+                            {
+                                Some(bytes) => bytes,
+                                None => {
+                                    owned =
+                                        prepared.copy_range(start, end).map_err(EngineError::Io)?;
+                                    &owned
+                                }
+                            };
+                            let mut unpacker = EdgeUnpacker::new(bytes, layout);
+                            dst_scratch.resize(1, 0);
+                            key_scratch.resize(1, 0);
+                            if unpacker.unpack_batch(dst_scratch, key_scratch) != 1 {
+                                return Err(EngineError::DataCorruption(
+                                    "prepared edge entry is truncated".into(),
+                                ));
+                            }
+                            emit(dst_scratch[0])?;
+                        }
+                    }
+                    ExplicitSelection::Full => {
+                        let owned;
+                        let data = match prepared
+                            .contiguous_range(relation.range.start, relation.range.end)
+                            .map_err(EngineError::Io)?
+                        {
+                            Some(bytes) => bytes,
+                            None => {
+                                owned = prepared
+                                    .copy_range(relation.range.start, relation.range.end)
+                                    .map_err(EngineError::Io)?;
+                                &owned
+                            }
+                        };
+                        let segment = RelationSegment {
+                            layout: layout.clone(),
+                            count: relation.range.count,
+                            data,
+                        };
+                        let fanout_spec = layer_spec
+                            .fanouts
+                            .get(&relation.rel_id)
+                            .or(layer_spec.default_fanout.as_ref())
+                            .ok_or_else(|| {
+                                EngineError::Internal("prepared fanout disappeared".into())
+                            })?;
+                        self.sample_segment_edges(
+                            &node_plan.node,
+                            relation.rel_id,
+                            &segment,
+                            fanout_spec,
+                            anchors,
+                            dst_scratch,
+                            key_scratch,
+                            cutoff,
+                            &mut emit,
+                        )?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // Keep reusable hot-path buffers explicit; bundling them would only hide
+    // the sampler's allocation and ownership boundaries.
+    #[allow(clippy::too_many_arguments)]
+    fn sample_explicit_type(
+        &self,
+        src_type_id: usize,
+        shards: &[ShardHandle],
+        shard_groups: &mut [Vec<NodeRecord>],
+        layer_spec: &CompiledLayerSpec,
+        request: &BatchSamplingRequest,
+        anchors: &[Option<&[i64]>],
+        cutoff: Option<&NodeCutoff<'_>>,
+        raw_edges: &mut Vec<RawEdge>,
+        dst_scratch: &mut Vec<u64>,
+        key_scratch: &mut Vec<u64>,
+        pooled_plans: &mut Vec<Option<ExplicitShardPlan>>,
+        read_ranges: &mut Vec<(u64, u64)>,
+        headers_scratch: &mut Vec<ParsedNodeHeader>,
+        pooled_header_plans: &mut Vec<Option<HeaderReadPlan>>,
+    ) -> Result<()> {
+        if pooled_plans.len() < shards.len() {
+            pooled_plans.resize_with(shards.len(), || Some(ExplicitShardPlan::default()));
+        }
+        if pooled_header_plans.len() < shards.len() {
+            pooled_header_plans.resize_with(shards.len(), || Some(HeaderReadPlan::default()));
+        }
+        let nonempty_shards = shard_groups
+            .iter()
+            .filter(|nodes| !nodes.is_empty())
+            .count();
+        let mut header_work = Vec::with_capacity(nonempty_shards);
+        let mut header_requests = Vec::with_capacity(nonempty_shards);
+        for (shard_idx, nodes) in shard_groups.iter_mut().enumerate() {
+            if nodes.is_empty() {
+                continue;
+            }
+            nodes.sort_by(|a, b| {
+                a.global_id
+                    .cmp(&b.global_id)
+                    .then(a.seed_index.cmp(&b.seed_index))
+            });
+            let shard = &shards[shard_idx];
+            let mut plan = pooled_header_plans[shard_idx].take().unwrap_or_default();
+            shard
+                .reader
+                .plan_headers_sorted_reusing(
+                    nodes.iter().map(|node| node.global_id - shard.min_id),
+                    &mut plan,
+                )
+                .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
+            let request = shard
+                .reader
+                .page_read_request_owned(std::mem::take(&mut plan.page_numbers))
+                .map_err(|e| EngineError::Io(other_io_error(e.to_string())))?;
+            header_work.push((shard_idx, plan));
+            header_requests.push(request);
+        }
+
+        let header_pages = submit_prepared_page_batch(header_requests)
+            .map_err(EngineError::Io)?
+            .finish()
+            .map_err(EngineError::Io)?;
+        let mut data_work = Vec::with_capacity(header_work.len());
+        let mut data_requests = Vec::with_capacity(header_work.len());
+        for ((shard_idx, mut plan), pages) in header_work.into_iter().zip(header_pages) {
+            let shard = &shards[shard_idx];
+            let header_pages = shard
+                .reader
+                .finish_header_plan_reusing(&mut plan, pages, headers_scratch)
+                .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
+            pooled_header_plans[shard_idx] = Some(plan);
+            let mut plans = pooled_plans[shard_idx].take().unwrap_or_default();
+            let header_pages = self.plan_explicit_shard(
+                src_type_id,
+                shard,
+                &shard_groups[shard_idx],
+                layer_spec,
+                cutoff,
+                headers_scratch,
+                header_pages,
+                &mut plans,
+                read_ranges,
+            )?;
+            let mut range_plan = shard
+                .reader
+                .plan_ranges_reusing(read_ranges, header_pages)
+                .map_err(|e| EngineError::Io(other_io_error(e.to_string())))?;
+            let request = shard
+                .reader
+                .page_read_request_owned(std::mem::take(&mut range_plan.page_numbers))
+                .map_err(|e| EngineError::Io(other_io_error(e.to_string())))?;
+            data_work.push((shard_idx, plans, range_plan));
+            data_requests.push(request);
+        }
+
+        let data_pages = submit_prepared_page_batch(data_requests)
+            .map_err(EngineError::Io)?
+            .finish()
+            .map_err(EngineError::Io)?;
+        let mut ready = Vec::with_capacity(data_work.len());
+        for ((shard_idx, plans, plan), pages) in data_work.into_iter().zip(data_pages) {
+            let pages = shards[shard_idx].reader.finish_range_plan(plan, pages);
+            ready.push((shard_idx, plans, pages));
+        }
+        // Explicit I/O already runs many independent sample requests on the
+        // fixed request threads. Sending every ready shard through a second
+        // work-stealing pool makes those threads wait while Rayon contends on
+        // thousands of tiny deque jobs. Consume this request's ready shards
+        // directly; I/O overlap still comes from the shared ring owners and
+        // cross-request concurrency.
+        let expected_edges = ready
+            .iter()
+            .flat_map(|(_, plans, _)| &plans.relations)
+            .map(|relation| match &relation.selection {
+                ExplicitSelection::Selected(indices) => indices.len(),
+                ExplicitSelection::Full => relation.range.count as usize,
+            })
+            .sum();
+        raw_edges.clear();
+        raw_edges.reserve(expected_edges);
+        dst_scratch.clear();
+        key_scratch.clear();
+        for (shard_idx, mut plans, pages) in ready {
+            self.consume_explicit_shard(
+                &shards[shard_idx],
+                &plans,
+                pages,
+                layer_spec,
+                request,
+                anchors,
+                cutoff,
+                raw_edges,
+                dst_scratch,
+                key_scratch,
+            )?;
+            plans.clear();
+            pooled_plans[shard_idx] = Some(plans);
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2874,10 +3609,37 @@ impl DiskGraphEngine {
         cutoff: Option<&NodeCutoff<'_>>,
     ) -> Result<()> {
         let fused = request.flags.fused_feature_fetching;
+        if fused
+            && self
+                .readers
+                .iter()
+                .flatten()
+                .any(|shard| shard.reader.edge_backend() != EdgeIoBackend::Mmap)
+        {
+            return Err(EngineError::InvalidRequest(
+                "fused feature fetching is not yet implemented for explicit edge I/O".into(),
+            ));
+        }
         let mut work_queue = Vec::new();
+        let capped_counts = &state.capped_neighbor_counts;
         for (node_type_id, type_state) in state.type_states.iter_mut() {
+            if let Some(limit) = self.max_neighbors_per_seed {
+                type_state.next_frontier.retain(|node| {
+                    capped_counts
+                        .get(node.seed_type_id as usize)
+                        .and_then(|counts| counts.get(node.seed_index as usize))
+                        .is_some_and(|count| *count < limit)
+                });
+            }
             if !type_state.next_frontier.is_empty() {
                 let frontier = std::mem::take(&mut type_state.next_frontier);
+                if !fused {
+                    // Install the previous hop's empty backing store before
+                    // sampling starts. Destinations reached while this
+                    // frontier is consumed can then grow without allocating a
+                    // fresh Vec, and the consumed buffer becomes the spare.
+                    type_state.next_frontier = std::mem::take(&mut type_state.frontier_spare);
+                }
                 work_queue.push((*node_type_id, frontier));
             }
         }
@@ -2893,6 +3655,7 @@ impl DiskGraphEngine {
                 if shards.is_empty() {
                     continue;
                 }
+                self.prefetch_batch(shards, frontier.iter().map(|n| n.global_id));
 
                 for node in &frontier {
                     let shard_idx = self.find_shard(shards, node.global_id)?;
@@ -2937,16 +3700,107 @@ impl DiskGraphEngine {
         }
 
         // Standalone sampling path (Multi-threaded Map-Reduce)
-        for (src_type_id, frontier) in work_queue {
+        for (src_type_id, mut frontier) in work_queue {
             if src_type_id >= self.readers.len() {
+                frontier.clear();
+                state
+                    .type_states
+                    .get_mut(&src_type_id)
+                    .unwrap()
+                    .frontier_spare = frontier;
                 continue;
             }
             let shards = &self.readers[src_type_id];
             if shards.is_empty() {
+                frontier.clear();
+                state
+                    .type_states
+                    .get_mut(&src_type_id)
+                    .unwrap()
+                    .frontier_spare = frontier;
                 continue;
             }
 
-            // group nodes by shard
+            if shards
+                .first()
+                .is_some_and(|shard| shard.reader.edge_backend() != EdgeIoBackend::Mmap)
+            {
+                let mut shard_groups = std::mem::take(&mut state.shard_groups);
+                if shard_groups.len() < shards.len() {
+                    shard_groups.resize_with(shards.len(), Vec::new);
+                }
+                for group in &mut shard_groups {
+                    group.clear();
+                }
+                let average_group = frontier.len().div_ceil(shards.len()).max(1);
+                for item in &frontier {
+                    let idx = self.find_shard(shards, item.global_id)?;
+                    let group = &mut shard_groups[idx];
+                    if group.is_empty() {
+                        group.reserve(average_group);
+                    }
+                    group.push(*item);
+                }
+                let mut raw_edges = std::mem::take(&mut state.explicit_raw_edges);
+                let mut dst_scratch = std::mem::take(&mut state.dst_scratch);
+                let mut key_scratch = std::mem::take(&mut state.key_scratch);
+                let mut pooled_plans = std::mem::take(&mut state.explicit_shard_plans);
+                let mut read_ranges = std::mem::take(&mut state.explicit_read_ranges);
+                let mut headers_scratch = std::mem::take(&mut state.explicit_headers);
+                let mut pooled_header_plans = std::mem::take(&mut state.explicit_header_plans);
+                let sample_result = self.sample_explicit_type(
+                    src_type_id,
+                    shards,
+                    &mut shard_groups[..shards.len()],
+                    layer_spec,
+                    request,
+                    anchors,
+                    cutoff,
+                    &mut raw_edges,
+                    &mut dst_scratch,
+                    &mut key_scratch,
+                    &mut pooled_plans,
+                    &mut read_ranges,
+                    &mut headers_scratch,
+                    &mut pooled_header_plans,
+                );
+                state.shard_groups = shard_groups;
+                state.dst_scratch = dst_scratch;
+                state.key_scratch = key_scratch;
+                state.explicit_shard_plans = pooled_plans;
+                state.explicit_read_ranges = read_ranges;
+                state.explicit_headers = headers_scratch;
+                state.explicit_header_plans = pooled_header_plans;
+                sample_result?;
+                if self.per_seed_recording(fused) {
+                    self.commit_edges(layer_idx, std::slice::from_ref(&raw_edges), state, output)?;
+                } else {
+                for edge in &raw_edges {
+                    self.record_edge(
+                        layer_idx,
+                        edge.src_local_id,
+                        edge.seed_index,
+                        edge.seed_type_id,
+                        edge.dst_global_id,
+                        edge.dst_type_id,
+                        edge.rel_id,
+                        edge.swap_edge_direction,
+                        state,
+                        output,
+                    )?;
+                }
+                }
+                raw_edges.clear();
+                state.explicit_raw_edges = raw_edges;
+                frontier.clear();
+                state
+                    .type_states
+                    .get_mut(&src_type_id)
+                    .unwrap()
+                    .frontier_spare = frontier;
+                continue;
+            }
+
             let mut shard_groups: Vec<Vec<&NodeRecord>> = vec![Vec::new(); shards.len()];
             for item in &frontier {
                 let idx = self.find_shard(shards, item.global_id)?;
@@ -2975,6 +3829,17 @@ impl DiskGraphEngine {
                         a.global_id.cmp(&b.global_id).then(a.seed_index.cmp(&b.seed_index))
                     });
 
+                    let (do_prefetch, probing) = diskgraph_index::prefetch::admit();
+                    if do_prefetch {
+                        let width = if probing && !diskgraph_index::prefetch::active() {
+                            diskgraph_index::prefetch::PROBE_IDS
+                        } else { usize::MAX };
+                        let mut local_ids: Vec<u64> = shard_nodes.iter().take(width)
+                            .map(|n| n.global_id - shard.min_id).collect();
+                        local_ids.dedup();
+                        shard.reader.prefetch_nodes(&local_ids, probing);
+                    }
+
                     let mut current_segments = Vec::new();
                     let mut last_id = None;
 
@@ -2984,7 +3849,7 @@ impl DiskGraphEngine {
 
                     for node in shard_nodes {
                         // HUB DEDUPING
-                        if last_id != Some(node.global_id) {
+                        if last_id != Some(node.global_id) || no_hub_dedup() {
                             let local_id = node.global_id - shard.min_id;
                             if let Ok(edges_view) = shard.reader.edges_for_node(local_id) {
                                 current_segments = edges_view.relation_segments().unwrap_or_default();
@@ -3131,10 +3996,18 @@ impl DiskGraphEngine {
                         cutoff,
                         |dst_global_id| {
                             self.record_edge(
-                                layer_idx, node.local_id, node.seed_index, node.seed_type_id,
-                                dst_global_id, dst_type_id, rel_id as u16,
-                                request.flags.swap_edge_direction, state, output)
-                        }
+                                layer_idx,
+                                node.local_id,
+                                node.seed_index,
+                                node.seed_type_id,
+                                dst_global_id,
+                                dst_type_id,
+                                rel_id as u16,
+                                request.flags.swap_edge_direction,
+                                state,
+                                output,
+                            )
+                        },
                     )?;
                 }
             }
@@ -3348,27 +4221,38 @@ impl DiskGraphEngine {
             global_id: dst_global_id,
         };
 
-        let dst_local_id = if let Some(&id) = dst_type_state.index_map.get(&key) {
-            id
-        } else {
-            let id = dst_type_state.nodes.len() as u32;
-            dst_type_state.index_map.insert(key, id);
+        let dst_local_id = match dst_type_state.index_map.entry(key) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                if let Some(limit) = self.max_neighbors_per_seed {
+                    let count = state
+                        .capped_neighbor_counts
+                        .get_mut(seed_type_id as usize)
+                        .and_then(|counts| counts.get_mut(seed_index as usize))
+                        .ok_or_else(|| {
+                            EngineError::Internal(
+                                "capped BFS root counter was not initialized".into(),
+                            )
+                        })?;
+                    if *count >= limit {
+                        return Ok(());
+                    }
+                    *count += 1;
+                }
+                let id = dst_type_state.nodes.len() as u32;
+                entry.insert(id);
 
-            dst_type_state.nodes.push(NodeRecord {
-                global_id: dst_global_id,
-                seed_index,
-                local_id: id,
-                seed_type_id,
-            });
-            state.stats.record_node(layer_idx + 1, dst_type_id);
-
-            dst_type_state.next_frontier.push(NodeRecord {
-                global_id: dst_global_id,
-                seed_index,
-                local_id: id,
-                seed_type_id,
-            });
-            id
+                let node = NodeRecord {
+                    global_id: dst_global_id,
+                    seed_index,
+                    local_id: id,
+                    seed_type_id,
+                };
+                dst_type_state.nodes.push(node);
+                state.stats.record_node(layer_idx + 1, dst_type_id);
+                dst_type_state.next_frontier.push(node);
+                id
+            }
         };
 
         // Apply edge direction reversal if requested (PyG CSC convention).
