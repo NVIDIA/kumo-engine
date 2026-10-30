@@ -344,6 +344,8 @@ def test_manifest_failures_warn_and_keep_outputs(graph, classifier, tmp_path,
         raise RuntimeError('unavailable')
 
     _, exported = run('baseline')
+    monkeypatch.setattr('kumo.engine.trainer._provenance.count_edges',
+                        lambda *args: None)
     monkeypatch.setattr(_run_manifest, 'output_counts', fail)
     with pytest.warns(UserWarning, match='without score counts'):
         partial, partial_exported = run('partial')

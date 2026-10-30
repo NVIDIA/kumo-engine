@@ -1716,8 +1716,7 @@ class Trainer:
             embedding_models=self._embedding_models,
             encoders=encoders,
             accelerator=self._accelerator,
-            count_edges=(None if settings is None else count_edges(
-                training_result.manifest, task_type)),
+            count_edges=count_edges(training_result.manifest, task_type),
         )
 
         del encoders

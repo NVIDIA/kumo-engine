@@ -144,11 +144,14 @@ def test_entities_missing_from_the_snapshot_are_recorded_as_skipped(
     assert sorted(table.skipped_sample) == [1000, 1001, 1002, 1003]
     assert table.skip_reason == 'not in snapshot'
 
+    from kumo_core.summaries import Note, Scalar
+
     from kumo.engine._tracking import prediction_record
-    logged = {summary.name: summary.value
-              for summary in prediction_record(result.manifest).summaries}
-    assert logged['data/skipped_rows'] == 4
-    assert logged['data/skipped_fraction'] == pytest.approx(4 / 14)
+    summaries = prediction_record(result.manifest).summaries
+    logged = {s.name: s.value for s in summaries if isinstance(s, Scalar)}
+    assert logged['pred/skipped_share'] == pytest.approx(4 / 14)
+    assert any(isinstance(s, Note) and s.text.startswith('4 requested rows')
+               for s in summaries)
 
     full = trainer.predict(snapshot, binary_classification_threshold=0.5)
     assert full.skipped_rows == 0
