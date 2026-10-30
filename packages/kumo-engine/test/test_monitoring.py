@@ -583,7 +583,7 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
 
 
 def test_drift_summaries_log_the_previous_run_and_explain_gaps():
-    from kumo.engine._monitoring import DriftReport, track
+    from kumo.engine._monitoring import DriftReport, _feature_drift, track
 
     report = DriftReport(
         prediction_id='p', bundle_id='b', score='True_PROB', psi=0.5, ks=0.25,
@@ -596,8 +596,9 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
         features={'users': {
             'AGE': {'type': 'numerical', 'standardized_mean_shift': -2.5,
                     'delta': {'null_rate': 0.0}},
-            'PLAN': {'type': 'categorical', 'psi': 0.75,
-                     'standardized_mean_shift': None, 'delta': {}},
+            'PLAN': {'type': 'categorical', 'psi': 0.75, 'delta': {}},
+            'REGION': {'type': 'categorical', 'psi': 0.05, 'delta': {}},
+            'BIO': {'type': 'text', 'delta': {'null_rate': 0.0}},
             'ID': {'type': 'categorical', 'type_changed': ['numerical',
                                                            'categorical']}}})
     tracker = _Tracker()
@@ -625,16 +626,21 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
                ('orders.USER_ID → users', 100, None, None)), brief=True),
         Table('drift/features', ('table', 'column', 'type', 'psi',
                                  'mean shift', 'null-rate change'),
-              (('users', 'PLAN', 'categorical', 0.75, None, None),
-               ('users', 'AGE', 'numerical', None, -2.5, 0.0),
+              (('users', 'AGE', 'numerical', None, -2.5, 0.0),
+               ('users', 'PLAN', 'categorical', 0.75, None, None),
+               ('users', 'REGION', 'categorical', 0.05, None, None),
+               ('users', 'BIO', 'text', None, None, 0.0),
                ('users', 'ID', 'numerical → categorical', None, None, None))),
-        Note('notes', 'Most moved columns: `users.PLAN` (psi 0.75), '
-             '`users.AGE` (mean shift -2.5 sd); all in '
-             '`drift/features.json`.'),
+        Note('notes', 'Columns vs training: `users.AGE` (mean shift -2.5 sd), '
+             '`users.PLAN` (psi 0.75); all in `drift/features.json`.'),
         Note('notes', "The model's holdout file was truncated to fit its "
              'size limit.'),
         Note('notes', 'Column drift: no drift statistics for the type of '
              'users.TS (timestamp).'))
+    assert _feature_drift({'users': {'AGE': {
+        'type': 'numerical', 'standardized_mean_shift': -0.09, 'delta': {}}}}
+    )[1] == Note('notes', 'Columns vs training: no column moved much; all in '
+                 '`drift/features.json`.')
 
     tracker.records.clear()
     track(replace(report, bundle_matches=False),

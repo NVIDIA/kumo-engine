@@ -694,6 +694,7 @@ _REASONS = {'holdout': 'Drift since training', 'previous':
             'features': 'Column drift', 'metrics': 'Realized metrics',
             'matured': 'Label maturity'}
 _TOP_FEATURES = 3
+_MOVED = 0.1
 
 
 def _reason_notes(reasons: Mapping[str, str]) -> List[Summary]:
@@ -731,19 +732,29 @@ def _feature_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
           (change.get('delta') or {}).get('null_rate'))
          for table, columns in features.items()
          for column, change in columns.items()),
-        key=lambda row: (row[3] is None, -(row[3] or 0), -abs(row[4] or 0)))
+        key=lambda row: (_moved(row) is None, -(_moved(row) or 0)))
     if not rows:
         return []
-    moved = [f'`{table}.{column}` (psi {number(psi)})' if psi is not None
-             else f'`{table}.{column}` (mean shift {number(shift)} sd)'
-             for table, column, _, psi, shift, _ in rows
-             if psi is not None or shift is not None][:_TOP_FEATURES]
+    moved = [f'`{table}.{column}` ' + (
+        f'(psi {number(psi)})' if psi is not None else
+        f'(mean shift {number(shift)} sd)')
+        for table, column, _, psi, shift, _ in [
+            row for row in rows if (_moved(row) or 0) >= _MOVED
+        ][:_TOP_FEATURES]]
     return [Table('drift/features', ('table', 'column', 'type', 'psi',
                                      'mean shift', 'null-rate change'),
                   tuple(rows)),
-            Note('notes', f"Most moved columns: {', '.join(moved)}; all in "
-                 '`drift/features.json`.' if moved else
-                 'Column drift: `drift/features.json`.')]
+            Note('notes', 'Columns vs training: '
+                 + (', '.join(moved) if moved else 'no column moved much')
+                 + '; all in `drift/features.json`.')]
+
+
+def _moved(row: Tuple[Any, ...]) -> Optional[float]:
+    r"""How far a ``drift/features`` row's column moved: its psi for a
+    category, its absolute mean shift in training standard deviations for a
+    number; None for other types."""
+    psi, shift = row[3], row[4]
+    return psi if psi is not None else None if shift is None else abs(shift)
 
 
 def _count_changes(before: Mapping[str, Mapping[str, int]],
