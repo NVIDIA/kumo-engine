@@ -651,6 +651,23 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
              f'from {name}.'))
 
 
+def test_link_prediction_score_drift_vs_holdout_has_no_shift():
+    from kumo.engine._monitoring import DriftReport, _drift_summaries
+
+    report = DriftReport(
+        prediction_id='p', bundle_id='b', score='top_score', psi=1.25,
+        ks=0.5, wasserstein=0.25, holdout_truncated=False,
+        bundle_matches=True, previous_prediction_id='p0', previous_psi=0.5,
+        previous_ks=0.25, previous_wasserstein=0.125, input_changes={},
+        reasons={})
+
+    table, = (summary for summary in _drift_summaries(report)
+              if isinstance(summary, Table))
+    assert table.rows == (
+        ('holdout scores at training', 1.25, '', 0.5, 0.25),
+        ('previous run', 0.5, 'large (> 0.25)', 0.25, 0.125))
+
+
 def test_drift_summaries_log_the_previous_run_and_explain_gaps():
     from kumo.engine._monitoring import DriftReport, _input_drift, track
 
@@ -669,7 +686,8 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
             'PLAN': {'type': 'categorical', 'psi': 0.75,
                      'delta': {'null_rate': 0.5}, 'relative': {}},
             'REGION': {'type': 'categorical', 'psi': 0.05, 'delta': {},
-                       'relative': {'num_unique': 0.5}},
+                       'relative': {'num_unique': 0.5},
+                       'category_counts_capped': True},
             'BIO': {'type': 'text', 'delta': {'null_rate': 0.25},
                     'relative': {'avg_tokens': -0.5}},
             'ID': {'type': 'categorical', 'type_changed': ['numerical',
@@ -701,26 +719,24 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
                ('previous run', 0.01, 'small (< 0.1)', 0.02, 0.03)),
               brief=True),
         Note('notes', 'Previous run: 2026-10-28-v6-churn.'),
-        Table('drift/table_rows', ('table', 'rows at training', 'rows now',
+        Table('drift/table_rows', ('table', 'training rows', 'rows now',
                                    'change (%)'),
               (('orders', 100, 104, 4.0),), brief=True),
-        Table('drift/link_edges', ('link', 'edges at training', 'edges now',
+        Table('drift/link_edges', ('link', 'training edges', 'edges now',
                                    'change (%)'),
               (('orders.USER_ID → users', 100, None, None),), brief=True),
         Scalar('drift/inputs_max_psi', 0.75),
-        Table('drift/inputs/orders', ('column', 'type',
-                                      'null rate change (pp)',
-                                      'newest value change (days)'),
+        Table('drift/inputs/orders', ('column', 'type', 'null Δ pp',
+                                      'newest Δ days'),
               (('TS', 'timestamp', 0.0, 1.0),)),
         Table('drift/inputs/users', (
-            'column', 'type', 'psi', 'shift', 'mean change (training sd)',
-            'null rate change (pp)', 'distinct values change ≈ (%)',
-            'mean tokens change ≈ (%)'),
+            'column', 'type', 'psi', 'shift', 'mean Δ sd', 'null Δ pp',
+            'distinct Δ≈ %', 'tokens Δ≈ %'),
             (('PLAN', 'categorical', 0.75, 'large (> 0.25)', '', 50.0, '',
               ''),
              ('AGE', 'numerical', 0.125, 'moderate (0.1–0.25)', -2.5, 0.0,
               '', ''),
-             ('REGION', 'categorical', 0.05, 'small (< 0.1)', '', '', 50.0,
+             ('REGION', 'categorical', 0.05, '≈ small (< 0.1)', '', '', 50.0,
               ''),
              ('BIO', 'text', '', '', '', 25.0, '', -50.0),
              ('ID', 'numerical → categorical', '', '', '', '', '', ''))),
@@ -735,6 +751,10 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
     assert _input_drift({'users': {'BIO': {
         'type': 'text', 'delta': {}, 'relative': {}}}}
     )[1] == Note('notes', 'Input columns vs training data: no psi; per '
+                 'table: `drift/inputs/users.json`.')
+    assert _input_drift({'users': {'AGE': {
+        'type': 'numerical', 'psi': 0.0, 'delta': {}, 'relative': {}}}}
+    )[2] == Note('notes', 'Input columns vs training data: no shift; per '
                  'table: `drift/inputs/users.json`.')
 
     tracker.records.clear()
@@ -988,7 +1008,7 @@ def test_feature_drift_detects_a_numeric_and_a_categorical_shift(shifted):
                                  'q75', 'skewness', 'kurtosis', 'null_rate',
                                  'num_unique'}
     assert plan['type'] == 'categorical' and plan['psi'] > 0.5
-    assert 0 < plan['js'] <= 1 and plan['category_counts_capped'] is False
+    assert plan['category_counts_capped'] is False
 
     same = _compare(_encoding(root, ['AGE', 'PLAN']), before, before, {})
     assert same['users']['AGE']['standardized_mean_shift'] == 0

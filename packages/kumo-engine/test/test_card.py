@@ -15,10 +15,10 @@ def test_a_fit_heading_leads_with_the_tuned_holdout_metric():
 
     assert _card.heading('fit', {'test/auroc': 0.7871, 'test/ap': 0.5},
                          tags) == [
-        'holdout auroc 0.787, 2 data problems', '===']
+        'holdout auroc 0.787, 2 data problems', '']
     assert _card.heading('fit', {'test/loss': 0.25}, {
         'kumo.tune_metric': 'loss', 'kumo.data_warnings': '0',
-        'kumo.error': 'ValueError: stop'})[0] == (
+        'kumo.error': 'ValueError:\n  stop'})[0] == (
             'failed: ValueError: stop, holdout loss 0.25')
 
 
@@ -38,13 +38,17 @@ def test_a_prediction_heading_leads_with_its_watch_numbers():
         'kumo.labels_mature': '2026-11-05'})[0] == (
         'psi 0.3 vs holdout (large shift), 10,000 users as of 2026-10-29, '
         'labels mature 2026-11-05, 1.2% skipped, 1 data problem')
-    assert _card.heading('prediction', {}, {}) == ['prediction', '===']
+    assert _card.heading('prediction', {'drift/psi': 1.24}, {
+        'kumo.task_type': 'temporal_link_prediction'})[0] == (
+        'psi 1.24 vs holdout (link prediction: compare with the previous run)')
+    assert _card.heading('prediction', {}, {}) == ['prediction', '']
     long = _card.heading('prediction', {}, {'kumo.error': 'x' * 200})[0]
     assert len(long) == _card.HEADLINE_CHARS and long.endswith('x…')
 
 
 def test_a_fit_says_what_it_trained_and_where_its_numbers_come_from():
     tags = {**MODEL, 'kumo.task_type': 'binary_classification',
+            'kumo.entity': 'users',
             'kumo.tune_metric': 'auroc', 'kumo.best_trial': '2',
             'kumo.best_epoch': '4'}
 
@@ -71,8 +75,9 @@ def test_the_body_holds_problems_tables_notes_and_locations():
             ('source_table', 'orders', '/data/orders')), brief=True),
     )
 
-    assert '\n'.join(_card.body('Fit.', summaries, [
-        '_provenance.json', 'data/health.json'])) == '\n'.join([
+    body = _card.body('Fit.', summaries,
+                      ['_provenance.json', 'data/health.json'])
+    assert '\n'.join(body) == '\n'.join([
         '', 'Fit.', '', '**Problems**', '',
         '- table `users`: 12 duplicate keys', '', '**Holdout metrics**', '',
         '| metric | value |', '| --- | ---: |', '| test/auroc | 0.75 |',
@@ -90,6 +95,56 @@ def test_the_body_holds_problems_tables_notes_and_locations():
     assert _card.holdout('prediction', {'test/ap': 0.5}, {}) == []
 
 
+def test_a_link_prediction_fit_shows_its_holdout_metrics_at_the_query_k():
+    metrics = {'test/map_at_1': 0.25, 'test/map_at_10': 0.125,
+               'test/recall_at_10': 0.5, 'test/locality_score': 0.75}
+
+    table, note = _card.holdout('fit', metrics, {'kumo.tune_metric': 'map@10'})
+    assert table.rows == (('test/map_at_10', 0.125),
+                          ('test/locality_score', 0.75),
+                          ('test/recall_at_10', 0.5))
+    assert note == Note('notes',
+                        'Holdout metrics at other k: `holdout/by_k.json`.')
+
+
+def test_a_prediction_body_puts_drift_after_the_scores():
+    scores = Table('pred/summary', ('column', 'mean'), (('score', 0.5),),
+                   brief=True)
+    prep = Table('data_preparation', ('step', 'seconds', 'bytes', 'reused'),
+                 (('snapshot', 9, 4096, False),), brief=True)
+    summaries = (prep, scores, Note('drift', 'psi explained'),
+                 Note('notes', 'other'),
+                 Table('locations', ('kind', 'id', 'location'),
+                       (('prediction', 'c' * 64, '/p'),), brief=True))
+
+    text = '\n'.join(_card.body('Scores of x.', summaries, [],
+                                ['<!-- block -->']))
+    assert [line for line in text.split('\n')
+            if line.startswith(('**', '<', '- '))] == [
+        '**Scores**', '<!-- block -->', '- psi explained',
+        '**Data preparation**', '**Notes**', '- other',
+        '**Where things are**']
+    assert '| prediction folder `cccccccc` | `/p` |' in text
+
+
+def test_a_block_names_the_files_of_tables_moved_for_size():
+    moved = Table('drift/link_edges', ('link', 'edges'), (('a', 1),))
+    assert _card.block([Note('notes', 'n')], [moved]) == '\n'.join([
+        '**Notes**', '', '- n',
+        '- Moved to files for size: `drift/link_edges.json`.'])
+
+
+def test_the_chart_note_says_what_each_step_is():
+    assert _card.charts({'pred/rows': 5}) == []
+    charts = _card.charts({'pred/True_PROB_count_by_score_pct': 1,
+                           'pred/recommendations_by_item_rank': 2})
+    assert charts == [Note(
+        'notes', 'Charts: `pred/True_PROB_count_by_score_pct`: step = score '
+                 '× 100 (step 37 = scores 0.37–0.38); '
+                 '`pred/recommendations_by_item_rank`: step = item rank '
+                 '(1 = most recommended).')]
+
+
 def test_a_prediction_names_the_model_and_its_fit_run():
     assert _card.model_line(MODEL, 'v6-churn', '#/experiments/1/runs/r') == (
         'Scores of `kumo-demo-churn` v6, trained by '
@@ -100,13 +155,17 @@ def test_a_prediction_names_the_model_and_its_fit_run():
         'Drift check of the scores of bundle `bbbbbbbb`.')
 
 
-def test_a_version_headline_leads_with_the_tuned_metric():
+def test_a_version_headline_leads_with_the_tuned_metric_then_logloss():
     metrics = {'test/mae': 0.25, 'before_refit/mae': 0.3, 'test/loss': 0.5,
                'test/mse': 1.0, 'test/rmse': 1.0, 'test/map_at_10': 0.125}
     assert _card.version_headline(metrics, 'loss') == (
         'test/loss 0.5 · test/mae 0.25 · test/mse 1 · test/rmse 1')
     assert _card.version_headline(metrics, 'map@10') == (
         'test/map_at_10 0.125 · test/mae 0.25 · test/loss 0.5 · test/mse 1')
+    binary = {'test/auroc': 0.75, 'test/loss': 0.5, 'test/ap': 0.5,
+              'test/auprc': 0.5, 'test/logloss': 0.25}
+    assert _card.version_headline(binary, 'auroc') == (
+        'test/auroc 0.75 · test/logloss 0.25 · test/loss 0.5 · test/ap 0.5')
 
 
 def test_a_prediction_heading_leads_with_the_tuned_realized_metric():
@@ -138,8 +197,12 @@ def test_data_preparation_marks_a_snapshot_built_by_another_process(
             disk_bytes=1024**3 // 2)))
 
     assert _card.table_text(table) == '\n'.join([
-        '**Data preparation**', '', '| step | time (s) | disk (GiB) |',
-        '| --- | ---: | ---: |',
-        '| Graph snapshot (built earlier, reused) | 90 | 3 |',
-        '| Training table | 12.5 | 0.5 |'])
+        '**Data preparation**', '', '| step | time (s) | disk |',
+        '| --- | ---: | --- |',
+        '| Graph snapshot (built earlier, reused) | 90 | 3 GiB |',
+        '| Training table | 12.5 | 512 MiB |'])
+    assert _prep_cost.prep_params(table) == {
+        'prep.snapshot.seconds': '90.0', 'prep.snapshot.bytes': '3221225472',
+        'prep.training_table.seconds': '12.5',
+        'prep.training_table.bytes': '536870912'}
     assert _prep_cost.prep_summaries(SnapshotManifest(id='old')) == []

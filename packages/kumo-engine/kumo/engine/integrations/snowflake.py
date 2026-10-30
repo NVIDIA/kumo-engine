@@ -37,6 +37,7 @@ from kumo.engine._tracking import (
     DROPPED_PARAMS,
     RunRecord,
     by_step,
+    model_metrics,
     record_failure,
     run_name,
     versioned,
@@ -336,7 +337,7 @@ class SnowflakeTracking:
                            if name.endswith('.json'))
             self._log_artifacts({_CARD_FILE: '\n'.join([
                 *_card.heading(kind, self._values, tags),
-                *_card.body(intro, [*_card.holdout(kind, record.metrics, tags),
+                *_card.body(intro, [*_card.holdout(kind, model_metrics(record), tags),
                                     *self._card], files)])})
         except Exception as error:
             logger.warning('Could not write the card of Snowflake run %s: %s',

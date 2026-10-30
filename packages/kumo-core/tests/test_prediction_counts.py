@@ -108,8 +108,8 @@ def test_multiclass_summarizes_each_class_and_the_most_predicted():
     assert logged['pred/histogram/confidence'].counts == _brute_histogram(
         prob.max(axis=1), PROBABILITY_EDGES)
     assert logged['pred/by_class'].columns == (
-        'class', 'share predicted', 'share predicted in holdout', 'mean',
-        'min', 'max')
+        'class', 'share now', 'holdout share', 'mean prob', 'min prob',
+        'max prob')
     assert logged['pred/by_class'].rows == tuple(
         (f'c{index}', top[index] / 400, at_holdout[index] / 200,
          *_summary_row(None, prob[:, index])[1:]) for index in order)
@@ -156,10 +156,11 @@ def test_regression_counts_on_the_target_bins_and_drift():
             for name in ('psi', 'ks', 'wasserstein')} == score_drift(
                 counts, reference)
     assert summaries[-1] == Note(
-        'notes', "Score drift compares `predicted` with the model's holdout "
-        "scores at training, over the training target's histogram bins. PSI "
-        'rule of thumb: 0 identical, < 0.1 small, 0.1–0.25 moderate, > 0.25 '
-        'large shift. KS: the largest gap between the two cumulative '
+        'drift', "Score drift compares `predicted` with the model's holdout "
+        "scores at training, on the training target's histogram bins. PSI "
+        "groups those bins at the holdout's deciles, into up to 10 groups. "
+        'PSI rule of thumb: 0 identical, < 0.1 small, 0.1–0.25 moderate, > '
+        '0.25 large shift. KS: the largest gap between the two cumulative '
         'distributions, from 0 to 1. Wasserstein: how far the scores moved '
         'on average, in score units.')
     other = Counts({'target': (0.0, 1.0)})
@@ -269,15 +270,15 @@ def test_recommendations_count_items_and_top_scores_across_workers(tmp_path):
     assert {path.suffix for path in tmp_path.iterdir()} == {'.json', '.npy'}
 
     total = item_counts(merged(parts))
-    logged = _by_name(prediction_summaries(total, threshold=None,
-                                           baseline=holdout))
+    summaries = prediction_summaries(total, threshold=None, baseline=holdout)
+    logged = _by_name(summaries)
     valid = items[(items >= 0) & (items < catalogue)]
     per_item = np.bincount(valid, minlength=catalogue)
     bounds = [0, *(2**power for power in range(
         int(np.log2(per_item.max())) + 1)), per_item.max() + 1]
     assert logged['pred/item_frequency'] == Table(
         'pred/item_frequency',
-        ('times recommended', 'items', 'share of recommendations'),
+        ('× recommended', 'items', 'share of recs'),
         tuple((str(low) if high - 1 <= low else f'{low}–{high - 1}',
                int(np.sum((per_item >= low) & (per_item < high))),
                pytest.approx(per_item[(per_item >= low) & (per_item < high)]
@@ -296,6 +297,7 @@ def test_recommendations_count_items_and_top_scores_across_workers(tmp_path):
         'item_rank', chart=True)
     assert logged['drift/ks'] == Scalar(
         'drift/ks', score_drift(total, holdout)['ks'])
+    assert 'so compare PSI with the previous run.' in summaries[-1].text
 
 
 def test_forecast_horizons_are_named_by_their_window():

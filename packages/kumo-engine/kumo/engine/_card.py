@@ -13,8 +13,11 @@ from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.score_drift import psi_shift
 from kumo_core.summaries import Note, Summary, Table
 
+from kumo.engine._prep_cost import PREP_TABLE
+
 HEADLINE_CHARS = 140
-NOTES_LINE = "*Add notes below this line; edits above it stop kumo's updates.*"
+NOTES_LINE = ("*kumo rewrites everything above this line; editing it stops "
+              "kumo's updates.*")
 TAIL = ('', NOTES_LINE, '', '---')
 _TITLES = {'data/splits': 'Training data', 'pred/summary': 'Scores',
            'holdout/metrics': 'Holdout metrics', 'drift/score': 'Score drift',
@@ -25,9 +28,10 @@ _MEANINGS = {'ap': 'average precision',
              'logloss': 'cross-entropy of the scores', 'bias': 'pred − actual'}
 _LEADS = {'prediction': 'Scores of', 'drift': 'Drift check of the scores of',
           'evaluate': 'Realized quality of the scores of'}
-_ARTIFACTS = {'model': 'model bundle', 'prediction': 'prediction run',
+_ARTIFACTS = {'model': 'model bundle', 'prediction': 'prediction folder',
               'prediction_output': 'output'}
 _NAMED = ('source_table', 'prediction_output')
+_STEPS = {'snapshot': 'Graph snapshot', 'training_table': 'Training table'}
 _CONSOLES = {'s3': 'https://s3.console.aws.amazon.com/s3/buckets/{}?prefix={}/',
              'gs': 'https://console.cloud.google.com/storage/browser/{}/{}'}
 
@@ -58,8 +62,10 @@ def heading(kind: str, metrics: Mapping[str, float],
                          f'{number(metrics[realized[0]])}')
         if 'drift/psi' in metrics:
             psi = metrics['drift/psi']
-            parts.append(f'psi {number(psi)} vs holdout ({psi_shift(psi)} '
-                         'shift)')
+            link = tags.get('kumo.task_type', '').endswith('link_prediction')
+            parts.append(f'psi {number(psi)} vs holdout (' + (
+                'link prediction: compare with the previous run' if link
+                else f'{psi_shift(psi)} shift') + ')')
         as_of = tags.get('kumo.as_of')
         if 'pred/rows' in metrics:
             parts.append(f"{number(metrics['pred/rows'])} "
@@ -74,9 +80,9 @@ def heading(kind: str, metrics: Mapping[str, float],
     problems = int(tags.get('kumo.data_warnings') or 0)
     if problems:
         parts.append(f"{problems} data problem{'s' * (problems > 1)}")
-    line = ', '.join(parts) or kind
+    line = ' '.join(', '.join(parts).split()) or kind
     return [line if len(line) <= HEADLINE_CHARS else
-            line[:HEADLINE_CHARS - 1] + '…', '===']
+            line[:HEADLINE_CHARS - 1] + '…', '']
 
 
 def intro(kind: str, tags: Mapping[str, str], params: Mapping[str, str],
@@ -85,15 +91,14 @@ def intro(kind: str, tags: Mapping[str, str], params: Mapping[str, str],
     r"""The sentence under the heading, and a fit's ``query``."""
     if kind != 'fit':
         return model_line(tags, fit_run, link)
-    return fit_line(tags, params, query) + (f'\n\n{query}' if query else '')
+    return fit_line(tags, params) + (f'\n\n{query}' if query else '')
 
 
-def fit_line(tags: Mapping[str, str], params: Mapping[str, str],
-             query: Optional[str]) -> str:
+def fit_line(tags: Mapping[str, str], params: Mapping[str, str]) -> str:
     r"""A fit's sentence: the model it registered, its task, and the trial
     and epoch its curves and holdout metrics come from."""
     task = tags.get('kumo.task_type', '').replace('_', ' ')
-    of = entity(query)
+    of = tags.get('kumo.entity')
     line = 'Fit' + (f' of {_model(tags)}' if _model(tags) else '') + (
         f" for {task}{f' of {of}' if of else ''}" if task else '')
     tune = f"val {_key(tags.get('kumo.tune_metric') or 'loss')}"
@@ -109,26 +114,35 @@ def fit_line(tags: Mapping[str, str], params: Mapping[str, str],
 
 
 def holdout(kind: str, metrics: Mapping[str, float],
-            tags: Mapping[str, str]) -> List[Table]:
+            tags: Mapping[str, str]) -> List[Summary]:
     r"""A fit's brief table ``holdout/metrics``: its holdout metrics, the
-    tuned one first, each with what it means where its name is unclear."""
-    tuned = f"test/{_key(tags.get('kumo.tune_metric') or '')}"
-    names = sorted((name for name in metrics if name.startswith('test/')),
-                   key=lambda name: (_key(name) != tuned, name))
-    if kind != 'fit' or not names:
+    tuned one first, each with what it means where its name is unclear;
+    of the metrics at k, only those at the tuned metric's k, and a note
+    pointing to the others."""
+    if kind != 'fit':
         return []
+    tuned = f"test/{_key(tags.get('kumo.tune_metric') or '')}"
+    tested = {_key(name): value for name, value in metrics.items()
+              if name.startswith('test/')}
+    at = _at(tuned)
+    names = sorted((name for name in tested if _at(name) in (None, at)),
+                   key=lambda name: (name != tuned, name))
+    if not names:
+        return []
+    others = len(names) < len(tested)
     return [Table('holdout/metrics', ('metric', 'value'), tuple(
-        (_meaning(_key(name)), metrics[name])
-        for name in names), brief=True)]
+        (_meaning(name), tested[name]) for name in names), brief=True),
+        *([Note('notes', 'Holdout metrics at other k: `holdout/by_k.json`.')]
+          if others else [])]
 
 
 def version_headline(metrics: Mapping[str, float],
                      tune: Optional[str]) -> str:
-    r"""A registered version's metrics line: the tuned metric, then the
-    next three holdout metrics."""
+    r"""A registered version's metrics line: the tuned metric, logloss,
+    then the next holdout metrics, four in all."""
     tuned = f"test/{_key(tune or '')}"
     names = [name for name in metrics if name.startswith('test/')]
-    names.sort(key=lambda name: name != tuned)
+    names.sort(key=lambda name: (name != tuned, name != 'test/logloss'))
     return ' · '.join(f'{_key(name)} {number(metrics[name])}'
                       for name in names[:4])
 
@@ -147,33 +161,62 @@ def model_line(tags: Mapping[str, str], fit_run: Optional[str] = None,
 
 
 def body(intro: Optional[str], summaries: Sequence[Summary],
-         files: Sequence[str]) -> List[str]:
-    r"""The card after its heading: ``intro``, problems, brief tables,
-    notes, where things are, and the run's files."""
+         files: Sequence[str], blocks: Sequence[str] = ()) -> List[str]:
+    r"""The card after its heading: ``intro``, problems, the scores, the
+    ``blocks`` later steps fill and the notes on drift, the other brief
+    tables, notes, where things are, and the run's files."""
     lines = [] if intro is None else ['', intro]
     problems = _notes(summaries, 'problems')
     if problems:
         lines += ['', '**Problems**', '', *problems]
-    tables = [s for s in summaries if isinstance(s, Table)]
+    tables = [s for s in summaries
+              if isinstance(s, Table) and s.name != 'locations']
+    scores = [table for table in tables if table.name.startswith('pred/')]
+    for table in scores:
+        lines += ['', table_text(table)]
+    if blocks:
+        lines += ['', *blocks]
+    drift = _notes(summaries, 'drift')
+    if drift:
+        lines += ['', *drift]
     for table in tables:
-        if table.name != 'locations':
+        if table not in scores:
             lines += ['', table_text(table)]
     notes = _notes(summaries, 'notes')
     if notes:
         lines += ['', '**Notes**', '', *notes]
-    for table in tables:
-        if table.name == 'locations':
-            lines += ['', _where(table)]
+    for summary in summaries:
+        if isinstance(summary, Table) and summary.name == 'locations':
+            lines += ['', _where(summary)]
     return [*lines, '', files_line(files)]
 
 
-def block(summaries: Sequence[Summary]) -> str:
+def block(summaries: Sequence[Summary], moved: Sequence[Table] = ()) -> str:
     r"""A part of the card a later step adds, such as drift: its brief
-    tables, then its notes."""
+    tables, then its notes, naming the files of the ``moved`` tables."""
+    notes = _notes(summaries, 'notes')
+    if moved:
+        names = ', '.join(f'`{table.name}.json`' for table in moved)
+        notes.append(f'- Moved to files for size: {names}.')
     return '\n\n'.join([
         *(table_text(s) for s in summaries if isinstance(s, Table)),
-        *(['\n'.join(_notes(summaries, 'notes'))]
-          if _notes(summaries, 'notes') else [])])
+        *(['**Notes**\n\n' + '\n'.join(notes)] if notes else [])])
+
+
+def charts(metrics: Mapping[str, float]) -> List[Note]:
+    r"""A note on what the step of each chart in ``metrics`` is."""
+    scored = sorted(name for name in metrics
+                    if name.endswith('_count_by_score_pct'))
+    steps = []
+    if scored:
+        name = (scored[0] if len(scored) == 1
+                else 'pred/<column>_count_by_score_pct')
+        steps.append(f'`{name}`: step = score × 100 (step 37 = scores '
+                     '0.37–0.38)')
+    if 'pred/recommendations_by_item_rank' in metrics:
+        steps.append('`pred/recommendations_by_item_rank`: step = item rank '
+                     '(1 = most recommended)')
+    return [Note('notes', f"Charts: {'; '.join(steps)}.")] if steps else []
 
 
 def files_line(files: Sequence[str]) -> str:
@@ -185,6 +228,8 @@ def files_line(files: Sequence[str]) -> str:
 
 def table_text(table: Table) -> str:
     r"""``**Title**`` and the table in Markdown."""
+    if table.name == PREP_TABLE:
+        table = _prep(table)
     numeric = [all(isinstance(row[i], (int, float)) or row[i] is None
                    for row in table.rows) for i in range(len(table.columns))]
     return '\n'.join([
@@ -203,6 +248,21 @@ def number(value: Any) -> str:
         return f'{value:,.0f}'
     digits = 2 - math.floor(math.log10(abs(value)))
     return f'{value:.{digits}f}'.rstrip('0').rstrip('.')
+
+
+def _size(count: float) -> str:
+    for unit in ('B', 'KiB', 'MiB', 'GiB'):
+        if count < 1024:
+            return f'{number(count)} {unit}'
+        count /= 1024
+    return f'{number(count)} TiB'
+
+
+def _prep(table: Table) -> Table:
+    return Table(table.name, ('step', 'time (s)', 'disk'), tuple(
+        (_STEPS[step] + (' (built earlier, reused)' if reused else ''),
+         seconds, _size(count))
+        for step, seconds, count, reused in table.rows), table.brief)
 
 
 def _where(table: Table) -> str:
@@ -254,6 +314,11 @@ def _row(cells: Sequence[str]) -> str:
 
 def _cell(value: Any) -> str:
     return '' if value is None else number(value).replace('|', '\\|')
+
+
+def _at(name: str) -> Optional[str]:
+    found = re.search(r'_at_(\d+)$', name)
+    return found and found.group(1)
 
 
 def _key(name: str) -> str:

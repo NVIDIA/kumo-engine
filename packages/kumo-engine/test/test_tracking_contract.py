@@ -454,7 +454,7 @@ def test_records_of_the_recorded_fit():
     assert fit.tags == {'team': 'ents', 'kumo.kind': 'fit',
                         'kumo.bundle_id': BUNDLE, 'kumo.snapshot_id': SNAPSHOT,
                         'kumo.task_type': 'regression',
-                        'kumo.tune_metric': 'mae',
+                        'kumo.entity': 'ents', 'kumo.tune_metric': 'mae',
                         'kumo.engine_version': __version__,
                         'kumo.best_trial': '2', 'kumo.best_epoch': '2'}
     assert fit.params == {
@@ -661,7 +661,6 @@ def test_prediction_record_of_the_recorded_run():
         'anchors': '["2024-04-29T00:00:00+00:00"]',
         'binary_classification_threshold': '0.4',
         'threshold_source': 'argument',
-        'count_source': 'none',
     }
     assert record.metrics == {}
     assert record.summaries == (
@@ -791,6 +790,8 @@ def test_every_summary_type_has_a_sink_in_each_tracker():
     ({'test_auroc': 0.7}, True, {'before_refit/auroc': 0.7}),
     ({'test_auroc': 0.7, 'test_refit_auroc': 0.8}, True,
      {'before_refit/auroc': 0.8}),
+    ({'test_acc': 0.9, 'val_acc': 0.8, 'best_val_acc': 0.85}, False,
+     {'test/accuracy': 0.9, 'val/accuracy': 0.8, 'val/best_accuracy': 0.85}),
 ])
 def test_holdout_metrics_are_named_after_the_shipped_model(
         metrics, refit_full, expected):

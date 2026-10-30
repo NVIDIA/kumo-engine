@@ -126,9 +126,9 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     assert parent.info.status == 'FINISHED'
     assert {k for k in parent.data.tags if k.startswith('kumo.')} == {
         'kumo.kind', 'kumo.bundle_id', 'kumo.dropped_params',
-        'kumo.snapshot_id', 'kumo.task_type', 'kumo.tune_metric',
-        'kumo.engine_version', 'kumo.best_trial', 'kumo.best_epoch',
-        'kumo.bundle_uri'}
+        'kumo.snapshot_id', 'kumo.task_type', 'kumo.entity',
+        'kumo.tune_metric', 'kumo.engine_version', 'kumo.best_trial',
+        'kumo.best_epoch', 'kumo.bundle_uri'}
     assert parent.data.tags['kumo.bundle_uri'] == str(
         tmp_path / 'root' / 'models' / result.id)
     assert parent.data.tags['kumo.snapshot_id'] == snapshot.id
@@ -513,17 +513,18 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
             'data': [['AMOUNT', 0.12]]}
     assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
         'realized map_at_10 0.5, psi 0.03 vs holdout (small shift), 50 rows '
-        'as of 2026-10-29', '===', '', 'Scores of bundle `bbbbbbbb`.', '',
-        'Full lineage: `_provenance.json`.', '',
+        'as of 2026-10-29', '', '', 'Scores of bundle `bbbbbbbb`.', '',
         '<!-- kumo:drift -->', '', '**Table rows**', '',
         '| table | rows at training | rows now | change (%) |',
         '| --- | ---: | ---: | ---: |', '| orders | 100 | 104 | 4 |', '',
+        '**Notes**', '',
         '- Drift vs training: psi 0.03 · vs 2026-10-28-v6-churn: psi 0.01.',
         '', '<!-- /kumo:drift -->',
-        '<!-- kumo:realized -->', '',
+        '<!-- kumo:realized -->', '', '**Notes**', '',
         '- Realized map@10 0.5 · 75 % labelled (3 of 4 scored rows), with '
         'labels from snapshot-2026-10-30-2.', '',
-        '<!-- /kumo:realized -->', *TAIL]))
+        '<!-- /kumo:realized -->', '', 'Full lineage: `_provenance.json`.',
+        *TAIL]))
 
     failure = log_run(later, 'log_monitoring', RunRecord(
         tags={**monitoring, 'kumo.prediction_id': 'pred-2'}))
@@ -611,9 +612,10 @@ def test_system_metrics_skip_a_failed_log_and_stop_after_repeated_ones(
     with integration._SystemMetrics(log, interval=0.001) as metrics:
         metrics._thread.join(10)
 
-    reading = ({'system/cpu': 1.0}, 0)
-    assert batches == [[reading] * 2, *[[reading]] * (
-        1 + integration._SYSTEM_METRICS_FAILURES)]
+    reading = {'system/cpu': 1.0}
+    assert batches == [[(reading, 0), (reading, 1)], *[
+        [(reading, step)]
+        for step in range(2, 3 + integration._SYSTEM_METRICS_FAILURES)]]
     assert caplog.text.count('Could not log system metrics') == 1
     assert 'ConnectionError: blip' in caplog.text
     assert 'stopped after 6 failed logs in a row' in caplog.text
@@ -671,10 +673,13 @@ def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
 
     client = mlflow.MlflowClient()
     run, = _runs(client)
-    values = sorted(point.value for point in client.get_metric_history(
-        run.info.run_id, 'system/cpu_utilization_percentage'))
+    history = sorted(client.get_metric_history(
+        run.info.run_id, 'system/cpu_utilization_percentage'),
+                     key=lambda point: point.value)
+    values = [point.value for point in history]
     assert values == ([] if environment or not enabled else [
         float(sample) for sample in range(1, monitor.samples + 1)])
+    assert [point.step for point in history] == list(range(len(history)))
     assert monitor.samples >= (10 if values else 0)
 
 
@@ -739,11 +744,11 @@ def test_charted_series_become_metrics_over_their_steps(tracking_uri):
     assert 'mlflow.loggedArtifacts' not in run.data.tags
 
 
-NOTES = "*Add notes below this line; edits above it stop kumo's updates.*"
+NOTES = "*kumo rewrites everything above this line; editing it stops kumo's updates.*"
 TAIL = ['', NOTES, '', '---']
 LOCATIONS = Table('locations', ('kind', 'id', 'location'),
                   (('model', 'm', '/r/m'),), brief=True)
-FIT_HEAD = ['holdout mae 0.25', '===', '', 'Fit for regression of ents.', '',
+FIT_HEAD = ['holdout mae 0.25', '', '', 'Fit for regression of ents.', '',
             f'`{QUERY}`', '']
 MAE = ['**Holdout metrics**', '', '| metric | value |', '| --- | ---: |',
        '| test/mae | 0.25 |', '']
@@ -761,7 +766,8 @@ def _fit_with_a_card(tracker, summaries=(), note=None):
 
     record = RunRecord(
         name='r', tags={'kumo.kind': 'fit', 'kumo.tune_metric': 'mae',
-                        'kumo.task_type': 'regression'},
+                        'kumo.task_type': 'regression',
+                        'kumo.entity': 'ents'},
         metrics={'test/mae': 0.25}, description=f'`{QUERY}`',
         artifacts={PROVENANCE_FILE: '{}'}, summaries=summaries)
     tracker.start(record)
@@ -773,11 +779,12 @@ def _fit_with_a_card(tracker, summaries=(), note=None):
 
 
 def test_a_fit_run_gets_a_card_before_the_users_notes(tracking_uri):
-    from kumo_core.summaries import Note, Table
+    from kumo_core.summaries import Note, Scalar, Table
 
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     run = _fit_with_a_card(MlflowTracking('e', log_system_metrics=False), (
+        Scalar('test/mse', 0.5, role='model'),
         Note('problems', 'table `ents`: 2 duplicate keys'),
         Table('data/splits', ('split', 'rows'), (('train', 3),), brief=True),
         Table('data/health', ('table', 'rows'), (('ents', 3),)),
@@ -785,7 +792,7 @@ def test_a_fit_run_gets_a_card_before_the_users_notes(tracking_uri):
 
     assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
         *FIT_HEAD, '**Problems**', '', '- table `ents`: 2 duplicate keys', '',
-        *MAE, '**Training data**', '', '| split | rows |', '| --- | ---: |',
+        *MAE[:-1], '| test/mse | 0.5 |', '', '**Training data**', '', '| split | rows |', '| --- | ---: |',
         '| train | 3 |', '', *WHERE,
         'Full lineage: `_provenance.json`. Tables: `data/health.json`.',
         *TAIL])) + '\n\nMine.'
@@ -829,24 +836,23 @@ def test_monitoring_fills_its_part_of_a_prediction_card(tracking_uri):
 
     tracker.update_card(run_id, 'drift', [Note('notes', 'psi 0.01 since')])
 
-    head = ['50 rows as of 2026-10-29', '===', '',
-            'Scores of bundle `bbbbbbbb`.', '',
-            'Full lineage: `_provenance.json`.', '']
+    head = ['50 rows as of 2026-10-29', '', '',
+            'Scores of bundle `bbbbbbbb`.', '']
+    tail = ['<!-- kumo:realized --><!-- /kumo:realized -->', '',
+            'Full lineage: `_provenance.json`.', *TAIL]
     assert card == _sealed('\n'.join([
-        *head, '<!-- kumo:drift --><!-- /kumo:drift -->',
-        '<!-- kumo:realized --><!-- /kumo:realized -->', *TAIL]))
+        *head, '<!-- kumo:drift --><!-- /kumo:drift -->', *tail]))
     assert client.get_run(run_id).data.tags['mlflow.note.content'] == (
         _sealed('\n'.join([
             'psi 0.03 vs holdout (small shift), ' + head[0], *head[1:],
-            '<!-- kumo:drift -->', '', '- psi 0.01 since', '',
-            '<!-- /kumo:drift -->',
-            '<!-- kumo:realized --><!-- /kumo:realized -->', *TAIL]))
+            '<!-- kumo:drift -->', '', '**Notes**', '', '- psi 0.01 since',
+            '', '<!-- /kumo:drift -->', *tail]))
         + '\n\nMine.')
 
 
 def test_a_card_over_its_budget_moves_tables_to_files_then_shrinks(
         tracking_uri):
-    from kumo_core.summaries import Note, Table
+    from kumo_core.summaries import Table
 
     from kumo.engine.integrations.mlflow import MlflowTracking
 
@@ -934,7 +940,8 @@ def test_a_run_reference_shows_as_a_link_in_a_notebook():
         'sagemaker run <code>r1</code>')
 
 
-def test_an_unused_experiment_without_a_description_gets_one(tracking_uri):
+def test_kumo_describes_an_unused_experiment_and_refreshes_its_own_text(
+        tracking_uri):
     from kumo.engine._tracking import RunRecord
     from kumo.engine.integrations.mlflow import (
         _EXPERIMENT_NOTE,
@@ -944,7 +951,9 @@ def test_an_unused_experiment_without_a_description_gets_one(tracking_uri):
     client = mlflow.MlflowClient()
     client.create_experiment('mine', tags={'mlflow.note.content': 'Mine.'})
     client.create_run(client.create_experiment('used'))
-    for name in ('new', 'mine', 'used'):
+    client.create_run(client.create_experiment(
+        'stale', tags={'mlflow.note.content': 'kumo-engine: old names'}))
+    for name in ('new', 'mine', 'used', 'stale'):
         tracker = MlflowTracking(name, log_system_metrics=False)
         for _ in range(2):
             tracker.start(RunRecord(name='r', tags={'kumo.kind': 'fit'}))
@@ -953,4 +962,5 @@ def test_an_unused_experiment_without_a_description_gets_one(tracking_uri):
     assert {experiment.name: experiment.tags.get('mlflow.note.content')
             for experiment in client.search_experiments()
             if experiment.name != 'Default'} == {
-        'new': _EXPERIMENT_NOTE, 'mine': 'Mine.', 'used': None}
+        'new': _EXPERIMENT_NOTE, 'mine': 'Mine.', 'used': None,
+        'stale': _EXPERIMENT_NOTE}

@@ -209,7 +209,7 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
     if drift is not None:
         summaries += [Scalar(f'drift/{name}', value)
                       for name, value in drift.items()]
-        summaries.append(Note('notes', _drift_note(counts, score)))
+        summaries.append(Note('drift', _drift_note(counts, score)))
     return summaries
 
 
@@ -235,8 +235,8 @@ def _by_class(counts: Counts, ranked: str, order: Sequence[int],
 
     label = 'class' if ranked == 'classes' else 'label'
     return Table(
-        'pred/by_class', (label, 'share predicted',
-                          'share predicted in holdout', 'mean', 'min', 'max'),
+        'pred/by_class', (label, 'share now', 'holdout share', 'mean prob',
+                          'min prob', 'max prob'),
         tuple((columns[i].removesuffix('_PROB') if columns else str(i),
                float(tally[i] / rows) if rows else 0.0,
                None if holdout is None else float(holdout[i] / holdout.sum()),
@@ -253,7 +253,7 @@ def _item_summaries(counts: Counts) -> List[Summary]:
               int(total['most_recommendations']) + 1]
     return [
         Table('pred/item_frequency',
-              ('times recommended', 'items', 'share of recommendations'),
+              ('× recommended', 'items', 'share of recs'),
               tuple((_range(bounds[b], bounds[b + 1] - 1),
                      int(arrays['item_frequency'][b]),
                      float(arrays['item_frequency/sum'][b] /
@@ -295,11 +295,17 @@ def _drift_note(counts: Counts, score: str) -> str:
             "the training target's histogram bins" if score == 'TARGET_PRED'
             else "percentile bins of the holdout's top scores")
     rule = ', '.join(f'{bound} {shift}' for shift, bound in PSI_SHIFTS.items())
+    reading = (
+        'For link prediction the holdout covers only entities with a future '
+        'target and a prediction all entities, so compare PSI with the '
+        'previous run.' if 'item_frequency' in counts.arrays else
+        f'PSI rule of thumb: 0 identical, {rule} shift.')
     return (f"Score drift compares `{_label(score)}` with the model's holdout "
-            f'scores at training, over {bins}. PSI rule of thumb: 0 '
-            f'identical, {rule} shift. KS: the largest gap between the two '
-            'cumulative distributions, from 0 to 1. Wasserstein: how far the '
-            'scores moved on average, in score units.')
+            f"scores at training, on {bins}. PSI groups those bins at the "
+            f"holdout's deciles, into up to 10 groups. {reading} KS: the "
+            'largest gap between the two cumulative distributions, from 0 to '
+            '1. Wasserstein: how far the scores moved on average, in score '
+            'units.')
 
 
 def _label(column: str) -> str:

@@ -19,13 +19,15 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 from kumo_core.score_counts import Counts
-from kumo_core.score_drift import PSI_SHIFTS, drift_column, psi_shift
+from kumo_core.score_drift import PSI_SHIFTS, drift_column
 from kumo_core.score_drift import psi as decile_psi
+from kumo_core.score_drift import psi_shift
 from kumo_core.score_drift import score_drift as exact_drift
 from kumo_core.summaries import Dataset, Note, Scalar, Summary, Table, Tag
 
 from kumo.engine._card import number
 from kumo.engine._manifest import PredictionManifest, TrackingRef
+from kumo.engine._tracking import metric_name
 
 _EVALUATION_FILE = '_evaluation.json'
 
@@ -600,7 +602,9 @@ def _drift_summaries(report: 'DriftReport',
     vs the previous run, named ``previous_name`` (else by its id), and, when
     the run's model is the trainer's, the input changes and column drift
     since training (its score drift metrics vs the holdout are the
-    prediction run's own); notes on what is missing and why."""
+    prediction run's own); notes on what is missing and why. Link
+    prediction's holdout covers only entities with a future target, so its
+    psi against it gets no shift."""
     summaries: List[Summary] = []
     reasons = report.reasons
     holdout = {'psi': report.psi, 'ks': report.ks,
@@ -616,7 +620,9 @@ def _drift_summaries(report: 'DriftReport',
     sides = [] if report.bundle_matches is False else [
         ('holdout scores at training', holdout)]
     sides.append(('previous run', previous))
-    rows = tuple((side, values['psi'], _shift(values['psi']), values['ks'],
+    rows = tuple((side, values['psi'],
+                  '' if values is holdout and report.score == 'top_score'
+                  else _shift(values['psi']), values['ks'],
                   values['wasserstein'])
                  for side, values in sides if values['psi'] is not None)
     if rows:
@@ -662,7 +668,7 @@ def _evaluation_summaries(result: EvaluationResult, labels: Any,
         if isinstance(summary, Dataset)
         and summary.name == (name or manifest.id)]
     tune = _tune_metric(model)
-    metrics = dict(sorted(((metric, value) for metric, value
+    metrics = dict(sorted(((metric_name(metric), value) for metric, value
                            in result.metrics.items() if value is not None),
                           key=lambda item: item[0] != tune))
     holdout = _holdout(model)
@@ -703,7 +709,8 @@ def _tune_metric(model: Any) -> Optional[str]:
     if not path or not Path(path).is_file():
         return None
     plan = json.loads(Path(path).read_text())
-    return (plan.get('training_job') or {}).get('tune_metric')
+    tune = (plan.get('training_job') or {}).get('tune_metric')
+    return tune and metric_name(tune)
 
 
 def _holdout(model: Any) -> Dict[str, float]:
@@ -715,7 +722,7 @@ def _holdout(model: Any) -> Dict[str, float]:
         return {}
     prefix = ('test_refit_' if any(name.startswith('test_refit_')
                                    for name in metrics) else 'test_')
-    return {name.removeprefix(prefix): value
+    return {metric_name(name.removeprefix(prefix)): value
             for name, value in metrics.items() if name.startswith(prefix)}
 
 
@@ -757,7 +764,7 @@ def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
             continue
         brief = len(rows) <= 12
         summaries.append(Table(
-            name, ('link' if links else 'table', f'{unit} at training',
+            name, ('link' if links else 'table', f'training {unit}',
                    f'{unit} now', 'change (%)'), rows, brief=brief))
         if not brief:
             summaries.append(Note('notes', f'{len(rows)} '
@@ -792,19 +799,18 @@ def _input_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
     if shifted:
         summaries.insert(0, Scalar('drift/inputs_max_psi', shifted[0][0]))
     top = ', '.join(f'`{column}` (psi {number(psi)}, {psi_shift(psi)})'
-                    for psi, column in shifted[:_TOP_FEATURES])
+                    for psi, column in shifted[:_TOP_FEATURES] if psi > 0)
     files = ', '.join(f'`drift/inputs/{table}.json`'
                       for table in sorted(features))
     summaries.append(Note('notes', 'Input columns vs training data: '
-                          + (f'most shifted {top}' if top else 'no psi')
+                          + (f'most shifted {top}' if top else
+                             'no shift' if shifted else 'no psi')
                           + f'; per table: {files}.'))
     return summaries
 
 
-_INPUT_HEADER = ('column', 'type', 'psi', 'shift',
-                 'mean change (training sd)', 'null rate change (pp)',
-                 'distinct values change ≈ (%)', 'newest value change (days)',
-                 'mean tokens change ≈ (%)')
+_INPUT_HEADER = ('column', 'type', 'psi', 'shift', 'mean Δ sd', 'null Δ pp',
+                 'distinct Δ≈ %', 'newest Δ days', 'tokens Δ≈ %')
 
 
 def _input_row(column: str, change: Mapping[str, Any]) -> Tuple[Any, ...]:
@@ -819,7 +825,9 @@ def _input_row(column: str, change: Mapping[str, Any]) -> Tuple[Any, ...]:
         return '' if value is None else value * scale
 
     psi = change.get('psi')
-    return (column, change['type'], blank(psi), '' if psi is None else _shift(psi),
+    shift = '' if psi is None else (
+        '≈ ' if change.get('category_counts_capped') else '') + _shift(psi)
+    return (column, change['type'], blank(psi), shift,
             blank(change.get('standardized_mean_shift')),
             blank(delta.get('null_rate'), 100),
             blank(relative.get('num_unique'), 100),
@@ -1068,7 +1076,6 @@ def _column_change(old: Mapping[str, Any],
         change = _deltas(old, new, _CATEGORY_STATS)
         p, q = _distribution(old), _distribution(new)
         change['psi'] = _category_psi(p, q)
-        change['js'] = _js(p, q)
         change['category_counts_capped'] = bool(
             old.get('category_counts_capped')
             or new.get('category_counts_capped'))
@@ -1146,11 +1153,3 @@ def _category_psi(p: Mapping[str, float],
         return None
     a, b = _smoothed(p, q)
     return float(np.sum((b - a) * np.log(b / a)))
-
-
-def _js(p: Mapping[str, float], q: Mapping[str, float]) -> Optional[float]:
-    if not p or not q:
-        return None
-    a, b = _smoothed(p, q)
-    m = (a + b) / 2
-    return float((np.sum(a * np.log2(a / m)) + np.sum(b * np.log2(b / m))) / 2)

@@ -62,6 +62,7 @@ from kumo.engine._tracking import (
     RunRecord,
     by_step,
     model_label,
+    model_metrics,
     record_failure,
     run_name,
     versioned,
@@ -311,10 +312,7 @@ class MlflowTracking:
         renamed after its first version."""
         from kumo.engine._manifest import stub
         from kumo.engine.graph import GraphSnapshot
-        from kumo.engine.trainer._run_spec import (
-            holdout_metrics,
-            model_metrics,
-        )
+        from kumo.engine.trainer._run_spec import model_metrics
         from kumo.engine.trainer._spec import read_training_spec
         from kumo.engine.trainer.trainer import registry_pointers
 
@@ -354,7 +352,7 @@ class MlflowTracking:
             published = _register(self.target, client, info, location,
                                   pointers)
             if fit is None:
-                text = _version_text(holdout_metrics(result), None, None,
+                text = _version_text(model_metrics(result), None, None,
                                      None, True)
             else:
                 if held is None:
@@ -362,7 +360,7 @@ class MlflowTracking:
                 with self.target.scope():
                     run = client.get_run(fit.run_id)
                 text = _version_text(
-                    holdout_metrics(result), run.data.tags.get(
+                    model_metrics(result), run.data.tags.get(
                         'kumo.tune_metric'), run.info.run_name,
                     run.data.tags.get('kumo.bundle_uri'), not self._unity())
             _describe_version(self.target, client, published, text)
@@ -443,8 +441,10 @@ class MlflowTracking:
                     client.create_experiment(self.experiment_name))
             experiment_id, self.experiment = (experiment.experiment_id,
                                               experiment.name)
-            if not experiment.tags.get(_NOTE) and not client.search_runs(
-                    [experiment_id], max_results=1):
+            note = experiment.tags.get(_NOTE)
+            if note != _EXPERIMENT_NOTE and (
+                    note.startswith('kumo-engine:') if note else
+                    not client.search_runs([experiment_id], max_results=1)):
                 client.set_experiment_tag(experiment_id, _NOTE,
                                           _EXPERIMENT_NOTE)
             tags = dict(record.tags)
@@ -693,15 +693,16 @@ class MlflowTracking:
         kind = tags.get('kumo.kind', '')
         lines[:2] = _card.heading(kind, run.data.metrics, tags)
         if kind == 'fit' and len(lines) > 3:
-            lines[3] = _card.fit_line(tags, run.data.params,
-                                      lines[5] if len(lines) > 5 else None)
+            lines[3] = _card.fit_line(tags, run.data.params)
         card = '\n'.join(lines)
         items = [s for s in summaries if isinstance(s, Note)
                  or isinstance(s, Table) and s.brief]
 
         def render(kept: Sequence[Summary], files: Sequence[str]) -> str:
             return card if block is None else _with_block(
-                card, block, _card.block(kept))
+                card, block, _card.block(kept, [
+                    item for item in items
+                    if isinstance(item, Table) and item not in kept]))
 
         def minimal(files: Sequence[str]) -> str:
             return '\n'.join([*lines[:4], '', _card.files_line(files),
@@ -723,18 +724,19 @@ class MlflowTracking:
             line = _card.heading(kind, run.data.metrics, tags)
             intro = _card.intro(kind, tags, run.data.params,
                                 record.description, *self._fit_link())
-            items = [*_card.holdout(kind, record.metrics, tags), *self._card]
+            items = [*_card.holdout(kind, _model_metrics(record), tags),
+                     *self._card, *_card.charts(run.data.metrics)]
             blocks = ([_part(name, '') for name in _BLOCKS]
                       if kind == 'prediction' else [])
-            tail = [*([''] + blocks if blocks else []), *_card.TAIL]
 
             def render(kept: Sequence[Summary], files: Sequence[str]) -> str:
-                return '\n'.join([*line, *_card.body(intro, kept, files),
-                                  *tail])
+                return '\n'.join([*line, *_card.body(
+                    intro, kept, files, blocks), *_card.TAIL])
 
             def minimal(files: Sequence[str]) -> str:
-                return '\n'.join([*line, '', intro, '',
-                                  _card.files_line(files), *tail])
+                return '\n'.join([*line, '', intro,
+                                  *(['', *blocks] if blocks else []), '',
+                                  _card.files_line(files), *_card.TAIL])
 
             user = split[1]
             self._set_card(run, render, minimal, items, user,
@@ -817,7 +819,7 @@ class MlflowTracking:
                 run = self._client.get_run(self._parent)
             _describe_version(self.target, self._client, published,
                               _version_text(
-                                  record.metrics,
+                                  _model_metrics(record),
                                   record.tags.get('kumo.tune_metric'),
                                   run.info.run_name,
                                   run.data.tags.get('kumo.bundle_uri'),
@@ -898,10 +900,7 @@ class MlflowTracking:
         scalars = pending.scalars
         if pending.datasets:
             with self.target.scope():
-                self._client.log_inputs(run_id, datasets=sorted(
-                    pending.datasets,
-                    key=lambda item: not item.dataset.name.startswith(
-                        'snapshot')))
+                self._client.log_inputs(run_id, datasets=pending.datasets)
         self._holdout = _holdout_dataset(pending.datasets)
         self._log_metrics(run_id, {s.name: s.value for s in scalars
                                    if s.role == 'model'},
@@ -1093,7 +1092,8 @@ _EXPERIMENT_NOTE = '\n'.join([
     "them. Filter `tags.kumo.kind = 'fit'`.",
     '- **Predictions**: one per scoring day, '
     "`predict-<model>-v<version>-<as-of date>`. Filter "
-    "`tags.kumo.kind = 'prediction'` and sort by the tag `kumo.as_of`.",
+    "`tags.kumo.kind = 'prediction'` and sort by the param `anchors` "
+    '(the as-of date).',
     "Each run's description starts with its card; add notes below the "
     "card's last line."])
 _CARD_END = re.compile(r'<!-- /kumo:card sha256=([0-9a-f]{16}) -->')
@@ -1190,9 +1190,9 @@ class _SystemMetrics:
     r"""Samples MLflow's CPU, disk, network and GPU monitors on its own
     thread every second (``MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL`` sets
     the interval) and hands ``log`` the readings, each with its elapsed
-    second as step and its time, every 10 seconds and once more when the
-    run ends, so a run with fewer than 2 readings logs none and no metric
-    draws as a bar. (MLflow's own ``SystemMetricsMonitor`` logs with
+    second as step (one more than the last reading's, if not past it) and
+    its time, every 10 seconds and once more when the run ends, so a run
+    with fewer than 2 readings logs none and no metric draws as a bar. (MLflow's own ``SystemMetricsMonitor`` logs with
     process-wide credentials.)"""
 
     def __init__(self, log: Callable[[List[_Reading]], None],
@@ -1220,6 +1220,7 @@ class _SystemMetrics:
         began = flushed = time.monotonic()
         readings: List[_Reading] = []
         taken = failures = 0
+        step = -1
         stopped = False
         while not stopped:  # and a last reading when the run ends
             stopped = self._stop.wait(self._interval)
@@ -1228,9 +1229,9 @@ class _SystemMetrics:
                 monitor.collect_metrics()
                 metrics.update(monitor.aggregate_metrics())
                 monitor.clear_metrics()
+            step = max(round(time.monotonic() - began), step + 1)
             readings.append(({f'system/{k}': v for k, v in metrics.items()},
-                             round(time.monotonic() - began),
-                             int(time.time() * 1000)))
+                             step, int(time.time() * 1000)))
             taken += 1
             if taken < _MIN_READINGS or not (
                     stopped or time.monotonic() - flushed >= _FLUSH_SECONDS):
@@ -1620,6 +1621,11 @@ def _register(target: Any, client: Any, info: Any,
     return PublishedModel(name=name, version=version,
                           uri=f'models:/{name}/{version}',
                           metadata=dict(metadata))
+
+
+def _model_metrics(record: RunRecord) -> Dict[str, float]:
+    return {metric_key(name): value
+            for name, value in model_metrics(record).items()}
 
 
 def _version_text(metrics: Mapping[str, float], tune: Optional[str],

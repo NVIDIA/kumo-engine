@@ -15,11 +15,7 @@ from kumoapi.plugin import (
 )
 from kumoapi.prediction_outputs import resolve_prediction_output_paths
 
-from kumo.engine.connector import (
-    file_store,
-    is_file_destination,
-    model_sink,
-)
+from kumo.engine.connector import file_store, is_file_destination, model_sink
 from kumo.engine.connector.base import Connector
 
 

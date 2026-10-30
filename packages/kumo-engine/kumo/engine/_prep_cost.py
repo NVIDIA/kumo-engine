@@ -11,15 +11,9 @@ from typing import Any, Dict, List, Set, Tuple
 
 from kumo_core.summaries import Table
 
-from kumo.engine._card import number
 from kumo.engine._manifest import BuildCost
 
 PREP_TABLE = 'data_preparation'
-_GIB = 1024**3
-_COLUMNS = ('step', 'time (s)', 'disk (GiB)')
-_PARAMS = ('seconds', 'disk_gib')
-_ROWS = {'snapshot': 'Graph snapshot', 'training_table': 'Training table'}
-_REUSED = ' (built earlier, reused)'
 
 Start = Tuple[datetime, float]
 
@@ -49,25 +43,19 @@ def directory_bytes(path: Path) -> int:
 
 def prep_summaries(*manifests: Any) -> List[Table]:
     r"""A brief table of what building each of ``manifests`` (a snapshot's,
-    a training table's) cost, for those that recorded it."""
-    rows = []
-    for manifest in manifests:
-        build = getattr(manifest, 'build', None)
-        if build is None:
-            continue
-        label = _ROWS[manifest.kind] + ('' if manifest.id in _built_here
-                                        else _REUSED)
-        rows.append((label, build.seconds, build.disk_bytes / _GIB))
-    return ([Table(PREP_TABLE, _COLUMNS, tuple(rows), brief=True)]
-            if rows else [])
+    a training table's) cost, for those that recorded it, and whether an
+    earlier process built it."""
+    rows = tuple((manifest.kind, manifest.build.seconds,
+                  manifest.build.disk_bytes, manifest.id not in _built_here)
+                 for manifest in manifests
+                 if getattr(manifest, 'build', None) is not None)
+    return ([Table(PREP_TABLE, ('step', 'seconds', 'bytes', 'reused'), rows,
+                   brief=True)] if rows else [])
 
 
 def prep_params(table: Table) -> Dict[str, str]:
     r"""``table``, a `prep_summaries` table, as run params
-    ``prep.<step>.<measure>``, as the card shows them."""
-    return {
-        f"prep.{label.removesuffix(_REUSED).lower().replace(' ', '_')}."
-        f'{name}': number(value)
-        for label, *values in table.rows
-        for name, value in zip(_PARAMS, values)
-    }
+    ``prep.<step>.seconds`` and ``prep.<step>.bytes``."""
+    return {f'prep.{step}.{name}': str(value)
+            for step, seconds, size, _ in table.rows
+            for name, value in (('seconds', seconds), ('bytes', size))}

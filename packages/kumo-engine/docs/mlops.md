@@ -110,7 +110,7 @@ Find runs with the platform's UI, or by tag: `kumo.kind` (`fit`, `prediction`), 
 `kumo.MLOps` says where artifacts go and what records them. Use it as a block, or pass it as `mlops=` on a single call (`fit`, `predict`, `evaluate`, `score_drift`, `graph.snapshot`, `generate_training_table`):
 
 ```python
-cfg = kumo.MLOps("s3://bucket/kumo", tracking=..., registry=..., on_error="raise")
+cfg = kumo.MLOps("s3://<bucket>/kumo", tracking=..., registry=..., on_error="raise")
 with kumo.mlops(cfg):
     snapshot = graph.snapshot()
 trainer.fit(table, snapshot=snapshot, mlops=cfg)
@@ -204,7 +204,7 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 - A `-2`, `-3` suffix marks a repeated name, such as a second scoring of the same day and model.
 - The tracker's `run_name` replaces `<model>-v<version>` in every run's name: `fit-<run_name>` and `predict-<run_name>-<as of>`. A `run_name` that already starts with the kind (`fit-nightly`) does not get it twice, and a named fit keeps its name when it registers.
 - `score_drift` and `evaluate` write into the prediction run they check, so one run holds one day of scoring.
-- Snowflake names are the same, as upper-case identifiers: `FIT_<MODEL>_<YYYYMMDD_HHMMSS>` and `PREDICT_<MODEL>_V<version>_<YYYY_MM_DD>` (`_2` for a repeat). Snowflake runs cannot be renamed, so a fit keeps its first name; its version is the param `kumo.model_version`. Finished Snowflake runs cannot change either, so `score_drift` and `evaluate` add their own runs, `DRIFT_<MODEL>_V<version>_<as of>` and `EVAL_<MODEL>_V<version>_<as of>` (`kumo.kind` = `monitoring`); `run_name` replaces `<MODEL>_V<version>` in those too.
+- Snowflake names are the same, as upper-case identifiers: `FIT_<MODEL>_<YYYYMMDD_HHMMSS>` and `PREDICT_<MODEL>_V<version>_<YYYY_MM_DD>` (`_2` for a repeat). A Snowflake fit keeps `FIT_<MODEL>_<YYYYMMDD_HHMMSS>`: Snowflake runs cannot be renamed, and a fit's version is decided only when it registers at the end (a failed fit or registration, a bundle the registry already holds, or a concurrent fit would make a version named at the start wrong), so its version is the param `kumo.model_version`. Snowflake accepts metrics, params and files only on a running run, so `score_drift` and `evaluate` record their own runs, `DRIFT_<MODEL>_V<version>_<as of>` and `EVAL_<MODEL>_V<version>_<as of>` (`kumo.kind` = `monitoring`), instead of adding to the finished prediction run; `run_name` replaces `<MODEL>_V<version>` in those too. Snowflake registry versions are named `V1`, `V2`, ... in order, one more than the model's highest `V<n>`.
 - The Models tab's narrow version column can cut `v10` to `v1…`; widen it or read the version in the fit's run name, or its tag `kumo.model_version`.
 
 **The card.** Each run's description (the Overview on MLflow, `run_card.md` on Snowflake) starts with a card.
@@ -214,9 +214,10 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 - Then one sentence says what the run is. A fit names its model, task, the trial and the epoch its curves and holdout
   metrics come from (the epoch with the best validation tune metric, tag `kumo.best_epoch`). A prediction names its
   model and the fit run that trained it.
+- Problems, when there are any, come right after the sentence.
 - Then tables: holdout metrics (fit; `test/ap` is average precision, `test/auprc` the trapezoidal area under the
   precision-recall curve, `test/loss` the training objective, `test/logloss` the cross-entropy of the scores); the 2x2
-  matrix at the binary threshold; the training data; data preparation; problems and notes; "Where things are", with
+  matrix at the binary threshold; the training data; data preparation; notes; "Where things are", with
   each artifact's full location, linked to the S3 or GCS console.
 - Add your own notes below the line "Add notes below this line"; the card ends with a rule. Editing above it stops
   kumo-engine updating that card; the run is then tagged `kumo.card_frozen`.
@@ -227,7 +228,7 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 - The `test/` values are also logged on the fit's logged model, against the training table dataset, so the model page, the Models tab and the registry's Compare versions view show them; they are also in the registered version's description. After a refit they describe the refit model the bundle ships; the model before the refit is `before_refit/<metric>`.
 - `loss` (`train/loss`, `val/loss`, `test/loss`) is the training objective, the model plan's `optimization.loss` (weighted when the plan weights examples), averaged as the trainer averages it. `logloss` is the plain log loss of the shipped probabilities over every holdout row. Compare models on `test/logloss`; `loss` compares only fits with the same objective.
 - `ap` is average precision, the precision at each threshold weighted by the recall it adds; `auprc` is the area under the precision-recall curve by trapezoids, which runs slightly higher on few distinct scores. They usually agree to two digits; `ap` is the one to compare.
-- Prediction: `pred/rows`, `pred/skipped_share`, `pred/positive_rate` (binary, with a threshold), `pred/item_coverage` and `pred/top_1pct_items_share` (ranking and link prediction); `drift/psi`, `drift/ks` and `drift/wasserstein` vs the model's holdout scores at training ([definitions](#drift-statistics)). After `score_drift`: `drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev` against the previous run (`_vs_prev` always means the previous run, never training), and `drift/inputs_max_psi`, the largest input-column PSI. After `evaluate`: `realized/<metric>` and `realized/labelled_share`. A prediction run shows "Model metrics (0)": the model's own quality is on its fit run.
+- Prediction: `pred/rows`, `pred/skipped_share`, `pred/positive_rate` (binary, with a threshold), `pred/item_coverage` and `pred/top_1pct_items_share` (ranking and link prediction); `drift/psi`, `drift/ks` and `drift/wasserstein` vs the model's holdout scores at training ([definitions](#drift-statistics)). After `score_drift`: `drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev` against the previous run (`_vs_prev` always means the previous run, never training), and `drift/inputs_max_psi`, the largest input-column PSI. After `evaluate`: `realized/<metric>` and `realized/labelled_share`. A prediction run's Model metrics tab shows "Model metrics (0)": the model's own quality is on its fit run.
 - `pred/<column>_count_by_score_pct`: step = the score in hundredths, so step 37 counts the entities scored from 0.37 to under 0.38 (step 99 includes 1.0). Logged for the 20 most predicted classes' probability columns; not on Snowflake, whose histogram tables carry the same counts.
 - `pred/recommendations_by_item_rank`: step = an item's rank by how often it was recommended (1 = most recommended, up to 100); the value is how many times it was recommended.
 - Data preparation: a fit's or prediction's card shows how long the graph snapshot and the training table took to build and their size on disk, read from their manifests. A snapshot or table built in an earlier process shows its original build, marked "(built earlier, reused)". On Snowflake the same numbers are the run params `prep.<step>.seconds` and `prep.<step>.disk_gib`.
@@ -249,13 +250,13 @@ A histogram table has a row per bin with `from` and `to` (the end bins are open)
 - Every run: `kumo.kind`, `kumo.engine_version`.
 - Fit: `kumo.task_type`, `kumo.tune_metric`, `kumo.snapshot_id`, `kumo.bundle_id`, `kumo.bundle_uri`, `kumo.model_name`, `kumo.model_version`, `kumo.best_trial`, `kumo.best_epoch`, and `kumo.data_warnings`, the number of data problems the card lists.
 - Prediction: `kumo.prediction_id`, `kumo.as_of`, `kumo.entity`, `kumo.tune_metric`, `kumo.labels_mature` (temporal queries), `kumo.bundle_id`, `kumo.fit_run_id`, `kumo.model_name`, `kumo.model_version`, and `kumo.output_uri` or `kumo.output_table`. After `score_drift`: `kumo.drift_previous`; after `evaluate`: `kumo.labels_snapshot_id`.
-- Datasets: the snapshot, the training table (fits), then each source table, at their real locations; after `evaluate`, the labels snapshot. Each dataset's context says its role: `training` on a fit, `scoring` on a prediction, `labels` for the labels snapshot. A prediction of a model its fit logged lists that model under "Logged models", Type Input.
+- Datasets: the snapshot, the training table (fits) and each source table, at their real locations; after `evaluate`, the labels snapshot. Each dataset's context says its role: `training` on a fit, `scoring` on a prediction, `labels` for the labels snapshot. A prediction of a model its fit logged lists that model under "Logged models", Type Input.
 - MLflow shortens a tag chip whose value is long, key included; hover the chip or open the Tags table for the full key.
 - Params are the model plan's own names. In the plan an experiment is one trial: `training_job.num_experiments` is the number of trials, and `pruning.*` settings stop unpromising trials of a search early.
 
-**Finding runs.** Keys with a `/` or `.` need backticks:
+**Finding runs.** Keys with a `/` need backticks:
 - a model's fits: ``tags.`kumo.kind` = 'fit' and tags.`kumo.model_name` = 'churn'``;
-- its scoring history, one row per day: ``tags.`kumo.kind` = 'prediction' and tags.`kumo.model_name` = 'churn'``, sorted by the tag `kumo.as_of`, with the columns `pred/rows`, `drift/psi`, `drift/psi_vs_prev` and `realized/auroc`;
+- its scoring history, one row per day: ``tags.`kumo.kind` = 'prediction' and tags.`kumo.model_name` = 'churn'``, sorted in the UI by the param `anchors` (an ISO date for a single-anchor run; the UI cannot sort by a tag) or, in the API, `order_by=["tags.kumo.as_of"]`, with the columns `pred/rows`, `drift/psi`, `drift/psi_vs_prev` and `realized/auroc`;
 - drifted days (a large shift): ``metrics.`drift/psi` > 0.25``;
 - everything one model version scored: ``tags.`kumo.bundle_id` = '<bundle id>'``.
 
@@ -280,8 +281,8 @@ run.id, run.bundle_id, run.snapshot_id, run.scored_rows, run.skipped_rows
 - **`PredictionOutputConfig(connector, path=...)`**: a directory or file on a file destination (local, S3, GCS, a volume or stage), else a table. `output_paths={"predictions": ..., "embeddings": ...}` writes embeddings too.
 - Your destination keeps the defaults it always had, with MLOps on or off: a **table** is replaced with exactly the columns of the [output contract](#prediction-output-contract), and **files** go to exactly `path` as given, with the run's `_provenance.json` next to the Parquet parts. History is not kept there; it lives under the artifact root (below). A directory holding another export is refused; `write_mode=WriteMode.OVERWRITE` replaces it.
 - `write_mode=WriteMode.APPEND` (`from kumoapi.jobs import WriteMode`) adds each run's rows to a table with two extra columns, the only case that adds columns: `PREDICTION_ID` (`run.id`) and `BUNDLE_ID`, so the runs in one table can be told apart.
-- With MLOps on, each run is also kept, never overwritten, under `<root>/predictions/<id>/`, which `evaluate`, `score_drift` and `kumo.output_uri` point at, and recorded as a tracker run named after its id: scoring options as params, row counts and score percentiles as metrics, the scoring snapshot's source tables as inputs. A failed export still records the run, ended failed with `kumo.error`.
-- Entities the snapshot does not hold are skipped and counted (`run.skipped_rows`, the `data/skipped_fraction` metric), never refused.
+- With MLOps on, each run is also kept, never overwritten, under `<root>/predictions/<id>/`, which `evaluate`, `score_drift` and `kumo.output_uri` point at, and recorded as its tracker run ([names](#what-youll-see-in-mlflow-and-snowsight)): scoring options as params, row counts and score drift as metrics, the scoring snapshot's source tables as inputs. A failed export still records the run, ended failed with `kumo.error`.
+- Entities the snapshot does not hold are skipped and counted (`run.skipped_rows`, the `pred/skipped_share` metric), never refused.
 - A scoring job needs no `Graph` code: `GraphSnapshot.load_from_connector(cfg, id=...)` and `Trainer.load_from_connector(cfg, ...)`, then `predict`. It warns when the snapshot was taken of a different graph than the model's, naming the schema changes (tables, columns, types, keys, edges); under `on_error="raise"` it raises instead, before scoring.
 
 **Scheduled jobs:** [`examples/mlops`](../../../examples/mlops/README.md) has a fit job and a score job with Databricks Jobs, SageMaker Pipelines and Snowflake Tasks wiring.
@@ -372,7 +373,7 @@ On a stage root, `LIST @DB.SCHEMA.STAGE/kumo/predictions/` names the same direct
 
 ### Warehouse model monitors
 
-Both platforms monitor the evaluated rows exported to a table with `write_mode=WriteMode.APPEND` (required for both: it adds `PREDICTION_ID` and `BUNDLE_ID`, so the table keeps every evaluation); neither monitors link prediction or ranking outputs.
+Both platforms monitor the evaluated rows exported to a table with `write_mode=WriteMode.APPEND` (required for both: it adds `PREDICTION_ID` and `BUNDLE_ID`, so the table keeps every evaluation); neither monitors link prediction, ranking, multilabel or forecasting outputs. The recipes below cover binary classification and regression: for multiclass, `holdout_evaluation` raises, so there is no holdout baseline (no Snowflake drift; Databricks drift only day over day), and Snowflake needs string `CLASS` and `TARGET` columns (untested).
 
 **Databricks (Data Quality Monitoring, inference log; the `databricks` extra installs a databricks-sdk with this API).** The classification monitor reads `TARGET_PRED`, so the run needs a threshold (passed or stored):
 
@@ -403,25 +404,25 @@ w.data_quality.create_refresh(object_type="table", object_id=table_id,
                               refresh=Refresh(object_type="table", object_id=table_id))                # after each export
 ```
 
-The baseline is the model's holdout as evaluated rows, exported with `APPEND` once per model. Each evaluation is exported with `APPEND`: the default export replaces the table without `PREDICTION_ID` and `BUNDLE_ID`, and the refresh then fails with `MISSING_REQUIRED_METADATA`. The monitor keys on `EVALUATED_AT` (anchors are older than its lookback by the label window). It writes `<table>_profile_metrics` and `<table>_drift_metrics`: one window per day, per `BUNDLE_ID` and over all models (`'*'`), with drift against the day before and against the baseline. The API has no probability column, so the profile has no ROC AUC or log loss; `evaluate` reports AUROC. Labels filled in later are picked up by the next refresh. It supports binary and multiclass classification (`prediction_column="CLASS"`) and regression (`INFERENCE_PROBLEM_TYPE_REGRESSION`) only.
+The baseline is the model's holdout as evaluated rows, exported with `APPEND` once per model. Each evaluation is exported with `APPEND`: the default export replaces the table without `PREDICTION_ID` and `BUNDLE_ID`, and the refresh then fails with `MISSING_REQUIRED_METADATA`. The monitor keys on `EVALUATED_AT` (anchors are older than its lookback by the label window). It writes `<table>_profile_metrics` and `<table>_drift_metrics`: one window per day, per `BUNDLE_ID` and over all models (`'*'`), with drift against the day before and against the baseline. The API has no probability column, so the profile has no ROC AUC or log loss; `evaluate` reports AUROC. Labels filled in later are picked up by the next refresh. Its inference profiles support classification and regression only; the recipe is verified for binary classification, and a regression profile uses `INFERENCE_PROBLEM_TYPE_REGRESSION`.
 
-**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` to a Snowflake table writes `TARGET` as a number and `EVALUATED_AT` as `TIMESTAMP_NTZ`, as the monitor needs. The baseline is the model's holdout as evaluated rows, `result.holdout_evaluation()`, exported once the same way, so its columns and types are the source's. Pass the threshold the monitored runs were scored with, so both sides' `TARGET_PRED` match (null for runs without one):
+**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` to a Snowflake table writes `TARGET` as a number and timestamps as `TIMESTAMP_NTZ`, as the monitor needs. A table path is used as a quoted identifier, so give it in upper case to refer to it unquoted in SQL. The baseline is the model's holdout as evaluated rows, `result.holdout_evaluation()`, exported once the same way, so its columns and types are the source's. Pass the threshold the monitored runs were scored with, so both sides' `TARGET_PRED` match (null for runs without one):
 
 ```python
-evaluation.export(kumo.PredictionOutputConfig(sf, path="churn_evaluated", write_mode=WriteMode.APPEND))
+evaluation.export(kumo.PredictionOutputConfig(sf, path="CHURN_EVALUATED", write_mode=WriteMode.APPEND))
 threshold = latest.manifest.scoring.binary_classification_threshold      # None if the runs had none
 champion.result.holdout_evaluation(binary_classification_threshold=threshold).export(
-    kumo.PredictionOutputConfig(sf, path="churn_holdout_evaluated", write_mode=WriteMode.APPEND))
+    kumo.PredictionOutputConfig(sf, path="CHURN_HOLDOUT_EVALUATED", write_mode=WriteMode.APPEND))
 ```
 
 ```sql
-CREATE MODEL MONITOR churn_monitor WITH MODEL=churn_gnn VERSION=<version> FUNCTION=predict
-  SOURCE=churn_evaluated BASELINE=churn_holdout_evaluated WAREHOUSE=wh REFRESH_INTERVAL='1 day'
+CREATE MODEL MONITOR CHURN_MONITOR WITH MODEL=CHURN_GNN VERSION=<version> FUNCTION=predict
+  SOURCE=CHURN_EVALUATED BASELINE=CHURN_HOLDOUT_EVALUATED WAREHOUSE=WH REFRESH_INTERVAL='1 day'
   AGGREGATION_WINDOW='1 day' TIMESTAMP_COLUMN=ANCHOR_TIMESTAMP ID_COLUMNS=('ENTITY')
   PREDICTION_SCORE_COLUMNS=('True_PROB') ACTUAL_CLASS_COLUMNS=('TARGET');
 ```
 
-Snowflake allows one model monitor per model version: drop the old monitor (`DROP MODEL MONITOR churn_monitor`) before creating another on that version.
+Snowflake allows one model monitor per model version: drop the old monitor (`DROP MODEL MONITOR CHURN_MONITOR`) before creating another on that version.
 
 Details per task type: [Warehouse monitor columns](#warehouse-monitor-columns).
 
@@ -447,13 +448,14 @@ snowflake = SnowflakeTracking(SnowflakeConnector(warehouse="<wh>", database="ML"
 
 ### SageMaker managed MLflow
 
-1. Create a tracking server once (15-25 minutes): `aws sagemaker create-mlflow-tracking-server --tracking-server-name <name> --artifact-store-uri s3://<bucket>/mlflow --role-arn <server role ARN>`; the server role needs read and write on that prefix. A stopped server starts with `aws sagemaker start-mlflow-tracking-server --tracking-server-name <name>` (about 20 minutes); `kumo.MLOps` fails until `aws sagemaker describe-mlflow-tracking-server --tracking-server-name <name>` reports `Started`.
+1. Create a tracking server once (15-25 minutes): `aws sagemaker create-mlflow-tracking-server --tracking-server-name <name> --artifact-store-uri s3://<bucket>/mlflow --role-arn <server role ARN>`; the server role needs read and write on that prefix. A stopped server starts with `aws sagemaker start-mlflow-tracking-server --tracking-server-name <name>` (about 20 minutes); `kumo.MLOps` fails until `aws sagemaker describe-mlflow-tracking-server --tracking-server-name <name>` reports `Started` (`Created` for a new server).
 2. Give the job's identity `sagemaker-mlflow:*` on the server ARN (an MLflow App instead needs `sagemaker:CallMlflowAppApi` on the app ARN; the sample policy on AWS's MLflow Apps setup page lists the Tracking Server actions, which don't apply) and S3 read and write on the artifact store and the kumo artifact root. Rights scoped to the root's prefix (`s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on `<bucket>/<prefix>/*`, `s3:ListBucket` limited to that prefix) suffice: kumo-engine makes no bucket-level calls.
 3. Install `kumo-engine[mlflow,sagemaker]` and pass `MlflowTracking(..., target=SageMakerMLflow(arn))`; the registry is the same server.
 4. MLflow's run links do not open on SageMaker. A tracked fit warns with the command below, and `result.tracking.url` is `None`. To open the UI:
-   - **SageMaker AI Studio** (not Studio Classic): Applications » MLflow, then Open MLflow on the server's menu. Studio acts as the domain's execution role, which needs `sagemaker-mlflow:AccessUI` on the server ARN (and `sagemaker:ListMlflowTrackingServers` to list it).
-   - **SageMaker Unified Studio** lists only servers connected to the project: on the project's MLflow page, Connect Tracking Server with its ARN.
+   - **SageMaker AI Studio** (not Studio Classic): Applications » MLflow, then Open MLflow on the server's menu. Studio acts as the domain's execution role, which needs `sagemaker-mlflow:AccessUI` (grant it on `*` if a policy scoped to the server ARN is still denied) and `sagemaker:ListMlflowTrackingServers` to list it).
+   - **SageMaker Unified Studio**: in an IAM-mode domain (tested), the project's MLflow page only lists servers connected to the project: Connect Tracking Server with its ARN. AWS documents Create MLflow Tracking Server and Create MLflow App on that page for other domains, deleted with the project (untested here).
    - **Anywhere**, with your own credentials: `aws sagemaker create-presigned-mlflow-tracking-server-url --tracking-server-name <name>` prints a one-time URL valid for 5 minutes; it needs `sagemaker:CreatePresignedMlflowTrackingServerUrl` and `sagemaker-mlflow:AccessUI`.
+   - **MLflow App** instead of a server: `aws sagemaker create-mlflow-app --name <name> --artifact-store-uri s3://<bucket>/mlflow --role-arn <app role ARN>` (ready at `Created`, about 5 minutes); pass its ARN as the target. The UI: `aws sagemaker create-presigned-mlflow-app-url --arn <arn>` (needs `sagemaker:CreatePresignedMlflowAppUrl`), then pick the workspace `default`.
 5. In a SageMaker notebook, use a Python 3.11+ kernel with the wheel installed by path (`pip install --find-links <wheel dir> "<wheel dir>/<kumo_engine wheel>[mlflow,sagemaker,s3,text]" ipykernel ipywidgets`, then `python -m ipykernel install --user --name kumo-engine`); `SageMakerMLflow(arn)` uses the notebook's role. Notebook instances need the AL2023 platform (`notebook-al2023-v1`): the wheel needs glibc 2.34.
 
 ## Reference
@@ -552,7 +554,7 @@ first (by PSI, then by null-rate change). A table leaves out measures that none 
 
 | column | types | meaning |
 |---|---|---|
-| `psi` | numerical, categorical | Numerical: over up to 10 groups of DiskGraph's fixed value bins (eight per power of two, the same in every snapshot), cut where the training snapshot's cumulative share reaches each decile. Exact. Categorical: over the categories; approximate when DiskGraph capped or sampled them (`category_counts_capped`). Shares floored at 1e-6. |
+| `psi` | numerical, categorical | Numerical: over up to 10 groups of DiskGraph's fixed value bins (eight per power of two, the same in every snapshot), cut where the training snapshot's cumulative share reaches each decile. Exact. Categorical: over the categories; approximate when DiskGraph capped or sampled them (`category_counts_capped`). Shares are floored at 1e-6 for numerical psi; categorical psi adds 1e-6 to each share and renormalises. |
 | `shift` | numerical, categorical | The PSI rule of thumb: < 0.1 small, 0.1–0.25 moderate, > 0.25 large |
 | `mean change (training sd)` | numerical | (mean now − mean at training) / training standard deviation |
 | `null rate change (pp)` | all | in percentage points |
@@ -570,8 +572,8 @@ table is diluted.
 
 ### Warehouse monitor columns
 
-- Databricks keys the monitor on `EVALUATED_AT` (anchors are older than its lookback by the label window). For regression use `INFERENCE_PROBLEM_TYPE_REGRESSION`; for multiclass `prediction_column="CLASS"`. `True_PROB` is profiled as an ordinary column.
-- Snowflake: binary classification uses `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; multiclass `PREDICTION_CLASS_COLUMNS=(CLASS)`; regression `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`. The timestamp is `TIMESTAMP_NTZ`, columns free of nulls, NaN and infinities, each used once; columns are listed as string literals in their stored case, `('True_PROB')` (`'"True_PROB"'` is not found). Without `BASELINE` there is no drift. Registration records the version's task type, which Model Monitor requires.
+- Databricks keys the monitor on `EVALUATED_AT` (anchors are older than its lookback by the label window). For regression use `INFERENCE_PROBLEM_TYPE_REGRESSION`. `True_PROB` is profiled as an ordinary column.
+- Snowflake: binary classification uses `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; regression `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`. The timestamp is `TIMESTAMP_NTZ`; prediction, timestamp and ID columns are free of nulls, NaN and infinities and each used once (a null `TARGET` is accepted: performance stays null); columns are listed as string literals in their stored case, `('True_PROB')` (`'"True_PROB"'` is not found). Without `BASELINE` there is no drift. Registration records the version's task type, which Model Monitor requires.
 
 ### Snowflake serving
 

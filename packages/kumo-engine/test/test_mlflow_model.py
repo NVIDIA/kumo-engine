@@ -91,7 +91,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         metadata={'kumo_bundle_id': result.id}, metrics=model_metrics(result))
     assert version.tags == {'kumo_bundle_id': result.id}
     kumo_text = '\n'.join([
-        _card.version_headline(holdout, 'mae'),
+        _card.version_headline(model_metrics(result), 'mae'),
         f'Trained by `{parent.info.run_name}`. Bundle '
         f"`{tmp_path / 'root' / 'models' / result.id}`."])
     assert version.description == (
@@ -603,7 +603,6 @@ def test_a_logged_model_is_named_after_its_model():
 def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
         table_and_snapshot, tmp_path, tracking_uri):
     from kumo.engine.integrations.mlflow import MlflowTracking
-    from kumo.engine.trainer._run_spec import holdout_metrics
 
     table, snapshot = table_and_snapshot
     tracking = MlflowTracking('fits', log_system_metrics=False)
@@ -632,6 +631,6 @@ def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
     model, = client.search_logged_models([experiment])
     assert (model.source_run_id, client.search_runs([experiment])) == (
         None, [])
-    headline = _card.version_headline(holdout_metrics(result), None)
+    headline = _card.version_headline(model_metrics(result), None)
     assert client.get_model_version('m', '1').description == (
         f'{headline}\n<!-- /kumo:version sha256={_card_hash(headline)} -->')
