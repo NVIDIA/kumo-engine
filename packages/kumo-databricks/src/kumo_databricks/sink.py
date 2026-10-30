@@ -162,13 +162,12 @@ class DatabricksSinkBackend(DatabricksModelRegistryMixin):
 
     def write_files(self, connector, table_name, files,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
-                    export_id=None, extra_columns=None, **options):
+                    export_id=None, extra_columns=None):
         """Copy Parquet to a volume path, or COPY it into a table."""
         if self.holds_files(connector, table_name):
             return FilesystemSink(self).write_files(
                 connector, table_name, files, write_mode,
-                export_id=export_id, extra_columns=extra_columns,
-                **options)
+                export_id=export_id, extra_columns=extra_columns)
         del project_id, export_id
         from functools import partial
 
