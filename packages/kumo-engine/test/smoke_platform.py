@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Explicit smoke: pytest -q -s packages/kumo-engine/test/smoke_platform.py.
 
-Set KUMO_SMOKE_DEVICE=cpu for CPU training; the default is mandatory CUDA.
+Run only against an installed wheel outside the source checkout.
+CPU training uses the public Trainer accelerator option.
 The filename keeps this integration check out of ordinary test discovery.
 """
 
 import json
 import math
-import os
 import platform
 import sys
 
@@ -25,8 +25,8 @@ from kumo.engine._scratch import get_scratch_dir
 
 
 def test_platform_train_predict(tmp_path, tmp_path_factory, monkeypatch):
-    device = os.environ.get('KUMO_SMOKE_DEVICE', 'cuda')
-    assert device in {'cpu', 'cuda'}, 'KUMO_SMOKE_DEVICE must be cpu or cuda'
+    device = 'cpu'
+    monkeypatch.setenv('SYNC_DATA_LOADER', '1')
     diagnostics = {
         'requested_device': device,
         'platform': platform.platform(),
@@ -37,11 +37,6 @@ def test_platform_train_predict(tmp_path, tmp_path_factory, monkeypatch):
         'cuda_available': torch.cuda.is_available(),
     }
     print(json.dumps(diagnostics, sort_keys=True), flush=True)
-    if device == 'cuda':
-        assert torch.cuda.is_available(), 'This smoke test requires a CUDA GPU'
-        print(f'CUDA device: {torch.cuda.get_device_name(0)}', flush=True)
-    monkeypatch.setenv('KUMO_REQUIRE_GPU', '1' if device == 'cuda' else '0')
-    monkeypatch.setenv('KUMO_ACCELERATOR', device)
 
     previous = get_scratch_dir()
     kumo.configure(scratch_dir=tmp_path / 'scratch')
@@ -71,7 +66,7 @@ def test_platform_train_predict(tmp_path, tmp_path_factory, monkeypatch):
         plan.training_job.disable_explain = True
         plan.optimization.max_epochs = 1
         plan.optimization.max_steps_per_epoch = 2
-        trainer = kumo.Trainer(model_plan=plan)
+        trainer = kumo.Trainer(model_plan=plan, accelerator='cpu')
         optimizer_steps = []
 
         def record_optimizer_step(optimizer, _args, _kwargs):
@@ -92,7 +87,7 @@ def test_platform_train_predict(tmp_path, tmp_path_factory, monkeypatch):
                                  snapshot=snapshot)
         finally:
             hook.remove()
-        assert optimizer_steps, f'No {device} optimizer step was observed'
+        assert len(optimizer_steps) == 4, 'Expected four CPU optimizer steps'
         assert fitted.metrics
         assert all(math.isfinite(value) for value in fitted.metrics.values())
         assert any(name.startswith('train_') for name in fitted.metrics)
@@ -105,8 +100,6 @@ def test_platform_train_predict(tmp_path, tmp_path_factory, monkeypatch):
         assert len(frame) == prediction_count
         assert set(frame['ENTITY']) == set(range(labeled_count, row_count))
         assert np.isfinite(frame['TARGET_PRED'].to_numpy()).all()
-        if device == 'cuda':
-            torch.cuda.synchronize()
         print(f'Platform smoke completed: {len(optimizer_steps)} '
               f'{device} optimizer steps, '
               f'{len(frame)} finite predictions',

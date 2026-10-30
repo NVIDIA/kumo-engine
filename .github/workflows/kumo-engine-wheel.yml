@@ -239,8 +239,12 @@ jobs:
     with:
       wheel_artifact: kumo-engine-wheel-x86_64-${{ github.sha }}
 
+  platform-qualification:
+    needs: [build]
+    uses: ./.github/workflows/kumo-engine-platform-smoke.yml
+
   attach-to-release:
-    needs: [build, check-requirements, wheel-smoke]
+    needs: [build, check-requirements, wheel-smoke, platform-qualification]
     if: ${{ github.event_name == 'release' }}
     strategy:
       fail-fast: false

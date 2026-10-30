@@ -147,8 +147,8 @@ def test_all_platforms_require_validation_and_release_environment():
         assert 'pattern' not in download
         assert download['name'] == _step('build', 'Upload wheel')['with']['name']
     assert JOBS['check-requirements']['needs'] == ['build']
-    assert set(JOBS['attach-to-release']['needs']) >= {
-        'build', 'check-requirements', 'wheel-smoke'
+    assert set(JOBS['attach-to-release']['needs']) == {
+        'build', 'check-requirements', 'wheel-smoke', 'platform-qualification'
     }
     assert JOBS['kitmaker']['needs'] == ['attach-to-release']
     assert JOBS['kitmaker']['environment'] == 'kumo-engine-release'
@@ -180,3 +180,37 @@ def test_publication_forwards_the_shared_prediction_tolerance():
     assert call['reload-atol'] == pr_call['reload-atol'] == '0.005'
     assert run['env']['RELOAD_ATOL'] == '${{ inputs.reload-atol }}'
     assert '--reload-atol "$RELOAD_ATOL"' in run['run']
+
+
+def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
+    caller = JOBS['platform-qualification']
+    assert caller['needs'] == ['build']
+    assert caller['uses'] == (
+        './.github/workflows/kumo-engine-platform-smoke.yml')
+    path = WORKFLOW.parent / 'kumo-engine-platform-smoke.yml'
+    workflow = yaml.safe_load(path.read_text())
+    # PyYAML's YAML 1.1 parser interprets the GitHub Actions `on` key as True.
+    assert workflow[True] == {'workflow_call': None}
+    job = workflow['jobs']['smoke']
+    matrix = job['strategy']['matrix']
+    assert set(matrix['python']) == {'3.11', '3.12', '3.13', '3.14'}
+    assert len(matrix['target']) == 3
+    assert {row['platform']: row['artifact'] for row in matrix['target']} == {
+        'windows-native': 'windows-x86_64', 'windows-wsl': 'x86_64',
+        'linux-arm64': 'aarch64',
+    }
+    assert {row['artifact'] for row in matrix['target']} <= {
+        build['arch'] for build in BUILDS}
+    assert job['env']['CUDA_VISIBLE_DEVICES'] == ''
+    download = next(step for step in job['steps']
+                    if step.get('uses', '').startswith(
+                        'actions/download-artifact@'))
+    assert download['with'] == {
+        'name': ('kumo-engine-wheel-${{ matrix.target.artifact }}-'
+                 '${{ github.sha }}'),
+        'path': '${{ runner.temp }}/platform-wheel/artifacts',
+    }
+    # Supplying another run or token here could accidentally qualify a stale
+    # artifact while publishing the current build.
+    assert 'run-id' not in download['with']
+    assert 'github-token' not in download['with']
