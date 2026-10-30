@@ -26,7 +26,7 @@ _MEANINGS = {'ap': 'average precision',
              'logloss': 'cross-entropy of the scores', 'bias': 'pred − actual'}
 _LEADS = {'prediction': 'Scores of', 'drift': 'Drift check of the scores of',
           'evaluate': 'Realized quality of the scores of'}
-_ARTIFACTS = {'model': 'model bundle', 'prediction': 'prediction run',
+_ARTIFACTS = {'model': 'model bundle', 'prediction': 'prediction folder',
               'prediction_output': 'output'}
 _NAMED = ('source_table', 'prediction_output')
 _CONSOLES = {'s3': 'https://s3.console.aws.amazon.com/s3/buckets/{}?prefix={}/',
