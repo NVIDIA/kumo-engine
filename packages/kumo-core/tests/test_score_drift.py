@@ -6,7 +6,7 @@ import math
 import numpy as np
 import pytest
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
-from kumo_core.score_drift import score_drift
+from kumo_core.score_drift import psi_shift, score_drift
 from scipy.stats import wasserstein_distance
 
 
@@ -75,3 +75,8 @@ def test_drift_needs_the_same_column_on_the_same_bins():
                                'confidence')) is None
     assert score_drift(probabilities, probabilities) == {
         'psi': 0.0, 'ks': 0.0, 'wasserstein': 0.0}
+
+
+def test_psi_shift_follows_the_rule_of_thumb():
+    assert [psi_shift(value) for value in (0, 0.099, 0.1, 0.25, 0.251)] == [
+        'small', 'small', 'moderate', 'moderate', 'large']

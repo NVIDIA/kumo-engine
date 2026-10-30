@@ -17,6 +17,8 @@ from kumo_core.score_counts import Counts, bin_bounds
 
 #: The score column a run's drift is measured on, the first it counted.
 DRIFT_COLUMNS = ('True_PROB', 'confidence', 'top_score', 'TARGET_PRED')
+#: The PSI rule of thumb: each shift and its range.
+PSI_SHIFTS = {'small': '< 0.1', 'moderate': '0.1–0.25', 'large': '> 0.25'}
 _FLOOR = 1e-6
 
 
@@ -51,6 +53,11 @@ def score_drift(counts: Counts, reference: Counts) -> Optional[Dict[str, float]]
             actual, _midpoints(edges, counts.extents.get(column)),
             expected, _midpoints(edges, reference.extents.get(column))),
     }
+
+
+def psi_shift(value: float) -> str:
+    r"""The `PSI_SHIFTS` shift a PSI of ``value`` is."""
+    return 'small' if value < 0.1 else 'moderate' if value <= 0.25 else 'large'
 
 
 def psi(actual: np.ndarray, expected: np.ndarray) -> float:

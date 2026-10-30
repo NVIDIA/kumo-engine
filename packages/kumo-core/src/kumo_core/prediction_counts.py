@@ -24,7 +24,7 @@ from typing import Any, List, Optional, Sequence
 import numpy as np
 from kumo_core.evaluation_counts import Timeframe, _horizons, horizon_label
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
-from kumo_core.score_drift import axis, drift_column, score_drift
+from kumo_core.score_drift import PSI_SHIFTS, axis, drift_column, score_drift
 from kumo_core.summaries import Note, Scalar, Series, Summary, Table
 from kumo_core.types import TaskType
 
@@ -259,13 +259,16 @@ def _range(low: int, high: int) -> str:
 
 
 def _drift_note(counts: Counts, score: str) -> str:
-    edges = counts.edges[axis(score)]
-    bins = ('probability hundredths' if edges == PROBABILITY_EDGES else
-            f'the training target\'s {len(edges) + 1} bins'
-            if score == 'TARGET_PRED' else
-            f'{len(edges) + 1} bins at the holdout top scores\' percentiles')
-    return (f'Drift compares `{_label(score)}` with the holdout over {bins}; '
-            f'PSI groups them at the holdout\'s deciles.')
+    bins = ('100 bins of width 0.01'
+            if counts.edges[axis(score)] == PROBABILITY_EDGES else
+            "the training target's histogram bins" if score == 'TARGET_PRED'
+            else "percentile bins of the holdout's top scores")
+    rule = ', '.join(f'{bound} {shift}' for shift, bound in PSI_SHIFTS.items())
+    return (f"Score drift compares `{_label(score)}` with the model's holdout "
+            f'scores at training, over {bins}. PSI rule of thumb: 0 '
+            f'identical, {rule} shift. KS: the largest gap between the two '
+            'cumulative distributions, from 0 to 1. Wasserstein: how far the '
+            'scores moved on average, in score units.')
 
 
 def _label(column: str) -> str:

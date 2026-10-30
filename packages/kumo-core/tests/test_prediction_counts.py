@@ -148,8 +148,12 @@ def test_regression_counts_on_the_target_bins_and_drift():
             for name in ('psi', 'ks', 'wasserstein')} == score_drift(
                 counts, reference)
     assert summaries[-1] == Note(
-        'notes', "Drift compares `predicted` with the holdout over the "
-        "training target's 7 bins; PSI groups them at the holdout's deciles.")
+        'notes', "Score drift compares `predicted` with the model's holdout "
+        "scores at training, over the training target's histogram bins. PSI "
+        'rule of thumb: 0 identical, < 0.1 small, 0.1–0.25 moderate, > 0.25 '
+        'large shift. KS: the largest gap between the two cumulative '
+        'distributions, from 0 to 1. Wasserstein: how far the scores moved '
+        'on average, in score units.')
     other = Counts({'target': (0.0, 1.0)})
     other.histogram('TARGET_PRED', 'target', holdout)
     assert not any(
