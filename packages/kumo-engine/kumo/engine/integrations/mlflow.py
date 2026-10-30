@@ -16,6 +16,7 @@ import time
 import warnings
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -184,6 +185,7 @@ class MlflowTracking:
         self._pending = _Pending()
         self._model_id: Optional[str] = None
         self._published: Optional[PublishedModel] = None
+        self._fit: Optional[Tuple[Any, Any]] = None
         self._http_owned: FrozenSet[str] = frozenset()
         self._guard = ExitStack()
 
@@ -368,11 +370,14 @@ class MlflowTracking:
             tags = dict(record.tags)
             if self._outer is not None:
                 tags['mlflow.parentRunId'] = self._outer
+            kind = record.tags.get('kumo.kind')
+            name = (self.run_name if self.run_name and kind == 'fit' else
+                    record.name)
+            if kind == 'prediction' and name:
+                name = _free_name(client, experiment_id or '0', name)
             run = client.create_run(
-                experiment_id or '0',
-                run_name=(self.run_name if self.run_name
-                          and record.tags.get('kumo.kind') == 'fit' else
-                          record.name),
+                experiment_id or '0', run_name=name,
+                start_time=_millis(record.started),
                 tags=context.resolve_tags(tags))
         self._parent = self.run_id = run.info.run_id
         self._fit_name = run.info.run_name
@@ -484,8 +489,9 @@ class MlflowTracking:
     def finish(self, record: Optional[RunRecord],
                error: Optional[BaseException]) -> None:
         status = 'FAILED'
-        fit_run = (record is not None and self._parent is not None
-                   and record.tags.get('kumo.kind') == 'fit')
+        kind = None if record is None else record.tags.get('kumo.kind')
+        fit_run = self._parent is not None and kind == 'fit'
+        ended = None if record is None else _millis(record.finished)
         try:
             if record is not None and self._parent is not None:
                 for epoch, metrics in by_step(record.steps):
@@ -495,6 +501,9 @@ class MlflowTracking:
                                   model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
                 self._log_artifacts(record.artifacts)
+                if kind == 'prediction':
+                    self._fit = self._fit_of(record.tags)
+                    self._log_model_input()
                 if fit_run and not self.run_name:
                     self._rename(record)
                 if fit_run and self._published is not None:
@@ -509,7 +518,7 @@ class MlflowTracking:
                     _quietly(self._client.set_terminated, run_id, 'FAILED')
                 if self._parent is not None:
                     _quietly(self._client.set_terminated, self._parent,
-                             status)
+                             status, ended)
             self._reset()
         hint = _sagemaker_ui_hint(self.target.tracking_uri)
         if fit_run and hint:
@@ -666,19 +675,45 @@ class MlflowTracking:
                            published.name, published.version,
                            format_error(error))
 
-    def _model_line(self, tags: Mapping[str, str]) -> str:
+    def _fit_of(self, tags: Mapping[str, str]) -> Optional[Tuple[Any, Any]]:
+        r"""The run info of the fit that trained a prediction's model, and
+        the model it logged, if any."""
         fit_id = tags.get('kumo.fit_run_id')
+        if not fit_id:
+            return None
+        try:
+            with self.target.scope():
+                fit = self._client.get_run(fit_id).info
+        except Exception:
+            logger.debug('No fit run %s', fit_id, exc_info=True)
+            return None
+        try:
+            with self.target.scope():
+                models = self._client.search_logged_models(
+                    [fit.experiment_id],
+                    filter_string=f"source_run_id = '{fit_id}'",
+                    max_results=1)
+        except Exception:
+            logger.debug('No logged model of %s', fit_id, exc_info=True)
+            models = []
+        return fit, (models[0] if models else None)
+
+    def _log_model_input(self) -> None:
+        if self._fit is None or self._fit[1] is None:
+            return
+        entities = self._mlflow.entities
+        with self.target.scope():
+            self._client.log_inputs(self._parent, models=[
+                entities.LoggedModelInput(self._fit[1].model_id)])
+
+    def _model_line(self, tags: Mapping[str, str]) -> str:
         name = link = None
-        if fit_id:
-            try:
-                with self.target.scope():
-                    fit = self._client.get_run(fit_id).info
-                name = fit.run_name
-                link = (self.target.run_url(fit.experiment_id, fit_id)
-                        if self.platform == 'databricks' else
-                        f'#/experiments/{fit.experiment_id}/runs/{fit_id}')
-            except Exception:
-                logger.debug('No fit run %s', fit_id, exc_info=True)
+        if self._fit is not None:
+            fit = self._fit[0]
+            name = fit.run_name
+            link = (self.target.run_url(fit.experiment_id, fit.run_id)
+                    if self.platform == 'databricks' else
+                    f'#/experiments/{fit.experiment_id}/runs/{fit.run_id}')
         return _card.model_line(tags.get('kumo.model_name'),
                                 tags.get('kumo.model_version'),
                                 tags.get('kumo.bundle_id'), name, link)
@@ -764,7 +799,7 @@ class MlflowTracking:
 
     def _log_dataset(self, summary: Dataset) -> None:
         source = _dataset_source(summary.source)
-        if source is None:
+        if source is None or summary.context == 'output':
             return
         entities = self._mlflow.entities
         dataset = entities.Dataset(
@@ -911,6 +946,24 @@ def _size(card: str) -> int:
 def _budget(user: str) -> int:
     r"""Bytes for the card: MLflow guarantees 5000 per tag value."""
     return min(4500, 5000 - len(user.encode()))
+
+
+def _free_name(client: Any, experiment_id: str, name: str) -> str:
+    r"""``name``, else the first of ``name-2``, ``name-3``, … no run in the
+    experiment has (unchecked if it holds both kinds of quote)."""
+    candidate, suffix = name, 1
+    while True:
+        quote = "'" if "'" not in candidate else '"'
+        if quote in candidate or not client.search_runs(
+                [experiment_id], max_results=1, filter_string=(
+                    f'attributes.run_name = {quote}{candidate}{quote}')):
+            return candidate
+        suffix += 1
+        candidate = f'{name}-{suffix}'
+
+
+def _millis(moment: Optional[datetime]) -> Optional[int]:
+    return None if moment is None else int(moment.timestamp() * 1000)
 
 
 def _trial_name(trial: int, attempt: int, fit: str) -> str:

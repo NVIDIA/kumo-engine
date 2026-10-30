@@ -650,7 +650,11 @@ def test_prediction_record_of_the_recorded_run():
         'predictions': ArtifactStats(rows=50, counts=_counted(SCORES))})
     record = prediction_record(manifest)
 
-    assert record.name == 'predict-20261021-0000'
+    assert (record.name, record.model_label) == ('2024-04-29-model-bbbbbbbb',
+                                                 'model')
+    assert (record.started, record.finished) == (
+        datetime(2026, 10, 21, tzinfo=timezone.utc),
+        datetime(2026, 10, 21, 0, 1, tzinfo=timezone.utc))
     assert record.params == {
         'anchors': '["2024-04-29T00:00:00+00:00"]',
         'binary_classification_threshold': '0.4',
@@ -669,11 +673,31 @@ def test_prediction_record_of_the_recorded_run():
     assert record.tags == {'kumo.kind': 'prediction',
                            'kumo.engine_version': __version__,
                            'kumo.prediction_id': PREDICTION_RUN,
+                           'kumo.as_of': '2024-04-29',
                            'kumo.bundle_id': BUNDLE,
                            'kumo.snapshot_id': 'g@d'}
     assert record.description is None
     assert record.inputs == INPUTS
     assert json.loads(record.artifacts[PROVENANCE_FILE]) == manifest.to_dict()
+
+
+@pytest.mark.parametrize('anchors,snapshot,as_of', [
+    (['2026-10-28T23:00:00-02:00', '2026-10-28T00:00:00'], {}, '2026-10-28..'
+     '2026-10-29'),
+    ([], {'created_at': '2026-10-27T10:00:00+00:00'}, '2026-10-27'),
+    ([], {}, '2026-10-21'),
+])
+def test_a_prediction_is_as_of_its_anchors_else_its_snapshot(
+        anchors, snapshot, as_of):
+    manifest = PredictionManifest.from_dict({
+        **PREDICTION_MANIFEST.to_dict(),
+        'prediction_table': {**PREDICTION_MANIFEST.prediction_table.to_dict(),
+                             'anchors': anchors},
+        'parents': {**PREDICTION_MANIFEST.to_dict()['parents'], 'snapshot': {
+            'kind': 'snapshot', 'schema_version': 1, 'id': 'g@d',
+            **snapshot}}})
+
+    assert prediction_record(manifest).tags['kumo.as_of'] == as_of
 
 
 def test_prediction_record_of_a_partial_manifest():
@@ -706,7 +730,7 @@ def test_prediction_run_is_named_and_tagged_after_its_registered_model():
             platform='mlflow', run_id='r1', url='https://mlflow/#/runs/r1')))
     record = prediction_record(PREDICTION_MANIFEST, model=model)
 
-    assert record.name == 'predict-churn-v3-20261021-0000'
+    assert record.name == '2024-04-29-v3-churn'
     assert record.tags.items() >= {
         'kumo.model_name': 'churn', 'kumo.model_version': '3',
         'kumo.model_alias': 'champion', 'kumo.fit_run_id': 'r1'}.items()

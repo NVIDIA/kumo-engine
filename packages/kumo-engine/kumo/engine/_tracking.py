@@ -297,10 +297,24 @@ def prediction_record(manifest: 'PredictionManifest',
     table = manifest.prediction_table
     params = {**manifest.scoring.to_dict(), 'anchors': table.anchors}
     model_manifest = getattr(model, 'manifest', None)
+    trained = getattr(_parents(model_manifest or manifest.parents.model),
+                      'training_table', None)
+    registered = getattr(model, 'registered_model', None)
+    label = model_label(getattr(registered, 'name', None),
+                        getattr(trained, 'query', None),
+                        getattr(trained, 'task_type', None))
+    as_of = _as_of(manifest)
+    timings = manifest.timings
     return run_record(
         RunSpec(
             kind='prediction',
-            name=run_name('predict', model, _started(manifest)),
+            name=(f'{as_of}-{label}-{manifest.parents.model.id[:8]}'
+                  if registered is None else
+                  f'{as_of}-v{registered.version}-{label}'),
+            model_label=label,
+            started=_started(manifest),
+            finished=(None if timings is None or not timings.finished_at
+                      else _utc(timings.finished_at)),
             params={
                 key: value
                 for key, value in params.items() if value is not None
@@ -308,6 +322,7 @@ def prediction_record(manifest: 'PredictionManifest',
             parents={
                 'bundle_id': manifest.parents.model.id,
                 'prediction_id': manifest.id,
+                'as_of': as_of,
                 **prediction_parents(manifest),
                 'fit_run_id': fit_run_id(model_manifest),
                 **registered_parents(model),
@@ -367,7 +382,25 @@ def registered_parents(model: Any) -> Mapping[str, Any]:
 def _started(manifest: 'PredictionManifest') -> datetime:
     timings = manifest.timings
     return (datetime.now(timezone.utc) if timings is None else
-            datetime.fromisoformat(timings.started_at))
+            _utc(timings.started_at))
+
+
+def _as_of(manifest: 'PredictionManifest') -> str:
+    r"""The date (UTC) a prediction is for: its anchor's (``<first>..<last>``
+    for several), else the creation date of the snapshot it scored."""
+    dates = sorted({_utc(anchor).date().isoformat()
+                    for anchor in manifest.prediction_table.anchors})
+    if not dates:
+        created = manifest.parents.snapshot.created_at
+        dates = [(_utc(created) if created else _started(manifest)
+                  ).date().isoformat()]
+    return dates[0] if len(dates) == 1 else f'{dates[0]}..{dates[-1]}'
+
+
+def _utc(text: str) -> datetime:
+    moment = datetime.fromisoformat(text)
+    return (moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else
+            moment.astimezone(timezone.utc))
 
 
 def _prediction_summaries(manifest: 'PredictionManifest',

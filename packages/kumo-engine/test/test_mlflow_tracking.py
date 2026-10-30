@@ -485,8 +485,9 @@ def test_prediction_run_nests_under_the_active_run(tracking_uri):
     assert nested.data.tags['mlflow.parentRunId'] == outer.info.run_id
     assert 'mlflow.parentRunId' not in top.data.tags
     assert client.get_experiment(top.info.experiment_id).name == 'scores'
-    assert (top.info.run_name, top.info.status) == ('predict-20261021-0000',
-                                                    'FINISHED')
+    assert (nested.info.run_name, top.info.run_name, top.info.status) == (
+        '2024-04-29-model-bbbbbbbb', '2024-04-29-model-bbbbbbbb-2',
+        'FINISHED')
 
 
 def test_link_prediction_metric_names_are_logged(tracking_uri):
@@ -795,3 +796,38 @@ def test_a_fit_that_registers_is_renamed_with_its_trials(tracking_uri):
     assert sorted(run.info.run_name for run in _runs(mlflow.MlflowClient())
                   ) == ['trial-1-v3-ents', 'trial-2-v3-ents',
                         'trial-2-v3-ents-attempt-2', 'v3-ents']
+
+
+def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
+    from types import SimpleNamespace
+
+    from test_tracking_contract import PREDICTION_MANIFEST
+
+    from kumo.engine._manifest import TrackingRef
+    from kumo.engine._tracking import track_prediction
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    client = mlflow.MlflowClient()
+    experiment = client.create_experiment('scores')
+    fit = client.create_run(experiment, run_name='v3-churn').info.run_id
+    model = client.create_logged_model(experiment, source_run_id=fit)
+    tracking = MlflowTracking('scores', log_system_metrics=False)
+    trained = SimpleNamespace(
+        registered_model=None, registered_alias=None, manifest=SimpleNamespace(
+            holdout=None, tracking=TrackingRef(platform='mlflow',
+                                               run_id=fit)))
+    track_prediction(PREDICTION_MANIFEST, tracking, model=trained, summaries=[
+        Dataset(name, INPUTS['ents'], {}, {}, context)
+        for name, context in (('snapshot', 'scoring'),
+                              ('predictions', 'output'))])
+
+    run = client.get_run(tracking.run_id)
+    assert (run.info.start_time, run.info.end_time) == (
+        1792540800000, 1792540860000)
+    assert [item.model_id for item in run.inputs.model_inputs] == [
+        model.model_id]
+    assert [item.dataset.name for item in run.inputs.dataset_inputs] == [
+        'snapshot']
+    assert run.data.tags['mlflow.note.content'].split('\n')[1] == (
+        'Model: bundle `bbbbbbbb`, trained by '
+        f'[v3-churn](#/experiments/{experiment}/runs/{fit}).')
