@@ -176,6 +176,8 @@ class MlflowTracking:
         self._parent: Optional[str] = None
         self._experiment_id: Optional[str] = None
         self._children: Dict[Tuple[int, int], str] = {}
+        self._trials: Dict[Tuple[int, int], str] = {}
+        self._fit_name: Optional[str] = None
         self._artifacts: Set[str] = set()
         # The run's notes and brief tables, for its description.
         self._card: List[Summary] = []
@@ -373,6 +375,7 @@ class MlflowTracking:
                           record.name),
                 tags=context.resolve_tags(tags))
         self._parent = self.run_id = run.info.run_id
+        self._fit_name = run.info.run_name
         self._experiment_id = run.info.experiment_id
         if self.log_system_metrics and record.tags.get('kumo.kind') == 'fit':
             self._guard.enter_context(
@@ -419,9 +422,10 @@ class MlflowTracking:
         if event.name == 'trial_started':
             with self.target.scope():
                 run = self._client.create_run(
-                    self._experiment_id, run_name=record.name,
+                    self._experiment_id, run_name=_trial_name(
+                        *key, cast(str, self._fit_name)),
                     tags={**record.tags, 'mlflow.parentRunId': self._parent})
-            self._children[key] = run.info.run_id
+            self._children[key] = self._trials[key] = run.info.run_id
             self._log_params(run.info.run_id, record.params)
         elif event.name == 'epoch_ended':
             self._log_metrics(self._children.get(key), event.metrics,
@@ -491,6 +495,8 @@ class MlflowTracking:
                                   model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
                 self._log_artifacts(record.artifacts)
+                if fit_run and not self.run_name:
+                    self._rename(record)
                 if fit_run and self._published is not None:
                     self._describe_version(record)
                 self._write_card(record)
@@ -623,6 +629,19 @@ class MlflowTracking:
         with self.target.scope():
             self._client.set_tag(run_id, 'mlflow.note.content',
                                  _sealed(card) + user)
+
+    def _rename(self, record: RunRecord) -> None:
+        r"""Names a fit that registered a version ``v<version>-<model>``,
+        and its trials after it."""
+        version = record.tags.get('kumo.model_version')
+        if version is None:
+            return
+        model = model_label(record.tags['kumo.model_name'], None, None)
+        name = f'v{version}-{model}'
+        with self.target.scope():
+            self._client.update_run(cast(str, self._parent), name=name)
+            for key, run_id in self._trials.items():
+                self._client.update_run(run_id, name=_trial_name(*key, name))
 
     def _describe_version(self, record: RunRecord) -> None:
         r"""Adds the fit's headline metrics (unless the version's logged
@@ -892,6 +911,11 @@ def _size(card: str) -> int:
 def _budget(user: str) -> int:
     r"""Bytes for the card: MLflow guarantees 5000 per tag value."""
     return min(4500, 5000 - len(user.encode()))
+
+
+def _trial_name(trial: int, attempt: int, fit: str) -> str:
+    return f'trial-{trial}-{fit}' + (f'-attempt-{attempt}' if attempt > 1
+                                     else '')
 
 
 def _part(name: str, text: str) -> str:

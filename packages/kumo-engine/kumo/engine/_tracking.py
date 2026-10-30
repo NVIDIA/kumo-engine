@@ -65,7 +65,10 @@ class RunRecord:
     source table names to their ``connector``, ``location``, ``version`` and
     ``version_kind``, ``summaries`` are `kumo_core.summaries` results,
     which each tracker logs in its own way, and ``description`` is the
-    Markdown line under line 1 of the run's card (a fit's query)."""
+    Markdown line under line 1 of the run's card (a fit's query). Trackers
+    compose run names from ``model_label``, `model_label` of the model,
+    and from ``started`` and ``finished``, when the run's work started and
+    ended (UTC), known for a prediction run logged after its work."""
 
     name: Optional[str] = None
     params: Mapping[str, str] = field(default_factory=dict)
@@ -78,6 +81,9 @@ class RunRecord:
         default_factory=dict)
     summaries: Tuple['Summary', ...] = ()
     description: Optional[str] = None
+    model_label: Optional[str] = None
+    started: Optional[datetime] = None
+    finished: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +107,9 @@ class RunSpec:
     status: Optional[str] = None
     error: Optional[str] = None
     description: Optional[str] = None
+    model_label: Optional[str] = None
+    started: Optional[datetime] = None
+    finished: Optional[datetime] = None
 
 
 INPUT_FIELDS = ('connector', 'location', 'version', 'version_kind')
@@ -225,6 +234,9 @@ def run_record(spec: RunSpec) -> RunRecord:
         inputs=dict(spec.inputs),
         summaries=tuple(spec.summaries),
         description=spec.description,
+        model_label=spec.model_label,
+        started=spec.started,
+        finished=spec.finished,
     )
 
 
@@ -577,11 +589,12 @@ class TrackingSession:
         events.append(event)
         if self._search is not None and not self._search.single:
             trial = trial_spec(events)
-            record = run_record(dataclasses.replace(trial, parents={
-                **{name: self.spec.parents.get(name)
-                   for name in _TRIAL_PARENTS},
-                **trial.parents
-            }))
+            record = run_record(dataclasses.replace(
+                trial, model_label=self.spec.model_label, parents={
+                    **{name: self.spec.parents.get(name)
+                       for name in _TRIAL_PARENTS},
+                    **trial.parents
+                }))
             logged = dataclasses.replace(event,
                                          metrics=logged_names(event.metrics))
             self._submit(lambda: self._call(

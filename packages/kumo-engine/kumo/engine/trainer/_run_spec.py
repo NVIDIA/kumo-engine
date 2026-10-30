@@ -11,7 +11,12 @@ from typing import Any, Mapping, Optional, Sequence
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.summaries import Summary
 
-from kumo.engine._tracking import RunSpec, _flatten, logged_names
+from kumo.engine._tracking import (
+    RunSpec,
+    _flatten,
+    logged_names,
+    model_label,
+)
 
 
 @dataclass(frozen=True)
@@ -31,10 +36,12 @@ class FitContext:
 def fit_spec(context: FitContext, *,
              tags: Optional[Mapping[str, Any]] = None) -> RunSpec:
     started = context.started or datetime.now(timezone.utc)
+    model = model_label(context.model_name, context.query, context.task_type)
     return RunSpec(
         kind='fit',
-        name='-'.join(filter(None, ('fit', context.model_name,
-                                    started.strftime('%Y%m%d-%H%M')))),
+        name=f'fit-{started:%Y%m%d-%H%M%S}-{model}',
+        model_label=model,
+        started=started,
         params=dict(_flatten(context.model_plan)),
         parents={'snapshot_id': context.snapshot_id,
                  'task_type': context.task_type,

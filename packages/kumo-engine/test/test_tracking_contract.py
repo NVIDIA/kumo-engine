@@ -304,6 +304,12 @@ def gaps(expected: Dict[str, RunRecord], observed: Dict[str, Observed],
     return found
 
 
+def _trial(run):
+    r"""An MLflow trial run's record name, ``trial-<i>-attempt-<j>``."""
+    trial = run.info.run_name.split('-')[1]
+    return f"trial-{trial}-attempt-{run.data.params['attempt']}"
+
+
 @pytest.fixture
 def mlflow_adapter(tmp_path, monkeypatch):
     mlflow = pytest.importorskip('mlflow')
@@ -319,8 +325,9 @@ def mlflow_adapter(tmp_path, monkeypatch):
             [e.experiment_id for e in client.search_experiments()])
         kumo_ids = {
             r.info.run_id:
-            FIT if r.data.tags['kumo.kind'] == 'fit' else
-            r.data.tags.get('kumo.prediction_id', r.info.run_name)
+            FIT if r.data.tags['kumo.kind'] == 'fit' else _trial(r)
+            if r.data.tags['kumo.kind'] == 'trial' else
+            r.data.tags['kumo.prediction_id']
             for r in runs
         }
 
@@ -331,7 +338,8 @@ def mlflow_adapter(tmp_path, monkeypatch):
 
         return {
             kumo_ids[run.info.run_id]: Observed(
-                name=run.info.run_name, params=run.data.params,
+                name=(run.info.run_name if run.data.tags['kumo.kind'] != 'trial'
+                      else _trial(run)), params=run.data.params,
                 metrics=run.data.metrics, tags=run.data.tags,
                 steps={k: history(run.info.run_id, k)
                        for k in run.data.metrics},
@@ -438,7 +446,9 @@ def test_records_of_the_recorded_fit():
     records = replay()
 
     fit = records[FIT]
-    assert fit.name == 'fit-20261029-0618'
+    assert fit.name == 'fit-20261029-061800-ents-regression'
+    assert (fit.model_label, fit.started) == ('ents-regression',
+                                              CONTEXT.started)
     assert fit.tags == {'team': 'ents', 'kumo.kind': 'fit',
                         'kumo.bundle_id': BUNDLE, 'kumo.snapshot_id': SNAPSHOT,
                         'kumo.task_type': 'regression',
@@ -472,7 +482,7 @@ def test_records_of_the_recorded_fit():
 
     oom = records['trial-2-attempt-1']
     assert oom == RunRecord(
-        name='trial-2-attempt-1',
+        name='trial-2-attempt-1', model_label='ents-regression',
         params={'optimization.base_lr': '0.001', 'attempt': '1'}, tags={
             'kumo.kind': 'trial',
             'kumo.engine_version': __version__,

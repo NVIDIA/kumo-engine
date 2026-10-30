@@ -114,7 +114,8 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
         if run.data.tags.get('mlflow.parentRunId') == outer.info.run_id
     ]
     assert tracking.run_id == parent.info.run_id
-    assert re.fullmatch(r'fit-\d{8}-\d{4}', parent.info.run_name)
+    assert re.fullmatch(r'fit-\d{8}-\d{6}-ents-regression',
+                        parent.info.run_name)
     children = sorted(
         (run for run in runs
          if run.data.tags.get('mlflow.parentRunId') == parent.info.run_id),
@@ -163,8 +164,8 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
         'uri': str((tmp_path / 'data' / 'ents.parquet').resolve())
     }
 
-    assert [run.info.run_name
-            for run in children] == ['trial-1-attempt-1', 'trial-2-attempt-1']
+    assert [run.info.run_name for run in children] == [
+        f'trial-{i}-{parent.info.run_name}' for i in (1, 2)]
     for child in children:
         assert child.info.status == 'FINISHED'
         assert child.data.tags['kumo.status'] == 'succeeded'
@@ -778,3 +779,19 @@ def test_a_card_over_its_budget_moves_tables_to_files_then_shrinks(
             'split-number-11', 11]
     assert shrunk.data.tags['mlflow.note.content'] == _sealed('\n'.join([
         *head, lineage, NOTES])) + '\n\n' + 'n' * 4800
+
+
+def test_a_fit_that_registers_is_renamed_with_its_trials(tracking_uri):
+    from types import SimpleNamespace
+
+    from test_tracking_contract import RESULT
+
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    replay(MlflowTracking(log_system_metrics=False), result=SimpleNamespace(
+        **{**vars(RESULT), 'registered_model': SimpleNamespace(
+            name='main.ml.ents', version='3')}))
+
+    assert sorted(run.info.run_name for run in _runs(mlflow.MlflowClient())
+                  ) == ['trial-1-v3-ents', 'trial-2-v3-ents',
+                        'trial-2-v3-ents-attempt-2', 'v3-ents']

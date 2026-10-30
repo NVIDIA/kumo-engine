@@ -61,6 +61,8 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     ]
     model, = mlflow.search_logged_models(output_format='list')
     assert (model.name, model.source_run_id) == ('m', parent.info.run_id)
+    version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
+    assert parent.info.run_name == f'v{version.version}-m'
     metrics = {metric.key: metric.value for metric in model.metrics}
     holdout = {name: value for name, value in logged_names(
         result.metrics).items() if not name.startswith(('train/', 'val/'))}
@@ -70,7 +72,6 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
            if isinstance(summary, Scalar) and summary.role == 'model'}}
     assert {(metric.dataset_name, metric.dataset_digest)
             for metric in model.metrics} == {(None, None)}
-    version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
     assert version.source == model.model_uri
     assert parent.data.tags.items() >= {
         'kumo.kind': 'fit', 'kumo.bundle_id': result.id,
