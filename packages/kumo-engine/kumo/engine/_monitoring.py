@@ -803,10 +803,8 @@ def _input_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
     return summaries
 
 
-_INPUT_HEADER = ('column', 'type', 'psi', 'shift',
-                 'mean change (training sd)', 'null rate change (pp)',
-                 'distinct values change ≈ (%)', 'newest value change (days)',
-                 'mean tokens change ≈ (%)')
+_INPUT_HEADER = ('column', 'type', 'psi', 'shift', 'mean Δ sd', 'null Δ pp',
+                 'distinct Δ≈ %', 'newest Δ days', 'tokens Δ≈ %')
 
 
 def _input_row(column: str, change: Mapping[str, Any]) -> Tuple[Any, ...]:
@@ -821,7 +819,9 @@ def _input_row(column: str, change: Mapping[str, Any]) -> Tuple[Any, ...]:
         return '' if value is None else value * scale
 
     psi = change.get('psi')
-    return (column, change['type'], blank(psi), '' if psi is None else _shift(psi),
+    shift = '' if psi is None else (
+        '≈ ' if change.get('category_counts_capped') else '') + _shift(psi)
+    return (column, change['type'], blank(psi), shift,
             blank(change.get('standardized_mean_shift')),
             blank(delta.get('null_rate'), 100),
             blank(relative.get('num_unique'), 100),
