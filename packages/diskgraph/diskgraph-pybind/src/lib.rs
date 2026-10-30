@@ -1449,6 +1449,7 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
     histograms=true,
     category_counts_limit=None,
     max_per=None,
+    fixed_edges=None,
     _category_count_limit_for_testing=None,
 ))]
 #[tracing::instrument(level = "debug", skip(py, kumo_column_specs_json))]
@@ -1462,6 +1463,7 @@ fn compute_col_stats_for_parquet(
     histograms: bool,
     category_counts_limit: Option<usize>,
     max_per: Option<Vec<String>>,
+    fixed_edges: Option<HashMap<String, Vec<f64>>>,
     _category_count_limit_for_testing: Option<u64>,
 ) -> PyResult<(String, String)> {
     use diskgraph_ingest::config_converter::{
@@ -1537,6 +1539,7 @@ fn compute_col_stats_for_parquet(
         histograms,
         category_counts_limit,
         max_per: max_per.unwrap_or_default(),
+        fixed_edges: fixed_edges.unwrap_or_default(),
     };
 
     py.detach(|| -> anyhow::Result<(String, String)> {

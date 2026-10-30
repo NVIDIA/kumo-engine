@@ -100,6 +100,9 @@ pub struct ColStatsOptions {
     /// run of equal values of these columns, in path and row order. Needs
     /// numerical columns and no histograms or by-class summaries.
     pub max_per: Vec<String>,
+    /// Count these numerical columns' finite values exactly on the given
+    /// edges, in the first pass, as `FIXED_HISTOGRAM`.
+    pub fixed_edges: HashMap<String, Vec<f64>>,
 }
 
 impl Default for ColStatsOptions {
@@ -110,8 +113,87 @@ impl Default for ColStatsOptions {
             histograms: true,
             category_counts_limit: None,
             max_per: Vec::new(),
+            fixed_edges: HashMap::new(),
         }
     }
+}
+
+/// A column's finite values counted on `edges` as `kumo_core.score_counts`
+/// does: `counts[i]` holds values in `[edges[i - 1], edges[i])`,
+/// `counts[0]` those below the first edge and the last those at or above
+/// the last edge; with their sum, minimum and maximum.
+#[derive(Clone)]
+struct FixedHistogram {
+    counts: Vec<u64>,
+    sum: f64,
+    min: f64,
+    max: f64,
+}
+
+impl FixedHistogram {
+    fn new(edges: &[f64]) -> Self {
+        Self {
+            counts: vec![0; edges.len() + 1],
+            sum: 0.0,
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+        }
+    }
+
+    fn add(&mut self, edges: &[f64], value: f64) {
+        if value.is_finite() {
+            self.counts[edges.partition_point(|edge| *edge <= value)] += 1;
+            self.sum += value;
+            self.min = self.min.min(value);
+            self.max = self.max.max(value);
+        }
+    }
+
+    fn merge(&mut self, other: FixedHistogram) {
+        for (total, count) in self.counts.iter_mut().zip(other.counts) {
+            *total += count;
+        }
+        self.sum += other.sum;
+        self.min = self.min.min(other.min);
+        self.max = self.max.max(other.max);
+    }
+
+    fn to_json(&self, edges: &[f64]) -> JsonValue {
+        let seen = self.min <= self.max;
+        json!({
+            "edges": edges,
+            "counts": self.counts,
+            "sum": self.sum,
+            "min": seen.then_some(self.min),
+            "max": seen.then_some(self.max),
+        })
+    }
+}
+
+/// `options.fixed_edges` as (column index, edges), checked: numerical
+/// columns, finite and strictly increasing edges.
+fn fixed_edge_specs(
+    columns: &[ColumnSpec],
+    options: &ColStatsOptions,
+) -> Result<Vec<(usize, Vec<f64>)>> {
+    let mut specs = Vec::new();
+    for (name, edges) in &options.fixed_edges {
+        let Some(idx) = columns.iter().position(|col| &col.name == name) else {
+            bail!("fixed_edges names column '{name}', which is not among the columns");
+        };
+        if columns[idx].semantic_type != Some(SemanticType::Numerical) {
+            bail!("fixed_edges needs a numerical column, not '{name}'");
+        }
+        if edges.is_empty()
+            || edges.iter().any(|edge| !edge.is_finite())
+            || edges.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            bail!("fixed_edges for '{name}' must be finite and strictly increasing");
+        }
+        specs.push((idx, edges.clone()));
+    }
+    specs.sort_by_key(|(idx, _)| *idx);
+    Ok(specs)
 }
 
 fn key_rows(batch: &RecordBatch, names: &[String]) -> Result<arrow::row::Rows> {
@@ -1015,7 +1097,7 @@ fn accumulate_by_class(
     Ok(())
 }
 
-type RowGroupStats = (FileColStats, ByClassStats, Vec<IntegerRange>);
+type RowGroupStats = (FileColStats, ByClassStats, Vec<IntegerRange>, Vec<FixedHistogram>);
 
 /// The row group's batches of the projected columns and `keys`.
 pub(crate) fn row_group_batches(
@@ -1048,13 +1130,14 @@ pub(crate) fn row_group_batches(
 struct StatsSink<'a> {
     columns: &'a [ColumnSpec],
     integer_spec_indices: &'a [usize],
+    fixed: &'a [(usize, Vec<f64>)],
     score_class: Option<(usize, usize)>,
     stats: RowGroupStats,
 }
 
 impl StatsSink<'_> {
     fn drive(&mut self, batch: &RecordBatch) -> Result<()> {
-        let (fcs, by_class, integer_ranges) = &mut self.stats;
+        let (fcs, by_class, integer_ranges, fixed) = &mut self.stats;
         let schema = batch.schema();
         for (i, col) in self.columns.iter().enumerate() {
             let range = self
@@ -1077,6 +1160,17 @@ impl StatsSink<'_> {
                     "compute statistics for column '{}'",
                     col.name
                 )));
+            }
+        }
+        for ((idx, edges), histogram) in self.fixed.iter().zip(fixed.iter_mut()) {
+            let column = batch.column(schema.index_of(&self.columns[*idx].name)?);
+            let values = cast(column, &DataType::Float64)?;
+            let values = values
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .context("fixed_edges values")?;
+            for value in values.iter().flatten() {
+                histogram.add(edges, value);
             }
         }
         if let Some((score, class)) = self.score_class {
@@ -1198,24 +1292,31 @@ fn accumulate_parquet_col_stats<'a>(
     {
         bail!("max_per needs numerical columns and no histograms or by-class summaries");
     }
+    let fixed = fixed_edge_specs(columns, options)?;
     let sink = || StatsSink {
         columns,
         integer_spec_indices: &integer_spec_indices,
+        fixed: &fixed,
         score_class,
         stats: (
             FileColStats::new_with_categories(columns, Arc::clone(&table_cat)),
             ByClassStats::new(),
             vec![IntegerRange::default(); integer_spec_indices.len()],
+            fixed.iter().map(|(_, edges)| FixedHistogram::new(edges)).collect(),
         ),
     };
-    let merge = |total: &mut RowGroupStats, (mut partial, partial_by_class, partial_ranges): RowGroupStats| {
-        let (acc, by_class, integer_ranges) = total;
+    let merge = |total: &mut RowGroupStats,
+                 (mut partial, partial_by_class, partial_ranges, partial_fixed): RowGroupStats| {
+        let (acc, by_class, integer_ranges, fixed) = total;
         acc.merge(&mut partial);
         for (class, stats) in partial_by_class {
             by_class.entry(class).or_default().merge(&stats);
         }
         for (total, range) in integer_ranges.iter_mut().zip(partial_ranges) {
             total.merge(range);
+        }
+        for (total, histogram) in fixed.iter_mut().zip(partial_fixed) {
+            total.merge(histogram);
         }
     };
 
@@ -1261,7 +1362,7 @@ fn accumulate_parquet_col_stats<'a>(
             merge(&mut total.stats, boundary.stats);
         }
     }
-    let (mut acc, by_class, integer_ranges) = total.stats;
+    let (mut acc, by_class, integer_ranges, fixed_counts) = total.stats;
     if work.is_empty() {
         acc.flush_categories();
     }
@@ -1277,6 +1378,7 @@ fn accumulate_parquet_col_stats<'a>(
             integer_ranges,
             by_class,
             score_class,
+            fixed: fixed.into_iter().zip(fixed_counts).collect(),
         },
     ))
 }
@@ -1291,6 +1393,7 @@ struct Accumulated<'a> {
     integer_ranges: Vec<IntegerRange>,
     by_class: ByClassStats,
     score_class: Option<(usize, usize)>,
+    fixed: Vec<((usize, Vec<f64>), FixedHistogram)>,
 }
 
 /// [`compute_parquet_col_stats_with_options`] with default options and a given
@@ -1385,6 +1488,13 @@ pub fn compute_parquet_col_stats_with_options(
         );
     }
     add_summary_stats_by_class(&run, &mut full, &mut min, data_version);
+    for ((idx, edges), histogram) in &run.fixed {
+        let count = histogram.counts.iter().sum::<u64>();
+        full.insert(
+            kumo_key(&columns[*idx].name, "kumo.numerical", "FIXED_HISTOGRAM", false),
+            kumo_entry(histogram.to_json(edges), false, data_version, count),
+        );
+    }
     Ok((
         kumo.to_json_string(&full, options.category_counts_limit.unwrap_or(usize::MAX))?,
         kumo.to_json_string(&min, MIN_COL_STATS_CATEGORY_LIMIT)?,
@@ -3283,4 +3393,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fixed_edges_count_every_finite_value_across_files_and_row_groups() {
+        let dir = tempdir().unwrap();
+        let edges = vec![0.0, 0.25, 0.5, 1.0];
+        let first: Vec<f64> = (0..1000).map(|i| (i as f64 - 100.0) / 700.0).collect();
+        let second = vec![0.25, 0.5, 1.0, -3.0, 7.0, f64::NAN, f64::INFINITY, 0.0];
+        let paths = [dir.path().join("a.parquet"), dir.path().join("b.parquet")];
+        write_scores(&paths[0], first.clone(), 64);
+        write_scores(&paths[1], second.clone(), 3);
+        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
+        let options = ColStatsOptions {
+            histograms: false,
+            fixed_edges: HashMap::from([("SCORE".to_string(), edges.clone())]),
+            ..Default::default()
+        };
+        let full = with_options(&[paths[0].as_path(), paths[1].as_path()], &columns, options);
+
+        let finite: Vec<f64> = first.into_iter().chain(second).filter(|v| v.is_finite()).collect();
+        let mut counts = vec![0u64; edges.len() + 1];
+        for value in &finite {
+            counts[edges.iter().filter(|edge| **edge <= *value).count()] += 1;
+        }
+        let histogram = val(&full, "SCORE__kumo.numerical__FIXED_HISTOGRAM__False");
+        assert_eq!(histogram["edges"], json!(edges));
+        assert_eq!(histogram["counts"], json!(counts));
+        assert_eq!(histogram["min"], json!(-3.0));
+        assert_eq!(histogram["max"], json!(7.0));
+        let sum: f64 = finite.iter().sum();
+        assert!((histogram["sum"].as_f64().unwrap() - sum).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fixed_edges_must_be_increasing_on_a_numerical_column() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("scores.parquet");
+        write_scores(&path, vec![0.5], 10);
+        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
+        for edges in [vec![], vec![0.5, 0.5], vec![0.0, f64::NAN]] {
+            let options = ColStatsOptions {
+                fixed_edges: HashMap::from([("SCORE".to_string(), edges)]),
+                ..Default::default()
+            };
+            let error = compute_parquet_col_stats_with_options(
+                &[path.as_path()],
+                &columns,
+                "v1",
+                MAX_CATEGORIES,
+                &options,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("strictly increasing"), "{error}");
+        }
+    }
 }
