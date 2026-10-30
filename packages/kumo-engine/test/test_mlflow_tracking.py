@@ -470,8 +470,8 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
             Scalar('drift/psi_prev', 0.01),
             Note('notes', 'Drift vs training: psi 0.03 · vs pred-0: psi '
                  '0.01.'),
-            Table('drift/input_changes', ('table or link', 'at training',
-                                          'now', 'change %'),
+            Table('drift/table_rows', ('table', 'rows at training',
+                                       'rows now', 'change (%)'),
                   (('orders', 100, 104, 4.0),), brief=True),
             Table('drift/inputs/orders', ('column', 'psi'),
                   (('AMOUNT', 0.12),))))) is None
@@ -509,7 +509,8 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
         'Full lineage: `_provenance.json`.', '',
         '<!-- kumo:drift -->',
         'Drift vs training: psi 0.03 · vs 2026-10-28-v6-churn: psi 0.01.',
-        '**Input changes:** orders: at training 100 · now 104 · change % 4',
+        '**Table rows:** orders: rows at training 100 · rows now 104 · '
+        'change (%) 4',
         '<!-- /kumo:drift -->',
         '<!-- kumo:realized -->',
         'Realized map@10 0.5 · 75 % labelled (3 of 4 scored rows), with '

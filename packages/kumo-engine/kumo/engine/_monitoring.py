@@ -742,19 +742,28 @@ def _values(values: Mapping[str, Optional[float]]) -> str:
 
 
 def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
-    if not changes:
-        return []
-    rows = tuple(
-        (name, before, after,
-         (after - before) / before * 100 if before and after is not None
-         else None)
-        for name, (before, after) in changes.items())
-    brief = len(rows) <= 12
-    return [Table('drift/input_changes',
-                  ('table or link', 'at training', 'now', 'change %'), rows,
-                  brief=brief),
-            *([] if brief else [Note('notes', f'{len(rows)} inputs changed '
-                                     'size: `drift/input_changes.json`.')])]
+    r"""``drift/table_rows`` and ``drift/link_edges``: the tables and the
+    links whose size changed, each in the card up to 12 rows, else a file."""
+    summaries: List[Summary] = []
+    for name, unit, links in (('drift/table_rows', 'rows', False),
+                              ('drift/link_edges', 'edges', True)):
+        rows = tuple(
+            (source, before, after,
+             (after - before) / before * 100 if before and after is not None
+             else None)
+            for source, (before, after) in changes.items()
+            if (' → ' in source) == links)
+        if not rows:
+            continue
+        brief = len(rows) <= 12
+        summaries.append(Table(
+            name, ('link' if links else 'table', f'{unit} at training',
+                   f'{unit} now', 'change (%)'), rows, brief=brief))
+        if not brief:
+            summaries.append(Note('notes', f'{len(rows)} '
+                                  f"{'links' if links else 'tables'} changed "
+                                  f'size: `{name}.json`.'))
+    return summaries
 
 
 def _input_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]

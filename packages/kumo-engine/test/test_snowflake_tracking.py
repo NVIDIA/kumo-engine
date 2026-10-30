@@ -450,7 +450,7 @@ def _monitoring(monitor):
             Scalar('drift/psi_prev', 0.01),
             Table('drift/inputs/orders', ('column', 'psi'),
                   (('AMOUNT', 0.12),)),
-            Table('drift/input_changes', ('table', 'at training', 'now'),
+            Table('drift/table_rows', ('table', 'rows at training', 'rows now'),
                   (('orders', 100, 104),), brief=True),
             Note('notes', 'Labels mature 2026-11-05.')))
 
@@ -483,6 +483,6 @@ def test_each_monitoring_call_is_a_run_named_like_its_prediction(fake):
     assert set(run['artifacts']) == {'drift/inputs/orders.json', 'run_card.md'}
     assert run['artifacts']['run_card.md'] == '\n'.join([
         'v6 churn', 'Model: `churn` v6.', '',
-        '**Input changes:** orders: at training 100 · now 104', '',
+        '**Table rows:** orders: rows at training 100 · rows now 104', '',
         '**Notes:** Labels mature 2026-11-05.', '',
         'Full lineage: `_provenance.json`. Tables: `drift/inputs/orders.json`.'])

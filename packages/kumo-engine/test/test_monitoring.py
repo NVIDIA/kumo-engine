@@ -611,7 +611,7 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
     before = len(snapshots.orders[snapshots.orders.TS < CUTOFF])
     after = len(snapshots.orders)
     changes, = [s for s in drift.summaries
-                if getattr(s, 'name', None) == 'drift/input_changes']
+                if getattr(s, 'name', None) == 'drift/table_rows']
     assert ('orders', before, after, (after - before) / before * 100
             ) in changes.rows and changes.brief
     orders, = [s for s in drift.summaries
@@ -685,10 +685,12 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
                ('previous run', 0.01, 'small (< 0.1)', 0.02, 0.03)),
               brief=True),
         Note('notes', 'Previous run: 2026-10-28-v6-churn.'),
-        Table('drift/input_changes', ('table or link', 'at training', 'now',
-                                      'change %'),
-              (('orders', 100, 104, 4.0),
-               ('orders.USER_ID → users', 100, None, None)), brief=True),
+        Table('drift/table_rows', ('table', 'rows at training', 'rows now',
+                                   'change (%)'),
+              (('orders', 100, 104, 4.0),), brief=True),
+        Table('drift/link_edges', ('link', 'edges at training', 'edges now',
+                                   'change (%)'),
+              (('orders.USER_ID → users', 100, None, None),), brief=True),
         Scalar('drift/inputs_max_psi', 0.75),
         Table('drift/inputs/orders', ('column', 'type',
                                       'null rate change (pp)',
