@@ -140,19 +140,14 @@ def test_a_trainer_publishes_and_loads_through_a_filesystem_only_sink(
     trainer, *_ = fitted
     connector = SimpleNamespace(source_type='SNOWFLAKE',
                                 sink_backend=StageSink())
-    result = trainer._finish_fit(
-        trainer._training_result, predictive_query=trainer._training_query,
-        snapshot_id=trainer._snapshot_id,
-        training_table_generation=trainer.training_table_generation_plan,
-        export_config=kumo.ModelOutputConfig(connector,
-                                             path='@stage/models/m'))
-    assert result.published_model.uri == '@stage/models/m'
+    published = trainer.result.export(
+        kumo.ModelOutputConfig(connector, path='@stage/models/m'))
+    assert published.uri == '@stage/models/m'
     loaded = kumo.Trainer.load_from_connector(connector,
                                               path='@stage/models/m')
-    assert loaded._snapshot_id == trainer._snapshot_id
+    assert loaded.result.id == trainer.result.id
     with pytest.raises(NotImplementedError, match='cannot publish'):
-        trainer.fit(None, snapshot=None,
-                    export_config=kumo.ModelOutputConfig(connector, path='T'))
+        trainer.result.export(kumo.ModelOutputConfig(connector, path='T'))
 
 
 def test_predictions_export_through_a_filesystem_only_sink(fitted, connector):
