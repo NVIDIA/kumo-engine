@@ -161,7 +161,7 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
                    if name in counts.arrays), None)
     if ranked is not None:
         order = np.argsort(-counts.arrays[ranked], kind='stable').tolist()
-        summaries.append(_by_class(counts, ranked, order, columns))
+        summaries.append(_by_class(counts, ranked, order, columns, baseline))
         columns = [columns[i] for i in order[:TOP_CLASSES] if columns]
     summaries += [
         counts.summary(name, axis(name), f'pred/histogram/{_label(name)}')
@@ -202,12 +202,17 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
 
 
 def _by_class(counts: Counts, ranked: str, order: Sequence[int],
-              columns: Sequence[str]) -> Table:
-    r"""Each class's or label's share of the rows predicting it, and the
+              columns: Sequence[str], baseline: Optional[Counts]) -> Table:
+    r"""Each class's or label's share of the rows predicting it, here and
+    at the ``baseline`` holdout when it tallied the same classes, and the
     mean, minimum and maximum of its probability, if counted."""
     tally = counts.arrays[ranked]
     rows = (tally.sum() if ranked == 'classes' else
             counts.arrays['predicted_labels'].sum())
+    holdout = None if baseline is None else baseline.arrays.get(ranked)
+    if holdout is not None and (holdout.shape != tally.shape
+                                or not holdout.sum()):
+        holdout = None
 
     def stats(name: Optional[str]) -> tuple:
         if name is None:
@@ -218,9 +223,11 @@ def _by_class(counts: Counts, ranked: str, order: Sequence[int],
 
     label = 'class' if ranked == 'classes' else 'label'
     return Table(
-        'pred/by_class', (label, 'share predicted', 'mean', 'min', 'max'),
+        'pred/by_class', (label, 'share predicted', 'share at holdout',
+                          'mean', 'min', 'max'),
         tuple((columns[i].removesuffix('_PROB') if columns else str(i),
                float(tally[i] / rows) if rows else 0.0,
+               None if holdout is None else float(holdout[i] / holdout.sum()),
                *stats(columns[i] if columns else None)) for i in order))
 
 

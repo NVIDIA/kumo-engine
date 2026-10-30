@@ -86,10 +86,15 @@ def test_multiclass_summarizes_each_class_and_the_most_predicted():
     columns = [f'c{index}_PROB' for index in range(25)]
     counts = _batches(TaskType.MULTICLASS_CLASSIFICATION,
                       {'score': PROBABILITY_EDGES}, columns, prob=prob)
+    tested = rng.dirichlet(np.ones(25), size=200)
+    holdout = baseline(evaluation_counts(
+        TaskType.MULTICLASS_CLASSIFICATION, prob=tested,
+        target=rng.integers(0, 25, 200)))
 
     logged = _by_name(
-        prediction_summaries(counts, threshold=None, baseline=None))
+        prediction_summaries(counts, threshold=None, baseline=holdout))
     top = np.bincount(prob.argmax(axis=1), minlength=25)
+    at_holdout = np.bincount(tested.argmax(axis=1), minlength=25)
     order = sorted(range(25), key=lambda index: -top[index])
     assert [name for name in logged if name.startswith('pred/histogram/')] == [
         'pred/histogram/confidence',
@@ -97,9 +102,9 @@ def test_multiclass_summarizes_each_class_and_the_most_predicted():
     assert logged['pred/histogram/confidence'].counts == _brute_histogram(
         prob.max(axis=1), PROBABILITY_EDGES)
     assert logged['pred/by_class'].columns == (
-        'class', 'share predicted', 'mean', 'min', 'max')
+        'class', 'share predicted', 'share at holdout', 'mean', 'min', 'max')
     assert logged['pred/by_class'].rows == tuple(
-        (f'c{index}', top[index] / 400,
+        (f'c{index}', top[index] / 400, at_holdout[index] / 200,
          *_summary_row(None, prob[:, index])[1:]) for index in order)
     assert logged['pred/summary'].rows == (
         _summary_row('confidence', prob.max(axis=1)),)
@@ -120,7 +125,7 @@ def test_many_classes_keep_only_their_tally_and_confidence():
             ] == ['pred/histogram/confidence']
     top = np.bincount(prob.argmax(axis=1), minlength=size)
     assert logged['pred/by_class'].rows[0] == (
-        str(top.argmax()), top.max() / 300, None, None, None)
+        str(top.argmax()), top.max() / 300, None, None, None, None)
 
 
 def test_regression_counts_on_the_target_bins_and_drift():
@@ -221,8 +226,8 @@ def test_multilabel_counts_each_labels_predicted_rows_and_top_score():
         prob.max(axis=1), PROBABILITY_EDGES)
     assert logged['pred/summary'].rows == (
         _summary_row('top score', prob.max(axis=1)),)
-    assert [row[:2] for row in logged['pred/by_class'].rows] == [
-        (f'l{index}', positives[index] / 300) for index in order]
+    assert [row[:3] for row in logged['pred/by_class'].rows] == [
+        (f'l{index}', positives[index] / 300, None) for index in order]
     per_row = np.bincount(pred.sum(axis=1))
     assert logged['pred/by_label_count/entities'] == Series(
         'pred/by_label_count/entities',
