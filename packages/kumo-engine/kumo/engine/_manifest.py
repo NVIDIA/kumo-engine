@@ -274,9 +274,10 @@ def _locations(located: List[Artifact], root: Optional[str]) -> List[str]:
 
 
 def _label(item: Artifact) -> str:
-    return {'model': 'bundle', 'source_table': f'source {item.id}',
-            'prediction_output': item.id}.get(item.kind,
-                                              item.kind.replace('_', ' '))
+    return {'model': 'bundle', 'prediction': 'prediction run',
+            'source_table': f'source {item.id}',
+            'prediction_output': {'predictions': 'scores'}.get(item.id, item.id)
+            }.get(item.kind, item.kind.replace('_', ' '))
 
 
 #: Datasets lead with the snapshot, as the run list shows the first.

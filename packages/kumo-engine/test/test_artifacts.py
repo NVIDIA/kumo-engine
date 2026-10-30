@@ -168,9 +168,9 @@ def test_a_prediction_run_reads_its_snapshot_and_writes_its_outputs():
         Tag('kumo.output_uri', 's3://out/p'),
         Tag('kumo.output_table', '"DB"."S"."EMB"'),
         *(Note('locations', line) for line in (
-            'prediction `s3://root/predictions/p`',
+            'prediction run `s3://root/predictions/p`',
             'bundle `s3://root/models/m`', 'source orders `s3://data/orders`',
-            'predictions `s3://out/p`', 'embeddings `"DB"."S"."EMB"`')),
+            'scores `s3://out/p`', 'embeddings `"DB"."S"."EMB"`')),
         Dataset('orders', {'connector': 'S3', 'location': 's3://data/orders',
                            'version': '7', 'version_kind': 'exact'}, {}, {},
                 'scoring'),
