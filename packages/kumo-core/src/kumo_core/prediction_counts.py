@@ -295,11 +295,17 @@ def _drift_note(counts: Counts, score: str) -> str:
             "the training target's histogram bins" if score == 'TARGET_PRED'
             else "percentile bins of the holdout's top scores")
     rule = ', '.join(f'{bound} {shift}' for shift, bound in PSI_SHIFTS.items())
+    reading = (
+        'For link prediction the holdout covers only entities with a future '
+        'target and a prediction all entities, so compare PSI with the '
+        'previous run.' if 'item_frequency' in counts.arrays else
+        f'PSI rule of thumb: 0 identical, {rule} shift.')
     return (f"Score drift compares `{_label(score)}` with the model's holdout "
-            f'scores at training, over {bins}. PSI rule of thumb: 0 '
-            f'identical, {rule} shift. KS: the largest gap between the two '
-            'cumulative distributions, from 0 to 1. Wasserstein: how far the '
-            'scores moved on average, in score units.')
+            f"scores at training, on {bins}. PSI groups those bins at the "
+            f"holdout's deciles, into up to 10 groups. {reading} KS: the "
+            'largest gap between the two cumulative distributions, from 0 to '
+            '1. Wasserstein: how far the scores moved on average, in score '
+            'units.')
 
 
 def _label(column: str) -> str:
