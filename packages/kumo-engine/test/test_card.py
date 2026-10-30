@@ -90,6 +90,18 @@ def test_the_body_holds_problems_tables_notes_and_locations():
     assert _card.holdout('prediction', {'test/ap': 0.5}, {}) == []
 
 
+def test_a_link_prediction_fit_shows_its_holdout_metrics_at_the_query_k():
+    metrics = {'test/map_at_1': 0.25, 'test/map_at_10': 0.125,
+               'test/recall_at_10': 0.5, 'test/locality_score': 0.75}
+
+    table, note = _card.holdout('fit', metrics, {'kumo.tune_metric': 'map@10'})
+    assert table.rows == (('test/map_at_10', 0.125),
+                          ('test/locality_score', 0.75),
+                          ('test/recall_at_10', 0.5))
+    assert note == Note('notes',
+                        'Holdout metrics at other k: `holdout/by_k.json`.')
+
+
 def test_a_prediction_names_the_model_and_its_fit_run():
     assert _card.model_line(MODEL, 'v6-churn', '#/experiments/1/runs/r') == (
         'Scores of `kumo-demo-churn` v6, trained by '

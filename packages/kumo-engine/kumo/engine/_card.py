@@ -110,17 +110,26 @@ def fit_line(tags: Mapping[str, str], params: Mapping[str, str],
 
 
 def holdout(kind: str, metrics: Mapping[str, float],
-            tags: Mapping[str, str]) -> List[Table]:
+            tags: Mapping[str, str]) -> List[Summary]:
     r"""A fit's brief table ``holdout/metrics``: its holdout metrics, the
-    tuned one first, each with what it means where its name is unclear."""
-    tuned = f"test/{_key(tags.get('kumo.tune_metric') or '')}"
-    names = sorted((name for name in metrics if name.startswith('test/')),
-                   key=lambda name: (_key(name) != tuned, name))
-    if kind != 'fit' or not names:
+    tuned one first, each with what it means where its name is unclear;
+    of the metrics at k, only those at the tuned metric's k, and a note
+    pointing to the others."""
+    if kind != 'fit':
         return []
+    tuned = f"test/{_key(tags.get('kumo.tune_metric') or '')}"
+    tested = {_key(name): value for name, value in metrics.items()
+              if name.startswith('test/')}
+    at = _at(tuned)
+    names = sorted((name for name in tested if _at(name) in (None, at)),
+                   key=lambda name: (name != tuned, name))
+    if not names:
+        return []
+    others = len(names) < len(tested)
     return [Table('holdout/metrics', ('metric', 'value'), tuple(
-        (_meaning(_key(name)), metrics[name])
-        for name in names), brief=True)]
+        (_meaning(name), tested[name]) for name in names), brief=True),
+        *([Note('notes', 'Holdout metrics at other k: `holdout/by_k.json`.')]
+          if others else [])]
 
 
 def version_headline(metrics: Mapping[str, float],
@@ -255,6 +264,11 @@ def _row(cells: Sequence[str]) -> str:
 
 def _cell(value: Any) -> str:
     return '' if value is None else number(value).replace('|', '\\|')
+
+
+def _at(name: str) -> Optional[str]:
+    found = re.search(r'_at_(\d+)$', name)
+    return found and found.group(1)
 
 
 def _key(name: str) -> str:
