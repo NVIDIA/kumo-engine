@@ -1,0 +1,157 @@
+{
+  "status": "EXACT_RELEASED_PYTHON_CUSTOM_SOURCE_LINK_REPRODUCED",
+  "checked_utc": "2026-10-29T22:03:42.671416+00:00",
+  "wheel_sha256": "1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e",
+  "released_function_source_sha256": "e54fb991c96350dee141fcaad73f65468584eba11c97c417b80487ead0e5c52c",
+  "native_graph_opened": false,
+  "model_created": false,
+  "model_predictions": 0,
+  "remote_operations": 0,
+  "guard_calls": {
+    "public_fit": 0,
+    "core_fit": 0,
+    "lightning_fit": 0,
+    "graph_snapshot": 0,
+    "graph_ingest": 0
+  },
+  "source": {
+    "path": "prediction-inputs/predictions.parquet",
+    "rows": 3,
+    "bytes": 832,
+    "sha256": "70cbc91e21b7cd4c3c200f639dbaada07dd1905525c63a8f0907f01aed26fdd3",
+    "columns": [
+      "ENTITY1",
+      "TIMESTAMP"
+    ]
+  },
+  "output": "scratch/prediction_tables/released-source-fixture/source-table/parts",
+  "links": [
+    {
+      "path": "scratch/prediction_tables/released-source-fixture/source-table/parts/part-00000.parquet",
+      "link_text": "../source/predictions.parquet/predictions.parquet",
+      "resolved_target": "scratch/prediction_tables/released-source-fixture/source-table/source/predictions.parquet/predictions.parquet",
+      "bytes": 832,
+      "sha256": "70cbc91e21b7cd4c3c200f639dbaada07dd1905525c63a8f0907f01aed26fdd3"
+    }
+  ],
+  "participating_python_source_file_parity": [
+    {
+      "path": "kumo_core/sources/arrow_parquet.py",
+      "executed_sha256": "f6fa3c44c1b33bb36e33fdaa197afcc399c8568f7dfe378c81d220d965d86035",
+      "released_sha256": "f6fa3c44c1b33bb36e33fdaa197afcc399c8568f7dfe378c81d220d965d86035",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/sources/backend.py",
+      "executed_sha256": "b176c7b1fc138085a9b235c7b04f70ab38ee4abc9c100346fbea6f505d6de0a3",
+      "released_sha256": "b176c7b1fc138085a9b235c7b04f70ab38ee4abc9c100346fbea6f505d6de0a3",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/sources/cpu.py",
+      "executed_sha256": "854a4d221cccd5c966c8402940a9fd516eeb293b56005e278cd798313fd89945",
+      "released_sha256": "854a4d221cccd5c966c8402940a9fd516eeb293b56005e278cd798313fd89945",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/sources/identity.py",
+      "executed_sha256": "f47c421b0d73115c46b2aa3f51234e79aaa1fb5c05062fa39fdb32e8380cfa4e",
+      "released_sha256": "f47c421b0d73115c46b2aa3f51234e79aaa1fb5c05062fa39fdb32e8380cfa4e",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/sources/layout.py",
+      "executed_sha256": "da608e29ca6ad2e3c3d22791f3db3c24188621369252e1e38ccc31f516e8e8ad",
+      "released_sha256": "da608e29ca6ad2e3c3d22791f3db3c24188621369252e1e38ccc31f516e8e8ad",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/sources/object_store.py",
+      "executed_sha256": "9cd4b99d1010c897184e5e34be6cf770946b4620b8f33c63b0e0cdbb9a303fb6",
+      "released_sha256": "9cd4b99d1010c897184e5e34be6cf770946b4620b8f33c63b0e0cdbb9a303fb6",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/sources/object_store_backend.py",
+      "executed_sha256": "ddf14be8072dc15a3dabc8374656d1ced8f56e01b0d334c7d577c8f7fd04d9da",
+      "released_sha256": "ddf14be8072dc15a3dabc8374656d1ced8f56e01b0d334c7d577c8f7fd04d9da",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/sources/parallel.py",
+      "executed_sha256": "9316ddad30a016a59952ffcd662745c22a5b1091ffe47b36830a8e10c24abe6e",
+      "released_sha256": "9316ddad30a016a59952ffcd662745c22a5b1091ffe47b36830a8e10c24abe6e",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/sources/prepare.py",
+      "executed_sha256": "715f5cf8b8ea691b91597f3043c0d096b652b7b892b4877820d9032df22318ed",
+      "released_sha256": "715f5cf8b8ea691b91597f3043c0d096b652b7b892b4877820d9032df22318ed",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/sources/protocol.py",
+      "executed_sha256": "84a2a52fb6ae57b7ea0c651374ab03a252bc83a437dce9a416334eeec3dc36b4",
+      "released_sha256": "84a2a52fb6ae57b7ea0c651374ab03a252bc83a437dce9a416334eeec3dc36b4",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/sources/sql.py",
+      "executed_sha256": "87f048863349aaf195526960a00969b68e883ace9c127b35122dbcdfe939c5cf",
+      "released_sha256": "87f048863349aaf195526960a00969b68e883ace9c127b35122dbcdfe939c5cf",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/sources/transfer.py",
+      "executed_sha256": "935c7151953b338d2d5058174545d2b8b9b6a3943ae91d6f0e4ad6638bfe770b",
+      "released_sha256": "935c7151953b338d2d5058174545d2b8b9b6a3943ae91d6f0e4ad6638bfe770b",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/sources/types.py",
+      "executed_sha256": "c15691c5ac445a6ff7c4a91a564466979c6faeb07caedadc0efdd8b6c6cc8b8c",
+      "released_sha256": "c15691c5ac445a6ff7c4a91a564466979c6faeb07caedadc0efdd8b6c6cc8b8c",
+      "exact_match": true
+    },
+    {
+      "path": "kumo_core/types/conversions.py",
+      "executed_sha256": "91b2ee5da38f6f6cb252860d44868209c2bc2ee12afaedf1ed824efa24780168",
+      "released_sha256": "91b2ee5da38f6f6cb252860d44868209c2bc2ee12afaedf1ed824efa24780168",
+      "exact_match": true
+    },
+    {
+      "path": "kumoapi/typing.py",
+      "executed_sha256": "9500014c4167f009620a7c7f731b51138f5ba4ce50afe9a36caef3387ce1444f",
+      "released_sha256": "9500014c4167f009620a7c7f731b51138f5ba4ce50afe9a36caef3387ce1444f",
+      "exact_match": true
+    },
+    {
+      "path": "kumo/engine/connector/base.py",
+      "executed_sha256": "12b0c0c37da11f454db881ce5f0f0e354da024e9fc974439607bc051e7293d00",
+      "released_sha256": "12b0c0c37da11f454db881ce5f0f0e354da024e9fc974439607bc051e7293d00",
+      "exact_match": true
+    },
+    {
+      "path": "kumo/engine/connector/file.py",
+      "executed_sha256": "3476cf47cedb12f767f7d170ae24288ffe9dcab9d244afb02d0172cfa33580c5",
+      "released_sha256": "3476cf47cedb12f767f7d170ae24288ffe9dcab9d244afb02d0172cfa33580c5",
+      "exact_match": true
+    },
+    {
+      "path": "kumo/engine/connector/source_table.py",
+      "executed_sha256": "e83daa896ed52bc5ad157df7209e8360bbef14839de74a810beb6cd8f06fe7f1",
+      "released_sha256": "e83daa896ed52bc5ad157df7209e8360bbef14839de74a810beb6cd8f06fe7f1",
+      "exact_match": true
+    },
+    {
+      "path": "kumo/engine/pquery/_custom_source.py",
+      "executed_sha256": "e54fb991c96350dee141fcaad73f65468584eba11c97c417b80487ead0e5c52c",
+      "released_sha256": "e54fb991c96350dee141fcaad73f65468584eba11c97c417b80487ead0e5c52c",
+      "exact_match": true
+    }
+  ],
+  "all_participating_python_sources_match_release": true,
+  "frozen_collector_sha256": "cc53630c0b0351ea55c659ee8cbfc6dc75ba14a9b2358c307c8533bb27fdde2b",
+  "frozen_collector_expected_error": "Evidence cannot contain symbolic links",
+  "scope": "Exact released pure Python staging and connector code executed in a local Arrow-capable Mac environment. All participating package source files match the approved Linux release. No native graph or model operation ran."
+}

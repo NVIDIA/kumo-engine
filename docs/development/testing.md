@@ -35,6 +35,9 @@ The [Engine nightly check](engine-nightly-ci.md) compares sixteen large-profile
 GPU fits with a saved reference. Its guide lists the remaining access and
 behavior coverage requirements.
 
+The [Engine weekly check](engine-weekly-ci.md) runs eleven approved cases.
+Its first reference block and a later candidate comparison are separate executions.
+
 ## Report evidence
 
 Record the command, environment, result, and any untested dependency. Keep

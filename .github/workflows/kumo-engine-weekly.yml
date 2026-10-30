@@ -1,0 +1,402 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Kumo Engine weekly
+
+on:  # yamllint disable-line rule:truthy
+  schedule:
+    - cron: '30 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Create eleven approved references or compare eleven fresh candidate fits
+        type: choice
+        options: [candidate, reference]
+        default: candidate
+        required: true
+      revision:
+        description: Candidate revision; empty selects this workflow revision
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-weekly-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.config.outputs.mode }}
+      matrix: ${{ steps.config.outputs.matrix }}
+      rtx: ${{ steps.config.outputs.rtx }}
+      manifest_sha256: ${{ steps.config.outputs.manifest_sha256 }}
+      reference_sha256: ${{ steps.config.outputs.reference_sha256 }}
+    steps:
+      - name: Require bound existing runners and pinned inputs
+        id: config
+        env:
+          WEEKLY_CONFIG: ${{ vars.KUMO_ENGINE_WEEKLY_CONFIG }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import PurePosixPath
+          value = json.loads(os.environ['WEEKLY_CONFIG'])
+          mode = os.environ.get('REQUESTED_MODE') or 'candidate'
+          if mode not in ('candidate', 'reference'):
+              raise SystemExit('Unknown weekly mode')
+          for key in ('manifest_sha256', 'reference_sha256'):
+              if key == 'reference_sha256' and mode == 'reference':
+                  continue
+              if not re.fullmatch('[0-9a-f]{64}', value.get(key, '')):
+                  raise SystemExit('Bind the exact frozen manifest and complete reference fingerprints')
+          matrix = []
+          for name in ('rtx', 'scale'):
+              profile = value['profiles'][name]
+              labels = profile.get('runner')
+              if not isinstance(labels, list) or not labels or any(not isinstance(label, str) or not label for label in labels):
+                  raise SystemExit('Bind both existing admitted runner profiles')
+              for key in ('root', 'manifest', 'dependency_profile', 'reference_wheel', 'reference_root', 'host_lock'):
+                  path = profile.get(key, '')
+                  if not isinstance(path, str) or not PurePosixPath(path).is_absolute() or any(c in path for c in '\r\n'):
+                      raise SystemExit('Runner paths must be explicit absolute paths')
+              if name == 'scale':
+                  auxiliary = profile.get('auxiliary', {})
+                  if set(auxiliary) != {'P1', 'B9'}:
+                      raise SystemExit('Bind both P1 and B9 before starting any weekly fit')
+                  for binding in auxiliary.values():
+                      if set(binding) != {'runner', 'template'}:
+                          raise SystemExit('Bind exact auxiliary runners and templates')
+                      for record in binding.values():
+                          path = record.get('path', '')
+                          if (set(record) != {'path', 'sha256'} or not isinstance(path, str)
+                              or not PurePosixPath(path).is_absolute() or any(c in path for c in '\r\n')
+                              or not re.fullmatch('[0-9a-f]{64}', record.get('sha256', ''))):
+                              raise SystemExit('Pin auxiliary paths and SHA-256 fingerprints')
+              matrix.append(dict(profile=name, **profile))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              for key, item in dict(mode=mode, matrix=json.dumps(dict(include=matrix)),
+                  rtx=json.dumps(matrix[0]), manifest_sha256=value['manifest_sha256'],
+                  reference_sha256=value.get('reference_sha256', '')).items():
+                  stream.write(f'{key}={item}\n')
+          PY
+
+  admit:
+    needs: configure
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.configure.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      MODE: ${{ needs.configure.outputs.mode }}
+      PROFILE_JSON: ${{ toJSON(matrix) }}
+      MANIFEST_SHA256: ${{ needs.configure.outputs.manifest_sha256 }}
+      REFERENCE_SHA256: ${{ needs.configure.outputs.reference_sha256 }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Admit both native shards before any fit
+        run: |
+          python3 - <<'PY'
+          import fcntl, json, os, runpy
+          from pathlib import Path
+          profile = json.loads(os.environ['PROFILE_JSON'])
+          api = runpy.run_path('packages/kumo-engine/scripts/weekly_check.py')
+          receipt = dict(status='RUNNING', physical_fits=0, profile=profile['profile'])
+          output = Path(os.environ['RUNNER_TEMP']) / 'weekly-admission.json'
+          try:
+              with Path(profile['host_lock']).open('a') as lock:
+                  fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                  manifest = api['load_manifest'](Path(profile['manifest']), os.environ['MANIFEST_SHA256'])
+                  selected = [row for row in manifest['cases'] if (row['workload'] == 'P2') == (profile['profile'] == 'scale')]
+                  if len(selected) != (1 if profile['profile'] == 'scale' else 10):
+                      raise ValueError('The native shard differs from the approved roster')
+                  for spec in selected:
+                      api['verify_case_inputs'](spec)
+                      api['pinned'](profile['dependency_profile'], spec['identity']['dependency_sha256'])
+                  if os.environ['MODE'] == 'candidate':
+                      api['verify_reference'](manifest, Path(profile['reference_root']), os.environ['REFERENCE_SHA256'])
+                  if profile['profile'] == 'scale':
+                      binder = runpy.run_path('packages/kumo-engine/scripts/weekly_aux_bind.py')
+                      binder['admit_bindings'](profile['auxiliary'], profile['host_lock'], selected[0])
+                  receipt.update(status='PASS', case_ids=[row['id'] for row in selected],
+                      manifest_sha256=os.environ['MANIFEST_SHA256'])
+          except BaseException as error:
+              receipt.update(status='FAIL', error=f'{type(error).__name__}: {error}')
+              raise
+          finally:
+              api['save'](output, receipt)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: engine-weekly-admission-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/weekly-admission.json
+          if-no-files-found: error
+
+  build:
+    needs: configure
+    if: needs.configure.outputs.mode == 'candidate'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: harness
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+      - name: Prepare the existing wheel builder
+        run: python -m pip --isolated install ziglang
+      - name: Record and build the exact selected source
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/weekly-wheel"
+          python - <<'PY'
+          import os, runpy, subprocess
+          from pathlib import Path
+          repo = Path('candidate').resolve()
+          helpers = runpy.run_path('harness/packages/kumo-engine/scripts/pr_check.py')
+          revision = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
+          helpers['save'](Path(os.environ['RUNNER_TEMP']) / 'weekly-wheel/source.json', helpers['source_identity'](repo, revision))
+          PY
+          candidate/packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/weekly-wheel"
+          python - <<'PY'
+          import json, os, runpy
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'weekly-wheel'
+          helpers = runpy.run_path('harness/packages/kumo-engine/scripts/pr_check.py')
+          source = json.loads((root / 'source.json').read_text())
+          if helpers['source_identity'](Path('candidate').resolve(), source['revision']) != source:
+              raise SystemExit('Selected source changed during the wheel build')
+          [wheel] = root.glob('*.whl')
+          helpers['save'](root / 'build.json', helpers['build_receipt'](source, wheel))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: engine-weekly-wheel-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/weekly-wheel
+          if-no-files-found: error
+          compression-level: 0
+
+  gpu:
+    needs: [configure, build, admit]
+    if: ${{ !cancelled() && needs.configure.result == 'success' && needs.admit.result == 'success' && (needs.configure.outputs.mode == 'reference' || needs.build.result == 'success') }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.configure.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 720
+    env:
+      MODE: ${{ needs.configure.outputs.mode }}
+      PROFILE: ${{ matrix.profile }}
+      PROFILE_JSON: ${{ toJSON(matrix) }}
+      MANIFEST_SHA256: ${{ needs.configure.outputs.manifest_sha256 }}
+      REFERENCE_SHA256: ${{ needs.configure.outputs.reference_sha256 }}
+      CUDA_VISIBLE_DEVICES: '0'
+      KUMO_ACCELERATOR: gpu
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+      OPENBLAS_NUM_THREADS: '4'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PIP_CONFIG_FILE: /dev/null
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: env.MODE == 'candidate'
+        with:
+          name: engine-weekly-wheel-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/weekly-wheel
+      - name: Admit the frozen block before installation or model work
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, runpy, subprocess
+          from pathlib import Path
+          profile = json.loads(os.environ['PROFILE_JSON'])
+          run_root = Path(profile['root']) / f"github-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          run_root.mkdir(parents=True, exist_ok=False)
+          api = runpy.run_path('packages/kumo-engine/scripts/weekly_check.py')
+          manifest = api['load_manifest'](Path(profile['manifest']), os.environ['MANIFEST_SHA256'])
+          selected = [row for row in manifest['cases'] if (row['workload'] == 'P2') == (os.environ['PROFILE'] == 'scale')]
+          if len(selected) != (1 if os.environ['PROFILE'] == 'scale' else 10):
+              raise SystemExit('The admitted weekly shard differs from the approved eleven cases')
+          if os.environ['MODE'] == 'candidate':
+              api['verify_reference'](manifest, Path(profile['reference_root']), os.environ['REFERENCE_SHA256'])
+              wheel_root = Path(os.environ['RUNNER_TEMP']) / 'weekly-wheel'
+              build = json.loads((wheel_root / 'build.json').read_text())
+              [wheel] = wheel_root.glob('*.whl')
+              api['pinned'](wheel, build['wheel_sha256'])
+              version, wheel_sha = build['version'], build['wheel_sha256']
+          else:
+              wheel = Path(profile['reference_wheel'])
+              version, wheel_sha = manifest['reference']['version'], manifest['reference']['wheel_sha256']
+              api['pinned'](wheel, wheel_sha)
+          dependency = Path(profile['dependency_profile'])
+          for spec in selected:
+              api['verify_case_inputs'](spec)
+              api['pinned'](dependency, spec['identity']['dependency_sha256'])
+          packages = json.loads(dependency.read_text())
+          (run_root / 'dependencies.txt').write_text(''.join(f'{name}=={version}\n' for name, version in sorted(packages.items())))
+          (run_root / 'case-ids.json').write_text(json.dumps([row['id'] for row in selected]))
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              for name, value in dict(RUN_ROOT=run_root, WHEEL=wheel, VERSION=version, WHEEL_SHA256=wheel_sha,
+                  MANIFEST=profile['manifest'], DEPENDENCY_PROFILE=dependency, HOST_LOCK=profile['host_lock']).items():
+                  stream.write(f'{name}={value}\n')
+          PY
+      - name: Install the selected wheel in a fresh fixed environment
+        run: |
+          set -euo pipefail
+          python3.12 -m venv "$RUN_ROOT/venv"
+          "$RUN_ROOT/venv/bin/python" -I -m pip --isolated install --no-deps \
+            --index-url https://pypi.org/simple --report "$RUN_ROOT/dependency-install.json" -r "$RUN_ROOT/dependencies.txt"
+          "$RUN_ROOT/venv/bin/python" -I -m pip --isolated install --no-deps \
+            --report "$RUN_ROOT/wheel-install.json" "$WHEEL"
+          "$RUN_ROOT/venv/bin/python" -I -m pip --isolated check
+      - name: Run five bound CPU sampling operations
+        if: matrix.profile == 'scale'
+        run: |
+          python3 - <<'PY'
+          import json, os, runpy, subprocess
+          from pathlib import Path
+          root = Path(os.environ['RUN_ROOT'])
+          profile = json.loads(os.environ['PROFILE_JSON'])
+          binder = runpy.run_path('packages/kumo-engine/scripts/weekly_aux_bind.py')
+          selected = dict(mode=os.environ['MODE'], expected_prefix=str(root / 'venv'),
+              wheel=dict(path=os.environ['WHEEL'], version=os.environ['VERSION'], sha256=os.environ['WHEEL_SHA256']),
+              dependency_profile=dict(path=os.environ['DEPENDENCY_PROFILE'], sha256=binder['digest'](os.environ['DEPENDENCY_PROFILE'])),
+              host_lock=os.environ['HOST_LOCK'])
+          bound = binder['bind'](profile['auxiliary']['P1'], selected, root / 'portable/auxiliary-inputs/P1')
+          subprocess.run([str(root / 'venv/bin/python'), '-I', bound['runner'],
+              '--manifest', bound['manifest'], '--manifest-sha256', bound['manifest_sha256'],
+              '--output', str(root / 'portable/ancillary/P1')], check=True)
+          PY
+      - name: Run each selected case exactly once
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          root = Path(os.environ['RUN_ROOT'])
+          build_args = (['--build-receipt', str(Path(os.environ['RUNNER_TEMP']) / 'weekly-wheel/build.json')]
+                        if os.environ['MODE'] == 'candidate' else [])
+          for case in json.loads((root / 'case-ids.json').read_text()):
+              subprocess.run([str(root / 'venv/bin/python'), '-I', 'packages/kumo-engine/scripts/weekly_check.py', 'run',
+                  '--manifest', os.environ['MANIFEST'], '--manifest-sha256', os.environ['MANIFEST_SHA256'],
+                  '--case', case, '--mode', os.environ['MODE'], '--version', os.environ['VERSION'],
+                  '--wheel', os.environ['WHEEL'], '--wheel-sha256', os.environ['WHEEL_SHA256'],
+                  '--expected-prefix', str(root / 'venv'), '--dependency-profile', os.environ['DEPENDENCY_PROFILE'],
+                  '--host-lock', os.environ['HOST_LOCK'], '--output', str(root / 'portable/cases' / case), *build_args], check=True)
+          PY
+      - name: Run retained P2 prediction on one then two matching GPUs
+        if: matrix.profile == 'scale'
+        run: |
+          python3 - <<'PY'
+          import json, os, runpy, subprocess
+          from pathlib import Path
+          root = Path(os.environ['RUN_ROOT'])
+          profile = json.loads(os.environ['PROFILE_JSON'])
+          [case] = json.loads((root / 'case-ids.json').read_text())
+          binder = runpy.run_path('packages/kumo-engine/scripts/weekly_aux_bind.py')
+          selected = dict(mode=os.environ['MODE'], expected_prefix=str(root / 'venv'),
+              wheel=dict(path=os.environ['WHEEL'], version=os.environ['VERSION'], sha256=os.environ['WHEEL_SHA256']),
+              dependency_profile=dict(path=os.environ['DEPENDENCY_PROFILE'], sha256=binder['digest'](os.environ['DEPENDENCY_PROFILE'])),
+              host_lock=os.environ['HOST_LOCK'])
+          bound = binder['bind'](profile['auxiliary']['B9'], selected, root / 'portable/auxiliary-inputs/B9',
+              retained_case=root / 'portable/cases' / case / 'weekly-case.json')
+          subprocess.run([str(root / 'venv/bin/python'), '-I', bound['runner'],
+              '--manifest', bound['manifest'], '--manifest-sha256', bound['manifest_sha256'],
+              '--output', str(root / 'portable/ancillary/B9')], check=True)
+          PY
+      - name: Preserve models, raw results, and failed attempts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: engine-weekly-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.RUN_ROOT }}/portable
+            ${{ env.RUN_ROOT }}/*install.json
+            ${{ env.RUN_ROOT }}/case-ids.json
+          if-no-files-found: error
+          compression-level: 0
+
+  compare:
+    needs: [configure, gpu]
+    if: ${{ !cancelled() && needs.gpu.result == 'success' }}
+    runs-on: ${{ fromJSON(needs.configure.outputs.rtx).runner }}
+    timeout-minutes: 120
+    env:
+      MODE: ${{ needs.configure.outputs.mode }}
+      PROFILE_JSON: ${{ needs.configure.outputs.rtx }}
+      MANIFEST_SHA256: ${{ needs.configure.outputs.manifest_sha256 }}
+      REFERENCE_SHA256: ${{ needs.configure.outputs.reference_sha256 }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: engine-weekly-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/weekly-shards
+      - name: Require the complete block and preserve its comparison
+        run: |
+          python3 - <<'PY'
+          import json, os, runpy
+          from pathlib import Path
+          profile = json.loads(os.environ['PROFILE_JSON'])
+          api = runpy.run_path('packages/kumo-engine/scripts/weekly_check.py')
+          manifest = api['load_manifest'](Path(profile['manifest']), os.environ['MANIFEST_SHA256'])
+          reports = list((Path(os.environ['RUNNER_TEMP']) / 'weekly-shards').rglob('weekly-case.json'))
+          output = Path(profile['root']) / f"github-collected-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          records = {}
+          for path in (Path(os.environ['RUNNER_TEMP']) / 'weekly-shards').rglob('auxiliary-result.json'):
+              check = api['read'](path).get('check')
+              if check not in ('P1', 'B9') or check in records:
+                  raise ValueError('Auxiliary evidence is missing, unknown, or repeated')
+              records[check] = dict(path=str(path), sha256=api['digest'](path))
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write(f'BLOCK_ROOT={output}\n')
+          bundle = api['collect'](manifest, reports, output, os.environ['MODE'], ancillary_records=records)
+          pin = api['digest'](output / 'manifest.json')
+          if os.environ['MODE'] == 'candidate':
+              api['compare'](manifest, output, pin, Path(profile['reference_root']),
+                  os.environ['REFERENCE_SHA256'], output.with_name(output.name + '-comparison'))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
+              stream.write(f"Completed case block: eleven {os.environ['MODE']} fits. Manifest SHA-256: {pin}.\\n")
+              stream.write('Quality and resource differences report only. The separate performance reference remains required.\\n')
+              stream.write(f"P1/B9 coverage complete: {bundle['weekly_milestone_complete']}. P1 cache state stays unqualified.\\n")
+          if not bundle['weekly_milestone_complete']:
+              raise SystemExit('Complete bound P1 and B9 evidence is required for the weekly milestone')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: engine-weekly-complete-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.BLOCK_ROOT }}
+            ${{ env.BLOCK_ROOT }}-comparison
+          if-no-files-found: error
+          compression-level: 0
