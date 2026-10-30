@@ -1,9 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Summaries of a training table's splits and of a graph snapshot, read
-from the statistics their builds wrote (``split_stats.json``,
-``col_stats.json``, ``ingest_stats.json``), with no pass over the data."""
+r"""Split and snapshot summaries, from the stats files builds wrote."""
 
 import json
 import logging
@@ -34,8 +32,7 @@ _TAG_LENGTH = 5000
 
 
 def split_summaries(staging_dir: Path) -> List[Summary]:
-    r"""``data/<split>/rows`` and ``entities`` per split, and its label
-    balance: ``positive_rate``, or the label's mean, median, min and max."""
+    r"""Rows, entities and label balance per split."""
     stats = _read(staging_dir / 'split_stats.json')
     summaries: List[Summary] = []
     for split in _SPLITS:
@@ -63,8 +60,7 @@ def split_summaries(staging_dir: Path) -> List[Summary]:
 
 def snapshot_summaries(index: Path,
                        graph_config: Mapping[str, Any]) -> List[Summary]:
-    r"""The snapshot's tables and relations (`_graph_scalars`), their data
-    quality (`_quality`) and ``graph/col_stats`` with a row per column."""
+    r"""The snapshot's tables, relations, data quality and column stats."""
     ingest = _read(index / 'ingest_stats.json').get('stats') or {}
     columns: Dict[str, Dict[str, Any]] = _read(index / 'col_stats.json')
     relations = _relations(_read(index / 'edge_stats.json'), ingest)
@@ -90,10 +86,7 @@ def _profiles(columns: Mapping[str, Mapping[str, Any]]
 
 def _relations(edge_stats: Mapping[str, Any],
                ingest: Mapping[str, Any]) -> Dict[str, Dict[str, float]]:
-    r"""Each relation's ``count``, ``src_match_frac`` and ``dst_match_frac``
-    (the share of source and destination rows with an edge) and
-    ``fk_lookup_failures``, under DiskGraph's ``<src>_<fkey>_to_<dst>_<pkey>``
-    name."""
+    r"""Each relation's counts and match fractions, by DiskGraph name."""
     relations: Dict[str, Dict[str, float]] = {
         name: {'count': count}
         for name, count in (ingest.get('edge_counts') or {}).items()
@@ -133,9 +126,7 @@ def _graph_scalars(ingest: Mapping[str, Any],
 def _quality(ingest: Mapping[str, Any], columns: Mapping[str, Any],
              relations: Mapping[str, Mapping[str, float]],
              graph_config: Mapping[str, Any]) -> List[Summary]:
-    r"""``graph/<table>/{duplicate_pks,dropped_rows,null_time_dropped}`` and,
-    when any table breaks the Kumo platform's data checks, the tag
-    ``kumo.data_warnings`` naming each."""
+    r"""Per-table data quality, and ``kumo.data_warnings`` if any fail."""
     duplicates = _by_table(ingest.get('pk_duplicate_counts'), ':')
     null_time = _by_table(ingest.get('pk_null_timestamp_drops'), ':shard-')
     dropped = ingest.get('dropped_rows_counts') or {}
@@ -195,8 +186,7 @@ def _quality(ingest: Mapping[str, Any], columns: Mapping[str, Any],
 
 
 def table_details(index: Path) -> Details:
-    r"""Each source table's schema and profile, its rows and column
-    statistics, for its `Dataset`."""
+    r"""Each source table's schema and profile, for its `Dataset`."""
     rows = (_read(index / 'ingest_stats.json').get('stats')
             or {}).get('node_counts') or {}
     profiles = _profiles(_read(index / 'col_stats.json'))

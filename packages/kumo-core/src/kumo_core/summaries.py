@@ -1,12 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Small typed results of an evaluation or a data summary, named
-``<section>/<name>`` (``test/roc``, ``pred/True_PROB/hist``, ``graph/rows``).
-
-They know nothing about experiment trackers: each tracker maps these types to
-its own calls, so another rendering (a figure, a UI) is one more mapping.
-"""
+r"""Typed, tracker-neutral results, named ``<section>/<name>``."""
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Tuple, Union
