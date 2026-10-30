@@ -62,7 +62,7 @@ def test_summaries_match_the_snapshot_and_training_table(scratch):
 
     splits, = split_summaries(table.staging_dir)
     assert splits.brief and splits.columns == (
-        'split', 'rows', 'entities≈', 'positive rate')
+        'split', 'rows', 'users≈', 'positive rate')
     for split, row in zip(('train', 'val', 'test'), splits.rows):
         seeds = pd.read_parquet(table.staging_dir / f'{split}_seeds')
         assert row[:2] == (split, len(seeds))

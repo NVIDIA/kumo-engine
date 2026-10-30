@@ -10,9 +10,11 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.instrumentation import format_error
 from kumo_core.summaries import Note, Summary, Table, Tag
 
+from kumo.engine._card import entity
 from kumo.engine._manifest import Details
 
 logger = logging.getLogger(__name__)
@@ -42,9 +44,10 @@ _MIN_ROWS = 10
 
 
 def split_summaries(staging_dir: Path) -> List[Summary]:
-    r"""The brief table ``data/splits``: each split's rows, entities and
-    label balance, its positive rate or the label's mean, minimum and
-    maximum; and a note naming a numerical target's bins."""
+    r"""The brief table ``data/splits``: each split's rows, entities (by
+    the query's entity table) and label balance, its positive rate or the
+    label's mean, minimum and maximum; and a note naming a numerical
+    target's bins."""
     stats = _read(staging_dir / 'split_stats.json')
     tables = {split: stats.get(f'{split}_table_stats') for split in _SPLITS}
     tables = {split: table for split, table in tables.items()
@@ -57,24 +60,27 @@ def split_summaries(staging_dir: Path) -> List[Summary]:
         label = {name: f'target_{name}' for name in columns}
     elif any(set(target.get('count') or {}) <= {'true', 'false'}
              and (target.get('count') or {}) for target in targets.values()):
-        columns, label = ('entities≈', 'positive rate'), {}
+        columns, label = ('entities', 'positive rate'), {}
     else:
-        columns, label = ('entities≈',), {}
+        columns, label = ('entities',), {}
     rows = tuple(
         (split, _whole(table.get('num_train_rows')), *(
             _value(table, targets[split], name, label) for name in columns))
         for split, table in tables.items())
+    query = _read(staging_dir / PROVENANCE_FILE).get('query')
+    entities = f"{entity(query) or 'entities'}≈"
     summaries: List[Summary] = []
     if rows:
-        summaries.append(Table('data/splits', ('split', 'rows', *columns),
-                               rows, brief=True))
+        summaries.append(Table('data/splits', ('split', 'rows', *(
+            entities if name == 'entities' else name for name in columns)),
+            rows, brief=True))
     note = _bins_note((targets.get('train') or {}))
     return summaries + ([Note('notes', note)] if note else [])
 
 
 def _value(table: Mapping[str, Any], target: Mapping[str, Any], name: str,
            label: Mapping[str, str]) -> Optional[float]:
-    if name == 'entities≈':
+    if name == 'entities':
         return _at_most(_whole(table.get('num_entities')),
                         _whole(table.get('num_train_rows')))
     if name == 'positive rate':
