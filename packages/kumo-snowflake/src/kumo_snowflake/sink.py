@@ -205,20 +205,19 @@ class SnowflakeSinkBackend(SnowflakeModelRegistryMixin, _SnowflakeSessions):
         return self._qualified(connector, table_name)
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
-        """Refuse an occupied stage directory before scoring, unless
-        ``write_mode`` is ``OVERWRITE``; tables are not checked."""
+        """Refuse an occupied stage directory; tables are not checked."""
+        del write_mode
         from kumo_core.artifact_export import ArtifactDestinationConflict
         from pyarrow.fs import FileSelector
 
-        if (write_mode is WriteMode.OVERWRITE or not table_name.endswith('/')
+        if (not table_name.endswith('/')
                 or not self.holds_files(connector, table_name)):
             return
         filesystem, path = self.filesystem(connector, table_name)
         if filesystem.get_file_info(FileSelector(path, allow_not_found=True)):
             raise ArtifactDestinationConflict(
                 f"Output directory '{path}/' already contains data from "
-                f"another export. Choose an empty destination path, or "
-                f"replace it with write_mode=WriteMode.OVERWRITE.")
+                f"another export. Choose an empty destination path.")
 
     def holds_files(self, connector, path):
         """Whether ``path`` names a named internal stage location."""

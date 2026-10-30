@@ -265,9 +265,9 @@ def test_an_occupied_stage_directory_is_refused_before_scoring(
     pd.DataFrame({'ID': [1]}).to_parquet(part)
     sink.write_files(object(), target, [str(part)], export_id='r1')
 
-    with pytest.raises(ArtifactDestinationConflict, match='/predictions/r1/'):
-        sink.preflight_write_files(object(), target)
-    sink.preflight_write_files(object(), target,
-                               write_mode=WriteMode.OVERWRITE)
+    for mode in (None, WriteMode.OVERWRITE):
+        with pytest.raises(ArtifactDestinationConflict,
+                           match='/predictions/r1/'):
+            sink.preflight_write_files(object(), target, write_mode=mode)
     sink.preflight_write_files(object(), f'{ROOT}/predictions/r2/')
     sink.preflight_write_files(object(), 'SCORES')
