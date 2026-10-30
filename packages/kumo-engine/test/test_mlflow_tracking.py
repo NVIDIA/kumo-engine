@@ -704,6 +704,26 @@ def test_series_and_histograms_become_one_table_per_name_prefix(
         'data': [[None, 5.0, 2, 0.5], [5.0, None, 2, 1.0]]}
 
 
+def test_charted_series_become_metrics_over_their_steps(tracking_uri):
+    from kumo_core.summaries import Series
+
+    from kumo.engine._tracking import RunRecord
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    tracker = MlflowTracking(experiment_name='e', log_system_metrics=False)
+    tags = {'kumo.kind': 'prediction'}
+    tracker.start(RunRecord(name='r', tags=tags))
+    tracker.finish(RunRecord(name='r', tags=tags, summaries=(
+        Series('pred/c@d_count_by_score_pct', ((0, 3.0), (1, 0.0)),
+               'score_pct', chart=True),)), None)
+
+    run = mlflow.get_run(tracker.run_id)
+    history = mlflow.MlflowClient().get_metric_history(
+        tracker.run_id, 'pred/c_at_d_count_by_score_pct')
+    assert [(m.step, m.value) for m in history] == [(0, 3.0), (1, 0.0)]
+    assert 'mlflow.loggedArtifacts' not in run.data.tags
+
+
 NOTES = "Notes below this line are kept; edits above it stop kumo's updates."
 
 

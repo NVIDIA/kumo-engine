@@ -870,9 +870,9 @@ class MlflowTracking:
                       run_id: Optional[str] = None) -> None:
         r"""Logs each summary on run ``run_id`` (default: the current run)
         through its type's call in `_SINKS`: values as metrics, a
-        ``role='model'`` scalar also on the logged model; series and
-        histograms as one table per name prefix; brief tables and notes for
-        the run's card."""
+        ``role='model'`` scalar also on the logged model; charted series as
+        metrics over their steps; other series and histograms as one table
+        per name prefix; brief tables and notes for the run's card."""
         self._pending = _Pending()
         for summary in summaries:
             _SINKS[type(summary)](self, summary)
@@ -884,6 +884,11 @@ class MlflowTracking:
                           model_id=self._model_id)
         self._log_metrics(run_id, {s.name: s.value for s in scalars
                                    if s.role != 'model'})
+        if pending.charts:
+            timestamp = int(time.time() * 1000)
+            self._log_readings(self._client, run_id, [
+                (values, step, timestamp)
+                for step, values in by_step(pending.charts)])
         if pending.tags:
             self._log_tags(run_id, pending.tags)
         self._write_tables(run_id, [*pending.grouped.tables(),
@@ -902,7 +907,10 @@ class MlflowTracking:
         self._pending.tags[summary.name] = summary.value
 
     def _log_series(self, summary: Series) -> None:
-        self._pending.grouped.add_series(summary)
+        if summary.chart:
+            self._pending.charts[summary.name] = summary.points
+        else:
+            self._pending.grouped.add_series(summary)
 
     def _log_curve(self, summary: Curve) -> None:
         self._pending.grouped.add_curve(summary)
@@ -1039,6 +1047,8 @@ class _Pending:
     `_SINKS` and written in batches."""
 
     scalars: List[Scalar] = field(default_factory=list)
+    charts: Dict[str, Tuple[Tuple[int, float], ...]] = field(
+        default_factory=dict)
     tags: Dict[str, str] = field(default_factory=dict)
     grouped: SummaryTables = field(default_factory=SummaryTables)
     tables: List[Table] = field(default_factory=list)

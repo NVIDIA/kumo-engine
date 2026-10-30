@@ -30,11 +30,14 @@ class Tag:
 
 @dataclass(frozen=True)
 class Series:
-    r"""``(step, value)`` points; ``x_label`` says what a step counts."""
+    r"""``(step, value)`` points; ``x_label`` says what a step counts;
+    ``chart`` asks for a chart over the steps where a tracker draws one,
+    rather than a table."""
 
     name: str
     points: Tuple[Tuple[int, float], ...]
     x_label: str = 'step'
+    chart: bool = False
 
 
 @dataclass(frozen=True)
