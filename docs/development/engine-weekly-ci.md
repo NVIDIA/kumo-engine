@@ -115,6 +115,10 @@ Manual `reference` mode creates only the eleven approved reference fits. Schedul
 
 Jobs preserve failures, binding receipts, and raw evidence. Collection receives both auxiliary records. Missing or invalid P1/B9 evidence keeps `weekly_milestone_complete` false and fails the workflow. A later candidate run still needs native end-to-end validation. The current Q15 reference keeps its exact eight identities, including harness source. A later replay-helper change needs a reviewed same-fit compatibility repair or a missing-compatible-reference report. It does not permit another fit or an identity waiver.
 
+During the manual initial reference block, keep complete evidence on the durable test hosts. Use compact local summaries, hash rosters, scores, and failure details while cases progress. Defer full model, raw prediction, and prepared-row copies until after testing or before scratch space must be reclaimed. A strict remote pass can release the next approved case without a full local copy. Preserve all remote evidence and partial transfers.
+
+Legacy replay remains a known gap. The frozen Q15 loader requires installed `1.0.0`. P2 keeps the approved `1.0.0` capacity and preparation contract. Their candidate replay needs compatible reference and replay evidence. Source or runtime changes must still satisfy all eight selected identities. The initial approved reference evidence stays valid for its frozen identity; it does not prove the later candidate route. Do not waive an identity or launch another eleven-fit block to close this gap during initial reference work.
+
 The scheduled time is Sunday at 00:30 UTC. Change that schedule only as part of a reviewed configuration change. Runs do not cancel an earlier weekly run. Host locks still control actual GPU use. Missing runner bindings, storage, capacity, source, or reference evidence must fail explicitly. This change does not register runners or create another service.
 
 ## Evidence and remaining validation
