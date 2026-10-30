@@ -229,8 +229,12 @@ jobs:
           python3 packages/kumo-engine/scripts/check_pypi_requirements.py
           dist/kumo_engine-*.whl --platform "${WHEEL_PLATFORM}"
 
+  platform-qualification:
+    needs: [build]
+    uses: ./.github/workflows/kumo-engine-platform-smoke.yml
+
   attach-to-release:
-    needs: [build, check-requirements]
+    needs: [build, check-requirements, platform-qualification]
     if: ${{ github.event_name == 'release' }}
     strategy:
       fail-fast: false
