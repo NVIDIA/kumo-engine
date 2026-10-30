@@ -654,7 +654,7 @@ class TrackingSession:
         self.spec: Optional[RunSpec] = None
         self._trials: Dict[int, List[Event]] = {}
         # A series' first point waits for its second: a line, not a dot.
-        self._first_epoch: Dict[Optional[int], Any] = {}
+        self._first_epoch: Dict[Any, Any] = {}
         self._search: Optional[_Search] = None
         self._jobs: 'queue.Queue[Optional[Callable[[], Any]]]' = queue.Queue(
             QUEUE_SIZE)
@@ -723,7 +723,9 @@ class TrackingSession:
                 }))
             logged = dataclasses.replace(event,
                                          metrics=logged_names(event.metrics))
-            for each in self._once_a_line(event.trial, event, logged):
+            for each in self._once_a_line(
+                    (event.trial, event.params.get('attempt')), event,
+                    logged):
                 self._submit(lambda each=each: self._call(
                     lambda tracker: tracker.on_trial(record, each)))
         series = None if self._search is None else self._search.on(event)
@@ -734,7 +736,7 @@ class TrackingSession:
                     lambda tracker: getattr(tracker, 'log_metrics', _none)(
                         metrics, step)))
 
-    def _once_a_line(self, key: Optional[int], event: Event,
+    def _once_a_line(self, key: Any, event: Event,
                      item: Any) -> List[Any]:
         r"""What to log for ``event`` of the series ``key``: an epoch after
         the series' second with its first, nothing for the first alone."""
