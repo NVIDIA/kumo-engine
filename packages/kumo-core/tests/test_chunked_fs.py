@@ -137,8 +137,8 @@ def test_a_write_removes_the_other_form(store, first, second):
 @pytest.mark.parametrize('sized', [False, True])
 @pytest.mark.parametrize('streams', [False, True])
 @pytest.mark.parametrize('old', [3, 2 * PART])
-def test_a_failed_chunked_write_leaves_the_old_file(monkeypatch, streams,
-                                                     sized, old):
+def test_a_failed_chunked_write_leaves_the_old_file(
+        monkeypatch, streams, sized, old):
     from kumo_core.object_store_sink import open_sized
 
     handler = StreamingHandler() if streams else MemoryHandler()
