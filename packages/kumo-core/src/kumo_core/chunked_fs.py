@@ -19,7 +19,6 @@ from typing import (
     Optional,
     Protocol,
     Tuple,
-    Union,
 )
 
 import pyarrow as pa
@@ -29,13 +28,13 @@ PART_BYTES = 256 << 20
 CHUNKS = '.chunks'
 DONE = '_SUCCESS'
 SIZE_KEY = 'kumo-size'
-_spool_dir: Union[None, str, Callable[[], str]] = None
+_spool_dir: Optional[Callable[[], str]] = None
 
 
-def set_spool_dir(path: Union[None, str, Callable[[], str]]) -> None:
+def set_spool_dir(spool_dir: Optional[Callable[[], str]]) -> None:
     r"""Where writers spool parts unless a handler sets ``spool_dir``."""
     global _spool_dir
-    _spool_dir = path
+    _spool_dir = spool_dir
 
 
 class Part(Protocol):
@@ -47,8 +46,7 @@ class Part(Protocol):
 
 
 def spool_root(handler: 'ChunkedFileHandler') -> Optional[str]:
-    root = handler.spool_dir or (_spool_dir()
-                                 if callable(_spool_dir) else _spool_dir)
+    root = handler.spool_dir or (_spool_dir() if _spool_dir else None)
     if root is not None:
         os.makedirs(root, exist_ok=True)
     return root

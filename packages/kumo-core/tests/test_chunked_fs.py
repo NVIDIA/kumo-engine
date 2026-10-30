@@ -229,7 +229,7 @@ def test_parts_spool_under_the_spool_dir_and_are_removed(
         store, tmp_path, monkeypatch):
     handler, fs = store
     monkeypatch.setattr(chunked_fs, '_spool_dir', None)
-    chunked_fs.set_spool_dir(str(tmp_path / 'scratch'))
+    chunked_fs.set_spool_dir(lambda: str(tmp_path / 'scratch'))
     _write(fs, 'root/a.bin', b'a' * (2 * PART + 1))
     handler.spool_dir = str(tmp_path / 'own')
     _write(fs, 'root/b.bin', b'b')
