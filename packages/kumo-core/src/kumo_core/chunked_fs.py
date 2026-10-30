@@ -1,21 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""A pyarrow filesystem over stores that only put, list, read and remove.
-
-A file larger than :attr:`ChunkedFileHandler.part_bytes` is stored as
-``<name>.chunks/<generation>/00000 ... NNNNN`` followed by an empty
-``_SUCCESS``; anything smaller is one plain object. Readers see one logical
-file either way. A write removes the other form and older generations only
-once its own is committed, and a write that failed commits nothing; if a
-crash leaves both forms, the plain object wins, and of several committed
-generations the newest. A writer
-spools one part at a time on local disk, under :func:`spool_root`. A handler
-that can stream an upload implements ``_stream``: a writer told the size
-(:data:`SIZE_KEY` in the stream metadata) streams a file of up to
-``part_bytes`` as one plain object and a larger one as parts, without local
-disk; without a size, up to ``plain_bytes`` is spooled and stays plain.
-"""
+r"""A pyarrow filesystem storing large files as ``<name>.chunks/`` parts."""
 
 import contextlib
 import io
@@ -42,14 +28,12 @@ from pyarrow.fs import FileInfo, FileSystemHandler, FileType
 PART_BYTES = 256 << 20
 CHUNKS = '.chunks'
 DONE = '_SUCCESS'
-#: Stream metadata key carrying the size a written file will have.
 SIZE_KEY = 'kumo-size'
 _spool_dir: Union[None, str, Callable[[], str]] = None
 
 
 def set_spool_dir(path: Union[None, str, Callable[[], str]]) -> None:
-    r"""Where writers spool parts unless a handler sets ``spool_dir``: a
-    path, a callable read at each write, or ``None`` (tempfile's)."""
+    r"""Where writers spool parts unless a handler sets ``spool_dir``."""
     global _spool_dir
     _spool_dir = path
 
@@ -63,8 +47,6 @@ class Part(Protocol):
 
 
 def spool_root(handler: 'ChunkedFileHandler') -> Optional[str]:
-    r"""Where ``handler`` stages local copies: its ``spool_dir``, else the
-    :func:`set_spool_dir` directory (created), else None (tempfile's)."""
     root = handler.spool_dir or (_spool_dir()
                                  if callable(_spool_dir) else _spool_dir)
     if root is not None:
@@ -73,35 +55,29 @@ def spool_root(handler: 'ChunkedFileHandler') -> Optional[str]:
 
 
 class ChunkedFileHandler(FileSystemHandler):
-    r"""Subclasses supply the five store primitives below, and optionally
-    ``_stream``."""
+    r"""Subclasses supply the store primitives below."""
     part_bytes = PART_BYTES
     spool_dir: Optional[str] = None
-    #: Largest plain file when ``_stream`` is implemented (<= part_bytes).
     plain_bytes = PART_BYTES
 
     def _stream(self, path: str) -> BinaryIO:
-        r"""Override to stream parts: a writable whose ``close`` commits the
-        object at ``path``."""
+        r"""Optional: a writable whose ``close`` commits ``path``."""
         raise NotImplementedError
 
     def _size(self, path: str) -> Optional[int]:
-        r"""Size of exactly the object at ``path``, or ``None``."""
         raise NotImplementedError
 
     def _list(self, directory: str) -> Dict[str, int]:
-        r"""Every object below ``directory/``, by full path."""
         raise NotImplementedError
 
     def _put(self, local: str, path: str) -> None:
-        r"""Uploads ``local``, whose basename matches ``path``'s."""
+        r"""Upload ``local``; its basename matches ``path``'s."""
         raise NotImplementedError
 
     def _part(self, path: str, size: int) -> Part:
         raise NotImplementedError
 
     def _remove(self, path: str, *, tree: bool) -> None:
-        r"""Removes the object at ``path``, or everything below it."""
         raise NotImplementedError
 
     def normalize_path(self, path):
@@ -120,8 +96,6 @@ class ChunkedFileHandler(FileSystemHandler):
         return layout
 
     def _forget(self, path: str) -> None:
-        r"""Drops cached layouts at or below ``path``; writes and deletes
-        through this handler call it."""
         cache = self.__dict__.get('_layouts', {})
         path = path.rstrip('/')
         for name in list(cache):
@@ -229,7 +203,6 @@ def _logical_parts(objects: Dict[str, int],
 
 
 def _logical_files(objects: Dict[str, int]) -> Dict[str, int]:
-    r"""Collapses committed ``.chunks`` directories into their files."""
     files: Dict[str, int] = {}
     chunked: Dict[str, Dict[str, int]] = {}
     for path, size in objects.items():
