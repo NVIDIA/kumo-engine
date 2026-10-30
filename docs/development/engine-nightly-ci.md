@@ -1,53 +1,51 @@
 # Engine nightly check
 
-The nightly check trains sixteen fresh models on the frozen PR172 `100M`
-profiles. Each of eight tasks runs once with normal answers and once with
-scrambled answers. It reuses the PR runner's model recipes with seed zero.
+One job uses the existing `linux-amd64-gpu-t4-latest-1` runner and GPU0.
+It builds and installs the selected wheel, runs sixteen cases in order,
+runs required behavior checks, compares results, and uploads artifacts.
+Each of eight tasks uses seed zero with normal and scrambled answers.
+Keep the frozen PR172 `100M` data and complete training recipes.
 
-One workflow job runs on one existing RTX host and CI runner, using GPU0.
-It builds the selected wheel, installs it, runs all sixteen cases in order,
-runs the required behavior checks, compares results, and uploads artifacts.
-Behavior checks include the quickstart, weighted training, time filters,
-prediction counts, warm starts, and model reuse in a fresh process. Count
-those extra fits separately. The shared host lock prevents overlapping
-model work. The two retained hosts can supply reference-data collection.
+Require actual CUDA work, complete finite predictions, exact saved state,
+reload checks, native input rules, and valid filtered rankings.
+Missing or failed checks fail the job. Quality and unqualified numerical
+differences report only. Count extra behavior fits separately.
 
-Every primary case requires real CUDA work, the complete training recipe,
-complete finite predictions, repeat and partial predictions, and exact
-checkpoint restoration. Link predictions require a certified ranking after
-filtering known connections. Failed execution or missing results fail the
-required job. Quality and unqualified numerical differences report only.
+## Inputs and reference
 
-The reference is the approved `kumo-engine==1.0.0` wheel. Its sixteen
-completed fits and retained recovery results become a pinned, data-only
-reference index. Routine CI does not rerun reference fits or execute old
-audit scripts. Each candidate uses the same frozen input files, queries,
-splits, model recipes, and prediction populations.
+The [input descriptor](../../packages/kumo-engine/test/nightly/inputs.json)
+pins the private S3 archive, input manifest, and reference checksums.
+The job downloads data into temporary storage through existing AWS access.
+AWS download tools stay outside the measured Engine environment.
+The approved wheel requires Lightning 2.6.5; the candidate requires 2.6.6.
+Pin each complete 98-package runtime and report this dependency difference.
 
-## Run configuration
+The initial descriptor uses the RTX recipe predecessor for setup only.
+It cannot pass an ordinary T4 comparison.
+Collect the initial T4 reference with manual input `reference_only: true`.
+This installs the exact approved `kumo-engine==1.0.0` wheel and runs the same
+sixteen cases and behavior checks. It exports a verified reference index.
+Admit that index in immutable storage and update the descriptor checksum
+before running ordinary candidate comparisons. Keep RTX results historical.
+They cannot qualify the T4 reference. Ordinary runs reuse the saved T4
+reference and train only sixteen fresh primary candidate models.
 
-The workflow starts at 10:00 UTC daily, or manually with `product_ref`.
-Trusted copied PR branches also run it when the nightly implementation or
-shared GPU tests change. Manual dispatch requires the workflow on the
-default branch. No complete nightly runtime limit is qualified yet.
+Reference and candidate hardware profiles must match, including driver,
+Torch/CUDA, GPU model and memory, architecture, and thread settings.
+Record each runner's GPU UUID without requiring the same physical device.
 
-Set these repository variables after verifying the existing RTX route:
+Record operation times, sampled process-tree RAM, device GPU memory,
+and Torch allocations. PSS counts each process's share of shared RAM.
+Summed RSS can count shared RAM more than once.
+Record graph preparation, training, predictions, and model loading separately.
+The engine total excludes build, installation, and separate behavior checks.
+Report comparable changes against the T4 reference. Missing measurements stay
+unavailable. These measurements set no performance limits.
 
-| Variable | Value |
-| --- | --- |
-| `KUMO_ENGINE_NIGHTLY_RTX_RUNNER` | Existing runner label for the selected retained RTX host |
-| `KUMO_ENGINE_NIGHTLY_ROOT` | Common absolute root containing `inputs/`, `reference.json`, and the existing shared `gpu-study.lock` |
-| `KUMO_ENGINE_NIGHTLY_INPUT_SHA256` | SHA-256 of `inputs/manifest.json` |
-| `KUMO_ENGINE_NIGHTLY_REFERENCE_SHA256` | SHA-256 of `reference.json` |
+## Schedule and capacity
 
-The selected host requires the admitted data and metadata. The input
-manifest pins the frozen 98-package runtime and allowed GPUs. The installer
-uses a fresh Python 3.12 environment, public PyPI, and the exact candidate wheel.
-It checks installed files against that archive. The workflow retains raw
-results, models, installation receipts, and build identity. Full input data
-and native indexes stay on the selected host.
-
-The previous GitHub GPU run used a managed T4. Successful SSH tests on the
-retained RTX hosts do not establish GitHub dispatch to them. Their route,
-final data admission, and a complete automated candidate run remain to be
-verified. This workflow creates no runners and publishes no packages.
+Run daily at 10:00 UTC, manually with `product_ref`, or through approved
+copied PR branches. Normal NVIDIA workflow vetting still applies.
+The T4 catalog lists 6 CPUs, 24G RAM, and 150G SSD. Full-workload capacity
+and complete runtime remain unverified. Keep inputs and work unchanged if
+capacity fails. This workflow creates no machines and publishes no packages.

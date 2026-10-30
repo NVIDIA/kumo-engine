@@ -12,10 +12,14 @@ import importlib.util
 import inspect
 import json
 import math
+import os
+import platform
 import random
+import re
 import resource
 import shutil
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -36,6 +40,16 @@ STAGES = ('train', 'val', 'test')
 PREDICTIONS = ('predict', 'repeat', 'partial', 'reload')
 KEY_FAILURES = ('key_parse_failures', 'key_lookup_failures',
                 'key_membership_failures', 'pk_duplicate_total')
+REFERENCE_WHEEL = '1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e'
+HARDWARE = ('gpu', 'gpu_count', 'gpu_memory_bytes', 'driver', 'architecture',
+            'compute_capability', 'torch', 'cuda', 'threads')
+RESOURCE_FIELDS = ('elapsed_seconds', 'cpu_self_seconds',
+                   'cpu_tree_pss_sampled_peak_bytes',
+                   'cpu_tree_rss_sampled_peak_bytes',
+                   'cuda_device_used_sampled_peak_bytes',
+                   'torch_allocated_sampled_peak_bytes',
+                   'torch_reserved_sampled_peak_bytes',
+                   'torch_peak_allocated_bytes', 'torch_peak_reserved_bytes')
 
 
 def digest(path):
@@ -59,6 +73,106 @@ def save(path, value):
 
 def read(path):
     return json.loads(Path(path).read_text())
+
+
+def start_measurement(scope):
+    import psutil
+    import torch
+
+    started, cpu = time.monotonic(), time.process_time()
+    result = dict(format='kumo-nightly-resources-v1', scope=scope,
+                  sample_interval_seconds=.2, samples=0, cpu_read_errors=0,
+                  cuda_read_errors=0)
+    fields = RESOURCE_FIELDS[2:7]
+    result.update({key: None for key in RESOURCE_FIELDS})
+    process, stopped = psutil.Process(), threading.Event()
+
+    def sample():
+        result['samples'] += 1
+        rss, pss = 0, 0
+        try:
+            for child in [process, *process.children(recursive=True)]:
+                try:
+                    memory = child.memory_full_info()
+                    rss += memory.rss
+                    pss += memory.pss
+                except psutil.NoSuchProcess:
+                    continue
+            for key, value in zip(fields[:2], (pss, rss), strict=True):
+                result[key] = max(result[key] or 0, value)
+        except (psutil.Error, AttributeError):
+            result['cpu_read_errors'] += 1
+        try:
+            free, total = torch.cuda.mem_get_info()
+            result[fields[2]] = max(result[fields[2]] or 0, total - free)
+            memory = torch.cuda.memory_allocated(), torch.cuda.memory_reserved()
+            for key, value in zip(fields[3:], memory, strict=True):
+                result[key] = max(result[key] or 0, value)
+        except (RuntimeError, AssertionError, AttributeError, OSError):
+            result['cuda_read_errors'] += 1
+
+    def monitor():
+        while not stopped.wait(result['sample_interval_seconds']):
+            sample()
+
+    sample()
+    thread = threading.Thread(target=monitor, daemon=True)
+    thread.start()
+
+    def finish():
+        stopped.set()
+        thread.join()
+        sample()
+        result.update(elapsed_seconds=time.monotonic() - started,
+                      cpu_self_seconds=time.process_time() - cpu)
+        if result['cpu_read_errors']:
+            result.update({key: None for key in fields[:2]})
+        if result['cuda_read_errors']:
+            result.update({key: None for key in fields[2:]})
+
+    return result, finish
+
+
+@contextmanager
+def measure_operation(report, name, scope):
+    values, finish = start_measurement(scope)
+    report.setdefault('operation_measurements', {})[name] = values
+    try:
+        yield
+    finally:
+        finish()
+        report.setdefault('timings', {})[name] = values['elapsed_seconds']
+
+
+def measurement_differences(current, baseline):
+    compatible = (current.get('format') == baseline.get('format') ==
+                  'kumo-nightly-resources-v1' and bool(current.get('scope'))
+                  and current.get('scope') == baseline.get('scope')
+                  and current.get('sample_interval_seconds')
+                  == baseline.get('sample_interval_seconds'))
+    timers = set(current.get('timings', {})) | set(baseline.get('timings', {}))
+    values, unavailable = {}, {}
+    for key in [
+            *RESOURCE_FIELDS, *('timings.' + key for key in sorted(timers))
+    ]:
+
+        def value(source):
+            return source.get('timings', {}).get(
+                key[8:]) if key.startswith('timings.') else source.get(key)
+
+        left, right = value(current), value(baseline)
+        valid = compatible and all(
+            type(v) in (int, float) and math.isfinite(v) and v >= 0
+            for v in (left, right))
+        values[key] = dict(current=left, reference=right,
+                           difference=left - right if valid else None)
+        if not valid:
+            unavailable[
+                key] = 'scope_mismatch_or_missing' if not compatible else 'measurement_missing_or_invalid'
+    return dict(
+        status='UNAVAILABLE' if len(unavailable) == len(values) else
+        'PARTIAL' if unavailable else 'MEASURED', policy='report_only',
+        metrics=values, unavailable=unavailable)
 
 
 def verify_artifacts(root, files, required=()):
@@ -91,7 +205,8 @@ def load_inputs(root, expected):
     if manifest.is_symlink() or digest(manifest) != expected:
         raise ValueError('Input manifest checksum differs')
     spec = read(manifest)
-    if spec.get('format') != 'kumo-engine-nightly-inputs-v1':
+    if (spec.get('format') != 'kumo-engine-nightly-inputs-v1'
+            or spec.get('gpu_model') != 'T4'):
         raise ValueError('Use the admitted nightly data manifest')
     if not isinstance(spec.get('files'), dict) or not spec['files']:
         raise ValueError('Input manifest needs exact regular-file hashes')
@@ -117,6 +232,7 @@ def load_inputs(root, expected):
                 'Admitted native key failures must be exactly four integer zeros'
             )
     safe_file(root, spec['candidate_dependencies'], spec['files'])
+    safe_file(root, spec['reference_dependencies'], spec['files'])
     for graph in spec['graphs'].values():
         safe_file(root, graph['schema'], spec['files'])
         for source in graph['sources'].values():
@@ -135,18 +251,74 @@ def load_inputs(root, expected):
 
 def check_dependencies(packages, profile):
     normalize = lambda name: name.lower().replace('_', '-').replace('.', '-')
-    if {
+    if len(packages) != 98 or len(profile) != 98 or {
             normalize(k): v
             for k, v in packages.items()
-    } != {
-            normalize(k): v
-            for k, v in profile.items()
-    }:
+    } != {normalize(k): v
+          for k, v in profile.items()}:
         raise ValueError(
             'Installed non-Engine packages differ from the frozen profile')
 
 
-def verify_runtime(version, profile, allowed_uuids):
+def hardware_profile(runtime):
+    if (runtime['gpu'] not in ('Tesla T4', 'NVIDIA T4')
+            or type(runtime['gpu_count']) is not int
+            or runtime['gpu_count'] != 1 or runtime['architecture'] != 'x86_64'
+            or runtime['compute_capability'] != [7, 5]
+            or type(runtime['gpu_memory_bytes']) is not int
+            or runtime['gpu_memory_bytes'] <= 0 or runtime['threads'] != 4
+            or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)+', runtime['driver'])):
+        raise ValueError(
+            'Runtime hardware is not the managed single T4 profile')
+    uuid.UUID(runtime['gpu_uuid'].removeprefix('GPU-'))
+    return {key: runtime[key] for key in HARDWARE}
+
+
+def check_reference_runtime(reference, runtime, reference_only):
+    observed = hardware_profile(runtime)
+    if not reference_only and observed != reference.get(
+            'reference_runtime', {}).get('reference_hardware'):
+        raise ValueError('Reference and candidate hardware profiles differ')
+
+
+def load_reference(args):
+    reference = read(args.reference)
+    if (digest(args.reference) != args.reference_sha256
+            or reference.get('input_manifest_sha256') != args.input_sha256
+            or reference.get('format') != 'kumo-engine-nightly-reference-v1'
+            or reference.get('version') != '1.0.0'
+            or reference.get('wheel_sha256') != REFERENCE_WHEEL):
+        raise ValueError('Approved reference or input-manifest binding differs')
+    return reference
+
+
+def reference_cases(reference, manifest):
+    references = {(v['task'], v['arm']): v for v in reference['cases']}
+    admitted = {(v['task'], v['arm']): v for v in manifest['cases']}
+    if (len(reference['cases']) != 16 or set(references) != set(admitted)
+            or len({v['fit_id']
+                    for v in reference['cases']}) != 16 or len(admitted) != 16):
+        raise ValueError('Reference requires sixteen distinct admitted cases')
+    for key, previous in references.items():
+        case = admitted[key]
+        if (type(previous['seed']) is not int or previous['seed'] != 0 or
+                previous['input_signature'] != input_signature(manifest, case)
+                or previous['metric'] != smoke.TASKS[key[0]]['metric']
+                or not previous['fit_id'] or
+                not re.fullmatch('[0-9a-f]{64}', previous['checkpoint_sha256'])
+                or any(
+                    type(previous[k]) not in
+                    (int, float) or not math.isfinite(previous[k])
+                    for k in ('score', 'baseline'))
+                or any(previous[k] != case[k]
+                       for k in ('resolved_plan_sha256', 'selected_plan_sha256',
+                                 'trainer_config_sha256'))):
+            raise ValueError(
+                'Reference input, recipe or measurement identity differs')
+    return references
+
+
+def verify_runtime(version, profile):
     import torch
 
     import kumo.engine as kumo
@@ -158,22 +330,29 @@ def verify_runtime(version, profile, allowed_uuids):
         if normalize(d.metadata['Name']) != 'kumo-engine'
     }
     check_dependencies(packages, profile)
-    if (sys.platform != 'linux' or sys.version_info[:2] != (3, 12)
+    if (sys.platform != 'linux' or platform.machine() != 'x86_64'
+            or sys.version_info[:2] != (3, 12)
             or importlib.metadata.version('kumo-engine') != version
-            or kumo.__version__ != version or
-            not Path(kumo.__file__).resolve().is_relative_to(Path(sys.prefix))
-            or not torch.cuda.is_available() or torch.cuda.device_count() != 1):
+            or kumo.__version__ != version
+            or not Path(kumo.__file__).resolve().is_relative_to(
+                Path(sys.prefix).resolve()) or not torch.cuda.is_available()
+            or torch.cuda.device_count() != 1):
         raise ValueError(
             'Use the installed Linux3.12 wheel and one actual CUDA GPU')
     torch.set_num_threads(4)
     properties = torch.cuda.get_device_properties(0)
     identifier = str(properties.uuid)
     uuid.UUID(identifier.removeprefix('GPU-'))
-    if ('RTX PRO 6000' not in properties.name or not allowed_uuids
-            or identifier.removeprefix('GPU-')
-            not in {v.removeprefix('GPU-')
-                    for v in allowed_uuids}):
-        raise ValueError('CUDA work requires an admitted retained RTX GPU')
+    if (properties.name not in ('Tesla T4', 'NVIDIA T4')
+            or (properties.major, properties.minor) != (7, 5)
+            or properties.total_memory <= 0):
+        raise ValueError('CUDA work requires the managed single T4 profile')
+    driver = subprocess.check_output([
+        'nvidia-smi', '--id=GPU-' + identifier.removeprefix('GPU-'),
+        '--query-gpu=driver_version', '--format=csv,noheader'
+    ], text=True).strip()
+    if not re.fullmatch(r'[0-9]+(?:\.[0-9]+)+', driver):
+        raise ValueError('CUDA driver identity is missing or ambiguous')
     direct = json.loads(
         importlib.metadata.distribution('kumo-engine').read_text(
             'direct_url.json'))
@@ -181,7 +360,9 @@ def verify_runtime(version, profile, allowed_uuids):
     if len(wheel_hash) != 64:
         raise ValueError('Installed wheel archive identity is missing')
     return dict(version=version, dependencies=packages, gpu=properties.name,
-                gpu_uuid=identifier,
+                gpu_count=1, driver=driver, architecture=platform.machine(),
+                compute_capability=[properties.major,
+                                    properties.minor], gpu_uuid=identifier,
                 gpu_memory_bytes=int(properties.total_memory),
                 torch=torch.__version__, cuda=torch.version.cuda, threads=4,
                 import_path=kumo.__file__, wheel_sha256=wheel_hash)
@@ -745,73 +926,65 @@ def run_case(root, manifest, case, graph, snapshot, output):
     report = dict(task=task, arm=case['arm'], seed=0, status='RUNNING',
                   work=state)
     state['ledger_path'] = str(output / 'core-fits.json')
-    table, stages, descriptor = load_table(root, manifest['files'], case)
-    truth = stage_frame(table, stages['test'])
-    full = pd.read_parquet(
-        safe_file(root, case['prediction_input'], manifest['files']))
-    partial = pd.read_parquet(
-        safe_file(root, case['partial_input'], manifest['files']))
-    ids = check_inputs(full, truth, static=task == 'static_link')
-    partial_ids = check_inputs(partial, truth, partial=True,
-                               static=task == 'static_link')
-    truth = truth.set_index('ENTITY1').loc[ids].reset_index()
-    if task == 'forecasting' and any(
-            len(v) != 12 for col in ('autoregression_labels', 'future_labels')
-            for v in truth[col]):
-        raise ValueError(
-            'Forecast inputs/answers require all twelve coordinates')
-    query = kumo.PredictiveQuery(graph, descriptor['query'])
-    query.validate()
-    plan = smoke.make_plan(task)
-    if signature(plan.as_json()) != case['requested_plan_sha256']:
-        raise ValueError('Requested full seed-zero model recipe differs')
-    save(output / 'requested-plan.json', plan.as_json())
-    save(output / 'generation-plan.json', descriptor['generation_plan'])
-    report['input_signature'] = input_signature(manifest, case)
-    classes = case.get('classes', [])
-    catalog = []
-    if task.endswith('link'):
-        spec = case['catalog']
-        catalog = pd.read_parquet(
-            safe_file(root, spec['path'], manifest['files']),
-            columns=[spec['column']])[spec['column']].tolist()
-        if not catalog or len(set(catalog)) != len(catalog):
-            raise ValueError('Link catalog keys are missing or duplicated')
-    anchor = None if task == 'static_link' else full.TIMESTAMP.iloc[0]
-    if anchor is not None and not full.TIMESTAMP.eq(anchor).all():
-        raise ValueError('Full prediction needs the fixed frozen test anchor')
-    seed = lambda: (random.seed(0), np.random.seed(0), torch.manual_seed(0))
-    work = output.parent / 'work' / output.name
-    kumo.configure(scratch_dir=work)
     torch.cuda.reset_peak_memory_stats()
-    peak = [0]
-    stopped = threading.Event()
-
-    def memory():
-        import psutil
-        process = psutil.Process()
-        while not stopped.wait(.2):
-            try:
-                peak[0] = max(
-                    peak[0],
-                    sum(p.memory_info().rss
-                        for p in [process, *process.children(recursive=True)]
-                        if p.is_running()))
-            except psutil.Error:
-                pass
-
-    monitor = threading.Thread(target=memory, daemon=True)
-    monitor.start()
+    measurements, finish_measurement = start_measurement(
+        'case-preparation-fit-predictions-validation-and-artifact-hashing-v1')
     try:
-        seed()
+        with measure_operation(
+                report, 'preparation',
+                'training-table-query-and-recipe-preparation-v1'):
+            table, stages, descriptor = load_table(root, manifest['files'],
+                                                   case)
+            truth = stage_frame(table, stages['test'])
+            full = pd.read_parquet(
+                safe_file(root, case['prediction_input'], manifest['files']))
+            partial = pd.read_parquet(
+                safe_file(root, case['partial_input'], manifest['files']))
+            ids = check_inputs(full, truth, static=task == 'static_link')
+            partial_ids = check_inputs(partial, truth, partial=True,
+                                       static=task == 'static_link')
+            truth = truth.set_index('ENTITY1').loc[ids].reset_index()
+            if task == 'forecasting' and any(
+                    len(v) != 12
+                    for col in ('autoregression_labels', 'future_labels')
+                    for v in truth[col]):
+                raise ValueError(
+                    'Forecast inputs/answers require all twelve coordinates')
+            query = kumo.PredictiveQuery(graph, descriptor['query'])
+            query.validate()
+            plan = smoke.make_plan(task)
+            if signature(plan.as_json()) != case['requested_plan_sha256']:
+                raise ValueError(
+                    'Requested full seed-zero model recipe differs')
+            save(output / 'requested-plan.json', plan.as_json())
+            save(output / 'generation-plan.json', descriptor['generation_plan'])
+            report['input_signature'] = input_signature(manifest, case)
+            classes = case.get('classes', [])
+            catalog = []
+            if task.endswith('link'):
+                spec = case['catalog']
+                catalog = pd.read_parquet(
+                    safe_file(root, spec['path'], manifest['files']),
+                    columns=[spec['column']])[spec['column']].tolist()
+                if not catalog or len(set(catalog)) != len(catalog):
+                    raise ValueError(
+                        'Link catalog keys are missing or duplicated')
+            anchor = None if task == 'static_link' else full.TIMESTAMP.iloc[0]
+            if anchor is not None and not full.TIMESTAMP.eq(anchor).all():
+                raise ValueError(
+                    'Full prediction needs the fixed frozen test anchor')
+            seed = lambda: (random.seed(0), np.random.seed(0),
+                            torch.manual_seed(0))
+            work = output.parent / 'work' / output.name
+            kumo.configure(scratch_dir=work)
+            seed()
         with smoke.observe_cuda(state), native_calls(state):
             trainer = kumo.Trainer(plan, accelerator='gpu')
             torch.cuda.synchronize()
-            train_started = time.monotonic()
-            fitted = trainer.fit(table, snapshot=snapshot)
-            torch.cuda.synchronize()
-            report['timings'] = dict(training=time.monotonic() - train_started,
-                                     preparation=train_started - started)
+            with measure_operation(report, 'training',
+                                   'fit-and-cuda-synchronize-v1'):
+                fitted = trainer.fit(table, snapshot=snapshot)
+                torch.cuda.synchronize()
             checkpoint = local_path(
                 str(fitted.artifact_paths['selected_checkpoint']))
             state['checkpoint_sha256'] = digest(checkpoint)
@@ -868,76 +1041,88 @@ def run_case(root, manifest, case, graph, snapshot, output):
                     runtime['table']['seed_entity_table']]['time_column']
 
             def predict(model, stage, frame):
-                seed()
-                torch.cuda.synchronize()
-                stage_started = time.monotonic()
-                state['stage'] = stage
-                before = state['prediction_batches'][stage]
-                inputs = output / 'prediction-inputs' / (stage + '.parquet')
-                inputs.parent.mkdir(exist_ok=True)
-                frame.to_parquet(inputs, index=False)
-                pt = kumo.PredictionTable.from_source_table(
-                    kumo.FileConnector(
-                        root_dir=str(inputs.parent))[inputs.name], pq=query,
-                    snapshot=snapshot,
-                    plan=model.training_table_generation_plan)
-                selected = frame.ENTITY1.tolist()
-                options = dict(output_config=kumo.PredictionOutputConfig(
-                    kumo.FileConnector(root_dir=str(output /
-                                                    'prediction-outputs')),
-                    output_paths={'predictions': stage}, extra_fields=[] if task
-                    == 'static_link' else [MetadataField.ANCHOR_TIMESTAMP]))
-                if task.endswith('link'):
-                    options['num_classes_to_return'] = min(500, len(catalog))
-                elif classes:
-                    options['num_classes_to_return'] = len(classes)
-                if task == 'binary':
-                    options['binary_classification_threshold'] = .5
-                result = model.predict(pt, snapshot=snapshot, **options)
-                torch.cuda.synchronize()
-                if state['prediction_batches'][stage] <= before:
-                    raise ValueError(
-                        'Prediction completed no actual CUDA batches')
-                raw = output / 'prediction-outputs' / stage
-                raw.mkdir(parents=True, exist_ok=True)
-                retained = []
-                for index, source in enumerate(result.files):
-                    destination = raw / f'raw-{index}.parquet'
-                    if Path(source).resolve() != destination.resolve():
-                        shutil.copyfile(local_path(source), destination)
-                    retained.append(str(destination.relative_to(output)))
-                if task.endswith('link'):
-                    selected_truth = truth.set_index('ENTITY1').loc[selected]
-                    excluded = selected_truth.exclude_target_keys.tolist(
-                    ) if task == 'static_link' else [[] for _ in selected]
-                    values = ranked_rows(
-                        ordered_batches(result.files,
-                                        work / 'sort' / stage), selected,
-                        catalog, excluded, 5 if task == 'static_link' else 10,
-                        min(500, len(catalog)), anchor=anchor)
-                    save(output / (stage + '-ranked.json'), values)
-                else:
-                    frame = result.frame
-                    if frame.ENTITY.dtype != full.ENTITY1.dtype:
+                label = 'reloaded_prediction' if stage == 'reload' else stage
+                with measure_operation(
+                        report, label,
+                        'prediction-input-execution-and-validation-v1'):
+                    seed()
+                    torch.cuda.synchronize()
+                    state['stage'] = stage
+                    before = state['prediction_batches'][stage]
+                    inputs = output / 'prediction-inputs' / (stage + '.parquet')
+                    inputs.parent.mkdir(exist_ok=True)
+                    frame.to_parquet(inputs, index=False)
+                    pt = kumo.PredictionTable.from_source_table(
+                        kumo.FileConnector(
+                            root_dir=str(inputs.parent))[inputs.name], pq=query,
+                        snapshot=snapshot,
+                        plan=model.training_table_generation_plan)
+                    selected = frame.ENTITY1.tolist()
+                    options = dict(output_config=kumo.PredictionOutputConfig(
+                        kumo.FileConnector(root_dir=str(output /
+                                                        'prediction-outputs')),
+                        output_paths={'predictions': stage
+                                      }, extra_fields=[] if task ==
+                        'static_link' else [MetadataField.ANCHOR_TIMESTAMP]))
+                    if task.endswith('link'):
+                        options['num_classes_to_return'] = min(
+                            500, len(catalog))
+                    elif classes:
+                        options['num_classes_to_return'] = len(classes)
+                    if task == 'binary':
+                        options['binary_classification_threshold'] = .5
+                    result = model.predict(pt, snapshot=snapshot, **options)
+                    torch.cuda.synchronize()
+                    if state['prediction_batches'][stage] <= before:
                         raise ValueError(
-                            'Prediction changed the original entity ID type')
-                    frame.to_parquet(output / (stage + '.parquet'), index=False)
-                    values = smoke.prediction_values(
-                        task, frame, selected, classes=classes, anchor=anchor,
-                        time_column=time_column or 'TIMESTAMP')
-                report.setdefault('predictions', {})[stage] = dict(
-                    entities=len(selected), rows=result.num_rows,
-                    files=retained, original_files=list(result.files),
-                    input_sha256=digest(inputs))
-                report['timings'][stage] = time.monotonic() - stage_started
-                return values
+                            'Prediction completed no actual CUDA batches')
+                    raw = output / 'prediction-outputs' / stage
+                    raw.mkdir(parents=True, exist_ok=True)
+                    retained = []
+                    for index, source in enumerate(result.files):
+                        destination = raw / f'raw-{index}.parquet'
+                        if Path(source).resolve() != destination.resolve():
+                            shutil.copyfile(local_path(source), destination)
+                        retained.append(str(destination.relative_to(output)))
+                    if task.endswith('link'):
+                        selected_truth = truth.set_index(
+                            'ENTITY1').loc[selected]
+                        excluded = selected_truth.exclude_target_keys.tolist(
+                        ) if task == 'static_link' else [[] for _ in selected]
+                        values = ranked_rows(
+                            ordered_batches(result.files,
+                                            work / 'sort' / stage), selected,
+                            catalog, excluded,
+                            5 if task == 'static_link' else 10,
+                            min(500, len(catalog)), anchor=anchor)
+                        save(output / (stage + '-ranked.json'), values)
+                    else:
+                        frame = result.frame
+                        if frame.ENTITY.dtype != full.ENTITY1.dtype:
+                            raise ValueError(
+                                'Prediction changed the original entity ID type'
+                            )
+                        frame.to_parquet(output / (stage + '.parquet'),
+                                         index=False)
+                        values = smoke.prediction_values(
+                            task, frame, selected, classes=classes,
+                            anchor=anchor, time_column=time_column
+                            or 'TIMESTAMP')
+                    report.setdefault('predictions', {})[stage] = dict(
+                        entities=len(selected), rows=result.num_rows,
+                        files=retained, original_files=list(result.files),
+                        input_sha256=digest(inputs))
+                    return values
 
             original = predict(trainer, 'predict', full)
             repeated = predict(trainer, 'repeat', full)
             subset = predict(trainer, 'partial', partial)
             del trainer
             gc.collect()
-            trainer = kumo.Trainer.load(saved, accelerator='gpu')
+            with measure_operation(report, 'model_load',
+                                   'published-model-load-v1'):
+                trainer = kumo.Trainer.load(saved, accelerator='gpu')
+                torch.cuda.synchronize()
             reloaded = predict(trainer, 'reload', full)
             if state['reload_checks'] < 1 or state['restored_tensors'] <= 0:
                 raise ValueError(
@@ -973,22 +1158,37 @@ def run_case(root, manifest, case, graph, snapshot, output):
                       physical_fits=state['core_fit_attempts'])
         raise
     finally:
-        stopped.set()
-        monitor.join()
-        report.update(
-            seconds=time.monotonic() - started, cpu_peak_sampled_bytes=peak[0],
-            cpu_memory_sample_interval_seconds=.2,
-            gpu_peak_allocated_bytes=torch.cuda.max_memory_allocated(),
-            gpu_peak_reserved_bytes=torch.cuda.max_memory_reserved())
-        report['process_lifetime_peak_rss_bytes'] = resource.getrusage(
-            resource.RUSAGE_SELF).ru_maxrss * 1024
-        report['artifacts'] = {
-            str(p.relative_to(output)): digest(p)
-            for p in output.rglob('*')
-            if p.is_file() and p != output / 'result.json'
-        }
-        report['seconds'] = time.monotonic() - started
-        save(output / 'result.json', report)
+        try:
+            report['process_lifetime_peak_rss_bytes'] = resource.getrusage(
+                resource.RUSAGE_SELF).ru_maxrss * 1024
+            report['artifacts'] = {}
+            for path in output.rglob('*'):
+                if path.is_file() and path != output / 'result.json':
+                    report['artifacts'][str(
+                        path.relative_to(output))] = digest(path)
+        except BaseException as error:
+            report[
+                'artifact_preservation_error'] = f'{type(error).__name__}: {error}'
+            if report['status'] != 'FAIL':
+                report.update(status='FAIL',
+                              error=report['artifact_preservation_error'],
+                              traceback=traceback.format_exc())
+                raise
+        finally:
+            finish_measurement()
+            try:
+                measurements.update(
+                    torch_peak_allocated_bytes=torch.cuda.max_memory_allocated(
+                    ),
+                    torch_peak_reserved_bytes=torch.cuda.max_memory_reserved())
+            except (RuntimeError, AssertionError, OSError) as error:
+                measurements[
+                    'torch_peak_read_error'] = f'{type(error).__name__}: {error}'
+            measurements['timings'] = report.get('timings', {})
+            report['measurements'] = measurements
+            report['seconds'] = time.monotonic() - started
+            save(output / 'result.json', report)
+
     return report
 
 
@@ -1031,18 +1231,27 @@ def run(args):
     if output.exists() and any(p.name != 'setup' for p in output.iterdir()):
         raise ValueError('Use a fresh output directory')
     manifest = load_inputs(root, args.input_sha256)
+    reference = load_reference(args)
+    reference_cases(reference, manifest)
     output.mkdir(parents=True, exist_ok=True)
     metadata = output / 'input-metadata'
     metadata.mkdir()
     shutil.copyfile(root / 'manifest.json', metadata / 'manifest.json')
-    profile = manifest['candidate_dependencies']
-    (metadata / profile).parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(root / profile, metadata / profile)
-    runtime = verify_runtime(args.expected_version, read(root / profile),
-                             manifest['allowed_gpu_uuids'])
-    check_install(output, runtime)
+    for key in ('candidate_dependencies', 'reference_dependencies'):
+        relative = manifest[key]
+        (metadata / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / relative, metadata / relative)
+    profile = manifest['reference_dependencies' if args.
+                       reference_only else 'candidate_dependencies']
+    runtime = verify_runtime(args.expected_version, read(root / profile))
+    check_reference_runtime(reference, runtime, args.reference_only)
+    check_install(output, runtime, reference_only=args.reference_only)
+    measurements, finish_measurement = start_measurement(
+        'graphs-and-sixteen-primary-cases-after-install-validation-v1')
     report = dict(format='kumo-engine-nightly-result-v1', status='RUNNING',
                   input_manifest_sha256=args.input_sha256, runtime=runtime,
+                  reference_sha256=args.reference_sha256,
+                  reference_only=args.reference_only, measurements=measurements,
                   expected_runs=16, runs=[], helper_sha256=digest(HELPER),
                   runner_sha256=digest(__file__))
     graphs = {}
@@ -1052,12 +1261,15 @@ def run(args):
             if key not in graphs:
                 import kumo.engine as kumo
                 spec = manifest['graphs'][key]
-                kumo.configure(scratch_dir=output / 'work' / 'graphs' / key)
-                graphs[key] = smoke.build_graph(
-                    read(root / spec['schema'])[spec['profile']], root,
-                    static=spec['static'], sources=spec['sources'])
-                report.setdefault('graphs', {})[key] = check_snapshot(
-                    graphs[key][1], dict(spec, input_root=str(root)))
+                with measure_operation(
+                        report, 'graph.' + key,
+                        'graph-build-snapshot-and-native-validation-v1'):
+                    kumo.configure(scratch_dir=output / 'work' / 'graphs' / key)
+                    graphs[key] = smoke.build_graph(
+                        read(root / spec['schema'])[spec['profile']], root,
+                        static=spec['static'], sources=spec['sources'])
+                    report.setdefault('graphs', {})[key] = check_snapshot(
+                        graphs[key][1], dict(spec, input_root=str(root)))
             row = run_case(root, manifest, case, *graphs[key],
                            output / (case['task'] + '-' + case['arm']))
             report['runs'].append(row)
@@ -1070,12 +1282,14 @@ def run(args):
                       traceback=traceback.format_exc())
         raise
     finally:
+        finish_measurement()
+        measurements['timings'] = report.get('timings', {})
         report.update(seconds=time.monotonic() - started,
                       completed_runs=len(report['runs']))
         save(output / 'nightly-result.json', report)
 
 
-def check_install(root, runtime):
+def check_install(root, runtime, *, reference_only=False):
     wheel, build = read(root / 'setup/wheel.json'), read(root /
                                                          'setup/build.json')
     if (type(wheel['installed_files']) is not int
@@ -1083,12 +1297,22 @@ def check_install(root, runtime):
             or wheel['sha256'] != build['wheel_sha256']
             or wheel['sha256'] != runtime['wheel_sha256']
             or wheel['version'] != build['version']
-            or wheel['version'] != runtime['version'] or any(
-                len(build[k]) != 40 or any(v not in '0123456789abcdef'
-                                           for v in build[k])
-                for k in ('revision', 'tree'))):
+            or wheel['version'] != runtime['version']):
         raise ValueError(
             'Selected source, installed wheel or archive identity differs')
+    if reference_only and (runtime['version'] != '1.0.0'
+                           or runtime['wheel_sha256'] != REFERENCE_WHEEL):
+        raise ValueError(
+            'Reference-only work requires the exact approved wheel')
+    if build.get('format') == 'kumo-engine-published-reference-v1':
+        harness = os.environ.get('GITHUB_SHA', '')
+        if (not reference_only or not re.fullmatch('[0-9a-f]{40}', harness)
+                or build.get('harness') != harness):
+            raise ValueError(
+                'Published reference receipt has no matching harness')
+    elif any(not re.fullmatch('[0-9a-f]{40}', build.get(k, ''))
+             for k in ('revision', 'tree')):
+        raise ValueError('Selected source revision or tree identity differs')
     return build
 
 
@@ -1164,34 +1388,34 @@ def compare(args):
     if manifest_path.is_symlink() or digest(manifest_path) != args.input_sha256:
         raise ValueError('Copied input manifest checksum differs')
     manifest = read(manifest_path)
-    reference = read(args.reference)
-    if (digest(args.reference) != args.reference_sha256
-            or reference['input_manifest_sha256'] != args.input_sha256
-            or reference['format'] != 'kumo-engine-nightly-reference-v1'
-            or reference['version'] != '1.0.0' or reference['wheel_sha256'] !=
-            '1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e'):
-        raise ValueError('Approved reference or input-manifest binding differs')
+    if manifest.get('gpu_model') != 'T4':
+        raise ValueError('Comparison requires the admitted T4 input profile')
+    reference = load_reference(args)
+    references = reference_cases(reference, manifest)
     path, report = load_report(args.results_dir, args.input_sha256)
     rows = report['runs']
+    if (report.get('reference_only') is not args.reference_only
+            or report.get('reference_sha256') != args.reference_sha256):
+        raise ValueError('Run used a different reference or measurement mode')
     if report['runner_sha256'] != digest(
             __file__) or report['helper_sha256'] != digest(HELPER):
         raise ValueError('Candidate report used different source helpers')
     expected = read(
-        safe_file(args.input_root, manifest['candidate_dependencies'],
-                  manifest['files']))
+        safe_file(
+            args.input_root,
+            manifest['reference_dependencies' if args.
+                     reference_only else 'candidate_dependencies'],
+            manifest['files']))
     admitted = {(v['task'], v['arm']): v for v in manifest['cases']}
     check_dependencies(report['runtime']['dependencies'], expected)
-    check_install(path.parent, report['runtime'])
+    check_reference_runtime(reference, report['runtime'], args.reference_only)
+    check_install(path.parent, report['runtime'],
+                  reference_only=args.reference_only)
     if digest(path.parent / 'reference.json') != args.reference_sha256:
         raise ValueError('Run did not retain the exact approved reference copy')
-    if digest(path.parent /
-              'input-metadata/manifest.json') != args.input_sha256:
+    if digest(
+            path.parent / 'input-metadata/manifest.json') != args.input_sha256:
         raise ValueError('Run did not retain the exact admitted input manifest')
-    if report['runtime']['gpu_uuid'].removeprefix('GPU-') not in {
-            v.removeprefix('GPU-')
-            for v in manifest['allowed_gpu_uuids']
-    }:
-        raise ValueError('Run used an unapproved GPU identity')
     for row in report['runs']:
         directory = path.parent / (row['task'] + '-' + row['arm'])
         if read(directory / 'result.json') != row:
@@ -1241,42 +1465,100 @@ def compare(args):
                 'reload_checks'] < 1:
             raise ValueError('Restored checkpoint state proof is missing')
     comparisons = []
-    references = {(v['task'], v['arm']): v for v in reference['cases']}
     if set(references) != {(r['task'], r['arm'])
                            for r in rows} or len(reference['cases']) != 16:
         raise ValueError('Reference needs all sixteen original cases')
     for row in rows:
         previous = references[(row['task'], row['arm'])]
         if (previous['input_signature'] != row['input_signature']
-                or previous['seed'] != 0 or previous['metric'] != row['metric']
-                or not previous['fit_id']
-                or len(previous['checkpoint_sha256']) != 64
-                or any(previous[k] != admitted[(row['task'], row['arm'])][k]
-                       for k in ('resolved_plan_sha256', 'selected_plan_sha256',
-                                 'trainer_config_sha256'))):
+                or previous['metric'] != row['metric']):
             raise ValueError(
                 'Reference and candidate row/plan/input signatures differ')
         comparisons.append(
             dict(
                 task=row['task'], arm=row['arm'], score=row['score'],
-                reference_score=previous['score'],
-                baseline=previous['baseline'],
-                difference=None if row['score'] is None
+                reference_score=None if args.reference_only else
+                previous['score'], baseline=previous['baseline'],
+                difference=None if args.reference_only or row['score'] is None
                 or previous['score'] is None else row['score'] -
                 previous['score'], candidate_fit_id=row['fit_id'],
-                reference_fit_id=previous['fit_id'],
-                checkpoint_sha256=row['checkpoint_sha256'],
-                reference_checkpoint_sha256=previous['checkpoint_sha256'],
-                seconds=row['seconds'], differences=row['differences']))
+                reference_fit_id=None if args.reference_only else
+                previous['fit_id'], checkpoint_sha256=row['checkpoint_sha256'],
+                reference_checkpoint_sha256=None
+                if args.reference_only else previous['checkpoint_sha256'],
+                seconds=row['seconds'], differences=row['differences'],
+                performance=measurement_differences(
+                    row.get('measurements', {}),
+                    {} if args.reference_only else previous.get(
+                        'measurements', {})), operations={
+                            name: measurement_differences(
+                                values,
+                                {} if args.reference_only else previous.get(
+                                    'operation_measurements', {}).get(name, {}))
+                            for name, values in row.get(
+                                'operation_measurements', {}).items()
+                        }))
     behavior = check_behavior(args.results_dir)
+    if args.reference_only:
+        cases = []
+        for row in rows:
+            if type(row['score']) not in (int, float) or not math.isfinite(
+                    row['score']):
+                raise ValueError(
+                    'A new reference requires sixteen finite scores')
+            previous = references[(row['task'], row['arm'])]
+            cases.append(
+                dict(
+                    previous, score=row['score'], fit_id=row['fit_id'],
+                    checkpoint_sha256=row['checkpoint_sha256'],
+                    timings=row.get('timings', {}),
+                    measurements=row.get('measurements', {}),
+                    operation_measurements=row.get('operation_measurements',
+                                                   {})))
+        save(
+            args.output_dir / 'reference.json',
+            dict(
+                format='kumo-engine-nightly-reference-v1', version='1.0.0',
+                wheel_sha256=REFERENCE_WHEEL, quality_policy='report_only',
+                input_manifest_sha256=args.input_sha256, cases=cases,
+                measurements=report.get('measurements', {}),
+                operation_measurements=report.get('operation_measurements', {}),
+                predecessor_reference_sha256=args.reference_sha256,
+                source_report_sha256=digest(path),
+                runner_sha256=report['runner_sha256'],
+                helper_sha256=report['helper_sha256'],
+                declared_candidate_dependency_difference={
+                    name: dict(reference=expected[name], candidate=value)
+                    for name, value in read(
+                        safe_file(args.input_root,
+                                  manifest['candidate_dependencies'],
+                                  manifest['files'])).items()
+                    if expected.get(name) != value
+                }, reference_runtime=dict(
+                    reference_hardware=hardware_profile(report['runtime']),
+                    reference_gpu_uuid=report['runtime']['gpu_uuid'],
+                    reference_dependencies_signature=signature(
+                        report['runtime']['dependencies']),
+                    reference_dependency_count=len(
+                        report['runtime']['dependencies']))))
     save(
         args.output_dir / 'comparison.json',
-        dict(status='MEASURED', quality_policy='report_only',
-             input_manifest_sha256=args.input_sha256,
-             reference_sha256=args.reference_sha256, primary_physical_fits=16,
-             extra_physical_fits=behavior['physical_fits'],
-             coverage=dict(behavior['coverage'], I1=True,
-                           B6=True), behavior=behavior, cases=comparisons))
+        dict(
+            status='MEASURED', quality_policy='report_only',
+            reference_only=args.reference_only,
+            performance=measurement_differences(
+                report.get('measurements', {}), {} if args.reference_only else
+                reference.get('measurements', {})), operations={
+                    name: measurement_differences(
+                        values, {} if args.reference_only else reference.get(
+                            'operation_measurements', {}).get(name, {}))
+                    for name, values in report.get('operation_measurements',
+                                                   {}).items()
+                }, input_manifest_sha256=args.input_sha256,
+            reference_sha256=args.reference_sha256, primary_physical_fits=16,
+            extra_physical_fits=behavior['physical_fits'],
+            coverage=dict(behavior['coverage'], I1=True,
+                          B6=True), behavior=behavior, cases=comparisons))
 
 
 def main(argv=None):
@@ -1287,12 +1569,13 @@ def main(argv=None):
         p.add_argument('--input-root', type=Path, required=True)
         p.add_argument('--input-sha256', required=True)
         p.add_argument('--output-dir', type=Path, required=True)
+        p.add_argument('--reference', type=Path, required=True)
+        p.add_argument('--reference-sha256', required=True)
+        p.add_argument('--reference-only', action='store_true')
         if name == 'run':
             p.add_argument('--expected-version', required=True)
         else:
             p.add_argument('--results-dir', type=Path, required=True)
-            p.add_argument('--reference', type=Path, required=True)
-            p.add_argument('--reference-sha256', required=True)
     args = parser.parse_args(argv)
     (run if args.command == 'run' else compare)(args)
 
