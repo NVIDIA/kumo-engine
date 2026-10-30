@@ -43,6 +43,7 @@ from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
     TrackingSession,
+    _Search,
     prediction_record,
     run_record,
     track_prediction,
@@ -223,8 +224,10 @@ def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
         spec = fitted_spec(spec, result)
     spec = replace(spec, steps=series if series is not None else {
         **({} if error else SELECTED)})
-    if series is None and not error:
-        spec = replace(spec, parents={**spec.parents, 'best_trial': 2})
+    if not error:
+        spec = replace(spec, parents={
+            **spec.parents, **({} if series is not None else {'best_trial': 2}),
+            'best_epoch': 2})
     if 'error' in events[-1].params:
         spec = replace(spec, error=str(events[-1].params['error']))
     records[FIT] = run_record(spec)
@@ -453,7 +456,7 @@ def test_records_of_the_recorded_fit():
                         'kumo.task_type': 'regression',
                         'kumo.tune_metric': 'mae',
                         'kumo.engine_version': __version__,
-                        'kumo.best_trial': '2'}
+                        'kumo.best_trial': '2', 'kumo.best_epoch': '2'}
     assert fit.params == {
         'optimization.base_lr': '[0.01, 0.001]',
         'optimization.max_epochs': '2',
@@ -863,6 +866,13 @@ def test_a_one_epoch_fit_writes_its_epoch_in_a_note_not_a_series():
     assert record.steps == {}
     assert Note('notes', 'Training (1 epoch): train loss 0.5 · val mae 0.4') \
         in record.summaries
+
+
+def test_the_kept_epoch_is_the_first_with_the_best_validation_metric():
+    search = _Search.of({'training_job.tune_metric': 'mae'})
+    events = _epochs(1, (0.5, 0.4), (0.4, 0.3), (0.3, 0.3), (0.2, 0.5))
+
+    assert search.best_epoch(events) == 2
 
 
 def test_a_series_starts_once_it_has_two_points():

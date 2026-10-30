@@ -602,6 +602,17 @@ class _Search:
                    metric=metric,
                    lower=MetricStore.tune_mode(metric) == 'min')
 
+    def best_epoch(self, events: Sequence[Event]) -> Optional[int]:
+        r"""The epoch of ``events`` with the best validation ``metric``, the
+        first of ties, as the fit's checkpoint keeps it."""
+        points = [(event.epoch, event.metrics[self.metric])
+                  for event in events if event.name == 'epoch_ended'
+                  and event.epoch and self.metric in event.metrics]
+        if not points:
+            return None
+        best = (min if self.lower else max)(value for _, value in points)
+        return next(epoch for epoch, value in points if value == best)
+
     def on(self, event: Event) -> Optional[Tuple[Dict[str, float], int]]:
         if event.name == 'epoch_ended' and self.single:
             return dict(event.metrics), event.epoch or 0
@@ -796,6 +807,14 @@ class TrackingSession:
                 final = dataclasses.replace(
                     final, steps=trial_spec(self._trials[selected[1]]).steps,
                     parents={**final.parents, 'best_trial': selected[1]})
+            search = self._search
+            if error is None and search is not None and (
+                    selected or len(self._trials) == 1):
+                kept = selected[1] if selected else next(iter(self._trials))
+                epoch = search.best_epoch(self._trials[kept])
+                if epoch is not None:
+                    final = dataclasses.replace(
+                        final, parents={**final.parents, 'best_epoch': epoch})
             held = self._first_epoch.get(None)
             final = _one_epoch_note(final, None if held is None else held[0])
             if error is not None and final.error is None:
