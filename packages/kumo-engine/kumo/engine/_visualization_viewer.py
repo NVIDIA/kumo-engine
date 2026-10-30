@@ -3,10 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Self-contained notebook viewer; layout geometry is computed in Python."""
 
-from base64 import b64encode
 from string import Template
 
-from kumo.engine._widget import CSS_THEME, button
+from kumo.engine._widget import CSS_THEME, button, render_static_svg
 
 _STYLE = Template(r"""
 .kumo-graph{container:kumo-graph/inline-size;padding:16px;overflow:clip}
@@ -553,11 +552,10 @@ def viewer(svg: str, layouts: dict, initial_layout: str, static_svg: str) -> dic
         '<div class="kumo-graph-view" role="region" hidden="" '
         'aria-label="Graph visualization">'
         f'<div class="kumo-graph-scene">{svg}</div></div></div>'
-        '<div class="kumo-graph-static"><img alt="Table relationships" '
-        'style="display:block;max-width:100%;height:auto" '
-        'src="data:image/svg+xml;base64,'
-        + b64encode(static_svg.encode()).decode() + '"/>'
-        '<p>Rerun this cell to activate animation.</p></div>')
+        '<div class="kumo-graph-static">'
+        + render_static_svg(static_svg,
+                            'Rerun this cell to activate animation.',
+                            'Table relationships') + '</div>')
     script = (
         'const view=host.querySelector(".kumo-graph-view");'
         'const svg=view.querySelector("svg"),scene=view.firstElementChild;'

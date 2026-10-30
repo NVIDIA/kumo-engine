@@ -4,6 +4,8 @@
 """Shared notebook theme, controls, and output cleanup."""
 
 import json
+import os
+from base64 import b64encode
 from hashlib import sha256
 from html import escape
 from string import Template
@@ -38,6 +40,29 @@ _DARK = {
 }
 CSS_THEME = {key: f'var(--kumo-{key.replace("_", "-")})'
              for key in THEME if key != 'font'} | {'font': THEME['font']}
+
+
+def is_snowflake_workspace() -> bool:
+    """Match the active Workspace notebook runtime, not installed connectors."""
+    if not os.environ.get('SNOWFLAKE_WORKSPACE_ID'):
+        return False
+    try:
+        from IPython import get_ipython
+    except ImportError:
+        return False
+    extensions = getattr(getattr(get_ipython(), 'extension_manager', None),
+                         'loaded', ())
+    return ('snowflake_notebook_utils.ipython_execution_context_monitor_extension'
+            in extensions)
+
+
+def render_static_svg(svg: str, message: str, label: str) -> str:
+    """Render a script-free SVG image and escaped explanatory text."""
+    return (f'<img alt="{escape(label)}" '
+            'style="display:block;max-width:100%;height:auto" '
+            'src="data:image/svg+xml;base64,'
+            + b64encode(svg.encode()).decode() + '"/>'
+            f'<p>{escape(message)}</p>')
 
 
 _STYLE = Template(r"""
@@ -111,7 +136,12 @@ def render_anywidget(body: str, *, style: str = '', script: str = '',
     try:
         import anywidget
         import traitlets
-    except ImportError as error:
+        from packaging.specifiers import SpecifierSet
+
+        if str(getattr(anywidget, '__version__', '0')) not in SpecifierSet(
+                '>=0.9,<1'):
+            raise ImportError('Incompatible anywidget version.')
+    except (ImportError, ValueError) as error:
         raise ImportError(
             'Interactive widget display requires anywidget>=0.9,<1 and '
             'ipywidgets. Snowflake Workspace Runtime 2.6+ supplies these '

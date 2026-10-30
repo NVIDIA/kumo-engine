@@ -479,7 +479,12 @@ def test_widget_shell_composes_non_graph_content_and_escapes_data():
     assert '<script>alert(' not in html
 
 
-def test_visualize_optional_widget_preserves_notebook_state():
+def test_visualize_optional_widget_preserves_notebook_state(tmp_path):
+    pytest.importorskip('IPython')
+    from IPython.core.interactiveshell import InteractiveShell
+    from IPython.display import display
+
+    from kumo.engine import _widget
     from kumo.engine._widget import render_anywidget
 
     with patch.object(S3Connector, 'source_backend', new_callable=PropertyMock,
@@ -518,6 +523,7 @@ def test_visualize_optional_widget_preserves_notebook_state():
                                  class_name='chart')
         repeated = svg.as_widget()
         try:
+            assert repeated is widget
             identity = widget.get_state()['_anywidget_id']
             assert chart.get_state()['_anywidget_id'] != identity
             assert repeated.get_state()['_anywidget_id'] == identity
@@ -526,6 +532,71 @@ def test_visualize_optional_widget_preserves_notebook_state():
             repeated.close()
     finally:
         widget.close()
+
+    shell = InteractiveShell.instance()
+    extension = (
+        'snowflake_notebook_utils.ipython_execution_context_monitor_extension')
+    graph = Graph(_s3_tables(), [Edge('events', 'user_id', 'users')])
+    for environment, extensions in [
+        ({}, set()),  # Ordinary Jupyter, even with widget packages installed.
+        ({'SNOWFLAKE_WORKSPACE_ID': 'test'}, set()),
+        ({}, {extension}),
+        ({'SNOWFLAKE_WORKSPACE_ID': ''}, {extension}),
+        ({'DATABRICKS_RUNTIME_VERSION': '17.3'}, set()),
+        ({'SNOWFLAKE_ACCOUNT': 'external'}, set()),
+    ]:
+        with patch.dict('os.environ', environment, clear=True), patch.object(
+                shell.extension_manager, 'loaded', extensions), patch.dict(
+                    'sys.modules', {'snowflake_notebook_utils': Mock(),
+                                    'snowflake.connector': Mock()}):
+            data, _ = shell.display_formatter.format(svg)
+            with patch.object(shell.display_pub, 'publish') as publish:
+                display(svg)
+            assert '<script' in data['text/html']
+            assert 'application/vnd.jupyter.widget-view+json' not in data
+            assert '<script' in publish.call_args.kwargs['data']['text/html']
+
+    with patch.dict('os.environ', {'SNOWFLAKE_WORKSPACE_ID': 'test'}), \
+            patch.object(shell.extension_manager, 'loaded', {extension}):
+        with patch('IPython.get_ipython', return_value=None):
+            assert not _widget.is_snowflake_workspace()
+        with patch.dict('sys.modules', {'anywidget': None, 'ipywidgets': None}):
+            for suffix in ('svg', 'pdf', 'md'):
+                result = graph.visualize(tmp_path / f'graph.{suffix}')
+                assert isinstance(result, str) and result._widget is None
+            with patch.object(shell.display_pub, 'publish') as publish:
+                display(result)
+            data = publish.call_args.kwargs['data']
+            assert '<script' not in data['text/html']
+            assert 'anywidget&gt;=0.9,&lt;1' in data['text/html']
+            image = ElementTree.fromstring('<div>' + data['text/html'] +
+                                           '</div>').find('img')
+            assert b64decode(image.get('src').split(',', 1)[1]).decode() == result
+        for version in ('0.8.9', '1.0.0rc1', '1.0.0', 'invalid'):
+            with patch.object(anywidget, '__version__', version), patch.object(
+                    shell.display_pub, 'publish') as publish:
+                display(graph.visualize())
+            assert 'anywidget&gt;=0.9,&lt;1' in publish.call_args.kwargs[
+                'data']['text/html']
+        result = graph.visualize()
+        with patch('kumo.engine._visualization.render_anywidget',
+                   wraps=render_anywidget) as create, patch.object(
+                       shell.display_pub, 'publish') as publish:
+            assert shell.display_formatter.format(result) == ({}, {})
+            display(result)
+            with patch.dict(shell.user_ns, {'_kumo_svg': result}):
+                assert shell.run_cell('_kumo_svg').success
+            assert create.call_count == 1 and publish.call_count == 3
+            for call in publish.call_args_list:
+                data = call.kwargs['data']
+                assert 'text/html' not in data and 'image/svg+xml' not in data
+                assert data['application/vnd.jupyter.widget-view+json'][
+                    'model_id'] == result._widget.model_id
+        previous = result._widget
+        previous.close()
+        replacement = result.as_widget()
+        assert replacement is not previous
+        replacement.close()
 
 
 @pytest.mark.parametrize('layout',

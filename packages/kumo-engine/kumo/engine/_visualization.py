@@ -17,6 +17,7 @@ from kumoapi.graph import Edge, validate_edge_endpoints
 from kumoapi.source_table import CustomSQLSourceTable
 from kumoapi.table import TableDefinition
 
+from kumo.engine import _widget
 from kumo.engine._widget import THEME, render_anywidget, render_widget
 from kumo.engine.table import Table
 
@@ -37,6 +38,7 @@ class SVG(str):
         obj._initial_layout = initial_layout
         obj._index = index or []
         obj._pdfs = {}
+        obj._widget = None
         return obj
 
     def _repr_svg_(self) -> str:
@@ -97,8 +99,24 @@ class SVG(str):
         return '\n'.join(lines)
 
     def as_widget(self):
-        """Return an anywidget view using the environment's widget packages."""
-        return render_anywidget(**self._viewer())
+        """Return a cached widget model with independent frontend views."""
+        if self._widget is None or self._widget.comm is None:
+            self._widget = render_anywidget(**self._viewer())
+        return self._widget
+
+    def _ipython_display_(self):
+        if not _widget.is_snowflake_workspace():
+            raise NotImplementedError
+        from IPython.display import display
+
+        try:
+            widget = self.as_widget()
+        except ImportError as error:
+            display({'text/html': _widget.render_static_svg(
+                self, str(error), 'Table relationships'),
+                'text/plain': str(error)}, raw=True)
+        else:
+            display(widget)
 
     def _repr_html_(self) -> str:
         return render_widget(**self._viewer())

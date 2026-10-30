@@ -362,7 +362,7 @@ class Graph:
                 Primary keys, foreign keys, and the declared time column (TS)
                 are always included, even above this limit. False shows only
                 these columns.
-            show_samples: Show up to six non-null examples per column in HTML
+            show_samples: Show up to six non-null examples per column in notebook
                 tooltips, in two columns and up to three rows, selected from
                 up to 30 preview rows per table. False (default) reads no
                 source data. Previews may
@@ -373,12 +373,13 @@ class Graph:
                 Auto chooses from graph structure, independently of viewport
                 size. Standard preserves the layered relationship view;
                 compact balances crowded groups.
-                HTML offers a selector to compare arrangements.
+                Notebook views offer a selector to compare arrangements.
 
         Uses declared schemas. More than 30 tables, self-relations,
         and missing schema/key definitions raise ValueError.
-        Call as_widget() on the result for hosts supporting anywidget;
-        this uses the environment's widget packages. Default output uses HTML.
+        Display automatically uses environment-provided widget packages in
+        detected Snowflake Workspace notebooks and HTML in other hosts.
+        The optional as_widget() helper explicitly selects the widget view.
         Full screen is available when the notebook host permits it.
         Dragging, full screen, Fit, and zoom preserve the selected arrangement.
         SVG exports use the initial layout and contain no interactive controls.

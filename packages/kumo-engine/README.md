@@ -122,14 +122,18 @@ Graphs are limited to 30 tables and require valid declared schemas without self-
 Drag to pan, use the controls or Ctrl/Cmd+wheel to zoom, and choose Fit to reset the view.
 Hover or focus a header or column for details without moving the graph.
 The default notebook view follows the browser’s light or dark appearance; SVG and PDF exports use the light palette.
-Default interactive output requires trusted HTML; fullscreen also needs permission from the notebook host.
+Notebook display automatically uses the widget protocol in detected Snowflake Workspace notebooks; Databricks and other hosts use HTML.
+Installing the Snowflake connector extra does not select the display protocol.
+HTML interactivity requires trusted output; fullscreen also needs permission from the notebook host.
 Saved HTML output includes the complete, sample-free SVG image in the requested initial layout and “Rerun this cell to activate animation.”
 Rerun the visualization cell once after upgrading and save the notebook to store this fallback; VS Code Restricted Mode can refuse HTML/SVG output entirely.
-For notebook hosts with anywidget support, display `graph.visualize().as_widget()` using the environment's `anywidget>=0.9,<1` and `ipywidgets` packages.
+The Snowflake Workspace view uses the environment's `anywidget>=0.9,<1` and `ipywidgets` packages, imported only when displaying the result.
 Snowflake Workspace Runtime 2.6 and later supplies these packages, including the documented GPU Runtime 2.9 target; Runtime 2.5 and earlier requires installation according to your environment's package policy.
 See [Snowflake's widget installation guidance](https://docs.snowflake.com/en/user-guide/ui-snowsight/notebooks-in-workspaces/notebooks-in-workspaces-interactive-widgets#installation).
 Kumo Engine does not install these packages as base dependencies or connector extras.
-This opt-in view uses the same controls through the widget protocol; host selection is not automatic, and widget restoration still depends on the notebook host.
+If the widget packages are unavailable or incompatible, the Workspace view shows a static graph and a diagnostic; SVG, PDF, and Markdown exports remain available.
+The optional `graph.visualize().as_widget()` helper explicitly selects the same widget view on compatible hosts.
+The widget view uses the same controls, and widget restoration still depends on the notebook host.
 It inherits a host color scheme declared when mounted, with browser appearance as the fallback.
 Each displayed view has its own camera; redisplay after restarting the kernel.
 SVG exports contain the initial arrangement and native tooltips.
