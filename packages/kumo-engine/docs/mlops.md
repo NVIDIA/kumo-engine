@@ -207,11 +207,19 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 - The Models tab's narrow version column can cut `v10` to `v1…`; widen it or read the version in the fit's run name, or its tag `kumo.model_version`.
 
 **The card.** Each run's description (the Overview on MLflow, `run_card.md` on Snowflake) starts with a card.
-- Line 1 is the run's status and watch numbers. For a fit: the tuned holdout metric, data problems, the model version, the number of trials and the task, and which trial and epoch the curves and holdout come from. For a prediction: realized quality, score `psi` vs holdout with its verdict (small, moderate or large shift), the entities scored and their date, when their labels mature (tag `kumo.labels_mature`, until `evaluate` logs realized quality), skipped share and the model version.
+- The heading is the run's status and watch numbers. For a fit: the tuned holdout metric and data problems. For a
+  prediction: realized quality, `psi` vs the holdout with its shift (small < 0.1, moderate 0.1–0.25, large > 0.25),
+  the entities scored and their date, when their labels mature, the skipped share and data problems.
+- Then one sentence says what the run is. A fit names its model, task, the trial and the epoch its curves and holdout
+  metrics come from (the epoch with the best validation tune metric, tag `kumo.best_epoch`). A prediction names its
+  model and the fit run that trained it.
+- Then tables: holdout metrics (fit; `test/ap` is average precision, `test/auprc` the trapezoidal area under the
+  precision-recall curve, `test/loss` the training objective, `test/logloss` the cross-entropy of the scores); the 2x2
+  matrix at the binary threshold; the training data; data preparation; problems and notes; "Where things are", with
+  each artifact's full location, linked to the S3 or GCS console.
+- Add your own notes below the line "Add notes below this line"; the card ends with a rule. Editing above it stops
+  kumo-engine updating that card; the run is then tagged `kumo.card_frozen`.
 - Every comparison names its reference: "vs holdout" (the model's holdout scores at training), "vs previous" (the previous run) or "vs training data" (input columns).
-<!-- TODO lead: card agent: line 1 wording (trial/epoch, PSI verdict, 'vs holdout') and the Data preparation line are written from the plan, not yet from the code -->
-- Then the model and the fit run that trained it, data problems, small tables, where things are, and the run's files.
-- Write your own notes below the card's last line ("Notes below this line are kept"). Editing above it stops kumo-engine updating that card; the run is then tagged `kumo.card_frozen`.
 
 **Metrics.**
 - Fit: per-epoch `train/<metric>` and `val/<metric>`, step = epoch, and the holdout quality as `test/<metric>`: the trainer's `test/auroc`, `test/ap`, `test/acc`, `test/mae`, `test/map_at_10`, `test/loss` and the like, and `test/logloss`, `test/brier`, `test/f1`, `test/r2` and the like from exact counts. The holdout is the training table's test split. MLflow's Model metrics tab shows them as `train`, `val` and `test` sections.
@@ -230,7 +238,7 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 
 | Run | Tables |
 |---|---|
-| fit | `holdout/by_threshold` (binary: threshold, share at or above, tp, fp, fn, tn, precision, recall, fpr), `holdout/calibration`, `holdout/confusion` (multiclass), `holdout/by_class` or `holdout/by_label`, `holdout/by_k`, `holdout/by_label_count` (multilabel), `holdout/by_horizon` (forecast), `holdout/histogram` and `holdout/residuals` (regression, forecast) |
+| fit | `holdout/by_threshold` (binary: threshold, share at or above, tp, fp, fn, tn, precision, recall, fpr), `holdout/at_threshold_<t>` (binary: the 2x2 matrix, actual × predicted, at the threshold), `holdout/calibration`, `holdout/confusion` (multiclass), `holdout/by_class` or `holdout/by_label`, `holdout/by_k`, `holdout/by_label_count` (multilabel), `holdout/by_horizon` (forecast), `holdout/histogram` and `holdout/residuals` (regression, forecast) |
 | fit, prediction | `data/health` (each table and link: rows, dropped rows, duplicate keys, matched rows, failed lookups), `data/columns` (column statistics; `≈` marks approximate ones) |
 | prediction | `pred/histogram`, `pred/by_class` (multiclass, multilabel), `pred/by_label_count` (multilabel), `pred/item_frequency` (ranking, link prediction); after `score_drift`, `drift/inputs/<table>` (one per source table: its encoded columns, most shifted first), `drift/table_rows` and `drift/link_edges` (each table's rows and each link's edges at training and now, for those whose size changed; in the card up to 12 rows) |
 
@@ -238,10 +246,10 @@ A histogram table has a row per bin with `from` and `to` (the end bins are open)
 
 **Tags and datasets.**
 - Every run: `kumo.kind`, `kumo.engine_version`.
-- Fit: `kumo.task_type`, `kumo.tune_metric`, `kumo.snapshot_id`, `kumo.bundle_id`, `kumo.bundle_uri`, `kumo.model_name`, `kumo.model_version`, `kumo.best_trial`, and `kumo.data_warnings`, the number of data problems the card lists.
+- Fit: `kumo.task_type`, `kumo.tune_metric`, `kumo.snapshot_id`, `kumo.bundle_id`, `kumo.bundle_uri`, `kumo.model_name`, `kumo.model_version`, `kumo.best_trial`, `kumo.best_epoch`, and `kumo.data_warnings`, the number of data problems the card lists.
 - Prediction: `kumo.prediction_id`, `kumo.as_of`, `kumo.entity`, `kumo.tune_metric`, `kumo.labels_mature` (temporal queries), `kumo.bundle_id`, `kumo.fit_run_id`, `kumo.model_name`, `kumo.model_version`, and `kumo.output_uri` or `kumo.output_table`. After `score_drift`: `kumo.drift_previous`; after `evaluate`: `kumo.labels_snapshot_id`.
 - Datasets: the snapshot, the training table (fits), then each source table, at their real locations; after `evaluate`, the labels snapshot. Each dataset's context says its role: `training` on a fit, `scoring` on a prediction, `labels` for the labels snapshot. A prediction of a model its fit logged lists that model under "Logged models", Type Input.
-- MLflow's chips cut long tag keys (`kum…`); hover a chip or read the Tags list on the run's Overview for the full key.
+- MLflow shortens a tag chip whose value is long, key included; hover the chip or open the Tags table for the full key.
 - Params are the model plan's own names. In the plan an experiment is one trial: `training_job.num_experiments` is the number of trials, and `pruning.*` settings stop unpromising trials of a search early.
 
 **Finding runs.** Keys with a `/` or `.` need backticks:
