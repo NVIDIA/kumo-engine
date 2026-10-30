@@ -10,16 +10,18 @@ import shutil
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from test.train.datamodule import test_remote_sampling_integration as parity
 
 import orjson
 import pyarrow as pa
 import pytest
 from kumo_core.diskgraph.remote_sampling import RemoteTaskIterator, _decode
 from kumo_core.diskgraph.sampling_protocol import encode_batch
-from kumo_core.diskgraph.sampling_service import SamplingService, SamplingServiceConfig
+from kumo_core.diskgraph.sampling_service import (
+    SamplingService,
+    SamplingServiceConfig,
+)
 from pyarrow import flight
-
-from test.train.datamodule import test_remote_sampling_integration as parity
 
 prepared_task = parity.prepared_task
 test_local_remote_parity = parity.test_local_remote_parity
