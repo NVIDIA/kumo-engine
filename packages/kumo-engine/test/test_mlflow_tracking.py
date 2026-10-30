@@ -600,18 +600,20 @@ def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
         def clear_metrics(self):
             pass
 
-    monkeypatch.setattr(integration, '_metric_monitors', lambda: [Monitor()])
+    monitor = Monitor()
+    monkeypatch.setattr(integration, '_metric_monitors', lambda: [monitor])
     monkeypatch.setattr(integration, '_SystemMetrics',
                         partial(integration._SystemMetrics, interval=0.01))
     tracking = integration.MlflowTracking(experiment_name='scores',
                                           log_system_metrics=enabled)
     with system_metrics(tracking):
         time.sleep(0.2)
-    track_prediction(PREDICTION_MANIFEST, tracking)
+        track_prediction(PREDICTION_MANIFEST, tracking)
+        time.sleep(0.2)
 
     client = mlflow.MlflowClient()
     run, = _runs(client)
     history = [(point.step, point.value) for point in client.get_metric_history(
         run.info.run_id, 'system/cpu_utilization_percentage')]
-    assert history == [(step, step + 1.0) for step in range(len(history))]
+    assert history == [(step, step + 1.0) for step in range(monitor.samples)]
     assert bool(history) == enabled

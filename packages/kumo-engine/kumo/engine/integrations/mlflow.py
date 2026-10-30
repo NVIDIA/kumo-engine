@@ -162,6 +162,7 @@ class MlflowTracking:
         self._outer: Optional[str] = None
         self.run_id: Optional[str] = None
         self._samples: List[Tuple[Mapping[str, float], int, int]] = []
+        self._sampled_run: Optional[Tuple[Any, str]] = None
         self._reset()
 
     def _reset(self) -> None:
@@ -369,19 +370,22 @@ class MlflowTracking:
                 _SystemMetrics(self._log_system_metrics))
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
-        self._log_samples()
+        self._sampled_run = (self._client, self._parent)
+        self._log_samples(*self._sampled_run)
 
     @contextmanager
     def sample_system_metrics(self) -> Iterator[None]:
         r"""Samples system metrics during the block, for the next prediction
-        or monitoring run this tracker logs."""
-        self._samples = []
+        or monitoring run this tracker logs, in the block or after it."""
+        self._samples, self._sampled_run = [], None
         if not self.log_system_metrics:
             yield
             return
         with _SystemMetrics(lambda metrics, step: self._samples.append(
                 (metrics, step, int(time.time() * 1000)))):
             yield
+        if self._sampled_run is not None:
+            self._log_samples(*self._sampled_run)
 
     def log_prediction_run(self, record: RunRecord) -> None:
         self.start(record)
@@ -497,7 +501,7 @@ class MlflowTracking:
                             step: int) -> None:
         self._log_metrics(self._parent, metrics, step)
 
-    def _log_samples(self) -> None:
+    def _log_samples(self, client: Any, run_id: str) -> None:
         samples, self._samples = self._samples, []
         entities = self._mlflow.entities
         metrics = [
@@ -507,9 +511,8 @@ class MlflowTracking:
         ]
         with self.target.scope():
             for start in range(0, len(metrics), _BATCH_METRICS):
-                self._client.log_batch(
-                    self._parent,
-                    metrics=metrics[start:start + _BATCH_METRICS])
+                client.log_batch(
+                    run_id, metrics=metrics[start:start + _BATCH_METRICS])
 
     def log_summaries(self, summaries: Sequence[Summary]) -> None:
         r"""Logs each summary on the current run through its type's call in
