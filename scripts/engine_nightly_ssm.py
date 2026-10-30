@@ -4,6 +4,7 @@
 """Check the nightly CPU-to-SSM connection without training a model."""
 
 import argparse
+import email
 import hashlib
 import json
 import re
@@ -13,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 REGION = 'us-east-2'
@@ -22,7 +24,7 @@ PREFIX = 'diskgraph-profiles/engine-nightly/ssm-integration'
 DOCUMENT = 'AWS-RunShellScript'
 DOCUMENT_VERSION = '1'
 
-# This fixed probe reads data only. It never downloads executable code.
+# The fixed probe optionally installs the exact CI wheel, without fitting models.
 REMOTE = r'''set -eu
 exec runuser -u ubuntu -- env -i HOME=/home/ubuntu PATH=/usr/local/bin:/usr/bin:/bin CUDA_VISIBLE_DEVICES=0 SSM_RunId="$SSM_RunId" SSM_RequestSha256="$SSM_RequestSha256" python3 - <<'PY'
 import csv, hashlib, json, os, pathlib, subprocess, tempfile
@@ -52,6 +54,42 @@ result = dict(request, status='INTEGRATION_PASS', gpu_work_started=False,
     nvme_available_bytes=disk.f_bavail * disk.f_frsize,
     request_sha256=hashlib.sha256(raw).hexdigest(),
     scope='SSM and small-file transport only; no model validation')
+if request.get('wheel'):
+    spec = request['wheel']
+    assert pathlib.Path(spec['filename']).name == spec['filename']
+    with tempfile.TemporaryDirectory(prefix='kumo-engine-ci-', dir='/opt/dlami/nvme') as directory:
+        stage = pathlib.Path(directory)
+        wheel = stage / spec['filename']
+        aws('s3', 'cp', 's3://' + bucket + '/' + spec['key'], str(wheel), '--only-show-errors')
+        assert hashlib.sha256(wheel.read_bytes()).hexdigest() == spec['sha256'], 'Wheel checksum differs'
+        subprocess.run(['python3', '-m', 'venv', str(stage / 'env')], check=True, timeout=60)
+        python = str(stage / 'env/bin/python')
+        log = stage / 'install.log'
+        with log.open('w') as stream:
+            try:
+                subprocess.run([python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check',
+                    'install', '--index-url', 'https://pypi.org/simple', '--no-cache-dir',
+                    '--progress-bar', 'off', str(wheel)], check=True, timeout=900,
+                    stdout=stream, stderr=subprocess.STDOUT)
+                subprocess.run([python, '-I', '-m', 'pip', '--isolated', 'check'],
+                    check=True, timeout=60, stdout=stream, stderr=subprocess.STDOUT)
+            finally:
+                aws('s3', 'cp', str(log), 's3://' + bucket + '/' + prefix + '/wheel-install.log', '--only-show-errors')
+        code = """import importlib.metadata, json, pathlib, sys
+import kumo.engine as engine
+import diskgraph
+from diskgraph import _c
+root = pathlib.Path(sys.prefix).resolve()
+assert sys.prefix != sys.base_prefix
+paths = dict(engine_import=str(pathlib.Path(engine.__file__).resolve()),
+             diskgraph_import=str(pathlib.Path(diskgraph.__file__).resolve()))
+assert all(pathlib.Path(p).is_relative_to(root) for p in paths.values())
+print(json.dumps(dict(status='PASS', version=importlib.metadata.version('kumo-engine'),
+    engine_version=engine.__version__, isolated=True, **paths)))"""
+        installed = subprocess.check_output([python, '-I', '-c', code], cwd=stage, text=True, timeout=90)
+        result['installation'] = json.loads(installed)
+        assert result['installation']['version'] == spec['version'] == result['installation']['engine_version']
+        result['scope'] = 'CI wheel build, S3 transfer, isolated installation and imports; zero model fits'
 encoded = json.dumps(result, indent=2).encode()
 aws('s3', 'cp', '-', 's3://' + bucket + '/' + prefix + '/result.json', '--only-show-errors', input=encoded)
 print(encoded.decode())
@@ -101,6 +139,32 @@ def validate_result(request, result):
             or result.get('cuda_visible_devices') != '0'):
         raise ValueError(
             'Expected a completed integration-only result with zero model work')
+    if request.get('wheel'):
+        install = result.get('installation') or {}
+        if (result.get('wheel') != request['wheel']
+                or install.get('status') != 'PASS'
+                or install.get('version') != request['wheel']['version']
+                or install.get('engine_version') != request['wheel']['version']
+                or install.get('isolated') is not True):
+            raise ValueError(
+                'Expected the exact CI wheel installed and imported in isolation'
+            )
+
+
+def wheel_identity(path, key):
+    with zipfile.ZipFile(path) as archive:
+        records = [
+            name for name in archive.namelist()
+            if name.endswith('.dist-info/METADATA')
+        ]
+        if len(records) != 1:
+            raise ValueError('Expected one wheel metadata record')
+        metadata = email.message_from_bytes(archive.read(records[0]))
+    if metadata['Name'] != 'kumo-engine' or not metadata['Version']:
+        raise ValueError('Expected the built kumo-engine wheel')
+    return dict(filename=path.name, version=metadata['Version'], key=key,
+                sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                bytes=path.stat().st_size)
 
 
 def run(args):
@@ -113,21 +177,30 @@ def run(args):
     request = dict(run_id=args.run_id, source_sha=args.source_sha,
                    instance_id=INSTANCE, nonce=secrets.token_hex(16),
                    mode='integration-only', physical_fits=0)
+    key = f'{PREFIX}/{args.run_id}'
+    wheel = getattr(args, 'wheel', None)
+    if wheel is not None:
+        request['wheel'] = wheel_identity(wheel, key + '/' + wheel.name)
+        aws('s3api', 'put-object',
+            '--bucket', BUCKET, '--key', request['wheel']['key'], '--body',
+            str(wheel), '--server-side-encryption', 'AES256',
+            region='us-west-2')
     path = output / 'request.json'
     path.write_text(json.dumps(request, indent=2))
     checksum = hashlib.sha256(path.read_bytes()).hexdigest()
-    key = f'{PREFIX}/{args.run_id}'
     aws('s3api', 'put-object', '--bucket', BUCKET, '--key',
         key + '/request.json', '--body', str(path), '--server-side-encryption',
         'AES256', region='us-west-2')
     script = (f'export SSM_RunId={shlex.quote(args.run_id)}\n'
               f'export SSM_RequestSha256={shlex.quote(checksum)}\n{REMOTE}')
-    command = aws('ssm', 'send-command', '--instance-ids', INSTANCE,
-                  '--document-name', DOCUMENT, '--document-version',
-                  DOCUMENT_VERSION, '--parameters',
-                  json.dumps(dict(commands=[script], executionTimeout=['150'])),
-                  '--timeout-seconds', '60', '--comment',
-                  'Nightly integration only; zero model fits')
+    command = aws(
+        'ssm', 'send-command', '--instance-ids', INSTANCE, '--document-name',
+        DOCUMENT, '--document-version', DOCUMENT_VERSION, '--parameters',
+        json.dumps(
+            dict(commands=[script],
+                 executionTimeout=['1200' if wheel is not None else '150'])),
+        '--timeout-seconds', '60', '--comment',
+        'Nightly integration only; zero model fits')
     command_id = command['Command']['CommandId']
     (output / 'command-id.txt').write_text(command_id + '\n')
     try:
@@ -137,10 +210,22 @@ def run(args):
             key + '/result.json', str(result_path), region='us-west-2')
         result = json.loads(result_path.read_text())
         validate_result(request, result)
+        if wheel is not None:
+            aws('s3api', 'get-object', '--bucket', BUCKET,
+                '--key', key + '/wheel-install.log',
+                str(output / 'wheel-install.log'), region='us-west-2')
         if result.get('request_sha256') != checksum:
             raise ValueError(
                 'Remote receipt does not match the staged request bytes')
     except BaseException:
+        if wheel is not None:
+            try:
+                aws('s3api', 'get-object', '--bucket', BUCKET,
+                    '--key', key + '/wheel-install.log',
+                    str(output / 'wheel-install.log'), region='us-west-2')
+            except RuntimeError as error:
+                print(f'Could not collect wheel installation log: {error}',
+                      file=sys.stderr)
         try:
             aws('ssm', 'cancel-command', '--command-id', command_id,
                 '--instance-ids', INSTANCE)
@@ -165,6 +250,7 @@ def main():
     probe.add_argument('--source-sha', required=True)
     probe.add_argument('--output-dir', type=Path, required=True)
     probe.add_argument('--timeout', type=int, default=240)
+    probe.add_argument('--wheel', type=Path)
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, interrupt)
     run(args)

@@ -19,9 +19,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   integration:
-    name: Nightly SSM connection, zero fits
+    name: Nightly wheel build and VM import, zero fits
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 60
     environment:
       name: gha-kumo-workflow-tests
       deployment: false
@@ -36,6 +36,22 @@ jobs:
         run: |
           aws --version
           python3 -m unittest discover -s test/scripts -p test_engine_nightly_ssm.py
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: packages/diskgraph
+          prefix-key: engine-pr-zig-workspace-v2
+          key: py312-glibc234-${{ hashFiles('packages/diskgraph/**', 'packages/kumo-engine/scripts/build_wheel.sh') }}
+          cache-workspace-crates: true
+          cache-on-failure: true
+      - name: Build the exact candidate wheel on CPU
+        env:
+          CARGO_BUILD_JOBS: '4'
+        run: |
+          python3 -m pip --isolated install ziglang
+          packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/pr-wheel"
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
         id: aws
         with:
@@ -44,7 +60,7 @@ jobs:
           aws-region: us-east-2
           output-env-credentials: false
           output-credentials: true
-      - name: Check nightly SSM and artifact transport without model execution
+      - name: Transfer the wheel to the VM and verify installation without training
         env:
           AWS_ACCESS_KEY_ID: ${{ steps.aws.outputs.aws-access-key-id }}
           AWS_SECRET_ACCESS_KEY: ${{ steps.aws.outputs.aws-secret-access-key }}
@@ -52,13 +68,18 @@ jobs:
           NIGHTLY_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
           NIGHTLY_SOURCE_SHA: ${{ github.sha }}
         run: |
+          wheels=("$RUNNER_TEMP/pr-wheel/"*.whl)
+          test "${#wheels[@]}" -eq 1
           python3 scripts/engine_nightly_ssm.py run \
             --run-id "$NIGHTLY_RUN_ID" --source-sha "$NIGHTLY_SOURCE_SHA" \
+            --wheel "${wheels[0]}" --timeout 1500 \
             --output-dir "$RUNNER_TEMP/nightly-ssm"
-          echo 'Nightly AWS integration passed. Zero fits and no GPU model work. Full nightly validation remains separate.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'CI wheel build, S3 transfer, isolated VM installation and imports passed. Zero fits. Full nightly validation remains separate.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         if: always()
         with:
           name: nightly-ssm-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/nightly-ssm
+          path: |
+            ${{ runner.temp }}/nightly-ssm
+            ${{ runner.temp }}/pr-wheel/*.whl
           if-no-files-found: warn

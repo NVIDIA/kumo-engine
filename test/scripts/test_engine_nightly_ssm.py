@@ -10,6 +10,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -125,6 +126,50 @@ class NightlySSMTest(unittest.TestCase):
                 hashlib.sha256(
                     (root / 'request.json').read_bytes()).hexdigest()
             ])
+
+    def test_wheel_result_requires_matching_installation_and_wheel_identity(
+            self):
+        wheel = dict(filename='kumo_engine-1.2.3-py3-none-any.whl',
+                     version='1.2.3', sha256='a' * 64, key='run/wheel.whl')
+        request = dict(run_id='123-1', source_sha='b' * 40,
+                       instance_id='i-06dd0e3c558780731', nonce='original',
+                       wheel=wheel)
+        install = dict(status='PASS', version='1.2.3', engine_version='1.2.3',
+                       isolated=True)
+        result = dict(request, status='INTEGRATION_PASS', physical_fits=0,
+                      gpu_work_started=False, cuda_visible_devices='0',
+                      installation=install)
+        controller.validate_result(request, result)
+        for change in [
+                dict(installation=None),
+                dict(installation=dict(install, status='FAILED')),
+                dict(installation=dict(install, version='1.2.2')),
+                dict(installation=dict(install, engine_version='1.2.2')),
+                dict(installation=dict(install, isolated=False)),
+                dict(wheel=dict(wheel, sha256='c' * 64))
+        ]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                controller.validate_result(request, dict(result, **change))
+
+    def test_wheel_metadata_rejects_a_different_distribution(self):
+        describe = getattr(controller, 'wheel_identity', None)
+        self.assertTrue(callable(describe),
+                        'Wheel identity validation is missing')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'kumo_engine-1.2.3-py3-none-any.whl'
+            for name in ['kumo-engine', 'another-project']:
+                with zipfile.ZipFile(path, 'w') as archive:
+                    archive.writestr('kumo_engine-1.2.3.dist-info/METADATA',
+                                     f'Name: {name}\nVersion: 1.2.3\n')
+                if name == 'kumo-engine':
+                    identity = describe(path, 'run/wheel.whl')
+                    self.assertEqual(identity['version'], '1.2.3')
+                    self.assertEqual(
+                        identity['sha256'],
+                        hashlib.sha256(path.read_bytes()).hexdigest())
+                else:
+                    with self.assertRaises(ValueError):
+                        describe(path, 'run/wheel.whl')
 
 
 if __name__ == '__main__':
