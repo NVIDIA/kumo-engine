@@ -28,7 +28,7 @@ def _build_commit(version: str) -> Optional[str]:
     root = Path(__file__).resolve().parents[2]
     if not (root / 'pyproject.toml').is_file():
         return None
-    command = ['git', '-C', str(root), 'rev-parse', '--short', 'HEAD']
+    command = ['git', '-C', str(root), 'rev-parse', '--short=12', 'HEAD']
     try:
         return subprocess.run(command, capture_output=True, text=True,
                               check=True, timeout=10).stdout.strip() or None
