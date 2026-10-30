@@ -223,8 +223,8 @@ def _by_class(counts: Counts, ranked: str, order: Sequence[int],
 
     label = 'class' if ranked == 'classes' else 'label'
     return Table(
-        'pred/by_class', (label, 'share predicted', 'share at holdout',
-                          'mean', 'min', 'max'),
+        'pred/by_class', (label, 'share predicted',
+                          'share predicted in holdout', 'mean', 'min', 'max'),
         tuple((columns[i].removesuffix('_PROB') if columns else str(i),
                float(tally[i] / rows) if rows else 0.0,
                None if holdout is None else float(holdout[i] / holdout.sum()),

@@ -102,7 +102,8 @@ def test_multiclass_summarizes_each_class_and_the_most_predicted():
     assert logged['pred/histogram/confidence'].counts == _brute_histogram(
         prob.max(axis=1), PROBABILITY_EDGES)
     assert logged['pred/by_class'].columns == (
-        'class', 'share predicted', 'share at holdout', 'mean', 'min', 'max')
+        'class', 'share predicted', 'share predicted in holdout', 'mean',
+        'min', 'max')
     assert logged['pred/by_class'].rows == tuple(
         (f'c{index}', top[index] / 400, at_holdout[index] / 200,
          *_summary_row(None, prob[:, index])[1:]) for index in order)
