@@ -23,7 +23,7 @@ PART = 32
 def stage(monkeypatch, tmp_path):
     monkeypatch.setattr('kumo_snowflake.staging.SPCS_TOKEN_PATH',
                         str(tmp_path / 'absent'))
-    monkeypatch.setattr(stage_fs, '_ranged_stages', {})
+    monkeypatch.setattr(stage_fs, '_read_modes', {})
     monkeypatch.setattr(stage_fs.StageFileSystemHandler, 'part_bytes', PART)
     fake = FakeStage()
     monkeypatch.setattr(stage_fs, '_download_session',

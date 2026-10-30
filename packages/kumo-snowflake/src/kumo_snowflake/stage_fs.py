@@ -93,7 +93,7 @@ class StageFileSystemHandler(ChunkedFileHandler):
         path = path.rstrip('/')
         with self._downloads_lock:
             for name in list(self._downloads):
-                if name == path or name.startswith(path):
+                if name == path or name.startswith(path + '/'):
                     del self._downloads[name]
 
     def _part(self, path: str, size: int):
