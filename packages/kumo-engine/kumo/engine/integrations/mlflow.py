@@ -1028,12 +1028,14 @@ class _Pending:
 
 _NOTE = 'mlflow.note.content'
 _EXPERIMENT_NOTE = '\n'.join([
-    'Runs kumo-engine records, of two kinds:',
-    '- **fits**, `v<version>-<model>` once registered (`fit-<time>-<model>` '
-    "before), with a search's trials under them: filter "
-    "`tags.kumo.kind = 'fit'`",
-    '- **predictions**, one per scoring day, `<date>-v<version>-<model>`: '
-    "filter `tags.kumo.kind = 'prediction'` and sort by Run Name",
+    "kumo-engine: v<N>-<model> = a fit · <date>-v<N>-<model> = one day's "
+    'scoring',
+    '',
+    '- **Fits**: `v<version>-<model>` once registered (`fit-<time>-<model>` '
+    "before), with a search's trials under them. Filter "
+    "`tags.kumo.kind = 'fit'`.",
+    '- **Predictions**: one per scoring day, `<date>-v<version>-<model>`. '
+    "Filter `tags.kumo.kind = 'prediction'` and sort by Run Name.",
     "Each run's description starts with its card; add notes below the "
     "card's last line."])
 _CARD_END = re.compile(r'<!-- /kumo:card sha256=([0-9a-f]{16}) -->')
@@ -1563,20 +1565,23 @@ def _version_text(metrics: Mapping[str, float], tune: Optional[str],
 
 def _describe_version(target: Any, client: Any, published: PublishedModel,
                       text: str) -> None:
-    r"""Puts ``text`` in the ``kumo:version`` part of the version's
-    description, after the user's text, within MLflow's 5000 characters."""
+    r"""Starts the version's description with ``text``, sealed as a run's
+    card is, within MLflow's 5000 characters; the user's text after it is
+    kept, and a user's edit of ``text`` stops kumo's updates."""
     name, version = published.name, published.version
     with target.scope():
         current = client.get_model_version(name, version).description or ''
-        user = _VERSION_PART.sub('', current).strip()
-        part = f'<!-- kumo:version -->\n{text}\n<!-- /kumo:version -->'
-        described = f'{user}\n\n{part}' if user else part
+        end = _VERSION_END.search(current)
+        if end and _card_hash(current[:end.start()]) != end.group(1):
+            return
+        user = current[end.end():] if end else current and f'\n\n{current}'
+        described = (f'{text}\n<!-- /kumo:version sha256='
+                     f'{_card_hash(text)} -->{user}')
         if len(described) <= 5000 and described != current:
             client.update_model_version(name, version, description=described)
 
 
-_VERSION_PART = re.compile(r'<!-- kumo:version -->.*?<!-- /kumo:version -->',
-                           re.DOTALL)
+_VERSION_END = re.compile(r'<!-- /kumo:version sha256=([0-9a-f]{16}) -->')
 
 
 def _registered_version(client: Any, name: str,

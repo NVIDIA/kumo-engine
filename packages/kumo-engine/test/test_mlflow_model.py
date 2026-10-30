@@ -23,6 +23,7 @@ import kumo.engine as kumo
 from kumo.engine import _card
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._tracking import logged_names
+from kumo.engine.integrations.mlflow import _card_hash
 from kumo.engine.trainer._run_spec import model_metrics
 
 mlflow = pytest.importorskip('mlflow')
@@ -85,12 +86,13 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         uri=f'models:/m/{version.version}',
         metadata={'kumo_bundle_id': result.id}, metrics=model_metrics(result))
     assert version.tags == {'kumo_bundle_id': result.id}
-    assert version.description == '\n'.join([
-        'Mine.', '', '<!-- kumo:version -->',
+    kumo_text = '\n'.join([
         _card.version_headline(holdout, 'mae'),
         f'Trained by `{parent.info.run_name}`. Bundle '
-        f"`{tmp_path / 'root' / 'models' / result.id}`.",
-        '<!-- /kumo:version -->'])
+        f"`{tmp_path / 'root' / 'models' / result.id}`."])
+    assert version.description == (
+        f'{kumo_text}\n<!-- /kumo:version sha256={_card_hash(kumo_text)} -->'
+        '\n\nMine.')
     assert trainer.result is result
 
     info = mlflow.models.get_model_info('models:/m@champion')
@@ -598,7 +600,6 @@ def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
     model, = client.search_logged_models([experiment])
     assert (model.source_run_id, client.search_runs([experiment])) == (
         None, [])
+    headline = _card.version_headline(holdout_metrics(result), None)
     assert client.get_model_version('m', '1').description == (
-        '<!-- kumo:version -->\n'
-        f'{_card.version_headline(holdout_metrics(result), None)}\n'
-        '<!-- /kumo:version -->')
+        f'{headline}\n<!-- /kumo:version sha256={_card_hash(headline)} -->')
