@@ -100,6 +100,7 @@ _UPLOAD_HTTP = {'MLFLOW_HTTP_REQUEST_TIMEOUT': '600'}
 _PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS')
 _SAGEMAKER_MODEL = re.compile(r'[a-zA-Z0-9](-*[a-zA-Z0-9]){0,56}')
 _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
+_HINTED: set = set()
 
 
 class MlflowTracking:
@@ -666,7 +667,9 @@ class MlflowTracking:
                              status, ended)
             self._reset()
         hint = _sagemaker_ui_hint(self.target.tracking_uri)
-        if hint and started and kind in ('fit', 'prediction'):
+        if (hint and started and kind in ('fit', 'prediction')
+                and self.target.tracking_uri not in _HINTED):
+            _HINTED.add(self.target.tracking_uri)
             warnings.warn(f'MLflow run {self.logged_run_name!r} in experiment '
                           f'{self.experiment!r}: {hint}', UserWarning,
                           stacklevel=2)

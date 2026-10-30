@@ -304,8 +304,11 @@ def test_building_mlops_creates_the_experiment_or_says_why_it_cannot(
     ('sqlite:///mlflow.db', None),
 ])
 def test_a_tracked_fit_on_sagemaker_says_how_to_open_the_ui(
-        tracking_uri, uri, command):
+        tracking_uri, uri, command, monkeypatch):
+    from kumo.engine.integrations import mlflow as integration
     from kumo.engine.integrations.mlflow import MlflowTracking
+
+    monkeypatch.setattr(integration, '_HINTED', set())
 
     tracker = MlflowTracking(log_system_metrics=False)
     tracker.start(run_record(fit_spec(CONTEXT)))
@@ -318,6 +321,10 @@ def test_a_tracked_fit_on_sagemaker_says_how_to_open_the_ui(
         "MLflow run 'fit-ents-regression-20261029-061800' in experiment "
         "'Default': MLflow's run links do not open on SageMaker: open the "
         f'MLflow UI from SageMaker Studio or at the URL `{command}` prints.'])
+    with warnings.catch_warnings(record=True) as again:
+        warnings.simplefilter('always')
+        tracker.finish(run_record(fit_spec(CONTEXT)), None)
+    assert not [w for w in again if 'Studio' in str(w.message)]
 
 
 def test_user_disabled_autologging_stays_disabled(tracking_uri):
