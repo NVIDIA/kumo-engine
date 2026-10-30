@@ -814,3 +814,68 @@ def test_a_fit_logs_only_the_plan_options_it_sets():
         'base_lr': 0.01, 'max_epochs': '???', 'loss': None}}))
 
     assert spec.params == {'optimization.base_lr': 0.01}
+
+
+class _Events(_Recorder):
+    def on_trial(self, record, event):
+        self.calls.append(('on_trial', event))
+
+
+def _session(events, trials):
+    recorder = _Events()
+    session = TrackingSession(recorder)
+    plan = {**CONTEXT.model_plan, 'training_job': {
+        'tune_metric': 'mae', 'num_experiments': trials}}
+    session.start(lambda: fit_spec(replace(CONTEXT, model_plan=plan)))
+    for event in events:
+        session.on_event(event)
+    session.finish(lambda: fitted_spec(session.spec, RESULT), None)
+    join_tracking_threads()
+    return recorder.calls
+
+
+def test_a_one_epoch_fit_writes_its_epoch_in_a_note_not_a_series():
+    calls = _session([
+        _event('trial_started', 1, attempt=1), *_epochs(1, (0.5, 0.4)),
+        _event('trial_ended', 1, status='succeeded', attempt=1),
+        _event('fit_ended', status='succeeded')], trials=1)
+
+    assert [hook for hook, _ in calls] == ['start', 'finish']
+    record = calls[-1][1]
+    assert record.steps == {}
+    assert Note('notes', 'Training (1 epoch): train loss 0.5 · val mae 0.4') \
+        in record.summaries
+
+
+def test_a_series_starts_once_it_has_two_points():
+    calls = _session([
+        _event('trial_started', 1, attempt=1), *_epochs(1, (0.5, 0.4)),
+        _event('trial_ended', 1, metrics={'val_mae': 0.4}, status='succeeded',
+               attempt=1),
+        _event('trial_started', 2, attempt=1),
+        *_epochs(2, (0.6, 0.5), (0.4, 0.3)),
+        _event('trial_ended', 2, metrics={'val_mae': 0.3}, status='succeeded',
+               attempt=1),
+        _event('fit_ended', status='succeeded')], trials=2)
+
+    epochs = [(event.trial, event.epoch) for hook, event in calls
+              if hook == 'on_trial' and event.name == 'epoch_ended']
+    assert epochs == [(2, 1), (2, 2)]
+    assert [event.metrics for hook, event in calls if hook == 'on_trial'
+            and event.trial == 1 and event.name == 'trial_ended'] == [
+        {'val/mae': 0.4}]
+    assert calls[-1][1].steps == {'train/loss': ((1, 0.6), (2, 0.4)),
+                                  'val/mae': ((1, 0.5), (2, 0.3))}
+
+
+def test_a_search_whose_selected_trial_ran_one_epoch_notes_it():
+    calls = _session([
+        _event('trial_started', 1, attempt=1), *_epochs(1, (0.5, 0.4)),
+        _event('trial_ended', 1, metrics={'val_mae': 0.4}, status='succeeded',
+               attempt=1),
+        _event('fit_ended', status='succeeded')], trials=2)
+
+    record = calls[-1][1]
+    assert record.steps == {}
+    assert Note('notes', 'Training (1 epoch): train loss 0.5 · val mae 0.4') \
+        in record.summaries

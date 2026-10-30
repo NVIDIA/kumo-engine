@@ -32,7 +32,7 @@ from typing import (
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.instrumentation import format_error
 
-from kumo.engine._card import entity
+from kumo.engine._card import entity, number
 from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
 from kumo.engine._version import __version__
@@ -410,6 +410,28 @@ def _tune_metric(model: Any) -> Optional[str]:
     return None if text in (None, '', '???') else text
 
 
+def _one_epoch_note(spec: RunSpec,
+                    held: Optional[Mapping[str, float]]) -> RunSpec:
+    r"""``spec`` with its single-point series, and a single-trial fit's
+    ``held`` first epoch that never got a second, in a note instead."""
+    from kumo_core.summaries import Note
+
+    single = {name: points[0][1] for name, points in spec.steps.items()
+              if len(points) < 2}
+    values = {**{logged_name(name): value for name, value in single.items()},
+              **(held or {})}
+    values.pop('train/epoch_seconds', None)
+    if not single and held is None:
+        return spec
+    text = ' · '.join(f"{name.replace('/', ' ')} {number(value)}"
+                      for name, value in values.items())
+    return dataclasses.replace(
+        spec, steps={name: points for name, points in spec.steps.items()
+                     if name not in single},
+        summaries=(*spec.summaries, Note('notes',
+                                         f'Training (1 epoch): {text}')))
+
+
 def _labels_mature(manifest: 'PredictionManifest',
                    window: Optional[Sequence[Any]]) -> Optional[str]:
     r"""The date (UTC) the latest anchor's labels are all known: the anchor
@@ -591,6 +613,8 @@ class TrackingSession:
         self._warn = warn
         self.spec: Optional[RunSpec] = None
         self._trials: Dict[int, List[Event]] = {}
+        # A series' first point waits for its second: a line, not a dot.
+        self._first_epoch: Dict[Optional[int], Any] = {}
         self._search: Optional[_Search] = None
         self._jobs: 'queue.Queue[Optional[Callable[[], Any]]]' = queue.Queue(
             QUEUE_SIZE)
@@ -659,14 +683,28 @@ class TrackingSession:
                 }))
             logged = dataclasses.replace(event,
                                          metrics=logged_names(event.metrics))
-            self._submit(lambda: self._call(
-                lambda tracker: tracker.on_trial(record, logged)))
+            for each in self._once_a_line(event.trial, event, logged):
+                self._submit(lambda each=each: self._call(
+                    lambda tracker: tracker.on_trial(record, each)))
         series = None if self._search is None else self._search.on(event)
         if series is not None:
-            metrics, step = logged_names(series[0]), series[1]
-            self._submit(lambda: self._call(
-                lambda tracker: getattr(tracker, 'log_metrics', _none)(
-                    metrics, step)))
+            for metrics, step in self._once_a_line(
+                    None, event, (logged_names(series[0]), series[1])):
+                self._submit(lambda metrics=metrics, step=step: self._call(
+                    lambda tracker: getattr(tracker, 'log_metrics', _none)(
+                        metrics, step)))
+
+    def _once_a_line(self, key: Optional[int], event: Event,
+                     item: Any) -> List[Any]:
+        r"""What to log for ``event`` of the series ``key``: an epoch after
+        the series' second with its first, nothing for the first alone."""
+        if event.name != 'epoch_ended':
+            return [item]
+        if key not in self._first_epoch:
+            self._first_epoch[key] = item
+            return []
+        first, self._first_epoch[key] = self._first_epoch[key], None
+        return [item] if first is None else [first, item]
 
     def log_model(
         self,
@@ -744,6 +782,8 @@ class TrackingSession:
                 final = dataclasses.replace(
                     final, steps=trial_spec(self._trials[selected[1]]).steps,
                     parents={**final.parents, 'best_trial': selected[1]})
+            held = self._first_epoch.get(None)
+            final = _one_epoch_note(final, None if held is None else held[0])
             if error is not None and final.error is None:
                 final = dataclasses.replace(final, error=format_error(error))
             record: Optional[RunRecord] = run_record(final)
