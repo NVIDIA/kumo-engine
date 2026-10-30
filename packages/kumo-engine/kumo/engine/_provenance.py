@@ -13,9 +13,6 @@ from typing import Any, Dict, Optional
 
 from kumo.engine._manifest import Environment, SourceTableEntry
 
-_LOCATED_CONNECTORS = frozenset(
-    {'LOCAL_FILE', 'S3', 'GCS', 'SNOWFLAKE', 'DATABRICKS', 'BIGQUERY'})
-
 
 @cache
 def _build_commit(version: str) -> Optional[str]:
@@ -28,7 +25,7 @@ def _build_commit(version: str) -> Optional[str]:
     root = Path(__file__).resolve().parents[2]
     if not (root / 'pyproject.toml').is_file():
         return None
-    command = ['git', '-C', str(root), 'rev-parse', '--short', 'HEAD']
+    command = ['git', '-C', str(root), 'rev-parse', '--short=12', 'HEAD']
     try:
         return subprocess.run(command, capture_output=True, text=True,
                               check=True, timeout=10).stdout.strip() or None
@@ -68,9 +65,8 @@ def source_location(connector: Any, table_name: str,
                     sql: Optional[str] = None) -> str:
     if sql is not None:
         return 'sql:' + hashlib.sha256(sql.encode()).hexdigest()
-    if _connector_kind(connector) not in _LOCATED_CONNECTORS:
-        return table_name
-    return connector.source_backend.table_location(connector, table_name)
+    locate = getattr(connector.source_backend, 'table_location', None)
+    return table_name if locate is None else locate(connector, table_name)
 
 
 def _connector_kind(connector: Any) -> str:

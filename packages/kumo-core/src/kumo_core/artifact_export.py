@@ -13,6 +13,7 @@ what they write with and how they classify a refusal; they must not differ in
 from __future__ import annotations
 
 import hashlib
+import warnings
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -239,7 +240,6 @@ def export_selected_files(files, output_path, *, fs, identity,
             try:
                 fs.write_bytes(osp.join(output_path, name), payload)
             except Exception as error:
-                import warnings
                 warnings.warn(f'Exporting without {name}: {error}',
                               UserWarning, stacklevel=2)
     return publish_export_destination(output_path, fs=fs)
