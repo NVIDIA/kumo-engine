@@ -53,6 +53,7 @@ from kumo.engine._embeddings import (
     require_trained_embedding_models,
 )
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
+from kumo.engine.connector import model_sink
 from kumo.engine.connector.base import Connector
 from kumo.engine.graph import GraphSnapshot
 from kumo.engine.pquery.prediction_table import PredictionTable
@@ -358,7 +359,8 @@ class Trainer:
         from kumo.engine.trainer._runtime import local_training_bindings
 
         if export_config is not None and not callable(
-                getattr(export_config.connector.sink_backend, 'publish_model',
+                getattr(model_sink(export_config.connector,
+                                   export_config.path), 'publish_model',
                         None)):
             raise NotImplementedError(
                 f'{type(export_config.connector).__name__} cannot publish '
@@ -547,7 +549,8 @@ class Trainer:
         )
         if export_config is not None:
             spec = read_training_spec(training_result.bundle_dir)
-            published = export_config.connector.sink_backend.publish_model(
+            sink = model_sink(export_config.connector, export_config.path)
+            published = sink.publish_model(
                 export_config.connector,
                 str(training_result.bundle_dir),
                 path=export_config.path,
@@ -819,7 +822,7 @@ class Trainer:
         address = ModelOutputConfig(model_registry, path=path,
                                     location=location)
         bundle_dir = trainer_scratch_dir(new_run_id()) / 'fetched-model'
-        sink = getattr(model_registry, 'sink_backend')
+        sink = model_sink(model_registry, address.path)
         if not isinstance(sink, ModelFetchingSink):
             raise TypeError(
                 'model_registry.sink_backend must implement ModelFetchingSink')

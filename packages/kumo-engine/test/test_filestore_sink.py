@@ -135,6 +135,26 @@ def test_bundles_round_trip_through_a_filesystem_only_sink(
             bundle / name).read_bytes()
 
 
+def test_a_trainer_publishes_and_loads_through_a_filesystem_only_sink(
+        fitted):
+    trainer, *_ = fitted
+    connector = SimpleNamespace(source_type='SNOWFLAKE',
+                                sink_backend=StageSink())
+    result = trainer._finish_fit(
+        trainer._training_result, predictive_query=trainer._training_query,
+        snapshot_id=trainer._snapshot_id,
+        training_table_generation=trainer.training_table_generation_plan,
+        export_config=kumo.ModelOutputConfig(connector,
+                                             path='@stage/models/m'))
+    assert result.published_model.uri == '@stage/models/m'
+    loaded = kumo.Trainer.load_from_connector(connector,
+                                              path='@stage/models/m')
+    assert loaded._snapshot_id == trainer._snapshot_id
+    with pytest.raises(NotImplementedError, match='cannot publish'):
+        trainer.fit(None, snapshot=None,
+                    export_config=kumo.ModelOutputConfig(connector, path='T'))
+
+
 def test_parquet_writes_stay_plain_up_to_one_part(tmp_path, connector):
     files = FilesystemSink(connector.sink_backend)
     frame = pd.DataFrame({'x': range(10)})
