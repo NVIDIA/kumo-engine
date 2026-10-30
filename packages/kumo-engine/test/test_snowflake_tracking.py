@@ -339,6 +339,8 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
             Table('data/splits', ('split', 'rows'),
                   (('train', 8), ('val', 1), ('test', 1)), brief=True),
             Series('holdout/by_k/map', ((1, 0.5), (10, 0.25)), x_label='k'),
+            Table('data_preparation', ('step', 'time (s)', 'disk (GiB)'),
+                  (('Training table', 12.5, 0.5),), brief=True),
         )), None)
 
     run, = fake._instance.runs.values()
@@ -348,9 +350,13 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
         '**Problems:** link `ents.ID → users`: 14 % of rows match', '',
         '**Training data:**', '', '| split | rows |', '| --- | ---: |',
         '| train | 8 |', '| val | 1 |', '| test | 1 |', '',
+        '**Data preparation:** Training table: time (s) 12.5 · disk (GiB) '
+        '0.5', '',
         '**Where things are**', '- bundle `models/b/`', '',
         'Full lineage: `_provenance.json`. Tables: `holdout/by_k.json`.'])
     assert ('duration_seconds', 90.0, 0) in run['metrics']
+    assert run['params']['prep.training_table.seconds'] == '12.5'
+    assert run['params']['prep.training_table.disk_gib'] == '0.5'
 
 
 def test_a_prediction_run_names_its_model_and_lasts_as_long_as_it_ran(fake):

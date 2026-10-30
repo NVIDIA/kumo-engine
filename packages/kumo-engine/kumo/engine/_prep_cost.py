@@ -7,15 +7,17 @@ wrote, shown on the runs that use it."""
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 from kumo_core.summaries import Table
 
+from kumo.engine._card import number
 from kumo.engine._manifest import BuildCost
 
 PREP_TABLE = 'data_preparation'
 _GIB = 1024**3
 _COLUMNS = ('step', 'time (s)', 'disk (GiB)')
+_PARAMS = ('seconds', 'disk_gib')
 _ROWS = {'snapshot': 'Graph snapshot', 'training_table': 'Training table'}
 _REUSED = ' (built earlier, reused)'
 
@@ -58,3 +60,14 @@ def prep_summaries(*manifests: Any) -> List[Table]:
         rows.append((label, build.seconds, build.disk_bytes / _GIB))
     return ([Table(PREP_TABLE, _COLUMNS, tuple(rows), brief=True)]
             if rows else [])
+
+
+def prep_params(table: Table) -> Dict[str, str]:
+    r"""``table``, a `prep_summaries` table, as run params
+    ``prep.<step>.<measure>``, as the card shows them."""
+    return {
+        f"prep.{label.removesuffix(_REUSED).lower().replace(' ', '_')}."
+        f'{name}': number(value)
+        for label, *values in table.rows
+        for name, value in zip(_PARAMS, values)
+    }

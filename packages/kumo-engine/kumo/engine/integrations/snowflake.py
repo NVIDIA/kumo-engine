@@ -30,6 +30,7 @@ from kumo_core.summaries import (
 
 from kumo.engine import _card
 from kumo.engine._events import Event
+from kumo.engine._prep_cost import PREP_TABLE, prep_params
 from kumo.engine._summary_tables import SummaryTables, table_json
 from kumo.engine._tracking import (
     DROPPED_METRICS,
@@ -348,6 +349,8 @@ class SnowflakeTracking:
         self._grouped.add_histogram(summary)
 
     def _log_table(self, summary: Table) -> None:
+        if summary.name == PREP_TABLE:
+            self._log_params(prep_params(summary))
         if summary.brief:
             self._card.append(summary)
             return
