@@ -221,6 +221,12 @@ class WeeklyChecks(unittest.TestCase):
                 result,
                 dict(entity_ids=[2, 1], ranked_ids=[[10, 12], [11, 12]],
                      values=[[.6, .3], [.3, .2]]))
+            raw['CLASS'] = raw.CLASS.astype(float)
+            raw.to_parquet(path)
+            with self.assertRaisesRegex(ValueError, 'class key type'):
+                worker.prediction_values([path], population, case,
+                                         root / 'sort', root)
+            raw['CLASS'] = raw.CLASS.astype(int)
             raw.loc[0, 'CLASS'] = 11
             raw.to_parquet(path)
             with self.assertRaisesRegex(ValueError, 'ranked'):

@@ -226,6 +226,9 @@ def prediction_values(files, population, case, scratch, input_root):
                 if not pd.api.types.is_integer_dtype(frame.ENTITY):
                     raise ValueError(
                         'Prediction changed the integer entity key type')
+                if link and not pd.api.types.is_integer_dtype(frame.CLASS):
+                    raise ValueError(
+                        'Prediction changed the integer class key type')
                 for row in frame.to_dict('records'):
                     entity = row['ENTITY']
                     if entity not in positions:
