@@ -859,3 +859,25 @@ def test_a_run_reference_shows_as_a_link_in_a_notebook():
         'target="_blank" rel="noopener">&lt;v6&gt;</a> in a&amp;b')
     assert TrackingRef(platform='sagemaker', run_id='r1')._repr_html_() == (
         'sagemaker run <code>r1</code>')
+
+
+def test_an_unused_experiment_without_a_description_gets_one(tracking_uri):
+    from kumo.engine._tracking import RunRecord
+    from kumo.engine.integrations.mlflow import (
+        _EXPERIMENT_NOTE,
+        MlflowTracking,
+    )
+
+    client = mlflow.MlflowClient()
+    client.create_experiment('mine', tags={'mlflow.note.content': 'Mine.'})
+    client.create_run(client.create_experiment('used'))
+    for name in ('new', 'mine', 'used'):
+        tracker = MlflowTracking(name, log_system_metrics=False)
+        for _ in range(2):
+            tracker.start(RunRecord(name='r', tags={'kumo.kind': 'fit'}))
+            tracker.finish(None, None)
+
+    assert {experiment.name: experiment.tags.get('mlflow.note.content')
+            for experiment in client.search_experiments()
+            if experiment.name != 'Default'} == {
+        'new': _EXPERIMENT_NOTE, 'mine': 'Mine.', 'used': None}

@@ -433,6 +433,10 @@ class MlflowTracking:
                     client.create_experiment(self.experiment_name))
             experiment_id, self.experiment = (experiment.experiment_id,
                                               experiment.name)
+            if not experiment.tags.get(_NOTE) and not client.search_runs(
+                    [experiment_id], max_results=1):
+                client.set_experiment_tag(experiment_id, _NOTE,
+                                          _EXPERIMENT_NOTE)
             tags = dict(record.tags)
             if self._outer is not None:
                 tags['mlflow.parentRunId'] = self._outer
@@ -672,7 +676,7 @@ class MlflowTracking:
         tags = run.data.tags
         if tags.get('kumo.card_frozen') == 'true':
             return None
-        description = tags.get('mlflow.note.content', '')
+        description = tags.get(_NOTE, '')
         end = _CARD_END.search(description)
         if end and _card_hash(description[:end.start()]) == end.group(1):
             return description[:end.start()].rstrip('\n'), description[
@@ -710,7 +714,7 @@ class MlflowTracking:
         if _size(card) > budget:
             card = minimal(files)
         with self.target.scope():
-            self._client.set_tag(run_id, 'mlflow.note.content',
+            self._client.set_tag(run_id, _NOTE,
                                  _sealed(card) + user)
 
     def _rename(self, record: RunRecord) -> None:
@@ -988,6 +992,16 @@ class _Pending:
     datasets: List[Any] = field(default_factory=list)
 
 
+_NOTE = 'mlflow.note.content'
+_EXPERIMENT_NOTE = '\n'.join([
+    'Runs kumo-engine records, of two kinds:',
+    '- **fits**, `v<version>-<model>` once registered (`fit-<time>-<model>` '
+    "before), with a search's trials under them: filter "
+    "`tags.kumo.kind = 'fit'`",
+    '- **predictions**, one per scoring day, `<date>-v<version>-<model>`: '
+    "filter `tags.kumo.kind = 'prediction'` and sort by Run Name",
+    "Each run's description starts with its card; add notes below the "
+    "card's last line."])
 _CARD_END = re.compile(r'<!-- /kumo:card sha256=([0-9a-f]{16}) -->')
 _NOTES_LINE = "Notes below this line are kept; edits above it stop kumo's updates."
 _BLOCKS = ('drift', 'realized')
