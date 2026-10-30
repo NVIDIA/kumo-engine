@@ -105,6 +105,33 @@ def test_a_link_prediction_fit_shows_its_holdout_metrics_at_the_query_k():
                         'Holdout metrics at other k: `holdout/by_k.json`.')
 
 
+def test_a_prediction_body_puts_drift_after_the_scores():
+    scores = Table('pred/summary', ('column', 'mean'), (('score', 0.5),),
+                   brief=True)
+    prep = Table('data_preparation', ('step', 'time (s)'),
+                 (('Graph snapshot', 9),), brief=True)
+    summaries = (prep, scores, Note('drift', 'psi explained'),
+                 Note('notes', 'other'),
+                 Table('locations', ('kind', 'id', 'location'),
+                       (('prediction', 'c' * 64, '/p'),), brief=True))
+
+    text = '\n'.join(_card.body('Scores of x.', summaries, [],
+                                ['<!-- block -->']))
+    assert [line for line in text.split('\n')
+            if line.startswith(('**', '<', '- '))] == [
+        '**Scores**', '<!-- block -->', '- psi explained',
+        '**Data preparation**', '**Notes**', '- other',
+        '**Where things are**']
+    assert '| prediction folder `cccccccc` | `/p` |' in text
+
+
+def test_a_block_names_the_files_of_tables_moved_for_size():
+    moved = Table('drift/link_edges', ('link', 'edges'), (('a', 1),))
+    assert _card.block([Note('notes', 'n')], [moved]) == '\n'.join([
+        '**Notes**', '', '- n',
+        '- Moved to files for size: `drift/link_edges.json`.'])
+
+
 def test_a_prediction_names_the_model_and_its_fit_run():
     assert _card.model_line(MODEL, 'v6-churn', '#/experiments/1/runs/r') == (
         'Scores of `kumo-demo-churn` v6, trained by '

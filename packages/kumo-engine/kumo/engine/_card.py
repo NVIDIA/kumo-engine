@@ -159,33 +159,46 @@ def model_line(tags: Mapping[str, str], fit_run: Optional[str] = None,
 
 
 def body(intro: Optional[str], summaries: Sequence[Summary],
-         files: Sequence[str]) -> List[str]:
-    r"""The card after its heading: ``intro``, problems, brief tables,
-    notes, where things are, and the run's files."""
+         files: Sequence[str], blocks: Sequence[str] = ()) -> List[str]:
+    r"""The card after its heading: ``intro``, problems, the scores, the
+    ``blocks`` later steps fill and the notes on drift, the other brief
+    tables, notes, where things are, and the run's files."""
     lines = [] if intro is None else ['', intro]
     problems = _notes(summaries, 'problems')
     if problems:
         lines += ['', '**Problems**', '', *problems]
-    tables = [s for s in summaries if isinstance(s, Table)]
+    tables = [s for s in summaries
+              if isinstance(s, Table) and s.name != 'locations']
+    scores = [table for table in tables if table.name.startswith('pred/')]
+    for table in scores:
+        lines += ['', table_text(table)]
+    if blocks:
+        lines += ['', *blocks]
+    drift = _notes(summaries, 'drift')
+    if drift:
+        lines += ['', *drift]
     for table in tables:
-        if table.name != 'locations':
+        if table not in scores:
             lines += ['', table_text(table)]
     notes = _notes(summaries, 'notes')
     if notes:
         lines += ['', '**Notes**', '', *notes]
-    for table in tables:
-        if table.name == 'locations':
-            lines += ['', _where(table)]
+    for summary in summaries:
+        if isinstance(summary, Table) and summary.name == 'locations':
+            lines += ['', _where(summary)]
     return [*lines, '', files_line(files)]
 
 
-def block(summaries: Sequence[Summary]) -> str:
+def block(summaries: Sequence[Summary], moved: Sequence[Table] = ()) -> str:
     r"""A part of the card a later step adds, such as drift: its brief
-    tables, then its notes."""
+    tables, then its notes, naming the files of the ``moved`` tables."""
+    notes = _notes(summaries, 'notes')
+    if moved:
+        names = ', '.join(f'`{table.name}.json`' for table in moved)
+        notes.append(f'- Moved to files for size: {names}.')
     return '\n\n'.join([
         *(table_text(s) for s in summaries if isinstance(s, Table)),
-        *(['\n'.join(_notes(summaries, 'notes'))]
-          if _notes(summaries, 'notes') else [])])
+        *(['**Notes**\n\n' + '\n'.join(notes)] if notes else [])])
 
 
 def files_line(files: Sequence[str]) -> str:
