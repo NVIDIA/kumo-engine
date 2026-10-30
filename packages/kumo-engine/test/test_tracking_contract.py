@@ -106,9 +106,8 @@ EVENTS = [
     _event('fit_ended', metrics={'val_mae': 0.3, 'test_mae': 0.32,
                                  'seconds': 9.0}, status='succeeded'),
 ]
-# The fit run's own series: the best val_mae after each trial that
-# succeeded and, once the fit succeeds, the selected trial 2's epochs.
-SEARCH = {'search/best_val_mae': ((1, 0.35), (2, 0.3))}
+# The fit run's own series: once the fit succeeds, the selected trial 2's
+# epochs.
 SELECTED = {'train_loss': ((1, 0.6), (2, 0.4)), 'val_mae': ((1, 0.5), (2, 0.3))}
 BUNDLE = 'b' * 64
 RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
@@ -223,7 +222,7 @@ def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
     if result is not None:
         spec = fitted_spec(spec, result)
     spec = replace(spec, steps=series if series is not None else {
-        **SEARCH, **({} if error else SELECTED)})
+        **({} if error else SELECTED)})
     if series is None and not error:
         spec = replace(spec, parents={**spec.parents, 'best_trial': 2})
     if 'error' in events[-1].params:
@@ -467,8 +466,7 @@ def test_records_of_the_recorded_fit():
             'kumo.bundle_id': 'x', 'training_job.tune_metric': 'y', 'a': 1}))
     assert spoofed.tags.keys() - fit.tags.keys() == {'a'}
     assert fit.metrics == {'mae': 0.32}
-    assert fit.steps == {'search/best_val_mae': ((1, 0.35), (2, 0.3)),
-                         'train/loss': ((1, 0.6), (2, 0.4)),
+    assert fit.steps == {'train/loss': ((1, 0.6), (2, 0.4)),
                          'val/mae': ((1, 0.5), (2, 0.3))}
     registered = SimpleNamespace(**{
         **vars(RESULT), 'registered_alias': 'candidate',

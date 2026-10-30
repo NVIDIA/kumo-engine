@@ -512,15 +512,14 @@ class Tracking(Protocol):
 
 @dataclass
 class _Search:
-    r"""The fit run's own series: a single trial's epochs as they end, or,
-    for a search, the best validation ``metric`` after each trial; then
-    `best`, the selected trial, whose epochs the run records at the end."""
+    r"""The fit run's own series: a single trial's epochs as they end; for
+    a search, `best`, the trial with the best validation ``metric``, whose
+    epochs the run records at the end."""
 
     single: bool
     metric: str
     lower: bool
     best: Optional[Tuple[float, int]] = None
-    trials: int = 0
 
     @classmethod
     def of(cls, params: Mapping[str, Any]) -> '_Search':
@@ -541,8 +540,7 @@ class _Search:
         if self.best is None or (value < self.best[0] if self.lower else
                                  value > self.best[0]):
             self.best = (value, event.trial or 0)
-        self.trials += 1
-        return {f'search/best_{self.metric}': self.best[0]}, self.trials
+        return None
 
 
 class RegistrationError(Exception):
