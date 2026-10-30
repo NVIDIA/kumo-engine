@@ -105,6 +105,22 @@ def test_snapshot_manifest_records_sources_and_diffs(make_snapshot,
     assert new_sources['events'].version != sources['events'].version
 
 
+def test_a_snapshot_built_with_mlops_records_its_build(make_snapshot,
+                                                       tmp_path):
+    from kumo_core.diskgraph.stores import diskgraph_index_size_bytes
+
+    from kumo.engine import MLOps
+
+    plain = make_snapshot(10)
+    built = make_snapshot(20, mlops=MLOps(artifact_root=str(tmp_path / 'a'),
+                                          store={'model'}))
+
+    assert plain.manifest.build is None
+    build = built.manifest.build
+    assert build.disk_bytes == diskgraph_index_size_bytes(built.index_path)
+    assert build.started_at <= build.finished_at and build.seconds > 0
+
+
 def test_index_without_manifest_is_reused_and_backfilled(
         make_snapshot, monkeypatch):
     import kumo_core.diskgraph.ingest as ingest

@@ -453,6 +453,8 @@ def test_a_mlops_block_stores_each_table_once_under_the_root(graph, tmp_path):
         parts = {p.name: p.stat().st_mtime_ns for p in stored.iterdir()}
         pquery.generate_training_table(snapshot)
     assert '_provenance.json' in parts and '_SUCCESS' in parts
+    assert table.manifest.build.disk_bytes > 0
+    assert pquery.generate_training_table(snapshot).manifest.build is None
     assert {p.name: p.stat().st_mtime_ns for p in stored.iterdir()} == parts
     assert json.loads((stored / '_provenance.json').read_text())['id'] == (
         table.id)

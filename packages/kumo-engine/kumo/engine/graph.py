@@ -85,6 +85,7 @@ from kumoapi.graph import Edge
 from kumo.engine._events import Event, EventEmitter
 from kumo.engine._manifest import (
     RECONSTRUCTED,
+    BuildCost,
     SnapshotManifest,
     SnapshotParents,
     SourceTableEntry,
@@ -92,6 +93,7 @@ from kumo.engine._manifest import (
     stamp,
     write_manifest,
 )
+from kumo.engine._prep_cost import build_cost, start
 from kumo.engine._provenance import source_table
 from kumo.engine._scratch import (
     fingerprint,
@@ -558,7 +560,8 @@ class GraphSnapshot:
 
 def _write_snapshot_manifest(result: Any, snapshot_id: str,
                              source_tables: Dict[str, SourceTableEntry],
-                             record_sources: bool, *, fresh: bool) -> None:
+                             record_sources: bool, *, fresh: bool,
+                             build: Optional[BuildCost] = None) -> None:
     path = Path(result.index_path) / SNAPSHOT_MANIFEST_FILE
     try:
         if not fresh and path.exists():
@@ -575,7 +578,7 @@ def _write_snapshot_manifest(result: Any, snapshot_id: str,
             manifest = SnapshotManifest(
                 id=snapshot_id,
                 parents=SnapshotParents(source_tables=source_tables),
-                record_sources=record_sources,
+                record_sources=record_sources, build=build,
                 **(stamp() if fresh else RECONSTRUCTED))
         write_manifest(path, manifest)
     except Exception as error:
@@ -774,7 +777,8 @@ class Graph:
             'graph': graph_key, 'tables': list(self._named_tables)})
         with _lock(graph_key):
             snapshot = self._snapshot_no_lock(graph_key, persist_dir,
-                                              record_sources, events)
+                                              record_sources, events,
+                                              timed=settings is not None)
         if settings is not None and settings.wants('snapshot'):
             from kumo.engine._mlops import raise_on_error
             from kumo.engine._snapshot_io import store
@@ -787,8 +791,8 @@ class Graph:
 
     def _snapshot_no_lock(self, graph_key: str, persist_dir: Path,
                           record_sources: bool = True,
-                          events: Optional['_SnapshotEvents'] = None
-                          ) -> GraphSnapshot:
+                          events: Optional['_SnapshotEvents'] = None,
+                          *, timed: bool = False) -> GraphSnapshot:
         r"""`snapshot()`'s body, run under its `FileLock`. Not meant to be
         called on its own -- `persist_dir`, unlike everything else here,
         isn't a pure function of `self` alone (it's `snapshot()`'s lock key,
@@ -805,6 +809,7 @@ class Graph:
             DiskgraphSnapshotHandle,
             check_diskgraph_output,
         )
+        from kumo_core.diskgraph.stores import diskgraph_index_size_bytes
         from kumo_core.sources.layout import staging_dir
         from kumo_core.sources.transfer import discard_destination
         from kumoapi.source_table import CustomSQLSourceTable
@@ -818,6 +823,7 @@ class Graph:
         source_paths: Dict[str, str] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
 
+        started = start() if timed else None
         try:
             for alias, table in self._named_tables.items():
                 assert table.definition is not None  # portable_graph_config
@@ -904,8 +910,12 @@ class Graph:
                 )
 
             snapshot_id = _snapshot_id(graph_key, data_version)
+            build = None if started is None or existing is not None else (
+                build_cost(snapshot_id, started,
+                           diskgraph_index_size_bytes(result.index_path)))
             _write_snapshot_manifest(result, snapshot_id, source_tables,
-                                     record_sources, fresh=existing is None)
+                                     record_sources, fresh=existing is None,
+                                     build=build)
 
             _warn_ingest_data_loss(result, graph_config)
             if events is not None:

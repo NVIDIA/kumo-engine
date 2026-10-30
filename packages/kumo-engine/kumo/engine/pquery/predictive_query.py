@@ -85,6 +85,7 @@ from kumoapi.task import TaskType
 from kumoapi.train import TrainingTableSpec
 
 from kumo.engine._embeddings import no_encoder_inference_warnings
+from kumo.engine._prep_cost import start
 from kumo.engine._scratch import (
     new_run_id,
     prediction_table_scratch_dir,
@@ -292,6 +293,7 @@ class PredictiveQuery:
         if errors:
             raise ModelPlanValueError(errors)
 
+        started = start()
         run_dir = train_table_scratch_dir(new_run_id())
         run_dir.mkdir(parents=True, exist_ok=True)
         workflow, task_plan, generated = self._generate(
@@ -326,7 +328,8 @@ class PredictiveQuery:
             required_stages=task_plan.task_dataset.required_stages,
             generation_plan=generation_plan,
         )
-        return _finish(table, snapshot, task_plan.train_table, mlops)
+        return _finish(table, snapshot, task_plan.train_table, mlops,
+                       started=started)
 
     def _generate(self, snapshot: GraphSnapshot, options: CoreGenerationPlan,
                   run_dir: Path, *, timestamps: tuple[int, ...] = (),

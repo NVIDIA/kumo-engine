@@ -321,6 +321,17 @@ def _parent(hint: Type[M], value: Any) -> M:
 
 
 @dataclass(frozen=True, kw_only=True)
+class BuildCost(Record):
+    r"""When building an artifact started and finished, its wall
+    ``seconds``, and the bytes it left on disk."""
+
+    started_at: str
+    finished_at: str
+    seconds: float
+    disk_bytes: int
+
+
+@dataclass(frozen=True, kw_only=True)
 class SnapshotParents(Record):
     source_tables: Dict[str, SourceTableEntry]
 
@@ -334,6 +345,7 @@ class SnapshotManifest(Manifest):
     IS_DATASET: ClassVar[bool] = True
     parents: Optional[SnapshotParents] = None
     record_sources: Optional[bool] = omit_none()
+    build: Optional[BuildCost] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -354,6 +366,7 @@ class TrainingTableManifest(Manifest):
     generation_plan: Optional[Dict[str, Any]] = None
     task_type: Optional[str] = None
     split_seed: Optional[int] = None
+    build: Optional[BuildCost] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
