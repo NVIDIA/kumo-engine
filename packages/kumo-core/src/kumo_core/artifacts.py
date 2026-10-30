@@ -258,8 +258,8 @@ class VitalArtifactPublicationPolicy:
 def verify_model_bundle(bundle: Path) -> str:
     """Verify fetched artifacts before parsing or staging a model bundle.
 
-    Returns the bundle id, a SHA-256 over every verified file except the
-    manifest (``_provenance.json``). Paths must stay inside the bundle after symlink
+    Returns the bundle id, a SHA-256 over every verified file except
+    ``_provenance.json``. Paths must stay inside the bundle after symlink
     resolution; declared sizes and SHA-256 digests must match. Older
     manifests may omit sizes or leave training-spec.json unlisted.
     """
