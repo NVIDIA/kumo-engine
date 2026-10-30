@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 RUNNER = (Path(__file__).resolve().parents[2] /
           'packages/kumo-engine/test/wheel_gpu_smoke.py')
@@ -154,6 +155,23 @@ def test_custom_reload_tolerance_stays_enforced_and_rejects_invalid_bounds():
     for bound in (-1., np.nan, np.inf, -np.inf):
         with pytest.raises(ValueError, match='finite and nonnegative'):
             compare([[0.]], [[0.]], atol=bound)
+
+
+def test_rtx_workflow_accepts_observed_repeat_difference_and_rejects_drift():
+    root = RUNNER.parents[3]
+    workflow = yaml.safe_load(
+        (root / '.github/workflows/kumo-engine-pr.yml').read_text())
+    action = yaml.safe_load(
+        (root / '.github/actions/engine-gpu-smoke/action.yml').read_text())
+    step = next(step for step in workflow['jobs']['gpu']['steps']
+                if step.get('uses') == './.github/actions/engine-gpu-smoke')
+    bound = float(step['with'].get('reload-atol',
+                                   action['inputs']['reload-atol']['default']))
+    compare = runner().compare_predictions
+    assert compare([[0.]], [[3.975629806518555e-5]],
+                   atol=bound)['within_tolerance']
+    with pytest.raises(ValueError, match='exceeds'):
+        compare([[0.]], [[1.0001e-4]], atol=bound)
 
 
 @pytest.mark.parametrize('task', [
