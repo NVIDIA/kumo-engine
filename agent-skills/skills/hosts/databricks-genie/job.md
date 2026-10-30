@@ -33,14 +33,15 @@ scoring after a model is published. Never wrap a fit the user wants to inspect i
 
 A job runs one notebook task, a **job notebook** separate from any interactive one.
 
-- **Score a pinned model** (`batch_inference`). The model is a Unity Catalog registered model
-  with an explicit name **and** version (`runtime.md` §5.2). Intake is
+- **Score a pinned model** (`batch_inference`). The model is a Unity Catalog registered model,
+  and the job notebook names an explicit integer version (`runtime.md` §5.2). Intake is
   `kumo-data-science/accept/batch_inference.md`; the load, rebuild and predict code is
   `kumo-model-persistence/references/reuse.md`. The notebook contains no `fit` and no training
-  table. If the user has not named the model and its version, ask (batch-inference Node 1a).
-  Never train in its place, and never let the version default: `version=None` loads whichever
-  Kumo version is newest when the run starts, so a later publication silently changes what a
-  scheduled job scores.
+  table. Ask for the model if the user has not named it, and for the version only as Node 1a
+  says: when the model has more than one loadable version and none was named. A single version
+  is restated as `[inferred]` and pinned. Never train in its place, and never let the version
+  default: `version=None` loads whichever Kumo version is newest when the run starts, so a later
+  publication silently changes what a scheduled job scores.
 - **Train and score**, only when the user asks for training inside the job. It is the training
   notebook, through the same gates: one blocking `fit`, then `predict`. Publication, if asked,
   follows `runtime.md` §5.1.
@@ -104,7 +105,7 @@ the graph itself. For scoring a pinned model, its cells are:
 1. The config cell (`runtime.md` §1), with the literals from the Node 1d restatement:
    `CATALOG`, `SCHEMA`, `WAREHOUSE_ID`, `REGISTRY_CATALOG`, `REGISTRY_SCHEMA`, `MODEL_NAME`,
    `MODEL_VERSION` (an integer as a string), `OUTPUT_CATALOG`, `OUTPUT_SCHEMA`, `OUTPUT_TABLE`,
-   `WRITE_MODE`, the threshold or `TOP_K`, and `TRAINED_QUERY`.
+   `WRITE_MODE`, the scoring options, and `TRAINED_QUERY`.
 2. The connect step and `run_sql` (`runtime.md` §2, §3), and the registry connector (§5).
 3. `Trainer.load_from_connector` with the explicit version (`runtime.md` §5.2).
 4. The recorded tables, column lists and edges rebuilt into `graph`
@@ -114,14 +115,16 @@ the graph itself. For scoring a pinned model, its cells are:
 5. `loaded.predict(...)` with the task's arguments and the `runtime.md` §4 output config, then the
    read-back assertion.
 
-The `predict` arguments follow the trained query: `binary_classification_threshold=THRESHOLD`
-for binary classification, and `num_classes_to_return=TOP_K` for link prediction and ranking
-(`kumoai-reference/references/kumo_finetuning_sdk.md` §9).
+The `predict` arguments are the scoring options confirmed at Node 1d, by the trained task type,
+as the table in `kumo-data-science/accept/batch_inference.md` (*scoring options by task type*)
+gives them: a threshold (`binary_classification_threshold`) and a count of results per entity
+(`num_classes_to_return`) wherever that table allows one.
 
 - `DatabricksIdentity()` in a job run takes the credentials of the user the run runs as — the
   submitter for `runs/submit`, the job's owner or `run_as` for a scheduled job.
-- Everything on the cluster's local disk is gone when the cluster terminates. The output table is
-  the only result that survives.
+- Everything on the cluster's local disk is gone when the cluster terminates. What survives is
+  what the run wrote out: the output table, and a published model or a retained archive if the
+  job notebook makes one (`runtime.md` §5, §6).
 - Let a failure raise. Do not catch broad exceptions, so that a failed run ends `FAILED`.
 - An APPEND run checks the row delta, not the table total (`kumoai-reference/references/outputs.md`).
 

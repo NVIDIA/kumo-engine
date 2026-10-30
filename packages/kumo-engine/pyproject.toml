@@ -34,6 +34,9 @@ classifiers=[
 ]
 
 [project.optional-dependencies]
+# Keep the required backend on Linux x86_64/macOS; both distributions own
+# the same import namespace. This extra does not select Torch or its device.
+cpu=["faiss-cpu==1.14.3; sys_platform != 'linux' or platform_machine != 'x86_64'"]
 test=[
     "boto3>=1.34,<2",
     "botocore>=1.34,<2",
@@ -43,8 +46,8 @@ test=[
     "pytest-mock",
     "torch>=2.9,<2.13",
 ]
-# kumo-core (Torch/PyG/DiskGraph included) and platform-selected Faiss are
-# required dependencies of this package, not extras -- see setup.py.
+# kumo-core (Torch/PyG/DiskGraph included) is always required. Faiss is required
+# on Linux x86_64 and macOS; other platforms opt in -- see setup.py.
 # Unlike kumo-sdk, where the equivalent `core` extra is optional because
 # CloudBackend is the default path, this package has no non-training use
 # case. These per-vendor extras only need to add their own plugin package on
@@ -64,6 +67,9 @@ s3=[
 # glove.6B 50d, the default model for text columns.
 text=[
     "kumo-glove-6b-50d>=1.0.0,<2",
+]
+adls=[
+    "kumo-adls>=0.1.0.dev1",
 ]
 gcs=[
     "kumo-gcs>=0.1.0.dev1",
@@ -87,6 +93,7 @@ kumo-databricks = { workspace = true }
 kumo-bigquery = { workspace = true }
 kumo-s3 = { workspace = true }
 kumo-gcs = { workspace = true }
+kumo-adls = { workspace = true }
 kumo-glove-6b-50d = { workspace = true }
 
 [build-system]

@@ -7,6 +7,7 @@ import os
 import runpy
 import subprocess
 import sys
+import tomllib
 import types
 import zipfile
 from email.parser import BytesParser
@@ -15,6 +16,8 @@ from typing import cast
 from zipfile import ZipFile
 
 import pytest
+
+from io_utils.fsutil.api import read_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / 'packages/kumo-engine/scripts'
@@ -29,7 +32,7 @@ def test_wheel_builds_all_first_party_packages_from_monorepo(
     for name in [
             'kumo-api', 'kumo-core', 'kumo-pql', 'kumo-engine', 'kumo-sdk',
             'kumo-databricks', 'kumo-snowflake', 'kumo-s3', 'kumo-gcs',
-            'kumo-bigquery', 'diskgraph'
+            'kumo-bigquery', 'kumo-adls', 'diskgraph'
     ]:
         package = repo / 'packages' / name
         package.mkdir(parents=True)
@@ -74,7 +77,7 @@ wheel_dir = Path(args[args.index('-w') + 1])
     sources = [call[-1] for call in recorded]
     expected = ['kumo-api', 'kumo-core', 'kumo-engine', 'kumo-pql']
     expected += [
-        'kumo-bigquery', 'kumo-databricks', 'kumo-gcs', 'kumo-s3',
+        'kumo-adls', 'kumo-bigquery', 'kumo-databricks', 'kumo-gcs', 'kumo-s3',
         'kumo-snowflake'
     ]
     assert [Path(source) for source in sources] == [
@@ -138,11 +141,12 @@ def _wheel(directory, name, requires=(), extras=(), tag='py3-none-any',
 
 CORE_COMPONENTS = ['kumo-engine', 'kumo-api', 'kumo-pql', 'kumo-core',
                    'diskgraph']
-ENGINE_EXTRAS = ['snowflake', 'databricks', 's3', 'text', 'test']
+ENGINE_EXTRAS = ['adls', 'snowflake', 'databricks', 's3', 'text', 'test']
 COMPONENTS = {
     'kumo-engine': {
         'requires': [
             'pandas', 'kumo-core[gpu]>=1.0', 'pytest; extra == "test"',
+            'kumo-adls; extra == "adls"',
             'kumo-snowflake[sdk]>=1.0; extra == "snowflake"',
             'kumo-databricks; extra == "databricks"', 'kumo-s3; extra == "s3"',
             'kumo-glove-6b-50d==1.0.0; extra == "text"'
@@ -180,6 +184,10 @@ COMPONENTS = {
     },
     'kumo-databricks': {
         'requires': ['kumo-core==1.0', 'databricks-sdk'],
+    },
+    'kumo-adls': {
+        'requires': ['kumo-core==1.0', 'azure-identity',
+                     'azure-storage-file-datalake'],
     },
     'kumo-s3': {
         'requires': ['kumo-core==1.0', 'boto3'],
@@ -242,13 +250,17 @@ def test_merged_module_reports_bundle_version(tmp_path, monkeypatch):
             b"__version__ = '1.0'\n")
 
 
-@pytest.mark.parametrize(('platform', 'expected'), [
-    ('linux', {'faiss-gpu'}),
-    ('darwin', {'faiss-cpu'}),
-    ('win32', set()),
+@pytest.mark.parametrize(('platform', 'machine', 'expected'), [
+    ('linux', 'x86_64', {'faiss-gpu'}),
+    ('linux', 'aarch64', set()),
+    ('darwin', 'arm64', {'faiss-cpu'}),
+    ('darwin', 'x86_64', {'faiss-cpu'}),
+    ('win32', 'AMD64', set()),
+    ('win32', 'ARM64', set()),
 ])
+@pytest.mark.parametrize('extra', ['', 'cpu'])
 def test_engine_faiss_platform_selection_survives_merge(
-        tmp_path, monkeypatch, platform, expected):
+        tmp_path, monkeypatch, platform, machine, expected, extra):
     from packaging.requirements import Requirement
 
     setup_kwargs = {}
@@ -260,13 +272,29 @@ def test_engine_faiss_platform_selection_survives_merge(
         requirement for requirement in engine['requires']
         if 'extra ==' in requirement
     ]
+    project = tomllib.loads(read_text(str(
+        REPO_ROOT / 'packages/kumo-engine/pyproject.toml')))['project']
+    assert not {'faiss-cpu', 'faiss-gpu', 'gpu'} & set(
+        project['optional-dependencies'])
+    for name in ('cpu',):
+        for value in project['optional-dependencies'][name]:
+            requirement = Requirement(value)
+            spec = str(requirement).split(';', 1)[0]
+            marker = str(requirement.marker) if requirement.marker else None
+            condition = f'({marker}) and ' if marker else ''
+            provider_requirements.append(
+                f'{spec}; {condition}extra == "{name}"')
     monkeypatch.setitem(COMPONENTS, 'kumo-engine', {
         **engine,
+        'extras': [*engine['extras'], 'cpu'],
         'requires': setup_kwargs['install_requires'] + provider_requirements,
     })
     result = _merge(tmp_path, list(COMPONENTS))
     assert result.returncode == 0, result.stderr
     metadata, manifest, _ = _read_wheel(tmp_path)
+    assert not {'faiss-cpu', 'faiss-gpu', 'gpu'} & set(
+        metadata.get_all('Provides-Extra'))
+    assert 'cpu' in metadata.get_all('Provides-Extra')
     faiss = [
         Requirement(value) for value in metadata.get_all('Requires-Dist')
         if value.startswith('faiss-')
@@ -278,15 +306,17 @@ def test_engine_faiss_platform_selection_survives_merge(
                and requirement.marker is not None for requirement in faiss)
     selected = {
         requirement.name for requirement in faiss
-        if requirement.marker.evaluate({'sys_platform': platform, 'extra': ''})
+        if requirement.marker.evaluate({'sys_platform': platform,
+                                        'platform_machine': machine,
+                                        'extra': extra})
     }
-    assert selected == expected
-    assert {str(requirement) for requirement in faiss} <= set(
-        manifest['requires'])
+    assert selected == (expected or ({f'faiss-{extra}'} if extra else set()))
+    assert {str(requirement) for requirement in faiss
+            if 'extra' not in str(requirement.marker)} <= set(manifest['requires'])
 
 
 @pytest.mark.parametrize('providers', [
-    ['kumo-databricks', 'kumo-s3', 'kumo-snowflake'],
+    ['kumo-adls', 'kumo-databricks', 'kumo-s3', 'kumo-snowflake'],
     ['kumo-databricks'],
 ])
 def test_provider_dependencies_only_come_with_their_extra(tmp_path, providers):
@@ -308,6 +338,10 @@ def test_provider_dependencies_only_come_with_their_extra(tmp_path, providers):
         assert provider.replace('-', '_') + '/__init__.py' in names
     # ...but its dependencies are conditional on the extra.
     expected_extras = {
+        'kumo-adls': {
+            'azure-identity; extra == "adls"',
+            'azure-storage-file-datalake; extra == "adls"'
+        },
         'kumo-databricks': {'databricks-sdk; extra == "databricks"'},
         'kumo-s3': {'boto3; extra == "s3"'},
         'kumo-snowflake': {

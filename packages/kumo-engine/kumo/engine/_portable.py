@@ -49,6 +49,8 @@ from typing import Any, Dict, Mapping, Sequence
 
 from kumoapi.graph import Edge, graph_definition_from_edges
 from kumoapi.source_table import (
+    ADLSRelativeSource,
+    ADLSSourceTable,
     BigQuerySourceTable,
     CustomSQLSourceTable,
     DatabricksSourceTable,
@@ -109,6 +111,12 @@ def _source_table_name(source_table: LocalSourceTableType) -> str:
         location = (source_table.source.path if isinstance(
             source_table.source, S3RelativeSource) else source_table.source.uri)
         return '.'.join(('s3', _escape_dots(source_table.connector_id[:16]),
+                         _escape_dots(location)))
+    if isinstance(source_table, ADLSSourceTable):
+        location = (source_table.source.path if isinstance(
+            source_table.source, ADLSRelativeSource) else
+                    source_table.source.uri)
+        return '.'.join(('adls', _escape_dots(source_table.connector_id[:16]),
                          _escape_dots(location)))
     if isinstance(source_table, GCSSourceTable):
         location = (source_table.source.path if isinstance(

@@ -115,7 +115,8 @@ pub struct NodeRecord {
 
 /// State specific to a single Node Type (table).
 pub struct TypeState {
-    /// Maps (Seed, Global) -> LocalID
+    /// Maps (Seed, Global) -> LocalID. Holds only the seeds when edges are
+    /// recorded through `SamplingState::seed_maps`.
     pub index_map: GxHashMap<LookupKey, u32>,
 
     /// Ordered list of nodes discovered (Index = LocalID)
@@ -173,6 +174,65 @@ impl TypeState {
     }
 }
 
+/// The feature projection for ONE plan, resolved against ONE graph, indexed by
+/// engine `type_id`.
+///
+/// Resolving means turning the caller's `HashMap<node type name, Vec<column
+/// name>>` into a per-type answer the non-fused `fetch_features_for_type` path
+/// can index into. This is a pure function of (graph, request), so it is
+/// computed ONCE per iterator and shared by `Arc` across every batch, rather
+/// than being re-derived from strings at four sites per batch.
+///
+/// Fused-mode dispatch does not consult this at all: projection pushdown is
+/// non-fused-only for now. `RuntimeBatchIterator::build` ignores projections
+/// for explicit fused mode and selects non-fused mode for projected automatic
+/// dispatch. It is not
+/// carried on `SamplingState`: it is resolved once per iterator (in
+/// `RuntimeBatchIterator::build`) and threaded explicitly into
+/// `sample_runtime_batch` / `sample_node_range_batch`, the only two callers
+/// that need it -- `sample()` itself never sees one.
+#[derive(Debug, Default)]
+pub struct ResolvedProjection {
+    /// Per-`type_id` column names for the non-fused path, as a TRI-STATE:
+    ///
+    /// * `None` -- the request named no entry for this type: SELECT ALL, the
+    ///   pre-pushdown behavior.
+    /// * `Some([])` -- the caller explicitly asked for NOTHING. The type is
+    ///   SKIPPED: no rowpack decode, no `raw_features` block emitted at all.
+    /// * `Some([..])` -- materialize exactly these.
+    ///
+    /// The optionality lives here rather than on the wire type because this
+    /// `Vec` is DENSE over `type_id` and so has no "absent" state of its own.
+    /// The caller-facing map expresses "select all" by omitting the key.
+    pub names: Vec<Option<Vec<String>>>,
+}
+
+impl ResolvedProjection {
+    /// Column names for the non-fused path, or `None` for SELECT ALL.
+    /// Out-of-range ids yield `None`, matching the old per-call helper's
+    /// tolerance.
+    pub fn names_for(&self, type_id: usize) -> Option<&[String]> {
+        self.names.get(type_id).and_then(|n| n.as_deref())
+    }
+
+    /// `true` when the caller consumes NO column of this type, so the whole
+    /// type can be skipped: no decode, no emitted block.
+    ///
+    /// DERIVED from `names` rather than stored alongside it, so the skip set
+    /// and the name list cannot drift apart.
+    pub fn skips(&self, type_id: usize) -> bool {
+        matches!(self.names.get(type_id), Some(Some(names)) if names.is_empty())
+    }
+
+    /// `true` when this projection is the select-all identity for every type
+    /// (equivalent to resolving an empty caller map). Used to detect when a
+    /// caller handed a non-trivial projection directly into a fused-dispatch
+    /// request, bypassing the iterator's handling of unsupported projections.
+    pub fn is_trivial(&self) -> bool {
+        self.names.iter().all(|n| n.is_none())
+    }
+}
+
 /// The main context for a single sampling request.
 /// Pooled to avoid allocation churn.
 pub struct SamplingState {
@@ -191,7 +251,51 @@ pub struct SamplingState {
 
     /// Statistics for the current run.
     pub stats: SamplingStats,
+
+    /// slot = seed_slot_base[seed_type_id] + seed_index
+    pub seed_slot_base: Vec<u32>,
+    pub seed_slots: usize,
+    pub seed_maps: Vec<GxHashMap<u64, u32>>,
+    pub commit_scratch: CommitScratch,
+    pub raw_edges: Vec<Vec<RawEdge>>,
 }
+
+/// A discovered edge before it is formally committed to the SamplingState.
+pub struct RawEdge {
+    pub src_local_id: u32,
+    pub dst_global_id: u64,
+    pub dst_type_id: usize,
+    pub rel_id: u16,
+    pub seed_index: u32,
+    /// Root seed type id, propagated from the source node so the destination
+    /// node can resolve its timestamp anchor against the correct per-type array.
+    pub seed_type_id: u32,
+    pub swap_edge_direction: bool,
+}
+
+#[derive(Default)]
+pub struct CommitScratch {
+    pub bounds: Vec<u32>,
+    pub cursor: Vec<u32>,
+    pub order: Vec<(u64, u32)>,
+    pub res: Vec<std::sync::atomic::AtomicU32>,
+    pub parts: Vec<CommitPart>,
+}
+
+#[derive(Default)]
+pub struct CommitPart {
+    pub new_edges: Vec<(u64, u32)>,
+    pub new_bounds: Vec<u32>,
+}
+
+fn clear_and_cap<T>(v: &mut Vec<T>, cap: usize) {
+    v.clear();
+    if v.capacity() > cap {
+        v.shrink_to(cap);
+    }
+}
+
+const SEED_MAPS_KEEP: usize = 1 << 10;
 
 const RESET_THRESHOLD: usize = 1 << 18; // ~262k items
 
@@ -210,6 +314,11 @@ impl SamplingState {
             reservoir_scratch: Vec::with_capacity(128),
             decode_scratch: diskgraph_rowpack::RowPackDecodeScratch::default(),
             stats: SamplingStats::new(),
+            seed_slot_base: Vec::new(),
+            seed_slots: 0,
+            seed_maps: Vec::new(),
+            commit_scratch: CommitScratch::default(),
+            raw_edges: Vec::new(),
         }
     }
 
@@ -222,6 +331,31 @@ impl SamplingState {
         self.key_scratch.clear();
         self.reservoir_scratch.clear();
         self.stats.reset();
+        self.seed_slot_base.clear();
+        self.seed_slots = 0;
+        let per_buffer = RESET_THRESHOLD / self.raw_edges.len().max(1);
+        for v in &mut self.raw_edges {
+            clear_and_cap(v, per_buffer);
+        }
+        let cs = &mut self.commit_scratch;
+        clear_and_cap(&mut cs.bounds, RESET_THRESHOLD);
+        clear_and_cap(&mut cs.cursor, RESET_THRESHOLD);
+        clear_and_cap(&mut cs.order, RESET_THRESHOLD);
+        clear_and_cap(&mut cs.res, RESET_THRESHOLD);
+        let per_part = RESET_THRESHOLD / cs.parts.len().max(1);
+        for part in &mut cs.parts {
+            clear_and_cap(&mut part.new_edges, per_part);
+            clear_and_cap(&mut part.new_bounds, per_part);
+        }
+        self.seed_maps.truncate(SEED_MAPS_KEEP);
+        let mut budget = RESET_THRESHOLD;
+        for m in &mut self.seed_maps {
+            m.clear();
+            if m.capacity() > budget {
+                m.shrink_to(0);
+            }
+            budget -= m.capacity();
+        }
         // Scratch buffer is inherently reusable
     }
     /// Access or create the state for a specific node type.
@@ -297,6 +431,45 @@ impl Drop for PooledState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_caps_edge_buffers_and_commit_scratch() {
+        let pool = StatePool::new();
+        {
+            let mut state = pool.acquire();
+            state.raw_edges = (0..4)
+                .map(|_| Vec::with_capacity(RESET_THRESHOLD * 2))
+                .collect();
+            let cs = &mut state.commit_scratch;
+            cs.order.reserve(RESET_THRESHOLD * 4);
+            cs.res.resize_with(RESET_THRESHOLD * 4, Default::default);
+            cs.parts = (0..4)
+                .map(|_| CommitPart {
+                    new_edges: Vec::with_capacity(RESET_THRESHOLD * 2),
+                    new_bounds: Vec::new(),
+                })
+                .collect();
+            state.seed_maps = (0..64)
+                .map(|_| GxHashMap::with_capacity(RESET_THRESHOLD / 16))
+                .collect();
+        }
+        let state = pool.acquire();
+        let edge_capacity: usize = state.raw_edges.iter().map(Vec::capacity).sum();
+        assert!(edge_capacity <= RESET_THRESHOLD);
+        let cs = &state.commit_scratch;
+        assert!(cs.order.capacity() <= RESET_THRESHOLD);
+        assert!(cs.res.capacity() <= RESET_THRESHOLD);
+        assert!(
+            cs.parts
+                .iter()
+                .map(|p| p.new_edges.capacity())
+                .sum::<usize>()
+                <= RESET_THRESHOLD
+        );
+        let map_capacity: usize = state.seed_maps.iter().map(GxHashMap::capacity).sum();
+        assert!(map_capacity <= RESET_THRESHOLD);
+        assert!(map_capacity > 0);
+    }
 
     #[test]
     fn test_pool_recycling() {

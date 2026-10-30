@@ -263,20 +263,38 @@ def deploy_genie(pkg: Path, ws: Workspace, prune: bool = False) -> str:
     """Upload `pkg` to the user's Genie Code skills folder and read every file back.
 
     Files in the target that the package does not ship — an older build's host directory, say —
-    are reported, and with `prune` deleted, along with directories they leave empty. Only the
-    `kumo-data-science/` folder is touched; other skills beside it never are. A stale file under
-    `hosts/` is refused without `prune` before anything is written: the router expects exactly one
-    host directory, so a second one left in place would let Genie read the wrong adapter.
+    are reported, and with `prune` deleted, along with directories they leave empty. Pruning runs
+    before the upload, so a failed delete leaves the old build rather than two host directories.
+    Only the `kumo-data-science/` folder is touched; other skills beside it never are, and a listed
+    path outside it stops the deploy before anything is deleted. A stale file under `hosts/` is
+    refused without `prune` before anything is written: the router expects exactly one host
+    directory, so a second one left in place would let Genie read the wrong adapter.
     """
     target = f'{GENIE_SKILLS.format(user=ws.me())}/{ROUTER}'
     files = sorted(p for p in pkg.rglob('*') if p.is_file())
     remote = {f'{target}/{p.relative_to(pkg).as_posix()}': p for p in files}
-    stale = sorted(set(ws.listing(target)) - set(remote))
+
+    def inside(paths: list[str]) -> list[str]:
+        outside = [path for path in paths if not path.startswith(target + '/')]
+        if outside:
+            raise SystemExit(f'workspace listing of {target} returned paths outside it '
+                             f'(e.g. {outside[0]}). Nothing was deleted.')
+        return paths
+
+    stale = sorted(set(inside(ws.listing(target))) - set(remote))
     stale_hosts = [path for path in stale if path.startswith(f'{target}/hosts/')]
     if stale_hosts and not prune:
         raise SystemExit(f'{len(stale_hosts)} file(s) under {target}/hosts/ are not in this package '
                          f'(e.g. {stale_hosts[0]}); a second host directory would be read. '
                          f'Rerun with --prune to delete them. Nothing was written.')
+    if prune:
+        for path in stale:
+            ws.delete(path)
+            print(f'  not in this package, deleted: {path}')
+        for d in inside(ws.listing(target, dirs=True)):
+            if not any(p.startswith(d + '/') for p in remote) and not ws.listing(d):
+                ws.delete(d)
+                print(f'  empty directory deleted: {d}')
     for path, p in remote.items():
         ws.api('POST', '/api/2.0/workspace/mkdirs', dict(path=path.rsplit('/', 1)[0]))
         ws.api('POST', '/api/2.0/workspace/import', dict(
@@ -289,18 +307,9 @@ def deploy_genie(pkg: Path, ws: Workspace, prune: bool = False) -> str:
     if bad:
         raise SystemExit(f'deploy check failed for {len(bad)} file(s): {bad[:5]}')
     print(f'genie: {len(files)} files deployed and read back byte for byte -> {target}')
-    for path in stale:
-        if prune:
-            ws.delete(path)
-        print(f"  not in this package, {'deleted' if prune else 'left in place'}: {path}")
-    if prune:
-        shipped_dirs = {path.rsplit('/', 1)[0] for path in remote}
-        for d in ws.listing(target, dirs=True):
-            if d not in shipped_dirs and not any(p.startswith(d + '/') for p in remote):
-                if not ws.listing(d):
-                    ws.delete(d)
-                    print(f'  empty directory deleted: {d}')
-    elif stale:
+    if not prune and stale:
+        for path in stale:
+            print(f'  not in this package, left in place: {path}')
         print('  --prune deletes these.')
     print('Start a new Genie Code chat (agent mode) to load it; ask it to quote SKILL-BUILD.')
     return target

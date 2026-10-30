@@ -1528,6 +1528,26 @@ mod tests_resume_phase {
     }
 
     #[test]
+    fn bitmap_snapshot_copy_failure_does_not_publish_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bitmap = tmp.path().join("bitmap.bin");
+        let pristine = bitmap.with_extension("bin.pristine");
+        let staging = pristine.with_extension("pristine.inprogress");
+        fs::write(&bitmap, b"\xff\xff").unwrap();
+        // Make the staging copy fail before it can be published.
+        fs::create_dir(&staging).unwrap();
+        assert!(snapshot_fkey_bitmap(&bitmap, &pristine).is_err());
+        assert!(!pristine.exists());
+        assert_eq!(fs::read(&bitmap).unwrap(), b"\xff\xff");
+
+        fs::remove_dir(&staging).unwrap();
+        fs::write(&staging, b"\xff").unwrap();
+        snapshot_fkey_bitmap(&bitmap, &pristine).unwrap();
+        assert_eq!(fs::read(&pristine).unwrap(), b"\xff\xff");
+        assert!(!staging.exists());
+    }
+
+    #[test]
     fn wipe_phase_outputs_removes_marker_and_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -11631,7 +11651,7 @@ impl IngestContext {
         self.for_each_fkey_bitmap(|bitmap| {
             let pristine = bitmap.with_extension("bin.pristine");
             if !pristine.exists() {
-                fs::copy(bitmap, &pristine)
+                snapshot_fkey_bitmap(bitmap, &pristine)
                     .with_context(|| format!("pk_map_pre: snapshot {}", bitmap.display()))?;
                 snapshot_count += 1;
             } else {
@@ -12778,6 +12798,14 @@ fn write_durable_file(final_path: &Path, payload: &[u8], description: &str) -> R
     if let Some(parent) = final_path.parent() {
         let _ = fs::File::open(parent).and_then(|f| f.sync_all());
     }
+    Ok(())
+}
+
+/// Publish a backup only after its copy completes, so SIGKILL cannot expose a partial pristine.
+fn snapshot_fkey_bitmap(bitmap: &Path, pristine: &Path) -> Result<()> {
+    let staging = pristine.with_extension("pristine.inprogress");
+    fs::copy(bitmap, &staging)?;
+    fs::rename(staging, pristine)?;
     Ok(())
 }
 

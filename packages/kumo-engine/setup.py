@@ -59,6 +59,7 @@ setup(
         # Select one Faiss distribution: both provide the `faiss` module.
         # Keep platform markers on these external dependencies so wheel
         # merging preserves them when the bundled core reference is removed.
-        'faiss-gpu==1.14.3; sys_platform == "linux"',
+        'faiss-gpu==1.14.3; sys_platform == "linux" '
+        'and platform_machine == "x86_64"',
         'faiss-cpu==1.14.3; sys_platform == "darwin"',
     ], )

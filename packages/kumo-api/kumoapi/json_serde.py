@@ -9,7 +9,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
 from pathlib import PurePath
-from typing import Any, Dict, Type, TypeVar, Union
+from typing import Any, Dict, Type, TypeVar, Union, cast
 from uuid import UUID
 
 from pydantic import BaseModel, SecretStr
@@ -139,5 +139,5 @@ def from_json(obj: Any, cls: Union[Type[T], object]) -> T:
     if isinstance(obj, str):
         obj = json.loads(obj)
     from pydantic import TypeAdapter
-    adapter = TypeAdapter(cls)
+    adapter: TypeAdapter[T] = TypeAdapter(cast(Any, cls))
     return adapter.validate_python(obj)

@@ -4,8 +4,10 @@
 
 import dataclasses
 from dataclasses import field
+from typing import Annotated, Union
 
-from pydantic import BaseModel
+import pytest
+from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 from kumoapi.json_serde import dataclass_to_dict, from_json
@@ -15,6 +17,21 @@ from kumoapi.model_plan import ModelPlan
 @dataclass
 class MetadataEnvelope:
     metadata: dict
+
+
+@pytest.mark.parametrize('descriptor,obj,expected', [
+    (int, '"7"', 7),
+    (list[int], '["1", 2]', [1, 2]),
+    (Union[int, None], '"3"', 3),
+    (Annotated[int, Field(gt=0)], '"4"', 4),
+    (dict[str, int], {
+        'value': '5'
+    }, {
+        'value': 5
+    }),
+])
+def test_from_json_accepts_type_descriptors(descriptor, obj, expected):
+    assert from_json(obj, descriptor) == expected
 
 
 def test_deserialization_does_not_migrate_unrelated_provider_metadata():

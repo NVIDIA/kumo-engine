@@ -23,12 +23,24 @@ Kumo Engine uses a GPU when one is available: an NVIDIA GPU through CUDA, or an 
 pip install kumo-engine
 ```
 
+Linux x86_64 requires GPU Faiss, which also handles CPU retrieval. macOS keeps
+CPU Faiss and its existing Metal retrieval support. Faiss is optional on ARM64
+Linux and native Windows: without it, affected link-prediction retrieval raises
+an installation error while other tasks remain available. On those platforms,
+use `pip install "kumo-engine[cpu]"` for CPU retrieval with a compatible backend
+wheel for your platform and Python version. For CUDA retrieval, install a
+compatible GPU Faiss build directly, building from source on ARM64 Linux if
+needed. The CPU extra retains the required platform backend on Linux x86_64
+and macOS; it does not configure PyTorch or select the execution device.
+Choose one backend per environment.
+
 The base install reads local CSV and Parquet files. For other data sources, install the matching extra in the same environment:
 
 | Data source | Command |
 | --- | --- |
 | Amazon S3 | `pip install "kumo-engine[s3]"` |
 | Google Cloud Storage | `pip install "kumo-engine[gcs]"` |
+| Azure Data Lake Storage Gen2 | `pip install "kumo-engine[adls]"` |
 | BigQuery | `pip install "kumo-engine[bigquery]"` |
 | Snowflake | `pip install "kumo-engine[snowflake]"` |
 | Databricks | `pip install "kumo-engine[databricks]"` |
@@ -104,6 +116,7 @@ kumo.install_skills("claude")  # or "codex", "coco" (Snowflake Cortex Code), "ge
 
 ## Documentation
 
+- [ADLS connector guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-adls/README.md): setup, authentication, supported reads and exports.
 - [Kumo Engine documentation](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview): prerequisites, GPU sizing, installation, and end-to-end workflows. Its User Code Guide covers connecting data, tables and graphs, training, and prediction.
 - [Predictive query examples](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/workflows-and-solutions/predictive-query-examples): common prediction tasks written as predictive queries.
 

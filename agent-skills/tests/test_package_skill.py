@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+import ast
 import importlib.util
 import re
 import sys
@@ -121,12 +122,24 @@ def test_genie_sql_quotes_identifiers_and_names_the_staging_volume() -> None:
         assert '_kumo_staging' in text and 'CREATE VOLUME' in adapter
 
 
+def max_links_to_predict() -> int:
+    source = (package_skill.SKILLS.parents[1] / 'packages' / 'kumo-core' / 'src' / 'kumo_core'
+              / 'prediction_options.py')
+    for node in ast.parse(source.read_text()).body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == 'MAX_LINKS_TO_PREDICT' for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f'MAX_LINKS_TO_PREDICT is no longer defined in {source}')
+
+
 def test_scoring_options_follow_the_sdk() -> None:
-    """Rows of batch_inference.md's table, checked against kumo_core.prediction_options."""
+    """Rows of batch_inference.md's table: the cap is read from kumo_core.prediction_options;
+    the rest is the wording the table must keep."""
+    cap = str(max_links_to_predict())
     text = (package_skill.SKILLS / 'kumo-data-science' / 'accept' / 'batch_inference.md').read_text()
     rows = {r.split('|')[1].strip(): r for r in text.splitlines() if r.startswith('| ')}
-    assert 'required' in rows['Temporal or static link prediction'] and '500' in rows['Temporal or static link prediction']
-    assert 'No 500 cap' in rows['Multilabel ranking']
+    assert 'required' in rows['Temporal or static link prediction'] and cap in rows['Temporal or static link prediction']
+    assert f'No {cap} cap' in rows['Multilabel ranking']
     assert 'RANK TOP K' in rows['Multiclass, multilabel classification']
     assert '0.5' in rows['Multiclass, multilabel classification']
     assert rows['Regression, forecasting'].split('|')[2].strip().startswith('none')
@@ -135,9 +148,11 @@ def test_scoring_options_follow_the_sdk() -> None:
 class FakeWorkspace:
     """Records imports and serves them back, as the Workspace API would."""
 
-    def __init__(self, existing: dict[str, bytes] | None = None, corrupt: str = '') -> None:
+    def __init__(self, existing: dict[str, bytes] | None = None, corrupt: str = '',
+                 leak: str = '') -> None:
         self.files = dict(existing or {})
         self.corrupt = corrupt
+        self.leak = leak      # a path the listing returns whatever is asked, as a buggy API might
         self.deleted: list[str] = []
 
     def me(self) -> str:
@@ -155,7 +170,7 @@ class FakeWorkspace:
         return {}
 
     def listing(self, path: str, dirs: bool = False) -> list[str]:
-        files = [p for p in self.files if p.startswith(path + '/')]
+        files = [p for p in self.files if p.startswith(path + '/') or p == self.leak]
         if not dirs:
             return files
         found = {f.rsplit('/', i)[0] for f in files for i in range(1, f[len(path):].count('/'))}
@@ -193,6 +208,32 @@ def test_prune_deletes_only_what_the_package_does_not_ship(tmp_path: Path) -> No
     assert ws.files[f'{skills}/tabular/SKILL.md'] == b'another skill'
     assert f'{target}/hosts/databricks-genie/adapter.md' in ws.files
     assert all(d.startswith(target + '/') for d in ws.deleted)
+
+
+def test_prune_refuses_a_listing_outside_the_target(tmp_path: Path) -> None:
+    pkg = package_skill.build('genie', tmp_path)
+    skills = '/Users/someone@example.com/.assistant/skills'
+    other = f'{skills}/tabular/SKILL.md'
+    ws = FakeWorkspace({other: b'another skill',
+                        f'{skills}/kumo-data-science/future/a.md': b'old'}, leak=other)
+    with pytest.raises(SystemExit, match='outside it'):
+        package_skill.deploy_genie(pkg, ws, prune=True)  # type: ignore[arg-type]
+    assert ws.deleted == [] and ws.files[other] == b'another skill'
+
+
+def test_prune_runs_before_the_upload(tmp_path: Path) -> None:
+    pkg = package_skill.build('genie', tmp_path)
+    target = '/Users/someone@example.com/.assistant/skills/kumo-data-science'
+    legacy = f'{target}/hosts/databricks/adapter.md'
+
+    class FailingDelete(FakeWorkspace):
+        def delete(self, path: str) -> None:
+            raise SystemExit(f'delete failed: {path}')
+
+    ws = FailingDelete({legacy: b'old adapter'})
+    with pytest.raises(SystemExit, match='delete failed'):
+        package_skill.deploy_genie(pkg, ws, prune=True)  # type: ignore[arg-type]
+    assert set(ws.files) == {legacy}      # no second host directory was written
 
 
 def test_deploy_refuses_a_second_host_without_prune(tmp_path: Path) -> None:

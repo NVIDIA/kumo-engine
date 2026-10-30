@@ -41,21 +41,40 @@ catalog named elsewhere in the conversation. Tables are `catalog.schema.table`.
 Every rule in it holds here; only the reading differs. Read the definition, never query the view:
 
 ```sql
-SELECT view_definition FROM <catalog>.information_schema.views
-WHERE table_schema = lower('<schema>') AND table_name = lower('<view>');
+DESCRIBE TABLE EXTENDED <catalog>.<schema>.<view> AS JSON;
 ```
 
-A metric view's definition is YAML. A view whose definition is plain SQL is an ordinary view, not
-a metric view: treat it as a query-defined table (the semantic-view rule for a logical table with
-no base table). Map the YAML onto that file's `TABLE` and `RELATIONSHIP` records:
+The result is one JSON document. Its `type` is `METRIC_VIEW` for a metric view, and its
+`view_text` is the YAML definition. Do not read `information_schema.views` for this: it does not
+list metric views, and its `view_definition` is NULL for anyone but a view's owner.
+
+- `type` `VIEW`: an ordinary view, not a metric view. Treat it as a query-defined table (the
+  semantic-view rule for a logical table with no base table).
+- `type` `METRIC_VIEW` with no `view_text`, or an error: you cannot read the definition. Say so,
+  quoting what came back, and ask for the YAML (or the base tables and joins) — the §2 *Details*
+  option. Never read a missing definition as an ordinary view.
+
+Every three-part `source` names a table, a view or another metric view. Check which before you
+map it, in one query per catalog:
+
+```sql
+SELECT table_schema, table_name, table_type FROM <catalog>.information_schema.tables
+WHERE (table_schema, table_name) IN ((lower('<schema>'), lower('<table>')), ...);
+```
+
+`MANAGED` and `EXTERNAL` are base tables. Any other `table_type` — `VIEW`, `METRIC_VIEW`,
+`MATERIALIZED_VIEW`, `STREAMING_TABLE`, `FOREIGN` — is not one: read it as a logical table defined
+by a query. Map the YAML onto that file's `TABLE` and `RELATIONSHIP` records:
 
 | Metric view YAML | `semantic_view.md` reads it as |
 |---|---|
-| `source: catalog.schema.table` | a `TABLE` with that base table |
-| `source:` a SQL query | a logical table defined by a query → ASK BACK, as that file says |
-| each entry of `joins:` (and of a join's own nested `joins:`) with `source: catalog.schema.table` | a `TABLE` with that base table; its `name` is a logical name |
-| that join's `on: <parent>.<fk> = <name>.<key>`, or `using: [<col>]` | a `RELATIONSHIP` from the parent (`source` for a top-level join, else the enclosing join) to this table: `FOREIGN_KEY` `<fk>`, `REF_KEY` `<key>` |
+| `source: catalog.schema.table`, a base table | a `TABLE` with that base table |
+| `source:` a SQL query, or a three-part name that is not a base table | a logical table defined by a query → ASK BACK, as that file says |
+| each entry of `joins:` (and of a join's own nested `joins:`) whose `source` is a base table | a `TABLE` with that base table; its `name` is a logical name |
+| a join whose `source` is a SQL query or not a base table | a logical table defined by a query → ASK BACK, as that file says |
+| that join's `on: <parent>.<fk> = <name>.<key>`, or `using: [<col>]`, when its `cardinality` is absent or `many_to_one` | a `RELATIONSHIP` from the parent (`source` for a top-level join, else the enclosing join) to this table: `FOREIGN_KEY` `<fk>`, `REF_KEY` `<key>` |
 | an `on:` that is anything but one column-to-column equality | a non-equality relationship → ASK BACK, as that file says |
+| a join with any other `cardinality` (`one_to_many`, `one_to_one`, …) | → ASK BACK: name the join and its `cardinality`, say the skill reads only many-to-one joins, and ask which table holds the foreign key and which column it references. Never swap the keys yourself |
 | `dimensions:`, `measures:`, `filter:` | the view's dimensions, facts and metrics: ignored, as that file says |
 
 A metric view declares no keys of its own. A base table's `PRIMARY_KEY` is its Unity Catalog
@@ -66,7 +85,9 @@ table. A base table with no primary-key constraint has no declared key: its key 
 preflight §3, as for a view table with no `PRIMARY_KEY`. The one-schema rule, physical names and
 `[declared]` relationships apply unchanged, with `catalog.schema` in place of `DB.SCHEMA`.
 
-> **Not verified:** no metric view has been read by this skill in a workspace.
+> **Verified 2026-10-27**, as a user who does not own the view: `DESCRIBE TABLE EXTENDED … AS
+> JSON` returns `type` and `view_text`, and `information_schema.views` has no row for a metric
+> view. **Not verified:** no metric view has been taken through intake by this skill.
 
 ---
 
@@ -117,7 +138,7 @@ results are evidence for the proposal only: never written, never saved, never fe
 -- tables in scope (enumerate only here)
 SELECT table_name FROM <catalog>.information_schema.tables WHERE table_schema = lower('<schema>');
 -- columns and types
-SELECT table_name, column_name, data_type FROM <catalog>.information_schema.columns
+SELECT table_name, column_name, data_type, full_data_type FROM <catalog>.information_schema.columns
 WHERE table_schema = lower('<schema>') ORDER BY table_name, ordinal_position;
 -- declared keys, if any (informational constraints)
 SELECT tc.table_name, tc.constraint_type, kcu.column_name
@@ -129,9 +150,11 @@ WHERE tc.table_schema = lower('<schema>');
 ```
 
 - Row counts are not in `information_schema` and are not needed for the graph proposal.
-- Unity Catalog types: `STRING`, `BIGINT` (listed as `LONG`), `INT`, `DOUBLE`, `DECIMAL(p,s)`,
-  `BOOLEAN`, `DATE`, `TIMESTAMP`, `TIMESTAMP_NTZ`, `ARRAY<...>`. Time columns are `DATE`,
-  `TIMESTAMP` or `TIMESTAMP_NTZ`; preflight §4 applies unchanged.
+- Unity Catalog types: `STRING`, `BIGINT`, `INT`, `DOUBLE`, `DECIMAL(p,s)`, `BOOLEAN`, `DATE`,
+  `TIMESTAMP`, `TIMESTAMP_NTZ`, `ARRAY<...>`. Read the type from `full_data_type`: `data_type`
+  reports `BIGINT` as `LONG` and every array as plain `ARRAY`, so only `full_data_type`
+  (`array<double>`, `bigint`) tells a supported array from an unsupported one (§6). Time columns
+  are `DATE`, `TIMESTAMP` or `TIMESTAMP_NTZ`; preflight §4 applies unchanged.
 - The confirmed `source_scope` becomes the connector's `catalog` and `schema_name`, and the
   confirmed warehouse its `warehouse_id` (`runtime.md` §2).
 
@@ -175,7 +198,7 @@ substitutions, which `runtime.md` §4.1, §5 and §6 spell out:
 | an internal stage for retained artifacts | a Unity Catalog volume path (`runtime.md` §6) |
 | the Snowpark `session`, Snowflake SQL | `run_sql` (`runtime.md` §3) |
 | a Snowflake connector scoped to a population table | a `DatabricksConnector` on the population's catalog and schema (`runtime.md` §4.1) |
-| Snowflake `ARRAY` / `VARIANT` columns arrive as strings | the connector types `ARRAY<FLOAT>`, `ARRAY<DOUBLE>`, `ARRAY<INT>`, `ARRAY<BIGINT>` and `ARRAY<STRING>` as lists (Source: shipped package (`kumo_databricks.types`)); other `ARRAY`s, `MAP`s and `STRUCT`s are not. Supplied list targets, link weights and forecast sequences have not been run on this host: say so at the gate rather than promise them |
+| Snowflake `ARRAY` / `VARIANT` columns arrive as strings | by `full_data_type` (§3), the connector types `ARRAY<FLOAT>`, `ARRAY<DOUBLE>`, `ARRAY<INT>`, `ARRAY<BIGINT>` and `ARRAY<STRING>` as lists (Source: shipped package (`kumo_databricks.types`)); other `ARRAY`s, `MAP`s and `STRUCT`s are not. Supplied list targets, link weights and forecast sequences have not been run on this host: say so at the gate rather than promise them |
 | a Snowflake ML Job | a Databricks job run on a GPU cluster (`job.md`) |
 | "the existing Snowflake notebook" | the existing Databricks notebook; run files are on the cluster's local disk |
 
