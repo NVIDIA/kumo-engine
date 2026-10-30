@@ -210,7 +210,7 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 
 **Metrics.**
 - Fit: the holdout quality unprefixed (`auroc`, `ap`, `acc`, `mae`, `map_at_10`, `holdout_loss` for the training objective, and `logloss`, `brier`, `f1`, `r2` and the like from exact counts). They fill MLflow's "Model metrics" section, the logged model's metrics (Models tab) and the registered version's description. After a refit they describe the refit model the bundle ships; the model before the refit is `before_refit/<metric>`. Per-epoch `train/<metric>` and `val/<metric>`, step = epoch.
-- Prediction: `pred/rows`, `pred/skipped_share`, `pred/positive_rate` (binary, with a threshold), `pred/item_coverage` and `pred/top_1pct_items_share` (ranking and link prediction); `drift/psi`, `drift/ks` and `drift/wasserstein` against the training holdout. After `score_drift`: `drift/psi_prev`, `drift/ks_prev`, `drift/wasserstein_prev` against the previous run. After `evaluate`: `realized/<metric>` and `realized/labelled_share`. A prediction run shows "Model metrics (0)": the model's own quality is on its fit run.
+- Prediction: `pred/rows`, `pred/skipped_share`, `pred/positive_rate` (binary, with a threshold), `pred/item_coverage` and `pred/top_1pct_items_share` (ranking and link prediction); `drift/psi`, `drift/ks` and `drift/wasserstein` against the model's holdout scores at training. After `score_drift`: `drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev` against the previous run. After `evaluate`: `realized/<metric>` and `realized/labelled_share`. A prediction run shows "Model metrics (0)": the model's own quality is on its fit run.
 - System metrics: `system/*`, step = seconds since the start, every second for 10 minutes and then every 10 seconds. A run with fewer than 10 readings logs none.
 - A series is logged once it has two points, so a one-epoch fit or trial logs no epoch curves; the fit's card lists that epoch's values instead.
 - Read one run's numbers in its Overview's Metrics table, below Details. The Model metrics tab is for the epoch and system curves; MLflow draws every other metric there as a single bar.
@@ -221,7 +221,7 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 |---|---|
 | fit | `holdout/by_threshold` (binary: threshold, share at or above, tp, fp, fn, tn, precision, recall, fpr), `holdout/calibration`, `holdout/confusion` (multiclass), `holdout/by_class` or `holdout/by_label`, `holdout/by_k`, `holdout/by_label_count` (multilabel), `holdout/by_horizon` (forecast), `holdout/histogram` and `holdout/residuals` (regression, forecast) |
 | fit, prediction | `data/health` (each table and link: rows, dropped rows, duplicate keys, matched rows, failed lookups), `data/columns` (column statistics; `≈` marks approximate ones) |
-| prediction | `pred/histogram`, `pred/by_class` (multiclass, multilabel), `pred/by_label_count` (multilabel), `pred/item_frequency` (ranking, link prediction); after `score_drift`, `drift/features` (every column the model encodes, sorted by PSI) |
+| prediction | `pred/histogram`, `pred/by_class` (multiclass, multilabel), `pred/by_label_count` (multilabel), `pred/item_frequency` (ranking, link prediction); after `score_drift`, `drift/features` (every column the model encodes, by how far it moved) |
 
 A histogram table has a row per bin with `from` and `to` (the end bins are open), then a count and a cumulative share per column.
 
@@ -233,8 +233,8 @@ A histogram table has a row per bin with `from` and `to` (the end bins are open)
 
 **Finding runs.** Keys with a `/` or `.` need backticks:
 - a model's fits: ``tags.`kumo.kind` = 'fit' and tags.`kumo.model_name` = 'churn'``;
-- its scoring history, one row per day: ``tags.`kumo.kind` = 'prediction' and tags.`kumo.model_name` = 'churn'``, sorted by Run Name, with the columns `pred/rows`, `drift/psi`, `drift/psi_prev` and `realized/auroc`;
-- drifted days: ``metrics.`drift/psi` > 0.2``;
+- its scoring history, one row per day: ``tags.`kumo.kind` = 'prediction' and tags.`kumo.model_name` = 'churn'``, sorted by Run Name, with the columns `pred/rows`, `drift/psi`, `drift/psi_vs_prev` and `realized/auroc`;
+- drifted days (a large shift): ``metrics.`drift/psi` > 0.25``;
 - everything one model version scored: ``tags.`kumo.bundle_id` = '<bundle id>'``.
 
 In a Chart view of fits only, the empty `drift/`, `pred/` and `realized/` sections go away with the chart settings' "Hide charts with no data". If the Models tab shows no metric columns, add them with its Columns selector. Compare registered versions with the registry's Compare versions view. On MLflow 3.10 and later, including SageMaker MLflow Apps, the UI opens on GenAI pages: choose "Model training" in the sidebar, or add `?workflowType=machine_learning` to the URL. A new, empty experiment gets a description with the two run kinds and their filters.
