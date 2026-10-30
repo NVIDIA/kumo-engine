@@ -11,6 +11,7 @@ import re
 import tempfile
 import uuid
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     Any,
@@ -39,6 +40,7 @@ from kumo_core.summaries import (
     Tag,
 )
 
+from kumo.engine import _card
 from kumo.engine._events import Event
 from kumo.engine._summary_tables import SummaryTables
 from kumo.engine._tracking import (
@@ -58,6 +60,7 @@ _MAX_PARAMS = 1000
 _EPOCH_METRICS = _MAX_METRICS - 60
 _SUMMARY_METRICS = _MAX_METRICS - 30
 _FINISH_PARAMS = 20
+_CARD_FILE = 'run_card.md'
 
 
 class SnowflakeTracking:
@@ -128,6 +131,8 @@ class SnowflakeTracking:
         self._run_context = ExitStack()
         self._trial_tags: Dict[Tuple[int, int], Set[str]] = {}
         self._metrics: Set[str] = set()
+        self._values: Dict[str, float] = {}
+        self._started = _now()
         self._params = 0
         self._start_tags: Set[str] = set()
         self._artifacts: Set[str] = set()
@@ -200,10 +205,12 @@ class SnowflakeTracking:
                 self.run_name if fit and self.run_name else
                 _run_identifier(record.name or 'fit')))
         self.run_id = str(self._run.name)
+        self._started = getattr(record, 'started', None) or _now()
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)
-        self._log_params({**record.params, **record.tags})
+        self._log_params({**record.params, **record.tags,
+                          **_model_param(record)})
         self._log_artifacts(record.artifacts)
 
     def log_prediction_run(self, record: RunRecord) -> None:
@@ -250,6 +257,10 @@ class SnowflakeTracking:
                                   if k not in self._start_tags}, _MAX_PARAMS)
                 self._log_artifacts(record.artifacts)
                 self.log_summaries(record.summaries)
+                finished = getattr(record, 'finished', None) or _now()
+                self._log_metrics({'duration_seconds': (
+                    finished - self._started).total_seconds()}, _MAX_METRICS)
+                self._log_card(record)
                 self._log_dropped()
                 if error is None:
                     status = 'FINISHED'
@@ -306,6 +317,26 @@ class SnowflakeTracking:
             _SINKS[type(summary)](self, summary)
         for table in self._grouped.tables():
             self._log_table(table)
+
+    def _log_card(self, record: RunRecord) -> None:
+        r"""Writes ``run_card.md``: the run's status line, the fit's query
+        or the prediction's model, its notes and brief tables, and its
+        files."""
+        tags = record.tags
+        kind = tags.get('kumo.kind', '')
+        try:
+            intro = record.description if kind == 'fit' else _card.model_line(
+                tags.get('kumo.model_name'), tags.get('kumo.model_version'),
+                tags.get('kumo.bundle_id'), tags.get('kumo.fit_run_id'))
+            files = sorted(name for name in self._artifacts
+                           if name.endswith('.json'))
+            self._log_artifacts({_CARD_FILE: '\n'.join([
+                _card.headline(kind, self._values, tags, record.params,
+                               record.description),
+                *_card.body(intro, self._card, files)])})
+        except Exception as error:
+            logger.warning('Could not write the card of Snowflake run %s: %s',
+                           self.run_id, format_error(error))
 
     def _log_scalar(self, summary: Scalar) -> None:
         self._log_metrics({summary.name: summary.value}, _MAX_METRICS)
@@ -387,6 +418,7 @@ class SnowflakeTracking:
             kept[name] = value
         if kept:
             self._tracking.log_metrics(kept, step=step)
+            self._values.update(kept)
 
 
 _SINKS: Dict[type, Callable[[SnowflakeTracking, Any], None]] = {
@@ -400,6 +432,21 @@ _SINKS: Dict[type, Callable[[SnowflakeTracking, Any], None]] = {
     Note: SnowflakeTracking._log_note,
     Dataset: lambda tracker, summary: None,
 }
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _model_param(record: RunRecord) -> Dict[str, str]:
+    r"""``kumo.model``, the registered version a prediction run scored
+    with, as ``<model>/<version>``."""
+    tags = record.tags
+    if (tags.get('kumo.kind') != 'prediction' or not tags.get('kumo.model_name')
+            or not tags.get('kumo.model_version')):
+        return {}
+    return {'kumo.model':
+            f"{tags['kumo.model_name']}/{tags['kumo.model_version']}"}
 
 
 def _run_identifier(name: str) -> str:

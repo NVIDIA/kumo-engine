@@ -6,22 +6,30 @@ import inspect
 import re
 import threading
 import time
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from typing import Optional
 from unittest import mock
 
 import _snowflake_experiment_fake
 import pytest
 from _snowflake_experiment_fake import FakeExperimentTracking, FakeSession
+from kumo_core.summaries import Note, Series, Table
 from kumoapi.model_plan import ModelPlan
+from kumoapi.plugin import PublishedModel
 from test_fit_events import table_and_snapshot  # noqa: F401
 from test_tracking_contract import (
     CONTEXT,
     EVENTS,
     PREDICTION_MANIFEST,
+    QUERY,
     RESULT,
     join_tracking_threads,
 )
 
-from kumo.engine._tracking import TrackingSession, prediction_record
+from kumo.engine._manifest import TrackingRef
+from kumo.engine._tracking import RunRecord, TrackingSession, prediction_record
 from kumo.engine.trainer._run_spec import fit_spec, fitted_spec
 
 FAKED = ('__init__', 'set_experiment', 'start_run', 'end_run', 'log_params',
@@ -199,7 +207,7 @@ def test_metric_and_param_limits(fake, monkeypatch):
 
     run, = fake._instance.runs.values()
     assert sorted({name for name, _, _ in run['metrics']}) == [
-        'mae', 'trial-1-attempt-1/train/loss',
+        'duration_seconds', 'mae', 'trial-1-attempt-1/train/loss',
         'trial-1-attempt-1/val/best_mae', 'trial-1-attempt-1/val/mae'
     ]
     assert run['params']['kumo.dropped_metrics'] == '6'
@@ -318,3 +326,65 @@ def test_mlops_loads_a_registered_model_through_the_tracker(
     })]
     with pytest.raises(ValueError, match='SnowflakeTracking\\(connector'):
         _tracking().load_model(location)
+
+
+@dataclass(frozen=True)
+class _Timed(RunRecord):
+    started: Optional[datetime] = None
+    finished: Optional[datetime] = None
+
+
+STARTED = datetime(2026, 10, 29, 6, 18, tzinfo=timezone.utc)
+REGISTERED = SimpleNamespace(
+    registered_model=PublishedModel('churn', '3', 'DB.ML.CHURN/3'),
+    registered_alias=None,
+    manifest=SimpleNamespace(holdout=None, tracking=TrackingRef(
+        platform='snowflake', run_id='CHURN_FIT_20261029_061800', url=None)))
+
+
+def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
+    import kumo.engine.integrations.snowflake as snowflake
+
+    monkeypatch.setattr(snowflake, '_now',
+                        lambda: STARTED + timedelta(seconds=90))
+    tags = {'kumo.kind': 'fit', 'kumo.task_type': 'regression',
+            'kumo.tune_metric': 'mae'}
+    start = _Timed(name='fit', tags=tags, description=f'`{QUERY}`',
+                   started=STARTED)
+    tracking = _tracking()
+    tracking.start(start)
+    tracking.finish(replace(start, metrics={'mae': 0.32}, tags={
+        **tags, 'kumo.data_warnings': '1'}, summaries=(
+            Note('problems', 'link `ents.ID → users`: 14 % of rows match'),
+            Note('locations', 'bundle `models/b/`'),
+            Table('data/splits', ('split', 'rows'),
+                  (('train', 8), ('val', 1), ('test', 1)), brief=True),
+            Series('holdout/by_k/map', ((1, 0.5), (10, 0.25)), x_label='k'),
+        )), None)
+
+    run, = fake._instance.runs.values()
+    assert run['artifacts']['run_card.md'] == '\n'.join([
+        'mae 0.32 · 1 data problem · regression of ents',
+        f'`{QUERY}`', '',
+        '**Problems:** link `ents.ID → users`: 14 % of rows match', '',
+        '**Training data:**', '', '| split | rows |', '| --- | ---: |',
+        '| train | 8 |', '| val | 1 |', '| test | 1 |', '',
+        '**Where things are**', '- bundle `models/b/`', '',
+        'Full lineage: `_provenance.json`. Tables: `holdout/by_k.json`.'])
+    assert ('duration_seconds', 90.0, 0) in run['metrics']
+
+
+def test_a_prediction_run_names_its_model_and_lasts_as_long_as_it_ran(fake):
+    record = prediction_record(PREDICTION_MANIFEST, model=REGISTERED)
+    timed = _Timed(**vars(record), started=STARTED,
+                   finished=STARTED + timedelta(seconds=60))
+
+    _tracking().log_prediction_run(timed)
+
+    run, = fake._instance.runs.values()
+    assert run['params']['kumo.model'] == 'churn/3'
+    assert run['artifacts']['run_card.md'] == (
+        'v3 churn\n'
+        'Model: `churn` v3, trained by `CHURN_FIT_20261029_061800`.\n\n'
+        'Full lineage: `_provenance.json`.')
+    assert ('duration_seconds', 60.0, 0) in run['metrics']

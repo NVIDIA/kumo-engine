@@ -385,7 +385,11 @@ def snowflake_adapter(monkeypatch):
                     runs['tags'][name] = value
                 else:
                     runs['params'][name] = value
+            # Snowflake's own run duration and card are checked in
+            # test_snowflake_tracking.
             for key, value, step in run['metrics']:
+                if key == 'duration_seconds':
+                    continue
                 runs, name = bucket(key)
                 runs['metrics'][name] = value
                 runs['steps'][name] = (*runs['steps'].get(name, ()),
@@ -394,7 +398,9 @@ def snowflake_adapter(monkeypatch):
                 key = prefix or runs['tags'].get('kumo.prediction_id', FIT)
                 observed[key] = Observed(
                     name=prefix or run_name,
-                    artifacts=run['artifacts'] if prefix is None else {},
+                    artifacts={} if prefix else {
+                        path: text for path, text in run['artifacts'].items()
+                        if path != 'run_card.md'},
                     **runs)
         return observed
 
