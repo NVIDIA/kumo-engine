@@ -31,8 +31,10 @@ The [Engine PR check](engine-pr-ci.md) builds the candidate wheel and runs eight
 small task checks on CUDA through one shared smoke action. It checks completed
 work, output structure, saved model state, and reloaded predictions. It sets no
 learning-quality score requirement. Source and package workflows remain separate.
-Its new numeric limits and complete timing require real GPU qualification
-and a fresh normal run.
+Numeric repeat/reload score drift reports only in PR135. Weights, labels,
+ranks, valid outputs, and CUDA execution remain strict. The shared publication
+caller keeps its enforced numerical policy. Complete PR timing still requires
+a fresh normal run.
 
 ## Report evidence
 

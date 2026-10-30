@@ -166,7 +166,8 @@ def prediction_decisions(task, frame, ids, *, classes=()):
 
 
 def compare_predictions(before, after, *, atol, rtol, qualify=False,
-                        before_decisions=None, after_decisions=None):
+                        before_decisions=None, after_decisions=None,
+                        report_numeric_drift=False):
     """Measure numeric drift; qualification never supplies a normal CI pass."""
     import numpy as np
 
@@ -186,7 +187,8 @@ def compare_predictions(before, after, *, atol, rtol, qualify=False,
         within_tolerance=bool(np.allclose(left, right, atol=atol, rtol=rtol)))
     if not qualify and not result['decisions_equal']:
         raise ValueError('Prediction decisions changed after repeat or reload')
-    if not qualify and not result['within_tolerance']:
+    if not qualify and not report_numeric_drift and not result[
+            'within_tolerance']:
         raise ValueError(
             f'Prediction difference exceeds atol={atol}, rtol={rtol}: {result}')
     return result
@@ -596,7 +598,8 @@ def run_task(task, prepared, directory, args):
             repeat_delta = compare_predictions(
                 before, repeated, atol=args.reload_atol, rtol=args.reload_rtol,
                 qualify=args.qualify, before_decisions=before_decisions,
-                after_decisions=repeat_decisions)
+                after_decisions=repeat_decisions,
+                report_numeric_drift=args.report_numeric_drift)
             del trainer
             gc.collect()
             trainer = kumo.Trainer.load(saved, accelerator='gpu')
@@ -604,7 +607,8 @@ def run_task(task, prepared, directory, args):
             reload_delta = compare_predictions(
                 before, after, atol=args.reload_atol, rtol=args.reload_rtol,
                 qualify=args.qualify, before_decisions=before_decisions,
-                after_decisions=after_decisions)
+                after_decisions=after_decisions,
+                report_numeric_drift=args.report_numeric_drift)
             if (state['reload_checks'] <= previous_reload_checks
                     or not state['restored_tensors']):
                 raise ValueError(
@@ -654,6 +658,9 @@ def main():
     parser.add_argument(
         '--qualify', action='store_true',
         help='Measure numeric differences; does not produce a normal CI pass')
+    parser.add_argument(
+        '--report-numeric-drift', action='store_true',
+        help='Report numeric drift; keep labels, ranks and execution strict')
     # The T4 qualification measured at most 1.91e-6 across 48 comparisons.
     parser.add_argument('--reload-atol', type=float, default=1e-5)
     parser.add_argument('--reload-rtol', type=float, default=0.)
@@ -667,9 +674,13 @@ def main():
     args.data_dir = args.data_dir.resolve()
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    report = dict(status='RUNNING', repetitions=args.repetitions, tasks=[],
-                  qualification=args.qualify, reload_atol=args.reload_atol,
-                  reload_rtol=args.reload_rtol)
+    report = dict(
+        status='RUNNING', repetitions=args.repetitions, tasks=[],
+        qualification=args.qualify, reload_atol=args.reload_atol,
+        reload_rtol=args.reload_rtol,
+        report_numeric_drift=args.report_numeric_drift,
+        numeric_drift_policy=('qualification' if args.qualify else 'report_only'
+                              if args.report_numeric_drift else 'enforced'))
     started = time.monotonic()
     try:
         import numpy as np

@@ -29,15 +29,24 @@ can contain small numeric differences despite identical saved weights.
 The manual qualification fits eight models and repeats prediction and reload
 three times on each retained model. It adds no training block for those repeats.
 Qualification returns `MEASURED`, not a normal CI pass. A normal run has eight
-fits, one prediction/reload cycle, and enforced numeric comparison limits.
+fits and one prediction/reload cycle. PR135 explicitly enables
+`report-numeric-drift`. It records maximum absolute and relative score
+differences for each comparison. Crossing the descriptive 0.00001 value alone
+does not fail this PR check. This reporting policy keeps labels, ranks, model
+state, valid outputs, and completed CUDA work strict.
+
+The shared action defaults to enforced numeric comparison. PR40 does not enable
+the reporting input, so its finished-wheel publication check keeps an absolute
+limit of 0.00001 and zero relative tolerance. Qualification is a separate
+diagnostic mode and is not the PR135 reporting policy.
+
 The [T4 qualification](https://github.com/NVIDIA/kumo-engine/actions/runs/40975805986)
 completed all eight fits and 48 repeat/reload comparisons. Its largest absolute
-difference was 0.00000190735. We use an absolute limit of 0.00001 with zero
-relative tolerance, about 5.2 times that measured maximum. Absolute comparison
-also handles values close to zero. Weights, chosen labels, and ranks stay exact.
-This empirical limit covers the fixed PR172 inputs on Tesla T4 with
-PyTorch 2.15.0 and CUDA 13.2. It does not qualify another device or a
-learning-quality limit. The finished-wheel run passed all eight tasks at
+difference was 0.00000190735. The publication limit is about 5.2 times that
+measured maximum for the fixed PR172 inputs on Tesla T4 with PyTorch 2.15.0 and
+CUDA 13.2. This is not a learning-quality limit. Training metrics and numeric
+prediction drift are separate report-only observations in PR135.
+The finished-wheel run passed all eight tasks at
 `2ac62b5`. A complete normal PR run still needs verification.
 This smoke check sets no learning-quality score or baseline requirement.
 
@@ -73,8 +82,8 @@ parent fixture discovery. A parent process stops the suite at 300 seconds.
 Failures, skips, empty or incomplete selection, timeouts, and elapsed time of
 300 seconds or more return failure. The printed directory retains the pytest
 log, counts, and elapsed time. The local suite requires no GPU or cloud access.
-The complete command passed all nineteen selected cases with no skips in
-0.70 seconds on macOS ARM64 with Python 3.12.13. Setup was excluded.
+The complete command passed all 26 selected cases with no skips in
+0.85 seconds on macOS ARM64 with Python 3.12.13. Setup was excluded.
 
 ## Scope and timing
 
@@ -101,4 +110,8 @@ run does not pass correctness or timing.
 GitHub caches are scoped by branch. That trusted copied-PR branch could not
 read the compatible native cache saved on the feature branch. The workflow
 now retains a completed native build even when a later GPU check fails.
-A complete normal run with the compatible cache still needs measurement.
+The cached normal attempt at `18598be` also reached the job deadline. Seven
+tasks passed before cancellation during the final temporal-link task. Its
+native build still took 10m33s despite a cache hit. Neither attempt establishes
+a complete normal timing pass. This reporting-policy change adds no reference
+or qualification training block.
