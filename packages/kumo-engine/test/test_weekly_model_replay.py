@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from pytorch_lightning import Callback
+from pytorch_lightning import Trainer as LightningTrainer
 
 import kumo.engine as kumo
 
@@ -88,12 +90,28 @@ def test_saved_model_replay_uses_frozen_native_inputs_without_a_fit(
     monkeypatch.setattr(kumo.Trainer, 'fit', reject_fit)
     # The shared fixture already completed its small CPU fit. The replay only loads and predicts.
     bundle = trainer._training_result.bundle_dir
+    checkpoint_sha256 = weekly.digest(bundle / 'model/checkpoint')
+    restored = []
+    initialize = LightningTrainer.__init__
+
+    class RestoredWeights(Callback):
+        def on_predict_start(self, trainer, module):
+            restored.append(worker.installation_helper().verify_checkpoint(
+                module, trainer.ckpt_path, checkpoint_sha256))
+
+    def initialize_with_observer(self, *args, callbacks=None, **kwargs):
+        initialize(self, *args,
+                   callbacks=[*(callbacks or []),
+                              RestoredWeights()], **kwargs)
+
+    monkeypatch.setattr(LightningTrainer, '__init__', initialize_with_observer)
     result = weekly.replay_reference(
         bundle, before, lambda path: kumo.Trainer.load(path, accelerator='cpu'),
         lambda model: predict(model, imported_table, imported_snapshot),
         atol=1e-4, rtol=1e-5)
     assert result['status'] == 'PASS'
     assert result['entities'] == len(before['entity_ids'])
+    assert restored and all(count > 0 for count in restored)
     assert weekly.inventory(inputs) == files
     assert not (index / 'train_tables').exists()
     assert (imported_snapshot.index_path / 'train_tables').is_dir()
