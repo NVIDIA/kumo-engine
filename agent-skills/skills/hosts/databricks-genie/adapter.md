@@ -101,14 +101,29 @@ run as the signed-in user. The check is the scope query, against `source_scope` 
 SELECT schema_name FROM <catalog>.information_schema.schemata WHERE schema_name = lower('<schema>');
 ```
 
-- A row back: you can read the scope. Name the tool in the proposal's `Source scope` line
-  (`Genie Code SQL, as <user>`).
+- A row back: you can see the scope. That is not yet reading it — continue with the read probe
+  below.
 - No row, or `CATALOG_NOT_FOUND` / `SCHEMA_NOT_FOUND`: the scope may not exist, or this user may
   not see it — say both.
 - `PERMISSION_DENIED` or `INSUFFICIENT_PERMISSIONS`: the scope exists and this user cannot read it.
 
-When nothing reads the scope, send the preflight §0 ask-back. State what you ran and what came
-back, quoting the error, then offer:
+**Read probe.** Unity Catalog lists a schema's tables and columns to a user who holds no `SELECT`
+on them, so the scope query, and every `information_schema` read in §3, can succeed for tables
+the notebook will then fail to read. Once §3 has listed the tables, probe each one the notebook
+will read:
+
+```sql
+SELECT 1 FROM <catalog>.<schema>.<table> LIMIT 0;   -- no rows, nothing scanned; needs SELECT
+```
+
+Quote each name with backticks, as `runtime.md` §3 does. Every probe succeeding is what makes the
+scope readable: name the tool in the proposal's `Source scope` line (`Genie Code SQL, as <user>;
+<n> tables read-checked`). `INSUFFICIENT_PERMISSIONS` on any probe is the ask-back below, naming
+those tables. The probe checks the signed-in user only: when the notebook will run as a service
+principal (`runtime.md` §2), say in the proposal that the service principal's access is unchecked.
+
+When nothing reads the scope, or a read probe fails, send the preflight §0 ask-back. State what
+you ran and what came back, quoting the error, then offer:
 
 1. **Access**: `USE CATALOG`, `USE SCHEMA` and `SELECT` on the tables for this user, granted by
    the user or a workspace administrator; tell you when it is done. Never run a `GRANT` yourself.
@@ -121,7 +136,8 @@ and show it in the proposal as `Warehouse: <name> (<id>) [inferred]`. The user c
 the graph. A warehouse the user names is `[supplied]`. If none is visible, say so; the notebook
 then carries the placeholder in `runtime.md` §1.
 
-**What a check may do.** Read catalog metadata and run the preflight §3 probe — nothing else.
+**What a check may do.** Read catalog metadata, run the read probe above and the preflight §3
+probe — nothing else.
 Never create, alter, drop or write anything during intake, and never change compute, permissions
 or workspace settings.
 
