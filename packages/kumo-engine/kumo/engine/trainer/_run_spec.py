@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""A `Trainer.fit` as a tracked run's `RunSpec`."""
 
-import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,20 +42,16 @@ def fit_spec(context: FitContext, *,
                                  or {}).get('tune_metric')},
         tags=dict(tags or {}),
         inputs=dict(context.inputs),
-        artifacts={
-            'query.pql': context.query,
-            'model_plan.json': json.dumps(dict(context.model_plan), indent=2,
-                                          default=str),
-        },
+        description=f'`{context.query}`',
     )
 
 
-def fitted_spec(spec: RunSpec, result: Any, seconds: Optional[float] = None,
+def fitted_spec(spec: RunSpec, result: Any,
                 summaries: Sequence[Summary] = ()) -> RunSpec:
-    r"""``spec`` once the fit returned ``result``, a `TrainingResult`,
-    after ``seconds``: its test metrics, since the run's train and
-    validation series show the selected trial's epochs, the version it
-    registered, and ``summaries``."""
+    r"""``spec`` once the fit returned ``result``, a `TrainingResult`:
+    its test metrics, since the run's train and validation series show the
+    selected trial's epochs, the version it registered, and
+    ``summaries``."""
     artifacts = dict(spec.artifacts)
     provenance = Path(result.bundle_dir) / PROVENANCE_FILE
     if provenance.is_file():
@@ -66,13 +61,10 @@ def fitted_spec(spec: RunSpec, result: Any, seconds: Optional[float] = None,
         if not name.startswith(('train_', 'val_'))
     }, refit_full=_fit_mode(result) == 'refit_full')
     return replace(
-        spec, metrics={
-            **tested, **({} if seconds is None else {
-                'seconds': seconds
-            })
-        }, parents={**spec.parents, 'bundle_id': result.id,
-                    **_registered(result.registered_model,
-                                  result.registered_alias)},
+        spec, metrics=tested,
+        parents={**spec.parents, 'bundle_id': result.id,
+                 **_registered(result.registered_model,
+                               result.registered_alias)},
         artifacts=artifacts, summaries=summaries)
 
 

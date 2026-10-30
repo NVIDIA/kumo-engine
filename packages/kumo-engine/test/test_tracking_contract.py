@@ -213,15 +213,14 @@ def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
         session.on_event(event)
     session.finish(
         None if result is None else lambda: fitted_spec(
-            session.spec, result, events[-1].metrics.get('seconds'),
-            summaries=summaries), error)
+            session.spec, result, summaries=summaries), error)
     records = {
         record.name: record
         for hook, record in recorder.calls if hook == 'on_trial'
     }
     spec = fit_spec(context, tags=USER_TAGS)
     if result is not None:
-        spec = fitted_spec(spec, result, events[-1].metrics.get('seconds'))
+        spec = fitted_spec(spec, result)
     spec = replace(spec, steps=series if series is not None else {
         **SEARCH, **({} if error else SELECTED)})
     if series is None and not error:
@@ -432,7 +431,7 @@ def test_records_of_the_recorded_fit():
         spoofed = run_record(fit_spec(CONTEXT, tags={
             'kumo.bundle_id': 'x', 'training_job.tune_metric': 'y', 'a': 1}))
     assert spoofed.tags.keys() - fit.tags.keys() == {'a'}
-    assert fit.metrics == {'mae': 0.32, 'seconds': 9.0}
+    assert fit.metrics == {'mae': 0.32}
     assert fit.steps == {'search/best_val_mae': ((1, 0.35), (2, 0.3)),
                          'train/loss': ((1, 0.6), (2, 0.4)),
                          'val/mae': ((1, 0.5), (2, 0.3))}
@@ -442,8 +441,8 @@ def test_records_of_the_recorded_fit():
     tags = run_record(fitted_spec(fit_spec(CONTEXT), registered)).tags
     assert tags.items() >= {'kumo.model_name': 'ents', 'kumo.model_version':
                             '3', 'kumo.model_alias': 'candidate'}.items()
-    assert fit.artifacts['query.pql'] == QUERY
-    assert json.loads(fit.artifacts['model_plan.json']) == CONTEXT.model_plan
+    assert fit.artifacts == {}
+    assert fit.description == f'`{QUERY}`'
     assert fit.inputs == INPUTS
 
     oom = records['trial-2-attempt-1']
@@ -459,7 +458,7 @@ def test_records_of_the_recorded_fit():
         })
     retry = records['trial-2-attempt-2']
     assert retry.params['attempt'] == '2'
-    assert retry.metrics == {'val/best_mae': 0.3, 'seconds': 4.0}
+    assert retry.metrics == {'val/best_mae': 0.3}
     assert retry.steps == {'train/loss': ((1, 0.6), (2, 0.4)),
                            'val/mae': ((1, 0.5), (2, 0.3))}
 

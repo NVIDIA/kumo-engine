@@ -151,9 +151,8 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
         result.metrics).items() if not name.startswith(('train/', 'val/'))}
     assert {name for name in metrics
             if '/' not in name.removeprefix('before_refit/')} == {
-        *tested, 'seconds', *(summary.name for summary in result._summaries
-                              if isinstance(summary, Scalar)
-                              and '/' not in summary.name)}
+        *tested, *(summary.name for summary in result._summaries
+                   if isinstance(summary, Scalar) and '/' not in summary.name)}
     assert metrics['graph/rows/ents'] == 400
     assert {name: metrics[name] for name in tested} == tested
     assert 'off for the rest of this run' not in caplog.text
@@ -168,8 +167,7 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     for child in children:
         assert child.info.status == 'FINISHED'
         assert child.data.tags['kumo.status'] == 'succeeded'
-        assert {'val/best_mae', 'seconds',
-                'val/mae'} <= set(child.data.metrics)
+        assert {'val/best_mae', 'val/mae'} <= set(child.data.metrics)
         history = client.get_metric_history(child.info.run_id, 'val/mae')
         assert sorted(metric.step for metric in history) == [1, 2]
     selected = min(children, key=lambda run: run.data.metrics['val/best_mae'])

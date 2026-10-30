@@ -247,8 +247,8 @@ def trial_spec(events: Sequence[Event]) -> RunSpec:
                          error=None if 'error' not in event.params else str(
                              event.params['error']))
             metrics.update({
-                name if name == 'seconds' else f'best_{name}': value
-                for name, value in event.metrics.items()
+                f'best_{name}': value
+                for name, value in event.metrics.items() if name != 'seconds'
             })
     return RunSpec(
         kind='trial',

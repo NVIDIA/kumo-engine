@@ -1061,7 +1061,7 @@ class Trainer:
             self._training_result = result
         session.finish(
             lambda: fitted_spec(
-                cast(RunSpec, session.spec), result, seconds, (
+                cast(RunSpec, session.spec), result, (
                     *result._summaries,
                     *snapshot_summaries(Path(snapshot.index_path),
                                         snapshot.graph_config),
