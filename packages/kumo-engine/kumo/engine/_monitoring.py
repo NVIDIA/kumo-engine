@@ -345,12 +345,12 @@ def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
     out['anchors'] = tuple(
         pd.Timestamp(anchor, tz='UTC').isoformat() for anchor in anchors)
     if anchors:
-        window_end = parsed.query.get_combined_date_offset_range(
-        ).end_date_offset
+        frame = parsed.query.get_combined_date_offset_range()
         try:
             latest = _target_maximum(parsed, str(snapshot.index_path), min)
-            out['matured'] = bool(
-                pd.Timestamp(max(anchors)) + window_end <= pd.Timestamp(latest))
+            window_end = (pd.Timestamp(max(anchors)) + frame.end_date_offset +
+                          (parsed.forecast_length - 1) * frame.timeframe)
+            out['matured'] = bool(window_end <= pd.Timestamp(latest))
         except Exception as error:
             reasons['matured'] = str(error)
     task = _TASKS.get(parsed.task_type)

@@ -173,6 +173,22 @@ def test_evaluate_immature_run_returns_metrics_and_warns(
     assert result.metrics['auroc'] is not None and result.reasons == {}
 
 
+@pytest.mark.parametrize('days,matured', [(14, True), (13, False)])
+def test_a_forecast_matures_after_its_last_frame(snapshots, monkeypatch, days,
+                                                 matured):
+    import kumo_core.pquery
+
+    monkeypatch.setattr(kumo_core.pquery, '_target_maximum',
+                        lambda *args: ANCHOR + pd.Timedelta(days=days))
+    frame = pd.DataFrame({'ENTITY': np.arange(60), 'TARGET_PRED': 10.0})
+    result = _evaluate(
+        snapshots, 'PREDICT SUM(orders.AMT, 0, 7, days) FORECAST 2 TIMEFRAMES '
+        'FOR EACH users.ID', frame, [ANCHOR])
+    assert result.task_type == 'forecasting'
+    assert result.matured is matured
+    assert result.reasons['metrics'] == 'forecasting metrics are not supported'
+
+
 def test_evaluate_joins_several_anchors(snapshots, classifier, monkeypatch):
     trainer, run = classifier
     anchors = [ANCHOR - pd.Timedelta(days=14), ANCHOR]
