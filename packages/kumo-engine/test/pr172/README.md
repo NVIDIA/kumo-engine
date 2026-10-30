@@ -1,35 +1,23 @@
-# Small PR172 inputs
+# Small PR172 fixtures
 
-`prepare.py` reuses the three synthetic generators from the pinned revision in
-`provenance.json`. It generates 556,127 adtech rows, 1,442,968 delivery rows,
-and 74,416 commerce rows. It trains no models and defines no quality limits.
+The GPU smoke action downloads the versioned S3 bundle recorded in
+`inputs.json`. Its SHA-256 pins the complete compressed archive. The action
+checks that hash before extraction and uses the repository's existing AWS role.
+No private GitHub repository or fixture-access token is required.
 
-The upstream source is acquired separately. It is not redistributed here.
-A trusted CI job needs a token with read access to that source repository.
-The default token for this public repository cannot read a private repository.
-Use a checkout at the exact `source_revision`, then pass its `scale-bench`
-directory to this command:
+The bundle retains the same 29 files from the approved generate-once inputs:
+23 Parquet table files, three manifests, and three validation stamps. It adds
+`graphs.json` with public table, column, key, time, type, and edge metadata.
+The tables contain 556,127 adtech rows, 1,442,968 delivery rows, and 74,416 commerce
+rows across their respective graph families. The original 29 files remain
+byte-identical. No generator source, hidden answers, or model outputs are included.
 
-```sh
-python3.12 packages/kumo-engine/test/pr172/prepare.py \
-  --source-dir /path/to/pinned-upstream/scale-bench \
-  --output-dir /path/to/pr-inputs
-```
+The extracted root contains `adtech/pr`, `delivery/pr`, `commerce/pr`, and
+`graphs.json`. The standalone runner reads those paths with public Engine APIs.
+It uses native static-link splitting for smoke coverage. The previous quality
+control payload and source projection are not part of this check.
 
-Use a separate generator environment with the four dependency versions in
-`provenance.json`. The worker environment can resolve its own dependencies.
-The command returns `data_root` and `source_root` for the GPU task worker.
-It keeps the source copy and all generation and validation logs under the
-output directory. An incomplete output directory fails without overwriting it.
-
-The wrapper checks source fingerprints before running copied code. It builds
-and checks the original placeholder profiles before data generation. It then
-runs the existing structural validator with full file checksums and the
-recorded small-profile settings. The wider distribution checks match those
-small inputs. They do not allow model score drops. Exact table counts,
-configuration identity, and file fingerprints remain strict.
-
-A complete output can be cached using the provenance file hash and generator
-dependencies. Reuse checks the copied source, generated profiles, manifests,
-validation stamps, complete table inventory, and every table file hash.
-Generated Parquet and acquired source must stay outside the committed tree.
+A fixture update requires a new versioned S3 object and an updated manifest
+hash. Keep the frozen reports from previous runs unchanged. The
+[Engine PR guide](../../../../docs/development/engine-pr-ci.md) describes
+normal runs, numeric qualification, and local feedback.

@@ -28,8 +28,11 @@ It builds its prerequisites and runs without cloud credentials. The
 [test matrix](../connector-test-matrix.md) lists coverage and CI limits.
 
 The [Engine PR check](engine-pr-ci.md) builds the candidate wheel and runs eight
-small task checks on CUDA. It reports learning scores without a quality gate.
-Its complete timing still requires a finished CI run and all required results.
+small task checks on CUDA through one shared smoke action. It checks completed
+work, output structure, saved model state, and reloaded predictions. It sets no
+learning-quality score requirement. Source and package workflows remain separate.
+Its new numeric limits and complete timing require real GPU qualification
+and a fresh normal run.
 
 The [Engine nightly check](engine-nightly-ci.md) compares sixteen large-profile
 GPU fits with a saved reference. Its guide lists the remaining access and
@@ -42,3 +45,15 @@ credentials, customer data, and private logs out of committed test reports.
 For a behavior change, add a regression test at the relevant boundary; pure
 prose edits need reference checks and a factual review rather than tests that
 repeat the prose.
+
+## Agent-local PR feedback
+
+Vedaant Jain requested a marked local selection that finishes in strictly less
+than five minutes. See [Engine PR checks](engine-pr-ci.md#agent-local-feedback)
+for one-time environment setup, the single command, selected coverage and timing
+evidence. The local command runs only the small pure output tests. It needs no
+GPU or cloud access. Normal GPU CI fits eight models. The separate numeric
+qualification runs three repetitions, or 24 fits. Source and package workflows
+keep their existing tests and failure policies. The preferred full-CI timeline
+is 20 minutes. The accepted budget is about 22 minutes, with a strict
+under-25-minute guardrail. The new slim job does not yet have a measured runtime.

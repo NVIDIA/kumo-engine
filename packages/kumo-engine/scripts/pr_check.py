@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Verify the exact candidate artifact and run selected PR checks in isolation."""
+"""Verify wheel identity and run shared installation and behavior phases."""
 
 import argparse
 import hashlib
@@ -91,17 +91,6 @@ def verify_installed_files(wheel, location):
     if not count:
         raise ValueError('Candidate archive contains no runtime files')
     return count
-
-
-def verify_roster(report):
-    rows = report.get('runs', [])
-    if (report.get('status') != 'MEASURED'
-            or report.get('learning_quality_policy') != 'report_only'
-            or len(rows) != 8 or {(r['task'], r['seed'], r['case'])
-                                  for r in rows} != {(t, 0, 'learnable')
-                                                     for t in TASKS}):
-        raise ValueError(
-            'PR requires eight normal seed-zero fits and score reporting')
 
 
 def verify_fits(rows):
@@ -412,8 +401,8 @@ def run_phase(args):
                       if args.phase == 'example' else nullcontext()):
                     code = pytest.main([
                         '-q', '-c', '/dev/null', '--import-mode=importlib',
-                        '--basetemp', str(output / 'pytest'),
-                        '--confcutdir',
+                        '--basetemp',
+                        str(output / 'pytest'), '--confcutdir',
                         str(modules), '--junitxml',
                         str(output / 'tests.xml'),
                         *[str(modules / p) for p in paths]
@@ -463,100 +452,6 @@ def verify_install(build, wheel):
                 cuda=torch.version.cuda)
 
 
-def run_checks(args):
-    selection = json.loads(args.selection.read_text())
-    build = json.loads(args.build.read_text())
-    if selection['revision'] != build['revision']:
-        raise ValueError('Selection and built revision differ')
-    actual = subprocess.check_output(
-        ['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
-    if actual != build['revision']:
-        raise ValueError('Worker checkout differs from built revision')
-    [wheel] = list(args.wheel_dir.glob('*.whl'))
-    output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
-    work = output / 'work'
-    work.mkdir()
-    report = dict(status='RUNNING', revision=build['revision'],
-                  learning_scores_block=False, stages=[], primary_fits=0,
-                  additional_fits=0, full_ci_time_verified=False)
-    started = time.monotonic()
-    modules = ROOT / 'packages/kumo-engine/test'
-    python = sys.executable
-    try:
-        report['installation'] = verify_install(build, wheel)
-        run_logged([python, '-I', '-m', 'pip', '--isolated', 'check'],
-                   output / 'pip-check.log', cwd=work)
-        packages = {
-            re.sub(r'[-_.]+', '-', d.metadata['Name']).lower(): d.version
-            for d in importlib.metadata.distributions() if
-            re.sub(r'[-_.]+', '-', d.metadata['Name']).lower() != 'kumo-engine'
-        }
-        dependencies = output / 'dependencies.json'
-        save(dependencies, packages)
-        if selection['learning']:
-            command = [
-                python, '-I', '-u',
-                str(modules / 'wheel_gpu_learning.py'), '--version',
-                build['version'], '--device', 'cuda', '--group', 'all',
-                '--seed-profile', 'pr', '--scale-bench-rung', 'pr',
-                '--scale-bench-data',
-                str(args.data.resolve()), '--scale-bench-source',
-                str(args.scale_source.resolve()), '--dependency-profile',
-                str(dependencies), '--output-dir',
-                str(output / 'learning')
-            ]
-            argv = output / 'primary-arguments.json'
-            save(argv, command[4:])
-            command = [
-                python, '-I', '-u',
-                str(Path(__file__).resolve()), 'primary', '--arguments',
-                str(argv), '--output',
-                str(output / 'primary-fits.json')
-            ]
-            report['stages'].append(
-                run_logged(command, output / 'learning.log', cwd=work))
-            measured = json.loads(
-                (output / 'learning/scale-result.json').read_text())
-            verify_roster(measured)
-            report['primary_fits'] = len(measured['runs'])
-            report['scores'] = [{
-                key: row[key]
-                for key in ('task', 'metric', 'score')
-            } for row in measured['runs']]
-        for phase in ('install', 'example', 'behavior'):
-            if not selection[phase]:
-                continue
-            command = [
-                python, '-I', '-u',
-                str(Path(__file__).resolve()), 'phase', '--phase', phase,
-                '--version', build['version'], '--output',
-                str(output / phase)
-            ]
-            report['stages'].append(
-                run_logged(command, output / f'{phase}.log', cwd=work))
-            result = json.loads((output / phase / 'result.json').read_text())
-            if result['status'] != 'PASS':
-                raise ValueError(f'{phase} did not complete')
-            report['additional_fits'] += result['physical_fits']
-        report['final_installation'] = verify_install(build, wheel)
-        report['status'] = 'PASS'
-    except BaseException as error:
-        report.update(status='FAIL', error=f'{type(error).__name__}: {error}',
-                      traceback=traceback.format_exc())
-        raise
-    finally:
-        report['seconds'] = time.monotonic() - started
-        ledger = output / 'primary-fits.json'
-        report['primary_fit_attempts'] = (len(json.loads(ledger.read_text()))
-                                          if ledger.exists() else 0)
-        report['additional_fit_attempts'] = sum(
-            len(json.loads(p.read_text())) for p in output.glob('*/fits.json'))
-        report['physical_fits'] = report['primary_fits'] + report[
-            'additional_fits']
-        save(output / 'result.json', report)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -567,21 +462,11 @@ def main():
     built.add_argument('--source', type=Path, required=True)
     built.add_argument('--wheel-dir', type=Path, required=True)
     built.add_argument('--output', type=Path, required=True)
-    run = commands.add_parser('run')
-    run.add_argument('--selection', type=Path, required=True)
-    run.add_argument('--build', type=Path, required=True)
-    run.add_argument('--wheel-dir', type=Path, required=True)
-    run.add_argument('--data', type=Path)
-    run.add_argument('--scale-source', type=Path)
-    run.add_argument('--output', type=Path, required=True)
     phase = commands.add_parser('phase')
     phase.add_argument('--phase', choices=('install', 'example', 'behavior'),
                        required=True)
     phase.add_argument('--version', required=True)
     phase.add_argument('--output', type=Path, required=True)
-    primary = commands.add_parser('primary')
-    primary.add_argument('--arguments', type=Path, required=True)
-    primary.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.command == 'source':
         save(args.output, source_identity(ROOT, args.revision))
@@ -593,22 +478,6 @@ def main():
         save(args.output, build_receipt(source, wheel))
     elif args.command == 'phase':
         run_phase(args)
-    elif args.command == 'primary':
-        worker = ROOT / 'packages/kumo-engine/test/wheel_gpu_learning.py'
-        arguments = json.loads(args.arguments.read_text())
-        with count_fits(args.output) as fits:
-            sys.argv = [str(worker), *arguments]
-            try:
-                runpy.run_path(str(worker), run_name='__main__')
-            except SystemExit as error:
-                if error.code not in (0, None):
-                    raise
-            verify_fits(fits)
-            if len(fits) != 8:
-                raise ValueError(
-                    'Primary worker must perform exactly eight fits')
-    else:
-        run_checks(args)
 
 
 if __name__ == '__main__':

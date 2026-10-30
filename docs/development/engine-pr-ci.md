@@ -1,100 +1,96 @@
 # Engine PR check
 
-The `Kumo Engine PR` workflow builds and tests the candidate at the exact PR
-head. It supplements the existing source, package, native, connector, and GPU
-workflows. It does not change release jobs or enforce learning-quality limits.
+The `Kumo Engine PR` workflow tests the current candidate wheel on the existing
+T4 GPU runner. Vedaant Jain requested this smaller check. One job builds the
+wheel, installs it in a fresh environment, and runs the shared smoke action.
+The release-wheel workflow in PR40 uses the same action with its finished wheel.
+No runner or cloud instance is created.
+The action uses a cached parallel dependency installer. Pip then reinstalls
+only the candidate wheel offline and verifies its archive hash. The environment
+stays fresh, and dependency downloads use public PyPI.
 
-NVIDIA GPU jobs use the existing trusted `copy-pr-bot` route. A push to
-`pull-request/<number>` starts the workflow. The selection step checks that
-the copied commit is still the PR head. A manual run also requires the PR
-number and matching revision. Repository owners can require the stable
-`kumo-engine-pr-ci` check after validating runner and source access.
+## Eight task checks
 
-## Selected work
+Each normal run fits eight models with seed zero. The tasks are binary,
+multiclass, multilabel, multilabel ranking, regression, forecasting, static
+link prediction, and temporal link prediction. Each task fits, predicts,
+saves its model, loads that model, and predicts again.
 
-Every code PR selects all eight learning types. Each task trains one normal
-model with seed zero on small synthetic PR 172 data. Scores report only.
-The check requires completed CUDA training, finite and complete predictions,
-hidden-answer and chronological checks, and exact saved and restored model
-state. Repeated, partial, and reloaded prediction differences remain diagnostic.
-There is no quality reference or scrambled-answer fit in this PR check.
+The runner requires the expected installed wheel version and actual CUDA
+training and prediction batches. It rejects empty work, missing output rows,
+duplicate coordinates, and nonfinite values. Forecasts require all twelve
+horizons. Class and link outputs require every requested class or catalog item.
+The restored model weights must exactly match the saved checkpoint.
+Chosen labels and published ranks must also match exactly after repeat or reload.
+Training metrics report only; they do not set a learning-quality gate.
 
-Changed paths also select installation, behavior, and source checks. Shared
-runtime, dependency, sampling, and unknown changes select the broad behavior
-roster. Packaging changes select installation. Test files select source checks.
-Only documentation changes skip learning. A changed Engine quickstart or
-example still runs the documented example. Renames inspect both paths.
-Missing inventories, stale heads, failed selection, and skipped required jobs
-fail the final check.
+The runner measures repeated and reloaded prediction differences. GPU results
+can contain small numeric differences despite identical saved weights.
+The manual qualification fits eight models and repeats prediction and reload
+three times on each retained model. It adds no training block for those repeats.
+Qualification returns `MEASURED`, not a normal CI pass. A normal run has eight
+fits, one prediction/reload cycle, and enforced numeric comparison limits.
+The [T4 qualification](https://github.com/NVIDIA/kumo-engine/actions/runs/40975805986)
+completed all eight fits and 48 repeat/reload comparisons. Its largest absolute
+difference was 0.00000190735. We use an absolute limit of 0.00001 with zero
+relative tolerance, about 5.2 times that measured maximum. Absolute comparison
+also handles values close to zero. Weights, chosen labels, and ranks stay exact.
+This empirical limit covers the fixed PR172 inputs on Tesla T4 with
+PyTorch 2.15.0 and CUDA 13.2. It does not qualify another device or a
+learning-quality limit. Fresh normal and finished-wheel verification remain pending.
+This smoke check sets no learning-quality score or baseline requirement.
 
-The behavior checks reuse small package fixtures. They cover recommendation
-counts and unique IDs, time filters, invalid options, exports and custom tables,
-continued training, and native sampling behavior. One retained model also
-predicts in a fresh process after reconstructing its graph from copied tables.
-The shared test also runs on the existing CPU owner suite. The PR worker
-requires CUDA and verifies the child's requested device and completed work.
-Public recommendation exclusions remain unsupported. The check does not claim
-coverage of that unsupported option.
+## Shared inputs
 
-Installation and behavior can add training runs. The report records each
-physical Core fit attempt, completed optimizer updates, CUDA batches, failures,
-and completed fit counts. Eight describes the primary task roster only.
-The source job also reads the existing source workflow at the same PR revision
-and rejects failed jobs even when that workflow allows their failure.
+The shared action downloads one versioned S3 archive and checks its SHA-256
+before extraction. The archive contains the fixed synthetic PR172 tables and
+public graph metadata. The workflow uses the repository's existing AWS role.
+It needs no token for a private GitHub repository. No generated data archive or
+1,000-line graph definition is committed here. See the
+[fixture record](../../packages/kumo-engine/test/pr172/README.md).
 
-## Artifact and input identity
+## Agent-local feedback
 
-The CPU job requires a clean checkout, builds the full bundled wheel, and
-records the full source revision, tree, version, and archive SHA-256. The GPU
-job installs that archive in a fresh Python 3.12 environment. It verifies every
-installed runtime member against the archive and runs `pip check`. Dependency
-versions and the actual GPU model are retained with the results.
-
-The small inputs contain 556,127 adtech rows, 1,442,968 delivery rows, and 74,416
-commerce rows. Their generator configuration, source hashes, and expected
-counts are in `packages/kumo-engine/test/pr172/`. CI acquires the pinned source
-with the existing `KUMO_GITHUB_BOT_TOKEN`. That token needs read access to the
-source repository. Private source is neither committed nor uploaded in result
-artifacts. Generator output and file hashes are checked before training.
-The token preflight preserves a configuration receipt without its value. A
-missing token fails before training and still produces a result artifact.
-
-The GPU runner defaults to the repository's existing
-`linux-amd64-gpu-t4-latest-1` label. `KUMO_ENGINE_PR_GPU_RUNNER` can select an
-admitted compatible runner. The workflow provisions no hosts and does not use
-the retained benchmark VMs. The existing RTX measurements do not prove T4
-runtime. Each run records its actual device and rejects CPU fallback.
-
-## Timing and evidence
-
-The target is 20 minutes through the last required result. It includes build,
-queues, installation, generation, selected checks, reporting, and uploads.
-Per-job timeouts are execution bounds. They do not prove the complete target.
-The recorded manual trial and worker timings do not replace a GitHub run.
-
-The [recorded attempt at `4a508a93`](https://github.com/NVIDIA/kumo-engine/actions/runs/40924279550)
-took 25 minutes 56 seconds and failed before any primary fit. Its exact wheel
-build passed in 13 minutes 15 seconds. The GPU job lacked the generator token.
-The owner source suite also failed its BigQuery authentication setup and a
-shared test's unconditional CUDA check. This is a failed measurement, not a
-passing runtime estimate. The current control jobs use Ubuntu 22. The existing
-owner workflow retains its own runners and waiting time.
-
-After a run finishes, download its run metadata and the complete job inventory,
-including all pages for its recorded attempt. Then audit that run:
+Vedaant requested local feedback in strictly less than five minutes. Prepare
+Python 3.12 dependencies once from the repository root. Setup is outside the
+measured command:
 
 ```sh
-python3 .github/scripts/engine-pr-timing.py \
-  --run run.json --jobs jobs.json --revision FULL_COMMIT_SHA \
-  --output timing.json
+python3.12 -m venv .venv-agent-local
+.venv-agent-local/bin/python -m pip install -r test/scripts/agent-local-requirements.txt
 ```
 
-The audit includes queue time and all jobs through their final completion.
-It rejects incomplete attempts, stale commits, and failed jobs hidden by a
-green workflow. Audit the other required workflows too before claiming the
-complete PR target. The existing source workflow previously took 1,302 seconds.
-It remains active and can exceed the target independently of the new worker.
+Run the marked pure output checks:
 
-The workflow keeps selection, build identity, installation, task results,
-physical-fit receipts, test results, generator logs, and failed-run evidence.
-No nightly, weekly, release, or reference-calibration job is added here.
+```sh
+.venv-agent-local/bin/python -I scripts/agent_local_tests.py
+```
+
+The command selects only `test/scripts/test_engine_gpu_smoke.py`. It disables
+inherited pytest options and plugin loading. Its isolated configuration stops
+parent fixture discovery. A parent process stops the suite at 300 seconds.
+Failures, skips, empty or incomplete selection, timeouts, and elapsed time of
+300 seconds or more return failure. The printed directory retains the pytest
+log, counts, and elapsed time. The local suite requires no GPU or cloud access.
+The complete command passed all nineteen selected cases with no skips in
+0.70 seconds on macOS ARM64 with Python 3.12.13. Setup was excluded.
+
+## Scope and timing
+
+Source and package tests keep their existing workflows and failure policies.
+This job neither waits for them nor replaces them. The previous observer,
+reporting framework, and 39 additional installation/behavior fits are removed.
+The existing package suite retains its ordinary behavior tests.
+
+Twenty minutes remains the preferred full-CI target. The accepted budget is
+about 22 minutes, with a strict under-25-minute guardrail. Those budgets include
+queues, build, installation, input download, execution, and result upload.
+The earlier 21m17s result belongs to the larger 47-fit implementation. It does
+not establish the timing of this smaller job. GitHub job times and the short
+GPU summary provide the new evidence. Nightly, weekly, and release policies
+remain separate.
+
+The three-cycle qualification took 37m55s overall. Its cold build took 14m16s,
+dependency installation took 11m51s, and the GPU worker took 9m29s. This is not
+a normal-run budget pass. The normal run still needs measurement with the
+verified native cache and the cached parallel installer.

@@ -4,9 +4,9 @@
 
 import hashlib
 import importlib.util
-import json
 import runpy
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -136,21 +136,18 @@ class RuntimeTests(unittest.TestCase):
                 checked([row])
         checked([dict(status='PASS', device='cuda:0', steps=2, cuda_batches=1)])
 
-    def test_only_eight_normal_seed_zero_primary_fits_pass(self):
-        tasks = [
-            'binary', 'multiclass', 'multilabel', 'multilabel_ranking',
-            'regression', 'forecasting', 'static_link', 'temporal_link'
-        ]
-        report = dict(
-            status='MEASURED', learning_quality_policy='report_only',
-            runs=[dict(task=t, seed=0, case='learnable') for t in tasks])
-        module().verify_roster(report)
-        for key, value in [('seed', 1), ('case', 'independent'),
-                           ('task', 'binary')]:
-            broken = json.loads(json.dumps(report))
-            broken['runs'][-1][key] = value
-            with self.assertRaises(ValueError):
-                module().verify_roster(broken)
+    def test_shared_cli_keeps_phases_without_the_old_pr_pipeline(self):
+        for command in ('run', 'primary'):
+            result = subprocess.run(
+                [sys.executable, '-I',
+                 str(SCRIPT), command], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('invalid choice', result.stderr)
+        result = subprocess.run(
+            [sys.executable, '-I',
+             str(SCRIPT), 'phase', '--help'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('install,example,behavior', result.stdout)
 
     def test_release_wheel_cannot_be_recorded_as_this_pr_build(self):
         with tempfile.TemporaryDirectory() as directory:

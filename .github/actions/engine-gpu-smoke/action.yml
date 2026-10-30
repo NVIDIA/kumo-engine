@@ -1,0 +1,129 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Test the finished Engine wheel on GPU
+description: Install one wheel in a clean environment and run eight GPU tasks
+inputs:
+  wheel-path:
+    description: Path or glob matching exactly one finished wheel
+    required: true
+  repetitions:
+    description: Prediction and reload cycles per retained model
+    default: '1'
+  qualify:
+    description: Measure numerical differences without accepting a smoke pass
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Set up the cached wheel installer
+      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      with:
+        version: '0.11.28'
+        enable-cache: true
+        prune-cache: false
+        cache-dependency-glob: 'packages/**/pyproject.toml'
+    - name: Read the existing private test bucket
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+      with:
+        role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+        aws-region: us-west-2
+    - name: Install only the finished wheel
+      shell: bash
+      env:
+        WHEEL_PATTERN: ${{ inputs.wheel-path }}
+      run: |
+        set -euo pipefail
+        uv_cache="${UV_CACHE_DIR:-$RUNNER_TEMP/setup-uv-cache}"
+        for name in ${!PIP_@} ${!UV_@}; do unset "$name"; done
+        export PIP_CONFIG_FILE=/dev/null
+        mkdir -p "$RUNNER_TEMP/engine-gpu-smoke"
+        python -m venv "$RUNNER_TEMP/engine-smoke-venv"
+        python - <<'PY'
+        import email, glob, hashlib, os, zipfile
+        from pathlib import Path
+        wheels = glob.glob(os.environ['WHEEL_PATTERN'])
+        if len(wheels) != 1:
+            raise SystemExit('Expected exactly one finished wheel')
+        wheel = Path(wheels[0]).resolve()
+        with zipfile.ZipFile(wheel) as archive:
+            names = [n for n in archive.namelist() if n.endswith('.dist-info/METADATA')]
+            if len(names) != 1:
+                raise SystemExit('Expected one wheel metadata record')
+            metadata = email.message_from_bytes(archive.read(names[0]))
+        if metadata['Name'].replace('_', '-') != 'kumo-engine':
+            raise SystemExit('Expected the finished kumo-engine wheel')
+        print('Wheel SHA-256:', hashlib.sha256(wheel.read_bytes()).hexdigest(), flush=True)
+        with open(os.environ['GITHUB_ENV'], 'a') as stream:
+            stream.write(f'ENGINE_SMOKE_WHEEL={wheel}\nENGINE_SMOKE_VERSION={metadata["Version"]}\n')
+        PY
+        wheel="$(python -c 'import glob,os; print(glob.glob(os.environ["WHEEL_PATTERN"])[0])')"
+        uv --no-config pip install --python "$RUNNER_TEMP/engine-smoke-venv/bin/python" \
+          --cache-dir "$uv_cache" --default-index https://pypi.org/simple \
+          "$wheel" 'boto3>=1.34,<2'
+        "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I -m pip --isolated install \
+          --no-index --no-deps --force-reinstall --no-compile \
+          --report "$RUNNER_TEMP/engine-gpu-smoke/install.json" "$wheel"
+        "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I -m pip --isolated check
+    - name: Check the installed wheel identity
+      shell: bash
+      run: |
+        "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I - <<'PY'
+        import hashlib, importlib.metadata, json, os
+        from pathlib import Path
+        root = Path(os.environ['RUNNER_TEMP']) / 'engine-gpu-smoke'
+        wheel = Path(os.environ['ENGINE_SMOKE_WHEEL'])
+        digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+        report = json.loads((root / 'install.json').read_text())
+        entries = [r for r in report['install'] if r['metadata']['name'].replace('_', '-').lower() == 'kumo-engine']
+        if (len(entries) != 1 or entries[0]['download_info']['archive_info']['hashes']['sha256'] != digest
+                or importlib.metadata.version('kumo-engine') != os.environ['ENGINE_SMOKE_VERSION']):
+            raise SystemExit('Installed wheel identity differs from the finished artifact')
+        (root / 'wheel.json').write_text(json.dumps(dict(filename=wheel.name, sha256=digest,
+            version=os.environ['ENGINE_SMOKE_VERSION']), indent=2) + '\n')
+        (root / 'install.json').unlink()
+        PY
+    - name: Download the pinned PR172 inputs
+      shell: bash
+      run: |
+        "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I - <<'PY'
+        import hashlib, json, os, tarfile
+        from pathlib import Path
+        import boto3
+        spec = json.loads(Path('packages/kumo-engine/test/pr172/inputs.json').read_text())
+        root = Path(os.environ['RUNNER_TEMP']) / 'engine-smoke-inputs'
+        root.mkdir()
+        archive = root / 'inputs.tar.gz'
+        boto3.client('s3', region_name=spec['region']).download_file(spec['bucket'], spec['key'], str(archive))
+        if hashlib.sha256(archive.read_bytes()).hexdigest() != spec['sha256']:
+            raise SystemExit('PR172 input checksum differs')
+        with tarfile.open(archive) as source:
+            source.extractall(root, filter='data')
+        print('Inputs:', spec['version'], spec['sha256'], flush=True)
+        PY
+    - name: Run the eight GPU tasks outside the checkout
+      shell: bash
+      env:
+        REPETITIONS: ${{ inputs.repetitions }}
+        QUALIFY: ${{ inputs.qualify }}
+        CUDA_VISIBLE_DEVICES: '0'
+        OMP_NUM_THREADS: '4'
+        MKL_NUM_THREADS: '4'
+        OPENBLAS_NUM_THREADS: '4'
+        PYTHONDONTWRITEBYTECODE: '1'
+      run: |
+        set -euo pipefail
+        for name in ${!PIP_@}; do unset "$name"; done
+        export PIP_CONFIG_FILE=/dev/null
+        mkdir -p "$RUNNER_TEMP/engine-gpu-smoke"
+        cp packages/kumo-engine/test/wheel_gpu_smoke.py "$RUNNER_TEMP/engine-gpu-smoke/runner.py"
+        cd "$RUNNER_TEMP/engine-gpu-smoke"
+        flags=()
+        if [[ "$QUALIFY" == true ]]; then flags+=(--qualify); fi
+        "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I runner.py \
+          --data-dir "$RUNNER_TEMP/engine-smoke-inputs" \
+          --graph-metadata "$RUNNER_TEMP/engine-smoke-inputs/graphs.json" \
+          --output-dir "$RUNNER_TEMP/engine-gpu-smoke" \
+          --expected-version "$ENGINE_SMOKE_VERSION" \
+          --repetitions "$REPETITIONS" "${flags[@]}"
