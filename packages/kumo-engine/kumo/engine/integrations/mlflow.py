@@ -31,6 +31,7 @@ from typing import (
     Sequence,
     Set,
     Tuple,
+    cast,
 )
 from urllib.parse import quote
 
@@ -179,6 +180,7 @@ class MlflowTracking:
         self._card: List[Summary] = []
         self._pending = _Pending()
         self._model_id: Optional[str] = None
+        self._published: Optional[PublishedModel] = None
         self._http_owned: FrozenSet[str] = frozenset()
         self._guard = ExitStack()
 
@@ -467,10 +469,12 @@ class MlflowTracking:
         if registry is None:
             return None
         try:
-            return _register(self.target, self._client, info, registry,
-                             registry_pointers(_id(manifest)))
+            self._published = _register(self.target, self._client, info,
+                                        registry,
+                                        registry_pointers(_id(manifest)))
         except Exception as error:
             raise RegistrationError(full_error(error)) from error
+        return self._published
 
     def finish(self, record: Optional[RunRecord],
                error: Optional[BaseException]) -> None:
@@ -486,6 +490,8 @@ class MlflowTracking:
                                   model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
                 self._log_artifacts(record.artifacts)
+                if fit_run and self._published is not None:
+                    self._describe_version(record)
                 self._write_card(record)
                 if error is None:
                     status = 'FINISHED'
@@ -616,6 +622,29 @@ class MlflowTracking:
         with self.target.scope():
             self._client.set_tag(run_id, 'mlflow.note.content',
                                  _sealed(card) + user)
+
+    def _describe_version(self, record: RunRecord) -> None:
+        r"""Adds the fit's headline metrics (unless the version's logged
+        model shows them, as on Unity Catalog), its run and its bundle to
+        the description of the version it registered, after the user's
+        comment."""
+        published = cast(PublishedModel, self._published)
+        uri = import_provider('mlflow.utils.uri', 'mlflow')
+        shown = uri.is_databricks_unity_catalog_uri(
+            self.target.registry_uri or '')
+        try:
+            with self.target.scope():
+                run = self._client.get_run(self._parent)
+            bundle = run.data.tags.get('kumo.bundle_uri')
+            _describe_version(self.target, self._client, published, '\n'.join([
+                *([] if shown else [_card.version_headline(
+                    record.metrics, record.tags.get('kumo.tune_metric'))]),
+                f'Trained by `{run.info.run_name}`.'
+                + (f' Bundle `{bundle}`.' if bundle else '')]))
+        except Exception as error:
+            logger.warning('Could not describe %s version %s: %s',
+                           published.name, published.version,
+                           format_error(error))
 
     def _model_line(self, tags: Mapping[str, str]) -> str:
         fit_id = tags.get('kumo.fit_run_id')
@@ -1345,6 +1374,24 @@ def _register(target: Any, client: Any, info: Any,
     return PublishedModel(name=name, version=version,
                           uri=f'models:/{name}/{version}',
                           metadata=dict(metadata))
+
+
+def _describe_version(target: Any, client: Any, published: PublishedModel,
+                      text: str) -> None:
+    r"""Puts ``text`` in the ``kumo:version`` part of the version's
+    description, after the user's text, within MLflow's 5000 characters."""
+    name, version = published.name, published.version
+    with target.scope():
+        current = client.get_model_version(name, version).description or ''
+        user = _VERSION_PART.sub('', current).strip()
+        part = f'<!-- kumo:version -->\n{text}\n<!-- /kumo:version -->'
+        described = f'{user}\n\n{part}' if user else part
+        if len(described) <= 5000 and described != current:
+            client.update_model_version(name, version, description=described)
+
+
+_VERSION_PART = re.compile(r'<!-- kumo:version -->.*?<!-- /kumo:version -->',
+                           re.DOTALL)
 
 
 def _registered_version(client: Any, name: str,

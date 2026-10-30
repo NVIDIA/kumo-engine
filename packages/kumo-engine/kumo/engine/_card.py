@@ -65,6 +65,17 @@ def headline(kind: str, metrics: Mapping[str, float], tags: Mapping[str, str],
             line[:HEADLINE_CHARS - 1] + '…')
 
 
+def version_headline(metrics: Mapping[str, float],
+                     tune: Optional[str]) -> str:
+    r"""A registered version's metrics line: the tuned metric, then the
+    next three holdout metrics."""
+    tuned = 'holdout_loss' if tune == 'loss' else tune
+    names = [name for name in metrics if '/' not in name]
+    names.sort(key=lambda name: name != tuned)
+    return ' · '.join(f'{_key(name)} {number(metrics[name])}'
+                      for name in names[:4])
+
+
 def model_line(name: Optional[str], version: Optional[str],
                bundle_id: Optional[str], fit_run: Optional[str] = None,
                link: Optional[str] = None) -> str:

@@ -20,6 +20,7 @@ from test_mlflow_tracking import (  # noqa: F401
 )
 
 import kumo.engine as kumo
+from kumo.engine import _card
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._tracking import logged_names
 
@@ -48,8 +49,8 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     plan = _plan()
     cfg = kumo.MLOps(str(tmp_path / 'root'),
                      tracking=MlflowTracking(log_system_metrics=False),
-                     registry=kumo.ModelRegistryLocation('m',
-                                                         alias='champion'))
+                     registry=kumo.ModelRegistryLocation(
+                         'm', alias='champion', comment='Mine.'))
     trainer = kumo.Trainer(plan)
     result = trainer.fit(table, snapshot=snapshot, mlops=cfg)
 
@@ -61,9 +62,10 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     model, = mlflow.search_logged_models(output_format='list')
     assert (model.name, model.source_run_id) == ('m', parent.info.run_id)
     metrics = {metric.key: metric.value for metric in model.metrics}
+    holdout = {name: value for name, value in logged_names(
+        result.metrics).items() if not name.startswith(('train/', 'val/'))}
     assert metrics == {
-        **{name: value for name, value in logged_names(result.metrics).items()
-           if not name.startswith(('train/', 'val/'))},
+        **holdout,
         **{summary.name: summary.value for summary in result._summaries
            if isinstance(summary, Scalar) and summary.role == 'model'}}
     assert {(metric.dataset_name, metric.dataset_digest)
@@ -79,6 +81,12 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         uri=f'models:/m/{version.version}',
         metadata={'kumo_bundle_id': result.id}, metrics=result.metrics)
     assert version.tags == {'kumo_bundle_id': result.id}
+    assert version.description == '\n'.join([
+        'Mine.', '', '<!-- kumo:version -->',
+        _card.version_headline(holdout, 'mae'),
+        f'Trained by `{parent.info.run_name}`. Bundle '
+        f"`{tmp_path / 'root' / 'models' / result.id}`.",
+        '<!-- /kumo:version -->'])
     assert trainer.result is result
 
     info = mlflow.models.get_model_info('models:/m@champion')

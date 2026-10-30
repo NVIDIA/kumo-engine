@@ -73,3 +73,12 @@ def test_a_prediction_names_the_model_and_its_fit_run():
                             '#/experiments/1/runs/r') == (
         'Model: `churn` v6, trained by [v6-churn](#/experiments/1/runs/r).')
     assert _card.model_line(None, None, 'b' * 64) == 'Model: bundle `bbbbbbbb`.'
+
+
+def test_a_version_headline_leads_with_the_tuned_metric():
+    metrics = {'mae': 0.25, 'before_refit/mae': 0.3, 'holdout_loss': 0.5,
+               'mse': 1.0, 'rmse': 1.0, 'map@10': 0.125}
+    assert _card.version_headline(metrics, 'loss') == (
+        'holdout_loss 0.5 · mae 0.25 · mse 1 · rmse 1')
+    assert _card.version_headline(metrics, 'map@10') == (
+        'map_at_10 0.125 · mae 0.25 · holdout_loss 0.5 · mse 1')
