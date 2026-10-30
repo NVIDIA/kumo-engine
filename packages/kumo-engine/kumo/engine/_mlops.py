@@ -309,4 +309,4 @@ def snapshot_uri(snapshot: Any,
             'A snapshot given by object or id is read from the artifact '
             'root: call this in a kumo.mlops block, or pass the location '
             'snapshot.export(...) returned.')
-    return settings.root.uri(snapshot_path(snapshot))
+    return settings.snapshot_uri(snapshot)
