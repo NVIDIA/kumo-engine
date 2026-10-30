@@ -68,7 +68,9 @@ class RunRecord:
     Markdown line under line 1 of the run's card (a fit's query). Trackers
     compose run names from ``model_label``, `model_label` of the model,
     and from ``started`` and ``finished``, when the run's work started and
-    ended (UTC), known for a prediction run logged after its work."""
+    ended (UTC), known for a prediction run logged after its work. A
+    monitoring call's record names, in ``prediction_run``, the tracker's run
+    of the prediction it checks, when known."""
 
     name: Optional[str] = None
     params: Mapping[str, str] = field(default_factory=dict)
@@ -84,6 +86,7 @@ class RunRecord:
     model_label: Optional[str] = None
     started: Optional[datetime] = None
     finished: Optional[datetime] = None
+    prediction_run: Optional[str] = None
 
 
 @dataclass(frozen=True)

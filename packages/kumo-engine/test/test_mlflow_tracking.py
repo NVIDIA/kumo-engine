@@ -440,32 +440,68 @@ def test_fit_inputs_come_from_the_embedded_parents():
     assert fit_inputs(None) == {}
 
 
-def test_a_monitoring_run_is_new_and_tags_its_prediction_run(tracking_uri):
+def test_monitoring_folds_into_its_prediction_run(tracking_uri):
+    from kumo_core.summaries import Note, Table, Tag
+
     from kumo.engine._tracking import RunRecord, log_run
     from kumo.engine.integrations.mlflow import MlflowTracking
 
+    tracker = MlflowTracking('scores', log_system_metrics=False)
+    tracker.log_prediction_run(RunRecord(name='p', tags={
+        'kumo.kind': 'prediction', 'kumo.prediction_id': 'pred-1',
+        'kumo.as_of': '2026-10-29', 'kumo.bundle_id': 'b' * 64},
+        summaries=(Scalar('pred/rows', 50), Scalar('drift/psi', 0.03))))
     client = mlflow.MlflowClient()
-    experiment = client.create_experiment('scores')
-    predicted = client.create_run(experiment, tags={
-        'kumo.kind': 'prediction', 'kumo.prediction_id': 'pred-1'
-    }).info.run_id
-    client.set_terminated(predicted)
+    predicted = client.get_run(tracker.run_id)
+    monitoring = {'kumo.kind': 'monitoring', 'kumo.prediction_id': 'pred-1'}
 
-    log_run(
-        MlflowTracking(experiment_name='scores', log_system_metrics=False),
-        'log_monitoring',
-        RunRecord(name='monitor-pred-1', metrics={'psi': 0.1, 'ks': 0.2},
-                  tags={'kumo.kind': 'monitoring', 'kumo.monitors': 'pred-1',
-                        'kumo.bundle_id': 'b'}))
+    later = MlflowTracking('scores', log_system_metrics=False)
+    assert log_run(later, 'log_monitoring', RunRecord(
+        tags={**monitoring, 'kumo.monitor': 'drift'}, summaries=(
+            Tag('kumo.drift_previous', 'pred-0'),
+            Scalar('drift/psi_prev', 0.01),
+            Note('notes', 'Drift since `pred-0`: psi 0.01.'),
+            Table('drift/input_changes', ('table or link', 'at training',
+                                          'now', 'change %'),
+                  (('orders', 100, 104, 4.0),), brief=True),
+            Table('drift/features', ('table', 'column', 'psi'),
+                  (('orders', 'AMOUNT', 0.12),))))) is None
+    assert later.run_id == predicted.info.run_id
+    assert log_run(later, 'log_monitoring', RunRecord(
+        tags={**monitoring, 'kumo.monitor': 'evaluate'},
+        prediction_run=predicted.info.run_id, summaries=(
+            Tag('kumo.labels_snapshot_id', 'g@2'),
+            Scalar('realized/map@10', 0.5),
+            Note('notes', 'Labelled 3 of 4 scored rows with `g@2`.')))) is None
 
-    monitor, = [run for run in _runs(client)
-                if run.data.tags['kumo.kind'] == 'monitoring']
-    assert monitor.info.run_name == 'monitor-pred-1'
-    assert monitor.info.status == 'FINISHED'
-    assert monitor.data.metrics == {'psi': 0.1, 'ks': 0.2}
-    assert monitor.data.tags['kumo.monitors'] == 'pred-1'
-    assert client.get_run(predicted).data.tags['kumo.monitored'] == (
-        monitor.info.run_id)
+    run, = _runs(client)
+    assert (run.info.run_id, run.info.status, run.info.end_time) == (
+        predicted.info.run_id, 'FINISHED', predicted.info.end_time)
+    assert run.data.metrics == {'pred/rows': 50, 'drift/psi': 0.03,
+                                'drift/psi_prev': 0.01,
+                                'realized/map_at_10': 0.5}
+    assert run.data.tags.items() >= {
+        'kumo.kind': 'prediction', 'kumo.drift_previous': 'pred-0',
+        'kumo.labels_snapshot_id': 'g@2'}.items()
+    assert not {'kumo.monitored', 'kumo.monitors'} & set(run.data.tags)
+    assert json.loads(mlflow.artifacts.load_text(
+        f'{run.info.artifact_uri}/drift/features.json')) == {
+            'columns': ['table', 'column', 'psi'],
+            'data': [['orders', 'AMOUNT', 0.12]]}
+    assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
+        'realized map_at_10 0.5 · psi 0.03 vs training · 50 rows as of '
+        '2026-10-29', 'Model: bundle `bbbbbbbb`.', '',
+        'Full lineage: `_provenance.json`.', '',
+        '<!-- kumo:drift -->', 'Drift since `pred-0`: psi 0.01.',
+        '**Input changes:** orders: at training 100 · now 104 · change % 4',
+        '<!-- /kumo:drift -->',
+        '<!-- kumo:realized -->', 'Labelled 3 of 4 scored rows with `g@2`.',
+        '<!-- /kumo:realized -->', NOTES]))
+
+    failure = log_run(later, 'log_monitoring', RunRecord(
+        tags={**monitoring, 'kumo.prediction_id': 'pred-2'}))
+    assert str(failure) == 'No MLflow prediction run has kumo.prediction_id ' \
+        'pred-2'
 
 
 def test_prediction_run_nests_under_the_active_run(tracking_uri):
@@ -568,26 +604,6 @@ def test_system_metrics_sample_every_second_then_every_ten(monkeypatch):
     assert [metrics._wait(elapsed) for elapsed in (0, 599, 600)] == [
         1.0, 1.0, 10.0]
     assert integration._SystemMetrics(batches.append)._wait(0) == 2.0
-
-
-def test_link_prediction_monitoring_metrics_are_logged(tracking_uri):
-    from kumo.engine._tracking import RunRecord
-    from kumo.engine.integrations.mlflow import MlflowTracking
-
-    tracker = MlflowTracking(experiment_name='lp')
-    tracker.log_monitoring(
-        RunRecord(
-            name='m', tags={
-                'kumo.kind': 'monitoring',
-                'kumo.monitors': 'p'
-            }, metrics={
-                'map@10': 0.5,
-                'precision@10': 0.25
-            }))
-
-    run = mlflow.get_run(tracker.run_id)
-    assert run.info.status == 'FINISHED'
-    assert run.data.metrics == {'map_at_10': 0.5, 'precision_at_10': 0.25}
 
 
 @pytest.mark.parametrize('enabled,environment', [

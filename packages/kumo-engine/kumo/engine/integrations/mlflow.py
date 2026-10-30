@@ -108,8 +108,9 @@ class MlflowTracking:
     run), file and object-store sources by URI. Params MLflow rejects are
     counted in ``kumo.dropped_params``. Concurrent fits in one process are
     not supported. As ``kumo.MLOps(tracking=...)``, it also records each
-    prediction run and each monitoring call as one run named after it,
-    placed like a fit run; ``run_name`` and ``tags`` apply to fit runs only.
+    prediction run as one run named after it, placed like a fit run, and
+    writes each monitoring call into the prediction run it checks;
+    ``run_name`` and ``tags`` apply to fit runs only.
 
     Args:
         experiment_name: experiment for the fit run, created if missing.
@@ -484,18 +485,54 @@ class MlflowTracking:
         self.finish(record, record_failure(record))
 
     def log_monitoring(self, record: RunRecord) -> None:
-        self.start(record)
-        experiment_id, run_id = self._experiment_id, self.run_id
-        client = self._client
-        self.finish(record, None)
+        r"""Folds a monitoring call into the prediction run it checks: the
+        record's ``prediction_run``, else the run tagged with its
+        ``kumo.prediction_id`` in this tracker's experiment. MLflow retries
+        each request twice."""
+        self.run_id = None
+        prediction_id = record.tags.get('kumo.prediction_id')
+        with _limited_http(frozenset(name for name in _HTTP_LIMITS
+                                     if name not in os.environ)):
+            self._client = client = self.target.client()
+            run_id = record.prediction_run
+            if run_id is None:
+                with self.target.scope():
+                    experiment = (None if self.experiment_name is None else
+                                  client.get_experiment_by_name(
+                                      self.experiment_name))
+                    found = client.search_runs(
+                        [experiment.experiment_id if experiment else
+                         self._default_experiment or '0'],
+                        filter_string=("tags.`kumo.kind` = 'prediction' AND "
+                                       "tags.`kumo.prediction_id` = "
+                                       f"'{prediction_id}'"),
+                        max_results=1)
+                if not found:
+                    raise LookupError(f'No MLflow prediction run has '
+                                      f'kumo.prediction_id {prediction_id}')
+                run_id = found[0].info.run_id
+            self.fold(run_id, record)
+
+    def fold(self, run_id: str, record: RunRecord) -> None:
+        r"""Adds a monitoring call's ``record`` to the finished run
+        ``run_id``: its metrics, tags, tables and datasets, and its notes and
+        brief tables as the card's ``drift`` or ``realized`` part, with line
+        1 regenerated. The run's status, end time and params are
+        unchanged."""
+        def on_card(summary: Summary) -> bool:
+            return isinstance(summary, Note) or (isinstance(summary, Table)
+                                                 and summary.brief)
+
+        self.log_summaries([summary for summary in record.summaries
+                            if not on_card(summary)], run_id)
+        self.update_card(
+            run_id, 'realized' if record.tags.get('kumo.monitor')
+            == 'evaluate' else 'drift',
+            [summary for summary in record.summaries if on_card(summary)])
         with self.target.scope():
-            for run in client.search_runs(
-                    [experiment_id], filter_string=(
-                        "tags.`kumo.kind` = 'prediction' AND "
-                        "tags.`kumo.prediction_id` = "
-                        f"'{record.tags['kumo.monitors']}'"),
-                    max_results=1):
-                client.set_tag(run.info.run_id, 'kumo.monitored', run_id)
+            self._experiment_id = self._client.get_run(
+                run_id).info.experiment_id
+        self.run_id = run_id
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         key = (event.trial or 0, int(event.params['attempt']))

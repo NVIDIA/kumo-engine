@@ -5,7 +5,6 @@
 import gc
 import math
 import os
-import re
 import time
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
@@ -14,6 +13,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 import pytest
+from kumo_core.summaries import Note, Scalar, Table, Tag
 from kumoapi.graph import Edge
 from kumoapi.model_plan import ModelPlan
 from kumoapi.typing import Stype
@@ -524,44 +524,119 @@ def test_monitoring_a_run_loaded_from_its_export(snapshots, classifier,
     assert (stored.id, stored.num_rows) == (run.id, run.num_rows)
 
 
-def test_tracked_monitoring_logs_a_new_run(snapshots, classifier, tmp_path):
+class _Tracker:
+    platform = 'fake'
+
+    def __init__(self):
+        self.records = []
+
+    def log_monitoring(self, record):
+        self.records.append(record)
+
+
+def test_tracked_monitoring_is_tagged_like_its_prediction_run(
+        snapshots, classifier, tmp_path):
     trainer, run = classifier
-
-    class Tracker:
-        records: list = []
-
-        def start(self, record):
-            pass
-
-        def on_trial(self, record, event):
-            pass
-
-        def finish(self, record, error):
-            pass
-
-        def log_monitoring(self, record):
-            self.records.append(record)
-
-    cfg = kumo.MLOps(artifact_root=str(tmp_path / 'root'), tracking=Tracker())
-    report = trainer.score_drift(run, mlops=cfg)
+    tracker = _Tracker()
+    cfg = kumo.MLOps(artifact_root=str(tmp_path / 'root'), tracking=tracker)
+    report = trainer.score_drift(run, snapshot=snapshots.after,
+                                 training_snapshot=snapshots.before,
+                                 mlops=cfg)
     with kumo.mlops(cfg):
-        trainer.evaluate(run, labels_snapshot=snapshots.after)
+        evaluation = trainer.evaluate(run, labels_snapshot=snapshots.after)
 
-    drift, evaluation = Tracker.records
-    assert re.fullmatch(r'monitor-\d{8}-\d{4}', drift.name)
-    assert (drift.tags['kumo.monitor'],
-            evaluation.tags['kumo.monitor']) == ('drift', 'evaluate')
-    for record in (drift, evaluation):
-        assert record.tags['kumo.kind'] == 'monitoring'
-        assert record.tags['kumo.monitors'] == run.id
-        assert record.tags['kumo.bundle_id'] == run.bundle_id
+    drift, evaluated = tracker.records
+    for record, monitor in ((drift, 'drift'), (evaluated, 'evaluate')):
         assert record.tags.items() >= {
-            'kumo.snapshot_id': run.snapshot_id,
-            'kumo.task_type': 'binary_classification',
-            'kumo.engine_version': __version__}.items()
-    assert drift.metrics['drift/score_psi'] == report.psi
-    assert drift.metrics['drift/score_wasserstein'] == report.wasserstein
-    assert {'eval/auroc', 'eval/rows'} <= set(evaluation.metrics)
+            'kumo.kind': 'monitoring', 'kumo.monitor': monitor,
+            'kumo.engine_version': __version__, 'kumo.prediction_id': run.id,
+            'kumo.bundle_id': run.bundle_id}.items()
+        assert record.prediction_run is None
+        assert record.started <= record.finished
+    before = len(snapshots.orders[snapshots.orders.TS < CUTOFF])
+    after = len(snapshots.orders)
+    changes, = [s for s in drift.summaries
+                if getattr(s, 'name', None) == 'drift/input_changes']
+    assert ('orders', before, after, (after - before) / before * 100
+            ) in changes.rows and changes.brief
+    features = drift.summaries[-2]
+    amount = report.features['orders']['AMT']
+    assert features.name == 'drift/features'
+    assert ('orders', 'AMT', 'numerical', None,
+            amount['standardized_mean_shift'],
+            amount['delta']['null_rate']) in features.rows
+    assert {Tag('kumo.labels_snapshot_id', snapshots.after.id),
+            Scalar('realized/auroc', evaluation.metrics['auroc']),
+            Scalar('realized/ap', evaluation.metrics['ap']),
+            Scalar('realized/labelled_share', evaluation.labelled_fraction),
+            Note('notes', f'Labelled {evaluation.labelled:,} of '
+                 f'{evaluation.rows:,} scored rows with '
+                 f'`{snapshots.after.id}`.')} <= set(evaluated.summaries)
+
+
+def test_drift_summaries_log_the_previous_run_and_explain_gaps():
+    from kumo.engine._manifest import TrackingRef
+    from kumo.engine._monitoring import DriftReport, track
+
+    report = DriftReport(
+        prediction_id='p', bundle_id='b', score='True_PROB', psi=0.5, ks=0.25,
+        wasserstein=0.125, holdout_truncated=True, bundle_matches=True,
+        previous_prediction_id='p0', previous_psi=0.01, previous_ks=0.02,
+        previous_wasserstein=0.03, input_changes={
+            'tables.orders.rows': (100, 104), 'edges.orders_users': (100, None)},
+        reasons={'features': 'no drift statistics for the type of users.TS '
+                 '(timestamp)'},
+        features={'users': {
+            'AGE': {'type': 'numerical', 'standardized_mean_shift': -2.5,
+                    'delta': {'null_rate': 0.0}},
+            'PLAN': {'type': 'categorical', 'psi': 0.75,
+                     'standardized_mean_shift': None, 'delta': {}},
+            'ID': {'type': 'categorical', 'type_changed': ['numerical',
+                                                           'categorical']}}})
+    tracker = _Tracker()
+    track(report, SimpleNamespace(id='p', bundle_id='b', manifest=None,
+                                  tracking=TrackingRef(platform='fake',
+                                                       run_id='run-7')),
+          SimpleNamespace(tracking=tracker, on_error='raise'),
+          SimpleNamespace(result=None), PREDICTED_AT.to_pydatetime())
+
+    record, = tracker.records
+    assert record.prediction_run == 'run-7'
+    assert record.summaries == (
+        Tag('kumo.drift_previous', 'p0'),
+        Scalar('drift/psi_prev', 0.01), Scalar('drift/ks_prev', 0.02),
+        Scalar('drift/wasserstein_prev', 0.03),
+        Note('notes', 'Drift since `p0`: psi 0.01 · ks 0.02 · '
+             'wasserstein 0.03.'),
+        Table('drift/input_changes', ('table or link', 'at training', 'now',
+                                      'change %'),
+              (('orders', 100, 104, 4.0), ('edges.orders_users', 100, None,
+                                           None)), brief=True),
+        Table('drift/features', ('table', 'column', 'type', 'psi',
+                                 'mean shift', 'null-rate change'),
+              (('users', 'PLAN', 'categorical', 0.75, None, None),
+               ('users', 'AGE', 'numerical', None, -2.5, 0.0),
+               ('users', 'ID', 'numerical → categorical', None, None, None))),
+        Note('notes', 'Most moved columns: `users.PLAN` (psi 0.75), '
+             '`users.AGE` (mean shift -2.5 sd); all in '
+             '`drift/features.json`.'),
+        Note('notes', "The model's holdout file was truncated to fit its "
+             'size limit.'),
+        Note('notes', 'Column drift: no drift statistics for the type of '
+             'users.TS (timestamp).'))
+
+    tracker.records.clear()
+    track(replace(report, bundle_matches=False, previous_psi=None),
+          SimpleNamespace(id='p', bundle_id='b', manifest=None),
+          SimpleNamespace(tracking=tracker, on_error='raise'),
+          SimpleNamespace(result=None), PREDICTED_AT.to_pydatetime())
+    record, = tracker.records
+    assert record.prediction_run is None
+    assert record.summaries == (
+        Tag('kumo.drift_previous', 'p0'),
+        Note('notes', "This trainer's model did not score this run, so its "
+             'drift since training is not logged here; against its '
+             'holdout: psi 0.5 · ks 0.25 · wasserstein 0.125.'))
 
 
 def test_a_monitoring_tracking_failure_warns_or_raises(classifier, tmp_path,
@@ -743,46 +818,3 @@ def test_feature_drift_reads_the_training_snapshot_of_a_derived_model(
     features = _compare(trainer, after, None, reasons)
     assert reasons == {}
     assert features['users']['AGE']['standardized_mean_shift'] > 2
-
-
-def test_feature_metrics_stay_far_below_a_run_limit():
-    from kumo.engine._monitoring import (
-        FEATURE_METRICS_TOP,
-        DriftReport,
-        feature_metrics,
-        track,
-    )
-
-    features = {
-        f'table_{t}': {
-            f'col {c}@x': {'standardized_mean_shift': float(c), 'psi': float(t)}
-            for c in range(40)
-        }
-        for t in range(30)
-    }
-    metrics = feature_metrics(features)
-    assert len(metrics) <= 4 * FEATURE_METRICS_TOP
-    assert all(set(name) <= set('abcdefghijklmnopqrstuvwxyz'
-                                'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-/')
-               for name in metrics)
-
-    class Tracker:
-        records: list = []
-
-        def log_monitoring(self, record):
-            self.records.append(record)
-
-    report = DriftReport(
-        prediction_id='p', bundle_id='b', score='True_PROB', psi=0.1, ks=0.1,
-        wasserstein=0.1, holdout_truncated=False, bundle_matches=True,
-        previous_prediction_id=None, previous_psi=None, previous_ks=None,
-        previous_wasserstein=None, input_changes={'tables.t.rows': (1, 2)},
-        reasons={}, features=features)
-    track(report, SimpleNamespace(id='p', bundle_id='b'),
-          SimpleNamespace(tracking=Tracker()))
-    deadline = time.monotonic() + 10
-    while not Tracker.records and time.monotonic() < deadline:
-        time.sleep(0.05)
-    [record] = Tracker.records
-    assert len(record.metrics) < 100
-    assert 'feature_drift.json' in record.artifacts

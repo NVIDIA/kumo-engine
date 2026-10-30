@@ -1752,8 +1752,9 @@ class Trainer:
         from kumo.engine._monitoring import evaluate, track
 
         settings = resolve(mlops)
+        started = datetime.now(timezone.utc)
         result = evaluate(self, run, labels_snapshot)
-        track(result, run, settings, self.result)
+        track(result, run, settings, self, started)
         return result
 
     def score_drift(
@@ -1781,10 +1782,13 @@ class Trainer:
         from kumo.engine._monitoring import score_drift, track
 
         settings = resolve(mlops)
-        report = score_drift(self, run, previous=previous, snapshot=snapshot,
+        started = datetime.now(timezone.utc)
+        report = score_drift(self, run, previous=previous,
+                             snapshot=snapshot,
                              training_snapshot=training_snapshot,
-                             root=None if settings is None else settings.root)
-        track(report, run, settings, self.result)
+                             root=None if settings is None else
+                             settings.root)
+        track(report, run, settings, self, started)
         return report
 
     @classmethod

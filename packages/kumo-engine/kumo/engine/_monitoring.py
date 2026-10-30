@@ -12,7 +12,7 @@ import warnings
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from uuid import uuid4
 
 import numpy as np
@@ -20,7 +20,9 @@ import pandas as pd
 from kumo_core.score_counts import Counts
 from kumo_core.score_drift import drift_column
 from kumo_core.score_drift import score_drift as exact_drift
+from kumo_core.summaries import Note, Scalar, Summary, Table, Tag
 
+from kumo.engine._card import number
 from kumo.engine._manifest import PredictionManifest
 
 _EVALUATION_FILE = '_evaluation.json'
@@ -499,74 +501,20 @@ def _drift(counts: Optional[Counts], reference: Optional[Counts], name: str,
     return {}
 
 
-#: Score-drift fields under their logged names.
-_SCORE_DRIFT = {'psi': 'score_psi', 'ks': 'score_ks',
-                'wasserstein': 'score_wasserstein'}
-
-
-def track(report: Any, run: Any, settings: Any, model: Any = None) -> None:
-    r"""Log ``report`` as a new monitoring run of ``run``; a failure warns,
-    or raises under ``on_error='raise'``."""
+def track(report: Any, run: Any, settings: Any, trainer: Any,
+          started: datetime) -> None:
+    r"""Log ``report``, a monitoring call of ``run`` that started at
+    ``started``, with the tracker's ``log_monitoring``; a failure warns, or
+    raises under ``on_error='raise'``."""
     tracking = None if settings is None else settings.tracking
     if tracking is None:
         return
 
     from kumo.engine._mlops import full_error, raise_on_error, warn_failure
-    from kumo.engine._tracking import (
-        RunSpec,
-        fit_run_id,
-        log_run,
-        prediction_parents,
-        registered_parents,
-        run_name,
-        run_record,
-    )
+    from kumo.engine._tracking import log_run
 
     try:
-        evaluating = isinstance(report, EvaluationResult)
-        section = 'eval' if evaluating else 'drift'
-        values = {f'eval/{name}': value
-                  for name, value in report.metrics.items()} if evaluating \
-            else {}
-        for name, value in dataclasses.asdict(report).items():
-            if name == 'input_changes':
-                for key, (before, after) in (value or {}).items():
-                    values[f'drift/input/{key}/before'] = before
-                    values[f'drift/input/{key}/after'] = after
-            elif name == 'features':
-                values.update(feature_metrics(value or {}))
-            elif name not in ('metrics', 'reasons', 'actuals'):
-                values[f'{section}/{_SCORE_DRIFT.get(name, name)}'] = value
-        prediction_id = getattr(run, 'id', None)
-        record = run_record(
-            RunSpec(
-                kind='monitoring',
-                name=run_name('monitor', model, datetime.now(timezone.utc)),
-                params={
-                    key: value
-                    for key, value in values.items() if isinstance(value, str)
-                },
-                metrics={
-                    key: value
-                    for key, value in values.items()
-                    if isinstance(value, (int, float))
-                    and not isinstance(value, bool)
-                },
-                parents={
-                    'monitors': prediction_id,
-                    'monitor': 'evaluate' if evaluating else 'drift',
-                    'bundle_id': getattr(run, 'bundle_id', None),
-                    **prediction_parents(getattr(run, 'manifest', None)),
-                    'fit_run_id': fit_run_id(getattr(model, 'manifest',
-                                                     None)),
-                    **registered_parents(model),
-                },
-                artifacts=({
-                    'feature_drift.json':
-                    json.dumps(report.features, indent=2, sort_keys=True,
-                               default=str)
-                } if getattr(report, 'features', None) else {}),
-            ))
+        record = _record(report, run, tracking, trainer, started)
     except Exception as error:
         if settings.on_error == 'warn':
             warn_failure(
@@ -577,6 +525,160 @@ def track(report: Any, run: Any, settings: Any, model: Any = None) -> None:
         failure = log_run(tracking, 'log_monitoring', record)
     raise_on_error(settings, failure, f'Monitoring of prediction run '
                    f'{getattr(run, "id", None)}', stacklevel=3)
+
+
+#: The prediction run's tags a monitoring record carries, which name it.
+_IDENTITY = ('kumo.prediction_id', 'kumo.bundle_id', 'kumo.as_of',
+             'kumo.model_name', 'kumo.model_version')
+
+
+def _record(report: Any, run: Any, tracking: Any, trainer: Any,
+            started: datetime) -> Any:
+    r"""``report`` as summaries, tagged like ``run``'s prediction run, which
+    the tracker writes them into or names a run after."""
+    from kumo.engine._tracking import RunSpec, prediction_record, run_record
+
+    evaluating = isinstance(report, EvaluationResult)
+    manifest = getattr(run, 'manifest', None)
+    identity: Mapping[str, Optional[str]] = {
+        'kumo.prediction_id': getattr(run, 'id', None),
+        'kumo.bundle_id': getattr(run, 'bundle_id', None)}
+    label = None
+    if manifest is not None:
+        prediction = prediction_record(manifest, model=(
+            None if report.bundle_matches is False else
+            getattr(trainer, 'result', None)))
+        identity, label = prediction.tags, prediction.model_label
+    record = run_record(RunSpec(
+        kind='monitoring',
+        parents={'monitor': 'evaluate' if evaluating else 'drift'},
+        summaries=(evaluation_summaries(report) if evaluating else
+                   drift_summaries(report))))
+    ref = getattr(run, 'tracking', None)
+    tracked = ref is not None and ref.platform == getattr(tracking,
+                                                          'platform', None)
+    return replace(
+        record, tags={**record.tags, **{
+            name: value for name, value in identity.items()
+            if name in _IDENTITY and value}},
+        model_label=label, started=started,
+        finished=datetime.now(timezone.utc),
+        prediction_run=ref.run_id if tracked else None)
+
+
+def drift_summaries(report: 'DriftReport') -> List[Summary]:
+    r"""What a tracker logs of ``report``: drift since the previous run, and,
+    when the run's model is the trainer's, the input changes and column
+    drift since training (its score drift since training is the prediction
+    run's own); notes on what is missing and why."""
+    summaries: List[Summary] = []
+    reasons = report.reasons
+    previous = {'psi': report.previous_psi, 'ks': report.previous_ks,
+                'wasserstein': report.previous_wasserstein}
+    if report.previous_prediction_id:
+        summaries.append(Tag('kumo.drift_previous',
+                             report.previous_prediction_id))
+    if report.previous_psi is not None:
+        summaries += [Scalar(f'drift/{name}_prev', value)
+                      for name, value in previous.items()]
+        summaries.append(Note('notes', f'Drift since '
+                              f'`{report.previous_prediction_id}`: '
+                              f'{_values(previous)}.'))
+    if report.bundle_matches is False:
+        against = {'psi': report.psi, 'ks': report.ks,
+                   'wasserstein': report.wasserstein}
+        summaries.append(Note('notes', (
+            "This trainer's model did not score this run, so its drift "
+            'since training is not logged here'
+            + (f'; against its holdout: {_values(against)}'
+               if report.psi is not None else '') + '.')))
+        reasons = {name: reason for name, reason in reasons.items()
+                   if name == 'previous'}
+    else:
+        summaries += _input_changes(report.input_changes or {})
+        summaries += _feature_drift(report.features)
+        if report.holdout_truncated:
+            summaries.append(Note('notes', "The model's holdout file was "
+                                  'truncated to fit its size limit.'))
+    return summaries + _reason_notes(reasons)
+
+
+def evaluation_summaries(result: EvaluationResult) -> List[Summary]:
+    r"""What a tracker logs of ``result``: its metrics as ``realized/<m>``,
+    the labelled share, the labels snapshot and notes on maturity and on
+    what is missing."""
+    summaries: List[Summary] = [
+        Tag('kumo.labels_snapshot_id', result.snapshot_id),
+        *(Scalar(f'realized/{name}', value)
+          for name, value in result.metrics.items() if value is not None),
+    ]
+    if result.labelled_fraction is not None:
+        summaries.append(Scalar('realized/labelled_share',
+                                result.labelled_fraction))
+    summaries.append(Note('notes', f'Labelled {result.labelled:,} of '
+                          f'{result.rows:,} scored rows with '
+                          f'`{result.snapshot_id}`.'))
+    if result.matured is False:
+        summaries.append(Note('notes', 'Labels are not mature yet: the '
+                              'label window ends after the snapshot data.'))
+    return summaries + _reason_notes(result.reasons)
+
+
+_REASONS = {'holdout': 'Drift since training', 'previous':
+            'Drift since the previous run', 'input_changes': 'Input changes',
+            'features': 'Column drift', 'metrics': 'Realized metrics',
+            'matured': 'Label maturity'}
+_TOP_FEATURES = 3
+
+
+def _reason_notes(reasons: Mapping[str, str]) -> List[Summary]:
+    return [Note('notes', f'{_REASONS.get(name, name)}: {reason}.')
+            for name, reason in reasons.items()]
+
+
+def _values(values: Mapping[str, Optional[float]]) -> str:
+    return ' · '.join(f'{name} {number(value)}'
+                      for name, value in values.items() if value is not None)
+
+
+def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
+    if not changes:
+        return []
+    rows = tuple(
+        (key.removeprefix('tables.').removesuffix('.rows'), before, after,
+         (after - before) / before * 100 if before and after is not None
+         else None)
+        for key, (before, after) in changes.items())
+    brief = len(rows) <= 12
+    return [Table('drift/input_changes',
+                  ('table or link', 'at training', 'now', 'change %'), rows,
+                  brief=brief),
+            *([] if brief else [Note('notes', f'{len(rows)} inputs changed '
+                                     'size: `drift/input_changes.json`.')])]
+
+
+def _feature_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
+                   ) -> List[Summary]:
+    rows = sorted(
+        ((table, column, change['type'] if 'type_changed' not in change else
+          ' → '.join(map(str, change['type_changed'])), change.get('psi'),
+          change.get('standardized_mean_shift'),
+          (change.get('delta') or {}).get('null_rate'))
+         for table, columns in features.items()
+         for column, change in columns.items()),
+        key=lambda row: (row[3] is None, -(row[3] or 0), -abs(row[4] or 0)))
+    if not rows:
+        return []
+    moved = [f'`{table}.{column}` (psi {number(psi)})' if psi is not None
+             else f'`{table}.{column}` (mean shift {number(shift)} sd)'
+             for table, column, _, psi, shift, _ in rows
+             if psi is not None or shift is not None][:_TOP_FEATURES]
+    return [Table('drift/features', ('table', 'column', 'type', 'psi',
+                                     'mean shift', 'null-rate change'),
+                  tuple(rows)),
+            Note('notes', f"Most moved columns: {', '.join(moved)}; all in "
+                 '`drift/features.json`.' if moved else
+                 'Column drift: `drift/features.json`.')]
 
 
 def _count_changes(before: Mapping[str, Mapping[str, int]],
@@ -609,9 +711,6 @@ def _finite(value: Any) -> Optional[float]:
     return value if math.isfinite(value) else None
 
 
-#: Columns per ranked list, and tables, in a monitoring run's metrics; keeps
-#: the run far below Snowflake's 200 metrics per run.
-FEATURE_METRICS_TOP = 10
 _NUMERIC_STATS = ('mean', 'std', 'min', 'max', 'q25', 'q50', 'q75',
                   'skewness', 'kurtosis', 'null_rate', 'num_unique')
 _CATEGORY_STATS = ('null_rate', 'num_unique')
@@ -868,36 +967,3 @@ def _js(p: Mapping[str, float], q: Mapping[str, float]) -> Optional[float]:
     a, b = _smoothed(p, q)
     m = (a + b) / 2
     return float((np.sum(a * np.log2(a / m)) + np.sum(b * np.log2(b / m))) / 2)
-
-
-def _metric_name(*parts: str) -> str:
-    import re
-    return '/'.join(re.sub(r'[^A-Za-z0-9_-]', '_', part) for part in parts)
-
-
-def feature_metrics(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
-                    ) -> Dict[str, float]:
-    r"""A bounded summary of ``features`` for a monitoring run: the
-    `FEATURE_METRICS_TOP` columns by absolute standardized mean shift and by
-    PSI, and the largest of each per table (for the same number of
-    tables)."""
-    metrics: Dict[str, float] = {}
-    for key, name in (('standardized_mean_shift', 'shift'), ('psi', 'psi')):
-        ranked = sorted(
-            ((abs(change[key]), table, column)
-             for table, columns in features.items()
-             for column, change in columns.items()
-             if isinstance(change.get(key), float)
-             and math.isfinite(change[key])),
-            reverse=True)
-        for value, table, column in ranked[:FEATURE_METRICS_TOP]:
-            metrics[_metric_name('drift', 'features', name, table,
-                                 column)] = value
-        tables: Dict[str, float] = {}
-        for value, table, _ in ranked:
-            tables.setdefault(table, value)
-        for table, value in sorted(tables.items(), key=lambda item: -item[1]
-                                   )[:FEATURE_METRICS_TOP]:
-            metrics[_metric_name('drift', 'features', f'max_{name}',
-                                 table)] = value
-    return metrics
