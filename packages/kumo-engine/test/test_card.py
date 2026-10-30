@@ -38,6 +38,9 @@ def test_a_prediction_heading_leads_with_its_watch_numbers():
         'kumo.labels_mature': '2026-11-05'})[0] == (
         'psi 0.3 vs holdout (large shift), 10,000 users as of 2026-10-29, '
         'labels mature 2026-11-05, 1.2% skipped, 1 data problem')
+    assert _card.heading('prediction', {'drift/psi': 1.24}, {
+        'kumo.task_type': 'temporal_link_prediction'})[0] == (
+        'psi 1.24 vs holdout (link prediction: compare with the previous run)')
     assert _card.heading('prediction', {}, {}) == ['prediction', '']
     long = _card.heading('prediction', {}, {'kumo.error': 'x' * 200})[0]
     assert len(long) == _card.HEADLINE_CHARS and long.endswith('x…')

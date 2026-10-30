@@ -59,8 +59,10 @@ def heading(kind: str, metrics: Mapping[str, float],
                          f'{number(metrics[realized[0]])}')
         if 'drift/psi' in metrics:
             psi = metrics['drift/psi']
-            parts.append(f'psi {number(psi)} vs holdout ({psi_shift(psi)} '
-                         'shift)')
+            link = tags.get('kumo.task_type', '').endswith('link_prediction')
+            parts.append(f'psi {number(psi)} vs holdout (' + (
+                'link prediction: compare with the previous run' if link
+                else f'{psi_shift(psi)} shift') + ')')
         as_of = tags.get('kumo.as_of')
         if 'pred/rows' in metrics:
             parts.append(f"{number(metrics['pred/rows'])} "
