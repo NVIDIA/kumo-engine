@@ -197,8 +197,7 @@ class MlflowTracking:
         if registry is not None:
             self.check_model_name(registry.model_name)
         uri = self.target.tracking_uri
-        owned = frozenset(name for name in _HTTP_LIMITS
-                          if name not in os.environ)
+        owned = _unset_limits()
         missing = False
         try:
             with _limited_http(owned), self.target.scope():
@@ -240,6 +239,13 @@ class MlflowTracking:
         self._outer = (active.info.run_id
                        if active is not None and same else None)
 
+    def _experiment_for(self, client: Any) -> str:
+        if self.experiment_name is None:
+            return self._default_experiment or '0'
+        experiment = client.get_experiment_by_name(self.experiment_name)
+        return (experiment.experiment_id if experiment else
+                client.create_experiment(self.experiment_name))
+
     def _require_experiment(self) -> None:
         if self._named and self.experiment_name is None:
             raise ValueError('MlflowTracking(target=...) records runs in an '
@@ -269,8 +275,7 @@ class MlflowTracking:
         self._require_experiment()
         client = self.target.client()
         pointers = registry_pointers(result.id)
-        with _limited_http(frozenset(name for name in _HTTP_LIMITS
-                                     if name not in os.environ)):
+        with _limited_http(_unset_limits()):
             with self.target.scope():
                 held = _registered_version(client, location.model_name,
                                            pointers)
@@ -280,14 +285,7 @@ class MlflowTracking:
                 snapshot = GraphSnapshot(spec.snapshot_id, Path(),
                                          spec.graph_config or {})
                 with self.target.scope():
-                    experiment_id = self._default_experiment or '0'
-                    if self.experiment_name is not None:
-                        experiment = client.get_experiment_by_name(
-                            self.experiment_name)
-                        experiment_id = (experiment.experiment_id
-                                         if experiment else
-                                         client.create_experiment(
-                                             self.experiment_name))
+                    experiment_id = self._experiment_for(client)
                     run_id = client.create_run(
                         experiment_id,
                         tags={'kumo.bundle_id': str(result.id)}).info.run_id
@@ -304,8 +302,7 @@ class MlflowTracking:
         self._require_experiment()
         self._reset()
         self.run_id = None
-        self._http_owned = frozenset(name for name in _HTTP_LIMITS
-                                     if name not in os.environ)
+        self._http_owned = _unset_limits()
         self._guard.enter_context(_limited_http(self._http_owned))
         try:
             autologging = import_provider('mlflow.utils.autologging_utils',
@@ -320,18 +317,11 @@ class MlflowTracking:
         context = import_provider('mlflow.tracking.context.registry',
                                   'mlflow')
         with self.target.scope():
-            experiment_id = self._default_experiment
-            if self.experiment_name is not None:
-                experiment = client.get_experiment_by_name(
-                    self.experiment_name)
-                experiment_id = (experiment.experiment_id if experiment else
-                                 client.create_experiment(
-                                     self.experiment_name))
             parent = {} if self._outer is None else {
                 'mlflow.parentRunId': self._outer
             }
             run = client.create_run(
-                experiment_id or '0',
+                self._experiment_for(client),
                 run_name=(self.run_name if self.run_name
                           and record.tags.get('kumo.kind') == 'fit' else
                           record.name),
@@ -732,7 +722,7 @@ def log_model(
         raise ValueError('log_model requires a fitted or loaded Trainer')
     tracking = MlflowTracking(experiment_name, target=target)
     target = tracking.target
-    if run_id is None and tracking._named and experiment_name is None:
+    if run_id is None:
         tracking._require_experiment()
     client = target.client()
     active = mlflow.active_run()
@@ -742,12 +732,8 @@ def log_model(
     created = run_id is None
     with target.scope():
         if created:
-            experiment = (client.get_experiment_by_name(
-                tracking.experiment_name) if tracking.experiment_name else
-                          None)
             run_id = client.create_run(
-                experiment.experiment_id if experiment else
-                tracking._default_experiment or '0').info.run_id
+                tracking._experiment_for(client)).info.run_id
         experiment_id = client.get_run(run_id).info.experiment_id
         _log_inputs(mlflow, client, run_id, fit_inputs(result.manifest))
     info = _log_model(target, client, result.bundle_dir, result.manifest or
@@ -1083,6 +1069,10 @@ def _quietly(function: Callable[..., Any], *args: Any) -> None:
         function(*args)
     except Exception:
         logger.debug('MLflow cleanup call failed', exc_info=True)
+
+
+def _unset_limits() -> FrozenSet[str]:
+    return frozenset(name for name in _HTTP_LIMITS if name not in os.environ)
 
 
 @contextmanager
