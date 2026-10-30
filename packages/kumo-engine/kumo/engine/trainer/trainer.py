@@ -157,20 +157,18 @@ class PredictionResult:
         self._export(output_config)
 
     def _export(self, output_config: PredictionOutputConfig) -> None:
-        write_files = getattr(output_config.connector.sink_backend,
-                              'write_files', None)
-        if not callable(write_files):
-            raise NotImplementedError(
-                'Prediction export requires FileArtifactSink.write_files')
+        for destination in output_config.destinations().values():
+            output_config.writer(destination)
         outputs = []
         for name, destination in output_config.destinations().items():
             kind = PredictionArtifactType(name.upper())
             files = PredictionResult(self.selection, kind).files
             outputs.append((kind, destination, files))
         for kind, destination, files in outputs:
-            write_files(output_config.connector, destination, list(files),
-                        output_config.write_mode,
-                        export_id=f'{self.selection.job_id}-{kind.value}')
+            output_config.writer(destination).write_files(
+                output_config.connector, destination, list(files),
+                output_config.write_mode,
+                export_id=f'{self.selection.job_id}-{kind.value}')
 
 
 def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
@@ -654,18 +652,11 @@ class Trainer:
             has_predictions=PredictionArtifactType.PREDICTIONS in artifacts,
         )
 
-        write_files = None
         if output_config is not None:
-            write_files = getattr(output_config.connector.sink_backend,
-                                  'write_files', None)
-            if not callable(write_files):
-                raise NotImplementedError(
-                    'Prediction export requires FileArtifactSink.write_files; '
-                    'this sink only supports in-memory table output')
-            preflight = getattr(output_config.connector.sink_backend,
-                                'preflight_write_files', None)
-            if callable(preflight):
-                for destination in destinations.values():
+            for destination in destinations.values():
+                preflight = getattr(output_config.writer(destination),
+                                    'preflight_write_files', None)
+                if callable(preflight):
                     preflight(output_config.connector, destination,
                               write_mode=output_config.write_mode)
 

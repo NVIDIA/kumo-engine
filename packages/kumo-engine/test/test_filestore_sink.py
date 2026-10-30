@@ -80,9 +80,6 @@ class StageSink:
         assert self.holds_files(connector, path)
         return PyFileSystem(self.store), path.rstrip('/')
 
-    def write_files(self, *args, **kwargs):
-        return FilesystemSink(self).write_files(*args, **kwargs)
-
 
 @pytest.fixture
 def connector(tmp_path):
@@ -155,6 +152,23 @@ def test_a_trainer_publishes_and_loads_through_a_filesystem_only_sink(
     with pytest.raises(NotImplementedError, match='cannot publish'):
         trainer.fit(None, snapshot=None,
                     export_config=kumo.ModelOutputConfig(connector, path='T'))
+
+
+def test_predictions_export_through_a_filesystem_only_sink(fitted, connector):
+    trainer, table, snapshot = fitted
+    output = PredictionOutputConfig(
+        connector, output_paths={'predictions': '@stage/preds/'})
+    result = trainer.predict(table, snapshot=snapshot, output_config=output,
+                             binary_classification_threshold=0.5)
+    store = connector.sink_backend.store
+    assert any(name.startswith('@stage/preds/') for name in store.objects)
+    result.export(
+        PredictionOutputConfig(connector,
+                               output_paths={'predictions': '@stage/again/'}))
+    assert any(name.startswith('@stage/again/') for name in store.objects)
+    with pytest.raises(NotImplementedError, match='requires'):
+        PredictionOutputConfig(connector, PredictionArtifactType.PREDICTIONS,
+                               'DB.S.T').writer('DB.S.T')
 
 
 def test_parquet_writes_stay_plain_up_to_one_part(tmp_path, connector):
