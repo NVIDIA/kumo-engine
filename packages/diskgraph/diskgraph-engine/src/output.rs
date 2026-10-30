@@ -56,6 +56,16 @@ impl InMemoryOutput {
             fused_batches: Vec::new(),
         }
     }
+
+    /// Reuse the backing storage between benchmark/test sampling requests.
+    /// Topology batches are large enough that dropping and rebuilding these
+    /// vectors on every request otherwise becomes part of the measured path.
+    pub fn clear(&mut self) {
+        self.edges.clear();
+        self.feature_batches.clear();
+        self.schema = None;
+        self.fused_batches.clear();
+    }
 }
 
 impl OutputHandler for InMemoryOutput {

@@ -1,0 +1,42 @@
+{
+  "total_rows": 1400000000,
+  "seed": 20260808,
+  "batch_size": 50000,
+  "row_group_size": 50000,
+  "parquet_compression": "zstd",
+  "tables": [
+    { "name": "users", "row_percent": 10, "shards": 102, "columns": [
+      { "name": "user_id", "dtype": "uint64", "primary_key": true },
+      { "name": "profile_embedding", "dtype": "float32_array", "gen": { "type": "array_float32", "len": 768, "min": -1.0, "max": 1.0 } },
+      { "name": "behavior_embedding", "dtype": "float32_array", "gen": { "type": "array_float32", "len": 256, "min": -1.0, "max": 1.0 } },
+      { "name": "region", "dtype": "string", "gen": { "type": "categorical", "values": ["na", "eu", "apac", "latam", "mea"] } },
+      { "name": "signup_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1262304000000, "step_ms": 1000 } },
+      { "name": "lifetime_value", "dtype": "float32", "gen": { "type": "uniform_float", "min": 0.0, "max": 100000.0 } }
+    ] },
+    { "name": "items", "row_percent": 10, "shards": 102, "columns": [
+      { "name": "item_id", "dtype": "uint64", "primary_key": true },
+      { "name": "semantic_embedding", "dtype": "float32_array", "gen": { "type": "array_float32", "len": 768, "min": -1.0, "max": 1.0 } },
+      { "name": "visual_embedding", "dtype": "float32_array", "gen": { "type": "array_float32", "len": 256, "min": -1.0, "max": 1.0 } },
+      { "name": "title", "dtype": "string", "gen": { "type": "string", "min_len": 24, "max_len": 64, "alphabet": "alnum" } },
+      { "name": "category", "dtype": "string", "gen": { "type": "categorical", "values": ["electronics", "home", "apparel", "beauty", "sports", "grocery", "toys", "automotive"] } },
+      { "name": "price", "dtype": "float32", "gen": { "type": "uniform_float", "min": 0.5, "max": 5000.0 } },
+      { "name": "active", "dtype": "bool", "gen": { "type": "bool", "true_ratio": 0.96 } }
+    ] },
+    { "name": "orders", "row_percent": 78, "shards": 205, "columns": [
+      { "name": "order_id", "dtype": "uint64", "primary_key": true }, { "name": "user_id", "dtype": "uint64" }, { "name": "item_id", "dtype": "uint64" }, { "name": "merchant_id", "dtype": "uint64" },
+      { "name": "ordered_at", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1577836800000, "step_ms": 10 } },
+      { "name": "amount", "dtype": "float32", "gen": { "type": "uniform_float", "min": 0.5, "max": 5000.0 } }, { "name": "quantity", "dtype": "int16", "gen": { "type": "uniform_int", "min": 1, "max": 12 } },
+      { "name": "channel", "dtype": "string", "gen": { "type": "categorical", "values": ["web", "ios", "android", "store"] } }
+    ] },
+    { "name": "merchants", "row_percent": 2, "shards": 26, "columns": [
+      { "name": "merchant_id", "dtype": "uint64", "primary_key": true }, { "name": "merchant_embedding", "dtype": "float32_array", "gen": { "type": "array_float32", "len": 24, "min": -1.0, "max": 1.0 } },
+      { "name": "segment", "dtype": "string", "gen": { "type": "categorical", "values": ["marketplace", "brand", "retail", "wholesale"] } }, { "name": "risk_score", "dtype": "float32", "gen": { "type": "uniform_float", "min": 0.0, "max": 1.0 } },
+      { "name": "created_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1262304000000, "step_ms": 60000 } }
+    ] }
+  ],
+  "relationships": [
+    { "src_table": "orders", "src_column": "user_id", "dst_table": "users", "dst_column": "user_id", "distribution": { "type": "uniform" } },
+    { "src_table": "orders", "src_column": "item_id", "dst_table": "items", "dst_column": "item_id", "distribution": { "type": "hotspot", "hot_fraction": 0.01, "hot_share": 0.80 } },
+    { "src_table": "orders", "src_column": "merchant_id", "dst_table": "merchants", "dst_column": "merchant_id", "distribution": { "type": "hotspot", "hot_fraction": 0.05, "hot_share": 0.70 } }
+  ]
+}

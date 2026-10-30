@@ -2982,7 +2982,7 @@ struct TempRowpackMeta {
 }
 
 struct TempRowWriter {
-    writer: FrameEncoder<OutputSink>,
+    writer: FrameEncoder<BufWriter<OutputSink>>,
     row_count: u64,
 }
 
@@ -6939,6 +6939,29 @@ fn build_sort_key_batchers_for_edge_table(
 
 const BASE_ENCODE_MEMORY_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
 
+const ENCODE_MEMORY_BUDGET_ENV: &str = "DISKGRAPH_ENCODE_MEMORY_BUDGET_BYTES";
+
+fn parse_encode_memory_budget_override_bytes(value: &str) -> Result<u64> {
+    let bytes = value.parse::<u64>().with_context(|| {
+        format!("{ENCODE_MEMORY_BUDGET_ENV} must be a positive base-10 byte count")
+    })?;
+    ensure!(
+        bytes > 0,
+        "{ENCODE_MEMORY_BUDGET_ENV} must be a positive base-10 byte count"
+    );
+    Ok(bytes)
+}
+
+fn encode_memory_budget_override_bytes() -> Result<Option<u64>> {
+    let Some(value) = std::env::var_os(ENCODE_MEMORY_BUDGET_ENV) else {
+        return Ok(None);
+    };
+    let value = value
+        .to_str()
+        .ok_or_else(|| anyhow!("{ENCODE_MEMORY_BUDGET_ENV} must be valid UTF-8"))?;
+    parse_encode_memory_budget_override_bytes(value).map(Some)
+}
+
 fn encode_memory_budget_bytes(has_resident_parquet: bool, total_memory: Option<u64>) -> u64 {
     if !has_resident_parquet {
         return BASE_ENCODE_MEMORY_BUDGET_BYTES;
@@ -6955,6 +6978,16 @@ mod encode_memory_budget_tests {
     use super::{encode_memory_budget_bytes, BASE_ENCODE_MEMORY_BUDGET_BYTES};
 
     const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn explicit_override_requires_positive_base10_bytes() {
+        assert_eq!(
+            super::parse_encode_memory_budget_override_bytes("137438953472").unwrap(),
+            128 * GIB
+        );
+        assert!(super::parse_encode_memory_budget_override_bytes("0").is_err());
+        assert!(super::parse_encode_memory_budget_override_bytes("128GiB").is_err());
+    }
 
     #[test]
     fn budget_does_not_scale_without_resident_parquet() {
@@ -7337,6 +7370,8 @@ impl IngestContext {
             }),
             total_memory_bytes(),
         );
+        let encode_memory_budget_bytes =
+            encode_memory_budget_override_bytes()?.unwrap_or(encode_memory_budget_bytes);
         let source_rowpack = self.source.rowpack.clone();
         let relationships = Arc::new(self.relationships.clone());
         let relation_defs = std::sync::Arc::new(self.relation_defs.clone());
@@ -13276,6 +13311,8 @@ fn read_temp_meta(path: &Path) -> Result<TempRowpackMeta> {
 }
 
 fn open_temp_row_writer(target: &OutputTarget, rel_path: &str) -> Result<TempRowWriter> {
+    // Coalesce LZ4 framing writes without retaining large per-shard buffers.
+    const TEMP_ROW_OUTPUT_BUFFER_BYTES: usize = 256 * 1024;
     let path = target.join(rel_path);
     if let OutputTarget::Local { .. } = target {
         if let Some(parent) = path.parent() {
@@ -13284,7 +13321,7 @@ fn open_temp_row_writer(target: &OutputTarget, rel_path: &str) -> Result<TempRow
     }
     let sink = target.sink(&path)?;
     Ok(TempRowWriter {
-        writer: FrameEncoder::new(sink),
+        writer: FrameEncoder::new(BufWriter::with_capacity(TEMP_ROW_OUTPUT_BUFFER_BYTES, sink)),
         row_count: 0,
     })
 }
@@ -13398,10 +13435,13 @@ fn write_temp_rows_segments(
 }
 
 fn finish_temp_writer(writer: TempRowWriter) -> Result<u64> {
-    let sink = writer
+    let buffered = writer
         .writer
         .finish()
         .map_err(|e| anyhow!("temp writer finish failed: {e}"))?;
+    let sink = buffered
+        .into_inner()
+        .map_err(|e| anyhow!("temp row output flush failed: {}", e.error()))?;
     sink.finish()?;
     Ok(writer.row_count)
 }

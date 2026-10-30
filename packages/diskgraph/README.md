@@ -89,6 +89,65 @@ utilization during a run:
 ./scripts/diskstats.sh -d '^nvme'
 ```
 
+The cached-O_DIRECT sampler design, correctness gate, fio ceiling, and retained
+CPU/throughput baselines are recorded in
+the [benchmark report index](docs/reports/README.md).
+
+### Benchmark sampling IOPS
+
+Use the production-engine sweep to measure nodes/s, physical read IOPS, and
+average queue depth with a stable memory cap and per-index cache eviction:
+
+```bash
+cargo build --release -p diskgraph-engine --bin dg-engine-bench --features jemalloc
+./scripts/bench_sampling_iops.sh \
+  /mnt/localssd/diskgraph-index/alt_detection_full_scale-zstd-1c1f7a9f-full-monitor
+```
+
+The default sampling workload starts at `users` and traverses three hops with
+fanout 10 on every applicable edge type:
+
+```text
+users -> {ip_addresses, mac_addresses, emails, btids}
+      -> users
+      -> {ip_addresses, mac_addresses, emails, btids}
+```
+
+Its canonical plan digest is `43d5badeb6e6f065`. The default frontier batch
+is 512 roots; this workload produces about 1,514 output nodes/root on the
+alt-detection indexes. Set `DG_BENCH_PLAN` to override the plan explicitly.
+
+Use the read-only fio helper to establish the storage ceiling. Raw targets
+require an explicit acknowledgement and block-device read permission:
+
+```bash
+./scripts/bench_fio_iops.sh /path/to/large/index-file
+FIO_ALLOW_RAW_READ=1 ./scripts/bench_fio_iops.sh /dev/md127
+```
+
+See the
+[`i8g identity scale matrix`](docs/reports/diskgraph-i8g-identity-scale-matrix-2026-08-10.md)
+for the current-hardware 1%, 5%, 25%, and 50% mmap/Direct comparison, including
+the additive Threadripper comparison. Cached O_DIRECT reaches 404.096M nodes/s
+at 1%, 290.582M at 25%, and 105.324M while driving the six-SSD array to 92.3%
+of its fio ceiling at 50%. The earlier
+[`Threadripper scale matrix`](docs/reports/diskgraph-all-edge-3hop-scale-matrix-2026-08-08.md)
+retains the 1%, 5%, 25%, 50%, and 100% results from that different host. At
+full scale there, cached O_DIRECT reaches 104.437M nodes/s and 6.123M physical
+IOPS versus mmap's 22.611M nodes/s and 1.306M IOPS: a 4.619x throughput gain
+while using 67.6% fewer total CPU-seconds. The
+[`detailed full-scale report`](docs/reports/diskgraph-all-edge-3hop-100pct-mmap-vs-direct-2026-08-07.md)
+contains the adjacent profiler, allocation, cache, and runtime-gap analysis.
+The separate
+[`Pinterest i8g report`](docs/reports/diskgraph-pinterest-i8g-io-benchmark-2026-08-09.md)
+records paired pruned/unpruned OmniSage results on a 96-core Graviton4 host with
+742 GiB RAM and six Nitro SSDs. The additive
+[`i8g feature-heavy matrix`](docs/reports/diskgraph-i8g-ecommerce-feature-io-benchmark-2026-08-10.md)
+uses a steady 640-GiB Direct cache and records 2.390x and 2.267x Direct gains
+on the out-of-core 25% and 50% e-commerce graphs, alongside the original
+Threadripper measurements. Other sampler reports describe the earlier
+two-hop IP-only workload and are not directly comparable.
+
 ## Generate a synthetic dataset
 
 Use the JSON-driven datagenerator to write Parquet shards under `/mnt/localssd/datasets/<config-name>/`.

@@ -1,0 +1,796 @@
+{
+  "_comment": "Size-matched variant of pinterest_omnisage_pruned_organic.json. Every node and edge table is scaled by 2.285719x, preserving node-type ratios, mean degrees, organic broken-power-law parameters, and popularity permutations while targeting the original hotspot index size of about 1,177 GiB on the same ingest format.",
+  "total_rows": 99360000000,
+  "seed": 20260820,
+  "batch_size": 250000,
+  "row_group_size": 1000000,
+  "parquet_compression": "zstd",
+  "tables": [
+    {
+      "name": "pin",
+      "rows": 9966000000,
+      "shards": 512,
+      "columns": [
+        {
+          "name": "pin_id",
+          "dtype": "int64",
+          "primary_key": true
+        }
+      ]
+    },
+    {
+      "name": "board",
+      "rows": 10743000000,
+      "shards": 512,
+      "columns": [
+        {
+          "name": "board_id",
+          "dtype": "int64",
+          "primary_key": true
+        }
+      ]
+    },
+    {
+      "name": "item",
+      "rows": 6446000000,
+      "shards": 256,
+      "columns": [
+        {
+          "name": "item_id",
+          "dtype": "int64",
+          "primary_key": true
+        }
+      ]
+    },
+    {
+      "name": "query",
+      "rows": 7611000000,
+      "shards": 512,
+      "columns": [
+        {
+          "name": "query_id",
+          "dtype": "int64",
+          "primary_key": true
+        }
+      ]
+    },
+    {
+      "name": "board_pin",
+      "rows": 21271000000,
+      "shards": 2048,
+      "columns": [
+        {
+          "name": "board_id",
+          "dtype": "int64"
+        },
+        {
+          "name": "pin_id",
+          "dtype": "int64"
+        },
+        {
+          "name": "ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1420070400000,
+            "step_ms": 4
+          }
+        },
+        {
+          "name": "weight",
+          "dtype": "uint32",
+          "gen": {
+            "type": "uniform_u_int",
+            "min": 1,
+            "max": 1000000
+          }
+        }
+      ]
+    },
+    {
+      "name": "board_item",
+      "rows": 2363000000,
+      "shards": 256,
+      "columns": [
+        {
+          "name": "board_id",
+          "dtype": "int64"
+        },
+        {
+          "name": "item_id",
+          "dtype": "int64"
+        },
+        {
+          "name": "ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1420070400000,
+            "step_ms": 4
+          }
+        },
+        {
+          "name": "weight",
+          "dtype": "uint32",
+          "gen": {
+            "type": "uniform_u_int",
+            "min": 1,
+            "max": 1000000
+          }
+        }
+      ]
+    },
+    {
+      "name": "pin_pin",
+      "rows": 19732000000,
+      "shards": 2048,
+      "columns": [
+        {
+          "name": "pin_id_a",
+          "dtype": "int64"
+        },
+        {
+          "name": "pin_id_b",
+          "dtype": "int64"
+        },
+        {
+          "name": "ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1420070400000,
+            "step_ms": 4
+          }
+        },
+        {
+          "name": "weight",
+          "dtype": "uint32",
+          "gen": {
+            "type": "uniform_u_int",
+            "min": 1,
+            "max": 1000000
+          }
+        }
+      ]
+    },
+    {
+      "name": "pin_item",
+      "rows": 2192000000,
+      "shards": 256,
+      "columns": [
+        {
+          "name": "pin_id",
+          "dtype": "int64"
+        },
+        {
+          "name": "item_id",
+          "dtype": "int64"
+        },
+        {
+          "name": "ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1420070400000,
+            "step_ms": 4
+          }
+        },
+        {
+          "name": "weight",
+          "dtype": "uint32",
+          "gen": {
+            "type": "uniform_u_int",
+            "min": 1,
+            "max": 1000000
+          }
+        }
+      ]
+    },
+    {
+      "name": "query_pin",
+      "rows": 10656000000,
+      "shards": 1024,
+      "columns": [
+        {
+          "name": "query_id",
+          "dtype": "int64"
+        },
+        {
+          "name": "pin_id",
+          "dtype": "int64"
+        },
+        {
+          "name": "ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1420070400000,
+            "step_ms": 4
+          }
+        },
+        {
+          "name": "weight",
+          "dtype": "uint32",
+          "gen": {
+            "type": "uniform_u_int",
+            "min": 1,
+            "max": 1000000
+          }
+        }
+      ]
+    },
+    {
+      "name": "item_item",
+      "rows": 6446000000,
+      "shards": 512,
+      "columns": [
+        {
+          "name": "item_id_a",
+          "dtype": "int64"
+        },
+        {
+          "name": "item_id_b",
+          "dtype": "int64"
+        },
+        {
+          "name": "ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1420070400000,
+            "step_ms": 4
+          }
+        },
+        {
+          "name": "weight",
+          "dtype": "uint32",
+          "gen": {
+            "type": "uniform_u_int",
+            "min": 1,
+            "max": 1000000
+          }
+        }
+      ]
+    },
+    {
+      "name": "item_pin",
+      "rows": 1289000000,
+      "shards": 128,
+      "columns": [
+        {
+          "name": "item_id",
+          "dtype": "int64"
+        },
+        {
+          "name": "pin_id",
+          "dtype": "int64"
+        },
+        {
+          "name": "ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1420070400000,
+            "step_ms": 4
+          }
+        },
+        {
+          "name": "weight",
+          "dtype": "uint32",
+          "gen": {
+            "type": "uniform_u_int",
+            "min": 1,
+            "max": 1000000
+          }
+        }
+      ]
+    },
+    {
+      "name": "item_board",
+      "rows": 645000000,
+      "shards": 64,
+      "columns": [
+        {
+          "name": "item_id",
+          "dtype": "int64"
+        },
+        {
+          "name": "board_id",
+          "dtype": "int64"
+        },
+        {
+          "name": "ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1420070400000,
+            "step_ms": 4
+          }
+        },
+        {
+          "name": "weight",
+          "dtype": "uint32",
+          "gen": {
+            "type": "uniform_u_int",
+            "min": 1,
+            "max": 1000000
+          }
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "src_table": "board_pin",
+      "src_column": "board_id",
+      "dst_table": "board",
+      "dst_column": "board_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 1,
+        "permutation_seed": 1101,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.5
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.42
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 0.58
+          },
+          {
+            "end_fraction": 0.5,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "board_pin",
+      "src_column": "pin_id",
+      "dst_table": "pin",
+      "dst_column": "pin_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 1,
+        "permutation_seed": 1102,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.32
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.76
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 1.1
+          },
+          {
+            "end_fraction": 0.105,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "board_item",
+      "src_column": "board_id",
+      "dst_table": "board",
+      "dst_column": "board_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 0,
+        "permutation_seed": 1101,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.5
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.42
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 0.58
+          },
+          {
+            "end_fraction": 0.5,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "board_item",
+      "src_column": "item_id",
+      "dst_table": "item",
+      "dst_column": "item_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 0,
+        "permutation_seed": 1103,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.5
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.65
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 0.75
+          },
+          {
+            "end_fraction": 0.7,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "pin_pin",
+      "src_column": "pin_id_a",
+      "dst_table": "pin",
+      "dst_column": "pin_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 1,
+        "permutation_seed": 1102,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.24
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.42
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 0.58
+          },
+          {
+            "end_fraction": 0.5,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "pin_pin",
+      "src_column": "pin_id_b",
+      "dst_table": "pin",
+      "dst_column": "pin_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 0,
+        "permutation_seed": 1102,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.32
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.76
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 1.1
+          },
+          {
+            "end_fraction": 0.105,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "pin_item",
+      "src_column": "pin_id",
+      "dst_table": "pin",
+      "dst_column": "pin_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 0,
+        "permutation_seed": 1102,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.24
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.42
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 0.58
+          },
+          {
+            "end_fraction": 0.5,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "pin_item",
+      "src_column": "item_id",
+      "dst_table": "item",
+      "dst_column": "item_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 0,
+        "permutation_seed": 1103,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.5
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.65
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 0.75
+          },
+          {
+            "end_fraction": 0.7,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "query_pin",
+      "src_column": "query_id",
+      "dst_table": "query",
+      "dst_column": "query_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 1,
+        "permutation_seed": 1104,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.34
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.8
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 0.9
+          },
+          {
+            "end_fraction": 0.3,
+            "exponent": 1.3
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "query_pin",
+      "src_column": "pin_id",
+      "dst_table": "pin",
+      "dst_column": "pin_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 0,
+        "permutation_seed": 1102,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.32
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.76
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 1.1
+          },
+          {
+            "end_fraction": 0.105,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "item_item",
+      "src_column": "item_id_a",
+      "dst_table": "item",
+      "dst_column": "item_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 1,
+        "permutation_seed": 1103,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.2
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.5
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 0.7
+          },
+          {
+            "end_fraction": 0.5,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "item_item",
+      "src_column": "item_id_b",
+      "dst_table": "item",
+      "dst_column": "item_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 1,
+        "permutation_seed": 1103,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.5
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.65
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 0.75
+          },
+          {
+            "end_fraction": 0.7,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "item_pin",
+      "src_column": "item_id",
+      "dst_table": "item",
+      "dst_column": "item_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 0,
+        "permutation_seed": 1103,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.2
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.5
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 0.7
+          },
+          {
+            "end_fraction": 0.5,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "item_pin",
+      "src_column": "pin_id",
+      "dst_table": "pin",
+      "dst_column": "pin_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 0,
+        "permutation_seed": 1102,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.32
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.76
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 1.1
+          },
+          {
+            "end_fraction": 0.105,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "item_board",
+      "src_column": "item_id",
+      "dst_table": "item",
+      "dst_column": "item_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 0,
+        "permutation_seed": 1103,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.2
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.5
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 0.7
+          },
+          {
+            "end_fraction": 0.5,
+            "exponent": 1.2
+          }
+        ]
+      }
+    },
+    {
+      "src_table": "item_board",
+      "src_column": "board_id",
+      "dst_table": "board",
+      "dst_column": "board_id",
+      "distribution": {
+        "type": "organic",
+        "minimum_degree": 0,
+        "permutation_seed": 1101,
+        "segments": [
+          {
+            "end_fraction": 0.001,
+            "exponent": 0.5
+          },
+          {
+            "end_fraction": 0.01,
+            "exponent": 0.6
+          },
+          {
+            "end_fraction": 0.1,
+            "exponent": 0.8
+          },
+          {
+            "end_fraction": 0.7,
+            "exponent": 1.2
+          }
+        ]
+      }
+    }
+  ]
+}
