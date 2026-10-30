@@ -107,6 +107,7 @@ def _compute_col_stats_from_sample(
     *,
     approx: bool,
     data_version: Any,
+    timestamp_precision: str = 'seconds',
 ) -> Dict[BaseColumnConfig, Dict[ColStatType, Stats]]:
     r"""Reduce an already-bounded sample without another warehouse read."""
     out: Dict[BaseColumnConfig, Dict[ColStatType, Stats]] = {}
@@ -121,7 +122,8 @@ def _compute_col_stats_from_sample(
         # A ``timestamp``-stype column read raw (cast_response=False) can
         # arrive as a bare epoch integer/float; coerce it to datetime so
         # the MIN/MAX col-stats are typed ``pd.Timestamp`` values.
-        ser = coerce_timestamp_stype_series_for_stats(ser, col_cfg)
+        ser = coerce_timestamp_stype_series_for_stats(ser, col_cfg,
+                                                      timestamp_precision)
         # A warehouse decimal arrives as an object column of `decimal.Decimal`,
         # which the gate below reads as `string` and strips every numerical
         # stat from -- leaving a `numerical` column without the stats

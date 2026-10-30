@@ -537,6 +537,127 @@ pub enum StageFilter {
     Not(Box<StageFilter>),
 }
 
+// ─── Index clocks ────────────────────────────────────────────────────────────
+//
+// A serialized plan stores raw ticks of one clock, named by a top-level
+// `timestamp_unit` (omitted for seconds).
+
+impl<U: UnitSystem> DiskGraphTTPlan<U> {
+    pub fn to_json(&self) -> serde_json::Result<String> {
+        if U::UNIT == TimeUnit::Seconds {
+            return serde_json::to_string(self);
+        }
+        let mut json = serde_json::to_value(self)?;
+        json["timestamp_unit"] = serde_json::to_value(U::UNIT)?;
+        serde_json::to_string(&json)
+    }
+}
+
+impl<U: UnitSystem> Op<U> {
+    /// The same op in clock `V`, with every offset converted by `offset`.
+    pub fn map_clock<V: UnitSystem>(self, offset: &impl Fn(Dur<U>) -> Dur<V>) -> Op<V> {
+        match self {
+            Op::Aggregate {
+                alias,
+                path,
+                func,
+                target_col,
+                time_col,
+                window,
+                window_unit,
+                row_filter,
+                limit,
+                target_entity_table,
+            } => Op::Aggregate {
+                alias,
+                path,
+                func,
+                target_col,
+                time_col,
+                window,
+                window_unit,
+                row_filter,
+                limit,
+                target_entity_table,
+            },
+            Op::Column {
+                alias,
+                table,
+                column,
+                path,
+            } => Op::Column {
+                alias,
+                table,
+                column,
+                path,
+            },
+            Op::Compare {
+                alias,
+                lhs,
+                op,
+                rhs,
+            } => Op::Compare {
+                alias,
+                lhs,
+                op,
+                rhs,
+            },
+            Op::LogicalOp {
+                alias,
+                op,
+                operands,
+            } => Op::LogicalOp {
+                alias,
+                op,
+                operands,
+            },
+            Op::Autoregression {
+                alias,
+                target_op,
+                lag_offsets,
+            } => Op::Autoregression {
+                alias,
+                target_op: Box::new(target_op.map_clock(offset)),
+                lag_offsets: lag_offsets.into_iter().map(offset).collect(),
+            },
+            Op::FutureLabels {
+                alias,
+                target_op,
+                future_offsets,
+            } => Op::FutureLabels {
+                alias,
+                target_op: Box::new(target_op.map_clock(offset)),
+                future_offsets: future_offsets.into_iter().map(offset).collect(),
+            },
+            Op::HasEdges {
+                alias,
+                path,
+                time_col,
+                window,
+                window_unit,
+                row_filter,
+            } => Op::HasEdges {
+                alias,
+                path,
+                time_col,
+                window,
+                window_unit,
+                row_filter,
+            },
+        }
+    }
+}
+
+/// The clock a serialized plan is written in.
+pub fn plan_timestamp_unit(plan_json: &str) -> serde_json::Result<TimeUnit> {
+    #[derive(Deserialize)]
+    struct ClockTag {
+        #[serde(default)]
+        timestamp_unit: TimeUnit,
+    }
+    Ok(serde_json::from_str::<ClockTag>(plan_json)?.timestamp_unit)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@
 r"""Tests for the timestamp/date converter.
 
 Covers the epoch-domain arithmetic kumo still owns (``div_ceil`` /
-``timestamp_from_int`` / ``days_from_secs`` / ``timestamp_secs_from_array`` /
+``timestamp_from_int`` / ``days_from_secs`` / ``timestamp_ticks_from_array`` /
 Date32), and the DiskGraph-backed apply path: the exhaustive
 format-x-value matrix, the vectorized entry points, and MIN/MAX.
 
@@ -261,31 +261,31 @@ def test_i64_min_magnitude_no_overflow():
 # ===========================================================================
 # Native temporal path (no parsing: the unit rides the dtype)
 # ===========================================================================
-def test_timestamp_secs_from_array_ceiling_ns():
+def test_timestamp_ticks_from_array_ceiling_ns():
     base = int(pd.Timestamp('2020-01-01 00:00:00').timestamp())
     ser = pd.Series([
         pd.Timestamp('2020-01-01 00:00:00.500'),   # sub-second -> ceil up
         pd.Timestamp('2020-01-01 00:00:01'),        # exact second
     ])
-    assert list(tc.timestamp_secs_from_array(ser)) == [base + 1, base + 1]
+    assert list(tc.timestamp_ticks_from_array(ser)) == [base + 1, base + 1]
 
 
-def test_timestamp_secs_from_array_ceiling_ms_unit():
+def test_timestamp_ticks_from_array_ceiling_ms_unit():
     base = int(pd.Timestamp('2020-01-01 00:00:00').timestamp())
     ser = pd.Series([pd.Timestamp('2020-01-01 00:00:00.500')]).astype(
         'datetime64[ms]')
-    assert list(tc.timestamp_secs_from_array(ser)) == [base + 1]
+    assert list(tc.timestamp_ticks_from_array(ser)) == [base + 1]
 
 
-def test_timestamp_secs_from_array_nat_is_none():
+def test_timestamp_ticks_from_array_nat_is_none():
     ser = pd.Series([pd.Timestamp('2020-01-01'), pd.NaT])
-    assert tc.timestamp_secs_from_array(ser)[1] is None
+    assert tc.timestamp_ticks_from_array(ser)[1] is None
 
 
-def test_timestamp_secs_from_array_tz_aware_normalized_to_utc():
+def test_timestamp_ticks_from_array_tz_aware_normalized_to_utc():
     ser = pd.Series([pd.Timestamp('2020-01-01 00:00:00', tz='US/Eastern')])
     want = int(pd.Timestamp('2020-01-01 00:00:00', tz='US/Eastern').timestamp())
-    assert list(tc.timestamp_secs_from_array(ser)) == [want]
+    assert list(tc.timestamp_ticks_from_array(ser)) == [want]
 
 
 def _scalar_native_seconds(ser):
@@ -308,14 +308,14 @@ def test_parity_native_vectorized_matches_scalar(resolution):
         pd.NaT,                                     # null -> None, never epoch
     ])
     ser = ts.astype(f'datetime64[{resolution}]')
-    out = tc.timestamp_secs_from_array(ser)
+    out = tc.timestamp_ticks_from_array(ser)
     assert list(out) == _scalar_native_seconds(ser)
 
 
 def test_parity_native_all_nat_and_empty():
-    assert list(tc.timestamp_secs_from_array(
+    assert list(tc.timestamp_ticks_from_array(
         pd.Series([pd.NaT, pd.NaT]))) == [None, None]
-    assert list(tc.timestamp_secs_from_array(
+    assert list(tc.timestamp_ticks_from_array(
         pd.Series([], dtype='datetime64[ns]'))) == []
 
 
@@ -450,3 +450,46 @@ def test_hint_constructors_shape():
     assert TemporalHint.of_format('%Y%m%d').kind is HintKind.FORMAT
     assert TemporalHint.native().kind is HintKind.NATIVE
     assert TemporalHint.unresolved().kind is HintKind.UNRESOLVED
+
+
+_TYPED = pd.Series(
+    pd.to_datetime([
+        '1969-12-31 23:59:59.5', '2024-01-01 00:00:00.000000001',
+        '1700-01-01 00:00:00.25', None
+    ], format='ISO8601'))
+_CLOCKS = list(tc.PANDAS_UNIT_OF_INDEX_CLOCK)
+
+
+@pytest.mark.parametrize('clock', _CLOCKS)
+@pytest.mark.parametrize('series', [
+    _TYPED.astype('datetime64[s]'),
+    _TYPED.astype('datetime64[ms]'),
+    _TYPED.astype('datetime64[us]'),
+    _TYPED,
+    _TYPED.dt.tz_localize('US/Pacific'),
+], ids=['s', 'ms', 'us', 'ns', 'tz'])
+def test_typed_columns_convert_like_diskgraph_in_every_clock(series, clock):
+    hint = TemporalHint.native()
+    assert list(tc.to_epoch_ticks(series, hint, clock)) == list(
+        tc._resolve(series, hint, days=False, timestamp_precision=clock))
+
+
+@pytest.mark.parametrize('clock,expected', [
+    ('nanoseconds', '2023-11-14 22:13:20.123'),
+    ('microseconds', '2023-11-14 22:13:20.123'),
+    ('milliseconds', '2023-11-14 22:13:20.123'),
+    ('seconds', '2023-11-14 22:13:20'),
+    ('hours', '2023-11-14 22:00:00'),
+    ('days', '2023-11-14'),
+])
+def test_text_statistics_truncate_into_the_snapshot_clock(clock, expected):
+    from kumoapi.typing import Stype
+
+    from kumo.config import BaseColumnConfig
+    from kumo.connector.utils import coerce_timestamp_stype_series_for_stats
+
+    config = BaseColumnConfig(name='ts', stype=Stype.timestamp)
+    coerced = coerce_timestamp_stype_series_for_stats(
+        pd.Series(['2023-11-14 22:13:20.123']), config, clock)
+
+    assert coerced.tolist() == [pd.Timestamp(expected)]

@@ -68,6 +68,7 @@ from typing import Any, Dict, Mapping, Sequence
 
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
+from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
 
 from kumo.engine._scratch import (
     fingerprint,
@@ -345,7 +346,10 @@ class Graph:
         """
         self.native_graph
 
-    def snapshot(self) -> GraphSnapshot:
+    def snapshot(
+        self,
+        timestamp_precision: TimestampPrecision = 'seconds',
+    ) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
         result through `kumo-core` to build column stats and the on-disk
         index. The index is stored under a directory keyed by both `self.id`
@@ -354,9 +358,16 @@ class Graph:
         and `GraphSnapshot`'s docstring for the resulting `id` shape. If a
         valid build already exists for that exact key, ingest is skipped and
         it's reused as is.
+
+        `timestamp_precision` is the clock the index stores timestamps in:
+        `"nanoseconds"`, `"microseconds"`, `"milliseconds"`, `"seconds"` (the
+        default), `"hours"` or `"days"`. Window lengths truncate to the clock,
+        so a window shorter than one tick is empty. Each clock is cached as a
+        separate snapshot.
         """
         from filelock import FileLock
 
+        validate_timestamp_precision(timestamp_precision)
         self.validate()
         for table in self._named_tables.values():
             table.connector.validate_scratch_dir(get_scratch_dir())
@@ -383,9 +394,11 @@ class Graph:
         # processes, and a lock-file-existence mutex would leave a stale
         # lock behind after a crash.
         with FileLock(f'{persist_dir}.lock'):
-            return self._snapshot_no_lock(graph_key, persist_dir)
+            return self._snapshot_no_lock(graph_key, persist_dir,
+                                          timestamp_precision)
 
-    def _snapshot_no_lock(self, graph_key: str, persist_dir: Path) \
+    def _snapshot_no_lock(self, graph_key: str, persist_dir: Path,
+                          timestamp_precision: TimestampPrecision = 'seconds') \
             -> GraphSnapshot:
         r"""`snapshot()`'s body, run under its `FileLock`. Not meant to be
         called on its own -- `persist_dir`, unlike everything else here,
@@ -466,8 +479,12 @@ class Graph:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
 
-            data_version = fingerprint(
-                json.dumps(table_data_versions, sort_keys=True).encode())
+            version_parts = [
+                json.dumps(table_data_versions, sort_keys=True).encode()
+            ]
+            if timestamp_precision != 'seconds':
+                version_parts.append(timestamp_precision.encode())
+            data_version = fingerprint(*version_parts)
             handle = DiskgraphSnapshotHandle(graph_key=graph_key,
                                              graph_data_version=data_version)
             output_dir = Path(store.path(handle))
@@ -494,6 +511,7 @@ class Graph:
                         table_data_versions=table_data_versions,
                         output_dir=str(output_dir),
                         source_paths=source_paths,
+                        timestamp_precision=timestamp_precision,
                         execution=IngestExecutionConfig(
                             success_marker_content=predicted.to_json()),
                     ),

@@ -62,6 +62,7 @@ class DiskgraphIngestWorkflow:
         source_size_bytes: int,
         resource_hint: ResourceHint | None,
         source_size_bytes_by_table: dict[str, int],
+        timestamp_precision: str = 'seconds',
     ) -> DiskgraphIngestResult:
         snapshot_id = DataSnapshot.GRAPH.canonicalize(
             f'{_graph_key_to_v2(graph_key)}@{graph_data_version}')
@@ -83,6 +84,7 @@ class DiskgraphIngestWorkflow:
                     source_size_bytes=source_size_bytes,
                     source_size_bytes_by_table=source_size_bytes_by_table,
                     resource_hint=current_resource_hint,
+                    timestamp_precision=timestamp_precision,
                 )
             except _LocalNoSpaceAtTier as failure:
                 failed_tier = failure.tier_ssd_gib
@@ -126,6 +128,7 @@ class DiskgraphIngestWorkflow:
         source_size_bytes: int,
         source_size_bytes_by_table: dict[str, int],
         resource_hint: ResourceHint | None,
+        timestamp_precision: str,
     ) -> DiskgraphIngestResult:
         # The controller computes the on-SSD estimate
         # (source × ingest_space_multiplier + buffer) from its own config,
@@ -161,6 +164,7 @@ class DiskgraphIngestWorkflow:
                                     all_graph_tables=all_graph_tables,
                                     source_size_bytes_by_table=(
                                         source_size_bytes_by_table),
+                                    timestamp_precision=timestamp_precision,
                                 ),
                             ],
                             schedule_to_close_timeout=timedelta(

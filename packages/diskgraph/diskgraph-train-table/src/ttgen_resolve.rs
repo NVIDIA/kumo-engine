@@ -11,9 +11,10 @@ use std::sync::Arc;
 
 use crate::errors::{TTGenError, TTGenResult};
 use crate::ttgen_output::PRIMARY_TARGET_COL;
+use crate::ttgen_traversal::SortKeyWindow;
 use arrow_schema::{DataType, Field};
 use diskgraph_core::sortkey::SortKeyEncoder;
-use diskgraph_core::time::{Abs, Dur, UnitSystem};
+use diskgraph_core::time::{add_calendar_months, Abs, Dur, UnitSystem};
 use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_index::layout::RelationLayout;
@@ -188,6 +189,29 @@ impl<U: UnitSystem> ResolvedOp<U> {
             ResolvedOp::FutureLabels(a) => a.alias_idx,
         }
     }
+
+    /// Whether every window and offset this op evaluates at `obs` stays inside the clock.
+    pub fn fits_clock(&self, obs: Abs<U>) -> bool {
+        let shifted_fit = |target: &ResolvedOp<U>, offsets: &[Dur<U>]| {
+            offsets.iter().all(|&offset| match obs.checked_add(offset) {
+                Some(ts) => target.fits_clock(ts),
+                None => false,
+            })
+        };
+        match self {
+            ResolvedOp::Aggregate(a) => window_fits(&a.window, obs),
+            ResolvedOp::HasEdges(h) => window_fits(&h.window, obs),
+            ResolvedOp::Autoregression(a) => {
+                a.target_op.fits_clock(obs) && shifted_fit(&a.target_op, &a.lag_offsets)
+            }
+            ResolvedOp::FutureLabels(f) => shifted_fit(&f.target_op, &f.future_offsets),
+            ResolvedOp::Column(_) | ResolvedOp::Compare(_) | ResolvedOp::LogicalOp(_) => true,
+        }
+    }
+}
+
+fn window_fits<U: UnitSystem>(window: &Option<ResolvedWindow<U>>, obs: Abs<U>) -> bool {
+    window.as_ref().is_none_or(|w| w.bounds(obs).is_some())
 }
 
 pub struct ResolvedAggregate<U: UnitSystem> {
@@ -272,6 +296,47 @@ pub enum ResolvedWindow<U: UnitSystem> {
         hi_months: i32,
         encoder: SortKeyEncoder,
     },
+}
+
+impl<U: UnitSystem> ResolvedWindow<U> {
+    /// The window's exclusive start and inclusive end around `obs`, or `None`
+    /// when either falls outside the clock.
+    pub fn bounds(&self, obs: Abs<U>) -> Option<(Option<Abs<U>>, Abs<U>)> {
+        match self {
+            ResolvedWindow::Fixed {
+                offset_lo,
+                offset_hi,
+                ..
+            } => {
+                let lo = match offset_lo {
+                    Some(offset) => Some(obs.checked_add(*offset)?),
+                    None => None,
+                };
+                Some((lo, obs.checked_add(*offset_hi)?))
+            }
+            ResolvedWindow::Calendar {
+                lo_months,
+                hi_months,
+                ..
+            } => {
+                let lo = match lo_months {
+                    Some(months) => Some(add_calendar_months(obs, *months)?),
+                    None => None,
+                };
+                Some((lo, add_calendar_months(obs, *hi_months)?))
+            }
+        }
+    }
+
+    pub fn sort_keys(&self, obs: Abs<U>) -> Option<SortKeyWindow> {
+        let (ResolvedWindow::Fixed { encoder, .. } | ResolvedWindow::Calendar { encoder, .. }) =
+            self;
+        let (lo, hi) = self.bounds(obs)?;
+        Some((
+            lo.map(|lo| encoder.encode_upper(lo.raw())),
+            encoder.encode_upper(hi.raw()),
+        ))
+    }
 }
 
 // ─── Resolved filter types ───────────────────────────────────────────────────
@@ -598,7 +663,7 @@ pub fn resolve_plan<U: UnitSystem>(
             .map(|t| t.temporal_col_indices())
             .unwrap_or((None, None));
 
-    Ok(ResolvedPlan {
+    let mut resolved = ResolvedPlan {
         entity_table_spec: plan.entity.clone(),
         entity_table,
         entity_time_col_idx,
@@ -640,10 +705,24 @@ pub fn resolve_plan<U: UnitSystem>(
         custom_target_pk_table,
         custom_target_temporal_create_col_idx,
         custom_target_temporal_end_col_idx,
-    })
+    };
+    resolved.timestamps = resolved
+        .timestamps
+        .iter()
+        .copied()
+        .filter(|&ts| resolved.fits_clock(ts))
+        .collect();
+    Ok(resolved)
 }
 
 impl<U: UnitSystem> ResolvedPlan<U> {
+    /// Whether the row anchored at `obs` can be evaluated without leaving the clock.
+    pub fn fits_clock(&self, obs: Abs<U>) -> bool {
+        self.stages
+            .iter()
+            .all(|stage| stage.ops.iter().all(|op| op.fits_clock(obs)))
+    }
+
     /// Convenience accessor: the primary (slot 0) ENTITY rowpack column index.
     /// Used by all single-entity call sites (PQ path, custom-TT lookup).
     #[inline]

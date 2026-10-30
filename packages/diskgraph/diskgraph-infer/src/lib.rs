@@ -394,6 +394,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     let num_shards =
         diskgraph_ingest::config_converter::inference::estimate_num_shards(total_bytes);
     let metadata = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: root_dataset_name(root),
         tables: table_specs,
         rowpack: None,

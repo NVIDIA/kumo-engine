@@ -1105,6 +1105,8 @@ _DG_UNIT_TO_NP = {
     'nanoseconds': 'ns',
     'nanos': 'ns',
     'ns': 'ns',
+    'hours': 'h',
+    'days': 'D',
 }
 
 # numpy datetime64 unit -> nanoseconds-per-one-tick. Used to convert Kumo's
@@ -1116,6 +1118,8 @@ _NP_UNIT_TO_NS_DIVISOR = {
     'ms': 1_000_000,
     'us': 1_000,
     'ns': 1,
+    'h': 3_600_000_000_000,
+    'D': 86_400_000_000_000,
 }
 
 

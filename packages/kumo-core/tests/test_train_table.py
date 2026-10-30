@@ -49,7 +49,8 @@ class FakeRuntime:
 
     def __init__(self, staging_dir):
         self.calls = []
-        self.DiskGraphPlanCompiler = lambda: FakeCompiler(self.calls)
+        self.DiskGraphPlanCompiler = lambda *, index_path: FakeCompiler(
+            self.calls)
         self.staging_dir = staging_dir
 
     def execute_tt_gen(self, plan, index_path, tt_id):

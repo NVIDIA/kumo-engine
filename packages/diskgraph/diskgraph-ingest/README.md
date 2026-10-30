@@ -179,6 +179,18 @@ Key matching behavior:
 - parse failures or missing targets skip the edge and are counted.
 - duplicate primary keys are skipped and counted.
 
+### Index clock
+
+The top-level `"timestamp_unit"` sets the clock timestamps are stored in:
+`nanoseconds`, `microseconds`, `milliseconds`, `seconds` (the default), `hours`
+or `days`.
+- A value the clock cannot represent is stored as null; a null `create_time`
+  drops the row.
+- `seconds`, `hours` and `days` keep the 8/16/32-bit edge time key; sub-second
+  clocks use the full 64-bit tick, so a `time` + `weight` sort key is a config
+  error on them.
+- A training-table plan must be written in the index's clock.
+
 ## Supported Parquet types
 
 Ingestion expects schemas to match `diskgraph_config.json` and supports:

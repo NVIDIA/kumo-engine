@@ -23,6 +23,7 @@ use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use diskgraph_core::accumulators::{
     kumo_entry, kumo_key, CategoryCountStrategy, WelfordAccumulator, MAX_CATEGORIES,
 };
+use diskgraph_core::time::{convert_ceil, TimeUnit};
 use diskgraph_ingest::col_stats::{FileColStats, TableCategoryCounts};
 use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType, TimestampUnit};
 use diskgraph_ingest::PublicIngestError;
@@ -249,9 +250,13 @@ fn integer_timestamp(
     }))
 }
 
-fn timestamp_seconds(access: &RowAccess<'_>, col: &ColumnSpec) -> Result<Option<i64>> {
+fn timestamp_ticks(access: &RowAccess<'_>, col: &ColumnSpec) -> Result<Option<i64>> {
     if let Some((unit, raw)) = integer_timestamp(access, col)? {
-        return Ok(Some(unit.scale_to_secs(raw)));
+        return Ok(Some(convert_ceil(
+            raw,
+            unit.to_arrow().into(),
+            access.clock(),
+        )));
     }
     access.get_timestamp(0)
 }
@@ -261,7 +266,7 @@ fn histogram_timestamp_seconds(
     access: &RowAccess<'_>,
     raw_timestamp: Option<(TimestampUnit, i64)>,
 ) -> Result<Option<i64>> {
-    let Some(seconds) = timestamp_seconds(access, col)? else {
+    let Some(seconds) = timestamp_ticks(access, col)? else {
         return Ok(None);
     };
     let raw_unit = raw_timestamp.or(integer_timestamp(access, col)?);
@@ -288,7 +293,8 @@ fn for_each_timestamp_second(
         _ => None,
     };
     let arrays = [array.clone()];
-    let mut access = RowAccess::new(vec![row_access_hints(col)], RowAccessStats::new(None));
+    let mut access = RowAccess::new(vec![row_access_hints(col)], RowAccessStats::new(None))
+        .with_clock(TimeUnit::Seconds);
     access.set_cols(&arrays);
     for row in 0..array.len() {
         access.set_row(row);
@@ -636,14 +642,16 @@ fn drive_from_arrow_column<O: ColumnValueObserver>(
     col: &ColumnSpec,
     observer: &mut O,
     mut integer_range: Option<&mut IntegerRange>,
+    clock: TimeUnit,
 ) -> Result<()> {
     let arrays = [array.clone()];
-    let mut access = RowAccess::new(vec![row_access_hints(col)], RowAccessStats::new(None));
+    let mut access =
+        RowAccess::new(vec![row_access_hints(col)], RowAccessStats::new(None)).with_clock(clock);
     access.set_cols(&arrays);
     for row in 0..array.len() {
         access.set_row(row);
         let present = if col.semantic_type == Some(SemanticType::Timestamp) {
-            access_or_parse_failure(timestamp_seconds(&access, col), col_idx, observer)
+            access_or_parse_failure(timestamp_ticks(&access, col), col_idx, observer)
                 .map(|value| observer.observe_timestamp(col_idx, value))
                 .is_some()
         } else {
@@ -694,7 +702,7 @@ fn drive_from_arrow_column<O: ColumnValueObserver>(
                     access_or_parse_failure(value, col_idx, observer).is_some()
                 }
                 IngestedType::Timestamp => {
-                    access_or_parse_failure(timestamp_seconds(&access, col), col_idx, observer)
+                    access_or_parse_failure(timestamp_ticks(&access, col), col_idx, observer)
                         .map(|value| observer.observe_timestamp(col_idx, value))
                         .is_some()
                 }
@@ -795,6 +803,7 @@ fn stats_for_row_group(
     integer_spec_indices: &[usize],
     table_cat: &Arc<TableCategoryCounts>,
     score_class: Option<(usize, usize)>,
+    clock: TimeUnit,
 ) -> Result<(FileColStats, ByClassStats, Vec<IntegerRange>)> {
     let mut fcs = FileColStats::new_with_categories(columns, Arc::clone(table_cat));
     let mut by_class = ByClassStats::new();
@@ -820,6 +829,7 @@ fn stats_for_row_group(
                 col,
                 &mut fcs,
                 range,
+                clock,
             );
             if let Err(error) = result {
                 if error.is::<PublicIngestError>() {
@@ -846,17 +856,20 @@ fn stats_for_row_group(
     Ok((fcs, by_class, integer_ranges))
 }
 
-/// Compute full and min Kumo-format statistics for prediction parquet files.
+/// Compute full and min Kumo-format statistics for prediction parquet files,
+/// with timestamp statistics in `clock` ticks.
 pub fn compute_parquet_col_stats(
     parquet_paths: &[&Path],
     columns: &[ColumnSpec],
     data_version: &str,
+    clock: TimeUnit,
 ) -> Result<(String, String)> {
     compute_parquet_col_stats_with_max_categories(
         parquet_paths,
         columns,
         data_version,
         MAX_CATEGORIES,
+        clock,
     )
 }
 
@@ -867,6 +880,7 @@ fn accumulate_parquet_col_stats<'a>(
     parquet_paths: &'a [&'a Path],
     columns: &'a [ColumnSpec],
     max_categories: u64,
+    clock: TimeUnit,
 ) -> Result<(FileColStats, Arc<TableCategoryCounts>, Accumulated<'a>)> {
     if max_categories == 0 {
         bail!("category count limit must be greater than zero");
@@ -927,6 +941,7 @@ fn accumulate_parquet_col_stats<'a>(
                     &integer_spec_indices,
                     &table_cat,
                     score_class,
+                    clock,
                 )
             })
             .try_reduce(
@@ -951,7 +966,7 @@ fn accumulate_parquet_col_stats<'a>(
             )?
     };
     Ok((
-        acc,
+        acc.with_clock(clock),
         table_cat,
         Accumulated {
             parquet_paths,
@@ -986,9 +1001,10 @@ pub(crate) fn compute_parquet_col_stats_with_max_categories(
     columns: &[ColumnSpec],
     data_version: &str,
     max_categories: u64,
+    clock: TimeUnit,
 ) -> Result<(String, String)> {
     let (acc, table_cat, run) =
-        accumulate_parquet_col_stats(parquet_paths, columns, max_categories)?;
+        accumulate_parquet_col_stats(parquet_paths, columns, max_categories, clock)?;
     let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
     let types: Vec<IngestedType> = columns.iter().map(|c| c.ingested_dtype.clone()).collect();
     let mut kumo = acc.into_kumo_stats(
@@ -1337,9 +1353,14 @@ mod tests {
             SemanticType::Categorical,
         )];
 
-        let (full, _) =
-            compute_parquet_col_stats_with_max_categories(&[path.as_path()], &columns, "v1", 2)
-                .unwrap();
+        let (full, _) = compute_parquet_col_stats_with_max_categories(
+            &[path.as_path()],
+            &columns,
+            "v1",
+            2,
+            TimeUnit::Seconds,
+        )
+        .unwrap();
         assert_eq!(
             val(&full, "status__kumo.categorical__CATEGORY_COUNTS__False"),
             json!([["red", 3], ["blue", 2]])
@@ -1368,7 +1389,8 @@ mod tests {
     ) -> (String, String) {
         use diskgraph_ingest::col_stats::minify_kumo_stats;
         let (mut acc, table_cat, run) =
-            accumulate_parquet_col_stats(paths, columns, max_categories).unwrap();
+            accumulate_parquet_col_stats(paths, columns, max_categories, TimeUnit::Seconds)
+                .unwrap();
         let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
         let types: Vec<IngestedType> = columns.iter().map(|c| c.ingested_dtype.clone()).collect();
         let mut full = acc.to_kumo_json(&names, &types, Some(&table_cat), None, "v1");
@@ -1440,8 +1462,14 @@ mod tests {
             col("SCORE", IngestedType::Float64, SemanticType::Numerical),
             col("CLASS", IngestedType::Int64, SemanticType::Categorical),
         ];
-        let streamed =
-            compute_parquet_col_stats_with_max_categories(&paths, &columns, "v1", cap).unwrap();
+        let streamed = compute_parquet_col_stats_with_max_categories(
+            &paths,
+            &columns,
+            "v1",
+            cap,
+            TimeUnit::Seconds,
+        )
+        .unwrap();
         assert_eq!(
             streamed,
             legacy_col_stats(&paths, &columns, cap),
@@ -1453,7 +1481,9 @@ mod tests {
 
     #[test]
     fn configurable_category_cap_rejects_zero() {
-        let error = compute_parquet_col_stats_with_max_categories(&[], &[], "v1", 0).unwrap_err();
+        let error =
+            compute_parquet_col_stats_with_max_categories(&[], &[], "v1", 0, TimeUnit::Seconds)
+                .unwrap_err();
         assert!(error
             .to_string()
             .contains("category count limit must be greater than zero"));
@@ -1490,7 +1520,9 @@ mod tests {
             col("SCORE", IngestedType::Float64, SemanticType::Numerical),
             col("CLASS", IngestedType::String, SemanticType::Categorical),
         ];
-        let (full, min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, min) =
+            compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                .unwrap();
 
         // COUNT == n across columns (merge across row groups correct).
         assert_eq!(val(&full, "entity__kumo.ID__COUNT__False"), n as u64);
@@ -1601,7 +1633,9 @@ mod tests {
             ts_col("month", None),
             ts_col("day", None),
         ];
-        let (full, _) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _) =
+            compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                .unwrap();
         for (name, stype) in [
             ("rank", "kumo.numerical"),
             ("revenue", "kumo.numerical"),
@@ -1649,7 +1683,9 @@ mod tests {
             IngestedType::Float32Array,
             SemanticType::Latlong,
         )];
-        let (full, _) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _) =
+            compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                .unwrap();
         assert_eq!(
             val(&full, "location__kumo.latlong__SEQUENCE_MAX_LENGTH__False"),
             2
@@ -1683,7 +1719,9 @@ mod tests {
             col("SCORE", IngestedType::Float32, SemanticType::Numerical),
             col("CLASS", IngestedType::Bool, SemanticType::Categorical),
         ];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) =
+            compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                .unwrap();
         // Numerical scalar stats populated (not empty-Welford defaults).
         let mx = val(&full, "SCORE__kumo.numerical__MAX__False")
             .as_f64()
@@ -1732,7 +1770,9 @@ mod tests {
             col("SCORE", IngestedType::Float64, SemanticType::Numerical),
             col("CLASS", IngestedType::String, SemanticType::Categorical),
         ];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) =
+            compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                .unwrap();
         let bc = val(
             &full,
             "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
@@ -1782,8 +1822,13 @@ mod tests {
             col("entity", IngestedType::String, SemanticType::Id),
             col("score", IngestedType::Float64, SemanticType::Numerical),
         ];
-        let (full, _) =
-            compute_parquet_col_stats(&[p1.as_path(), p2.as_path()], &columns, "v1").unwrap();
+        let (full, _) = compute_parquet_col_stats(
+            &[p1.as_path(), p2.as_path()],
+            &columns,
+            "v1",
+            TimeUnit::Seconds,
+        )
+        .unwrap();
         assert_eq!(val(&full, "entity__kumo.ID__COUNT__False"), 4);
         assert_eq!(val(&full, "score__kumo.numerical__MIN__False"), 1.0);
         assert_eq!(val(&full, "score__kumo.numerical__MAX__False"), 4.0);
@@ -1818,6 +1863,7 @@ mod tests {
             &[p1.as_path(), p2.as_path()],
             &[col("score", IngestedType::Float64, SemanticType::Numerical)],
             "v1",
+            TimeUnit::Seconds,
         )
         .unwrap_err();
         assert!(format!("{err:#}").contains("column 'score'"));
@@ -1882,7 +1928,9 @@ mod tests {
         );
 
         let columns = vec![ts_col("created_at", None), ts_col("updated_at", None)];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) =
+            compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                .unwrap();
         assert_eq!(
             val(
                 &full,
@@ -1936,8 +1984,13 @@ mod tests {
             1,
         );
 
-        let (full, _min) =
-            compute_parquet_col_stats(&[path.as_path()], &[ts_col("ts", None)], "v1").unwrap();
+        let (full, _min) = compute_parquet_col_stats(
+            &[path.as_path()],
+            &[ts_col("ts", None)],
+            "v1",
+            TimeUnit::Seconds,
+        )
+        .unwrap();
         let histogram = val(&full, "ts__kumo.timestamp__HISTOGRAM_HALF_MONTH__False");
         let histogram = histogram.as_array().unwrap();
         assert_eq!(histogram.len(), TIMESTAMP_HISTOGRAM_BINS);
@@ -1980,8 +2033,13 @@ mod tests {
             1,
         );
 
-        let (full, _) =
-            compute_parquet_col_stats(&[path.as_path()], &[ts_col("ts", None)], "v1").unwrap();
+        let (full, _) = compute_parquet_col_stats(
+            &[path.as_path()],
+            &[ts_col("ts", None)],
+            "v1",
+            TimeUnit::Seconds,
+        )
+        .unwrap();
         let histogram = val(&full, "ts__kumo.timestamp__HISTOGRAM_HALF_MONTH__False");
         let histogram = histogram.as_array().unwrap();
         assert_eq!(histogram.len(), TIMESTAMP_HISTOGRAM_BINS);
@@ -2033,7 +2091,9 @@ mod tests {
             ts_col("null_ts", None),
             col("score", IngestedType::Float64, SemanticType::Numerical),
         ];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) =
+            compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                .unwrap();
         let stats: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
         assert!(!stats.contains_key("ts__kumo.timestamp__HISTOGRAM_HALF_MONTH__False"));
         assert!(!stats.contains_key("null_ts__kumo.timestamp__HISTOGRAM_HALF_MONTH__False"));
@@ -2077,7 +2137,9 @@ mod tests {
         let mut timestamp = ts_col("ts", Some(TimestampUnit::Millis));
         timestamp.ingested_dtype = IngestedType::Int64;
         let columns = vec![timestamp];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) =
+            compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                .unwrap();
         assert_eq!(val(&full, "ts__kumo.timestamp__MIN__False"), expected);
         assert_eq!(val(&full, "ts__kumo.timestamp__MAX__False"), expected);
         assert_eq!(
@@ -2088,7 +2150,8 @@ mod tests {
         let mut timestamp = ts_col("ts", None);
         timestamp.ingested_dtype = IngestedType::Int64;
         let (full, _min) =
-            compute_parquet_col_stats(&[path.as_path()], &[timestamp], "v1").unwrap();
+            compute_parquet_col_stats(&[path.as_path()], &[timestamp], "v1", TimeUnit::Seconds)
+                .unwrap();
         assert_eq!(val(&full, "ts__kumo.timestamp__MIN__False"), expected);
     }
 
@@ -2106,7 +2169,9 @@ mod tests {
             64,
         );
         let columns = vec![ts_col("ts", Some(TimestampUnit::Seconds))];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) =
+            compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                .unwrap();
         assert_eq!(
             val(&full, "ts__kumo.timestamp__MIN__False"),
             "kumo_timestamp_2022-07-31 22:00:01"
@@ -2129,7 +2194,8 @@ mod tests {
             IngestedType::Float64,
             SemanticType::Numerical,
         )];
-        let err = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap_err();
+        let err = compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+            .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("NOT_THERE") && msg.contains("schema error"));
 
@@ -2142,7 +2208,9 @@ mod tests {
             1024,
         );
         let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
-        let (full, _) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _) =
+            compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                .unwrap();
         assert_eq!(
             val(&full, "SCORE__kumo.numerical__MIN__False"),
             JsonValue::Null
@@ -2175,7 +2243,9 @@ mod tests {
             col("cnt", IngestedType::Int32, SemanticType::Numerical),
             col("b", IngestedType::UInt8, SemanticType::Numerical),
         ];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) =
+            compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                .unwrap();
         assert_eq!(val(&full, "cnt__kumo.numerical__COUNT__False"), 3u64);
         assert_eq!(val(&full, "b__kumo.numerical__COUNT__False"), 3u64);
         let mfull: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
@@ -2203,6 +2273,7 @@ mod tests {
             &[path.as_path()],
             &[col("v", IngestedType::Int64, SemanticType::Numerical)],
             "v1",
+            TimeUnit::Seconds,
         )
         .unwrap();
         assert_eq!(val(&full, "v__kumo.numerical__MIN__False"), i64::MAX - 2);
@@ -2231,6 +2302,7 @@ mod tests {
             &[path.as_path()],
             &[col("v", IngestedType::Int64, SemanticType::Numerical)],
             "v1",
+            TimeUnit::Seconds,
         )
         .unwrap();
         let histogram = val(&full, "v__kumo.numerical__HISTOGRAM__False");
@@ -2267,6 +2339,7 @@ mod tests {
                 SemanticType::Numerical,
             )],
             "v1",
+            TimeUnit::Seconds,
         )
         .unwrap();
 
@@ -2307,6 +2380,7 @@ mod tests {
                 SemanticType::Numerical,
             )],
             "v1",
+            TimeUnit::Seconds,
         )
         .unwrap();
 
@@ -2377,6 +2451,7 @@ mod tests {
                     SemanticType::Numerical,
                 )],
                 "v1",
+                TimeUnit::Seconds,
             )
             .unwrap_err();
 
@@ -2418,6 +2493,7 @@ mod tests {
                 col("float", IngestedType::Float64, SemanticType::Numerical),
             ],
             "v1",
+            TimeUnit::Seconds,
         )
         .unwrap();
         let stats: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
@@ -2452,7 +2528,9 @@ mod tests {
             col("subnormal", IngestedType::Float64, SemanticType::Numerical),
         ];
 
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, _min) =
+            compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                .unwrap();
         let histogram = val(&full, "extreme__kumo.numerical__HISTOGRAM__False");
         let histogram = histogram.as_array().unwrap();
         assert_eq!(histogram.len(), NUMERICAL_HISTOGRAM_BINS);
@@ -2509,7 +2587,8 @@ mod tests {
             );
             let columns = vec![ts_col("ts", None)];
             let (full, _min) =
-                compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+                compute_parquet_col_stats(&[path.as_path()], &columns, "v1", TimeUnit::Seconds)
+                    .unwrap();
             assert_eq!(
                 val(&full, "ts__kumo.timestamp__MIN__False"),
                 "kumo_timestamp_1969-12-31 23:59:59",

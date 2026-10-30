@@ -14,6 +14,7 @@ from kumoapi.graph import (
     GraphValidationRequest,
 )
 from kumoapi.json_serde import to_json_dict
+from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
 
 from kumoai_studio.client.endpoints import GraphEndpoints
 from kumoai_studio.client.transport import Transport
@@ -79,16 +80,28 @@ class GraphAPI:
         *,
         refresh_source: bool = False,
         project_id: Optional[str] = None,
+        timestamp_precision: TimestampPrecision = 'seconds',
     ) -> GraphSnapshotID:
+        validate_timestamp_precision(timestamp_precision)
         params: Dict[str, Any] = {
             'graph_id': graph_id,
             'refresh_source': refresh_source
         }
         if project_id is not None:
             params['project_id'] = project_id
+        if timestamp_precision != 'seconds':
+            params['timestamp_precision'] = timestamp_precision
         resp = self._client._request(GraphEndpoints.create_snapshot,
                                      params=params)
         raise_on_error(resp)
+        # Servers that predate index clocks send no header and build seconds.
+        built_precision = resp.headers.get('X-Kumo-Timestamp-Precision',
+                                           'seconds')
+        if built_precision != timestamp_precision:
+            raise RuntimeError(
+                f"Requested a {timestamp_precision} snapshot but the server "
+                f"built a {built_precision} one; upgrade the server to use "
+                f"this clock.")
         return GraphSnapshotID(parse_id_response(resp))
 
     def get_snapshot(

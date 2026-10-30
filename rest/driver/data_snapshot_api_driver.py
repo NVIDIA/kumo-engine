@@ -13,6 +13,7 @@ import kumoapi.graph as graph_interfaces
 from kumo_core.types import ConnectorType, TableStatType
 from kumo_core.types.schema import FPID
 from kumoapi.common import JobStatus
+from kumoapi.typing import TimestampPrecision
 from temporalio.client import (
     WorkflowExecutionDescription,
     WorkflowExecutionStatus,
@@ -344,6 +345,7 @@ class DataSnapshotApiDriver:
         base_graph_name: Optional[str] = None,
         *,
         project_id: ProjectID,
+        timestamp_precision: TimestampPrecision = 'seconds',
     ) -> snapshot_interfaces.GraphSnapshotID:
         """Create a graph data snapshot for an existing graph: the data
         snapshot corresponds to a specific graph data version.
@@ -388,6 +390,7 @@ class DataSnapshotApiDriver:
         # immutable) TableDefinition. `refresh_graph_data_version` reads
         # from `pinned_data_versions` to override the latest-version fetch.
         data_compute_input.pinned_data_versions = dict(table_versions)
+        data_compute_input.timestamp_precision = timestamp_precision
         version_info = await DataBackend.refresh_graph_data_version_in_activity(
             self._data_backend_ctx,
             data_compute_input,

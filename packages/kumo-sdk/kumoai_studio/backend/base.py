@@ -86,6 +86,7 @@ from kumoapi.pquery import PQueryResource
 from kumoapi.source_table import LocalFileSourceTable, SourceTableType
 from kumoapi.task import TaskType
 from kumoapi.train import TrainingStage
+from kumoapi.typing import TimestampPrecision
 
 from kumoai_studio.identity import Identity
 
@@ -330,6 +331,7 @@ class GraphBackend(Protocol):
         *,
         refresh_source: bool = False,
         project_id: Optional[str] = None,
+        timestamp_precision: TimestampPrecision = 'seconds',
     ) -> snapshot_api.GraphSnapshotID:
         ...
 

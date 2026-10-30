@@ -24,9 +24,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use diskgraph_core::metadata::DatasetMetadata;
 
 use crate::config::{ResolveColumnSpec, ResolveKind};
 use crate::graph_config::{ColumnSpec, DataSource, FKeySpec, GraphConfig, IngestedType, TableSpec};
+use crate::index_metadata::read_index_metadata;
 use crate::{ingest_with_stats_from_source_and_sidecars, Dest, IngestOptions};
 
 /// One stage table to ingest into a stage extension.
@@ -228,7 +230,10 @@ pub fn ingest_stage_extension_with_resolution_and_sidecars(
         }
     };
 
+    let parent_metadata: DatasetMetadata =
+        serde_json::from_str(&read_index_metadata(parent_index_path)?)?;
     let graph_config = GraphConfig {
+        timestamp_unit: parent_metadata.timestamp_unit,
         dataset_name: dataset_name.to_string(),
         tables,
         rowpack: None,

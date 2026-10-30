@@ -11,6 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 
 import kumo_core.diskgraph.runner as diskgraph_runner
 import pyarrow as pa
@@ -19,6 +20,7 @@ import pytest
 from kumo_core.diskgraph.ingest import (
     DiskgraphIngestSpec,
     execute_diskgraph_ingest,
+    set_timestamp_precision,
 )
 from kumo_core.diskgraph.snapshot import (
     DiskgraphIngestResult,
@@ -27,6 +29,7 @@ from kumo_core.diskgraph.snapshot import (
     DiskgraphSnapshotHandle,
     LocalSnapshotStore,
 )
+from kumoapi.typing import TimestampPrecision
 
 ZERO_COUNTS = ("diskgraph ingest completed: 0 node tables, 0 edge relations, "
                "0 nodes, 0 edges")
@@ -788,3 +791,11 @@ def test_list_ready_skips_invalid_snapshot_without_hiding_valid(
     with pytest.raises(DiskgraphSnapshotError, match="no usable rows"):
         store.verify(DiskgraphSnapshotHandle("graph", "invalid"))
     assert Path(store.path(DiskgraphSnapshotHandle("graph", "invalid"))).exists()
+
+
+@pytest.mark.parametrize("clock", get_args(TimestampPrecision))
+def test_ingest_config_names_the_clock_unless_seconds(clock: str) -> None:
+    ingest_config: dict = {}
+    set_timestamp_precision(ingest_config, clock)
+    expected = {} if clock == "seconds" else {"timestamp_unit": clock}
+    assert ingest_config == expected

@@ -1853,6 +1853,7 @@ dependencies = [
  "base64 0.22.1",
  "bincode",
  "chrono",
+ "diskgraph-core",
  "fast-float2",
  "gxhash",
  "half",

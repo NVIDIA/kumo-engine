@@ -79,6 +79,9 @@ class TestGenerateTrainTableViaDiskgraph:
 
         class _FakeCompiler:
 
+            def __init__(self, *, index_path):
+                pass
+
             def compile(self, **kwargs):
                 return "{\"fake\": true}"
 

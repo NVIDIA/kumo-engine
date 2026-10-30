@@ -266,6 +266,7 @@ def _compute_bp_sample_col_stats(
     sample,
     stats_dict: Dict[BaseColumnConfig, List[ColStatType]],
     data_version: TableDataVersion,
+    timestamp_precision: str,
 ) -> Dict[BaseColumnConfig, Dict[ColStatType, Stats]]:
     """Reduce a bounded prediction sample, including SCORE grouped by CLASS."""
     from kumo.connector.connector import _compute_col_stats_from_sample
@@ -275,6 +276,7 @@ def _compute_bp_sample_col_stats(
         sample,
         approx=True,
         data_version=data_version,
+        timestamp_precision=timestamp_precision,
     )
     score_config = next(
         (config
@@ -1286,6 +1288,10 @@ class DataBackend:
                 raise ValueError(
                     'Direct Databricks stats stage contains no Parquet files.')
 
+        timestamp_precision = (job_input.graph_version_info.timestamp_precision
+                               if job_input.graph_version_info is not None else
+                               'seconds')
+
         entity_col_name = job_input.predictive_query.get_bp_entity_col_name()
         (bp_connector_spec, bp_table_def, bp_data_version,
          bp_col_stats_set) = await generate_bp_stats_workflow_args(
@@ -1363,6 +1369,7 @@ class DataBackend:
                 sample,
                 request,
                 bp_data_version,
+                timestamp_precision,
             )
             if not col_stat_dict_complete(sampled_stats, request):
                 raise RuntimeError(
@@ -1438,6 +1445,7 @@ class DataBackend:
                     parquet_paths=parquet_paths,
                     kumo_column_specs=kumo_column_specs,
                     data_version=str(bp_data_version),
+                    timestamp_precision=timestamp_precision,
                 )
         finally:
             if staging_dir is not None:

@@ -386,6 +386,7 @@ def test_predict_table_cross_graph_contamination(contamination_env, caplog,
     env = contamination_env
     plan_json = build_ttng_predict_plan(
         env["validated_query"],
+        index_path=env["g1_index"],
         task_type=TaskType.REGRESSION,
         graph=env["graph"],
         timestamps=[0],

@@ -197,7 +197,8 @@ class Runtime:
         self.tmp_path = tmp_path
         self.compile_options = None
 
-    def DiskGraphPlanCompiler(self):
+    def DiskGraphPlanCompiler(self, *, index_path):
+        assert index_path == str(self.tmp_path / "index")
         runtime = self
 
         class Compiler:

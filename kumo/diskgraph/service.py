@@ -660,6 +660,7 @@ class DiskgraphService:
         data_persist_dir: str,
         table_data_versions: dict,
         dataplane_root: str,
+        timestamp_precision: str = 'seconds',
         source_paths: Optional[dict] = None,
         source_specs: Optional[dict] = None,
         subprocess_environment: Optional[dict[str, Optional[str]]] = None,
@@ -689,6 +690,7 @@ class DiskgraphService:
             graph_config=graph_config,
             data_persist_dir=data_persist_dir,
             table_data_versions=table_data_versions,
+            timestamp_precision=timestamp_precision,
             output_dir=output_dir,
             source_paths=source_paths,
             source_specs=source_specs,
@@ -1721,6 +1723,7 @@ class DiskgraphService:
         parquet_paths: List[str],
         kumo_column_specs: List[dict],
         data_version: str,
+        timestamp_precision: str = 'seconds',
     ) -> Tuple[str, str]:
         """Compute Kumo-format column statistics over BP-output parquet.
 
@@ -1733,6 +1736,7 @@ class DiskgraphService:
                 ``name`` / ``stype`` / ``dtype`` (raw Kumo enum value strings);
                 pybind maps them via ``map_kumo_stype`` / ``map_kumo_dtype``.
             data_version: Stamped into every ``kumo_col_stats_v1`` entry.
+            timestamp_precision: Index clock that timestamp statistics are in.
 
         Returns:
             ``(full_json, min_json)`` — the full map and its min variant.
@@ -1742,6 +1746,7 @@ class DiskgraphService:
             parquet_paths=parquet_paths,
             kumo_column_specs_json=json.dumps(kumo_column_specs),
             data_version=data_version,
+            timestamp_unit=timestamp_precision,
         )
 
 

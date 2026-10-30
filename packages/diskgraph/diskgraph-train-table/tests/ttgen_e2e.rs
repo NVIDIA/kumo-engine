@@ -178,6 +178,7 @@ fn build_e2e_graph(root: &Path) -> PathBuf {
         unit: "s".to_string(),
     };
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_e2e".to_string(),
         tables: vec![
             TableSpec {
@@ -304,6 +305,7 @@ fn build_users_only_graph(root: &Path, n_users: i64) -> PathBuf {
     write_parquet(&data_dir.join("users.parquet"), &users_batch);
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "test_e2e_users_only".to_string(),
         tables: vec![TableSpec {
             name: "users".to_string(),
