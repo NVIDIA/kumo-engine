@@ -168,7 +168,7 @@ class MlflowTracking:
         self.logs_model = log_model
         self._outer: Optional[str] = None
         self.run_id: Optional[str] = None
-        self._samples: List[Tuple[Mapping[str, float], int, int]] = []
+        self._samples: List[_Reading] = []
         self._sampled_run: Optional[Tuple[Any, str]] = None
         self._reset()
 
@@ -382,9 +382,10 @@ class MlflowTracking:
         self._parent = self.run_id = run.info.run_id
         self._fit_name = run.info.run_name
         self._experiment_id = run.info.experiment_id
-        if self.log_system_metrics and record.tags.get('kumo.kind') == 'fit':
-            self._guard.enter_context(
-                _SystemMetrics(self._log_system_metrics))
+        if self._samples_system() and record.tags.get('kumo.kind') == 'fit':
+            self._guard.enter_context(_SystemMetrics(
+                lambda readings: self._log_readings(client, run.info.run_id,
+                                                    readings)))
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
         self._sampled_run = (self._client, self._parent)
@@ -393,16 +394,20 @@ class MlflowTracking:
     @contextmanager
     def sample_system_metrics(self) -> Iterator[None]:
         r"""Samples system metrics during the block, for the next prediction
-        or monitoring run this tracker logs, in the block or after it."""
+        run this tracker logs, in the block or after it."""
         self._samples, self._sampled_run = [], None
-        if not self.log_system_metrics:
+        if not self._samples_system():
             yield
             return
-        with _SystemMetrics(lambda metrics, step: self._samples.append(
-                (metrics, step, int(time.time() * 1000)))):
+        with _SystemMetrics(lambda readings: self._samples.extend(readings)):
             yield
         if self._sampled_run is not None:
             self._log_samples(*self._sampled_run)
+
+    def _samples_system(self) -> bool:
+        return self.log_system_metrics and os.environ.get(
+            'MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING', '').strip().lower() not in (
+                'false', '0')
 
     def log_prediction_run(self, record: RunRecord) -> None:
         self.start(record)
@@ -721,16 +726,16 @@ class MlflowTracking:
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         self._log_metrics(self._parent, metrics, step)
 
-    def _log_system_metrics(self, metrics: Mapping[str, float],
-                            step: int) -> None:
-        self._log_metrics(self._parent, metrics, step)
-
     def _log_samples(self, client: Any, run_id: str) -> None:
         samples, self._samples = self._samples, []
+        self._log_readings(client, run_id, samples)
+
+    def _log_readings(self, client: Any, run_id: str,
+                      readings: Sequence['_Reading']) -> None:
         entities = self._mlflow.entities
         metrics = [
             entities.Metric(metric_key(name), float(value), timestamp, step)
-            for values, step, timestamp in samples
+            for values, step, timestamp in readings
             for name, value in values.items()
         ]
         with self.target.scope():
@@ -1006,17 +1011,26 @@ _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
                  'time': 'datetime'}
 
 
-class _SystemMetrics:
-    r"""Samples MLflow's CPU, disk, network and GPU monitors every
-    ``interval`` seconds on its own thread and hands each aggregate to
-    ``log(metrics, step)``, which logs it through the tracker's
-    credentials. (MLflow's own ``SystemMetricsMonitor`` logs with
-    process-wide ones.)"""
+_Reading = Tuple[Mapping[str, float], int, int]  # values, second, time
+_FAST_SECONDS = 600
+_FLUSH_SECONDS = 10.0
+_MIN_READINGS = 10
 
-    def __init__(self, log: Callable[[Mapping[str, float], int], None],
-                 interval: float = 10.0) -> None:
+
+class _SystemMetrics:
+    r"""Samples MLflow's CPU, disk, network and GPU monitors on its own
+    thread, every second for the first ten minutes and then every 10
+    (``MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL`` fixes the interval), and
+    hands ``log`` the readings, each with its elapsed second as step and its
+    time, every 10 seconds once there are 10, so a short run logs none and
+    no run's metrics draw as a bar. (MLflow's own ``SystemMetricsMonitor``
+    logs with process-wide credentials.)"""
+
+    def __init__(self, log: Callable[[List[_Reading]], None],
+                 interval: Optional[float] = None) -> None:
+        fixed = os.environ.get('MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL')
         self._log = log
-        self._interval = interval
+        self._interval = interval or (float(fixed) if fixed else None)
         self._monitors = _metric_monitors()
         self._failed = False
         self._stop = threading.Event()
@@ -1031,33 +1045,44 @@ class _SystemMetrics:
     def __exit__(self, *exc: Any) -> None:
         self._stop.set()
         if self._thread.is_alive():
-            self._thread.join(self._interval + 5)
+            self._thread.join(_FLUSH_SECONDS + 5)
+
+    def _wait(self, elapsed: float) -> float:
+        return self._interval or (1.0 if elapsed < _FAST_SECONDS else 10.0)
 
     def _run(self) -> None:
-        step = failures = 0
+        began = flushed = time.monotonic()
+        readings: List[_Reading] = []
+        taken = failures = 0
         stopped = False
         while not stopped:  # and a last reading when the run ends
-            stopped = self._stop.wait(self._interval)
+            stopped = self._stop.wait(self._wait(time.monotonic() - began))
             metrics: Dict[str, float] = {}
             for monitor in self._monitors:
                 monitor.collect_metrics()
                 metrics.update(monitor.aggregate_metrics())
                 monitor.clear_metrics()
+            readings.append(({f'system/{k}': v for k, v in metrics.items()},
+                             round(time.monotonic() - began),
+                             int(time.time() * 1000)))
+            taken += 1
+            if taken < _MIN_READINGS or not (
+                    stopped or time.monotonic() - flushed >= _FLUSH_SECONDS):
+                continue
+            batch, readings, flushed = readings, [], time.monotonic()
             try:
-                self._log({f'system/{k}': v
-                           for k, v in metrics.items()}, step)
+                self._log(batch)
                 failures = 0
             except Exception as error:
                 if not self._failed:
-                    logger.info('Could not log system metrics, skipping that '
-                                'reading: %s', format_error(error))
+                    logger.info('Could not log system metrics, skipping those '
+                                'readings: %s', format_error(error))
                 self._failed = True
                 failures += 1
                 if failures == _SYSTEM_METRICS_FAILURES:
                     logger.info('System metrics stopped after %d failed logs '
                                 'in a row', failures)
                     return
-            step += 1
 
 
 def _metric_monitors() -> List[Any]:

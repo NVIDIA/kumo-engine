@@ -437,8 +437,8 @@ def _prediction_summaries(manifest: 'PredictionManifest',
 @contextmanager
 def system_metrics(tracking: Any) -> Iterator[None]:
     r"""Has ``tracking`` sample system metrics during the block, through its
-    optional ``sample_system_metrics()`` context, for the prediction or
-    monitoring run it logs next."""
+    optional ``sample_system_metrics()`` context, for the prediction run it
+    logs next."""
     sample = getattr(tracking, 'sample_system_metrics', None)
     if sample is None or _rank() != 0:
         yield
@@ -493,9 +493,9 @@ class Tracking(Protocol):
     registry ``registry`` registers in when there is no ``log_model``; and
     ``platform``, ``run_id`` and ``run_url``, the tracker's own run once
     `start` returned, recorded as the model manifest's ``tracking``; and
-    the best-effort hooks ``log_prediction_run(record)`` and
-    ``log_monitoring(record)``, whose system metrics a
-    ``sample_system_metrics()`` context samples while the run works.
+    the best-effort hooks ``log_prediction_run(record)``, whose system
+    metrics a ``sample_system_metrics()`` context samples while the run
+    works, and ``log_monitoring(record)``.
     """
     def start(self, record: RunRecord) -> None:
         ...

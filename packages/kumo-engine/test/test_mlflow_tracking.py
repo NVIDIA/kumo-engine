@@ -528,35 +528,40 @@ def test_system_metrics_skip_a_failed_log_and_stop_after_repeated_ones(
 
     from kumo.engine.integrations import mlflow as integration
 
-    calls = []
+    batches = []
 
-    def log(metrics, step):
-        calls.append(step)
-        if step == 0 or step >= 2:
+    def log(readings):
+        batches.append([(values, step) for values, step, _ in readings])
+        if len(batches) == 1 or len(batches) >= 3:
             raise ConnectionError('blip')
 
     monkeypatch.setattr(integration, '_metric_monitors', lambda: [_Monitor()])
+    monkeypatch.setattr(integration, '_FLUSH_SECONDS', 0.0)
     caplog.set_level(logging.INFO, integration.logger.name)
     with integration._SystemMetrics(log, interval=0.001) as metrics:
         metrics._thread.join(10)
 
-    assert calls == list(range(2 + integration._SYSTEM_METRICS_FAILURES))
+    reading = ({'system/cpu': 1.0}, 0)
+    assert batches == [[reading] * 10, *[[reading]] * (
+        1 + integration._SYSTEM_METRICS_FAILURES)]
     assert caplog.text.count('Could not log system metrics') == 1
     assert 'ConnectionError: blip' in caplog.text
     assert 'stopped after 6 failed logs in a row' in caplog.text
 
 
-def test_system_metrics_log_a_reading_when_a_run_ends_within_the_interval(
-        monkeypatch):
+def test_system_metrics_sample_every_second_then_every_ten(monkeypatch):
     from kumo.engine.integrations import mlflow as integration
 
-    calls = []
     monkeypatch.setattr(integration, '_metric_monitors', lambda: [_Monitor()])
-    with integration._SystemMetrics(lambda metrics, step: calls.append(
-            (metrics, step)), interval=60):
+    batches = []
+    with integration._SystemMetrics(batches.append) as metrics:
         pass
+    monkeypatch.setenv('MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL', '2')
 
-    assert calls == [({'system/cpu': 1.0}, 0)]
+    assert batches == []  # fewer than 10 readings
+    assert [metrics._wait(elapsed) for elapsed in (0, 599, 600)] == [
+        1.0, 1.0, 10.0]
+    assert integration._SystemMetrics(batches.append)._wait(0) == 2.0
 
 
 def test_link_prediction_monitoring_metrics_are_logged(tracking_uri):
@@ -579,9 +584,10 @@ def test_link_prediction_monitoring_metrics_are_logged(tracking_uri):
     assert run.data.metrics == {'map_at_10': 0.5, 'precision_at_10': 0.25}
 
 
-@pytest.mark.parametrize('enabled', [True, False])
+@pytest.mark.parametrize('enabled,environment', [
+    (True, None), (False, None), (True, 'false')])
 def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
-        tracking_uri, monkeypatch, enabled):
+        tracking_uri, monkeypatch, enabled, environment):
     from functools import partial
 
     from test_tracking_contract import PREDICTION_MANIFEST
@@ -602,6 +608,8 @@ def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
             pass
 
     monitor = Monitor()
+    if environment:
+        monkeypatch.setenv('MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING', environment)
     monkeypatch.setattr(integration, '_metric_monitors', lambda: [monitor])
     monkeypatch.setattr(integration, '_SystemMetrics',
                         partial(integration._SystemMetrics, interval=0.01))
@@ -614,10 +622,11 @@ def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
 
     client = mlflow.MlflowClient()
     run, = _runs(client)
-    history = [(point.step, point.value) for point in client.get_metric_history(
-        run.info.run_id, 'system/cpu_utilization_percentage')]
-    assert history == [(step, step + 1.0) for step in range(monitor.samples)]
-    assert bool(history) == enabled
+    values = sorted(point.value for point in client.get_metric_history(
+        run.info.run_id, 'system/cpu_utilization_percentage'))
+    assert values == ([] if environment or not enabled else [
+        float(sample) for sample in range(1, monitor.samples + 1)])
+    assert monitor.samples >= (10 if values else 0)
 
 
 def test_series_and_histograms_become_one_table_per_name_prefix(

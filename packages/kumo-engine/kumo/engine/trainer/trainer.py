@@ -1732,8 +1732,7 @@ class Trainer:
         from kumo.engine._monitoring import evaluate, track
 
         settings = resolve(mlops)
-        with system_metrics(None if settings is None else settings.tracking):
-            result = evaluate(self, run, labels_snapshot)
+        result = evaluate(self, run, labels_snapshot)
         track(result, run, settings, self.result)
         return result
 
@@ -1762,12 +1761,9 @@ class Trainer:
         from kumo.engine._monitoring import score_drift, track
 
         settings = resolve(mlops)
-        with system_metrics(None if settings is None else settings.tracking):
-            report = score_drift(self, run, previous=previous,
-                                 snapshot=snapshot,
-                                 training_snapshot=training_snapshot,
-                                 root=None if settings is None else
-                                 settings.root)
+        report = score_drift(self, run, previous=previous, snapshot=snapshot,
+                             training_snapshot=training_snapshot,
+                             root=None if settings is None else settings.root)
         track(report, run, settings, self.result)
         return report
 
