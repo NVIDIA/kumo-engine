@@ -61,8 +61,7 @@ def fitted_spec(spec: RunSpec, result: Any,
     return replace(
         spec, metrics=holdout_metrics(result),
         parents={**spec.parents, 'bundle_id': result.id,
-                 **_registered(result.registered_model,
-                               result.registered_alias)},
+                 **_registered(result.registered_model)},
         artifacts=artifacts, summaries=summaries)
 
 
@@ -90,8 +89,7 @@ def _fit_mode(result: Any) -> Optional[str]:
     return getattr(getattr(result, 'manifest', None), 'fit_mode', None)
 
 
-def _registered(model: Any, alias: Optional[str]) -> Mapping[str, Any]:
+def _registered(model: Any) -> Mapping[str, Any]:
     if model is None:
         return {}
-    return {'model_name': model.name, 'model_version': model.version,
-            'model_alias': alias}
+    return {'model_name': model.name, 'model_version': model.version}

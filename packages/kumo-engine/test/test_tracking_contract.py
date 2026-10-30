@@ -474,8 +474,9 @@ def test_records_of_the_recorded_fit():
         **vars(RESULT), 'registered_alias': 'candidate',
         'registered_model': SimpleNamespace(name='ents', version='3')})
     tags = run_record(fitted_spec(fit_spec(CONTEXT), registered)).tags
-    assert tags.items() >= {'kumo.model_name': 'ents', 'kumo.model_version':
-                            '3', 'kumo.model_alias': 'candidate'}.items()
+    assert tags.items() >= {'kumo.model_name': 'ents',
+                            'kumo.model_version': '3'}.items()
+    assert 'kumo.model_alias' not in tags
     assert fit.artifacts == {}
     assert fit.description == f'`{QUERY}`'
     assert fit.inputs == INPUTS
@@ -733,7 +734,7 @@ def test_prediction_run_is_named_and_tagged_after_its_registered_model():
     assert record.name == '2024-04-29-v3-churn'
     assert record.tags.items() >= {
         'kumo.model_name': 'churn', 'kumo.model_version': '3',
-        'kumo.model_alias': 'champion', 'kumo.fit_run_id': 'r1'}.items()
+        'kumo.fit_run_id': 'r1'}.items()
 
 
 def test_adapter_records_the_same_prediction_run(adapter):

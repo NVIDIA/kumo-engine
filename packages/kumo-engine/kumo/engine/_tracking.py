@@ -370,13 +370,11 @@ def fit_run_id(manifest: Any) -> Optional[str]:
 
 def registered_parents(model: Any) -> Mapping[str, Any]:
     r"""Pointer tags to the registered version of ``model``, a
-    `TrainingResult`: ``model_name``, ``model_version`` and
-    ``model_alias``."""
+    `TrainingResult`: ``model_name`` and ``model_version`` (not its alias,
+    which the registry moves)."""
     from kumo.engine.trainer._run_spec import _registered
 
-    if model is None:
-        return {}
-    return _registered(model.registered_model, model.registered_alias)
+    return {} if model is None else _registered(model.registered_model)
 
 
 def _started(manifest: 'PredictionManifest') -> datetime:

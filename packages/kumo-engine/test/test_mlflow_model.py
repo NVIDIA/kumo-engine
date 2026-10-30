@@ -76,8 +76,8 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     assert version.source == model.model_uri
     assert parent.data.tags.items() >= {
         'kumo.kind': 'fit', 'kumo.bundle_id': result.id,
-        'kumo.model_name': 'm', 'kumo.model_version': str(version.version),
-        'kumo.model_alias': 'champion'}.items()
+        'kumo.model_name': 'm',
+        'kumo.model_version': str(version.version)}.items()
     assert result.registered_model == PublishedModel(
         name='m', version=str(version.version),
         uri=f'models:/m/{version.version}',
