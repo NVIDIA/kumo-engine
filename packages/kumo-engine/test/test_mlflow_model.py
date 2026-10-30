@@ -556,6 +556,33 @@ def test_a_tracking_start_failure_names_its_cause_and_can_raise(
     ]
 
 
+def test_an_alias_names_one_version_to_load_and_record(
+        tracking_uri, monkeypatch):
+    import contextlib
+
+    from kumo.engine.integrations import mlflow as integration
+
+    aliases = {'champion': '1'}
+    client = SimpleNamespace(get_model_version_by_alias=lambda name, alias:
+                             SimpleNamespace(version=aliases[alias]))
+    recorded = []
+
+    def promote_while_downloading(uri, **kwargs):
+        name, at, alias = uri.removeprefix('models:/').partition('@')
+        bundle = aliases[alias] if at else name.partition('/')[2]
+        aliases['champion'] = '2'
+        return SimpleNamespace(_from_registry=lambda model, alias: recorded
+                               .append((bundle, model.version)))
+
+    monkeypatch.setattr(integration, 'load_model', promote_while_downloading)
+    tracking = integration.MlflowTracking(log_system_metrics=False)
+    tracking.target = SimpleNamespace(scope=contextlib.nullcontext,
+                                      client=lambda: client)
+    tracking.load_model(kumo.ModelRegistryLocation('m', alias='champion'))
+
+    assert recorded == [('1', '1')]
+
+
 def test_a_logged_model_is_named_after_its_model():
     from kumo.engine.integrations.mlflow import logged_model_name
 
