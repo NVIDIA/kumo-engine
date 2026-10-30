@@ -38,25 +38,19 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Read copied PR context
+      - name: Verify the copied PR and find its merge base
         id: pr
         if: startsWith(github.ref, 'refs/heads/pull-request/')
-        uses: nv-gha-runners/get-pr-info@090577647b8ddc4e06e809e264f7881650ecdccf
-      - name: Verify the copied commit
-        if: startsWith(github.ref, 'refs/heads/pull-request/')
-        env:
-          PR_INFO: ${{ steps.pr.outputs.pr-info }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          pr = json.loads(os.environ['PR_INFO'])
-          assert pr['head']['sha'] == os.environ['GITHUB_SHA'], 'Copied PR is stale; approve the current SHA'
-          PY
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const { setCopiedPullRequestOutputs } = require('./.github/scripts/copied-pr.cjs');
+            await setCopiedPullRequestOutputs({ github, context, core });
       - name: Read complete changed-file list
         id: files
         uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
         with:
-          base_sha: ${{ steps.pr.outputs.pr-info && fromJSON(steps.pr.outputs.pr-info).base.sha || github.event.before }}
+          base_sha: ${{ steps.pr.outputs.base || github.event.before }}
           json: true
           escape_json: false
       - name: Select private jobs

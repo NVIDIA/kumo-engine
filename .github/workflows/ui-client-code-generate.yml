@@ -6,70 +6,54 @@ name: Auto UI client code gen using Orval
 
 on: # yamllint disable-line rule:truthy
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - 'rest/app.py'
-      - 'rest/config/**'
-      - 'rest/main.py'
-      - 'rest/routers/**'
-      - 'rest/scripts/download_schema.py'
-      - 'rest/utils/routers.py'
-      - 'ui/src/gen/spec/**'
+  # Schema analysis waits for approval of the exact commit by copy-pr-bot.
+  push:
+    branches: ["pull-request/[0-9]+"]
   issue_comment:
     types: [created]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }}
-  # Only cancel intermediate builds if on a PR:
-  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
-
-env:
-  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-  GITHUB_REF: ${{secrets.GITHUB_REF}}
-  GITHUB_API_URL: ${{secrets.GITHUB_API_URL}}
-  GITHUB_REPOSITORY: ${{secrets.GITHUB_REPOSITORY}}
-  GITHUB_REPOSITORY_OWNER: ${{secrets.GITHUB_REPOSITORY_OWNER}}
-  GITHUB_RUN_ID: ${{secrets.GITHUB_RUN_ID}}
+  group: ${{ github.workflow }}-${{ github.event.issue.number || github.ref }}-${{ startsWith(github.ref, 'refs/heads/pull-request/') && 'approved' || github.run_number }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/heads/pull-request/') }}
 
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  packages: read
+  contents: read
 
 jobs:
   check-openapi-changes:
     name: Check OpenAPI Changes
     runs-on: ubuntu-24.04
-    if: github.event_name == 'pull_request'
+    timeout-minutes: 45
+    if: github.event_name == 'push'
     permissions:
       contents: read
       pull-requests: write
-      issues: write
-      packages: read
-    outputs:
-      spec_changed: ${{steps.openapi-changes.outputs.changed}}
     steps:
-      - name: Checkout PR branch
+      - name: Checkout the approved commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ github.sha }}
-          # Shallow checkout to avoid a full clone of git history
-          fetch-depth: 1
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Set up Python
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - name: Verify the copied PR and find its merge base
+        id: pr
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
         with:
-          python-version: "3.14"
-          activate-environment: true
-          enable-cache: false
+          script: |
+            const { setCopiedPullRequestOutputs } = require('./.github/scripts/copied-pr.cjs');
+            await setCopiedPullRequestOutputs({ github, context, core });
 
       - name: Check for backend/API changes
         id: backend-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
         with:
+          base_sha: ${{ steps.pr.outputs.base }}
           files: |
+            .github/actions/setup/**
+            .github/scripts/copied-pr.cjs
+            .github/scripts/openapi-pr.cjs
+            .github/workflows/ui-client-code-generate.yml
             rest/app.py
             rest/config/**
             rest/main.py
@@ -83,8 +67,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           python-version: "3.14"
-          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
-          ref: ${{ github.event.pull_request.head.sha }}
+          github_token: ${{ github.token }}
+          ref: ${{ steps.pr.outputs.head }}
 
       - name: Download openapi.json files
         if: steps.backend-changes.outputs.any_changed == 'true'
@@ -113,56 +97,48 @@ jobs:
           cd ui
           npm run lint-format-codegen --subdir=spec
 
-      - name: Check for Spec changes
+      - name: Check for schema changes
         if: steps.backend-changes.outputs.any_changed == 'true'
         id: openapi-changes
         run: |
-          if git diff --quiet --exit-code ui/src/gen/spec/; then
-            echo "changed=false" >> $GITHUB_OUTPUT
+          if git diff --quiet --exit-code -- ui/src/gen/spec/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --binary -- ui/src/gen/spec/ > "$RUNNER_TEMP/openapi-schema.patch"
           fi
 
-      - name: Post warning comment if changes detected
-        if: steps.backend-changes.outputs.any_changed == 'true' && steps.openapi-changes.outputs.changed == 'true'
+      - name: Upload the schema patch
+        if: steps.openapi-changes.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: openapi-schema-patch
+          path: ${{ runner.temp }}/openapi-schema.patch
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Summarize schema analysis
+        env:
+          SCHEMA_CHANGED: ${{ steps.openapi-changes.outputs.changed }}
+          API_CHANGED: ${{ steps.backend-changes.outputs.any_changed }}
+        run: |
+          if [[ "$SCHEMA_CHANGED" == true ]]; then
+            echo 'OpenAPI schemas need regeneration. Download the schema patch from this run.' >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$API_CHANGED" == true ]]; then
+            echo 'OpenAPI schemas are up to date.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No OpenAPI-related files changed.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Analyzed commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update the OpenAPI PR comment
+        env:
+          SCHEMA_CHANGED: ${{ steps.openapi-changes.outputs.changed }}
         uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const warningMessage = `⚠️ **OpenAPI spec changes detected in this PR**
-
-            This means the UI client code needs to be regenerated.
-
-            To regenerate the UI client code in this PR, comment:
-            \`/trigger-ui-codegen\``;
-
-            // Find existing warning comment
-            const comments = await github.rest.issues.listComments({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-            });
-
-            const existingComment = comments.data.find(comment =>
-              comment.body.includes('⚠️ **OpenAPI spec changes detected in this PR**')
-            );
-
-            // Update existing comment or create new one
-            if (existingComment) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existingComment.id,
-                body: warningMessage
-              });
-            } else {
-              await github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: warningMessage
-              });
-            }
+            const { reportOpenAPI } = require('./.github/scripts/openapi-pr.cjs');
+            await reportOpenAPI({ github, context, changed: process.env.SCHEMA_CHANGED === 'true' });
 
   trigger-codegen:
     name: Trigger UI Codegen

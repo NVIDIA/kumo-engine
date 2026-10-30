@@ -20,7 +20,7 @@ def selection(files, force=False):
                              'benchmark/**', '*.md')) or path in
         ('tools/run_private_tests.py', 'tools/ci_private_changes.py')
         for path in files)
-    shared = ('.github/actions/setup/**',
+    shared = ('.github/actions/setup/**', '.github/scripts/copied-pr.cjs',
               '.github/workflows/testing_private.yml', 'test/ci_resources.py',
               'kumo/testing/**', 'setup.py', 'uv.lock',
               'tools/run_private_tests.py', 'tools/ci_private_changes.py')
