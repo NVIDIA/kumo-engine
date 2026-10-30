@@ -36,6 +36,7 @@ dependencies = [
   "matplotlib>=3.10.0",
   "numpy>=1.26,<3",
   "optuna>=4,<5",
+  "orjson>=3.10,<4",
   "pandas>=1.5,<3",
   "pyarrow>=15,<25",
   "pydantic>=2.11",

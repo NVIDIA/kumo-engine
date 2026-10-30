@@ -114,3 +114,23 @@ Report bugs and request features in [GitHub Issues](https://github.com/NVIDIA/ku
 ## License
 
 Kumo Engine is licensed under the [Apache License 2.0](https://github.com/NVIDIA/kumo-engine/blob/main/LICENSE). The wheel also bundles third-party components under their own licenses, listed in [THIRD-PARTY.txt](https://github.com/NVIDIA/kumo-engine/blob/main/THIRD-PARTY.txt).
+
+### Remote batch sampling
+
+With identical graph index files already prepared on Flight sampling workers,
+configure the trainer with their addresses:
+
+```python
+trainer = kumo.Trainer(
+    model_plan,
+    remote_sampling_endpoint=["grpc://worker-a:8815", "grpc://worker-b:8815"],
+    remote_sampling_num_threads=2,
+)
+result = trainer.fit(training_table, snapshot=snapshot)
+```
+
+Training runs on the calling machine. Workers receive the prepared training-table
+extension and push complete, disjoint epoch shards over Arrow Flight. The sampling
+thread count must fit each worker's configured budget. See the
+[core transport documentation](../kumo-core/README.md#remote-batch-sampling-over-arrow-flight)
+for worker setup, flow control, and cleanup.

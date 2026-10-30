@@ -83,3 +83,45 @@ Run commands from the repository worktree after installing the normal Kumo devel
 On a CUDA-capable development machine, `make test-kumo-core-gpu` selects the retained device-parametrized package cases. The focused, non-required Kumo Core GPU workflow runs on manual dispatch and, for trusted in-repository PRs, when the existing `ml-algorithms` component label triggers a workflow event or a labeled PR is subsequently updated; bot-applied labels may require that subsequent update because `GITHUB_TOKEN` events do not launch workflows. The retired Triton workflow is not part of this package.
 
 Kumo is not yet a uv workspace. These commands operate on `packages/kumo-core` explicitly and do not rely on workspace discovery.
+
+## Remote batch sampling over Arrow Flight
+
+`kumo_core.diskgraph.sampling_service.SamplingService` serves complete native
+DiskGraph batches from a prepared graph index. Each worker owns a disjoint epoch
+shard. The trainer's `RemoteRuntimeIndex` merges these streams in deterministic
+round-robin order and passes the same Arrow-backed batch structure to the local
+training adapter.
+
+Start a worker in its owning process, using a graph replica with the same native
+index files as the trainer:
+
+```python
+from pathlib import Path
+from kumo_core.diskgraph.sampling_service import SamplingService, SamplingServiceConfig
+
+service = SamplingService(
+    SamplingServiceConfig(
+        index_path=Path("/local/graph"),
+        host="0.0.0.0",
+        port=8815,
+        max_threads=2,
+    )
+)
+try:
+    service.serve()
+finally:
+    service.close()
+```
+
+The client registers each immutable training-table extension once per worker,
+using bounded file chunks and a content checksum. Epoch requests carry sampling,
+projection, seed, and shard settings. Flight exchanges use a two-batch credit
+window to bound production while the consumer is paused. Completion counts and
+RPC status are checked; failures propagate without replaying an incomplete epoch.
+Closing an iterator cancels its outstanding streams, and data-module teardown
+closes shared worker connections. Ordered RHS catalog scans use one replica to
+preserve the order required by MIPS embedding construction.
+
+`SamplingService.health()` reports readiness, process identity, active streams,
+and task/batch counters. Graph preparation and worker process lifetime belong to
+the caller. Use this transport only between trusted peers on a restricted network.
