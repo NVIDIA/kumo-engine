@@ -25,23 +25,18 @@ _DTYPES = {
 
 class KumoModel(_pyfunc.PythonModel):
     def load_context(self, context: Any) -> None:
-        from pathlib import Path
-
-        from kumo.engine._deps import asset_locations, connector_roots
+        from kumo.engine._deps import assets_through
         from kumo.engine._predictor import load_predictor
-        from kumo.engine.trainer._provenance import read_provenance
 
+        self._reader = context.model_config.get('assets_from')
         bundle = context.artifacts['bundle']
-        with asset_locations(
-                connector_roots(read_provenance(Path(bundle)),
-                                context.model_config.get('assets_from')),
-                lambda reader, _: (
+        with assets_through(
+                self._reader, bundle, lambda reader, _: (
                     f"pass model_config={{'assets_from': {reader}(...)}} to "
                     f"mlflow.pyfunc.load_model(model_uri, ...), with an "
                     f"identity that reads it")):
             self._predictor = load_predictor(bundle)
         self._columns = list(context.model_config['columns'])
-        self._reader = context.model_config.get('assets_from')
         self._snapshots: Dict[str, GraphSnapshot] = {}
         self._default = context.model_config.get('snapshot')
         if self._default:

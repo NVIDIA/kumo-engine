@@ -283,6 +283,17 @@ def connector_roots(manifest: Optional[ModelManifest],
     })]
 
 
+@contextmanager
+def assets_through(connector: Any, bundle: Union[str, Path],
+                   hint: Hint) -> Iterator[None]:
+    r"""Resolves ``bundle``'s stored assets through ``connector`` too."""
+    from kumo.engine.trainer._provenance import read_provenance
+
+    with asset_locations(
+            connector_roots(read_provenance(Path(bundle)), connector), hint):
+        yield
+
+
 def asset_cache() -> Path:
     base = os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache'
     return Path(base) / 'kumo' / 'assets'

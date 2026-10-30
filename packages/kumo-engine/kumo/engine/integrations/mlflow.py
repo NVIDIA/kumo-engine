@@ -1399,9 +1399,8 @@ def load_model(
     r"""Restore the `Trainer` of a model `log_model` logged, from the
     server ``target`` reaches, as in `MlflowTracking` (`None`: MLflow's own
     tracking URI)."""
-    from kumo.engine._deps import asset_locations, connector_roots
+    from kumo.engine._deps import assets_through
     from kumo.engine._scratch import new_run_id, trainer_scratch_dir
-    from kumo.engine.trainer._provenance import read_provenance
     from kumo.engine.trainer.trainer import Trainer, warn_if_other_bundle
 
     mlflow = import_provider('mlflow', 'mlflow')
@@ -1412,9 +1411,7 @@ def load_model(
         local = Path(_download(mlflow, target, model_uri, destination))
     model = mlflow.models.Model.load(str(local))
     bundle = model.flavors['python_function']['artifacts']['bundle']['path']
-    with asset_locations(
-            connector_roots(read_provenance(local / bundle), target.assets),
-            _target_hint):
+    with assets_through(target.assets, local / bundle, _target_hint):
         trainer = Trainer.load(local / bundle, embedding_models,
                                accelerator=accelerator)
     warn_if_other_bundle(model.metadata, trainer)
