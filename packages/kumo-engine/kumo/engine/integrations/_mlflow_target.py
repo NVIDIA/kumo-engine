@@ -1,18 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Where `MlflowTracking` records, and the credentials that reach it.
-
-MLflow clients take a tracking and a registry URI but no credentials: the
-Databricks store reads them from ``DATABRICKS_*`` variables, a profile or the
-notebook (``mlflow.utils.databricks_utils.get_databricks_host_creds``), and
-the SageMaker plugin signs with the process-wide tracking URI and a boto3
-session (``sagemaker_mlflow.auth_provider.AuthProvider.get_auth``). With
-explicit credentials, `Target.scope` sets exactly that state around each
-call, under one lock, and restores it. Ambient credentials set no
-credentials; a Databricks or SageMaker target still sets the process-wide
-tracking URI.
-"""
+r"""Where `MlflowTracking` records, and the credentials that reach it."""
 
 import logging
 import os
@@ -33,8 +22,6 @@ _QUIET_LOCK = threading.Lock()
 
 
 def _no_header_error(record: logging.LogRecord) -> bool:
-    # A request-header provider that fails off its platform; the call
-    # proceeds without those headers.
     return not record.getMessage().startswith(
         'Encountered unexpected error during resolving request headers')
 
@@ -79,8 +66,7 @@ class SageMakerMLflow:
 
 
 class Target:
-    r"""A tracking URI, its registry URI and, for explicit credentials, the
-    state MLflow reads them from."""
+    r"""A tracking URI, its registry URI and how to reach them."""
 
     def __init__(self, tracking_uri: str, registry_uri: Optional[str],
                  swap: Optional[Callable[[], ContextManager[Any]]] = None,
@@ -100,8 +86,7 @@ class Target:
         return 'mlflow'
 
     def run_url(self, experiment_id: str, run_id: str) -> Optional[str]:
-        r"""The run's page in the MLflow UI; None where no link opens it
-        (SageMaker, local stores)."""
+        r"""The run's page in the MLflow UI, where there is one."""
         if self.platform == 'databricks':
             host = self._host or _workspace_host()
             return None if host is None else (
@@ -133,8 +118,7 @@ class Target:
         return mlflow.MlflowClient(self.tracking_uri, self.registry_uri)
 
     def artifact_repository(self, uri: str) -> Any:
-        r"""The repository for artifacts at ``uri``, or `None` to go through
-        the client: MLflow's S3 store signs with the default AWS chain."""
+        r"""An S3 repository signed as this target, or `None`."""
         if self._aws_session is None or not uri.startswith('s3://'):
             return None
         s3 = import_provider('mlflow.store.artifact.s3_artifact_repo',
@@ -167,8 +151,6 @@ def resolve(target: Any) -> Target:
 
 
 def _workspace_host() -> Optional[str]:
-    # On a cluster the SDK's host is the regional one; the notebook context
-    # names the workspace's own URL, which run links need.
     try:
         utils = import_provider('mlflow.utils.databricks_utils', 'mlflow')
         host, _ = utils.get_workspace_info_from_dbutils()
@@ -184,8 +166,7 @@ def _workspace_host() -> Optional[str]:
 
 
 def registry_for(tracking_uri: str) -> str:
-    r"""The registry a tracking URI implies: Unity Catalog on Databricks,
-    the tracking server itself elsewhere."""
+    r"""Unity Catalog on Databricks, else the tracking server itself."""
     scheme, colon, rest = tracking_uri.partition(':')
     return f'databricks-uc{colon}{rest}' if scheme == 'databricks' else (
         tracking_uri)
@@ -203,8 +184,6 @@ def _databricks(connector: Any) -> Target:
     principal = _principal(connector.identity)
     if (principal is None or principal.config.authentication
             is DatabricksAuthenticationKind.AMBIENT):
-        # Unity Catalog registration downloads the logged model through the
-        # process-wide tracking URI, so it must point at the workspace.
         return Target('databricks', 'databricks-uc',
                       swap=lambda: global_tracking_uri('databricks'))
     client = import_provider('kumo_databricks.session',
@@ -216,10 +195,7 @@ def _databricks(connector: Any) -> Target:
 
 @contextmanager
 def _databricks_token(client: Any) -> Iterator[None]:
-    r"""``DATABRICKS_HOST`` and a short-lived ``DATABRICKS_TOKEN`` minted
-    from the identity's own client, with every other Databricks auth
-    variable unset, and the process-wide tracking URI set to
-    ``databricks``; the client secret never enters the environment."""
+    r"""A short-lived ``DATABRICKS_TOKEN``; the secret stays out."""
     config_type = import_provider('databricks.sdk.config',
                                   'databricks').Config
     authorization = client.config.authenticate()['Authorization']
@@ -233,8 +209,6 @@ def _databricks_token(client: Any) -> Iterator[None]:
                for name in names}, 'DATABRICKS_HOST': client.config.host,
             'DATABRICKS_TOKEN': authorization.partition(' ')[2]
     }), global_tracking_uri('databricks'):
-        # Unity Catalog registration downloads the logged model through the
-        # process-wide tracking URI, so it must point at the workspace too.
         yield
 
 
@@ -254,9 +228,7 @@ def _sagemaker(target: SageMakerMLflow) -> Target:
 
 @contextmanager
 def _sagemaker_session(arn: str, session: Any) -> Iterator[None]:
-    r"""The plugin's signer and router read the process-wide tracking URI
-    and take a boto3 session from a per-thread context variable;
-    ``SAGEMAKER_MLFLOW_ASSUME_ROLE_ARN`` would make it assume a role."""
+    r"""The SageMaker plugin's state, signing with ``session``."""
     plugin = import_provider('sagemaker_mlflow.session', 'sagemaker')
     with ExitStack() as stack:
         stack.enter_context(environ({'SAGEMAKER_MLFLOW_ASSUME_ROLE_ARN': None}))
@@ -267,9 +239,7 @@ def _sagemaker_session(arn: str, session: Any) -> Iterator[None]:
 
 @contextmanager
 def global_tracking_uri(uri: str) -> Iterator[None]:
-    r"""``mlflow.set_tracking_uri(uri)`` for the block. MLflow's own
-    ``_use_tracking_uri`` restores by unsetting ``MLFLOW_TRACKING_URI``,
-    so this restores the module value and the variable itself."""
+    r"""``mlflow.set_tracking_uri(uri)`` for the block."""
     mlflow = import_provider('mlflow', 'mlflow')
     utils = import_provider('mlflow.tracking._tracking_service.utils',
                             'mlflow')

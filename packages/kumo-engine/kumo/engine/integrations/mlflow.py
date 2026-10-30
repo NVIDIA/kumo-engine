@@ -77,14 +77,12 @@ logger = logging.getLogger(__name__)
 
 _MAX_PARAM_KEY = 250
 _MAX_PARAM_VALUE = 6000
-# MLflow's portable name charset (its Windows rule, which omits ':').
+# MLflow's Windows-safe charset.
 _PARAM_KEY = re.compile(r'[/\w.\- ]+')
-# MLflow's defaults (7 retries, 120 s timeout) can hold a call for minutes.
 _HTTP_LIMITS = {
     'MLFLOW_HTTP_REQUEST_MAX_RETRIES': '2',
     'MLFLOW_HTTP_REQUEST_TIMEOUT': '30',
 }
-# Model upload only, and only where the limits above apply.
 _UPLOAD_HTTP = {'MLFLOW_HTTP_REQUEST_TIMEOUT': '600'}
 _PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS')
 _SAGEMAKER_MODEL = re.compile(r'[a-zA-Z0-9](-*[a-zA-Z0-9]){0,56}')
@@ -190,15 +188,11 @@ class MlflowTracking:
             yield self.target.client()
 
     def check_model_name(self, name: str) -> None:
-        r"""Raises :class:`ValueError` unless this tracker's registry
-        accepts ``name``."""
+        r"""Raises :class:`ValueError` unless the registry accepts ``name``."""
         check_model_name(name, self.target.registry_uri or '')
 
     def check(self, registry: Optional[ModelRegistryLocation] = None) -> None:
-        r"""Raises before any work unless the server is reachable with these
-        credentials and, given ``registry``, can register its model: one
-        experiment lookup, one registry listing and, on Unity Catalog, the
-        model's schema."""
+        r"""Raises unless the server (and ``registry``) is usable."""
         self._require_experiment()
         if registry is not None:
             self.check_model_name(registry.model_name)
@@ -253,8 +247,7 @@ class MlflowTracking:
 
     def load_model(self, location: ModelRegistryLocation,
                    **kwargs: Any) -> 'Trainer':
-        r"""The `Trainer` of the version of ``location`` its alias or
-        version names, from this tracker's registry."""
+        r"""The `Trainer` of ``location``'s alias or version."""
         if (location.alias is None) == (location.version is None):
             raise ValueError('Loading from an MLflow registry takes a '
                              'ModelRegistryLocation with an alias or a '
@@ -266,9 +259,8 @@ class MlflowTracking:
 
     def register(self, result: Any,
                  location: ModelRegistryLocation) -> PublishedModel:
-        r"""Registers a fitted or loaded model (a `TrainingResult`) at
-        ``location``: the version that already holds its bundle, else a new
-        version of the model logged in a new run of this experiment."""
+        r"""Registers a `TrainingResult` at ``location``, reusing a version
+        that holds its bundle."""
         from kumo.engine._manifest import stub
         from kumo.engine.graph import GraphSnapshot
         from kumo.engine.trainer._spec import read_training_spec
@@ -318,7 +310,6 @@ class MlflowTracking:
         try:
             autologging = import_provider('mlflow.utils.autologging_utils',
                                           'mlflow')
-            # Not reentrant: leaving it clears the flag.
             if not getattr(autologging, '_AUTOLOGGING_GLOBALLY_DISABLED',
                            False):
                 self._guard.enter_context(autologging.disable_autologging())
@@ -452,8 +443,6 @@ class MlflowTracking:
         self._log_metrics(self._parent, metrics, step)
 
     def log_summaries(self, summaries: Sequence[Summary]) -> None:
-        r"""Logs each summary on the current run through its type's call in
-        `_SINKS`; a test scalar also goes on the logged model."""
         for summary in summaries:
             _SINKS[type(summary)](self, summary)
 
@@ -607,11 +596,7 @@ _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
 
 
 class _SystemMetrics:
-    r"""Samples MLflow's CPU, disk, network and GPU monitors every
-    ``interval`` seconds on its own thread and hands each aggregate to
-    ``log(metrics, step)``, which logs it through the tracker's
-    credentials. (MLflow's own ``SystemMetricsMonitor`` logs with
-    process-wide ones.)"""
+    r"""MLflow's system monitors, logged with the tracker's credentials."""
 
     def __init__(self, log: Callable[[Mapping[str, float], int], None],
                  interval: float = 10.0) -> None:
@@ -636,7 +621,7 @@ class _SystemMetrics:
     def _run(self) -> None:
         step = failures = 0
         stopped = False
-        while not stopped:  # and a last reading when the run ends
+        while not stopped:
             stopped = self._stop.wait(self._interval)
             metrics: Dict[str, float] = {}
             for monitor in self._monitors:
@@ -677,11 +662,7 @@ def _metric_monitors() -> List[Any]:
 
 
 def check_model_name(name: str, registry_uri: str) -> None:
-    r"""Raises :class:`ValueError` unless the MLflow registry at
-    ``registry_uri`` accepts ``name``: SageMaker managed MLflow takes letters,
-    digits and hyphens; Unity Catalog takes ``catalog.schema.model``, each
-    part at most 255 characters without spaces, ``/``, ``.`` or control
-    characters."""
+    r"""Raises :class:`ValueError` unless ``registry_uri`` accepts ``name``."""
     is_databricks_unity_catalog_uri = import_provider(
         'mlflow.utils.uri', 'mlflow').is_databricks_unity_catalog_uri
 
@@ -721,8 +702,7 @@ def _sagemaker_ui_hint(tracking_uri: str) -> Optional[str]:
 
 
 def metric_key(name: str) -> str:
-    r"""The MLflow name of a Kumo metric: MLflow rejects ``@``, so
-    ``map@10`` is logged as ``map_at_10``."""
+    r"""``map@10`` as ``map_at_10``: MLflow rejects ``@``."""
     return name.replace('@', '_at_')
 
 
@@ -846,9 +826,7 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
                snapshot: Optional['GraphSnapshot'], *, name: str, run_id: str,
                experiment_id: Optional[str],
                serving_snapshot: Optional[str]) -> Any:
-    r"""What ``mlflow.pyfunc.log_model`` does, through ``client``: it only
-    logs to the process-wide tracking URI. A bundle without a training spec
-    is logged without a signature."""
+    r"""``mlflow.pyfunc.log_model`` through ``client``."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
     from kumo.engine.integrations import _mlflow_model, _mlflow_model_code
@@ -1030,9 +1008,7 @@ def _code(error: BaseException) -> str:
 
 
 def check_registry_schema(name: str, registry_uri: str) -> None:
-    r"""On Unity Catalog, raises :class:`ValueError` unless the catalog and
-    schema of a ``catalog.schema.model`` name exist and these credentials
-    can use them (one metadata call, no warehouse)."""
+    r"""On Unity Catalog, raises unless the model's schema is usable."""
     uri = import_provider('mlflow.utils.uri', 'mlflow')
     parts = name.split('.')
     if not uri.is_databricks_unity_catalog_uri(registry_uri) or len(
@@ -1060,7 +1036,6 @@ def check_registry_schema(name: str, registry_uri: str) -> None:
 
 
 def _no_serving_check(record: logging.LogRecord) -> bool:
-    # MLflow's input-example check predicts without a snapshot; no switch.
     return not record.getMessage().startswith(
         'Failed to validate serving input example')
 

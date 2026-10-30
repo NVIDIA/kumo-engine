@@ -42,8 +42,6 @@ logger = logging.getLogger(__name__)
 
 DROPPED_PARAMS = 'kumo.dropped_params'
 DROPPED_METRICS = 'kumo.dropped_metrics'
-# Tracker calls run on one background thread so a slow tracking server
-# never stalls training; these bound how long the fit waits for it.
 QUEUE_SIZE = 1000
 FINISH_SECONDS = 30.0
 MODEL_SECONDS = 3600.0
@@ -51,11 +49,7 @@ MODEL_SECONDS = 3600.0
 
 @dataclass(frozen=True)
 class RunRecord:
-    r"""One tracked run; ``steps`` are per-epoch ``(epoch, value)``
-    histories, ``artifacts`` map file names to text, ``inputs`` map
-    source table names to their ``connector``, ``location``, ``version`` and
-    ``version_kind``, and ``summaries`` are `kumo_core.summaries` results,
-    which each tracker logs in its own way."""
+    r"""One tracked run; ``steps`` are ``(step, value)`` histories."""
 
     name: Optional[str] = None
     params: Mapping[str, str] = field(default_factory=dict)
@@ -71,9 +65,7 @@ class RunRecord:
 
 @dataclass(frozen=True)
 class RunSpec:
-    r"""What a run records, whatever trained or scored it: ``params`` are
-    flat, ``parents`` become ``kumo.<name>`` pointer tags and ``tags`` are
-    the user's own."""
+    r"""What a run records; ``parents`` become ``kumo.<name>`` tags."""
 
     kind: str
     name: Optional[str] = None
@@ -95,8 +87,7 @@ INPUT_FIELDS = ('connector', 'location', 'version', 'version_kind')
 
 
 def fit_inputs(manifest: Any) -> Dict[str, Dict[str, Optional[str]]]:
-    r"""Source tables of a training table or model manifest, read from its
-    embedded parents; stub parents add none."""
+    r"""Source tables of a training table or model manifest."""
     try:
         table = manifest
         if getattr(manifest, 'kind', None) == 'model':
@@ -129,9 +120,8 @@ def _text(value: Any) -> Optional[str]:
 
 
 def logged_name(name: str) -> str:
-    r"""A metric's name in a tracker: ``val_auroc`` is ``val/auroc`` and a
-    trial's ``best_val_auroc`` is ``val/best_auroc``, so charts group by
-    split."""
+    r"""``val_auroc`` as ``val/auroc``, ``best_val_auroc`` as
+    ``val/best_auroc``."""
     best = name.startswith('best_')
     split, _, metric = name.removeprefix('best_').partition('_')
     if split not in ('train', 'val', 'test') or not metric:
@@ -145,8 +135,7 @@ def logged_names(metrics: Mapping[str, Any]) -> Dict[str, Any]:
 
 def by_step(steps: Mapping[str, Sequence[Tuple[int, float]]]
             ) -> List[Tuple[int, Dict[str, float]]]:
-    r"""Per-step histories regrouped as each step's metrics, in step
-    order."""
+    r"""Each step's metrics, in step order."""
     grouped: Dict[int, Dict[str, float]] = {}
     for name, history in steps.items():
         for step, value in history:
@@ -252,9 +241,7 @@ class Tracking(Protocol):
 
 @dataclass
 class _Search:
-    r"""The fit run's own series: a single trial's epochs as they end, or,
-    for a search, the best validation ``metric`` after each trial; then
-    `best`, the selected trial, whose epochs the run records at the end."""
+    r"""The fit run's series: one trial's epochs, or a search's best."""
 
     single: bool
     metric: str
@@ -286,8 +273,7 @@ class _Search:
 
 
 class RegistrationError(Exception):
-    r"""Raised by a tracker's ``log_model`` from the error that registering
-    the logged model raised."""
+    r"""Registering, not logging, the model failed."""
 
 
 class TrackingSession:
@@ -337,8 +323,7 @@ class TrackingSession:
             self._started.set()
 
     def pointer(self) -> Optional['TrackingRef']:
-        r"""The tracker's own run, once it started: its platform, run id
-        and URL."""
+        r"""The tracker's own run, once it started."""
         from kumo.engine._manifest import TrackingRef
 
         if self.spec is None or not self._started.wait(FINISH_SECONDS):
@@ -381,8 +366,7 @@ class TrackingSession:
         snapshot: Any,
         registry: Optional['ModelRegistryLocation'] = None,
     ) -> Tuple[Optional['PublishedModel'], Optional[BaseException]]:
-        r"""Runs the tracker's ``log_model`` on the tracking thread and waits
-        for it; returns the registered version and the error it raised."""
+        r"""The tracker's ``log_model``, run on the tracking thread."""
         if self._worker is None or (self._tracker is not None and not callable(
                 getattr(self._tracker, 'log_model', None))):
             return None, None
@@ -438,8 +422,7 @@ class TrackingSession:
 
     def finish(self, spec: Optional[Callable[[], RunSpec]],
                error: Optional[BaseException]) -> None:
-        r"""Ends the run with ``spec()``, its final spec (`None`: the started
-        one), failed if ``error``."""
+        r"""Ends the run with ``spec()`` (`None`: the started spec)."""
         worker = self._worker
         if self.spec is None or worker is None:
             return
@@ -524,8 +507,6 @@ class TrackingSession:
 
 
 def _debug() -> bool:
-    r"""Tracebacks of tracking failures only at DEBUG: the failure itself is
-    reported once, by the call that tracked it."""
     return logger.isEnabledFor(logging.DEBUG)
 
 

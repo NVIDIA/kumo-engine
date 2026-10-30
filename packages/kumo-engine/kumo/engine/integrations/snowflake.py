@@ -51,7 +51,6 @@ logger = logging.getLogger(__name__)
 
 _MAX_METRICS = 200
 _MAX_PARAMS = 1000
-# Metric name budgets: per-epoch metrics give way first, then trial summaries.
 _EPOCH_METRICS = _MAX_METRICS - 60
 _SUMMARY_METRICS = _MAX_METRICS - 30
 _FINISH_PARAMS = 20
@@ -254,9 +253,7 @@ class SnowflakeTracking:
                       run_name: Optional[str]) -> Optional[str]:
         if run_name is None:
             return None
-        # start_run(name) resumes, or raises on, any run matching name as a
-        # SQL LIKE pattern and cannot create an existing run, so pick a name
-        # that is neither.
+        # start_run matches name as a LIKE pattern.
         existing = [
             str(row['name'])
             for row in tracking._sql_client.show_runs_in_experiment(
@@ -277,9 +274,6 @@ class SnowflakeTracking:
         return name
 
     def log_summaries(self, summaries: Sequence[Summary]) -> None:
-        r"""Logs each summary on the run through its type's call in
-        `_SINKS`: values as metrics within the name budget, tables as JSON
-        artifacts; Snowflake has no datasets."""
         if self._run is not None:
             for summary in summaries:
                 _SINKS[type(summary)](self, summary)
@@ -382,8 +376,7 @@ _SINKS: Dict[type, Callable[[SnowflakeTracking, Any], None]] = {
 
 
 def _run_identifier(name: str) -> str:
-    r"""``name`` as an unquoted identifier: snowflake-ml puts a run's name
-    into its artifact URIs, where a quoted name is not found."""
+    r"""``name`` as an unquoted identifier, which artifact URIs need."""
     name = re.sub(r'[^A-Za-z0-9_]', '_', name)
     return name if re.match(r'[A-Za-z_]', name) else f'_{name}'
 

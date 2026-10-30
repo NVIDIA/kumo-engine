@@ -94,8 +94,7 @@ def predict(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
 
 
 def _in_input_order(rows: pd.DataFrame, scored: pd.DataFrame) -> pd.DataFrame:
-    r"""``scored`` in the order of ``rows``, which scoring does not keep;
-    rows scoring skipped stay out, and repeated rows pair up in order."""
+    r"""``scored`` in the order of ``rows``."""
     keys = ['ENTITY']
     left = pd.DataFrame({'ENTITY': rows['ENTITY1'].to_numpy()})
     right = scored[['ENTITY']].copy()
