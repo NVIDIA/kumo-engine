@@ -44,6 +44,7 @@ _STYLE = Template(r"""
 max-width:100%;padding:8px;box-sizing:border-box;background:$background;
 color:$foreground;font:14px $font}
 .kumo-widget [hidden]{display:none!important}
+.kumo-widget:fullscreen{filter:none!important}
 :where(.kumo-widget-toolbar){display:flex;align-items:center;gap:6px;
 flex:none;margin-bottom:16px}
 :where(.kumo-widget) .kumo-widget-button{box-sizing:border-box;display:inline-flex;
@@ -104,7 +105,7 @@ def render_widget(body: str, *, style: str = '', script: str = '',
         payload = payload.replace(char, encoded)
     return (
         f'<div id="kumo-{uuid4().hex}" '
-        f'class="kumo-widget {escape(class_name)}"{attrs}>'
+        f'class="kumo-widget nodarkmode {escape(class_name)}"{attrs}>'
         f'<style>{_STYLE}{style}</style>{body}'
         f'<script type="application/json" class="kumo-widget-data">'
         f'{payload}</script><script>//<![CDATA[\n(()=>{{'

@@ -456,6 +456,7 @@ def test_widget_shell_composes_non_graph_content_and_escapes_data():
                       attributes={'aria-label': label}) for _ in range(2)
     ]
     root = ElementTree.fromstring(html)
+    assert 'nodarkmode' in root.get('class').split()
     assert root.get('id') != ElementTree.fromstring(repeated).get('id')
     with pytest.raises(ValueError, match='data-.*aria-'):
         render_widget(body, attributes={'onclick': 'alert(1)'})
