@@ -1567,7 +1567,8 @@ def _log_inputs(mlflow: Any, client: Any, run_id: str,
             datasets.append(
                 entities.DatasetInput(
                     dataset._to_mlflow_entity(),
-                    tags=[entities.InputTag('mlflow.data.context', 'train')]))
+                    tags=[entities.InputTag('mlflow.data.context',
+                                            'training')]))
         if datasets:
             client.log_inputs(run_id, datasets=datasets)
     except Exception as error:
