@@ -159,6 +159,15 @@ def _text(value: Any) -> Optional[str]:
     return None if value is None else str(value)
 
 
+def model_metrics(record: RunRecord) -> Dict[str, float]:
+    r"""A run's metrics and its exact ``role='model'`` scalars."""
+    from kumo_core.summaries import Scalar
+
+    return {**record.metrics,
+            **{summary.name: summary.value for summary in record.summaries
+               if isinstance(summary, Scalar) and summary.role == 'model'}}
+
+
 def metric_name(metric: str) -> str:
     r"""``metric`` as every task logs it: the plan's ``acc`` is
     ``accuracy``."""

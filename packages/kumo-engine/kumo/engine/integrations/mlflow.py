@@ -62,6 +62,7 @@ from kumo.engine._tracking import (
     RunRecord,
     by_step,
     model_label,
+    model_metrics,
     record_failure,
     run_name,
     versioned,
@@ -1608,10 +1609,8 @@ def _register(target: Any, client: Any, info: Any,
 
 
 def _model_metrics(record: RunRecord) -> Dict[str, float]:
-    return {**record.metrics,
-            **{metric_key(summary.name): summary.value
-               for summary in record.summaries
-               if isinstance(summary, Scalar) and summary.role == 'model'}}
+    return {metric_key(name): value
+            for name, value in model_metrics(record).items()}
 
 
 def _version_text(metrics: Mapping[str, float], tune: Optional[str],
