@@ -58,7 +58,7 @@ def _summary_row(column, values):
 
 def test_binary_counts_match_brute_force():
     rng = np.random.default_rng(0)
-    true = rng.random(301)
+    true = np.append(rng.random(300), 1.0)
     prob = np.stack([1 - true, true], axis=1)
     pred = true >= 0.4
     counts = _batches(TaskType.BINARY_CLASSIFICATION,
@@ -67,8 +67,14 @@ def test_binary_counts_match_brute_force():
 
     logged = _by_name(prediction_summaries(counts, threshold=0.4,
                                            baseline=None))
-    assert sorted(logged) == ['pred/histogram/True_PROB', 'pred/positive_rate',
+    assert sorted(logged) == ['pred/True_PROB_count_by_score_pct',
+                              'pred/histogram/True_PROB', 'pred/positive_rate',
                               'pred/summary']
+    per_pct = np.bincount(np.minimum(true * 100, 99).astype(int),
+                          minlength=100)
+    assert logged['pred/True_PROB_count_by_score_pct'] == Series(
+        'pred/True_PROB_count_by_score_pct',
+        tuple(enumerate(per_pct.astype(float))), 'score_pct', chart=True)
     assert logged['pred/histogram/True_PROB'] == Histogram(
         'pred/histogram/True_PROB', PROBABILITY_EDGES,
         _brute_histogram(true, PROBABILITY_EDGES), (true.min(), true.max()))
@@ -144,6 +150,7 @@ def test_regression_counts_on_the_target_bins_and_drift():
     logged = _by_name(summaries)
     assert logged['pred/histogram/predicted'].counts == _brute_histogram(
         values, edges)
+    assert not any(isinstance(summary, Series) for summary in summaries)
     assert logged['pred/summary'].rows == (_summary_row('predicted', values),)
     assert {name: logged[f'drift/{name}'].value
             for name in ('psi', 'ks', 'wasserstein')} == score_drift(
@@ -227,6 +234,10 @@ def test_multilabel_counts_each_labels_predicted_rows_and_top_score():
     assert [name for name in logged if name.startswith('pred/histogram/')] == [
         'pred/histogram/top score',
         *(f'pred/histogram/{columns[index]}' for index in order[:20])]
+    assert [name for name in logged if name.endswith('_by_score_pct')] == [
+        'pred/top_score_count_by_score_pct',
+        *(f'pred/{columns[index]}_count_by_score_pct'
+          for index in order[:20])]
     assert logged['pred/histogram/top score'].counts == _brute_histogram(
         prob.max(axis=1), PROBABILITY_EDGES)
     assert logged['pred/summary'].rows == (
@@ -277,6 +288,12 @@ def test_recommendations_count_items_and_top_scores_across_workers(tmp_path):
         np.sort(per_item)[-10:].sum() / valid.size)
     assert logged['pred/histogram/top score'].counts == _brute_histogram(
         scores, holdout.edges['top_score'])
+    assert [name for name in logged if name.endswith('_by_score_pct')] == []
+    assert logged['pred/recommendations_by_item_rank'] == Series(
+        'pred/recommendations_by_item_rank',
+        tuple((rank, float(n)) for rank, n in
+              enumerate(np.sort(per_item)[::-1][:100], 1) if n),
+        'item_rank', chart=True)
     assert logged['drift/ks'] == Scalar(
         'drift/ks', score_drift(total, holdout)['ks'])
 

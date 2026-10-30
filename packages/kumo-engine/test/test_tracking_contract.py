@@ -666,6 +666,9 @@ def test_prediction_record_of_the_recorded_run():
         Histogram('pred/histogram/True_PROB', PROBABILITY_EDGES, tuple(
             np.bincount(np.searchsorted(PROBABILITY_EDGES, SCORES, 'right'),
                         minlength=102).tolist()), (min(SCORES), max(SCORES))),
+        Series('pred/True_PROB_count_by_score_pct', tuple(enumerate(
+            np.bincount((SCORES * 100).astype(int), minlength=100).astype(
+                float).tolist())), 'score_pct', chart=True),
         Table('pred/summary', ('column', 'mean', 'min', 'max'),
               (('True_PROB', SCORES.sum() / 50, 0.2, 0.6),), brief=True),
         Scalar('pred/positive_rate', 0.62))

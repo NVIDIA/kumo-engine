@@ -18,6 +18,7 @@ label, ``predicted_labels`` the rows per number of predicted labels and
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
@@ -30,6 +31,7 @@ from kumo_core.types import TaskType
 
 TOP_CLASSES = 20
 ITEMS = 'items'
+RANKED_ITEMS = 100
 MAX_CLASS_HISTOGRAMS = 100
 _SCORES = ('confidence', 'top_score', 'TARGET_PRED')
 
@@ -89,8 +91,10 @@ def item_counts(counts: Counts) -> Counts:
     r"""``counts`` with its ``items`` tally replaced by what is logged of
     it, which is as small for any catalogue: ``item_frequency``, items per
     number of recommendations on powers of two, and ``item_frequency/sum``,
-    their recommendations; and the totals ``catalogue``,
-    ``items_recommended``, ``recommendations``, ``most_recommendations``,
+    their recommendations; ``items_by_rank``, the recommendations of the
+    `RANKED_ITEMS` most recommended items, most first; and the totals
+    ``catalogue``, ``items_recommended``, ``recommendations``,
+    ``most_recommendations``,
     those of the most recommended item, and ``top1pct_recommendations``,
     those of the most recommended 1% of items."""
     arrays = dict(counts.arrays)
@@ -103,6 +107,10 @@ def item_counts(counts: Counts) -> Counts:
     summary.histogram('item_frequency', 'recommendations', tally)
     summary.histogram('item_frequency/sum', 'recommendations', tally,
                       weights=tally)
+    ranks = min(RANKED_ITEMS, tally.size)
+    ranked = (np.partition(tally, tally.size - ranks)[tally.size - ranks:]
+              if ranks else tally)
+    summary.arrays['items_by_rank'] = np.sort(ranked)[::-1]
     for name, value in (('catalogue', tally.size),
                         ('items_recommended', np.count_nonzero(tally)),
                         ('recommendations', tally.sum()),
@@ -144,16 +152,17 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
                          timeframe: Optional[Timeframe] = None
                          ) -> List[Summary]:
     r"""``pred/histogram`` of each score column, of only the `TOP_CLASSES`
-    most predicted classes, and of each forecast horizon; ``pred/summary``,
-    the mean, minimum and maximum of the score that drift is measured on;
-    ``pred/positive_rate`` at a binary ``threshold``; ``pred/by_class``
-    and, for labels, ``pred/by_label_count``; for recommendations,
-    ``pred/item_frequency``, ``pred/item_coverage`` and
-    ``pred/top_1pct_items_share``; and ``drift/psi``, ``drift/ks`` and
-    ``drift/wasserstein`` against ``baseline``, the training holdout's
-    counts, when it counted the same score on the same bins. A forecast's
-    horizons are named by their window in ``timeframe``, as the holdout's
-    are."""
+    most predicted classes, and of each forecast horizon, with a
+    ``pred/<column>_count_by_score_pct`` chart of each probability among
+    them; ``pred/summary``, the mean, minimum and maximum of the score that
+    drift is measured on; ``pred/positive_rate`` at a binary ``threshold``;
+    ``pred/by_class`` and, for labels, ``pred/by_label_count``; for
+    recommendations, ``pred/item_frequency``, ``pred/item_coverage``,
+    ``pred/top_1pct_items_share`` and a ``pred/recommendations_by_item_rank``
+    chart; and ``drift/psi``, ``drift/ks`` and ``drift/wasserstein`` against
+    ``baseline``, the training holdout's counts, when it counted the same
+    score on the same bins. A forecast's horizons are named by their window
+    in ``timeframe``, as the holdout's are."""
     summaries: List[Summary] = []
     scores = [name for name in counts.extents if name in _SCORES]
     columns = [name for name in counts.extents if name not in _SCORES]
@@ -167,6 +176,9 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
         counts.summary(name, axis(name), f'pred/histogram/{_label(name)}')
         for name in (*scores, *columns)
     ]
+    summaries += [_by_score_pct(name, counts.arrays[name])
+                  for name in (*scores, *columns)
+                  if counts.edges[axis(name)] == PROBABILITY_EDGES]
     summaries += [
         counts.summary(name, 'target', 'pred/histogram/predicted, ' +
                        horizon_label(int(name.removeprefix('TARGET_PRED_h'))
@@ -251,7 +263,26 @@ def _item_summaries(counts: Counts) -> List[Summary]:
                total['items_recommended'] / max(total['catalogue'], 1)),
         Scalar('pred/top_1pct_items_share', total['top1pct_recommendations'] /
                max(total['recommendations'], 1)),
+        *_by_item_rank(arrays.get('items_by_rank', ())),
     ]
+
+
+def _by_score_pct(column: str, counts: np.ndarray) -> Series:
+    r"""``counts`` on `PROBABILITY_EDGES` per hundredth of score, with any
+    below 0 in the first and any from 1 in the last."""
+    per_pct = counts[1:-1].astype(np.float64)
+    per_pct[0] += counts[0]
+    per_pct[-1] += counts[-1]
+    name = re.sub(r'[^\w.-]', '_', column)
+    return Series(f'pred/{name}_count_by_score_pct',
+                  tuple(enumerate(per_pct.tolist())), 'score_pct', chart=True)
+
+
+def _by_item_rank(ranked: Sequence[float]) -> List[Series]:
+    points = tuple((rank, float(count))
+                   for rank, count in enumerate(ranked, 1) if count)
+    return [Series('pred/recommendations_by_item_rank', points, 'item_rank',
+                   chart=True)] if len(points) > 1 else []
 
 
 def _range(low: int, high: int) -> str:
