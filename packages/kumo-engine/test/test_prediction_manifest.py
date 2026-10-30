@@ -455,8 +455,6 @@ def test_tracking_records_the_run_and_never_changes_it(graph, classifier,
     for result in (tracked, failed):
         pd.testing.assert_frame_equal(result.frame, untracked.frame,
                                       check_exact=False, rtol=1e-4)
-    settings = kumo.MLOps(artifact_root=str(tmp_path / 'root'),
-                          tracking=recorder, store=set())
     assert recorder.records == [prediction_record(
         tracked.manifest, model=trainer.result,
         summaries=_scoring_summaries(tracked.manifest, snapshot))]

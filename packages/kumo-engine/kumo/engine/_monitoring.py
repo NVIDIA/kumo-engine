@@ -19,8 +19,9 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 from kumo_core.score_counts import Counts
-from kumo_core.score_drift import PSI_SHIFTS, drift_column, psi_shift
+from kumo_core.score_drift import PSI_SHIFTS, drift_column
 from kumo_core.score_drift import psi as decile_psi
+from kumo_core.score_drift import psi_shift
 from kumo_core.score_drift import score_drift as exact_drift
 from kumo_core.summaries import Dataset, Note, Scalar, Summary, Table, Tag
 

@@ -74,8 +74,9 @@ def test_the_body_holds_problems_tables_notes_and_locations():
             ('source_table', 'orders', '/data/orders')), brief=True),
     )
 
-    assert '\n'.join(_card.body('Fit.', summaries, [
-        '_provenance.json', 'data/health.json'])) == '\n'.join([
+    body = _card.body('Fit.', summaries,
+                      ['_provenance.json', 'data/health.json'])
+    assert '\n'.join(body) == '\n'.join([
         '', 'Fit.', '', '**Problems**', '',
         '- table `users`: 12 duplicate keys', '', '**Holdout metrics**', '',
         '| metric | value |', '| --- | ---: |', '| test/auroc | 0.75 |',
@@ -134,12 +135,13 @@ def test_a_block_names_the_files_of_tables_moved_for_size():
 
 def test_the_chart_note_says_what_each_step_is():
     assert _card.charts({'pred/rows': 5}) == []
-    assert _card.charts({'pred/True_PROB_count_by_score_pct': 1,
-                         'pred/recommendations_by_item_rank': 2}) == [Note(
+    charts = _card.charts({'pred/True_PROB_count_by_score_pct': 1,
+                           'pred/recommendations_by_item_rank': 2})
+    assert charts == [Note(
         'notes', 'Charts: `pred/True_PROB_count_by_score_pct`: step = score '
-        '× 100 (step 37 = scores 0.37–0.38); '
-        '`pred/recommendations_by_item_rank`: step = item rank '
-        '(1 = most recommended).')]
+                 '× 100 (step 37 = scores 0.37–0.38); '
+                 '`pred/recommendations_by_item_rank`: step = item rank '
+                 '(1 = most recommended).')]
 
 
 def test_a_prediction_names_the_model_and_its_fit_run():

@@ -846,7 +846,7 @@ def test_monitoring_fills_its_part_of_a_prediction_card(tracking_uri):
 
 def test_a_card_over_its_budget_moves_tables_to_files_then_shrinks(
         tracking_uri):
-    from kumo_core.summaries import Note, Table
+    from kumo_core.summaries import Table
 
     from kumo.engine.integrations.mlflow import MlflowTracking
 
