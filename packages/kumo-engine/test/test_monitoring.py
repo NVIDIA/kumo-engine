@@ -752,6 +752,10 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
         'type': 'text', 'delta': {}, 'relative': {}}}}
     )[1] == Note('notes', 'Input columns vs training data: no psi; per '
                  'table: `drift/inputs/users.json`.')
+    assert _input_drift({'users': {'AGE': {
+        'type': 'numerical', 'psi': 0.0, 'delta': {}, 'relative': {}}}}
+    )[2] == Note('notes', 'Input columns vs training data: no shift; per '
+                 'table: `drift/inputs/users.json`.')
 
     tracker.records.clear()
     track(replace(report, bundle_matches=False),

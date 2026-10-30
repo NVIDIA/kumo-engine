@@ -798,11 +798,12 @@ def _input_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
     if shifted:
         summaries.insert(0, Scalar('drift/inputs_max_psi', shifted[0][0]))
     top = ', '.join(f'`{column}` (psi {number(psi)}, {psi_shift(psi)})'
-                    for psi, column in shifted[:_TOP_FEATURES])
+                    for psi, column in shifted[:_TOP_FEATURES] if psi > 0)
     files = ', '.join(f'`drift/inputs/{table}.json`'
                       for table in sorted(features))
     summaries.append(Note('notes', 'Input columns vs training data: '
-                          + (f'most shifted {top}' if top else 'no psi')
+                          + (f'most shifted {top}' if top else
+                             'no shift' if shifted else 'no psi')
                           + f'; per table: {files}.'))
     return summaries
 
