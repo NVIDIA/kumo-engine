@@ -233,6 +233,17 @@ class NightlyCompareTests(unittest.TestCase):
                  'wheel_scale_learning.py', 'wheel_measurements.py')
         for name in names:
             shutil.copyfile(MODULES / name, helpers / name)
+        learning = helpers / 'wheel_scale_learning.py'
+        learning.write_text(learning.read_text(
+        ).replace('limit, 500,', 'limit,', 1).replace(
+            "                            if len(truth['catalog']) > 500:\n"
+            '                                raise ValueError(\n'
+            "                                    'Eligible topK remains ambiguous at the '\n"
+            "                                    'public 500-result limit')\n",
+            '', 1))
+        self.assertEqual(
+            digest(learning),
+            'c4a358ac40da70f7762498baaaaa1da910fc83694d9abce77df47ba712814099')
         before = helpers / 'wheel_scale_data.py'
         before.write_bytes(before.read_bytes() + b'\n# Frozen test producer.\n')
         files = {'helpers/' + name: digest(helpers / name) for name in names}
@@ -359,6 +370,83 @@ class NightlyCompareTests(unittest.TestCase):
         self.assertNotEqual(report['gpu_source_sha256'],
                             gpu.source_identity(prepared=True))
         return report, descriptor
+
+    def test_learning_cap_review_rejects_other_source_changes(self):
+        verify = self.function('verify_learning_cap_repair')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.source_bridge_case(root)
+            before = root / 'producer/helpers/wheel_scale_learning.py'
+            after = root / 'current.py'
+            original = (MODULES / 'wheel_scale_learning.py').read_text()
+            verify(before, MODULES / 'wheel_scale_learning.py')
+            for old, new in (('limit, 500,', 'limit, 501,'),
+                             ("if len(truth['catalog']) > 500:",
+                              "if len(truth['catalog']) >= 500:"),
+                             ("if values['fallback_ids']:",
+                              'if False:'), ("truth['metric'].split('@')[1]",
+                                             "truth['metric'].split('@')[0]"),
+                             ("len(order) != wanted", "len(order) < wanted")):
+                with self.subTest(change=new):
+                    self.assertIn(old, original)
+                    after.write_text(original.replace(old, new, 1))
+                    with self.assertRaisesRegex(ValueError, 'cap repair'):
+                        verify(before, after)
+
+    def test_cap_only_link_bridge_requires_the_exact_sole_source_repair(self):
+        verify = self.function('validate_reference_report')
+        for change in (None, 'data', 'no_cap_repair'):
+            with self.subTest(
+                    change=change), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                report, descriptor = self.source_bridge_case(root)
+                helpers = root / 'producer/helpers'
+                shutil.copyfile(MODULES / 'wheel_scale_data.py',
+                                helpers / 'wheel_scale_data.py')
+                if change == 'data':
+                    with (helpers / 'wheel_scale_data.py').open('a') as stream:
+                        stream.write('\n# A separate unreviewed change.\n')
+                if change == 'no_cap_repair':
+                    shutil.copyfile(MODULES / 'wheel_scale_learning.py',
+                                    helpers / 'wheel_scale_learning.py')
+                packet = root / 'producer/manifest.json'
+                save(
+                    packet,
+                    dict(
+                        files={
+                            'helpers/' + path.name: digest(path)
+                            for path in helpers.glob('*.py')
+                        }))
+                producer = runpy.run_path(str(helpers /
+                                              'wheel_gpu_learning.py'))
+                fixtures = runpy.run_path(
+                    str(
+                        Path(__file__).with_name(
+                            'test_engine_nightly_runtime.py')))
+                row = fixtures['metadata_row']('static_link', 'learnable')
+                expected = [['static_link', 0, 'learnable']]
+                report.update(
+                    runs=[row], expected_runs=expected, completed_runs=expected,
+                    profiles={'static_link': {
+                        'fixed': 1
+                    }}, gpu_source_sha256=producer['source_identity'](
+                        prepared=True))
+                save(root / descriptor['path'], report)
+                bridge = descriptor['reference_source_bridge']
+                del bridge['review']
+                bridge['report_sha256'] = digest(root / descriptor['path'])
+                original = (root / descriptor['path']).read_bytes()
+                if change is not None:
+                    with self.assertRaisesRegex(ValueError, 'source review'):
+                        verify(root, descriptor, report)
+                    continue
+                diagnostic = verify(root, descriptor, report)
+                self.assertIn('learning_cap_repair', diagnostic)
+                self.assertEqual((root / descriptor['path']).read_bytes(),
+                                 original)
+                with self.assertRaisesRegex(ValueError,
+                                            'candidate.*source bridge'):
+                    self.function('collect_reports')(root, [descriptor])
 
     def test_reviewed_reference_keeps_actual_producer_source_and_raw_bytes(
             self):

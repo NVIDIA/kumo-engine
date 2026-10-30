@@ -142,6 +142,34 @@ def prepared_source_hashes(directory):
     return {name: digest(confined(directory, name)) for name in names}
 
 
+def verify_learning_cap_repair(before, after):
+    """Allow only the reviewed ranked request cap and strict fallback guard."""
+    expected = ast.parse(before.read_text())
+    assignment = ast.parse(
+        "limit = min(limit, int(truth['metric'].split('@')[1]) + "
+        "max(map(len, selected_truth.get('excluded_ids', [[]])), default=0) + 1)"
+    ).body[0]
+    fallback = ast.parse("values['fallback_ids']", mode='eval').body
+    guard = ast.parse(
+        "if len(truth['catalog']) > 500:\n"
+        "    raise ValueError('Eligible topK remains ambiguous at the ' "
+        "'public 500-result limit')").body[0]
+    counts = [0, 0]
+    for node in ast.walk(expected):
+        if ast.dump(node) == ast.dump(assignment):
+            node.value.args.insert(1, ast.Constant(value=500))
+            counts[0] += 1
+        if isinstance(node, ast.If) and ast.dump(
+                node.test) == ast.dump(fallback):
+            node.body.insert(0, copy.deepcopy(guard))
+            counts[1] += 1
+    if (counts != [1, 1]
+            or ast.dump(expected) != ast.dump(ast.parse(after.read_text()))):
+        raise ValueError('The learning helper differs beyond the cap repair')
+    return dict(before_helper_sha256=digest(before),
+                after_helper_sha256=digest(after), new_fits=0)
+
+
 def verify_static_roundtrip(root, native_entry, before_sha256, after):
     """Check the raw helper/freeze/load proof without approving references."""
     path = confined(root, native_entry['path'])
@@ -360,14 +388,28 @@ def validate_reference_report(root, descriptor, report):
             raise ValueError('A manifested producer source changed')
     sources = prepared_source_hashes(helpers)
     current = prepared_source_hashes(MODULES)
+    learning_review = None
     for name, value in sources.items():
         relative = (helpers / name).relative_to(packet_path.parent).as_posix()
-        if (packet['files'].get(relative) != value
-                or name != 'wheel_scale_data.py' and value != current[name]):
+        if packet['files'].get(relative) != value:
             raise ValueError('A reference verifier or learning helper changed')
-    diagnostic = reference_source_review(root, descriptor,
-                                         report.get('runs', []),
-                                         sources['wheel_scale_data.py'])
+        if name == 'wheel_scale_learning.py' and value != current[name]:
+            learning_review = verify_learning_cap_repair(
+                helpers / name, MODULES / name)
+        elif name != 'wheel_scale_data.py' and value != current[name]:
+            raise ValueError('A reference verifier or learning helper changed')
+    if 'review' in bridge:
+        diagnostic = reference_source_review(root, descriptor,
+                                             report.get('runs', []),
+                                             sources['wheel_scale_data.py'])
+    elif (learning_review is not None
+          and sources['wheel_scale_data.py'] == current['wheel_scale_data.py']):
+        diagnostic = dict(
+            kind='reviewed_learning_cap_reference_source',
+            raw_report_sha256=digest(confined(root,
+                                              descriptor['path'])), new_fits=0)
+    else:
+        raise ValueError('The reference source review is missing or differs')
     producer = runpy.run_path(str(helpers / 'wheel_gpu_learning.py'))
     producer['verify_prepared_report'](
         report, expected_runs=report.get('expected_runs'))
@@ -376,6 +418,8 @@ def validate_reference_report(root, descriptor, report):
         producer_packet_sha256=digest(packet_path),
         producer_gpu_source_sha256=producer['source_identity'](prepared=True),
         validator_gpu_source_sha256=gpu.source_identity(prepared=True))
+    if learning_review is not None:
+        diagnostic['learning_cap_repair'] = learning_review
     return diagnostic
 
 
@@ -727,6 +771,16 @@ def legacy_report(root, descriptor):
     legacy = descriptor['legacy']
     review = None
     validator_sources = prepared_source_hashes(MODULES)
+    learning_path = confined(
+        root,
+        str(
+            PurePosixPath(legacy['producer_packet']).parent /
+            'helpers/wheel_scale_learning.py'))
+    learning_review = None
+    if digest(learning_path) != validator_sources['wheel_scale_learning.py']:
+        learning_review = verify_learning_cap_repair(
+            learning_path, MODULES / 'wheel_scale_learning.py')
+        validator_sources['wheel_scale_learning.py'] = digest(learning_path)
     if 'reference_source_bridge' in descriptor:
         bridge = descriptor['reference_source_bridge']
         if (bridge.get('producer_packet') != legacy['producer_packet']
@@ -790,6 +844,11 @@ def legacy_report(root, descriptor):
                 compared['source']['sha256'] == compared['current']['sha256'] ==
                 review['before_helper_sha256']):
             continue
+        if (name == 'wheel_scale_learning.py' and learning_review is not None
+                and
+                compared['source']['sha256'] == compared['current']['sha256'] ==
+                learning_review['before_helper_sha256']):
+            continue
         if name != 'wheel_gpu_learning.py':
             raise ValueError('A legacy learning or metric helper changed')
         before = ast.parse(
@@ -831,6 +890,8 @@ def legacy_report(root, descriptor):
         source_hashes)
     if review is not None:
         diagnostic['reference_source_bridge'] = review
+    if learning_review is not None:
+        diagnostic['learning_cap_repair'] = learning_review
     report['envelope_kind'] = 'legacy_validation_only'
     return report, diagnostic
 
