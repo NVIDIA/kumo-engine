@@ -464,7 +464,7 @@ def run_case(prepared, case, seed, independent, directory, *,
                     limit = len(truth['catalog'])
                     if ranked_links and not full_catalog:
                         limit = min(
-                            limit,
+                            limit, 500,
                             int(truth['metric'].split('@')[1]) + max(
                                 map(len, selected_truth.get(
                                     'excluded_ids', [[]])), default=0) + 1)
@@ -500,6 +500,10 @@ def run_case(prepared, case, seed, independent, directory, *,
                                     started_prediction,
                                     fallback_ids=values['fallback_ids']))
                         if values['fallback_ids']:
+                            if len(truth['catalog']) > 500:
+                                raise ValueError(
+                                    'Eligible topK remains ambiguous at the '
+                                    'public 500-result limit')
                             fallback = predict(model, values['fallback_ids'],
                                                f'{label}-fallback',
                                                full_catalog=True, measure=False)

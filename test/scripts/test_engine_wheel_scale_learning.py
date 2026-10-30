@@ -28,7 +28,8 @@ class WheelScaleLearningTest(unittest.TestCase):
         return runpy.run_path(str(path))
 
     def exercise_prediction_sequence(self, directory, *, missing_repeat=False,
-                                     ranked=False):
+                                     ranked=False, large_catalog=False,
+                                     ambiguous=False, insufficient=False):
         worker = self.worker()
         tree = ast.parse(inspect.getsource(worker['run_case']))
         self.assertEqual(
@@ -62,6 +63,10 @@ class WheelScaleLearningTest(unittest.TestCase):
                          target_ids=[[8], [7]], excluded_ids=[[0], [0]],
                          catalog=list(range(9)), classes=[], metric='recall@5',
                          anchor=None)
+            if large_catalog:
+                truth.update(catalog=list(range(1000)),
+                             target_ids=[[999], [998]],
+                             excluded_ids=[list(range(841))] * 2)
         inputs = [dict(ENTITY1=entity, TIMESTAMP=anchor) for entity in ids]
         prepared = dict(truth=truth, prediction_rows=inputs,
                         rows=[dict(row, SPLIT=2) for row in inputs])
@@ -84,10 +89,19 @@ class WheelScaleLearningTest(unittest.TestCase):
                 label = table.table_path.stem
                 events.append((model, population.ENTITY1.tolist(), label))
                 if ranked:
+                    if kwargs['num_classes_to_return'] > 500:
+                        raise ValueError(
+                            'Public prediction permits at most 500')
+                    candidates = list(range(1000 if large_catalog else 9))
+                    if large_catalog and not insufficient:
+                        candidates = candidates[841:] + candidates[:841]
                     frame = pd.DataFrame([
-                        dict(ENTITY=entity, CLASS=item,
-                             SCORE=[10., 9., 8., 7., 6., 6., 6., 6., 6.][item])
-                        for entity in population.ENTITY1 for item in range(9)
+                        dict(
+                            ENTITY=entity, CLASS=item, SCORE=1. if ambiguous
+                            else float(1000 - rank) if large_catalog else
+                            [10., 9., 8., 7., 6., 6., 6., 6., 6.][item])
+                        for entity in population.ENTITY1
+                        for rank, item in enumerate(candidates)
                     ]).sort_values(['ENTITY', 'SCORE', 'CLASS'],
                                    ascending=[True, False, False])
                     frame = frame.groupby('ENTITY', sort=False).head(
@@ -202,6 +216,34 @@ class WheelScaleLearningTest(unittest.TestCase):
                     row['removed_recommendations'] == 0
                     and row['qualified'] is False
                     for row in result['evidence']['consistency_measurements']))
+
+    def test_large_exclusion_count_uses_supported_count_and_complete_eligible_topk(
+            self):
+        with tempfile.TemporaryDirectory() as path:
+            result, events, _ = self.exercise_prediction_sequence(
+                Path(path), ranked=True, large_catalog=True)
+            self.assertEqual(len(events), 4)
+            self.assertEqual(result['predictions']['ranked_ids'],
+                             [[841, 842, 843, 844, 845]] * 2)
+            calls = result['evidence']['ranked_prediction_calls']
+            self.assertEqual([row['raw_limit'] for row in calls], [500] * 4)
+            self.assertTrue(all(not row['fallback_ids'] for row in calls))
+
+    def test_large_catalog_ties_fail_without_an_unsupported_fallback(self):
+        with tempfile.TemporaryDirectory() as path:
+            with self.assertRaisesRegex(ValueError,
+                                        'Eligible topK remains ambiguous'):
+                self.exercise_prediction_sequence(Path(path), ranked=True,
+                                                  large_catalog=True,
+                                                  ambiguous=True)
+
+    def test_large_catalog_exclusions_cannot_pass_incomplete_topk(self):
+        with tempfile.TemporaryDirectory() as path:
+            with self.assertRaisesRegex(ValueError,
+                                        'Eligible topK remains ambiguous'):
+                self.exercise_prediction_sequence(Path(path), ranked=True,
+                                                  large_catalog=True,
+                                                  insufficient=True)
 
     @unittest.skipUnless(importlib.util.find_spec('torch'),
                          'Requires the checkpoint runtime')
