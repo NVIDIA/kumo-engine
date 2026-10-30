@@ -57,6 +57,7 @@ from kumo.engine._tracking import (
     RegistrationError,
     RunRecord,
     by_step,
+    model_label,
     record_failure,
 )
 from kumo.engine._version import __version__
@@ -322,7 +323,9 @@ class MlflowTracking:
                         tags={'kumo.bundle_id': str(result.id)}).info.run_id
                 info = _log_model(self.target, client, result.bundle_dir,
                                   result.manifest or stub('model', result.id),
-                                  snapshot, name='model', run_id=run_id,
+                                  snapshot, name=logged_model_name(
+                                      location.model_name, result.manifest),
+                                  run_id=run_id,
                                   experiment_id=experiment_id,
                                   serving_snapshot=None)
                 with self.target.scope():
@@ -448,7 +451,9 @@ class MlflowTracking:
         os.environ.update(upload)
         try:
             info = _log_model(self.target, self._client, bundle_dir, manifest,
-                              snapshot, name='model', run_id=run_id,
+                              snapshot, name=logged_model_name(
+                                  registry and registry.model_name, manifest),
+                              run_id=run_id,
                               experiment_id=self._experiment_id,
                               serving_snapshot=None)
         finally:
@@ -1174,6 +1179,16 @@ def _download(mlflow: Any, target: Any, model_uri: str,
     return mlflow.artifacts.download_artifacts(
         artifact_uri=model_uri, dst_path=str(destination),
         tracking_uri=target.tracking_uri, registry_uri=target.registry_uri)
+
+
+def logged_model_name(registered: Optional[str], manifest: Any) -> str:
+    r"""A logged model's name: `model_label` without the characters MLflow
+    rejects."""
+    table = getattr(getattr(manifest, 'parents', None), 'training_table',
+                    None)
+    return re.sub(r'[/:.%"\']', '-', model_label(
+        registered, getattr(table, 'query', None),
+        getattr(table, 'task_type', None)))
 
 
 def _log_model(target: Any, client: Any, bundle_dir: Path,

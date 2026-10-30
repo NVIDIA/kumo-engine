@@ -59,7 +59,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         if 'mlflow.parentRunId' not in run.data.tags
     ]
     model, = mlflow.search_logged_models(output_format='list')
-    assert model.source_run_id == parent.info.run_id
+    assert (model.name, model.source_run_id) == ('m', parent.info.run_id)
     metrics = {metric.key: metric.value for metric in model.metrics}
     assert metrics == {
         **{name: value for name, value in logged_names(result.metrics).items()
@@ -537,3 +537,16 @@ def test_a_tracking_start_failure_names_its_cause_and_can_raise(
         'earlier failure (MlflowException: RESOURCE_DOES_NOT_EXIST: Parent '
         'of /NoSuchFolder/churn does not exist.)'
     ]
+
+
+def test_a_logged_model_is_named_after_its_model():
+    from kumo.engine.integrations.mlflow import logged_model_name
+
+    manifest = SimpleNamespace(parents=SimpleNamespace(
+        training_table=SimpleNamespace(
+            query='PREDICT users.CHURN FOR EACH users.ID',
+            task_type='binary_classification')))
+    assert logged_model_name('main.ml.churn', manifest) == 'churn'
+    assert logged_model_name('a/b:c%d"e\'f', None) == 'a-b-c-d-e-f'
+    assert logged_model_name(None, manifest) == 'users-binary_classification'
+    assert logged_model_name(None, None) == 'model'

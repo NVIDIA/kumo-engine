@@ -32,6 +32,7 @@ from typing import (
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.instrumentation import format_error
 
+from kumo.engine._card import entity
 from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
 from kumo.engine._version import __version__
@@ -176,6 +177,16 @@ def logged_names(metrics: Mapping[str, Any],
         named[metric if latest and not refit_full else
               f'before_refit/{metric}'] = value
     return named
+
+
+def model_label(registered: Optional[str], query: Optional[str],
+                task_type: Optional[str]) -> str:
+    r"""``<model>`` in run and logged-model names: the ``registered`` name
+    (a Unity Catalog name's last part), else ``<entity table>-<task type>``
+    of the predictive ``query``."""
+    if registered:
+        return registered.rsplit('.', 1)[-1]
+    return '-'.join(filter(None, (entity(query), task_type))) or 'model'
 
 
 def by_step(steps: Mapping[str, Sequence[Tuple[int, float]]]
