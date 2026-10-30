@@ -105,6 +105,7 @@ jobs:
       - run: python packages/kumo-engine/test/test_weekly_reference.py
       - run: python packages/kumo-engine/test/test_weekly_workflow.py
       - run: python packages/kumo-engine/test/test_weekly_p1.py
+      - run: python packages/kumo-engine/test/test_weekly_b9.py
 
   wheel:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate'
