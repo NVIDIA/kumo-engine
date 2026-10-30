@@ -34,6 +34,7 @@ under today. That path is snowflake-ml's private layout; the marker is ours.
 
 import json
 import logging
+import math
 import re
 import shutil
 from contextlib import contextmanager
@@ -91,6 +92,9 @@ _LOG = logging.getLogger(__name__)
 #: rather than a temporary directory so a half-finished import leaves something
 #: a reader can look at.
 _EXPORT_DIR = '_registry-export'
+
+#: How a version comment's line of holdout metrics begins.
+_METRICS_LINE = 'Holdout: '
 
 
 def _require_registry() -> type["Registry"]:
@@ -253,6 +257,20 @@ def _version_record(metadata: Mapping[str, str]) -> Dict[str, str]:
     return record
 
 
+def _finite(metrics: Mapping[str, float]) -> Dict[str, float]:
+    return {name: float(value) for name, value in metrics.items()
+            if math.isfinite(value)}
+
+
+def _comment(user: Optional[str],
+             metrics: Mapping[str, float]) -> Optional[str]:
+    r"""The user's comment, then a line of the model's holdout metrics."""
+    line = ' · '.join(f'{name} {value:.3g}'
+                      for name, value in _finite(metrics).items())
+    return '\n'.join(text for text in (user, line and _METRICS_LINE + line)
+                     if text) or None
+
+
 def _recorded_lineage(version: "ModelVersion") -> Dict[str, str]:
     try:
         return registry_lineage(dict(version.show_metrics() or {}))
@@ -352,8 +370,9 @@ class SnowflakeModelRegistryMixin:
                 this reports back what it created.
             metadata: Returned with the publication result; its
                 ``kumo_bundle_id`` is also recorded in the version's metrics.
-            metrics: Returned with the publication result. Training metrics
-                remain in the bundle's metrics.json.
+            metrics: The model's holdout metrics, recorded in the version's
+                metrics and as a line after ``location.comment``; also
+                returned with the publication result.
             project_id: Ignored; a local runtime has no projects.
 
         Returns:
@@ -371,13 +390,13 @@ class SnowflakeModelRegistryMixin:
                 f"{bundle} does not look like a published model bundle: it "
                 f"has no {_SPEC_FILE}, which an export writes into every one.")
 
-        record = _version_record(metadata)
+        record = {**_finite(metrics), **_version_record(metadata)}
         with self._registry(connector) as registry:
             version = registry.log_model(
                 _bundle_model(str(bundle)),
                 model_name=location.model_name,
                 version_name=location.version,
-                comment=location.comment,
+                comment=_comment(location.comment, metrics),
                 metrics=record,
                 signatures=_carrier_signature(),
                 **_task(bundle),

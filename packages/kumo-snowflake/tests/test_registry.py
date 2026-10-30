@@ -86,7 +86,7 @@ def test_invalid_metrics_preserve_previous_destination(fetch, payload):
     'kumo_bundle_id': 'b1',
     'kumo_engine': '0'
 }])
-def test_publish_records_only_pointers_in_catalog(
+def test_publish_records_pointers_and_holdout_metrics_in_catalog(
         tmp_path, monkeypatch, metadata):
     bundle = tmp_path / 'bundle'
     bundle.mkdir()
@@ -107,15 +107,19 @@ def test_publish_records_only_pointers_in_catalog(
     monkeypatch.setattr(sink, '_registry', registry)
     monkeypatch.setattr(registry_module, '_bundle_model', lambda _: object())
     monkeypatch.setattr(registry_module, '_carrier_signature', lambda: {})
-    published = sink.publish_model(SimpleNamespace(), str(bundle),
-                                   location=ModelRegistryLocation('CHURN'),
-                                   metadata=metadata,
-                                   metrics={'auc': 0.92, 'loss': float('nan')})
+    metrics = {'auroc': 0.9213, 'holdout_loss': 0.5, 'brier': float('nan')}
+    published = sink.publish_model(
+        SimpleNamespace(), str(bundle),
+        location=ModelRegistryLocation('CHURN', comment='Weekly retrain.'),
+        metadata=metadata, metrics=metrics)
     assert calls[0]['metrics'] == {
+        'auroc': 0.9213, 'holdout_loss': 0.5,
         **({'kumo_bundle_id': 'b1'} if metadata else {}), 'kumo_engine': '1'
     }
+    assert calls[0]['comment'] == ('Weekly retrain.\n'
+                                   'Holdout: auroc 0.921 · holdout_loss 0.5')
     assert published.metadata == metadata
-    assert published.metrics['auc'] == 0.92
+    assert published.metrics == metrics
 
 
 def test_listing_filters_engine_marker_and_returns_lineage(monkeypatch):
