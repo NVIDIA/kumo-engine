@@ -2,9 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import os
 from dataclasses import replace
-from pathlib import Path
 from test.rest.conftest import TestClient
 from test.rest.integ import fixture_connector_args
 from typing import Any, Dict
@@ -44,17 +42,6 @@ from .config_for_test import (
     unsupported_parquet_args,
 )
 
-# Default DEPLOY_ENV_CONFIG_FILE so _diskgraph_deploy_config picks up the
-# diskgraph config even when the env var isn't set by CI. Mirrors the
-# sibling DG ingestion e2e modules (test_snowflake_ingestion_diskgraph_e2e.py,
-# test_bigquery_ingestion_diskgraph_e2e.py): set at module import (not in a
-# fixture) because deploy_env_config caches its DeployEnvConfig the first
-# time the session imports the conftest.
-if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
-    _default_deploy_config = (Path(__file__).resolve().parents[4] / 'rest' /
-                              'devserver' / 'configs' / 'diskgraph-test.json')
-    os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(_default_deploy_config)
-
 # Pool fixtures (storage_backend, _diskgraph_deploy_config, _pool_subprocesses)
 # live in test/rest/integ/conftest.py; the diskgraph per-table refresh
 # (TableRefreshWorkflow -> ingest_table_data_activity_v2) needs the pool
@@ -64,7 +51,9 @@ if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
 # within one session trips a known harness deploy_env leak.
 pytestmark = [
     pytest.mark.usefixtures("_pool_subprocesses"),
-    pytest.mark.parametrize("storage_backend", ["s3"], indirect=True),
+    pytest.mark.parametrize("storage_backend", [
+        pytest.param("s3", marks=pytest.mark.private_resource('aws')),
+    ], indirect=True),
 ]
 
 

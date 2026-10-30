@@ -3380,8 +3380,8 @@ def test_get_presigned_artifact_urls_artifact_type_not_found(artifact_type):
 
 
 @pytest.mark.parametrize('artifact_type', _ARTIFACT_TYPES)
-def test_get_presigned_artifact_urls_file_not_found(artifact_type):
-    file_storage_path = 's3://kumo-public-datasets/db/rest'
+def test_get_presigned_artifact_urls_file_not_found(artifact_type, tmp_path):
+    file_storage_path = str(tmp_path)
     pquery = _pquery_driver(
         ml_job_backend=_create_mock_ml_job_backend(file_storage_path), )
 

@@ -38,7 +38,9 @@ def withSnowflakeCredentials(func: Callable):
     """Load credentials during pytest setup, before cloud resource fixtures."""
     import pytest
 
-    return pytest.mark.usefixtures('snowflake_credentials')(func)
+    from kumo.testing._skip import requires_resource
+    return pytest.mark.usefixtures('snowflake_credentials')(requires_resource(
+        'snowflake', func))
 
 
 def setup_snowflake_credentials() -> None:

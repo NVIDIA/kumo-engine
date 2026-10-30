@@ -1,0 +1,198 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Private resource tests
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [main, "pull-request/[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      full_test:
+        description: Run full-suite-only cases as well
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/heads/pull-request/') }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      run: ${{ steps.select.outputs.run }}
+      gcp-e2e: ${{ steps.select.outputs.gcp-e2e }}
+      snowflake-e2e: ${{ steps.select.outputs.snowflake-e2e }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the copied PR and find its merge base
+        id: pr
+        if: startsWith(github.ref, 'refs/heads/pull-request/')
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const { setCopiedPullRequestOutputs } = require('./.github/scripts/copied-pr.cjs');
+            await setCopiedPullRequestOutputs({ github, context, core });
+      - name: Read complete changed-file list
+        id: files
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+        with:
+          base_sha: ${{ steps.pr.outputs.base || github.event.before }}
+          json: true
+          escape_json: false
+      - name: Select private jobs
+        id: select
+        env:
+          CHANGED_FILES: ${{ steps.files.outputs.all_changed_files }}
+          FORCE_PRIVATE_TESTS: ${{ github.event_name == 'workflow_dispatch' }}
+        run: python3 tools/ci_private_changes.py
+
+  diskgraph-wheel:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+    permissions:
+      contents: read
+
+  pytest:
+    name: private-${{ matrix.group }}
+    needs: [changes, diskgraph-wheel]
+    if: needs.changes.outputs.run == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
+    runs-on:
+      group: nv-cpu-general
+      labels: linux-amd64-cpu16
+    timeout-minutes: ${{ (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || inputs.full_test == true) && 90 || 25 }}
+    environment:
+      name: ${{ matrix.group == 'azure' && 'azure-adls-tests' || 'gha-kumo-workflow-tests' }}
+      deployment: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FULL_TEST: ${{ (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || inputs.full_test == true) && '1' || '0' }}
+      CI_RUN_GCP_E2E: ${{ needs.changes.outputs.gcp-e2e }}
+      CI_RUN_SNOWFLAKE_E2E: ${{ needs.changes.outputs.snowflake-e2e }}
+      CI_TEST_RESULTS: ci-test-results
+      ARTIFACTS_DIR: /tmp/kumo-test-artifacts
+      AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
+      AWS_DEFAULT_REGION: us-west-2
+      DEPLOY_STAGE: test
+      TEMPORAL_SERVER: localhost
+      DATA_SPARK_MEM: 1g
+      MAX_DATA_BACKEND_WORKER_PROCESSES: '1'
+      CUDA: cpu
+      KUMO_ENABLE_GLOVE: 'False'
+      SPARK_VERSION: '3.5'
+      SPARK_LOCAL_IP: 127.0.0.1
+      KUMO_TESTING: 'True'
+      KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS: '0'
+      KUMO_RUN_ADLS_TESTS: ${{ matrix.group == 'azure' && '1' || '0' }}
+      KUMO_RUN_GCP_TESTS: ${{ startsWith(matrix.group, 'gcp') && '1' || '0' }}
+      KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ startsWith(matrix.group, 'gcp') && 'true' || 'false' }}
+      GCS_TEST_BUCKET: kumo-test-bucket
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_STORAGE_TRANSFER_BUCKET: ${{ vars.GCP_STORAGE_TRANSFER_BUCKET }}
+      GCP_TEST_SERVICE_ACCOUNT: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
+      GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT: ${{ vars.GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT }}
+      GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT: ${{ vars.GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT }}
+      AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+      AZURE_CONTAINER_NAME: ${{ vars.AZURE_CONTAINER_NAME }}
+      DATABRICKS_HOST: ${{ matrix.group == 'databricks' && vars.DATABRICKS_HOST || '' }}
+      DATABRICKS_CLUSTER_ID: ${{ vars.DATABRICKS_CLUSTER_ID }}
+      DATABRICKS_WAREHOUSE_ID: ${{ vars.DATABRICKS_WAREHOUSE_ID }}
+      DATABRICKS_TOKEN: ${{ matrix.group == 'databricks' && secrets.DATABRICKS_TOKEN || '' }}
+      DATABRICKS_CLIENT_ID: ${{ matrix.group == 'databricks' && vars.DATABRICKS_CLIENT_ID || '' }}
+      DATABRICKS_CLIENT_SECRET: ${{ matrix.group == 'databricks' && secrets.DATABRICKS_CLIENT_SECRET || '' }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: '3.14'
+          activate-environment: true
+      - name: Set up packages
+        uses: ./.github/actions/setup
+        with:
+          github_token: ${{ github.token }}
+          diskgraph-wheel-artifact: diskgraph-wheel
+          install-graphviz: 'true'
+      - name: Configure AWS credentials
+        if: startsWith(matrix.group, 'aws') || matrix.group == 'gcp-e2e' || matrix.group == 'snowflake' || matrix.group == 'databricks'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+      - name: Authenticate to Google Cloud
+        if: startsWith(matrix.group, 'gcp')
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
+      - name: Authenticate to Azure
+        if: matrix.group == 'azure'
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify Azure test storage configuration
+        if: matrix.group == 'azure'
+        run: |
+          python - <<'PY'
+          import os
+          missing = [name for name in ('AZURE_STORAGE_ACCOUNT', 'AZURE_CONTAINER_NAME') if not os.environ.get(name)]
+          assert not missing, f'Missing Azure test configuration: {missing}'
+          PY
+      - name: Verify federated Google credentials
+        if: startsWith(matrix.group, 'gcp')
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          credentials = json.loads(Path(os.environ['GOOGLE_APPLICATION_CREDENTIALS']).read_text())
+          assert credentials['type'] == 'external_account', 'Private GCP CI requires federation'
+          required = ['GCP_PROJECT_ID', 'GCP_TEST_SERVICE_ACCOUNT', 'GCP_STORAGE_TRANSFER_BUCKET']
+          if os.environ['KUMO_RUN_GCP_TESTS'] == '1':
+              required += ['GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT', 'GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT']
+          missing = [name for name in required if not os.environ.get(name)]
+          assert not missing, f'Missing GCP test configuration: {missing}'
+          PY
+      - name: Verify Databricks test configuration
+        if: matrix.group == 'databricks'
+        run: |
+          python - <<'PY'
+          import os
+          required = ['DATABRICKS_HOST', 'DATABRICKS_WAREHOUSE_ID', 'DATABRICKS_CLIENT_ID', 'DATABRICKS_CLIENT_SECRET', 'DATABRICKS_TOKEN']
+          missing = [name for name in required if not os.environ.get(name)]
+          assert not missing, f'Missing Databricks test configuration: {missing}'
+          PY
+      - name: Run selected resource tests
+        env:
+          RESOURCE_GROUP: ${{ matrix.group }}
+        run: python -m tools.run_private_tests "$RESOURCE_GROUP"
+      - name: Upload selection, results and complete durations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: private-tests-${{ matrix.group }}-${{ github.run_id }}
+          path: ci-test-results/
+          if-no-files-found: error

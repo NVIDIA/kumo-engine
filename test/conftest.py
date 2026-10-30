@@ -5,7 +5,7 @@
 # Register fixtures defined under test/fixtures/ so they're discoverable
 # session-wide without per-test imports. Currently exposes
 # ``dg_indexed_financial_graph`` (see test/fixtures/dg_indexed_graph.py).
-pytest_plugins = ["test.fixtures.dg_indexed_graph"]
+pytest_plugins = ["test.fixtures.dg_indexed_graph", "test.ci_resources"]
 
 import asyncio  # noqa: E402
 import copy  # noqa: E402
@@ -70,6 +70,7 @@ from kumo.graph.graph import Graph  # noqa: E402
 from kumo.graph.table import Table  # noqa: E402
 from kumo.task.task import Task  # noqa: E402
 from kumo.testing import withDatabricksCredentials  # noqa: E402
+from kumo.testing._skip import requires_resource  # noqa: E402
 from kumo.testing.generator import EdgeSpec, GraphSpec, TableSpec  # noqa: E402
 from kumo.testing.snowflake import setup_snowflake_credentials  # noqa: E402
 from kumo.utils.embedding_models import embedding_model_store  # noqa: E402
@@ -96,8 +97,42 @@ _ENABLE_FSUTIL_DEBUG_LOGS_ENV = 'KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS'
 os.environ.setdefault(_ENABLE_FSUTIL_DEBUG_LOGS_ENV, '0')
 
 
+@pytest.fixture(scope='session')
+def test_execution_environment(request):
+    """Apply selected process configuration before any deployment/cache fixtures."""
+    from test.ci_resources import profiles_for_item
+
+    from service_framework import deploy_env_config as config
+
+    if not any('diskgraph' in profiles_for_item(item)
+               for item in request.session.items):
+        yield
+        return
+    names = ('DEPLOY_ENV_CONFIG_FILE', 'DEPLOY_ENV_CONFIG_JSON', 'PATH')
+    previous = {name: os.environ.get(name) for name in names}
+    previous_deploy_env = config._deploy_env
+    previous_cache = data._active_cache
+    if not (os.environ.get('DEPLOY_ENV_CONFIG_FILE')
+            or os.environ.get('DEPLOY_ENV_CONFIG_JSON')):
+        os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(
+            pathlib.Path(__file__).resolve().parents[1] / 'rest' /
+            'devserver' / 'configs' / 'diskgraph-test.json')
+    config._reset_deploy_env()
+    data.reset_active_cache_for_test()
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        config._deploy_env = previous_deploy_env
+        data.reset_active_cache_for_test(previous_cache)
+
+
 @pytest.fixture(scope='session', autouse=True)
-def configure_test_glove_artifacts(tmp_path_factory):
+def configure_test_glove_artifacts(tmp_path_factory, test_execution_environment):
     artifacts = tmp_path_factory.mktemp('glove')
     tokens = [
         'get',
@@ -159,6 +194,9 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "nightly" in item.keywords:
                 item.add_marker(skip_nightly)
+
+    if config.getoption('--resource-group') == 'snowflake':
+        return  # The resource selector also includes unmarked live session tests.
 
     # check if you got an option like --key=snowflake
     if not config.getoption("--runsnowflake"):
@@ -1441,6 +1479,7 @@ def create_s3_graph() -> Callable:
 
 
 @pytest.fixture()
+@requires_resource('snowflake')
 def create_snowflake_graph() -> Callable:
     return _create_snowflake_graph
 
@@ -1451,6 +1490,7 @@ def create_task() -> Callable:
 
 
 @pytest.fixture(scope='session')
+@requires_resource('snowflake')
 def snowflake_credentials() -> None:
     setup_snowflake_credentials()
 
@@ -1587,7 +1627,7 @@ def run_before_and_after_tests(auto_setup_kumo_backend: bool,
 
 
 @pytest.fixture(scope='session', autouse=True)
-def run_before_and_after_test_sessions():
+def run_before_and_after_test_sessions(test_execution_environment):
     # The data persist dir is derived from deploy_env() (kumo.data
     # .get_persist_dir); wipe it at session boundaries for clean seeding.
     data_persist_dir = data.get_persist_dir()
@@ -1602,7 +1642,7 @@ def run_before_and_after_test_sessions():
 
 
 @pytest.fixture(scope='session', autouse=True)
-def _redirect_test_diskgraph_data_root():
+def _redirect_test_diskgraph_data_root(test_execution_environment):
     """Point the DiskGraph data_root at a writable location under TEST.
 
     The production default for ``DiskgraphConfig.data_root`` is

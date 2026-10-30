@@ -113,6 +113,9 @@ def withBigQueryCredentials(func: Optional[Callable] = None,
     import pytest
 
     def decorator(inner_func: Callable):
+        from kumo.testing._skip import requires_resource
+        inner_func = requires_resource('gcp', inner_func)
+
         def _setup():
             setup_bigquery_credentials(service_account_key)
             if (not os.getenv(ENV_GOOGLE_CREDENTIALS_JSON) and

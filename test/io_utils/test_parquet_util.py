@@ -305,6 +305,7 @@ def test_count_rows_paritions(tmp_path: pathlib.Path):
     assert info.num_rows == 10
 
 
+@pytest.mark.private_resource('aws')
 def test_get_parquet_metadata_wildcard(tmp_path: pathlib.Path,
                                        deploy_env_config):
     # parquet_util.get_parquet_metadata on subsets of .parquet files in a
@@ -1094,6 +1095,7 @@ def test_is_empty_helper_ucv(temp_ucv, tmp_path: pathlib.Path):
     assert parquet_util._is_empty_helper(empty_dir.as_url())
 
 
+@pytest.mark.private_resource('aws')
 def test_read_parquet_offset_size():
     file_path = 's3://kumo-public-datasets/large_input_data/test1G128/'
 
