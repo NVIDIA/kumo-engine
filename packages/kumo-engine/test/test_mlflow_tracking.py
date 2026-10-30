@@ -778,11 +778,12 @@ def _fit_with_a_card(tracker, summaries=(), note=None):
 
 
 def test_a_fit_run_gets_a_card_before_the_users_notes(tracking_uri):
-    from kumo_core.summaries import Note, Table
+    from kumo_core.summaries import Note, Scalar, Table
 
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     run = _fit_with_a_card(MlflowTracking('e', log_system_metrics=False), (
+        Scalar('test/mse', 0.5, role='model'),
         Note('problems', 'table `ents`: 2 duplicate keys'),
         Table('data/splits', ('split', 'rows'), (('train', 3),), brief=True),
         Table('data/health', ('table', 'rows'), (('ents', 3),)),
@@ -790,7 +791,7 @@ def test_a_fit_run_gets_a_card_before_the_users_notes(tracking_uri):
 
     assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
         *FIT_HEAD, '**Problems**', '', '- table `ents`: 2 duplicate keys', '',
-        *MAE, '**Training data**', '', '| split | rows |', '| --- | ---: |',
+        *MAE[:-1], '| test/mse | 0.5 |', '', '**Training data**', '', '| split | rows |', '| --- | ---: |',
         '| train | 3 |', '', *WHERE,
         'Full lineage: `_provenance.json`. Tables: `data/health.json`.',
         *TAIL])) + '\n\nMine.'
