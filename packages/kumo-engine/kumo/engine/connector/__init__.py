@@ -42,7 +42,7 @@ def _file_sink(connector: Any, path: str) -> Any:
 
     try:
         sink = connector.sink_backend
-    except Exception:
+    except NotImplementedError:
         return None
     return sink if isinstance(sink, FileStoreSink) and sink.holds_files(
         connector, path) else None

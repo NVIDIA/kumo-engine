@@ -97,7 +97,8 @@ def test_sinks_with_a_filesystem_hold_files(tmp_path, connector):
     assert is_file_destination(connector, '@stage/p')
     assert not is_file_destination(connector, 'DB.SCHEMA.T')
     assert file_store(connector, 'DB.SCHEMA.T') is None
-    assert not is_file_destination(SimpleNamespace(), 'x')
+    assert not is_file_destination(SimpleNamespace(sink_backend=object()),
+                                   'x')
 
 
 def test_output_configs_take_a_sinks_file_paths(connector):
