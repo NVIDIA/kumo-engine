@@ -99,7 +99,7 @@ To serve only a better model, move its alias yourself: [Promote a model](#promot
 | `snapshot.id` | a graph snapshot | `<root>/snapshots/<graph id>/<data version>/`; `result.snapshot_id` |
 | `table.id` | a training table | `<root>/training_tables/<id>/` |
 | `result.id` | a model (its bundle id) | `<root>/models/<id>/`; the `kumo.bundle_id` run tag; `kumo_bundle_id` on the registered version |
-| `run.id` | a prediction run | `<root>/predictions/<id>/`; the `kumo.prediction_id` run tag; the `PREDICTION_ID` column of a table output |
+| `run.id` | a prediction run | `<root>/predictions/<id>/`; the `kumo.prediction_id` run tag; the `PREDICTION_ID` column of a table output written with `WriteMode.APPEND` |
 | `result.registered_model.version` | the registered version | the registry |
 | `result.tracking`, `run.tracking` | the tracker's run of the fit or prediction: `platform`, `experiment`, `run_id`, `run_name`, `url` | the tracker's UI |
 
@@ -256,8 +256,9 @@ run.id, run.bundle_id, run.snapshot_id, run.scored_rows, run.skipped_rows
 ```
 
 - **`PredictionOutputConfig(connector, path=...)`**: a directory or file on a file destination (local, S3, GCS, a volume or stage), else a table. `output_paths={"predictions": ..., "embeddings": ...}` writes embeddings too.
-- **Tables** append and get two columns, `PREDICTION_ID` (`run.id`) and `BUNDLE_ID`, so each row names its run and model. **Files** go to a directory per run, `<path>/<prediction id>/` (or `<dir>/<prediction id>/scores.csv` for a file name), with the run's `_provenance.json` next to the Parquet parts. `write_mode=WriteMode.OVERWRITE` replaces the table or exactly `path`.
-- With MLOps on, each run is stored under `<root>/predictions/<id>/` and recorded as a tracker run named after its id: scoring options as params, row counts and score percentiles as metrics, the scoring snapshot's source tables as inputs. A failed export still records the run, ended failed with `kumo.error`.
+- The destination is written the same way with MLOps on or off: a **table** is replaced, and **files** go to exactly `path`, with the run's `_provenance.json` next to the Parquet parts. A directory holding another export is refused; `write_mode=WriteMode.OVERWRITE` replaces it.
+- `write_mode=WriteMode.APPEND` (`from kumoapi.jobs import WriteMode`) adds each run's rows to a table with two columns, `PREDICTION_ID` (`run.id`) and `BUNDLE_ID`, so the runs in one table can be told apart.
+- With MLOps on, each run is also kept, never overwritten, under `<root>/predictions/<id>/`, which `evaluate`, `score_drift` and `kumo.output_uri` point at, and recorded as a tracker run named after its id: scoring options as params, row counts and score percentiles as metrics, the scoring snapshot's source tables as inputs. A failed export still records the run, ended failed with `kumo.error`.
 - Entities the snapshot does not hold are skipped and counted (`run.skipped_rows`, the `data/skipped_fraction` metric), never refused.
 - A scoring job needs no `Graph` code: `GraphSnapshot.load_from_connector(cfg, id=...)` and `Trainer.load_from_connector(cfg, ...)`, then `predict`. It warns when the snapshot was taken of a different graph than the model's, naming the schema changes (tables, columns, types, keys, edges); under `on_error="raise"` it raises instead, before scoring.
 
@@ -305,14 +306,19 @@ with kumo.mlops(cfg):
     drift = champion.score_drift(latest, previous=earlier[0] if earlier else None)
 ```
 
-Snowflake runs have no tags, so read the ids from a table the runs wrote instead:
+Snowflake runs have no tags, so list the runs stored under the artifact root instead and keep the champion's:
 
 ```python
-ids = [row[0] for row in sf.session().sql(
-    f"SELECT DISTINCT PREDICTION_ID FROM CHURN_SCORES WHERE BUNDLE_ID = '{champion.result.id}'").collect()]
-latest, *earlier = sorted((kumo.PredictionResult.load_from_connector(cfg, path=f"predictions/{prediction_id}")
-                           for prediction_id in ids), key=lambda run: run.manifest.created_at, reverse=True)
+from pyarrow import fs
+
+store, base = fs.FileSystem.from_uri("s3://<bucket>/kumo/predictions")   # <root>/predictions
+ids = [info.base_name for info in store.get_file_info(fs.FileSelector(base)) if info.type == fs.FileType.Directory]
+runs = [kumo.PredictionResult.load_from_connector(cfg, path=f"predictions/{prediction_id}") for prediction_id in ids]
+latest, *earlier = sorted((run for run in runs if run.bundle_id == champion.result.id),
+                          key=lambda run: run.manifest.created_at, reverse=True)
 ```
+
+On a stage root, `LIST @DB.SCHEMA.STAGE/kumo/predictions/` names the same directories.
 
 `latest` is the run started or written last; when a backfill scores older data after a daily run, order by `run.manifest.prediction_table.anchors` instead.
 
@@ -320,7 +326,7 @@ latest, *earlier = sorted((kumo.PredictionResult.load_from_connector(cfg, path=f
 
 ### Warehouse model monitors
 
-Both platforms monitor the evaluated rows exported to a table; neither monitors link prediction or ranking outputs.
+Both platforms monitor the evaluated rows exported to a table with `write_mode=WriteMode.APPEND`, so the table keeps every evaluation and its `PREDICTION_ID` and `BUNDLE_ID`; neither monitors link prediction or ranking outputs.
 
 **Databricks (Data Quality Monitoring, inference log; the `databricks` extra installs a databricks-sdk with this API).** The classification monitor reads `TARGET_PRED`, so the run needs a threshold (passed or stored):
 
@@ -328,8 +334,9 @@ Both platforms monitor the evaluated rows exported to a table; neither monitors 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.dataquality import (AggregationGranularity, DataProfilingConfig, InferenceLogConfig,
                                                 InferenceProblemType, Monitor)
+from kumoapi.jobs import WriteMode
 
-evaluation.export(kumo.PredictionOutputConfig(dbx, path="churn_evaluated"))
+evaluation.export(kumo.PredictionOutputConfig(dbx, path="churn_evaluated", write_mode=WriteMode.APPEND))
 w = WorkspaceClient()
 table_id = w.tables.get("main.ml.churn_evaluated").table_id
 w.data_quality.create_monitor(monitor=Monitor(object_type="table", object_id=table_id,
@@ -340,13 +347,13 @@ w.data_quality.create_monitor(monitor=Monitor(object_type="table", object_id=tab
             timestamp_column="EVALUATED_AT", granularities=[AggregationGranularity.AGGREGATION_GRANULARITY_1_DAY]))))
 ```
 
-**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` to a Snowflake table writes `TARGET` as a number and `EVALUATED_AT` as `TIMESTAMP_NTZ`, as the monitor needs. The baseline is the model's holdout as evaluated rows, `result.holdout_evaluation()`, exported the same way, so its columns and types are the source's. Pass the threshold the monitored runs were scored with, so both sides' `TARGET_PRED` match (null for runs without one):
+**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` to a Snowflake table writes `TARGET` as a number and `EVALUATED_AT` as `TIMESTAMP_NTZ`, as the monitor needs. The baseline is the model's holdout as evaluated rows, `result.holdout_evaluation()`, exported once the same way, so its columns and types are the source's. Pass the threshold the monitored runs were scored with, so both sides' `TARGET_PRED` match (null for runs without one):
 
 ```python
-evaluation.export(kumo.PredictionOutputConfig(sf, path="churn_evaluated"))
+evaluation.export(kumo.PredictionOutputConfig(sf, path="churn_evaluated", write_mode=WriteMode.APPEND))
 threshold = latest.manifest.scoring.binary_classification_threshold      # None if the runs had none
 champion.result.holdout_evaluation(binary_classification_threshold=threshold).export(
-    kumo.PredictionOutputConfig(sf, path="churn_holdout_evaluated"))
+    kumo.PredictionOutputConfig(sf, path="churn_holdout_evaluated", write_mode=WriteMode.APPEND))
 ```
 
 ```sql
@@ -450,7 +457,7 @@ A text column `infer_metadata()` reads as categorical (short values from a small
 | `False_PROB`, `True_PROB` | binary classification | class probabilities; `True_PROB` is summarized |
 | `CLASS`, `SCORE` | multiclass, multilabel, ranking | one row per returned class; the top `SCORE` is summarized |
 
-`predict` checks each destination first: a directory holding another export raises `ArtifactDestinationConflict`. A table written without the id columns takes one `OVERWRITE` before it can append. Object stores replace a directory by deleting, then writing, so a reader in between finds no `_SUCCESS`; `APPEND` to files is not supported.
+`predict` checks each destination first: a directory holding another export raises `ArtifactDestinationConflict`. A table written without `APPEND` has no id columns: append to a new table, or drop it first. Object stores replace a directory by deleting, then writing, so a reader in between finds no `_SUCCESS`; `APPEND` to files is not supported.
 
 ### Moving snapshots between machines
 
