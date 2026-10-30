@@ -1095,7 +1095,8 @@ _EXPERIMENT_NOTE = '\n'.join([
     "them. Filter `tags.kumo.kind = 'fit'`.",
     '- **Predictions**: one per scoring day, '
     "`predict-<model>-v<version>-<as-of date>`. Filter "
-    "`tags.kumo.kind = 'prediction'` and sort by the tag `kumo.as_of`.",
+    "`tags.kumo.kind = 'prediction'` and sort by the param `anchors` "
+    '(the as-of date).',
     "Each run's description starts with its card; add notes below the "
     "card's last line."])
 _CARD_END = re.compile(r'<!-- /kumo:card sha256=([0-9a-f]{16}) -->')
