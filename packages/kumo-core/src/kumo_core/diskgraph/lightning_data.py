@@ -18,7 +18,7 @@ import threading
 import time
 import warnings
 import weakref
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterator, Mapping
@@ -1291,6 +1291,18 @@ def _allocate_stage_batches(
     return allocations
 
 
+def _sampling_replica_count(runtime_options: Mapping[str, Any]) -> int:
+    """Count remote epoch producers; keep ordered RHS catalog scans on one worker."""
+    endpoints = runtime_options.get("remote_sampling_endpoint")
+    if endpoints is None or runtime_options.get("rhs_seed_node_type") is not None:
+        return 1
+    if isinstance(endpoints, str):
+        return 1
+    if not endpoints:
+        raise ValueError("At least one sampling endpoint is required")
+    return len(endpoints)
+
+
 class DiskgraphTaskBatchIterable(IterableDataset):
     """Torch iterable over ``diskgraph.RuntimeIndex.iter``."""
     def __init__(
@@ -1401,18 +1413,22 @@ class DiskgraphTaskBatchIterable(IterableDataset):
             raise TypeError(
                 f"DiskgraphTaskBatchIterable(stages={self.stages!r}) has "
                 "no num_seeds; cannot compute __len__")
-        total_workers = self.runtime_num_workers * self.dataloader_num_workers
+        replicas = _sampling_replica_count(self.runtime_options)
+        total_workers = (self.runtime_num_workers * self.dataloader_num_workers
+                         * replicas)
         return sum(
             self._natural_batches(
                 self._worker_num_seeds(
                     self.num_seeds,
                     total_workers,
                     worker_id * self.runtime_num_workers +
-                    self.runtime_worker_id,
+                    self.runtime_worker_id + replica * self.runtime_num_workers
+                    * self.dataloader_num_workers,
                 ),
                 self.batch_size,
                 drop_last=self.drop_last,
-            ) for worker_id in range(self.dataloader_num_workers))
+            ) for worker_id in range(self.dataloader_num_workers)
+            for replica in range(replicas))
 
     def _apply_step_caps(self, natural: int) -> int:
         """Clamp a natural per-epoch batch count by min/max steps per epoch
@@ -1504,24 +1520,58 @@ class DiskgraphTaskBatchIterable(IterableDataset):
 
     def _runtime_index(self) -> Any:
         """One opened index per worker process, reused for every epoch."""
-        cached = self.__dict__.get('_runtime_index_handle')
-        if cached is None:
+        cached = self.__dict__.get("_runtime_index_handle")
+        if cached is None or self.__dict__.get("_runtime_index_pid") != os.getpid():
             from diskgraph import RuntimeIndex
-            cached = RuntimeIndex(
-                self.manifest_path,
-                rnd_seed=self.base_seed,
-                num_threads=self.runtime_options.get('num_threads'),
-            )
-            self.__dict__['_runtime_index_handle'] = cached
+
+            endpoint = self.runtime_options.get("remote_sampling_endpoint")
+            if endpoint is not None:
+                from kumo_core.diskgraph.remote_sampling import RemoteRuntimeIndex
+
+                cached = RemoteRuntimeIndex(
+                    self.manifest_path,
+                    endpoint=endpoint,
+                    rnd_seed=self.base_seed,
+                    num_threads=self.runtime_options.get("num_threads"),
+                )
+            else:
+                cached = RuntimeIndex(
+                    self.manifest_path,
+                    rnd_seed=self.base_seed,
+                    num_threads=self.runtime_options.get("num_threads"),
+                )
+            self.__dict__["_runtime_index_handle"] = cached
+            self.__dict__["_runtime_index_pid"] = os.getpid()
         return cached
+
 
     def __getstate__(self) -> dict:
         # Never pickle the handle; workers rebuild their own.
         state = dict(self.__dict__)
-        state.pop('_runtime_index_handle', None)
+        state.pop("_runtime_index_handle", None)
+        state.pop("_runtime_index_managed", None)
         return state
 
+
     def __iter__(self) -> Iterator[Mapping[str, Any]]:
+        try:
+            yield from self._iter_batches()
+        finally:
+            if (self.runtime_options.get("remote_sampling_endpoint") is not None
+                    and not self.__dict__.get("_runtime_index_managed", False)):
+                index = self.__dict__.get("_runtime_index_handle")
+                if index is not None:
+                    index.close()
+
+
+    def _iter_batches(self) -> Iterator[Mapping[str, Any]]:
+        with ExitStack() as cleanup:
+            yield from self._iter_batches_with_cleanup(cleanup)
+
+
+    def _iter_batches_with_cleanup(
+        self, cleanup: ExitStack,
+    ) -> Iterator[Mapping[str, Any]]:
         worker = get_worker_info()
         local_num_workers = worker.num_workers if worker is not None else 1
         local_worker_id = worker.id if worker is not None else 0
@@ -1535,7 +1585,8 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         # num_threads belongs to the opened engine, not to iter().
         iter_options = {
             k: v
-            for k, v in self.runtime_options.items() if k != 'num_threads'
+            for k, v in self.runtime_options.items()
+            if k not in {"num_threads", "remote_sampling_endpoint"}
         }
 
         def _open(
@@ -1559,6 +1610,9 @@ class DiskgraphTaskBatchIterable(IterableDataset):
                 group_by_timestamp=self.group_by_timestamp,
                 **options,
             )
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                cleanup.callback(close)
             return iterator, int(num_samples)
 
         if self.stage_batch_targets is not None:
@@ -1968,8 +2022,15 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         return bool(self._worker_pool_shutdown_deferrals.get(phase, 0))
 
     def shutdown_dataloader_workers(self, phase: str | None = None) -> None:
-        """Synchronously close every matching worker pool."""
-        self._worker_pool_registry.shutdown(phase)
+        """Close matching worker pools, and remote streams at job/failure boundaries."""
+        try:
+            self._worker_pool_registry.shutdown(phase)
+        finally:
+            if phase is None:
+                remote = self.__dict__.get("_remote_runtime_index")
+                if remote is not None:
+                    remote.close()
+
 
     @property
     def active_dataloader_worker_pids(self) -> tuple[int, ...]:
@@ -1977,8 +2038,31 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         return self._worker_pool_registry.worker_pids
 
     def teardown(self, stage: str | None = None) -> None:
-        self.shutdown_dataloader_workers()
-        super().teardown(stage)
+        try:
+            self.shutdown_dataloader_workers()
+        finally:
+            super().teardown(stage)
+
+
+    def _bind_remote_runtime(self, iterable: DiskgraphTaskBatchIterable) -> None:
+        """Share replica streams across stage loaders until module teardown."""
+        endpoint = self.runtime_options.get("remote_sampling_endpoint")
+        if endpoint is None:
+            return
+        from kumo_core.diskgraph.remote_sampling import RemoteRuntimeIndex
+
+        remote = self.__dict__.get("_remote_runtime_index")
+        if remote is None:
+            remote = RemoteRuntimeIndex(
+                iterable.manifest_path, endpoint=endpoint,
+                rnd_seed=self.base_seed,
+                num_threads=self.runtime_options.get("num_threads"),
+            )
+            self.__dict__["_remote_runtime_index"] = remote
+        iterable.__dict__["_runtime_index_handle"] = remote
+        iterable.__dict__["_runtime_index_pid"] = os.getpid()
+        iterable.__dict__["_runtime_index_managed"] = True
+
 
     def train_dataloader(self) -> DataLoader:
         return self._make_dataloader(self.train_stages, is_train=True)
@@ -2202,6 +2286,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             replay=False,
             runtime_options=runtime_options,
         )
+        self._bind_remote_runtime(iterable)
         loader = DataLoader(
             iterable,
             batch_size=None,
@@ -2443,6 +2528,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             stage_num_seeds=stage_num_seeds,
             stage_runtime_options=stage_runtime_options,
         )
+        self._bind_remote_runtime(iterable)
         loader_kwargs: dict[str, Any] = dict(
             batch_size=None,
             num_workers=loader_num_workers,
@@ -2518,15 +2604,20 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             return None
         return sum(int(value) for value in values if value is not None)
 
-    @staticmethod
     def _natural_batches(
+        self,
         num_seeds: int,
         batch_size: int,
         *,
         drop_last: bool = False,
     ) -> int:
-        return num_seeds // batch_size if drop_last else math.ceil(num_seeds /
-                                                                   batch_size)
+        replicas = _sampling_replica_count(getattr(self, "runtime_options", {}))
+        rows, remainder = divmod(num_seeds, replicas)
+        if drop_last:
+            return ((replicas - remainder) * (rows // batch_size)
+                    + remainder * ((rows + 1) // batch_size))
+        return ((replicas - remainder) * math.ceil(rows / batch_size)
+                + remainder * math.ceil((rows + 1) / batch_size))
 
     def _max_train_batches(self, num_seeds: int | None) -> int | None:
         if num_seeds is None:
@@ -3003,6 +3094,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             dataloader_num_workers=0,
         )
 
+        self._bind_remote_runtime(iterable)
         return DataLoader(
             iterable,
             batch_size=None,

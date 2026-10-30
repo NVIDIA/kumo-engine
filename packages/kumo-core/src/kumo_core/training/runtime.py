@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol, Tuple
+from typing import TYPE_CHECKING, Any, Protocol
 
 import psutil
 from diskgraph import SamplerEngine
+
 from kumo_core.diskgraph.stores import (
     DiskgraphFeatureStore,
     DiskgraphGraphStore,
@@ -20,33 +21,30 @@ from kumo_core.diskgraph.stores import (
 
 if TYPE_CHECKING:
     from kumo_core.embedding_models import EmbeddingModelStore
+    from kumo_core.training.config import SamplerKwargs
 
 
 class TrainingDataRuntime(Protocol):
-    def create_graph_sampler(self, *args: Any, **kwargs: Any) -> Any:
-        ...
+    def create_graph_sampler(self, *args: Any, **kwargs: Any) -> Any: ...
 
-    def create_datamodule(self, *args: Any, **kwargs: Any) -> Any:
-        ...
+    def create_datamodule(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
 class TrainingArtifactRuntime(Protocol):
-    def default_model_root(self) -> str:
-        ...
+    def default_model_root(self) -> str: ...
 
-    def local_model_root(self) -> str:
-        ...
+    def local_model_root(self) -> str: ...
 
 
 class DiskgraphTrainingRuntime(Protocol):
     """Engine capabilities needed by DiskGraph-native numerical training."""
+
     def auto_config(
         self,
         *,
         index_path: str,
         estimated_edges: int,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
     def create_feature_and_graph_stores(
         self,
@@ -55,12 +53,30 @@ class DiskgraphTrainingRuntime(Protocol):
         encoders: Any,
         entity_table_names: list[str],
         time_col_dict: dict[str, str],
-    ) -> tuple[Any, Any]:
-        ...
+    ) -> tuple[Any, Any]: ...
 
 
 class LocalDiskgraphTrainingRuntime:
-    """Construct core DiskGraph stores for a driver-local snapshot."""
+    """Construct stores and select a sampling backend for a local run.
+
+    Args:
+        sampling: Optional remote endpoint and native sampler thread settings.
+    """
+
+    def __init__(self, sampling: SamplerKwargs | None = None) -> None:
+        """Retain sampling settings without opening an index or connection."""
+        self._sampling = sampling
+
+    @property
+    def sampling_options(self) -> dict[str, str | list[str] | int]:
+        """Return remote iterator options, or an empty mapping for local sampling."""
+        if self._sampling is None or self._sampling.remote_sampling_endpoint is None:
+            return {}
+        return {
+            "remote_sampling_endpoint": self._sampling.remote_sampling_endpoint,
+            "num_threads": self._sampling.remote_sampling_num_threads,
+        }
+
     def auto_config(
         self,
         *,
@@ -95,6 +111,7 @@ class LocalDiskgraphTrainingRuntime:
 
 class LocalTrainingArtifactRuntime:
     r"""Resolves every Trainer path under one run directory."""
+
     def __init__(self, model_root: str) -> None:
         self.model_root = str(Path(model_root))
 
@@ -111,10 +128,9 @@ class LocalExplainRuntime:
     prediction_selection_nodes = 1000
     max_batches = 50
     max_facts = 16
-    mapping_file_name = 'strategy_mappings.json'
+    mapping_file_name = "strategy_mappings.json"
 
-    def get_explain_node_inputs(self, datamodule: Any,
-                                stage: Any) -> Tuple[Any, Any]:
+    def get_explain_node_inputs(self, datamodule: Any, stage: Any) -> tuple[Any, Any]:
         _, input_nodes, _, input_id = datamodule.stage_inputs(stage.value)
         return input_nodes, input_id
 
@@ -123,8 +139,7 @@ class LocalExplainRuntime:
 
         return select_input_nodes(*args, **kwargs)
 
-    def get_eval_dataloader(self, datamodule: Any, stage: Any,
-                            seed_nodes: Any) -> Any:
+    def get_eval_dataloader(self, datamodule: Any, stage: Any, seed_nodes: Any) -> Any:
         return datamodule.explain_dataloader(stage.value, seed_nodes)
 
 
@@ -136,14 +151,16 @@ class LocalAutoTrainingRuntime:
     They still check what they are asked for: a mismatch means the caller is
     mixing runs, which would train against the wrong data.
     """
+
     def __init__(
         self,
         *,
         home_dir: str,
         resolved_task: Any,
-        run_name: Optional[str] = None,
-        embedding_models: Optional[EmbeddingModelStore] = None,
-        accelerator: str = 'auto',
+        run_name: str | None = None,
+        embedding_models: EmbeddingModelStore | None = None,
+        accelerator: str = "auto",
+        sampling: SamplerKwargs | None = None,
     ) -> None:
         self.home_dir = str(Path(home_dir))
         self.resolved_task = resolved_task
@@ -151,61 +168,62 @@ class LocalAutoTrainingRuntime:
         self.embedding_models = embedding_models
         self.accelerator = accelerator
         self.artifact_runtime = LocalTrainingArtifactRuntime(self.home_dir)
-        self.diskgraph_runtime = LocalDiskgraphTrainingRuntime()
+        self.diskgraph_runtime = LocalDiskgraphTrainingRuntime(sampling)
         self.explain_runtime = LocalExplainRuntime()
 
     def default_home_dir(self) -> str:
         return self.home_dir
 
     def metrics_job_name(self) -> str:
-        return str(self.run_name or 'kumo-engine')
+        return str(self.run_name or "kumo-engine")
 
     def collect_encoders(self, task: Any) -> Any:
         from kumo_core.automl.runtime import collect_resolved_encoders
 
-        if (task is not self.resolved_task
-                and task.name != self.resolved_task.name):
-            raise ValueError('encoder artifact does not belong to this task')
+        if task is not self.resolved_task and task.name != self.resolved_task.name:
+            raise ValueError("encoder artifact does not belong to this task")
         return collect_resolved_encoders(task)
 
     def load_task(self, task_name: str, home_dir: str) -> Any:
         if task_name != self.resolved_task.name or home_dir != self.home_dir:
-            raise ValueError('requested task does not match resolved input')
+            raise ValueError("requested task does not match resolved input")
         return self.resolved_task
 
     def load_task_from_home(self, home_dir: str) -> Any:
         if home_dir != self.home_dir:
-            raise ValueError('requested home does not match resolved input')
+            raise ValueError("requested home does not match resolved input")
         return self.resolved_task
 
     def load_automl_config(self, job_config: Any) -> Any:
         raise RuntimeError(
-            'The local backend trains from a resolved model plan; there is no '
-            'AutoML config file to load.')
+            "The local backend trains from a resolved model plan; there is no "
+            "AutoML config file to load."
+        )
 
-    def trainer_runtime_kwargs(self) -> Dict[str, Any]:
+    def trainer_runtime_kwargs(self) -> dict[str, Any]:
         return {
-            'accelerator': self.accelerator,
-            'artifact_runtime': self.artifact_runtime,
-            'diskgraph_runtime': self.diskgraph_runtime,
-            'explain_runtime': self.explain_runtime,
-            'embedding_models': self.embedding_models,
+            "accelerator": self.accelerator,
+            "artifact_runtime": self.artifact_runtime,
+            "diskgraph_runtime": self.diskgraph_runtime,
+            "explain_runtime": self.explain_runtime,
+            "embedding_models": self.embedding_models,
         }
 
 
-def _trainer_validation_metrics(trainer: Any) -> Dict[str, float]:
+def _trainer_validation_metrics(trainer: Any) -> dict[str, float]:
     return {
         name: value
         for name, value in trainer.get_train_results().items()
-        if name.startswith('val_')
+        if name.startswith("val_")
     }
 
 
 def local_training_bindings(
     training_input: Any,
-    run_name: Optional[str] = None,
-    embedding_models: Optional[EmbeddingModelStore] = None,
-    accelerator: str = 'auto',
+    run_name: str | None = None,
+    embedding_models: EmbeddingModelStore | None = None,
+    accelerator: str = "auto",
+    sampling: SamplerKwargs | None = None,
 ) -> Any:
     r"""Binds one resolved training input to this process.
 
@@ -219,16 +237,20 @@ def local_training_bindings(
     from kumo_core.training.orchestration import TrainingBindings
 
     return TrainingBindings(
-        runtime=LocalAutoTrainingRuntime(home_dir=training_input.home_dir,
-                                         resolved_task=training_input.task,
-                                         run_name=run_name,
-                                         embedding_models=embedding_models,
-                                         accelerator=accelerator),
+        runtime=LocalAutoTrainingRuntime(
+            home_dir=training_input.home_dir,
+            resolved_task=training_input.task,
+            run_name=run_name,
+            embedding_models=embedding_models,
+            accelerator=accelerator,
+            sampling=sampling,
+        ),
         instrumentation=NoOpTrainingInstrumentation(),
         resolve_vital_artifacts=resolve_vital_artifact_sources,
         # The vital bundle lands beside the run. A platform backend would then
         # upload it to a registry; locally the path is the identity.
         artifact_publisher=FilesystemVitalArtifactPublisher(
-            Path(training_input.home_dir) / 'published-model'),
+            Path(training_input.home_dir) / "published-model"
+        ),
         load_validation_metrics=_trainer_validation_metrics,
     )
