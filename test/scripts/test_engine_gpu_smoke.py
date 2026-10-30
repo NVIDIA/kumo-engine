@@ -130,6 +130,15 @@ def test_reload_tolerance_accepts_boundary_and_rejects_larger_or_invalid_values(
             compare(before, after)
 
 
+@pytest.mark.parametrize(('before', 'after'), [
+    ([[1.]], [[1., 1.]]),
+    ([[np.inf]], [[np.inf]]),
+])
+def test_invalid_reload_outputs_fail_even_with_large_tolerance(before, after):
+    with pytest.raises(ValueError, match='equal finite prediction shapes'):
+        runner().compare_predictions(before, after, atol=1.)
+
+
 def test_training_proof_rejects_zero_work_and_incomplete_fits():
     check = runner().verify_training_work
     valid = dict(fits=1, completed_fits=1, training_batches=2,
