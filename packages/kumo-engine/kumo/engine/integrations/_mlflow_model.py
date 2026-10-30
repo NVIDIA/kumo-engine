@@ -138,15 +138,9 @@ def _seconds(values: pd.Series) -> pd.Series:
 
 def _require_inputs(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
                     time: Optional[pd.Timestamp]) -> None:
-    from kumo_core.pquery import query_is_temporal
-
-    from kumo.engine.pquery import PredictiveQuery
-
     if len(rows) == 0 or time is not None or 'TIMESTAMP' in rows:
         return
-    parsed = PredictiveQuery._from_snapshot(snapshot,
-                                            trainer._training_query)._parsed
-    if query_is_temporal(parsed, snapshot._native_graph):
+    if _temporal(trainer, snapshot):
         raise ValueError("temporal query: pass params={'prediction_time': "
                          "...} or a TIMESTAMP column")
 
