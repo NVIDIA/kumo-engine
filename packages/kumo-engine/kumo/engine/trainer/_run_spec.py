@@ -56,10 +56,7 @@ def fit_spec(context: FitContext, *,
 def fitted_spec(spec: RunSpec, result: Any, seconds: Optional[float] = None,
                 alias: Optional[str] = None,
                 summaries: Sequence[Summary] = ()) -> RunSpec:
-    r"""``spec`` once the fit returned ``result``, a `TrainingResult`,
-    after ``seconds``: its test metrics, since the run's train and
-    validation series show the selected trial's epochs, the version it
-    registered with ``alias``, and ``summaries``."""
+    r"""``spec`` once the fit returned ``result``."""
     artifacts = dict(spec.artifacts)
     provenance = Path(result.bundle_dir) / PROVENANCE_FILE
     if provenance.is_file():

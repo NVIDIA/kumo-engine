@@ -371,11 +371,7 @@ def _store_and_register(
     warn: bool = True,
     stored: Optional[BaseException] = None,
 ) -> Tuple[Optional[PublishedModel], Optional[BaseException]]:
-    r"""Store a fitted bundle under the artifact root, log it in the
-    session's run and register it, as MLOps ``settings`` say; returns the
-    registered version and the first failure. A model whose bundle or
-    assets (``stored``, the asset failure) could not be stored is not
-    registered."""
+    r"""Stores, logs and registers a bundle; returns it and any error."""
     if stored is None and settings is not None and settings.wants('model'):
         try:
             _store_model(bundle_dir, manifest, settings)
@@ -496,8 +492,7 @@ def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
 
 def _with_metrics(model: Optional[PublishedModel],
                   metrics: Mapping[str, float]) -> Optional[PublishedModel]:
-    r"""``model`` with the fit's metrics, where its registry returned none
-    (an MLflow version, unlike a Snowflake one, carries none)."""
+    r"""``model`` with ``metrics``, where its registry returned none."""
     if model is None or model.metrics:
         return model
     return replace(model, metrics=dict(metrics))
@@ -572,10 +567,7 @@ _F = TypeVar('_F', bound=Callable[..., Any])
 def _without_torch_scatter_hint(method: _F) -> _F:
     r"""Runs ``method`` without PyTorch Geometric's GPU hint that min/max
     aggregation "can be accelerated via the 'torch-scatter' package",
-    Lightning's "Tip" log lines advertising its cloud products, Lightning's
-    note that the loader's IterableDataset defines ``__len__``, and Python's
-    note that forking a multi-threaded process may deadlock (the loader
-    workers fork before any thread that matters holds a lock).
+    Lightning's tips and ``__len__`` note, and Python's fork warning.
 
     kumo-engine uses PyTorch's own scatter instead of that optional extension
     (see ``test_wheel_uses_torch_fallbacks_without_native_extensions``), so

@@ -151,8 +151,7 @@ class MLOps:
         check_model_location(ModelOutputConfig(connector, location=registry))
 
     def snapshot_uri(self, snapshot: Any) -> str:
-        r"""Where a `GraphSnapshot`, or a snapshot id, is stored under this
-        artifact root, e.g. for the pyfunc's ``snapshot`` param."""
+        r"""Where a `GraphSnapshot`, or a snapshot id, is stored."""
         return self.root.uri(snapshot_path(snapshot))
 
     def wants(self, kind: str) -> bool:
@@ -160,9 +159,7 @@ class MLOps:
         return kind in self.kinds
 
     def locate(self, path: Path, kind: Type[M], relative: str) -> Optional[M]:
-        r"""Records in the manifest at ``path`` that its artifact is stored
-        at ``relative`` under the root, before it is copied there; returns
-        the manifest, if there is one."""
+        r"""Sets the manifest at ``path`` to say it is at ``relative``."""
         location = self.root.uri(relative)
         manifest = read_manifest(path, kind)
         if manifest is not None and manifest.location != location:
@@ -255,9 +252,7 @@ def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
 
 def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
                    call: str, stacklevel: int = 2) -> None:
-    r"""Reports ``error``, a storing, tracking or registration failure of a
-    finished ``call``: raises when ``settings.on_error`` is ``'raise'``,
-    else warns unless `warn_failure` already warned about it."""
+    r"""Raises or warns about ``error``, as ``settings.on_error`` says."""
     if error is None or settings is None:
         return
     message = (f'{call} finished, but MLOps storing, tracking or '
@@ -274,8 +269,7 @@ def full_error(error: BaseException) -> str:
 
 def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
                  also: Optional[BaseException] = None) -> None:
-    r"""Warns ``message`` (a :class:`UserWarning`) once per ``error``; it
-    also reports ``also``, an earlier error that caused ``error``."""
+    r"""Warns ``message`` once per ``error`` (and ``also``)."""
     if getattr(error, '_kumo_warned', False):
         return
     warnings.warn(message, UserWarning, stacklevel=stacklevel + 1)
@@ -305,9 +299,7 @@ _SNAPSHOT_ID = re.compile(r'[0-9a-f]+@[0-9a-f]+')
 
 def snapshot_uri(snapshot: Any,
                  settings: Optional[MLOps] = None) -> Optional[str]:
-    r"""A snapshot to serve against, as a location: a URI or stage path as
-    given; a `GraphSnapshot` or snapshot id as stored under the artifact
-    root of ``settings`` (else of the enclosing block)."""
+    r"""A snapshot location; an object or id is read from the root."""
     if snapshot is None or (isinstance(snapshot, str)
                             and not _SNAPSHOT_ID.fullmatch(snapshot)):
         return snapshot
