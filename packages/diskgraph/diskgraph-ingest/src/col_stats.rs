@@ -9,7 +9,7 @@
 //! per-file stats are merged into a shared `TableColStats` accumulator
 //! via a mutex.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -539,6 +539,27 @@ impl ReservoirSamplerL {
 pub use diskgraph_core::accumulators::TDigestEstimator;
 pub use diskgraph_core::accumulators::WelfordAccumulator;
 
+/// The fixed bin of a finite `value`, the same in every snapshot: eight per
+/// power of two, by the sign, exponent and top three mantissa bits.
+fn value_bin(value: f64) -> i32 {
+    let bin = (value.abs().to_bits() >> 49) as i32;
+    if value < 0.0 {
+        -bin - 1
+    } else {
+        bin
+    }
+}
+
+/// Where `bin` starts on the number line: its lowest value, or for a
+/// negative bin the bound just below its values.
+fn bin_start(bin: i32) -> f64 {
+    if bin < 0 {
+        -f64::from_bits(((-bin) as u64) << 49)
+    } else {
+        f64::from_bits((bin as u64) << 49)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FileColStats — per-file observer
 // ---------------------------------------------------------------------------
@@ -573,6 +594,7 @@ pub enum ColumnStatsCollector {
         welford: WelfordAccumulator,
         hll: HyperLogLog,
         tdigest: TDigestEstimator,
+        bins: BTreeMap<i32, u64>,
     },
     Categorical {
         count: u64,
@@ -1090,6 +1112,7 @@ impl ColumnStatsCollector {
                 welford: WelfordAccumulator::new(),
                 hll: HyperLogLog::new(),
                 tdigest: TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA),
+                bins: BTreeMap::new(),
             },
             Some(SemanticType::Categorical) => ColumnStatsCollector::Categorical {
                 count: 0,
@@ -1191,6 +1214,7 @@ impl ColumnStatsCollector {
                     welford,
                     hll,
                     tdigest,
+                    bins,
                 },
                 ColumnStatsCollector::Numerical {
                     null_count: nc2,
@@ -1199,6 +1223,7 @@ impl ColumnStatsCollector {
                     welford: w2,
                     hll: h2,
                     tdigest: td2,
+                    bins: b2,
                 },
             ) => {
                 *null_count += *nc2;
@@ -1207,6 +1232,9 @@ impl ColumnStatsCollector {
                 welford.merge(w2);
                 hll.merge(h2);
                 tdigest.merge(td2);
+                for (bin, count) in b2.iter() {
+                    *bins.entry(*bin).or_default() += count;
+                }
             }
             (
                 ColumnStatsCollector::Categorical {
@@ -1425,6 +1453,7 @@ impl ColumnStatsCollector {
                 welford,
                 hll,
                 tdigest,
+                bins,
             } => {
                 let total = welford.count + *null_count + *invalid_count;
                 let (q25, q50, q75) = tdigest.quantiles().unwrap_or((0.0, 0.0, 0.0));
@@ -1444,6 +1473,10 @@ impl ColumnStatsCollector {
                     "q50": q50,
                     "q75": q75,
                     "num_unique": hll.estimate() as u64,
+                    "value_bins": bins
+                        .iter()
+                        .map(|(bin, count)| json!([bin_start(*bin), count]))
+                        .collect::<Vec<_>>(),
                 }))
             }
             ColumnStatsCollector::Categorical {
@@ -1791,6 +1824,7 @@ impl FileColStats {
                     welford,
                     hll,
                     tdigest,
+                    ..
                 } => {
                     let count = welford.count + *null_count + *invalid_count;
                     // Base stats
@@ -2510,12 +2544,14 @@ impl ColumnValueObserver for FileColStats {
                 welford,
                 hll,
                 tdigest,
+                bins,
                 ..
             } => {
                 let fval = value as f64;
                 welford.observe(fval);
                 hll.observe_i64(value);
                 tdigest.observe(fval);
+                *bins.entry(value_bin(fval)).or_default() += 1;
             }
             ColumnStatsCollector::Categorical { count, hll, .. } => {
                 *count += 1;
@@ -2574,12 +2610,14 @@ impl ColumnValueObserver for FileColStats {
                 welford,
                 hll,
                 tdigest,
+                bins,
                 ..
             } => {
                 if value.is_finite() {
                     welford.observe(value);
                     hll.observe_f64(value);
                     tdigest.observe(value);
+                    *bins.entry(value_bin(value)).or_default() += 1;
                 } else {
                     *invalid_count += 1;
                 }
@@ -3877,6 +3915,26 @@ mod tests {
     fn test_format_kumo_timestamp_sentinels() {
         assert_eq!(format_kumo_timestamp(i64::MAX), "kumo_timestamp_NaT");
         assert_eq!(format_kumo_timestamp(i64::MIN), "kumo_timestamp_NaT");
+    }
+
+    #[test]
+    fn numerical_values_are_counted_exactly_on_fixed_bins() {
+        let stypes = vec![Some(SemanticType::Numerical)];
+        let mut first = FileColStats::new(&make_test_cols(&stypes));
+        let mut second = FileColStats::new(&make_test_cols(&stypes));
+        for value in [-3.0, 0.0, -0.0, 1.0, 1.1, 1.2] {
+            first.observe_f64(0, value);
+        }
+        second.observe_i64(0, 1);
+        second.observe_f64(0, f64::NAN);
+        second.observe_null(0);
+        first.merge(&mut second);
+
+        let raw = first.to_json(&["x".into()], &[IngestedType::Float64], None, None);
+        assert_eq!(
+            raw["x"]["value_bins"],
+            json!([[-3.25, 1], [0.0, 2], [1.0, 3], [1.125, 1]])
+        );
     }
 
     #[test]
