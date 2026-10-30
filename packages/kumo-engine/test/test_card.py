@@ -48,6 +48,7 @@ def test_a_prediction_heading_leads_with_its_watch_numbers():
 
 def test_a_fit_says_what_it_trained_and_where_its_numbers_come_from():
     tags = {**MODEL, 'kumo.task_type': 'binary_classification',
+            'kumo.entity': 'users',
             'kumo.tune_metric': 'auroc', 'kumo.best_trial': '2',
             'kumo.best_epoch': '4'}
 

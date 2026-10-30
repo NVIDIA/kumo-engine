@@ -454,7 +454,7 @@ def test_records_of_the_recorded_fit():
     assert fit.tags == {'team': 'ents', 'kumo.kind': 'fit',
                         'kumo.bundle_id': BUNDLE, 'kumo.snapshot_id': SNAPSHOT,
                         'kumo.task_type': 'regression',
-                        'kumo.tune_metric': 'mae',
+                        'kumo.entity': 'ents', 'kumo.tune_metric': 'mae',
                         'kumo.engine_version': __version__,
                         'kumo.best_trial': '2', 'kumo.best_epoch': '2'}
     assert fit.params == {

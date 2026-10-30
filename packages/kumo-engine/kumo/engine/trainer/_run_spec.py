@@ -11,6 +11,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.summaries import Scalar, Summary
 
+from kumo.engine._card import entity
 from kumo.engine._tracking import (
     RunSpec,
     _flatten,
@@ -53,6 +54,7 @@ def fit_spec(context: FitContext, *,
                 if value is not None and value != _UNSET},
         parents={'snapshot_id': context.snapshot_id,
                  'task_type': context.task_type,
+                 'entity': entity(context.query),
                  'tune_metric': tune and metric_name(tune)},
         tags=dict(tags or {}),
         inputs=dict(context.inputs),

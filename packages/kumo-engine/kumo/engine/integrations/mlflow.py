@@ -692,8 +692,7 @@ class MlflowTracking:
         kind = tags.get('kumo.kind', '')
         lines[:2] = _card.heading(kind, run.data.metrics, tags)
         if kind == 'fit' and len(lines) > 3:
-            lines[3] = _card.fit_line(tags, run.data.params,
-                                      lines[5] if len(lines) > 5 else None)
+            lines[3] = _card.fit_line(tags, run.data.params)
         card = '\n'.join(lines)
         items = [s for s in summaries if isinstance(s, Note)
                  or isinstance(s, Table) and s.brief]

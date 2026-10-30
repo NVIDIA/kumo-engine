@@ -126,9 +126,9 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     assert parent.info.status == 'FINISHED'
     assert {k for k in parent.data.tags if k.startswith('kumo.')} == {
         'kumo.kind', 'kumo.bundle_id', 'kumo.dropped_params',
-        'kumo.snapshot_id', 'kumo.task_type', 'kumo.tune_metric',
-        'kumo.engine_version', 'kumo.best_trial', 'kumo.best_epoch',
-        'kumo.bundle_uri'}
+        'kumo.snapshot_id', 'kumo.task_type', 'kumo.entity',
+        'kumo.tune_metric', 'kumo.engine_version', 'kumo.best_trial',
+        'kumo.best_epoch', 'kumo.bundle_uri'}
     assert parent.data.tags['kumo.bundle_uri'] == str(
         tmp_path / 'root' / 'models' / result.id)
     assert parent.data.tags['kumo.snapshot_id'] == snapshot.id
@@ -766,7 +766,8 @@ def _fit_with_a_card(tracker, summaries=(), note=None):
 
     record = RunRecord(
         name='r', tags={'kumo.kind': 'fit', 'kumo.tune_metric': 'mae',
-                        'kumo.task_type': 'regression'},
+                        'kumo.task_type': 'regression',
+                        'kumo.entity': 'ents'},
         metrics={'test/mae': 0.25}, description=f'`{QUERY}`',
         artifacts={PROVENANCE_FILE: '{}'}, summaries=summaries)
     tracker.start(record)

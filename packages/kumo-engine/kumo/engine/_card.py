@@ -91,15 +91,14 @@ def intro(kind: str, tags: Mapping[str, str], params: Mapping[str, str],
     r"""The sentence under the heading, and a fit's ``query``."""
     if kind != 'fit':
         return model_line(tags, fit_run, link)
-    return fit_line(tags, params, query) + (f'\n\n{query}' if query else '')
+    return fit_line(tags, params) + (f'\n\n{query}' if query else '')
 
 
-def fit_line(tags: Mapping[str, str], params: Mapping[str, str],
-             query: Optional[str]) -> str:
+def fit_line(tags: Mapping[str, str], params: Mapping[str, str]) -> str:
     r"""A fit's sentence: the model it registered, its task, and the trial
     and epoch its curves and holdout metrics come from."""
     task = tags.get('kumo.task_type', '').replace('_', ' ')
-    of = entity(query)
+    of = tags.get('kumo.entity')
     line = 'Fit' + (f' of {_model(tags)}' if _model(tags) else '') + (
         f" for {task}{f' of {of}' if of else ''}" if task else '')
     tune = f"val {_key(tags.get('kumo.tune_metric') or 'loss')}"
