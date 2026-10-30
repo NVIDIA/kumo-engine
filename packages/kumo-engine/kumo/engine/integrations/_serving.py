@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Scoring rows against a registered bundle, shared by the MLflow pyfunc
-and the Snowflake Model Registry model."""
+r"""Scoring rows with a registered bundle, for MLflow and Snowflake."""
 
 import json
 import logging
@@ -85,15 +84,18 @@ def _in_input_order(rows: pd.DataFrame, scored: pd.DataFrame) -> pd.DataFrame:
     return scored.iloc[order.to_numpy()].reset_index(drop=True)
 
 
+def _parsed(trainer: Any, snapshot: GraphSnapshot) -> Any:
+    from kumo.engine.pquery import PredictiveQuery
+
+    return PredictiveQuery._from_snapshot(snapshot,
+                                          trainer._training_query)._parsed
+
+
 def _temporal(trainer: Any, snapshot: GraphSnapshot) -> bool:
     from kumo_core.pquery import query_is_temporal
 
-    from kumo.engine.pquery import PredictiveQuery
-
-    return query_is_temporal(
-        PredictiveQuery._from_snapshot(snapshot,
-                                       trainer._training_query)._parsed,
-        snapshot._native_graph)
+    return query_is_temporal(_parsed(trainer, snapshot),
+                             snapshot._native_graph)
 
 
 def _seconds(values: pd.Series) -> pd.Series:
@@ -105,15 +107,9 @@ def _seconds(values: pd.Series) -> pd.Series:
 
 def _require_inputs(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
                     time: Optional[pd.Timestamp]) -> None:
-    from kumo_core.pquery import query_is_temporal
-
-    from kumo.engine.pquery import PredictiveQuery
-
     if len(rows) == 0 or time is not None or 'TIMESTAMP' in rows:
         return
-    parsed = PredictiveQuery._from_snapshot(snapshot,
-                                            trainer._training_query)._parsed
-    if query_is_temporal(parsed, snapshot._native_graph):
+    if _temporal(trainer, snapshot):
         raise ValueError("temporal query: pass params={'prediction_time': "
                          "...} or a TIMESTAMP column")
 
@@ -140,10 +136,7 @@ def output_columns(bundle: Path) -> List[str]:
 
 def score_registered(bundle: str, serving: str, rows: pd.DataFrame,
                      params: Mapping[str, Any]) -> pd.DataFrame:
-    r"""Scores ``rows`` with the predictor the bundle at ``bundle`` names,
-    against the snapshot in ``params`` or the ``serving`` record, with the
-    bundle's assets read from their stage. The bundle and each snapshot
-    load once per process."""
+    r"""Scores ``rows`` against ``params``' or ``serving``'s snapshot."""
     from kumo.engine._predictor import load_predictor
 
     record = json.loads(Path(serving).read_text())
@@ -175,8 +168,7 @@ def score_registered(bundle: str, serving: str, rows: pd.DataFrame,
 
 def _staged(bundle: str, target: Mapping[str, Any],
             load: Callable[[str], Any]) -> Any:
-    r"""``load(bundle)``, with the stages holding the bundle's assets
-    readable with the Snowpark Container Services identity."""
+    r"""``load(bundle)``, reading its staged assets as the container."""
     from kumo.engine._deps import Dependencies, asset_locations
     from kumo.engine.trainer._provenance import read_provenance
 
@@ -187,28 +179,26 @@ def _staged(bundle: str, target: Mapping[str, Any],
     })
     if not roots:
         return load(bundle)
-    from kumo.engine.connector.snowflake import SnowflakeConnector
-
-    connector = SnowflakeConnector.from_spcs_env(
-        warehouse=target.get('warehouse'), database=target.get('database'),
-        schema_name=target.get('schema'))
+    connector = _container_connector(target)
     with asset_locations([(connector, root) for root in roots]):
         return load(bundle)
 
 
 def load_snapshot(uri: str, target: Mapping[str, Any]) -> GraphSnapshot:
-    r"""Loads an exported snapshot; an ``@`` stage path is read with the
-    Snowpark Container Services identity, in ``target``'s warehouse."""
+    r"""Loads an exported snapshot, a stage's as the container."""
     if uri.startswith('@'):
-        from kumo.engine.connector.snowflake import SnowflakeConnector
-
-        connector: Connector = SnowflakeConnector.from_spcs_env(
-            warehouse=target.get('warehouse'),
-            database=target.get('database'),
-            schema_name=target.get('schema'))
-        return GraphSnapshot.load_from_connector(connector, path=uri)
+        return GraphSnapshot.load_from_connector(_container_connector(target),
+                                                 path=uri)
     connector, path = snapshot_location(uri)
     return GraphSnapshot.load_from_connector(connector, path=path)
+
+
+def _container_connector(target: Mapping[str, Any]) -> Connector:
+    from kumo.engine.connector.snowflake import SnowflakeConnector
+
+    return SnowflakeConnector.from_spcs_env(
+        warehouse=target.get('warehouse'), database=target.get('database'),
+        schema_name=target.get('schema'))
 
 
 def _cached(cache: Dict[str, Any], key: str, load: Callable[[], Any]) -> Any:
@@ -220,11 +210,8 @@ def _cached(cache: Dict[str, Any], key: str, load: Callable[[], Any]) -> Any:
 
 def _entities(values: pd.Series, trainer: Any,
               snapshot: GraphSnapshot) -> pd.Series:
-    from kumo.engine.pquery import PredictiveQuery
-
-    parsed = PredictiveQuery._from_snapshot(snapshot,
-                                            trainer._training_query)._parsed
-    entity = snapshot._native_graph.table(parsed.entity_table)
+    entity = snapshot._native_graph.table(
+        _parsed(trainer, snapshot).entity_table)
     dtype = str(entity.column(entity.primary_key).dtype)
     if dtype.startswith('int') or dtype.startswith('uint'):
         return pd.to_numeric(values).astype('int64')
