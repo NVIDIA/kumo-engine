@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared JSON manifest format for engine artifacts."""
 
+import html
 import json
 import types
 import warnings
@@ -382,11 +383,23 @@ class FitTiming(Record):
 class TrackingRef(Record):
     r"""A run in an experiment tracker: its ``platform`` (``mlflow``,
     ``databricks``, ``sagemaker``, ``snowflake``), the platform's own
-    ``run_id`` and, where the platform has one, the run's ``url``."""
+    ``run_id``, its ``experiment`` and ``run_name`` and, where the platform
+    has one, the run's ``url``. A notebook shows it as a link to the run."""
 
     platform: str
     run_id: str
     url: Optional[str] = omit_none()
+    experiment: Optional[str] = omit_none()
+    run_name: Optional[str] = omit_none()
+
+    def _repr_html_(self) -> str:
+        name = html.escape(self.run_name or self.run_id)
+        where = (f' in {html.escape(self.experiment)}'
+                 if self.experiment else '')
+        if self.url is None:
+            return f'{html.escape(self.platform)} run <code>{name}</code>{where}'
+        return (f'<a href="{html.escape(self.url)}" target="_blank" '
+                f'rel="noopener">{name}</a>{where}')
 
 
 @dataclass(frozen=True, kw_only=True)

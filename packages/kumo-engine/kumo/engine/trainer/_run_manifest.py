@@ -34,6 +34,7 @@ from kumo.engine._manifest import (
     RunScoring,
     RunTimings,
     SnapshotManifest,
+    TrackingRef,
     embedded,
     stamp,
     stub,
@@ -64,13 +65,14 @@ def start(*, result: Any, trainer: Any, snapshot: Any, prediction_table: Any,
 
 def finish(result: Any, manifest: Optional[PredictionManifest],
            output_config: Any, settings: Any, model: Any = None,
-           snapshot: Any = None) -> None:
+           snapshot: Any = None) -> Optional[TrackingRef]:
     r"""Export to ``output_config``, record the run (with the outputs
     written, even if the export fails), store it in the artifact root and
     track it as a run of ``model``, a `TrainingResult`, on ``snapshot``; a
-    storing or tracking failure raises last under ``on_error='raise'``."""
+    storing or tracking failure raises last under ``on_error='raise'``.
+    Returns the tracked run."""
     from kumo.engine._mlops import raise_on_error
-    from kumo.engine._tracking import track_prediction
+    from kumo.engine._tracking import track_prediction, tracking_ref
 
     records = ([] if output_config is None else output_records(
         output_config, result.id))
@@ -78,6 +80,7 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
     error: Optional[BaseException] = None
     untracked: Optional[BaseException] = None
     unstored: Optional[BaseException] = None
+    tracking: Optional[TrackingRef] = None
     try:
         if output_config is not None:
             result._export(
@@ -102,11 +105,15 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
             untracked = track_prediction(
                 manifest, settings.tracking, error or unstored, model,
                 _scoring_summaries(manifest, settings, snapshot))
+            tracked = getattr(settings.tracking, 'log_prediction_run', None)
+            if untracked is None and tracked is not None:
+                tracking = tracking_ref(settings.tracking)
     untracked = unstored or untracked
     if untracked is not None:
         raise_on_error(settings, untracked,
                        f'Trainer.predict (run {result.id}, outputs written)',
                        stacklevel=4)
+    return tracking
 
 
 def _scoring_summaries(manifest: Optional[PredictionManifest], settings: Any,

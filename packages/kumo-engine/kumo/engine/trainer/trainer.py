@@ -175,6 +175,9 @@ class TrainingResult:
     # The fit's `kumo_core.summaries` of its test split, for trackers.
     _summaries: Tuple[Summary, ...] = field(default=(), repr=False,
                                             compare=False)
+    # The fit's run once it ended, as named then.
+    _tracking: Optional[TrackingRef] = field(default=None, repr=False,
+                                             compare=False)
 
     @property
     def id(self) -> Optional[str]:
@@ -198,9 +201,11 @@ class TrainingResult:
     @property
     def tracking(self) -> Optional[TrackingRef]:
         """The experiment tracker's run of the fit: its ``platform``,
-        ``run_id`` and ``url``; None when the fit was not tracked."""
+        ``run_id``, ``experiment``, ``run_name`` and ``url``; None when the
+        fit was not tracked."""
         manifest = self.manifest
-        return None if manifest is None else manifest.tracking
+        return self._tracking or (None if manifest is None else
+                                  manifest.tracking)
 
     def predict(self, *args: Any, **kwargs: Any) -> 'PredictionResult':
         """Score with this model, as :meth:`Trainer.predict`."""
@@ -309,13 +314,20 @@ class PredictionResult:
     Parquet files. Accessing ``frame`` explicitly collects the whole result
     into memory and is intended only for outputs that fit in memory.
     ``id`` names the run; ``manifest`` is its record (None if it could not
-    be written), from which ``bundle_id`` and ``snapshot_id`` are read.
+    be written), from which ``bundle_id`` and ``snapshot_id`` are read;
+    ``tracking`` is its experiment tracker's run, None when not tracked.
     """
 
     selection: Optional[PredictionSelectionRef]
     artifact_type: PredictionArtifactType
+    _tracking: Optional[TrackingRef] = field(default=None, compare=False,
+                                             repr=False)
     _exported: Optional['_Export'] = field(default=None, compare=False,
                                            repr=False)
+
+    @property
+    def tracking(self) -> Optional[TrackingRef]:
+        return self._tracking
 
     @classmethod
     def load_from_connector(cls, connector: Connector, *,
@@ -1075,6 +1087,9 @@ class Trainer:
                         result.manifest, 'training', settings,
                         table_details(Path(snapshot.index_path)))),
                     *split_summaries(train_table.staging_dir))), error)
+        if session.final is not None:
+            result = replace(result, _tracking=session.final)
+            self._training_result = result
         raise_on_error(settings, session.error or error,
                        'Trainer.fit (its model is in trainer.result)')
         return result
@@ -1721,9 +1736,9 @@ class Trainer:
                                             num_classes_to_return, 'query'),
                 num_workers=num_workers,
             ), started_at=started_at.isoformat(timespec='seconds'))
-        _run_manifest.finish(result, manifest, output_config, settings,
-                             training_result, snapshot)
-        return result
+        tracking = _run_manifest.finish(result, manifest, output_config,
+                                        settings, training_result, snapshot)
+        return replace(result, _tracking=tracking)
 
     def evaluate(self, run: PredictionResult, *,
                  labels_snapshot: GraphSnapshot,

@@ -141,8 +141,8 @@ class MlflowTracking:
     SageMaker plugin route with it.
 
     ``run_id`` is the MLflow id of the most recent tracked run, once it has
-    started, and ``run_url`` its link in the MLflow UI, where the server has
-    one.
+    started, ``logged_run_name`` its name, ``experiment`` its experiment's
+    and ``run_url`` its link in the MLflow UI, where the server has one.
     """
 
     def __init__(
@@ -169,6 +169,9 @@ class MlflowTracking:
         self.logs_model = log_model
         self._outer: Optional[str] = None
         self.run_id: Optional[str] = None
+        self.logged_run_name: Optional[str] = None
+        self.experiment: Optional[str] = None
+        self._experiment_id: Optional[str] = None
         self._samples: List[_Reading] = []
         self._sampled_run: Optional[Tuple[Any, str]] = None
         self._reset()
@@ -176,10 +179,8 @@ class MlflowTracking:
     def _reset(self) -> None:
         self._client: Any = None
         self._parent: Optional[str] = None
-        self._experiment_id: Optional[str] = None
         self._children: Dict[Tuple[int, int], str] = {}
         self._trials: Dict[Tuple[int, int], str] = {}
-        self._fit_name: Optional[str] = None
         self._artifacts: Set[str] = set()
         # The run's notes and brief tables, for its description.
         self._card: List[Summary] = []
@@ -423,13 +424,15 @@ class MlflowTracking:
         context = import_provider('mlflow.tracking.context.registry',
                                   'mlflow')
         with self.target.scope():
-            experiment_id = self._default_experiment
-            if self.experiment_name is not None:
-                experiment = client.get_experiment_by_name(
-                    self.experiment_name)
-                experiment_id = (experiment.experiment_id if experiment else
-                                 client.create_experiment(
-                                     self.experiment_name))
+            experiment = (client.get_experiment_by_name(self.experiment_name)
+                          if self.experiment_name is not None else
+                          client.get_experiment(self._default_experiment
+                                                or '0'))
+            if experiment is None:
+                experiment = client.get_experiment(
+                    client.create_experiment(self.experiment_name))
+            experiment_id, self.experiment = (experiment.experiment_id,
+                                              experiment.name)
             tags = dict(record.tags)
             if self._outer is not None:
                 tags['mlflow.parentRunId'] = self._outer
@@ -437,13 +440,13 @@ class MlflowTracking:
             name = (self.run_name if self.run_name and kind == 'fit' else
                     record.name)
             if kind == 'prediction' and name:
-                name = _free_name(client, experiment_id or '0', name)
+                name = _free_name(client, experiment_id, name)
             run = client.create_run(
-                experiment_id or '0', run_name=name,
+                experiment_id, run_name=name,
                 start_time=_millis(record.started),
                 tags=context.resolve_tags(tags))
         self._parent = self.run_id = run.info.run_id
-        self._fit_name = run.info.run_name
+        self.logged_run_name = run.info.run_name
         self._experiment_id = run.info.experiment_id
         if self._samples_system() and record.tags.get('kumo.kind') == 'fit':
             self._guard.enter_context(_SystemMetrics(
@@ -496,7 +499,7 @@ class MlflowTracking:
             with self.target.scope():
                 run = self._client.create_run(
                     self._experiment_id, run_name=_trial_name(
-                        *key, cast(str, self._fit_name)),
+                        *key, cast(str, self.logged_run_name)),
                     tags={**record.tags, 'mlflow.parentRunId': self._parent})
             self._children[key] = self._trials[key] = run.info.run_id
             self._log_params(run.info.run_id, record.params)
@@ -715,6 +718,7 @@ class MlflowTracking:
             return
         model = model_label(record.tags['kumo.model_name'], None, None)
         name = f'v{version}-{model}'
+        self.logged_run_name = name
         with self.target.scope():
             self._client.update_run(cast(str, self._parent), name=name)
             for key, run_id in self._trials.items():

@@ -27,6 +27,7 @@ from test_tracking_contract import (
 )
 
 import kumo.engine as kumo
+from kumo.engine._manifest import TrackingRef
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._tracking import logged_names, run_record
 from kumo.engine.trainer._run_spec import fit_spec
@@ -135,8 +136,11 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     assert parent.data.tags['kumo.bundle_id'] == result.id
     stored = tmp_path / 'root' / 'models' / result.id / PROVENANCE_FILE
     assert json.loads(stored.read_text())['tracking'] == {
-        'platform': 'mlflow', 'run_id': parent.info.run_id}
-    assert result.tracking.run_id == parent.info.run_id
+        'platform': 'mlflow', 'run_id': parent.info.run_id,
+        'experiment': 'ents', 'run_name': parent.info.run_name}
+    assert result.tracking == TrackingRef(
+        platform='mlflow', run_id=parent.info.run_id, experiment='ents',
+        run_name=parent.info.run_name)
     logged = client.download_artifacts(parent.info.run_id, PROVENANCE_FILE,
                                        str(tmp_path))
     assert json.loads(Path(logged).read_text())['id'] == result.id
@@ -812,8 +816,7 @@ def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
 
     from test_tracking_contract import PREDICTION_MANIFEST
 
-    from kumo.engine._manifest import TrackingRef
-    from kumo.engine._tracking import track_prediction
+    from kumo.engine._tracking import track_prediction, tracking_ref
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     client = mlflow.MlflowClient()
@@ -831,6 +834,9 @@ def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
                               ('predictions', 'output'))])
 
     run = client.get_run(tracking.run_id)
+    assert tracking_ref(tracking) == TrackingRef(
+        platform='mlflow', run_id=run.info.run_id, experiment='scores',
+        run_name='2024-04-29-model-bbbbbbbb')
     assert (run.info.start_time, run.info.end_time) == (
         1792540800000, 1792540860000)
     assert [item.model_id for item in run.inputs.model_inputs] == [
@@ -840,3 +846,15 @@ def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
     assert run.data.tags['mlflow.note.content'].split('\n')[1] == (
         'Model: bundle `bbbbbbbb`, trained by '
         f'[v3-churn](#/experiments/{experiment}/runs/{fit}).')
+
+
+def test_a_run_reference_shows_as_a_link_in_a_notebook():
+    linked = TrackingRef(platform='mlflow', run_id='r1', experiment='a&b',
+                         run_name='<v6>', url='http://h/#/experiments/1/'
+                         'runs/r1?x="1"')
+
+    assert linked._repr_html_() == (
+        '<a href="http://h/#/experiments/1/runs/r1?x=&quot;1&quot;" '
+        'target="_blank" rel="noopener">&lt;v6&gt;</a> in a&amp;b')
+    assert TrackingRef(platform='sagemaker', run_id='r1')._repr_html_() == (
+        'sagemaker run <code>r1</code>')

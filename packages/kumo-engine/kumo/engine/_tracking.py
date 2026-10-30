@@ -489,8 +489,9 @@ class Tracking(Protocol):
     failed), and which returns the version it registered at ``registry``, a
     ``ModelRegistryLocation``; ``connector``, a connector whose model
     registry ``registry`` registers in when there is no ``log_model``; and
-    ``platform``, ``run_id`` and ``run_url``, the tracker's own run once
-    `start` returned, recorded as the model manifest's ``tracking``; and
+    ``platform``, ``run_id``, ``run_url``, ``experiment`` and
+    ``logged_run_name``, the tracker's own run once `start` returned,
+    recorded as the model manifest's ``tracking`` (`tracking_ref`); and
     the best-effort hooks ``log_prediction_run(record)``, whose system
     metrics a ``sample_system_metrics()`` context samples while the run
     works, and ``log_monitoring(record)``.
@@ -560,6 +561,8 @@ class TrackingSession:
         self._behind = False
         self._started = threading.Event()
         self.error: Optional[BaseException] = None
+        # The tracker's run once it ended, renamed or not.
+        self.final: Optional['TrackingRef'] = None
 
     @property
     def enabled(self) -> bool:
@@ -593,19 +596,10 @@ class TrackingSession:
             self._started.set()
 
     def pointer(self) -> Optional['TrackingRef']:
-        r"""The tracker's own run, once it started: its platform, run id
-        and URL."""
-        from kumo.engine._manifest import TrackingRef
-
+        r"""The tracker's own run, once it started (`tracking_ref`)."""
         if self.spec is None or not self._started.wait(FINISH_SECONDS):
             return None
-        tracker = self._tracker
-        run_id = getattr(tracker, 'run_id', None)
-        if tracker is None or not run_id:
-            return None
-        return TrackingRef(
-            platform=str(getattr(tracker, 'platform', type(tracker).__name__)),
-            run_id=str(run_id), url=getattr(tracker, 'run_url', None))
+        return tracking_ref(self._tracker)
 
     def on_event(self, event: Event) -> None:
         if self.spec is None or event.trial is None:
@@ -727,6 +721,7 @@ class TrackingSession:
             if tracker is not None:
                 try:
                     tracker.finish(record, error)
+                    self.final = tracking_ref(tracker)
                 except Exception as failure:
                     self._fail(failure)
                     raise
@@ -784,6 +779,21 @@ class TrackingSession:
     def _fail(self, error: BaseException) -> None:
         if self.error is None:
             self.error = error
+
+
+def tracking_ref(tracker: Any) -> Optional['TrackingRef']:
+    r"""The tracker's latest run: its ``platform``, ``run_id``, ``run_url``,
+    ``experiment`` and ``logged_run_name``."""
+    from kumo.engine._manifest import TrackingRef
+
+    run_id = getattr(tracker, 'run_id', None)
+    if tracker is None or not run_id:
+        return None
+    return TrackingRef(
+        platform=str(getattr(tracker, 'platform', type(tracker).__name__)),
+        run_id=str(run_id), url=getattr(tracker, 'run_url', None),
+        experiment=getattr(tracker, 'experiment', None),
+        run_name=getattr(tracker, 'logged_run_name', None))
 
 
 def log_run(tracking: Any, hook: str,

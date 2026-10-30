@@ -64,6 +64,8 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     assert (model.name, model.source_run_id) == ('m', parent.info.run_id)
     version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
     assert parent.info.run_name == f'v{version.version}-m'
+    assert (result.tracking.run_name, trainer.result.tracking.run_name) == (
+        parent.info.run_name, parent.info.run_name)
     metrics = {metric.key: metric.value for metric in model.metrics}
     holdout = {name: value for name, value in logged_names(
         result.metrics).items() if not name.startswith(('train/', 'val/'))}
