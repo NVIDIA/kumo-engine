@@ -96,6 +96,42 @@ def test_fit_then_score_locally(tmp_path, monkeypatch, capsys):
         'parents']['model']['id'] == fit.id
 
 
+def test_a_scoring_step_scores_its_fit_after_a_later_fit_moved_the_alias(
+        tmp_path, monkeypatch):
+    import mlflow
+
+    _data(tmp_path / 'data')
+    plan = ModelPlan()
+    plan.training_job.disable_explain = True
+    plan.optimization.max_epochs = 1
+    plan.optimization.max_steps_per_epoch = 2
+    monkeypatch.setattr(PredictiveQuery, 'suggest_model_plan',
+                        lambda self, snapshot: plan)
+    monkeypatch.syspath_prepend(str(_examples()))
+    monkeypatch.delitem(sys.modules, 'jobs', raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('MLFLOW_TRACKING_URI',
+                       f'sqlite:///{tmp_path / "mlflow.db"}')
+    flags = [
+        '--source', str(tmp_path / 'data'), '--artifact-root',
+        str(tmp_path / 'artifacts'), '--scratch-dir',
+        str(tmp_path / 'scratch'), '--registry', 'mlflow', '--model-name',
+        'users-churn'
+    ]
+    fit_a = _module('fit_job').main(
+        [*flags, '--model-path-file', str(tmp_path / 'a')])
+    fit_b = _module('fit_job').main(
+        [*flags, '--model-path-file', str(tmp_path / 'b'), '--threshold',
+         '0.7'])
+    assert mlflow.MlflowClient().get_model_version_by_alias(
+        'users-churn', 'champion').version == int(
+            fit_b.registered_model.version)
+
+    score = _module('score_job').main(
+        [*flags, '--model-path-file', str(tmp_path / 'a')])
+    assert score.manifest.parents.model.id == fit_a.id
+
+
 def test_the_shared_graph_declares_text_columns(tmp_path, monkeypatch):
     import kumo.engine as kumo
 
@@ -136,6 +172,9 @@ def test_sagemaker_steps_take_their_own_instance_types_and_the_alias(
 
     def fake(name):
         class Fake:
+            properties = SimpleNamespace(ModelArtifacts=SimpleNamespace(
+                S3ModelArtifacts='s3://fit/model/'))
+
             def __init__(self, *args, **kwargs):
                 made[name] = kwargs
 
@@ -179,7 +218,9 @@ def test_sagemaker_steps_take_their_own_instance_types_and_the_alias(
     assert made['PipelineSession'] == {
         'default_bucket': 'bucket', 'default_bucket_prefix': 'sagemaker'}
     assert made['OutputDataConfig'] == {
-        's3_output_path': 's3://bucket/sagemaker/output'}
+        's3_output_path': 's3://bucket/sagemaker/output',
+        'compression_type': 'NONE'}
+    assert made['ProcessingS3Input']['s3_uri'] == 's3://fit/model/'
     assert made['SourceCode']['command'] == 'python fit_job.py'
     assert '--query' not in made['SourceCode']['args']
     assert os.environ['SAGEMAKER_VALIDATE_ROLE'] == 'false'
@@ -188,6 +229,10 @@ def test_sagemaker_steps_take_their_own_instance_types_and_the_alias(
         assert arguments[arguments.index('--alias') + 1] == 'candidate'
         assert arguments[arguments.index('--on-error') + 1] == 'raise'
         assert arguments[arguments.index('--model-name') + 1] == 'users-churn'
+    assert made['SourceCode']['args'][-2:] == [
+        '--model-path-file', '/opt/ml/model/model_path']
+    assert made['ProcessingStep']['step_args']['arguments'][-2:] == [
+        '--model-path-file', '/opt/ml/processing/input/model/model_path']
 
 
 def test_snowflake_tasks_pass_names_and_strict_mode(monkeypatch):

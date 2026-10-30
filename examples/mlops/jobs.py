@@ -4,6 +4,7 @@
 """The flags, graph, connectors and MLOps settings both job scripts share."""
 
 import argparse
+from pathlib import Path
 from typing import Optional, Sequence
 
 from kumoapi.jobs import MetadataField
@@ -62,14 +63,18 @@ def parse_args(argv: Optional[Sequence[str]], *,
         'job loads')
     parser.add_argument('--scratch-dir')
     parser.add_argument(
+        '--model-path-file',
+        help='file the score job reads --model-path from, written by the fit '
+        'job')
+    parser.add_argument(
         '--on-error', choices=('raise', 'warn'), default='raise',
         help='raise (fail the job) or warn when tracking or registration '
         'fails')
     if score:
         parser.add_argument(
             '--model-path',
-            help='models/<bundle id> under the artifact root, without a '
-            'registry')
+            help='models/<bundle id> under the artifact root, loaded instead '
+            'of --alias')
         parser.add_argument(
             '--snapshot', help='the id of a snapshot stored under the '
             'artifact root, instead of a new one')
@@ -81,6 +86,8 @@ def parse_args(argv: Optional[Sequence[str]], *,
             '--threshold', type=float, default=0.5,
             help='binary classification threshold the model scores with')
     args = parser.parse_args(argv)
+    if score and args.model_path_file:
+        args.model_path = Path(args.model_path_file).read_text()
     if args.registry and not args.model_name:
         parser.error('--registry needs --model-name')
     if score and not args.registry and not args.model_path:
@@ -155,9 +162,9 @@ def build_graph(connector: Connector, prefix: str = '') -> Graph:
 
 
 def load_model(args: argparse.Namespace, cfg: kumo.MLOps) -> Trainer:
-    if args.registry:
-        return Trainer.load_from_connector(cfg, location=registry(args))
-    return Trainer.load_from_connector(cfg, path=args.model_path)
+    if args.model_path:
+        return Trainer.load_from_connector(cfg, path=args.model_path)
+    return Trainer.load_from_connector(cfg, location=registry(args))
 
 
 def prediction_output(

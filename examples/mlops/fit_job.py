@@ -6,6 +6,7 @@
 
 import os
 import sys
+from pathlib import Path
 from typing import Optional, Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(
@@ -31,6 +32,8 @@ def main(argv: Optional[Sequence[str]] = None) -> kumo.TrainingResult:
             table, snapshot=snapshot, scoring_defaults=kumo.ScoringDefaults(
                 binary_classification_threshold=args.threshold))
     print(f'model: models/{result.id}')
+    if args.model_path_file:
+        Path(args.model_path_file).write_text(f'models/{result.id}')
     return result
 
 

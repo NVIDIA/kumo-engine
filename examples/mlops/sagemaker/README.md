@@ -9,7 +9,11 @@
    MLflow tracking server, registers the model as a new version of
    `users-churn` and moves the `--alias` alias (`champion` by default) to it.
 2. **`Predict`** (processing job, after `Fit`) runs `python score_job.py`,
-   loading `models:/users-churn@<alias>` and scoring a fresh snapshot.
+   loading the model its `Fit` step trained and scoring a fresh snapshot.
+   `Fit` writes `models/<bundle id>` to `/opt/ml/model/model_path`; the
+   training job's uncompressed model output is `Predict`'s `model` input,
+   so a later execution's `Fit` moving the alias does not change what this
+   execution scores.
 
 `--fit-instance-type` and `--score-instance-type` size the two steps
 separately. `--model-name` (default `users-churn`) and `--table-prefix`
@@ -22,7 +26,9 @@ On a shared tracking server, pass your own `--name` and `--model-name`: the
 defaults would update another team's pipeline or registered model.
 
 To score on a schedule without retraining, put `Predict` in its own pipeline
-with a `PipelineSchedule` trigger (`pipeline.put_triggers`).
+with a `PipelineSchedule` trigger (`pipeline.put_triggers`), without the
+`model` input and `--model-path-file`, so it loads
+`models:/users-churn@<alias>`.
 
 ## Before running
 

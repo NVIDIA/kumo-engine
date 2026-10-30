@@ -9,6 +9,7 @@ import os
 from typing import Any, Optional, Sequence
 
 PROCESS_CODE = '/opt/ml/processing/input/code'
+PROCESS_MODEL = '/opt/ml/processing/input/model'
 
 
 def build_pipeline(
@@ -69,10 +70,12 @@ def build_pipeline(
         source_code=SourceCode(
             source_dir=code, command='python fit_job.py',
             args=[*flags, *(['--query', query] if query else []),
-                  '--scratch-dir', '/tmp/kumo']),
+                  '--scratch-dir', '/tmp/kumo',
+                  '--model-path-file', '/opt/ml/model/model_path']),
         environment=env,
         output_data_config=OutputDataConfig(
-            s3_output_path=f's3://{bucket}/{sagemaker_prefix}/output'),
+            s3_output_path=f's3://{bucket}/{sagemaker_prefix}/output',
+            compression_type='NONE'),
         sagemaker_session=session,
     )
     fit = TrainingStep(name='Fit', step_args=trainer.train())
@@ -89,12 +92,20 @@ def build_pipeline(
     predict = ProcessingStep(
         name='Predict',
         step_args=processor.run(
-            inputs=[ProcessingInput(
-                input_name='code', s3_input=ProcessingS3Input(
-                    s3_uri=code, s3_data_type='S3Prefix',
-                    local_path=PROCESS_CODE, s3_input_mode='File'))],
+            inputs=[
+                ProcessingInput(
+                    input_name='code', s3_input=ProcessingS3Input(
+                        s3_uri=code, s3_data_type='S3Prefix',
+                        local_path=PROCESS_CODE, s3_input_mode='File')),
+                ProcessingInput(
+                    input_name='model', s3_input=ProcessingS3Input(
+                        s3_uri=fit.properties.ModelArtifacts.S3ModelArtifacts,
+                        s3_data_type='S3Prefix', local_path=PROCESS_MODEL,
+                        s3_input_mode='File')),
+            ],
             arguments=[
-                *flags, '--scratch-dir', '/opt/ml/processing/scratch'
+                *flags, '--scratch-dir', '/opt/ml/processing/scratch',
+                '--model-path-file', f'{PROCESS_MODEL}/model_path'
             ],
         ),
         depends_on=[fit],

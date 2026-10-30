@@ -9,7 +9,8 @@ schedule. Both take their settings as command-line flags.
   artifact root (`snapshots/…`, `training_tables/<id>/`, `models/<bundle id>/`).
   The model carries its `--threshold` (0.5 by default) as scoring defaults.
   With a registry, the model is registered and the `--alias` alias
-  (`champion` by default) moves to it. It prints `model: models/<bundle id>`.
+  (`champion` by default) moves to it. It prints `model: models/<bundle id>`
+  and, with `--model-path-file`, writes it to that file.
 - `score_job.py` loads the version `--alias` points at (or `--model-path`)
   through `Trainer.load_from_connector(cfg, ...)`, scores a fresh snapshot
   (or the stored one `--snapshot` names) and writes `--predictions-table` when
@@ -38,7 +39,8 @@ schedule. Both take their settings as command-line flags.
 | `--registry` | `mlflow` (`MLOps(tracking=MlflowTracking(), registry=ModelRegistryLocation(...))`) or `snowflake` (`MLOps(tracking=SnowflakeTracking(connector, ...), registry=ModelRegistryLocation(...))`); omit for no registry |
 | `--model-name` | registered model name, with `--registry`: `users-churn` on SageMaker (letters, digits and hyphens only), `<catalog>.<schema>.users_churn` in Unity Catalog, `USERS_CHURN` in Snowflake |
 | `--alias` | with `--registry`: the alias the fit moves to its new version and the score job loads; default `champion`. With MLflow, register under `candidate` and promote yourself to gate scoring |
-| `--model-path` | score only, without a registry: `models/<bundle id>` under the artifact root |
+| `--model-path` | score only: `models/<bundle id>` under the artifact root, loaded instead of `--alias` |
+| `--model-path-file` | fit: a file to write `models/<bundle id>` to; score: a file to read `--model-path` from, so a scoring step scores its own fit even after a later fit moved the alias |
 | `--snapshot` | score only: the id of a snapshot stored under the artifact root |
 | `--predictions-table` | score only: a table of the source connector to write |
 | `--query`, `--num-experiments`, `--threshold` | fit only: the predictive query, the number of experiments and the classification threshold the model scores with |
