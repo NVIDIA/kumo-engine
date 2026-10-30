@@ -13,6 +13,8 @@ from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.score_drift import psi_shift
 from kumo_core.summaries import Note, Summary, Table
 
+from kumo.engine._prep_cost import PREP_TABLE
+
 HEADLINE_CHARS = 140
 NOTES_LINE = ("*kumo rewrites everything above this line; editing it stops "
               "kumo's updates.*")
@@ -29,6 +31,7 @@ _LEADS = {'prediction': 'Scores of', 'drift': 'Drift check of the scores of',
 _ARTIFACTS = {'model': 'model bundle', 'prediction': 'prediction folder',
               'prediction_output': 'output'}
 _NAMED = ('source_table', 'prediction_output')
+_STEPS = {'snapshot': 'Graph snapshot', 'training_table': 'Training table'}
 _CONSOLES = {'s3': 'https://s3.console.aws.amazon.com/s3/buckets/{}?prefix={}/',
              'gs': 'https://console.cloud.google.com/storage/browser/{}/{}'}
 
@@ -226,6 +229,8 @@ def files_line(files: Sequence[str]) -> str:
 
 def table_text(table: Table) -> str:
     r"""``**Title**`` and the table in Markdown."""
+    if table.name == PREP_TABLE:
+        table = _prep(table)
     numeric = [all(isinstance(row[i], (int, float)) or row[i] is None
                    for row in table.rows) for i in range(len(table.columns))]
     return '\n'.join([
@@ -244,6 +249,21 @@ def number(value: Any) -> str:
         return f'{value:,.0f}'
     digits = 2 - math.floor(math.log10(abs(value)))
     return f'{value:.{digits}f}'.rstrip('0').rstrip('.')
+
+
+def _size(count: float) -> str:
+    for unit in ('B', 'KiB', 'MiB', 'GiB'):
+        if count < 1024:
+            return f'{number(count)} {unit}'
+        count /= 1024
+    return f'{number(count)} TiB'
+
+
+def _prep(table: Table) -> Table:
+    return Table(table.name, ('step', 'time (s)', 'disk'), tuple(
+        (_STEPS[step] + (' (built earlier, reused)' if reused else ''),
+         seconds, _size(count))
+        for step, seconds, count, reused in table.rows), table.brief)
 
 
 def _where(table: Table) -> str:

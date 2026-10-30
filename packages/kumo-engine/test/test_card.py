@@ -108,8 +108,8 @@ def test_a_link_prediction_fit_shows_its_holdout_metrics_at_the_query_k():
 def test_a_prediction_body_puts_drift_after_the_scores():
     scores = Table('pred/summary', ('column', 'mean'), (('score', 0.5),),
                    brief=True)
-    prep = Table('data_preparation', ('step', 'time (s)'),
-                 (('Graph snapshot', 9),), brief=True)
+    prep = Table('data_preparation', ('step', 'seconds', 'bytes', 'reused'),
+                 (('snapshot', 9, 4096, False),), brief=True)
     summaries = (prep, scores, Note('drift', 'psi explained'),
                  Note('notes', 'other'),
                  Table('locations', ('kind', 'id', 'location'),
@@ -190,8 +190,12 @@ def test_data_preparation_marks_a_snapshot_built_by_another_process(
             disk_bytes=1024**3 // 2)))
 
     assert _card.table_text(table) == '\n'.join([
-        '**Data preparation**', '', '| step | time (s) | disk (GiB) |',
-        '| --- | ---: | ---: |',
-        '| Graph snapshot (built earlier, reused) | 90 | 3 |',
-        '| Training table | 12.5 | 0.5 |'])
+        '**Data preparation**', '', '| step | time (s) | disk |',
+        '| --- | ---: | --- |',
+        '| Graph snapshot (built earlier, reused) | 90 | 3 GiB |',
+        '| Training table | 12.5 | 512 MiB |'])
+    assert _prep_cost.prep_params(table) == {
+        'prep.snapshot.seconds': '90.0', 'prep.snapshot.bytes': '3221225472',
+        'prep.training_table.seconds': '12.5',
+        'prep.training_table.bytes': '536870912'}
     assert _prep_cost.prep_summaries(SnapshotManifest(id='old')) == []

@@ -332,8 +332,8 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
             Series('holdout/by_k/map', ((1, 0.5), (10, 0.25)), x_label='k'),
             Series('pred/True_PROB_count_by_score_pct', ((0, 1.0), (1, 2.0)),
                    'score_pct', chart=True),
-            Table('data_preparation', ('step', 'time (s)', 'disk (GiB)'),
-                  (('Training table', 12.5, 0.5),), brief=True),
+            Table('data_preparation', ('step', 'seconds', 'bytes', 'reused'),
+                  (('training_table', 12.5, 4300, False),), brief=True),
         )), None)
 
     run, = fake._instance.runs.values()
@@ -344,15 +344,15 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
         '**Holdout metrics**', '', '| metric | value |', '| --- | ---: |',
         '| test/mae | 0.32 |', '', '**Training data**', '', '| split | rows |',
         '| --- | ---: |', '| train | 8 |', '| val | 1 |', '| test | 1 |', '',
-        '**Data preparation**', '', '| step | time (s) | disk (GiB) |',
-        '| --- | ---: | ---: |', '| Training table | 12.5 | 0.5 |', '',
+        '**Data preparation**', '', '| step | time (s) | disk |',
+        '| --- | ---: | --- |', '| Training table | 12.5 | 4.2 KiB |', '',
         '**Where things are**', '', '| Artifact | Location |', '| --- | --- |',
         '| model bundle `bbbbbbbb` | [`s3://b/models/b`](https://s3.console.'
         'aws.amazon.com/s3/buckets/b?prefix=models/b/) |', '',
         'Full lineage: `_provenance.json`. Tables: `holdout/by_k.json`.'])
     assert ('duration_seconds', 90.0, 0) in run['metrics']
     assert run['params']['prep.training_table.seconds'] == '12.5'
-    assert run['params']['prep.training_table.disk_gib'] == '0.5'
+    assert run['params']['prep.training_table.bytes'] == '4300'
 
 
 def test_a_prediction_run_names_its_model_and_lasts_as_long_as_it_ran(fake):
