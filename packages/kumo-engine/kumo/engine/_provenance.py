@@ -13,9 +13,6 @@ from typing import Any, Dict, Optional
 
 from kumo.engine._manifest import Environment, SourceTableEntry
 
-_LOCATED_CONNECTORS = frozenset(
-    {'LOCAL_FILE', 'S3', 'GCS', 'SNOWFLAKE', 'DATABRICKS', 'BIGQUERY'})
-
 
 @cache
 def _build_commit(version: str) -> Optional[str]:
@@ -68,9 +65,8 @@ def source_location(connector: Any, table_name: str,
                     sql: Optional[str] = None) -> str:
     if sql is not None:
         return 'sql:' + hashlib.sha256(sql.encode()).hexdigest()
-    if _connector_kind(connector) not in _LOCATED_CONNECTORS:
-        return table_name
-    return connector.source_backend.table_location(connector, table_name)
+    locate = getattr(connector.source_backend, 'table_location', None)
+    return table_name if locate is None else locate(connector, table_name)
 
 
 def _connector_kind(connector: Any) -> str:
