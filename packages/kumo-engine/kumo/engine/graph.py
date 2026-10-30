@@ -302,6 +302,38 @@ def _loaded(store: Any, handle: Any) -> Optional[Any]:
         return None
 
 
+def _load_local(connector: Any, path: str, root: str,
+                manifest: Dict[str, Any]) -> Any:
+    from kumo_core.diskgraph.snapshot import DiskgraphSnapshotHandle
+
+    from kumo.engine._snapshot_io import holds_export, load_into, read
+
+    store = _store()
+    handle = DiskgraphSnapshotHandle(
+        graph_key=manifest['graph_key'],
+        graph_data_version=manifest['data_version'])
+    target = Path(store.path(handle))
+    with _lock(manifest['graph_key']):
+        result = _loaded(store, handle)
+        if result is not None and holds_export(Path(result.index_path),
+                                               manifest):
+            return result
+        try:
+            load_into(connector, path, root, manifest, target)
+        except FileNotFoundError:
+            # A newer export of this snapshot committed meanwhile.
+            newer_root, newer = read(connector, path)
+            if (newer_root == root
+                    or newer['snapshot_id'] != manifest['snapshot_id']):
+                raise
+            load_into(connector, path, newer_root, newer, target)
+        result = _loaded(store, handle)
+    if result is None:
+        raise RuntimeError(f'The snapshot loaded from {path} did not pass '
+                           'its integrity check.')
+    return result
+
+
 def _snapshot_id(graph_key: str, data_version: str) -> str:
     return f'{graph_key}@{data_version[:16]}'
 
@@ -419,10 +451,8 @@ class GraphSnapshot:
             graph: if given, warn when its source tables changed since the
                 snapshot was built (see `source_changes`).
         """
-        from kumo_core.diskgraph.snapshot import DiskgraphSnapshotHandle
-
         from kumo.engine._mlops import MLOps, on_root, snapshot_path
-        from kumo.engine._snapshot_io import holds_export, load_into, read
+        from kumo.engine._snapshot_io import read
 
         if (path is None) == (id is None):
             raise ValueError('Pass exactly one of path or id.')
@@ -433,51 +463,28 @@ class GraphSnapshot:
             path = snapshot_path(id)
         connector, path = on_root(connector, path)
         root, manifest = read(connector, path)
-        graph_key = manifest['graph_key']
-        if graph is not None and graph.id != graph_key:
+        if graph is not None and graph.id != manifest['graph_key']:
             report_other_graph(
                 f"Snapshot at {path} was taken of another graph.",
                 graph._graph_config, manifest['graph_config'], stacklevel=2)
-        store = _store()
-        handle = DiskgraphSnapshotHandle(
-            graph_key=graph_key, graph_data_version=manifest['data_version'])
-        with _lock(graph_key):
-            result = _loaded(store, handle)
-            if result is not None and not holds_export(
-                    Path(result.index_path), manifest):
-                result = None
-            if result is None:
-                try:
-                    load_into(connector, path, root, manifest,
-                              Path(store.path(handle)))
-                except FileNotFoundError:
-                    # A newer export of this snapshot committed meanwhile.
-                    newer_root, newer = read(connector, path)
-                    if (newer_root == root
-                            or newer['snapshot_id'] != manifest['snapshot_id']):
-                        raise
-                    root, manifest = newer_root, newer
-                    load_into(connector, path, root, manifest,
-                              Path(store.path(handle)))
-                result = _loaded(store, handle)
-            if result is None:
-                raise RuntimeError(f'The snapshot loaded from {path} did not '
-                                   'pass its integrity check.')
+        result = _load_local(connector, path, root, manifest)
         snapshot = cls(id=manifest['snapshot_id'],
                        index_path=Path(result.index_path),
                        graph_config=manifest['graph_config'])
         if graph is not None:
-            changed = [
-                alias
-                for alias, change in snapshot.source_changes(graph).items()
-                if change['status'] == 'changed'
-            ]
-            if changed:
-                warnings.warn(
-                    f"Snapshot at {path} predates source table(s) "
-                    f"{', '.join(changed)}; see `snapshot.source_changes`.",
-                    UserWarning, stacklevel=2)
+            snapshot._warn_changed_sources(graph, path)
         return snapshot
+
+    def _warn_changed_sources(self, graph: 'Graph', path: str) -> None:
+        changed = [
+            alias for alias, change in self.source_changes(graph).items()
+            if change['status'] == 'changed'
+        ]
+        if changed:
+            warnings.warn(
+                f"Snapshot at {path} predates source table(s) "
+                f"{', '.join(changed)}; see `snapshot.source_changes`.",
+                UserWarning, stacklevel=3)
 
     def source_changes(self, graph: 'Graph') -> Dict[str, Dict[str, Any]]:
         r"""Each of `graph`'s tables' source status since this snapshot:
