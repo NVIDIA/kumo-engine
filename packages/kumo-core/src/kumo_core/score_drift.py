@@ -67,12 +67,6 @@ def psi(actual: np.ndarray, expected: np.ndarray) -> float:
     return float(np.sum((p - q) * np.log(p / q)))
 
 
-def psi_shift(psi: float) -> str:
-    r"""The PSI rule of thumb: ``small`` below 0.1, ``moderate`` up to
-    0.25, ``large`` above."""
-    return 'small' if psi < 0.1 else 'moderate' if psi <= 0.25 else 'large'
-
-
 def ks(actual: np.ndarray, expected: np.ndarray) -> float:
     return float(np.max(np.abs(np.cumsum(actual) / actual.sum() -
                                np.cumsum(expected) / expected.sum())))
