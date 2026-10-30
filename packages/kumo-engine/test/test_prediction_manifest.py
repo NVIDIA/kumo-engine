@@ -109,7 +109,7 @@ def test_manifest_records_run_and_directory_export(graph, classifier,
         num_classes_to_return=None, count_source='none', num_workers=1)
     assert [o.destination for o in manifest.outputs] == [
         OutputDestination(connector='LOCAL_FILE',
-                          location=str(tmp_path / name / result.id))
+                          location=str(tmp_path / name))
         for name in ('preds', 'embs')
     ]
     assert manifest.timings.started_at <= manifest.timings.finished_at
@@ -128,7 +128,7 @@ def test_manifest_records_run_and_directory_export(graph, classifier,
 
     for name in ('preds', 'embs'):
         sidecar = json.loads(
-            (tmp_path / name / result.id / '_provenance.json').read_text())
+            (tmp_path / name / '_provenance.json').read_text())
         assert sidecar['id'] == manifest.id
         assert sidecar['outputs'] == manifest.to_dict()['outputs']
 
@@ -163,7 +163,7 @@ def test_mlops_stores_the_run_after_its_export(graph, classifier, tmp_path):
     assert copy['location'] == str(tmp_path / 'root' / 'predictions' /
                                    result.id)
     assert [o['destination']['location'] for o in copy['outputs']] == [
-        str(tmp_path / 'out' / 'preds' / result.id), str(stored)
+        str(tmp_path / 'out' / 'preds'), str(stored)
     ]
 
     off = kumo.MLOps(artifact_root=str(tmp_path / 'off'), store={'model'})
@@ -305,7 +305,8 @@ def test_plain_export_records_nothing_and_skips_non_parquet_sidecars(
     result.export(PredictionOutputConfig(connector,
                                          PredictionArtifactType.PREDICTIONS,
                                          'PREDS'))
-    assert len(calls) == 1 and 'sidecars' not in calls[0]
+    assert len(calls) == 1
+    assert not calls[0].keys() & {'sidecars', 'extra_columns'}
 
     files = kumo.FileConnector(root_dir=str(tmp_path))
     result.export(PredictionOutputConfig(
@@ -313,11 +314,10 @@ def test_plain_export_records_nothing_and_skips_non_parquet_sidecars(
     result.export(PredictionOutputConfig(
         connector=files, output_paths={'predictions': 'preds.csv/'}))
     sidecar = json.loads(
-        (tmp_path / 'preds' / result.id / '_provenance.json').read_text())
+        (tmp_path / 'preds' / '_provenance.json').read_text())
     assert sidecar == before.to_dict() and sidecar['outputs'] == []
-    assert list((tmp_path / result.id / 'preds.csv').glob('*.csv'))
-    assert not (tmp_path / result.id / 'preds.csv' / '_provenance.json'
-                ).exists()
+    assert list((tmp_path / 'preds.csv').glob('*.csv'))
+    assert not (tmp_path / 'preds.csv' / '_provenance.json').exists()
     assert result.manifest == before
 
 
@@ -337,7 +337,7 @@ def test_manifest_failures_warn_and_keep_outputs(graph, classifier, tmp_path,
                                  binary_classification_threshold=0.5)
         written = pd.concat(
             pd.read_parquet(p)
-            for p in sorted((tmp_path / name).glob('*/*.parquet')))
+            for p in sorted((tmp_path / name).glob('*.parquet')))
         return result, written.sort_values('ENTITY').reset_index(drop=True)
 
     def fail(*args, **kwargs):
@@ -423,7 +423,7 @@ def test_failed_export_still_writes_and_tracks_the_run(graph, classifier,
     assert manifest['outputs'] == [{
         'artifact': 'predictions',
         'destination': {'connector': 'LOCAL_FILE',
-                        'location': str(tmp_path / 'preds' / manifest['id'])},
+                        'location': str(tmp_path / 'preds')},
     }]
     assert manifest['timings']['finished_at'] is not None
     assert not (tmp_path / 'root' / 'predictions').exists()

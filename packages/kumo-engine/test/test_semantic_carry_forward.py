@@ -212,8 +212,7 @@ def test_binary_predictions_preserve_probabilities_and_metadata_contract(
     assert calls[0]['job_start_time'].tzinfo is timezone.utc
     sink.write_files.assert_called_once_with(
         output.connector, output.table_name, list(result.files),
-        output.write_mode, export_id=f'{result.selection.job_id}-PREDICTIONS',
-        extra_columns={'PREDICTION_ID': result.id})
+        output.write_mode, export_id=f'{result.selection.job_id}-PREDICTIONS')
 
 
 def test_predict_reuses_generated_table_without_recompiling(

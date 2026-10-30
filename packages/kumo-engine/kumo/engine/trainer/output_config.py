@@ -6,7 +6,6 @@
 from dataclasses import dataclass, field
 from typing import List, Mapping, Optional, cast
 
-from kumo_core.sources import layout
 from kumo_core.sources.object_store_sessions import ObjectStoreSessions
 from kumoapi.jobs import MetadataField, PredictionArtifactType, WriteMode
 from kumoapi.plugin import (
@@ -34,11 +33,10 @@ class PredictionOutputConfig:
     ``artifact_type`` and ``table_name`` for one legacy destination.
     ``extra_fields`` applies to every selected artifact, only when passed to
     ``Trainer.predict``; ``PredictionResult.export`` rejects it.
-    A table appends by default and gets ``PREDICTION_ID`` and ``BUNDLE_ID``
-    columns. A file destination gets a directory per run by default,
-    ``<path>/<prediction id>/``, or ``<dir>/<prediction id>/<name>`` when
-    ``path`` ends in a file name such as ``scores.csv``;
-    ``WriteMode.OVERWRITE`` replaces ``path`` itself.
+    A table is replaced by default; ``WriteMode.APPEND`` adds rows with
+    ``PREDICTION_ID`` and ``BUNDLE_ID`` columns. A file destination is
+    written at exactly ``path``; ``WriteMode.OVERWRITE`` replaces what it
+    holds.
     """
 
     connector: Connector
@@ -90,7 +88,7 @@ class PredictionOutputConfig:
         if self.write_mode is None and not all(
                 is_file_destination(self.connector, path)
                 for path in self.destinations().values()):
-            object.__setattr__(self, 'write_mode', WriteMode.APPEND)
+            object.__setattr__(self, 'write_mode', WriteMode.OVERWRITE)
 
     def destinations(self) -> dict[str, str]:
         if self.output_paths is not None:
@@ -105,18 +103,6 @@ class PredictionOutputConfig:
                 'Prediction export requires FileArtifactSink.write_files; '
                 'this sink only supports in-memory table output')
         return sink
-
-    def _targets(self, run_id: Optional[str]) -> dict[str, str]:
-        r"""The destinations a run ``run_id`` writes to."""
-        if self.write_mode is not None or not run_id:
-            return self.destinations()
-        targets = {}
-        for name, path in self.destinations().items():
-            head, sep, tail = path.rstrip('/').rpartition('/')
-            targets[name] = (f'{head}{sep}{run_id}/{path[len(head + sep):]}'
-                             if layout.file_type(tail) else
-                             f'{head}{sep}{tail}/{run_id}/')
-        return targets
 
     def _write(self, destination: str, files: List[str], **kwargs) -> str:
         r"""Write ``files`` to ``destination``; ``OVERWRITE`` first empties
@@ -135,7 +121,8 @@ class PredictionOutputConfig:
 
     def _id_columns(self, destination: str, prediction_id: Optional[str],
                     bundle_id: Optional[str]) -> dict[str, str]:
-        if is_file_destination(self.connector, destination):
+        if (self.write_mode is not WriteMode.APPEND
+                or is_file_destination(self.connector, destination)):
             return {}
         return {
             name: value

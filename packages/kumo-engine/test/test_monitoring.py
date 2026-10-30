@@ -265,18 +265,17 @@ def test_evaluation_exports_its_rows(snapshots, classifier, tmp_path):
                                     output_paths={'predictions': 'evaluated/'})
     result.export(output)
     pd.testing.assert_frame_equal(
-        pd.read_parquet(tmp_path / 'evaluated' / run.id), result.frame)
+        pd.read_parquet(tmp_path / 'evaluated'), result.frame)
 
-    loaded = EvaluationResult.load_from_connector(
-        connector, path=f'evaluated/{run.id}/')
+    loaded = EvaluationResult.load_from_connector(connector,
+                                                  path='evaluated/')
     assert replace(loaded, actuals=None) == replace(result, actuals=None)
     pd.testing.assert_frame_equal(pd.read_parquet(loaded.actuals),
                                   pd.read_parquet(result.actuals))
 
-    written = (tmp_path / 'evaluated' / run.id / '_SUCCESS').stat().st_mtime_ns
+    written = (tmp_path / 'evaluated' / '_SUCCESS').stat().st_mtime_ns
     result.export(output)
-    assert (tmp_path / 'evaluated' / run.id /
-            '_SUCCESS').stat().st_mtime_ns == written
+    assert (tmp_path / 'evaluated' / '_SUCCESS').stat().st_mtime_ns == written
 
 
 def test_evaluation_appends_to_a_table_with_its_ids(snapshots, classifier):
@@ -289,11 +288,17 @@ def test_evaluation_appends_to_a_table_with_its_ids(snapshots, classifier):
     trainer, run = classifier
     result = trainer.evaluate(run, labels_snapshot=snapshots.after)
     sink = SimpleNamespace(write_files=Mock())
-    output = PredictionOutputConfig(
-        SimpleNamespace(sink_backend=sink), PredictionArtifactType.PREDICTIONS,
-        'EVALUATED')
-    result.export(output)
-    (_, table, _, mode), kwargs = sink.write_files.call_args
+
+    def export(**options):
+        result.export(PredictionOutputConfig(
+            SimpleNamespace(sink_backend=sink),
+            PredictionArtifactType.PREDICTIONS, 'EVALUATED', **options))
+        return sink.write_files.call_args
+
+    (_, table, _, mode), kwargs = export()
+    assert (table, mode) == ('EVALUATED', WriteMode.OVERWRITE)
+    assert 'extra_columns' not in kwargs
+    (_, table, _, mode), kwargs = export(write_mode=WriteMode.APPEND)
     assert (table, mode) == ('EVALUATED', WriteMode.APPEND)
     assert kwargs['extra_columns'] == {'PREDICTION_ID': run.id,
                                        'BUNDLE_ID': trainer.result.id}
@@ -331,6 +336,7 @@ def test_the_holdout_baseline_loads_with_the_evaluated_rows_types(
     import pyarrow as pa
     import pyarrow.parquet as parquet
     from kumo_core.artifact_export import prepared_artifact_file
+    from kumoapi.jobs import WriteMode
 
     from kumo.engine.trainer.output_config import PredictionOutputConfig
 
@@ -347,10 +353,12 @@ def test_the_holdout_baseline_loads_with_the_evaluated_rows_types(
     run = trainer.predict(snapshots.before,
                           binary_classification_threshold=threshold)
     trainer.evaluate(run, labels_snapshot=snapshots.after).export(
-        PredictionOutputConfig(connector, path='EVALUATED'))
+        PredictionOutputConfig(connector, path='EVALUATED',
+                               write_mode=WriteMode.APPEND))
     baseline = trainer.result.holdout_evaluation(
         binary_classification_threshold=threshold)
-    baseline.export(PredictionOutputConfig(connector, path='BASELINE'))
+    baseline.export(PredictionOutputConfig(connector, path='BASELINE',
+                                           write_mode=WriteMode.APPEND))
     assert loads['EVALUATED'] == loads['BASELINE']
     assert loads['BASELINE'].field('TARGET_PRED').type == pa.bool_()
 
@@ -501,12 +509,12 @@ def test_monitoring_a_run_loaded_from_its_export(snapshots, classifier,
     connector = kumo.FileConnector(root_dir=str(tmp_path))
     output = PredictionOutputConfig(connector, path='p/')
     run.export(output)
-    success = tmp_path / 'p' / run.id / '_SUCCESS'
+    success = tmp_path / 'p' / '_SUCCESS'
     written = success.stat().st_mtime_ns
     run.export(output)
     assert success.stat().st_mtime_ns == written
 
-    path = f'p/{run.id}/'
+    path = 'p/'
     loaded = PredictionResult.load_from_connector(connector, path=path)
     parts = loaded._exported.local / 'parts'
     assert loaded.manifest.id == run.id and not parts.exists()
@@ -537,6 +545,34 @@ def test_monitoring_a_run_loaded_from_its_export(snapshots, classifier,
     stored = PredictionResult.load_from_connector(cfg,
                                                   path=f'predictions/{run.id}')
     assert (stored.id, stored.num_rows) == (run.id, run.num_rows)
+
+
+def test_monitoring_finds_past_runs_on_the_artifact_root(
+        snapshots, classifier, tmp_path):
+    from kumoapi.jobs import WriteMode
+
+    from kumo.engine.trainer.output_config import PredictionOutputConfig
+
+    trainer, _ = classifier
+    output = PredictionOutputConfig(kumo.FileConnector(root_dir=str(tmp_path)),
+                                    path='scores/',
+                                    write_mode=WriteMode.OVERWRITE)
+    cfg = kumo.MLOps(str(tmp_path / 'root'))
+    with kumo.mlops(cfg):
+        runs = [
+            trainer.predict(snapshots.before, output_config=output,
+                            binary_classification_threshold=.5)
+            for _ in range(2)
+        ]
+    earlier, latest = (PredictionResult.load_from_connector(
+        cfg, path=f'predictions/{run.id}') for run in runs)
+    drift = trainer.score_drift(latest, previous=earlier)
+    assert drift.previous_prediction_id == runs[0].id
+    assert drift.previous_psi is not None
+    evaluation = trainer.evaluate(earlier, labels_snapshot=snapshots.after)
+    assert evaluation.prediction_id == runs[0].id
+    assert evaluation.metrics == trainer.evaluate(
+        runs[0], labels_snapshot=snapshots.after).metrics
 
 
 class _Tracker:

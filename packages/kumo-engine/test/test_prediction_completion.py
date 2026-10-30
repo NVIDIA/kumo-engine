@@ -184,7 +184,6 @@ def test_connector_export_uses_selected_files_without_collecting(
                              output_config=output,
                              binary_classification_threshold=.5)
     assert result.num_rows == 8
-    target /= result.id
     assert (target / '_SUCCESS').exists()
     exported = sorted(target.glob('*.parquet'))
     assert len(exported) == len(result.files) == workers
@@ -239,7 +238,6 @@ def test_separate_exact_output_paths(prepared_prediction, tmp_path, workers):
                              num_workers=workers,
                              binary_classification_threshold=.5)
     for kind, path in paths.items():
-        path = f'{path}{result.id}/'
         files = sorted(Path(path).glob('*.parquet'))
         assert len(files) == workers
         assert sum(pq.ParquetFile(p).metadata.num_rows for p in files) == 8
@@ -250,6 +248,9 @@ def test_separate_exact_output_paths(prepared_prediction, tmp_path, workers):
         assert (Path(path) / '_SUCCESS').exists()
         assert not Path(path.rstrip('/') + '_' + kind).exists()
     result.export(config)
+    with pytest.raises(ValueError, match='another export'):
+        trainer.predict(table, snapshot=snapshot, output_config=config,
+                        binary_classification_threshold=.5)
 
 
 def test_export_missing_artifact_does_not_publish_partial_outputs(
@@ -338,8 +339,8 @@ def test_retained_outputs_retry_after_partial_embedding_export(
         with pytest.raises(RuntimeError,
                            match='embedding transfer interrupted'):
             result.export(retry)
-    prediction_dir = tmp_path / 'retry/predictions' / result.id
-    embedding_dir = tmp_path / 'retry/embeddings' / result.id
+    prediction_dir = tmp_path / 'retry/predictions'
+    embedding_dir = tmp_path / 'retry/embeddings'
     assert (prediction_dir / '_SUCCESS').exists()
     assert not (embedding_dir / '_SUCCESS').exists()
     assert len(list(embedding_dir.glob('*.parquet'))) == 1

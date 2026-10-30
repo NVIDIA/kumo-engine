@@ -51,7 +51,7 @@ def test_unwritable_output_fails_before_prediction(fitted, tmp_path, outputs,
                             binary_classification_threshold=.5)
     finally:
         (tmp_path / locked).chmod(0o700)
-    assert error.value.filename.startswith(f"{tmp_path}/{denied.rstrip('/')}/")
+    assert error.value.filename == f'{tmp_path}/{denied}'
     assert set(runs.glob('*-predict-*')) == before
     assert [path.name for path in tmp_path.iterdir()] == ['locked']
 
@@ -66,20 +66,21 @@ def _predict(trainer, table, snapshot, output):
                            binary_classification_threshold=.5)
 
 
-def test_runs_write_to_their_own_directories(fitted, tmp_path):
+def test_mlops_keeps_every_run_on_the_artifact_root(fitted, tmp_path):
     trainer, table, snapshot = fitted
-    connector = kumo.FileConnector(root_dir=str(tmp_path))
-    output = PredictionOutputConfig(connector,
-                                    output_paths={'predictions': 'scores/'})
-    runs = [_predict(trainer, table, snapshot, output) for _ in range(2)]
+    output = PredictionOutputConfig(
+        kumo.FileConnector(root_dir=str(tmp_path)),
+        output_paths={'predictions': 'scores/'},
+        write_mode=WriteMode.OVERWRITE)
+    cfg = kumo.MLOps(str(tmp_path / 'root'))
+    with kumo.mlops(cfg):
+        runs = [_predict(trainer, table, snapshot, output) for _ in range(2)]
 
-    assert sorted(p.name for p in (tmp_path / 'scores').iterdir()) == sorted(
-        run.id for run in runs)
+    assert json.loads((tmp_path / 'scores' / '_provenance.json'
+                       ).read_text())['id'] == runs[-1].id
     for run in runs:
-        [record] = run.manifest.outputs
-        assert record.destination.location == f'{tmp_path}/scores/{run.id}'
         loaded = PredictionResult.load_from_connector(
-            connector, path=f'scores/{run.id}/')
+            cfg, path=f'predictions/{run.id}')
         assert (loaded.id, loaded.num_rows) == (run.id, run.num_rows)
 
 
@@ -105,10 +106,8 @@ def test_overwrite_replaces_the_destination(fitted, tmp_path):
 def test_occupied_output_directory_fails_before_scoring(fitted, tmp_path,
                                                         monkeypatch):
     trainer, table, snapshot = fitted
-    monkeypatch.setattr('kumo.engine.trainer.trainer.new_run_id',
-                        lambda: 'fixed')
-    taken = tmp_path / 'results' / f'{trainer._id}-predict-fixed'
-    taken.mkdir(parents=True)
+    taken = tmp_path / 'results'
+    taken.mkdir()
     (taken / 'old.txt').write_text('other')
 
     def score(**_):

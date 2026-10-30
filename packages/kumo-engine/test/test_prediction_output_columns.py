@@ -121,7 +121,7 @@ def _predict(graph, fitted, fields, kinds=('predictions', ), **options):
         kind:
         pd.concat(
             pd.read_parquet(path)
-            for path in sorted((root / 'out' / paths[kind]).glob('*/*.parquet')))
+            for path in sorted((root / 'out' / paths[kind]).glob('*.parquet')))
         for kind in kinds
     }
 
@@ -202,8 +202,7 @@ def test_link_prediction_respects_explicit_count(
     assert frame.groupby('ENTITY').size().eq(expected).all()
     if export:
         exported = pd.concat(
-            pd.read_parquet(path)
-            for path in tmp_path.glob('ranking/*/*.parquet'))
+            pd.read_parquet(path) for path in tmp_path.glob('ranking/*.parquet'))
         assert exported.groupby('ENTITY').size().eq(expected).all()
 
 
@@ -243,7 +242,7 @@ def test_link_embeddings_do_not_require_count(graph, link, tmp_path):
 
     trainer.predict(table, snapshot=snapshot, output_config=output)
 
-    assert list(tmp_path.glob('embeddings/*/*.parquet'))
+    assert list(tmp_path.glob('embeddings/*.parquet'))
 
 
 def test_later_export_rejects_extra_fields(graph, classifier, tmp_path):
@@ -263,7 +262,7 @@ def test_later_export_rejects_extra_fields(graph, classifier, tmp_path):
     result.export(
         PredictionOutputConfig(connector=connector,
                                output_paths={'predictions': 'good/'}))
-    copied = sorted((tmp_path / 'good' / result.id).glob('*.parquet'))
+    copied = sorted((tmp_path / 'good').glob('*.parquet'))
     written = [p.read_bytes() for p in copied]
     expected = [Path(f).read_bytes() for f in sorted(result.files)]
     assert written == expected

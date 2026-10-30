@@ -33,41 +33,47 @@ def _output(sink, **options):
         PredictionArtifactType.PREDICTIONS, 'PREDS', **options)
 
 
-def test_table_outputs_append_runs_with_their_ids(fitted):
+@pytest.mark.parametrize('mlops', [False, True])
+def test_table_outputs_overwrite_unless_appending_with_their_ids(
+        fitted, tmp_path, mlops):
     trainer, table, snapshot = fitted
     sink = TableSink()
-    runs = [
-        trainer.predict(table, snapshot=snapshot, output_config=_output(sink),
-                        binary_classification_threshold=.5) for _ in range(2)
-    ]
+    cfg = kumo.MLOps(str(tmp_path / 'root')) if mlops else None
 
-    written = sink.tables['PREDS']
+    def predict(**options):
+        return trainer.predict(table, snapshot=snapshot, mlops=cfg,
+                               output_config=_output(sink, **options),
+                               binary_classification_threshold=.5)
+
+    last = [predict() for _ in range(2)][-1]
+    assert list(sink.tables['PREDS'].columns) == list(last.frame.columns)
+    assert len(sink.tables['PREDS']) == last.num_rows
+    last.export(_output(sink))
+    assert len(sink.tables['PREDS']) == last.num_rows
+
+    runs = [predict(write_mode=WriteMode.APPEND) for _ in range(2)]
+    written = sink.tables['PREDS'].iloc[last.num_rows:]
     assert written.groupby('PREDICTION_ID').size().to_dict() == {
         run.id: run.num_rows
         for run in runs
     }
     assert set(written['BUNDLE_ID']) == {trainer.result.id}
 
-    last = trainer.predict(
-        table, snapshot=snapshot, binary_classification_threshold=.5,
-        output_config=_output(sink, write_mode=WriteMode.OVERWRITE))
-    assert set(sink.tables['PREDS']['PREDICTION_ID']) == {last.id}
-    assert len(sink.tables['PREDS']) == last.num_rows
 
-
-def test_file_outputs_default_to_a_run_directory_without_id_columns(
-        fitted, tmp_path):
+@pytest.mark.parametrize('mlops', [False, True])
+def test_file_outputs_are_written_at_exactly_path(fitted, tmp_path, mlops):
     trainer, table, snapshot = fitted
     connector = kumo.FileConnector(root_dir=str(tmp_path))
     output = PredictionOutputConfig(connector, output_paths={'predictions':
                                                              'preds/'})
-    assert output.write_mode is None
-    assert _output(TableSink()).write_mode is WriteMode.APPEND
-
+    cfg = kumo.MLOps(str(tmp_path / 'root')) if mlops else None
     run = trainer.predict(table, snapshot=snapshot, output_config=output,
-                          binary_classification_threshold=.5)
-    columns = set(pd.read_parquet(tmp_path / 'preds' / run.id).columns)
-    assert not columns & {'PREDICTION_ID', 'BUNDLE_ID'}
+                          mlops=cfg, binary_classification_threshold=.5)
+    written = pd.read_parquet(tmp_path / 'preds')
+    assert list(written.columns) == list(run.frame.columns)
+    assert len(written) == run.num_rows
+    run.export(PredictionOutputConfig(connector, path='exported.csv'))
+    assert (tmp_path / 'exported.csv').is_file()
 
     appended = PredictionOutputConfig(connector, output_paths={
         'predictions': 'other/'
@@ -84,7 +90,8 @@ def test_path_names_a_file_destination_or_a_table():
     table = SimpleNamespace(source_type='SNOWFLAKE', sink_backend=None)
     config = PredictionOutputConfig(table, path='CHURN_SCORES')
     assert config.destinations() == {'predictions': 'CHURN_SCORES'}
-    assert config.write_mode is WriteMode.APPEND
+    assert config.write_mode is WriteMode.OVERWRITE
+    assert PredictionOutputConfig(files, path='scores/').write_mode is None
     with pytest.raises(ValueError, match='only one form'):
         PredictionOutputConfig(files, path='scores/',
                                output_paths={'predictions': 'x/'})

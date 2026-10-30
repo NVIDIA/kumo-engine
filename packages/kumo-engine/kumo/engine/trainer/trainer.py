@@ -492,7 +492,7 @@ class PredictionResult:
         for destination in output_config.destinations().values():
             output_config.writer(destination)
         outputs = []
-        for name, destination in output_config._targets(self.id).items():
+        for name, destination in output_config.destinations().items():
             kind = PredictionArtifactType(name.upper())
             files = replace(self, artifact_type=kind).files
             outputs.append((kind, destination, files))
@@ -1621,7 +1621,7 @@ class Trainer:
 
         run_id = f'{self._id}-predict-{new_run_id()}'
         if output_config is not None:
-            for destination in output_config._targets(run_id).values():
+            for destination in output_config.destinations().values():
                 preflight = getattr(output_config.writer(destination),
                                     'preflight_write_files', None)
                 if callable(preflight):

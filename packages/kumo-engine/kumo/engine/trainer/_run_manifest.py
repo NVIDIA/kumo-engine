@@ -74,8 +74,7 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
     from kumo.engine._mlops import raise_on_error
     from kumo.engine._tracking import track_prediction, tracking_ref
 
-    records = ([] if output_config is None else output_records(
-        output_config, result.id))
+    records = ([] if output_config is None else output_records(output_config))
     written: List[PredictionOutput] = []
     error: Optional[BaseException] = None
     untracked: Optional[BaseException] = None
@@ -277,16 +276,15 @@ def _record_predictions(
     )
 
 
-def output_records(output_config: Any,
-                   run_id: Optional[str]) -> Optional[List[PredictionOutput]]:
-    r"""Records of the destinations run ``run_id`` writes to; None, with a
-    warning, if one cannot be described."""
+def output_records(output_config: Any) -> Optional[List[PredictionOutput]]:
+    r"""Records of ``output_config``'s destinations; None, with a warning,
+    if one cannot be described."""
     try:
         return [
             PredictionOutput(
                 artifact=name, destination=destination_record(
                     output_config.connector, destination))
-            for name, destination in output_config._targets(run_id).items()
+            for name, destination in output_config.destinations().items()
         ]
     except Exception as error:
         warnings.warn(f"Exporting without a prediction manifest: {error}",

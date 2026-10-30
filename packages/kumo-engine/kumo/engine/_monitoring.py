@@ -110,8 +110,7 @@ class EvaluationResult:
 
         if self.actuals is None:
             raise ValueError(f'No evaluated rows: {dict(self.reasons)}')
-        destination = output_config._targets(
-            self.prediction_id)['predictions']
+        destination = output_config.destinations()['predictions']
         files = sorted(str(path) for path in Path(self.actuals).glob('*.parquet'))
         written = max(Path(path).stat().st_mtime_ns for path in files)
         extra: Dict[str, Any] = {}
