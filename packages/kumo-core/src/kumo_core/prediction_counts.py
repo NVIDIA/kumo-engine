@@ -235,8 +235,8 @@ def _by_class(counts: Counts, ranked: str, order: Sequence[int],
 
     label = 'class' if ranked == 'classes' else 'label'
     return Table(
-        'pred/by_class', (label, 'share predicted',
-                          'share predicted in holdout', 'mean', 'min', 'max'),
+        'pred/by_class', (label, 'share now', 'holdout share', 'mean prob',
+                          'min prob', 'max prob'),
         tuple((columns[i].removesuffix('_PROB') if columns else str(i),
                float(tally[i] / rows) if rows else 0.0,
                None if holdout is None else float(holdout[i] / holdout.sum()),
@@ -253,7 +253,7 @@ def _item_summaries(counts: Counts) -> List[Summary]:
               int(total['most_recommendations']) + 1]
     return [
         Table('pred/item_frequency',
-              ('times recommended', 'items', 'share of recommendations'),
+              ('× recommended', 'items', 'share of recs'),
               tuple((_range(bounds[b], bounds[b + 1] - 1),
                      int(arrays['item_frequency'][b]),
                      float(arrays['item_frequency/sum'][b] /
