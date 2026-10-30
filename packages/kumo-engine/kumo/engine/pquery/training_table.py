@@ -321,12 +321,10 @@ def _table_id(table: TrainingTable, snapshot: GraphSnapshot,
               custom: bool) -> str:
     from kumo_core.io.json import to_json_dict
 
-    from kumo.engine._provenance import environment
-
     if custom and source_version is None:
         from kumo.engine._scratch import new_run_id
         return f'tt-{new_run_id()}'
-    build = environment()
+    build = provenance.environment()
     key = json.dumps([
         snapshot.id, table.query,
         to_json_dict(table.generation_plan), seed,
