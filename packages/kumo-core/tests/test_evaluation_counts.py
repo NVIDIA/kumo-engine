@@ -9,7 +9,14 @@ from kumo_core.evaluation_counts import (
     evaluation_summaries,
 )
 from kumo_core.score_counts import PROBABILITY_EDGES, merged
-from kumo_core.summaries import Confusion, Histogram, Scalar, Series, Table
+from kumo_core.summaries import (
+    Confusion,
+    Histogram,
+    Note,
+    Scalar,
+    Series,
+    Table,
+)
 from kumo_core.types import TaskType
 
 
@@ -288,5 +295,13 @@ def test_ranking_metrics_become_at_k_columns():
 
 def test_at_k_columns_describe_the_refit_model_when_there_is_one():
     assert at_k_summaries({'test_map@10': 0.2, 'test_refit_map@10': 0.25,
-                           'test_refit_map@1': 0.6}) == [
+                           'test_refit_map@1': 0.6,
+                           'test_refit_loss': 1.0}) == [
         Series('holdout/by_k/map', ((1, 0.6), (10, 0.25)), 'k')]
+
+
+def test_at_k_columns_without_a_holdout_loss_say_so():
+    assert at_k_summaries({'test_map@1': 0.5, 'test_acc': 0.9}) == [
+        Series('holdout/by_k/map', ((1, 0.5),), 'k'),
+        Note('notes', 'Link prediction reports no holdout loss.')]
+    assert at_k_summaries({'test_acc': 0.9}) == []

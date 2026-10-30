@@ -19,6 +19,7 @@ import numpy as np
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts, bin_bounds
 from kumo_core.summaries import (
     Confusion,
+    Note,
     Scalar,
     Series,
     Summary,
@@ -116,7 +117,8 @@ def evaluation_summaries(task_type: TaskType, counts: Counts,
 def at_k_summaries(metrics: Mapping[str, float]) -> List[Summary]:
     r"""``test_map@1``, ``test_map@10``... as the column ``map`` of the
     table ``holdout/by_k``, from the refit model's ``test_refit_map@1``...
-    when there are any: the bundle ships that model."""
+    when there are any: the bundle ships that model. Without its loss, as
+    link prediction's, a note says so."""
     refit = any(re.fullmatch(r'test_refit_\w+@\d+', name) for name in metrics)
     prefix = 'test_refit_' if refit else 'test_'
     series: Dict[str, List[Tuple[int, float]]] = {}
@@ -125,8 +127,13 @@ def at_k_summaries(metrics: Mapping[str, float]) -> List[Summary]:
         if match:
             series.setdefault(match.group(1), []).append(
                 (int(match.group(2)), float(value)))
-    return [Series(f'holdout/by_k/{metric}', tuple(sorted(points)), 'k')
-            for metric, points in sorted(series.items())]
+    summaries: List[Summary] = [
+        Series(f'holdout/by_k/{metric}', tuple(sorted(points)), 'k')
+        for metric, points in sorted(series.items())]
+    if series and f'{prefix}loss' not in metrics:
+        summaries.append(Note('notes',
+                              'Link prediction reports no holdout loss.'))
+    return summaries
 
 
 def _binary(p: np.ndarray, y: np.ndarray,
