@@ -70,6 +70,7 @@ jobs:
           prefix-key: engine-pr-zig-workspace-v2
           key: py312-glibc234-${{ hashFiles('packages/diskgraph/**', 'packages/kumo-engine/scripts/build_wheel.sh') }}
           cache-workspace-crates: true
+          cache-on-failure: true
       - name: Build the candidate wheel
         run: |
           python -m pip --isolated install ziglang

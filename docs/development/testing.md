@@ -49,7 +49,10 @@ than five minutes. See [Engine PR checks](engine-pr-ci.md#agent-local-feedback)
 for one-time environment setup, the single command, selected coverage and timing
 evidence. The local command runs only the small pure output tests. It needs no
 GPU or cloud access. Normal GPU CI fits eight models. The separate numeric
-qualification runs three repetitions, or 24 fits. Source and package workflows
+qualification fits eight models and repeats prediction and reload three times
+on each model. It adds no fits for those repeats. Source and package workflows
 keep their existing tests and failure policies. The preferred full-CI timeline
 is 20 minutes. The accepted budget is about 22 minutes, with a strict
-under-25-minute guardrail. The new slim job does not yet have a measured runtime.
+under-25-minute guardrail. The first normal run reached the 22-minute job limit
+after a cold 14m22s build. Five task checks passed, but the run remained
+incomplete. A complete normal runtime is still unverified.

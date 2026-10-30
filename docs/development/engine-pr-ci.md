@@ -37,7 +37,8 @@ relative tolerance, about 5.2 times that measured maximum. Absolute comparison
 also handles values close to zero. Weights, chosen labels, and ranks stay exact.
 This empirical limit covers the fixed PR172 inputs on Tesla T4 with
 PyTorch 2.15.0 and CUDA 13.2. It does not qualify another device or a
-learning-quality limit. Fresh normal and finished-wheel verification remain pending.
+learning-quality limit. The finished-wheel run passed all eight tasks at
+`2ac62b5`. A complete normal PR run still needs verification.
 This smoke check sets no learning-quality score or baseline requirement.
 
 ## Shared inputs
@@ -92,5 +93,12 @@ remain separate.
 
 The three-cycle qualification took 37m55s overall. Its cold build took 14m16s,
 dependency installation took 11m51s, and the GPU worker took 9m29s. This is not
-a normal-run budget pass. The normal run still needs measurement with the
-verified native cache and the cached parallel installer.
+a normal-run budget pass. The first normal run at `2a18469` hit the 22-minute
+job limit during forecasting. Five tasks passed before cancellation. Its cold
+build took 14m22s and dependency installation took 66 seconds. This incomplete
+run does not pass correctness or timing.
+
+GitHub caches are scoped by branch. That trusted copied-PR branch could not
+read the compatible native cache saved on the feature branch. The workflow
+now retains a completed native build even when a later GPU check fails.
+A complete normal run with the compatible cache still needs measurement.
