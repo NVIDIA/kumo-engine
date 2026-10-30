@@ -173,17 +173,17 @@ def _snapshot_manifest(snapshot: Any) -> bytes:
         RECONSTRUCTED,
         SnapshotManifest,
         SnapshotParents,
+        manifest_bytes,
     )
     from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
 
     try:
         return (Path(snapshot.index_path) / SNAPSHOT_MANIFEST_FILE).read_bytes()
     except OSError:
-        manifest = SnapshotManifest(
-            id=snapshot.id, parents=SnapshotParents(source_tables={}),
-            **RECONSTRUCTED)
-        return (json.dumps(manifest.to_dict(), indent=2, sort_keys=True) +
-                '\n').encode()
+        return manifest_bytes(
+            SnapshotManifest(id=snapshot.id,
+                             parents=SnapshotParents(source_tables={}),
+                             **RECONSTRUCTED))
 
 
 def export_location(snapshot: Any, path: str) -> str:
