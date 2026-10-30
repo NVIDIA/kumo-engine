@@ -185,6 +185,12 @@ and takes the final platform tag from the built DiskGraph wheel. Rust, Xcode
 Command Line Tools, and CMake are required. The release workflow builds this
 wheel on a macOS ARM64 runner with the same deployment target.
 
+Experimental native Windows x64 installations require a Microsoft Visual C++
+v14 runtime at least as recent as the build tools used for the wheel. If the
+runtime is missing or too old, install the
+[latest supported x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+The engine wheel does not bundle the redistributable.
+
 For experimental native Windows builds, run the builder in Git Bash with
 native Windows Python, the Rust MSVC toolchain, CMake, and an activated
 Visual Studio x64 C++/Windows SDK environment. Set `PYTHON=python` if `python3`

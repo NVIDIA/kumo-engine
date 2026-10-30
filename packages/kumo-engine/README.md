@@ -21,6 +21,11 @@ The bundled native engine requires CPU AES instructions: AES and SSE2 on
 x86-64, or AES and NEON on ARM64. Check that your host or virtual machine
 exposes these features before installing a wheel.
 
+Native Windows x64 installations require the Microsoft Visual C++ v14 runtime
+for the bundled ingestion executable. If it is missing, install the
+[latest supported x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+Visual Studio build tools are needed only when building from source.
+
 ## Installation
 
 ```bash
