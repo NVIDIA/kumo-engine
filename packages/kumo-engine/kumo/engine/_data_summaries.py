@@ -35,7 +35,7 @@ _EDGE_STATS = {'FRAC_SRC_NONZERO_DEGREE': 'src_match_frac',
                'FRAC_DST_NONZERO_DEGREE': 'dst_match_frac'}
 _HEALTH = ('table or link', 'rows', 'columns', 'dropped rows',
            'duplicate keys', 'rows without time', 'edges',
-           'source rows matched', 'target rows matched', 'failed lookups')
+           'source matched', 'target matched', 'failed lookups')
 # The Kumo platform's data checks.
 _BAD_TIME_FRACTION = 0.05
 _INVALID_FRACTION = 0.10
@@ -68,7 +68,7 @@ def split_summaries(staging_dir: Path) -> List[Summary]:
             _value(table, targets[split], name, label) for name in columns))
         for split, table in tables.items())
     query = _read(staging_dir / PROVENANCE_FILE).get('query')
-    entities = f"{entity(query) or 'entities'}≈"
+    entities = f"distinct {entity(query) or 'entities'} (approx.)"
     summaries: List[Summary] = []
     if rows:
         summaries.append(Table('data/splits', ('split', 'rows', *(
@@ -92,7 +92,7 @@ def _value(table: Mapping[str, Any], target: Mapping[str, Any], name: str,
 
 def target_edges(staging_dir: Path) -> Tuple[float, ...]:
     r"""Bin edges for a numerical target from the training split's
-    statistics: its histogram's bins, or `_TARGET_BINS` even bins from its
+    statistics: its histogram's bins, or `_TARGET_BINS` equal bins from its
     min to its max, and its quartiles; empty without them."""
     return _target_bins(_train_target(staging_dir))[0]
 
@@ -104,25 +104,28 @@ def _train_target(staging_dir: Path) -> Mapping[str, Any]:
 
 def _target_bins(target: Mapping[str, Any]) -> Tuple[Tuple[float, ...], str]:
     bins = (target.get('histogram') or {}).get('bins') or ()
-    source = f"the training target's {max(len(bins) - 1, 0)} histogram bins"
+    source = f"the training target's {len(bins) - 1} histogram bins"
     low, high = (_number(target.get(key))
                  for key in ('target_min', 'target_max'))
     if not bins and low is not None and high is not None and high > low:
         bins = [low + (high - low) * i / _TARGET_BINS
                 for i in range(_TARGET_BINS + 1)]
-        source = (f"{_TARGET_BINS} even bins from the training target's "
-                  f"minimum to its maximum")
+        source = f'{_TARGET_BINS} equal bins'
     edges = {*bins, *(target[key] for key in _QUARTILES
                       if _number(target.get(key)) is not None)}
-    return (tuple(sorted(edges)), source) if len(edges) > 1 else ((), '')
+    parts = [source] if bins else []
+    extra = len(edges) - len(set(bins))
+    if extra:
+        parts.append(f"{extra} quartile edge{'s' * (extra > 1)}")
+    return ((tuple(sorted(edges)), ' + '.join(parts)) if len(edges) > 1
+            else ((), ''))
 
 
 def _bins_note(target: Mapping[str, Any]) -> Optional[str]:
     edges, source = _target_bins(target)
     if not edges:
         return None
-    return (f'Target histograms cut at {source} and its quartiles '
-            f'({len(edges) + 1} bins).')
+    return f'Target histograms: {source}.'
 
 
 def snapshot_summaries(index: Path,

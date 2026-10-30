@@ -11,6 +11,7 @@ from kumo_core.summaries import Dataset, Note, Table, Tag
 
 import kumo.engine as kumo
 from kumo.engine._data_summaries import (
+    _bins_note,
     snapshot_summaries,
     split_summaries,
     table_details,
@@ -62,7 +63,7 @@ def test_summaries_match_the_snapshot_and_training_table(scratch):
 
     splits, = split_summaries(table.staging_dir)
     assert splits.brief and splits.columns == (
-        'split', 'rows', 'users≈', 'positive rate')
+        'split', 'rows', 'distinct users (approx.)', 'positive rate')
     for split, row in zip(('train', 'val', 'test'), splits.rows):
         seeds = pd.read_parquet(table.staging_dir / f'{split}_seeds')
         assert row[:2] == (split, len(seeds))
@@ -76,17 +77,17 @@ def test_summaries_match_the_snapshot_and_training_table(scratch):
     assert [dict(zip(health.columns, row)) for row in health.rows] == [
         {'table or link': 'users', 'rows': 300, 'columns': 2,
          'dropped rows': 0, 'duplicate keys': 0, 'rows without time': '',
-         'edges': '', 'source rows matched': '',
-         'target rows matched': '', 'failed lookups': ''},
+         'edges': '', 'source matched': '',
+         'target matched': '', 'failed lookups': ''},
         {'table or link': 'orders', 'rows': 6000, 'columns': 3,
          'dropped rows': 0, 'duplicate keys': 0, 'rows without time': 0,
-         'edges': '', 'source rows matched': '',
-         'target rows matched': '', 'failed lookups': ''},
+         'edges': '', 'source matched': '',
+         'target matched': '', 'failed lookups': ''},
         {'table or link': 'orders.USER_ID → users', 'rows': '',
          'columns': '', 'dropped rows': '', 'duplicate keys': '',
          'rows without time': '', 'edges': matched.sum(),
-         'source rows matched': pytest.approx(matched.mean()),
-         'target rows matched': pytest.approx(
+         'source matched': pytest.approx(matched.mean()),
+         'target matched': pytest.approx(
              orders.loc[matched, 'USER_ID'].nunique() / 300),
          'failed lookups': (~matched).sum()}]
     stats = summaries['data/columns']
@@ -171,7 +172,7 @@ def test_approximate_counts_never_exceed_the_exact_ones(tmp_path):
                 'num_unique': 61}}}))
 
     assert split_summaries(tmp_path) == [Table(
-        'data/splits', ('split', 'rows', 'entities≈'),
+        'data/splits', ('split', 'rows', 'distinct entities (approx.)'),
         (('val', 947, 944), ('test', 976, 976)), brief=True)]
     columns = {s.name: s for s in snapshot_summaries(tmp_path, {})}[
         'data/columns']
@@ -196,7 +197,11 @@ def test_target_edges_are_even_bins_without_a_histogram(tmp_path):
         Table('data/splits', ('split', 'rows', 'mean', 'min', 'max'),
               (('train', 80, 30.5, 0.0, 200.0), ('test', 10, 1.5, -1.0, 9.0)),
               brief=True),
-        Note('notes', "Target histograms cut at 50 even bins from the "
-             "training target's minimum to its maximum and its quartiles "
-             "(53 bins)."),
+        Note('notes', 'Target histograms: 50 equal bins + 1 quartile edge.'),
     ]
+    assert _bins_note({'histogram': {'bins': [0, 10, 20, 30]},
+                       'target_min': 0, 'target_percentile_25': 5,
+                       'target_median': 15, 'target_percentile_75': 25,
+                       'target_max': 30}) == (
+        "Target histograms: the training target's 3 histogram bins + 3 "
+        'quartile edges.')
