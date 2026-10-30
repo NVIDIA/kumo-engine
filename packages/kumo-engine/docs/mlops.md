@@ -323,6 +323,7 @@ job.wait()
 - **Input:** one `ENTITY` column of ids as strings. Params: `prediction_time` (temporal queries; `predict(snapshot)` defaults to the snapshot's latest time, so pass `run.manifest.prediction_table.anchors[0]` to reproduce a local run), `binary_classification_threshold` and `num_classes_to_return` (override the model's defaults), and `snapshot`, another stage snapshot to score against.
 - **Output:** Parquet under `<stage_location>/<job name>/` with the columns `predict` returns. Create the table first; for a binary model, `CREATE TABLE <table> (ENTITY VARCHAR, TARGET_PRED BOOLEAN, "False_PROB" FLOAT, "True_PROB" FLOAT)` (quote the mixed-case probability columns). Then load it with `COPY INTO <table> FROM @... FILE_FORMAT = (TYPE = PARQUET) MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE`.
 - Pool, grants, environment and serving options: [Snowflake serving](#snowflake-serving).
+- **Not a Kumo prediction run:** `run_batch` returns scores only. It stores no `<artifact root>/predictions/<id>/` run, so its output cannot be loaded with `PredictionResult.load_from_connector` or passed to `evaluate` and `score_drift`. Snowflake's job records and Model Monitor still work on it. To monitor with kumo-engine, score with `Trainer.predict` (or the scoring job, `score_job.py`) under `kumo.MLOps`, as in [Score](#score).
 
 ## Monitor
 
