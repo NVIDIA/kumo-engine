@@ -12,16 +12,7 @@ import tempfile
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Mapping,
-    Optional,
-    Sequence,
-    Set,
-)
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 
 from kumo_core.instrumentation import format_error
 from kumo_core.sources.sql import resolve_snowflake_identifier
