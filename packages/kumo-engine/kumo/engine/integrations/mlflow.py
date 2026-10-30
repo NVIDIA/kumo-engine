@@ -15,6 +15,7 @@ import threading
 import time
 import warnings
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -174,8 +175,8 @@ class MlflowTracking:
         self._artifacts: Set[str] = set()
         # The run's notes and brief tables, for its description.
         self._card: List[Summary] = []
+        self._pending = _Pending()
         self._model_id: Optional[str] = None
-        self._dataset: Optional[Tuple[str, str]] = None
         self._http_owned: FrozenSet[str] = frozenset()
         self._guard = ExitStack()
 
@@ -474,7 +475,6 @@ class MlflowTracking:
                    and record.tags.get('kumo.kind') == 'fit')
         try:
             if record is not None and self._parent is not None:
-                self._dataset = _test_dataset(record)
                 for epoch, metrics in by_step(record.steps):
                     self._log_metrics(self._parent, metrics, epoch)
                 self.log_summaries(record.summaries)
@@ -517,49 +517,67 @@ class MlflowTracking:
                 client.log_batch(
                     run_id, metrics=metrics[start:start + _BATCH_METRICS])
 
-    def log_summaries(self, summaries: Sequence[Summary]) -> None:
-        r"""Logs each summary on the current run through its type's call in
-        `_SINKS`; a ``role='model'`` scalar also goes on the logged model."""
+    def log_summaries(self, summaries: Sequence[Summary],
+                      run_id: Optional[str] = None) -> None:
+        r"""Logs each summary on run ``run_id`` (default: the current run)
+        through its type's call in `_SINKS`: values as metrics, a
+        ``role='model'`` scalar also on the logged model; series and
+        histograms as one table per name prefix; brief tables and notes for
+        the run's card."""
+        self._pending = _Pending()
         for summary in summaries:
             _SINKS[type(summary)](self, summary)
+        pending, self._pending = self._pending, _Pending()
+        run_id = run_id or self._parent
+        scalars = pending.scalars
+        self._log_metrics(run_id, {s.name: s.value for s in scalars
+                                   if s.role == 'model'},
+                          model_id=self._model_id)
+        self._log_metrics(run_id, {s.name: s.value for s in scalars
+                                   if s.role != 'model'})
+        if pending.tags:
+            self._log_tags(run_id, pending.tags)
+        self._write_tables(run_id, [
+            *(_series_table(name, x_label, columns)
+              for name, (x_label, columns) in pending.series.items()),
+            *(_histogram_table(name, histograms)
+              for name, histograms in pending.histograms.items()),
+            *pending.tables])
+        if pending.datasets:
+            with self.target.scope():
+                self._client.log_inputs(run_id, datasets=sorted(
+                    pending.datasets,
+                    key=lambda item: not item.dataset.name.startswith(
+                        'snapshot')))
 
     def _log_scalar(self, summary: Scalar) -> None:
-        model_id = self._model_id if summary.role == 'model' else None
-        self._log_metrics(self._parent, {summary.name: summary.value},
-                          model_id=model_id)
+        self._pending.scalars.append(summary)
 
     def _log_tag(self, summary: Tag) -> None:
-        self._log_tags(self._parent, {summary.name: summary.value})
+        self._pending.tags[summary.name] = summary.value
 
     def _log_series(self, summary: Series) -> None:
-        self._log_points({summary.name: summary.points})
+        parent, _, column = summary.name.rpartition('/')
+        x_label, columns = self._pending.series.setdefault(
+            parent or summary.name, (summary.x_label, {}))
+        columns[column] = dict(summary.points)
 
     def _log_curve(self, summary: Curve) -> None:
-        self._log_points({summary.x.name: summary.x.points,
-                          summary.y.name: summary.y.points})
+        self._log_series(summary.x)
+        self._log_series(summary.y)
 
     def _log_histogram(self, summary: Histogram) -> None:
-        self._log_points({
-            f'{summary.name}/count': tuple(enumerate(summary.counts)),
-            f'{summary.name}/lower_edge': tuple(enumerate(summary.edges, 1)),
-        })
+        name = summary.name.rpartition('/')[0] or summary.name
+        group = self._pending.histograms.get(name)
+        if group and group[0].edges != summary.edges:
+            name = summary.name
+        self._pending.histograms.setdefault(name, []).append(summary)
 
     def _log_table(self, summary: Table) -> None:
         if summary.brief:
             self._card.append(summary)
-            return
-        path = f'{summary.name}.json'
-        self._log_artifacts({path: json.dumps({
-            'columns': list(summary.columns),
-            'data': [list(row) for row in summary.rows],
-        }, default=str)})
-        with self.target.scope():
-            tags = self._client.get_run(self._parent).data.tags
-            logged = json.loads(tags.get('mlflow.loggedArtifacts', '[]'))
-            entry = {'path': path, 'type': 'table'}
-            if entry not in logged:
-                self._client.set_tag(self._parent, 'mlflow.loggedArtifacts',
-                                     json.dumps([*logged, entry]))
+        else:
+            self._pending.tables.append(summary)
 
     def _log_note(self, summary: Note) -> None:
         self._card.append(summary)
@@ -577,50 +595,61 @@ class MlflowTracking:
         entities = self._mlflow.entities
         dataset = entities.Dataset(
             name=summary.name,
-            digest=_digest(summary.source),
+            digest=_digest(summary.name, summary.source, summary.schema),
             source_type=source._get_source_type(),
             source=source.to_json(),
             schema=json.dumps({'mlflow_colspec': [
                 {'name': name, 'type': _COLUMN_TYPES.get(column['dtype'],
                                                          'string')}
                 for name, column in summary.schema.items()]}),
-            profile=json.dumps(summary.profile, default=str))
-        with self.target.scope():
-            self._client.log_inputs(self._parent, datasets=[
-                entities.DatasetInput(dataset, tags=[entities.InputTag(
-                    'mlflow.data.context', summary.context)])])
+            profile=json.dumps({
+                key: value for key, value in summary.profile.items()
+                if not isinstance(value, (Mapping, list, tuple))
+            }, default=str))
+        self._pending.datasets.append(entities.DatasetInput(
+            dataset, tags=[entities.InputTag('mlflow.data.context',
+                                             summary.context)]))
 
-    def _log_points(self, series: Mapping[str, Sequence[Tuple[int, float]]]
-                    ) -> None:
-        entities = self._mlflow.entities
-        timestamp = int(time.time() * 1000)
-        metrics = [
-            entities.Metric(metric_key(name), float(value), timestamp, step)
-            for name, points in series.items() for step, value in points
-        ]
+    def _write_tables(self, run_id: str, tables: Sequence[Table]) -> None:
+        r"""Writes each table as ``<name>.json``, replacing an earlier
+        file, and lists it in ``mlflow.loggedArtifacts`` for the UI's table
+        view (``mlflow.log_table`` would append to an earlier file)."""
+        if not tables:
+            return
+        for table in tables:
+            self._write_text(run_id, f'{table.name}.json', json.dumps({
+                'columns': list(table.columns),
+                'data': [list(row) for row in table.rows],
+            }, default=str))
         with self.target.scope():
-            for start in range(0, len(metrics), _BATCH_METRICS):
-                self._client.log_batch(
-                    self._parent,
-                    metrics=metrics[start:start + _BATCH_METRICS])
+            tags = self._client.get_run(run_id).data.tags
+            logged = json.loads(tags.get('mlflow.loggedArtifacts', '[]'))
+            entries = [{'path': f'{table.name}.json', 'type': 'table'}
+                       for table in tables]
+            added = [entry for entry in entries if entry not in logged]
+            if added:
+                self._client.set_tag(run_id, 'mlflow.loggedArtifacts',
+                                     json.dumps([*logged, *added]))
 
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         for name, text in artifacts.items():
-            if name in self._artifacts:
-                continue
-            with self.target.scope():
-                repository = self.target.artifact_repository(
-                    self._client.get_run(self._parent).info.artifact_uri
-                ) if self.target.explicit else None
-                if repository is None:
-                    self._client.log_text(self._parent, text, name)
-                else:
-                    with tempfile.TemporaryDirectory() as tmp:
-                        path = Path(tmp) / posixpath.basename(name)
-                        path.write_text(text)
-                        repository.log_artifact(
-                            str(path), posixpath.dirname(name) or None)
-            self._artifacts.add(name)
+            if name not in self._artifacts:
+                self._write_text(self._parent, name, text)
+                self._artifacts.add(name)
+
+    def _write_text(self, run_id: str, name: str, text: str) -> None:
+        with self.target.scope():
+            repository = self.target.artifact_repository(
+                self._client.get_run(run_id).info.artifact_uri
+            ) if self.target.explicit else None
+            if repository is None:
+                self._client.log_text(run_id, text, name)
+            else:
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / posixpath.basename(name)
+                    path.write_text(text)
+                    repository.log_artifact(str(path),
+                                            posixpath.dirname(name) or None)
 
     def _log_tags(self, run_id: str, tags: Mapping[str, str]) -> None:
         entities = self._mlflow.entities
@@ -650,34 +679,71 @@ class MlflowTracking:
             return
         entities = self._mlflow.entities
         timestamp = int(time.time() * 1000)
-        name, digest = (self._dataset if model_id is not None
-                        and self._dataset else (None, None))
+        batch = [
+            entities.Metric(metric_key(key), float(value), timestamp, step,
+                            model_id=model_id)
+            for key, value in metrics.items()
+        ]
         with self.target.scope():
-            self._client.log_batch(
-                run_id, metrics=[
-                    entities.Metric(metric_key(key), float(value), timestamp,
-                                    step, model_id=model_id,
-                                    dataset_name=name, dataset_digest=digest)
-                    for key, value in metrics.items()
-                ])
+            for start in range(0, len(batch), _BATCH_METRICS):
+                self._client.log_batch(
+                    run_id, metrics=batch[start:start + _BATCH_METRICS])
 
 
-def _test_dataset(record: RunRecord) -> Optional[Tuple[str, str]]:
-    r"""The name and digest of the training-table dataset a fit's test
-    metrics come from, to link them to it on the logged model."""
-    location = next((summary.value for summary in record.summaries
-                     if isinstance(summary, Tag)
-                     and summary.name == 'kumo.training_table_uri'), None)
-    for summary in record.summaries:
-        if (isinstance(summary, Dataset) and location
-                and summary.source.get('location') == location):
-            return summary.name, _digest(summary.source)
-    return None
+def _digest(name: str, source: Mapping[str, Optional[str]],
+            schema: Mapping[str, Any]) -> str:
+    r"""A dataset's digest, over its name, source and schema: MLflow keeps
+    one dataset per name and digest, so a moved source is a new one."""
+    return hashlib.sha256(json.dumps(
+        [name, dict(source), dict(schema)], sort_keys=True,
+        default=str).encode()).hexdigest()[:8]
 
 
-def _digest(source: Mapping[str, Optional[str]]) -> str:
-    return (source.get('version') or '')[:36] or hashlib.sha256(json.dumps(
-        dict(source), sort_keys=True).encode()).hexdigest()[:8]
+@dataclass
+class _Pending:
+    r"""What one `MlflowTracking.log_summaries` call logs, gathered by
+    `_SINKS` and written in batches."""
+
+    scalars: List[Scalar] = field(default_factory=list)
+    tags: Dict[str, str] = field(default_factory=dict)
+    series: Dict[str, Tuple[str, Dict[str, Dict[int, float]]]] = field(
+        default_factory=dict)
+    histograms: Dict[str, List[Histogram]] = field(default_factory=dict)
+    tables: List[Table] = field(default_factory=list)
+    datasets: List[Any] = field(default_factory=list)
+
+
+def _series_table(name: str, x_label: str,
+                  columns: Mapping[str, Mapping[int, float]]) -> Table:
+    r"""Series ``<name>/<column>`` as one table: the step, then a column
+    per series, a row per step."""
+    steps = sorted({step for points in columns.values() for step in points})
+    return Table(name, (x_label, *columns), tuple(
+        (step, *(points.get(step) for points in columns.values()))
+        for step in steps))
+
+
+def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
+    r"""Histograms ``<name>/<column>`` over the same edges as one table: a
+    bin per row from ``from`` to ``to`` (open at both ends), a count and a
+    cumulative share per histogram."""
+    edges = histograms[0].edges
+    columns = [h.name.rpartition('/')[2] for h in histograms]
+    shares = []
+    for histogram in histograms:
+        total, running = sum(histogram.counts), 0.0
+        cumulative = []
+        for count in histogram.counts:
+            running += count
+            cumulative.append(running / total if total else None)
+        shares.append(cumulative)
+    return Table(name, (
+        'from', 'to', *columns,
+        *(f'{column} cumulative share' for column in columns)), tuple(
+            (low, high, *(h.counts[i] for h in histograms),
+             *(share[i] for share in shares))
+            for i, (low, high) in enumerate(zip((None, *edges),
+                                                (*edges, None)))))
 
 
 _SINKS: Dict[type, Callable[[MlflowTracking, Any], None]] = {
@@ -1047,9 +1113,8 @@ def _log_inputs(mlflow: Any, client: Any, run_id: str,
             source = _dataset_source(entry)
             if source is None:
                 continue
-            digest = hashlib.sha256(
-                json.dumps(dict(entry), sort_keys=True).encode()).hexdigest()
-            dataset = meta.MetaDataset(source, name=name, digest=digest[:8])
+            dataset = meta.MetaDataset(source, name=name,
+                                       digest=_digest(name, entry, {}))
             datasets.append(
                 entities.DatasetInput(
                     dataset._to_mlflow_entity(),

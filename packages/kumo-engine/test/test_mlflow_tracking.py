@@ -617,3 +617,44 @@ def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
         run.info.run_id, 'system/cpu_utilization_percentage')]
     assert history == [(step, step + 1.0) for step in range(monitor.samples)]
     assert bool(history) == enabled
+
+
+def test_series_and_histograms_become_one_table_per_name_prefix(
+        tracking_uri):
+    from kumo_core.summaries import Curve, Histogram, Series
+
+    from kumo.engine._tracking import RunRecord
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    tracker = MlflowTracking(experiment_name='e', log_system_metrics=False)
+    tags = {'kumo.kind': 'fit'}
+    tracker.start(RunRecord(name='r', tags=tags))
+    tracker.finish(RunRecord(name='r', tags=tags, summaries=(
+        Series('holdout/by_k/map', ((10, 0.25), (1, 0.5)), 'k'),
+        Series('holdout/by_k/recall', ((1, 0.125),), 'k'),
+        Curve('holdout/by_bin', Series('holdout/by_bin/fpr', ((0, 1.0),), 'bin'),
+              Series('holdout/by_bin/tpr', ((0, 0.75),), 'bin')),
+        Histogram('holdout/histogram/actual', (0.0, 1.0), (1, 2, 1)),
+        Histogram('holdout/histogram/predicted', (0.0, 1.0), (0, 3, 1)),
+        Histogram('holdout/histogram/other', (5.0,), (2, 2)))), None)
+
+    run = mlflow.get_run(tracker.run_id)
+
+    def table(name):
+        return json.loads(mlflow.artifacts.load_text(
+            f'{run.info.artifact_uri}/{name}.json'))
+
+    assert run.data.metrics == {}
+    assert table('holdout/by_k') == {'columns': ['k', 'map', 'recall'],
+                                     'data': [[1, 0.5, 0.125],
+                                              [10, 0.25, None]]}
+    assert table('holdout/by_bin') == {'columns': ['bin', 'fpr', 'tpr'],
+                                       'data': [[0, 1.0, 0.75]]}
+    assert table('holdout/histogram') == {
+        'columns': ['from', 'to', 'actual', 'predicted',
+                    'actual cumulative share', 'predicted cumulative share'],
+        'data': [[None, 0.0, 1, 0, 0.25, 0.0], [0.0, 1.0, 2, 3, 0.75, 0.75],
+                 [1.0, None, 1, 1, 1.0, 1.0]]}
+    assert table('holdout/histogram/other') == {
+        'columns': ['from', 'to', 'other', 'other cumulative share'],
+        'data': [[None, 5.0, 2, 0.5], [5.0, None, 2, 1.0]]}

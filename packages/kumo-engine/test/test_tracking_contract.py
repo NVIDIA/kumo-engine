@@ -4,6 +4,7 @@
 """Every tracking adapter records the same run records as a recorded fit
 and a recorded prediction run."""
 
+import hashlib
 import json
 import threading
 import time
@@ -502,24 +503,27 @@ def test_adapter_logs_each_summary_type(adapter, mlflow_adapter):
     replay(adapter.make(), summaries=SUMMARIES)
 
     fit = adapter.observe()[FIT]
-    assert {name: fit.steps[name] for name in (
-        'test/brier', 'search/trials', 'test/roc/fpr', 'test/roc/tpr',
-        'pred/True_PROB/hist/count', 'pred/True_PROB/hist/lower_edge')} == {
-        'test/brier': ((0, 0.25),), 'search/trials': ((1, 3.0), (2, 4.0)),
-        'test/roc/fpr': ((0, 1.0), (1, 0.5)),
-        'test/roc/tpr': ((0, 1.0), (1, 0.75)),
-        'pred/True_PROB/hist/count': ((0, 3.0), (1, 4.0)),
-        'pred/True_PROB/hist/lower_edge': ((1, 0.5),)}
     tables = {'col_stats.json': {'columns': ['table', 'rows'],
                                  'data': [['ents', 400]]},
               'confusion.json': {'columns': ['actual', 'a', 'b'],
                                  'data': [['a', 5, 1], ['b', 2, 7]]}}
     if adapter is not mlflow_adapter:
+        assert {name: fit.steps[name] for name in (
+            'test/brier', 'search/trials', 'test/roc/fpr', 'test/roc/tpr',
+            'pred/True_PROB/hist/count', 'pred/True_PROB/hist/lower_edge')
+        } == {
+            'test/brier': ((0, 0.25),), 'search/trials': ((1, 3.0), (2, 4.0)),
+            'test/roc/fpr': ((0, 1.0), (1, 0.5)),
+            'test/roc/tpr': ((0, 1.0), (1, 0.75)),
+            'pred/True_PROB/hist/count': ((0, 3.0), (1, 4.0)),
+            'pred/True_PROB/hist/lower_edge': ((1, 0.5),)}
         assert {name: json.loads(fit.artifacts[name])
                 for name in tables} == tables
         return
     import mlflow
 
+    assert {name for name in fit.steps if not name.startswith((
+        'train/', 'val/', 'search/'))} == {'mae', 'test/brier'}
     client = mlflow.MlflowClient()
     run, = (r for r in client.search_runs(
         [e.experiment_id for e in client.search_experiments()])
@@ -529,11 +533,14 @@ def test_adapter_logs_each_summary_type(adapter, mlflow_adapter):
         for section, name in (('graph', 'col_stats.json'),
                               ('test', 'confusion.json'))} == tables
     assert json.loads(run.data.tags['mlflow.loggedArtifacts']) == [
-        {'path': 'graph/col_stats.json', 'type': 'table'},
-        {'path': 'test/confusion.json', 'type': 'table'}]
+        {'path': f'{name}.json', 'type': 'table'} for name in (
+            'search', 'test/roc', 'pred/True_PROB', 'graph/col_stats',
+            'test/confusion')]
     dataset, = run.inputs.dataset_inputs
     assert (dataset.dataset.name, dataset.dataset.digest,
-            dataset.tags[0].value) == ('ents', '1790000000', 'training')
+            dataset.tags[0].value) == ('ents', hashlib.sha256(json.dumps(
+                ['ents', INPUTS['ents'], SUMMARIES[-1].schema],
+                sort_keys=True).encode()).hexdigest()[:8], 'training')
     assert json.loads(dataset.dataset.schema) == {
         'mlflow_colspec': [{'name': 'ID', 'type': 'long'}]}
     assert json.loads(dataset.dataset.profile) == {'rows': 400}
@@ -718,9 +725,8 @@ def test_a_full_refit_names_the_holdout_summaries_before_it():
 
     from kumo.engine.trainer.trainer import _REFIT_FULL, _unlogged
 
-    summaries = (Scalar('auroc', 0.7, role='model'), Scalar('brier', 0.2,
-                                                           role='model'),
-                 Scalar('label/rows', 9.0))
+    summaries = (Scalar('auroc', 0.7, role='model'),
+                 Scalar('brier', 0.2, role='model'), Scalar('label/rows', 9.0))
     assert _unlogged(summaries, {'test_auroc': 0.7}) == summaries[1:]
     assert _unlogged(summaries, {'test_auroc': 0.7}, refit_full=True) == (
         Scalar('before_refit/brier', 0.2, role='model'),

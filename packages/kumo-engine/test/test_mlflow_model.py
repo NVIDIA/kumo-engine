@@ -7,7 +7,6 @@ import json
 import warnings
 from types import SimpleNamespace
 
-import numpy as np
 import pandas as pd
 import pytest
 from kumo_core.artifacts import PROVENANCE_FILE
@@ -67,6 +66,8 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
            if not name.startswith(('train/', 'val/'))},
         **{summary.name: summary.value for summary in result._summaries
            if isinstance(summary, Scalar) and summary.role == 'model'}}
+    assert {(metric.dataset_name, metric.dataset_digest)
+            for metric in model.metrics} == {(None, None)}
     version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
     assert version.source == model.model_uri
     assert parent.data.tags.items() >= {
@@ -536,34 +537,3 @@ def test_a_tracking_start_failure_names_its_cause_and_can_raise(
         'earlier failure (MlflowException: RESOURCE_DOES_NOT_EXIST: Parent '
         'of /NoSuchFolder/churn does not exist.)'
     ]
-
-
-def test_test_metrics_link_the_stored_training_table(tmp_path, tracking_uri):
-    from kumo.engine.integrations.mlflow import MlflowTracking
-
-    rng = np.random.default_rng(0)
-    (tmp_path / 'data').mkdir()
-    pd.DataFrame({'ID': np.arange(400), 'Y': rng.random(400),
-                  'F1': rng.normal(size=400)}).to_parquet(
-                      tmp_path / 'data' / 'ents.parquet')
-    connector = kumo.FileConnector(root_dir=str(tmp_path / 'data'))
-    graph = kumo.Graph(tables={'ents': kumo.Table.from_source_table(
-        connector['ents.parquet'], primary_key='ID').infer_metadata()},
-        edges=[])
-    cfg = kumo.MLOps(str(tmp_path / 'root'),
-                     tracking=MlflowTracking(log_system_metrics=False),
-                     registry=kumo.ModelRegistryLocation('m'))
-    with kumo.mlops(cfg):
-        snapshot = graph.snapshot()
-        table = kumo.PredictiveQuery(
-            graph=graph, query='PREDICT ents.Y FOR EACH ents.ID'
-        ).generate_training_table(snapshot)
-        kumo.Trainer(_plan()).fit(table, snapshot=snapshot)
-
-    model, = mlflow.search_logged_models(output_format='list')
-    run = mlflow.get_run(model.source_run_id)
-    linked = {(metric.dataset_name, metric.dataset_digest)
-              for metric in model.metrics}
-    assert linked == {(table.id, table.id)}
-    assert (table.id, table.id) in {(item.dataset.name, item.dataset.digest)
-                                    for item in run.inputs.dataset_inputs}
