@@ -324,6 +324,16 @@ def _restore_alias(model: Any, version: str, alias: str) -> None:
                      alias, version)
 
 
+def _next_version(registry: Any, model_name: str) -> str:
+    try:
+        names = [str(version.version_name)
+                 for version in registry.get_model(model_name).versions()]
+    except ValueError:
+        names = []
+    numbers = [int(name[1:]) for name in names if re.fullmatch(r'V\d+', name)]
+    return f'V{max(numbers, default=0) + 1}'
+
+
 class SnowflakeModelRegistryMixin:
     r"""The model half of :class:`SnowflakeSinkBackend`.
 
@@ -392,8 +402,8 @@ class SnowflakeModelRegistryMixin:
             location: The
                 :class:`~kumoapi.plugin.ModelRegistryLocation` naming
                 the model, and optionally the version. A version of ``None``
-                lets the registry assign one -- the usual case, and the reason
-                this reports back what it created.
+                is the next ``V<n>`` after the model's highest, retried with
+                the one after if a concurrent registration takes it.
             metadata: Returned with the publication result; its
                 ``kumo_bundle_id`` is also recorded in the version's metrics.
             metrics: The model's holdout metrics, recorded in the version's
@@ -418,15 +428,25 @@ class SnowflakeModelRegistryMixin:
 
         record = {**_finite(metrics), **_version_record(metadata)}
         with self._registry(connector) as registry:
-            version = registry.log_model(
-                _bundle_model(str(bundle)),
-                model_name=location.model_name,
-                version_name=location.version,
-                comment=_comment(location.comment, metrics),
-                metrics=record,
-                signatures=_carrier_signature(),
-                **_task(bundle),
-            )
+            name = location.version or _next_version(registry,
+                                                     location.model_name)
+            while True:
+                try:
+                    version = registry.log_model(
+                        _bundle_model(str(bundle)),
+                        model_name=location.model_name,
+                        version_name=name,
+                        comment=_comment(location.comment, metrics),
+                        metrics=record,
+                        signatures=_carrier_signature(),
+                        **_task(bundle),
+                    )
+                    break
+                except Exception:
+                    taken, name = name, location.version or _next_version(
+                        registry, location.model_name)
+                    if name == taken:
+                        raise
         return _published(connector, version, metadata=metadata,
                           metrics=metrics)
 
