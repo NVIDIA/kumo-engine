@@ -601,7 +601,9 @@ def _drift_summaries(report: 'DriftReport',
     vs the previous run, named ``previous_name`` (else by its id), and, when
     the run's model is the trainer's, the input changes and column drift
     since training (its score drift metrics vs the holdout are the
-    prediction run's own); notes on what is missing and why."""
+    prediction run's own); notes on what is missing and why. Link
+    prediction's holdout covers only entities with a future target, so its
+    psi against it gets no shift."""
     summaries: List[Summary] = []
     reasons = report.reasons
     holdout = {'psi': report.psi, 'ks': report.ks,
@@ -617,7 +619,9 @@ def _drift_summaries(report: 'DriftReport',
     sides = [] if report.bundle_matches is False else [
         ('holdout scores at training', holdout)]
     sides.append(('previous run', previous))
-    rows = tuple((side, values['psi'], _shift(values['psi']), values['ks'],
+    rows = tuple((side, values['psi'],
+                  '' if values is holdout and report.score == 'top_score'
+                  else _shift(values['psi']), values['ks'],
                   values['wasserstein'])
                  for side, values in sides if values['psi'] is not None)
     if rows:
