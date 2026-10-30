@@ -43,6 +43,7 @@ python3 agent-skills/scripts/package_skill.py generic     # -> agent-skills/dist
 python3 agent-skills/scripts/package_skill.py genie       # -> agent-skills/dist/genie/skills/
 python3 agent-skills/scripts/package_skill.py genie --deploy   # + upload to your Genie Code skills folder
 python3 agent-skills/scripts/package_skill.py --check     # build every host, verify references
+python3 agent-skills/scripts/package_skill.py --zip DIR   # kumo-data-science-<host>.zip for every host
 ```
 
 A package carries exactly one host, and the core reaches it only as `hosts/<host>/`; tests fail if
@@ -78,6 +79,24 @@ data. In a source checkout `install_skills` builds from `agent-skills/` directly
 edit is installed without a rebuild. Each install replaces only its own `kumo-data-science/`
 directory. `tests/test_install_skills.py` covers every agent and scope; the Genie and Snowflake
 account paths run there against fakes.
+
+## Download zips on each release
+
+For anyone installing the skill without the wheel (a docs download button, an install script),
+every `kumo-engine-v*` GitHub release carries one zip per host, attached by the `skill-zips` job in
+`.github/workflows/kumo-engine-wheel.yml` beside the wheels built from the same commit:
+
+```
+https://github.com/NVIDIA/kumo-engine/releases/download/kumo-engine-v<version>/kumo-data-science-generic.zip
+https://github.com/NVIDIA/kumo-engine/releases/download/kumo-engine-v<version>/kumo-data-science-coco.zip
+https://github.com/NVIDIA/kumo-engine/releases/download/kumo-engine-v<version>/kumo-data-science-genie.zip
+```
+
+Each zip holds `kumo-data-science/` at its root, the directory `install_skills()` installs: unzip it
+into the agent's skills directory (the same locations as above). Link by release tag, never through
+`releases/latest`: this repository also publishes `kumo-sdk-v*`, model and wheel releases, and
+whichever is newest is "latest". The zips are reproducible, so `/skill-zips` can rebuild a
+release's zips from its tag and compare them byte for byte.
 
 The build stamps the router's `SKILL-BUILD` marker with the source commit
 (`<commit date>-<short sha>`, `-dirty` for uncommitted edits); never edit it by hand. Every build

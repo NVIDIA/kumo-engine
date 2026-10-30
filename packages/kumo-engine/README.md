@@ -114,6 +114,8 @@ kumo.install_skills("claude")  # or "codex", "coco" (Snowflake Cortex Code), "ge
 
 `scope="project"` installs into the current project instead of your home directory. From a shell, run `python -m kumo.engine.skills`.
 
+Without the wheel, download the skill from the GitHub release for your version: `kumo-data-science-generic.zip` (Claude Code, Codex, other agents), `kumo-data-science-coco.zip` (Snowflake Cortex Code) or `kumo-data-science-genie.zip` (Databricks Genie Code). Unzip it into your agent's skills directory.
+
 ## Documentation
 
 - [ADLS connector guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-adls/README.md): setup, authentication, supported reads and exports.

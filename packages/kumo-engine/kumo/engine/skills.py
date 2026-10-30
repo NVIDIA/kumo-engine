@@ -4,8 +4,9 @@
 r"""Install the `kumo-data-science` agent skill that ships with this wheel.
 
 The skill teaches a coding agent to build, train and run Kumo models with
-*this* SDK, so it ships inside the wheel and installs from it; it never comes
-from a separate download that can drift from the installed Kumo::
+*this* SDK, so it ships inside the wheel and installs from it, matching the
+installed Kumo. (Each ``kumo-engine-v*`` GitHub release also carries the same
+packages as ``kumo-data-science-<host>.zip``, for installs without the wheel.)::
 
     import kumo.engine as kumo
     kumo.install_skills()                    # every local agent found, or Genie

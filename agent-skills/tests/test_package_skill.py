@@ -5,6 +5,7 @@ import ast
 import importlib.util
 import re
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -277,3 +278,26 @@ def test_adapter_covers_what_the_core_defers(host: str) -> None:
 def test_every_host_ships_a_runtime(host: str) -> None:
     """The router reads `hosts/<host>/runtime.md` at Step 2."""
     assert any(rel.endswith('/runtime.md') for rel in package_skill.HOSTS[host]['hosts'])
+
+
+def test_archive_zips_each_host_as_its_bundle(tmp_path: Path) -> None:
+    """A download zip is the directory install_skills() installs, at the zip's root."""
+    zips = package_skill.archive(tmp_path / 'zips')
+    assert [z.name for z in zips] == [f'kumo-data-science-{h}.zip' for h in sorted(package_skill.HOSTS)]
+    package_skill.bundle(tmp_path / 'bundle')
+    for host, z in zip(sorted(package_skill.HOSTS), zips):
+        root = tmp_path / 'bundle' / host
+        shipped = sorted(p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file())
+        with zipfile.ZipFile(z) as zf:
+            assert sorted(zf.namelist()) == shipped
+            assert {n.split('/')[0] for n in zf.namelist()} == {'kumo-data-science'}
+            for name in shipped:
+                assert zf.read(name) == (root / name).read_bytes()
+        hosts = {n.split('/')[2] for n in shipped if n.startswith('kumo-data-science/hosts/')}
+        assert len(hosts) == 1, f'{host} zip carries {sorted(hosts)}'
+
+
+def test_archive_is_reproducible(tmp_path: Path) -> None:
+    first = package_skill.archive(tmp_path / 'a')
+    second = package_skill.archive(tmp_path / 'b')
+    assert [z.read_bytes() for z in first] == [z.read_bytes() for z in second]
