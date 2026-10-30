@@ -569,13 +569,16 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
     assert ('orders', 'AMT', 'numerical', None,
             amount['standardized_mean_shift'],
             amount['delta']['null_rate']) in features.rows
-    assert {Tag('kumo.labels_snapshot_id', snapshots.after.id),
-            Scalar('realized/auroc', evaluation.metrics['auroc']),
-            Scalar('realized/ap', evaluation.metrics['ap']),
-            Scalar('realized/labelled_share', evaluation.labelled_fraction),
-            Note('notes', f'Labelled {evaluation.labelled:,} of '
-                 f'{evaluation.rows:,} scored rows with '
-                 f'`{snapshots.after.id}`.')} <= set(evaluated.summaries)
+    labels = snapshots.after.manifest
+    name = (f'snapshot-{labels.created_at[:10]}-'
+            f"{labels.id.partition('@')[2][:6]}")
+    auroc, ap = evaluation.metrics['auroc'], evaluation.metrics['ap']
+    assert evaluated.summaries == (
+        Tag('kumo.labels_snapshot_id', snapshots.after.id),
+        Scalar('realized/auroc', auroc), Scalar('realized/ap', ap),
+        Scalar('realized/labelled_share', 1.0),
+        Note('notes', f'Realized auroc {auroc:.3g} · ap {ap:.3g} · 100 % '
+             f'labelled (60 of 60 scored rows), with labels from {name}.'))
 
 
 def test_drift_summaries_log_the_previous_run_and_explain_gaps():
@@ -646,37 +649,66 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
              'holdout: psi 0.5 · ks 0.25 · wasserstein 0.125.'))
 
 
-def test_evaluation_summaries_name_the_labels_snapshot():
+def test_evaluation_summaries_name_the_labels_snapshot(tmp_path):
     from kumo.engine._manifest import SnapshotManifest
-    from kumo.engine._monitoring import EvaluationResult, track
+    from kumo.engine._monitoring import (
+        EvaluationResult,
+        _evaluation_summaries,
+        track,
+    )
 
     result = EvaluationResult(
-        prediction_id='p', bundle_id='b', snapshot_id='g@2',
+        prediction_id='p', bundle_id='b', snapshot_id='g@023b25a5',
         task_type='binary_classification', anchors=(),
-        metrics={'auroc': 0.75, 'ap': None}, rows=4, labelled=3,
-        labelled_fraction=0.75, matured=False, bundle_matches=True,
+        metrics={'ap': 0.5, 'auroc': 0.75, 'brier': None}, rows=4,
+        labelled=3, labelled_fraction=0.75, matured=False,
+        bundle_matches=True,
         reasons={'metrics': 'a metric is undefined for these labels'})
+    plan = tmp_path / 'resolved-model-plan.json'
+    plan.write_text('{"training_job": {"tune_metric": "auroc"}}')
     tracker = _Tracker()
     track(result, SimpleNamespace(id='p', bundle_id='b', manifest=None),
           SimpleNamespace(tracking=tracker, on_error='raise'),
-          SimpleNamespace(result=None), PREDICTED_AT.to_pydatetime(),
+          SimpleNamespace(result=SimpleNamespace(
+              artifact_paths={'resolved_model_plan': str(plan)})),
+          PREDICTED_AT.to_pydatetime(),
           SimpleNamespace(manifest=SnapshotManifest(
-              id='g@2', location='s3://b/snapshots/g/2')))
+              id='g@023b25a5', location='s3://b/snapshots/g/2',
+              created_at='2024-06-08T10:00:00+00:00')))
 
     record, = tracker.records
     assert record.tags['kumo.monitor'] == 'evaluate'
     assert record.summaries == (
-        Tag('kumo.labels_snapshot_id', 'g@2'),
-        Dataset('g@2', {'connector': 'S3', 'location': 's3://b/snapshots/g/2',
-                        'version': 'g@2', 'version_kind': 'exact'}, {}, {},
-                'labels'),
-        Scalar('realized/auroc', 0.75),
+        Tag('kumo.labels_snapshot_id', 'g@023b25a5'),
+        Dataset('snapshot-2024-06-08-023b25', {
+            'connector': 'S3', 'location': 's3://b/snapshots/g/2',
+            'version': 'g@023b25a5', 'version_kind': 'exact'}, {}, {},
+            'labels'),
+        Scalar('realized/auroc', 0.75), Scalar('realized/ap', 0.5),
         Scalar('realized/labelled_share', 0.75),
-        Note('notes', 'Labelled 3 of 4 scored rows with `g@2`.'),
+        Note('notes', 'Realized auroc 0.75 · ap 0.5 · 75 % labelled (3 of 4 '
+             'scored rows), with labels from snapshot-2024-06-08-023b25.'),
         Note('notes', 'Labels are not mature yet: the label window ends '
              'after the snapshot data.'),
         Note('notes', 'Realized metrics: a metric is undefined for these '
              'labels.'))
+
+    assert _evaluation_summaries(replace(
+        result, metrics={}, labelled=0, labelled_fraction=0.0), None)[1:] == [
+        Scalar('realized/labelled_share', 0.0),
+        Note('notes', 'Labelled 0 of 4 scored rows.'),
+        Note('notes', 'Labels are not mature yet: the label window ends '
+             'after the snapshot data.'),
+        Note('notes', 'Realized metrics: a metric is undefined for these '
+             'labels.')]
+    assert _evaluation_summaries(replace(
+        result, task_type='forecasting', metrics={}, rows=0, labelled=0,
+        labelled_fraction=None, matured=None,
+        reasons={'metrics': 'forecasting metrics are not supported'}), None,
+        scored=2000) == [
+        Tag('kumo.labels_snapshot_id', 'g@023b25a5'),
+        Note('notes', "Realized quality isn't computed for forecasting yet "
+             '(2,000 rows scored).')]
 
 
 def test_a_monitoring_tracking_failure_warns_or_raises(classifier, tmp_path,

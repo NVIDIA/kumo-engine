@@ -478,7 +478,8 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
             Dataset('g@2', {'connector': 'S3', 'location': 's3://b/g/2'}, {},
                     {}, 'labels'),
             Scalar('realized/map@10', 0.5),
-            Note('notes', 'Labelled 3 of 4 scored rows with `g@2`.')))) is None
+            Note('notes', 'Realized map@10 0.5 · 75 % labelled (3 of 4 scored rows), '
+                 'with labels from snapshot-2026-10-30-2.')))) is None
 
     run = client.get_run(predicted.info.run_id)
     assert (run.info.run_id, run.info.status, run.info.end_time) == (
@@ -505,7 +506,9 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
         'Drift vs training: psi 0.03 · vs 2026-10-28-v6-churn: psi 0.01.',
         '**Input changes:** orders: at training 100 · now 104 · change % 4',
         '<!-- /kumo:drift -->',
-        '<!-- kumo:realized -->', 'Labelled 3 of 4 scored rows with `g@2`.',
+        '<!-- kumo:realized -->',
+        'Realized map@10 0.5 · 75 % labelled (3 of 4 scored rows), with '
+        'labels from snapshot-2026-10-30-2.',
         '<!-- /kumo:realized -->', NOTES]))
 
     failure = log_run(later, 'log_monitoring', RunRecord(
