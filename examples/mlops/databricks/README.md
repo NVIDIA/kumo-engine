@@ -64,8 +64,12 @@ settings.
   schema (or a pre-created `<catalog>.<schema>._kumo_staging` volume) for
   staged table writes.
 - `CAN USE` on the SQL warehouse; edit permission on the MLflow experiment.
-- `CREATE MODEL` on the schema and `EXECUTE` on the model; moving an alias
-  needs rights on the model itself.
+- `CREATE MODEL` on the schema. The first fit creates `<model_name>`, and its
+  creator owns it, which covers registering each later version and moving
+  the alias. For a model that already exists, the principal must own it:
+  `CREATE MODEL VERSION` on the model allows new versions, but only the
+  owner can set an alias. A principal that only scores needs `EXECUTE` on
+  the model.
 
 ## Notes
 
