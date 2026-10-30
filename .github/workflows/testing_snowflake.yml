@@ -50,7 +50,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'kumo-ai/kumo' && (contains(matrix.test_dir, 'test/io_utils/fsutil') || contains(matrix.test_dir, 'test/connector') || contains(matrix.test_dir, 'test/rest')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
+      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'NVIDIA/kumo-engine' && (contains(matrix.test_dir, 'test/io_utils/fsutil') || contains(matrix.test_dir, 'test/connector') || contains(matrix.test_dir, 'test/rest')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       GCP_TEST_SERVICE_ACCOUNT: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
       GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT: ${{ vars.GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT }}
