@@ -340,7 +340,7 @@ class MlflowTracking:
         self._experiment_id = run.info.experiment_id
         if self.log_system_metrics and record.tags.get('kumo.kind') == 'fit':
             self._guard.enter_context(
-                _SystemMetrics(self._log_system_metrics))
+                _SystemMetrics(self.log_metrics))
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
         if record.tags.get('kumo.kind') != 'fit':  # a fit logs Datasets
@@ -436,10 +436,6 @@ class MlflowTracking:
             warnings.warn(hint, UserWarning, stacklevel=2)
 
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
-        self._log_metrics(self._parent, metrics, step)
-
-    def _log_system_metrics(self, metrics: Mapping[str, float],
-                            step: int) -> None:
         self._log_metrics(self._parent, metrics, step)
 
     def log_summaries(self, summaries: Sequence[Summary]) -> None:
