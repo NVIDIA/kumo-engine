@@ -4,11 +4,13 @@ The nightly check trains sixteen fresh models on the frozen PR172 `100M`
 profiles. Each of eight tasks runs once with normal answers and once with
 scrambled answers. It reuses the PR runner's model recipes with seed zero.
 
-Two RTX jobs each run eight primary fits. One job also runs the existing
-quickstart and behavior tests, including weighted training, time filters,
-prediction counts, warm starts, and model reuse in a fresh process. Those
-extra fits are counted separately. The host's shared GPU lock prevents
-overlapping model jobs.
+One workflow job runs on one existing RTX host and CI runner, using GPU0.
+It builds the selected wheel, installs it, runs all sixteen cases in order,
+runs the required behavior checks, compares results, and uploads artifacts.
+Behavior checks include the quickstart, weighted training, time filters,
+prediction counts, warm starts, and model reuse in a fresh process. Count
+those extra fits separately. The shared host lock prevents overlapping
+model work. The two retained hosts can supply reference-data collection.
 
 Every primary case requires real CUDA work, the complete training recipe,
 complete finite predictions, repeat and partial predictions, and exact
@@ -33,17 +35,17 @@ Set these repository variables after verifying the existing RTX route:
 
 | Variable | Value |
 | --- | --- |
-| `KUMO_ENGINE_NIGHTLY_RTX_RUNNER` | Existing label that selects the two retained RTX hosts |
+| `KUMO_ENGINE_NIGHTLY_RTX_RUNNER` | Existing runner label for the selected retained RTX host |
 | `KUMO_ENGINE_NIGHTLY_ROOT` | Common absolute root containing `inputs/`, `reference.json`, and the existing shared `gpu-study.lock` |
 | `KUMO_ENGINE_NIGHTLY_INPUT_SHA256` | SHA-256 of `inputs/manifest.json` |
 | `KUMO_ENGINE_NIGHTLY_REFERENCE_SHA256` | SHA-256 of `reference.json` |
 
-Both hosts require the same admitted data and metadata. The input manifest
-pins the frozen 98-package runtime and allowed GPUs. The installer uses a
-fresh Python 3.12 environment, public PyPI, and the exact candidate wheel.
+The selected host requires the admitted data and metadata. The input
+manifest pins the frozen 98-package runtime and allowed GPUs. The installer
+uses a fresh Python 3.12 environment, public PyPI, and the exact candidate wheel.
 It checks installed files against that archive. The workflow retains raw
 results, models, installation receipts, and build identity. Full input data
-and native indexes stay on the hosts.
+and native indexes stay on the selected host.
 
 The previous GitHub GPU run used a managed T4. Successful SSH tests on the
 retained RTX hosts do not establish GitHub dispatch to them. Their route,

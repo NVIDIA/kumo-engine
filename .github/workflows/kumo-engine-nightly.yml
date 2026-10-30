@@ -25,18 +25,28 @@ on:  # yamllint disable-line rule:truthy
 permissions:
   contents: read
 concurrency:
-  group: engine-nightly-${{ github.ref }}
+  group: engine-nightly-rtx
   cancel-in-progress: false
 env:
   NIGHTLY_ROOT: ${{ vars.KUMO_ENGINE_NIGHTLY_ROOT }}
   INPUT_SHA256: ${{ vars.KUMO_ENGINE_NIGHTLY_INPUT_SHA256 }}
   REFERENCE_SHA256: ${{ vars.KUMO_ENGINE_NIGHTLY_REFERENCE_SHA256 }}
 jobs:
-  build:
-    runs-on: ubuntu-22.04
+  nightly:
+    name: kumo-engine-nightly
+    runs-on: ${{ vars.KUMO_ENGINE_NIGHTLY_RTX_RUNNER }}
+    env:
+      CUDA_VISIBLE_DEVICES: '0'
+      CARGO_BUILD_JOBS: '4'
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+      OPENBLAS_NUM_THREADS: '4'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Require the existing RTX route and admitted inputs
         env:
@@ -46,14 +56,38 @@ jobs:
           [[ "$NIGHTLY_ROOT" = /* ]]
           [[ "$INPUT_SHA256" =~ ^[0-9a-f]{64}$ ]]
           [[ "$REFERENCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Check the admitted metadata before installation
+        id: inputs
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['NIGHTLY_ROOT'])
+          manifest = root / 'inputs/manifest.json'
+          reference = root / 'reference.json'
+          for path, key in [(manifest, 'INPUT_SHA256'), (reference, 'REFERENCE_SHA256')]:
+              if hashlib.sha256(path.read_bytes()).hexdigest() != os.environ[key]:
+                  raise SystemExit('Admitted nightly metadata checksum differs')
+          data = json.loads(manifest.read_text())
+          baseline = json.loads(reference.read_text())
+          if (baseline['input_manifest_sha256'] != os.environ['INPUT_SHA256']
+                  or baseline['version'] != '1.0.0' or len(baseline['cases']) != 16):
+              raise SystemExit('Reference input binding or case roster is not admitted')
+          profile = data['candidate_dependencies']
+          resolved = (manifest.parent / profile).resolve()
+          if not resolved.is_relative_to(manifest.parent.resolve()):
+              raise SystemExit('Dependency profile escapes the input root')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write(f'profile={resolved}\nprofile_sha256={data["files"][profile]}\n')
+          PY
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           ref: ${{ inputs.product_ref || github.sha }}
           path: product
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: '3.12'
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
           toolchain: stable
@@ -63,6 +97,10 @@ jobs:
       - name: Build the exact product tree with the existing builder
         run: |
           set -euo pipefail
+          exec 9>"$NIGHTLY_ROOT/gpu-study.lock"
+          flock 9
+          processes="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)"
+          test -z "$processes"
           mkdir -p "$RUNNER_TEMP/nightly-wheel"
           test -z "$(git -C product status --porcelain)"
           git -C product rev-parse HEAD 'HEAD^{tree}' > "$RUNNER_TEMP/nightly-wheel/source.txt"
@@ -87,67 +125,13 @@ jobs:
               version=expected, wheel_sha256=hashlib.sha256(wheel.read_bytes()).hexdigest(),
               harness=os.environ['GITHUB_SHA']), indent=2))
           PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
-        if: always()
-        with:
-          name: nightly-wheel
-          path: ${{ runner.temp }}/nightly-wheel
-          if-no-files-found: error
-          compression-level: 0
-  gpu:
-    needs: build
-    runs-on: ${{ vars.KUMO_ENGINE_NIGHTLY_RTX_RUNNER }}
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [node, other]
-    env:
-      CUDA_VISIBLE_DEVICES: '0'
-      OMP_NUM_THREADS: '4'
-      MKL_NUM_THREADS: '4'
-      OPENBLAS_NUM_THREADS: '4'
-      PYTHONDONTWRITEBYTECODE: '1'
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      SHARD: ${{ matrix.shard }}
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: '3.12'
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
-        with:
-          name: nightly-wheel
-          path: ${{ runner.temp }}/nightly-wheel
-      - name: Check the admitted metadata before installation
-        id: inputs
-        run: |
-          python - <<'PY'
-          import hashlib, json, os
-          from pathlib import Path
-          root = Path(os.environ['NIGHTLY_ROOT'])
-          manifest = root / 'inputs/manifest.json'
-          reference = root / 'reference.json'
-          for path, key in [(manifest, 'INPUT_SHA256'), (reference, 'REFERENCE_SHA256')]:
-              if hashlib.sha256(path.read_bytes()).hexdigest() != os.environ[key]:
-                  raise SystemExit('Admitted nightly metadata checksum differs')
-          data = json.loads(manifest.read_text())
-          profile = data['candidate_dependencies']
-          resolved = (manifest.parent / profile).resolve()
-          if not resolved.is_relative_to(manifest.parent.resolve()):
-              raise SystemExit('Dependency profile escapes the input root')
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
-              stream.write(f'profile={resolved}\nprofile_sha256={data["files"][profile]}\n')
-          PY
       - uses: ./.github/actions/engine-gpu-smoke
         with:
           wheel-path: ${{ runner.temp }}/nightly-wheel/*.whl
           install-only: 'true'
           dependency-profile: ${{ steps.inputs.outputs.profile }}
           dependency-profile-sha256: ${{ steps.inputs.outputs.profile_sha256 }}
-      - name: Run eight primary fits under the existing GPU lock
+      - name: Run sixteen primary fits under the existing GPU lock
         run: |
           set -euo pipefail
           exec 9>"$NIGHTLY_ROOT/gpu-study.lock"
@@ -161,14 +145,12 @@ jobs:
           cp "$RUNNER_TEMP/engine-gpu-smoke/"*.json "$out/setup/"
           cp packages/kumo-engine/scripts/nightly_check.py packages/kumo-engine/test/wheel_gpu_smoke.py "$RUNNER_TEMP/nightly-harness/"
           python="$RUNNER_TEMP/engine-smoke-venv/bin/python"
-          "$python" -I "$RUNNER_TEMP/nightly-harness/nightly_check.py" run --input-root "$NIGHTLY_ROOT/inputs" --input-sha256 "$INPUT_SHA256" --output-dir "$out" --expected-version "$ENGINE_SMOKE_VERSION" --shard "$SHARD" 2>&1 | tee "$RUNNER_TEMP/nightly-run.log"
-          if [[ "$SHARD" = node ]]; then
-            "$python" -I -m pip --isolated install --index-url https://pypi.org/simple --target "$RUNNER_TEMP/nightly-test-tools" pytest pytest-subtests
-            mkdir -p "$RUNNER_TEMP/nightly-tests"
-            cp -R packages/kumo-engine/test "$RUNNER_TEMP/nightly-tests/test"
-            cp packages/kumo-engine/README.md "$RUNNER_TEMP/nightly-tests/README.md"
-            ENGINE_NIGHTLY_PYTEST_TOOLS="$RUNNER_TEMP/nightly-test-tools" "$python" -I "$RUNNER_TEMP/nightly-tests/test/test_nightly_model_reuse.py" --behavior "$out/behavior"
-          fi
+          "$python" -I "$RUNNER_TEMP/nightly-harness/nightly_check.py" run --input-root "$NIGHTLY_ROOT/inputs" --input-sha256 "$INPUT_SHA256" --output-dir "$out" --expected-version "$ENGINE_SMOKE_VERSION" 2>&1 | tee "$RUNNER_TEMP/nightly-run.log"
+          "$python" -I -m pip --isolated install --index-url https://pypi.org/simple --target "$RUNNER_TEMP/nightly-test-tools" pytest pytest-subtests
+          mkdir -p "$RUNNER_TEMP/nightly-tests"
+          cp -R packages/kumo-engine/test "$RUNNER_TEMP/nightly-tests/test"
+          cp packages/kumo-engine/README.md "$RUNNER_TEMP/nightly-tests/README.md"
+          ENGINE_NIGHTLY_PYTEST_TOOLS="$RUNNER_TEMP/nightly-test-tools" "$python" -I "$RUNNER_TEMP/nightly-tests/test/test_nightly_model_reuse.py" --behavior "$out/behavior"
       - name: Retain results and failures without full input indexes
         if: always()
         run: |
@@ -183,7 +165,7 @@ jobs:
           from pathlib import Path
           temporary = Path(os.environ['RUNNER_TEMP'])
           root = temporary / 'nightly-result'
-          with tarfile.open(temporary / f'nightly-{os.environ["SHARD"]}.tar.gz', 'w:gz', dereference=True) as archive:
+          with tarfile.open(temporary / 'nightly-result.tar.gz', 'w:gz', dereference=True) as archive:
               for directory, dirs, names in os.walk(root):
                   directory = Path(directory)
                   dirs[:] = [d for d in dirs if not (directory / d).is_symlink()
@@ -193,49 +175,25 @@ jobs:
                       if path.is_file():
                           archive.add(path, arcname=str(path.relative_to(root)), recursive=False)
           PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
-        if: always()
-        with:
-          name: nightly-${{ matrix.shard }}
-          path: ${{ runner.temp }}/nightly-${{ matrix.shard }}.tar.gz
-          if-no-files-found: error
-          compression-level: 0
-  required:
-    if: always()
-    needs: [build, gpu]
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Require both completed shards
-        env:
-          RESULT: ${{ needs.gpu.result }}
-        run: test "$RESULT" = success
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: '3.12'
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
-        with:
-          pattern: nightly-*
-          path: ${{ runner.temp }}/nightly-artifacts
       - name: Validate the complete candidate comparison
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/nightly-artifacts"
-          python - <<'PY'
+          python3 - <<'PY3'
           import os, tarfile
           from pathlib import Path
-          root = Path(os.environ['RUNNER_TEMP']) / 'nightly-artifacts'
-          for shard in ('node', 'other'):
-              with tarfile.open(root / f'nightly-{shard}/nightly-{shard}.tar.gz') as archive:
-                  archive.extractall(root / shard, filter='data')
-          PY
-          python -I packages/kumo-engine/scripts/nightly_check.py compare --input-root "$root/node/input-metadata" --input-sha256 "$INPUT_SHA256" --results-dir "$root" --reference "$root/node/reference.json" --reference-sha256 "$REFERENCE_SHA256" --output-dir "$RUNNER_TEMP/nightly-summary"
+          root = Path(os.environ['RUNNER_TEMP'])
+          with tarfile.open(root / 'nightly-result.tar.gz') as archive:
+              archive.extractall(root / 'nightly-portable', filter='data')
+          PY3
+          root="$RUNNER_TEMP/nightly-portable"
+          "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I "$RUNNER_TEMP/nightly-harness/nightly_check.py" compare --input-root "$root/input-metadata" --input-sha256 "$INPUT_SHA256" --results-dir "$root" --reference "$root/reference.json" --reference-sha256 "$REFERENCE_SHA256" --output-dir "$RUNNER_TEMP/nightly-summary"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         if: always()
         with:
-          name: nightly-summary
-          path: ${{ runner.temp }}/nightly-summary
+          name: engine-nightly-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/nightly-wheel
+            ${{ runner.temp }}/nightly-result.tar.gz
+            ${{ runner.temp }}/nightly-summary
           if-no-files-found: error
+          compression-level: 0

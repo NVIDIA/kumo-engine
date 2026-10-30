@@ -34,7 +34,6 @@ smoke = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(smoke)
 STAGES = ('train', 'val', 'test')
 PREDICTIONS = ('predict', 'repeat', 'partial', 'reload')
-NODE = ('multiclass', 'regression', 'multilabel', 'multilabel_ranking')
 KEY_FAILURES = ('key_parse_failures', 'key_lookup_failures',
                 'key_membership_failures', 'pk_duplicate_total')
 
@@ -136,10 +135,13 @@ def load_inputs(root, expected):
 
 def check_dependencies(packages, profile):
     normalize = lambda name: name.lower().replace('_', '-').replace('.', '-')
-    if {normalize(k): v
+    if {
+            normalize(k): v
             for k, v in packages.items()
-        } != {normalize(k): v
-              for k, v in profile.items()}:
+    } != {
+            normalize(k): v
+            for k, v in profile.items()
+    }:
         raise ValueError(
             'Installed non-Engine packages differ from the frozen profile')
 
@@ -230,8 +232,8 @@ def load_table(root, files, case):
                 or manifest['fact_pseudo_time'] != dict(
                     path='fact_pseudo_time.bin',
                     format='tt_fact_pseudo_time_v1', node_type='purchases')
-                or manifest['checksums']['fact_pseudo_time_sha256'] !=
-                value['files']['fact_pseudo_time.bin']):
+                or manifest['checksums']['fact_pseudo_time_sha256']
+                != value['files']['fact_pseudo_time.bin']):
             raise ValueError('Static native routing or fact visibility differs')
     elif manifest['version'] != 3:
         raise ValueError('Unexpected frozen native version')
@@ -321,11 +323,11 @@ def stable_trainer(value):
 
 def check_recipe(case, directory):
     config = read(directory / 'trainer_config.json')
-    if (signature(read(directory / 'resolved_model_plan.json')) !=
-            case['resolved_plan_sha256']
-            or signature(read(directory / 'selected-model-plan.json')) !=
-            case['selected_plan_sha256'] or
-            signature(stable_trainer(config)) != case['trainer_config_sha256']
+    if (signature(read(directory / 'resolved_model_plan.json'))
+            != case['resolved_plan_sha256']
+            or signature(read(directory / 'selected-model-plan.json'))
+            != case['selected_plan_sha256'] or signature(
+                stable_trainer(config)) != case['trainer_config_sha256']
             or any(config['refit_cfg'][k] is not False
                    for k in ('refitted_full', 'refitted_trainval'))
             or config['loader_kwargs']['batch_size'] != 64
@@ -561,8 +563,8 @@ def check_feature_schema(runtime, features, schema, *, static=False):
         if ({
                 c['column_name']: (c['dtype'], c['stype'])
                 for c in actual['column_specs']
-        } != expected or actual['time_column'] !=
-            (None if static else table.get('time_col'))):
+        } != expected or actual['time_column']
+                != (None if static else table.get('time_col'))):
             raise ValueError('Fitted source feature types or time roles differ')
     if {
             tuple(e[k] for k in ('src_table', 'fkey', 'dst_table'))
@@ -623,8 +625,8 @@ def audit_link_rows(runtime_path, table, stages, graph_schema, graph_counts,
         observed_options = list(state['pseudo_options'].get(stage, []))
         options = DiskgraphLightningDataModule._pseudo_time_options(
             SimpleNamespace(_task_type=runtime['task']['task_type']), stage)
-        if expected and (expected['pseudo_cutoffs'][stage] !=
-                         options.get('pseudo_seed_time')
+        if expected and (expected['pseudo_cutoffs'][stage]
+                         != options.get('pseudo_seed_time')
                          or options.get('disable_pseudo_time') is not False
                          or stage in ('train', 'val')
                          and options not in observed_options):
@@ -707,15 +709,15 @@ def audit_link_rows(runtime_path, table, stages, graph_schema, graph_counts,
         extension = Path(runtime['stages']['train']['index_path'])
         raw = (extension / 'fact_pseudo_time.bin').read_bytes()
         version, dtype, count = struct.unpack('<IIQ', raw[8:24])
-        if raw[:8] != b'DGPTIME\0' or (version, dtype) != (
-                1, 1) or len(raw) != 24 + count:
+        if raw[:8] != b'DGPTIME\0' or (version,
+                                       dtype) != (1,
+                                                  1) or len(raw) != 24 + count:
             raise ValueError('Consumed static fact sidecar is invalid')
         fact_keys = read_node_column(index, 'purchases', 'purchase_id',
                                      graph_counts['purchases']).to_pylist()
-        if count != len(fact_keys) or any(
-                v > 3
-                for v in raw[24:]) or signature(sorted(zip(
-                    fact_keys, raw[24:]))) != expected['fact_pk_tags_sha256']:
+        if count != len(fact_keys) or any(v > 3 for v in raw[24:]) or signature(
+                sorted(zip(fact_keys,
+                           raw[24:]))) != expected['fact_pk_tags_sha256']:
             raise ValueError(
                 'Consumed static raw fact-key visibility tags differ')
     return result
@@ -992,17 +994,35 @@ def run_case(root, manifest, case, graph, snapshot, output):
 
 def check_results(rows):
     wanted = {(task, arm, 0)
-              for task in smoke.TASKS for arm in ('normal', 'control')}
+              for task in smoke.TASKS
+              for arm in ('normal', 'control')}
     if (len(rows) != 16 or {(r['task'], r['arm'], r['seed'])
                             for r in rows} != wanted
             or len({r['fit_id']
                     for r in rows}) != 16 or
-            any(r['status'] != 'MEASURED' or type(r['physical_fits']) is not int
+            any(r['status'] != 'MEASURED' or type(r['seed']) is not int
+                or type(r['physical_fits']) is not int
                 or r['physical_fits'] != 1 or len(r['checkpoint_sha256']) != 64
                 or not all(r['prediction_batches'].get(s, 0) > 0
                            for s in PREDICTIONS) for r in rows)):
         raise ValueError(
             'Comparison needs sixteen complete unique one-fit workflows')
+
+
+def load_report(root, expected):
+    paths = list(Path(root).rglob('nightly-result.json'))
+    if len(paths) != 1:
+        raise ValueError('Exactly one complete sixteen-case report is required')
+    path = paths[0]
+    report = read(path)
+    if (report['format'] != 'kumo-engine-nightly-result-v1' or 'shard' in report
+            or report['status'] != 'MEASURED'
+            or report['input_manifest_sha256'] != expected
+            or report['expected_runs'] != 16 or report['completed_runs'] != 16):
+        raise ValueError(
+            'The single report must complete all sixteen frozen cases')
+    check_results(report['runs'])
+    return path, report
 
 
 def run(args):
@@ -1021,17 +1041,13 @@ def run(args):
     runtime = verify_runtime(args.expected_version, read(root / profile),
                              manifest['allowed_gpu_uuids'])
     check_install(output, runtime)
-    tasks = NODE if args.shard == 'node' else tuple(t for t in smoke.TASKS
-                                                    if t not in NODE)
     report = dict(format='kumo-engine-nightly-result-v1', status='RUNNING',
-                  shard=args.shard, input_manifest_sha256=args.input_sha256,
-                  runtime=runtime, expected_runs=8, runs=[],
-                  helper_sha256=digest(HELPER), runner_sha256=digest(__file__))
+                  input_manifest_sha256=args.input_sha256, runtime=runtime,
+                  expected_runs=16, runs=[], helper_sha256=digest(HELPER),
+                  runner_sha256=digest(__file__))
     graphs = {}
     try:
         for case in manifest['cases']:
-            if case['task'] not in tasks:
-                continue
             key = case['graph']
             if key not in graphs:
                 import kumo.engine as kumo
@@ -1046,9 +1062,7 @@ def run(args):
                            output / (case['task'] + '-' + case['arm']))
             report['runs'].append(row)
             save(output / 'nightly-result.json', report)
-        if len(report['runs']) != 8 or sum(r['physical_fits']
-                                           for r in report['runs']) != 8:
-            raise ValueError('Shard did not complete its eight primary fits')
+        check_results(report['runs'])
         load_inputs(root, args.input_sha256)
         report['status'] = 'MEASURED'
     except BaseException as error:
@@ -1157,100 +1171,75 @@ def compare(args):
             or reference['version'] != '1.0.0' or reference['wheel_sha256'] !=
             '1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e'):
         raise ValueError('Approved reference or input-manifest binding differs')
-    paths = list(args.results_dir.rglob('nightly-result.json'))
-    reports = [read(p) for p in paths]
-    if (len(reports) != 2 or {r['shard']
-                              for r in reports} != {'node', 'other'}
-            or any(r['status'] != 'MEASURED'
-                   or r['input_manifest_sha256'] != args.input_sha256
-                   for r in reports)):
-        raise ValueError(
-            'Both complete shards and the same frozen inputs are required')
-    rows = [row for report in reports for row in report['runs']]
-    check_results(rows)
-    if {r['runner_sha256']
-            for r in reports} != {digest(__file__)
-                                  } or {r['helper_sha256']
-                                        for r in reports} != {digest(HELPER)}:
-        raise ValueError('Candidate shards used different source helpers')
+    path, report = load_report(args.results_dir, args.input_sha256)
+    rows = report['runs']
+    if report['runner_sha256'] != digest(
+            __file__) or report['helper_sha256'] != digest(HELPER):
+        raise ValueError('Candidate report used different source helpers')
     expected = read(
         safe_file(args.input_root, manifest['candidate_dependencies'],
                   manifest['files']))
     admitted = {(v['task'], v['arm']): v for v in manifest['cases']}
-    builds = []
-    for path, report in zip(paths, reports, strict=True):
-        check_dependencies(report['runtime']['dependencies'], expected)
-        builds.append(check_install(path.parent, report['runtime']))
-        if digest(path.parent / 'reference.json') != args.reference_sha256:
+    check_dependencies(report['runtime']['dependencies'], expected)
+    check_install(path.parent, report['runtime'])
+    if digest(path.parent / 'reference.json') != args.reference_sha256:
+        raise ValueError('Run did not retain the exact approved reference copy')
+    if digest(path.parent /
+              'input-metadata/manifest.json') != args.input_sha256:
+        raise ValueError('Run did not retain the exact admitted input manifest')
+    if report['runtime']['gpu_uuid'].removeprefix('GPU-') not in {
+            v.removeprefix('GPU-')
+            for v in manifest['allowed_gpu_uuids']
+    }:
+        raise ValueError('Run used an unapproved GPU identity')
+    for row in report['runs']:
+        directory = path.parent / (row['task'] + '-' + row['arm'])
+        if read(directory / 'result.json') != row:
             raise ValueError(
-                'Shard did not retain the exact approved reference copy')
-        if digest(path.parent /
-                  'input-metadata/manifest.json') != args.input_sha256:
+                'Aggregate case row differs from original result bytes')
+        required = [
+            row['checkpoint_artifact'],
+            'requested-plan.json',
+            'generation-plan.json',
+            'selected-model-plan.json',
+            'resolved_model_plan.json',
+            'trainer_config.json',
+            'feature_schema.json',
+            'runtime_manifest.json',
+            'metadata.json',
+            'encoders.json',
+            'target_encoder.json',
+            'core-fits.json',
+        ]
+        for stage in PREDICTIONS:
+            required.extend(row['predictions'].get(stage, {}).get('files', []))
+            required.append(f'prediction-inputs/{stage}.parquet')
+            required.append(stage + (
+                '-ranked.json' if row['task'].endswith('link') else '.parquet'))
+        verify_artifacts(directory, row['artifacts'], required=required)
+        check_training(row['work'], row['selected_checkpoint_steps'])
+        case = admitted[(row['task'], row['arm'])]
+        if row['input_signature'] != input_signature(manifest, case):
             raise ValueError(
-                'Shard did not retain the exact admitted input manifest')
-        if report['runtime']['gpu_uuid'].removeprefix('GPU-') not in {
-                v.removeprefix('GPU-')
-                for v in manifest['allowed_gpu_uuids']
-        }:
-            raise ValueError('Shard used an unapproved GPU identity')
-        for row in report['runs']:
-            directory = path.parent / (row['task'] + '-' + row['arm'])
-            if read(directory / 'result.json') != row:
+                'Candidate input signatures differ from the admitted manifest')
+        check_recipe(case, directory)
+        if row['artifacts'].get(
+                row['checkpoint_artifact']) != row['checkpoint_sha256']:
+            raise ValueError(
+                'Published checkpoint artifact and restored checkpoint identity differ'
+            )
+        for key in ('core_fit_ledger', 'fit_ledger'):
+            ledger = row['work'].get(key, [])
+            if len(ledger) != 1 or ledger[0]['status'] != 'PASS' or ledger[0][
+                    'steps'] <= 0 or ledger[0]['cuda_batches'] <= 0:
                 raise ValueError(
-                    'Aggregate case row differs from original result bytes')
-            required = [
-                row['checkpoint_artifact'],
-                'requested-plan.json',
-                'generation-plan.json',
-                'selected-model-plan.json',
-                'resolved_model_plan.json',
-                'trainer_config.json',
-                'feature_schema.json',
-                'runtime_manifest.json',
-                'metadata.json',
-                'encoders.json',
-                'target_encoder.json',
-                'core-fits.json',
-            ]
-            for stage in PREDICTIONS:
-                required.extend(row['predictions'].get(stage,
-                                                       {}).get('files', []))
-                required.append(f'prediction-inputs/{stage}.parquet')
-                required.append(stage + ('-ranked.json' if row['task'].
-                                         endswith('link') else '.parquet'))
-            verify_artifacts(directory, row['artifacts'], required=required)
-            check_training(row['work'], row['selected_checkpoint_steps'])
-            case = admitted[(row['task'], row['arm'])]
-            if row['input_signature'] != input_signature(manifest, case):
-                raise ValueError(
-                    'Candidate input signatures differ from the admitted manifest'
-                )
-            check_recipe(case, directory)
-            if row['artifacts'].get(
-                    row['checkpoint_artifact']) != row['checkpoint_sha256']:
-                raise ValueError(
-                    'Published checkpoint artifact and restored checkpoint identity differ'
-                )
-            for key in ('core_fit_ledger', 'fit_ledger'):
-                ledger = row['work'].get(key, [])
-                if len(ledger) != 1 or ledger[0]['status'] != 'PASS' or ledger[
-                        0]['steps'] <= 0 or ledger[0]['cuda_batches'] <= 0:
-                    raise ValueError(
-                        'Core or Lightning physical-fit ledger is incomplete')
-            if not all(row['predictions'].get(s, {}).get('files')
-                       for s in PREDICTIONS):
-                raise ValueError(
-                    'Complete raw prediction artifacts are missing')
-            if row['work']['restored_tensors'] <= 0 or row['work'][
-                    'reload_checks'] < 1:
-                raise ValueError('Restored checkpoint state proof is missing')
-    if builds[0] != builds[1]:
-        raise ValueError('Shards used different selected product builds')
-    runtime_keys = ('version', 'wheel_sha256', 'dependencies', 'gpu',
-                    'gpu_memory_bytes', 'torch', 'cuda', 'threads')
-    if any(reports[0]['runtime'][k] != reports[1]['runtime'][k]
-           for k in runtime_keys):
-        raise ValueError('Candidate shard hardware or runtime profiles differ')
+                    'Core or Lightning physical-fit ledger is incomplete')
+        if not all(row['predictions'].get(s, {}).get('files')
+                   for s in PREDICTIONS):
+            raise ValueError('Complete raw prediction artifacts are missing')
+        if row['work']['restored_tensors'] <= 0 or row['work'][
+                'reload_checks'] < 1:
+            raise ValueError('Restored checkpoint state proof is missing')
     comparisons = []
     references = {(v['task'], v['arm']): v for v in reference['cases']}
     if set(references) != {(r['task'], r['arm'])
@@ -1300,7 +1289,6 @@ def main(argv=None):
         p.add_argument('--output-dir', type=Path, required=True)
         if name == 'run':
             p.add_argument('--expected-version', required=True)
-            p.add_argument('--shard', choices=('node', 'other'), required=True)
         else:
             p.add_argument('--results-dir', type=Path, required=True)
             p.add_argument('--reference', type=Path, required=True)
