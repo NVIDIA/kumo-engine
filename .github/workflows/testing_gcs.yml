@@ -8,7 +8,6 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - main
-    paths-ignore: ["ui/**", "tools/**"]
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -26,16 +25,6 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
-
-env:
-  AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
-  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-  GITHUB_REF: ${{secrets.GITHUB_REF}}
-  GITHUB_API_URL: ${{secrets.GITHUB_API_URL}}
-  GITHUB_REPOSITORY: ${{secrets.GITHUB_REPOSITORY}}
-  GITHUB_REPOSITORY_OWNER: ${{secrets.GITHUB_REPOSITORY_OWNER}}
-  GITHUB_RUN_ID: ${{secrets.GITHUB_RUN_ID}}
 
 jobs:
   pytest-gcs:
@@ -43,25 +32,38 @@ jobs:
       name: gha-kumo-workflow-tests
       # This job uses environment-scoped OIDC; it does not deploy an application.
       deployment: false
-    name: gcs-e2e-tests
+    # Keep the three existing e2e check labels when adding capability fields.
+    name: gcs-e2e-tests (${{ matrix.test_dir }})
     runs-on: ubuntu-24.04
-    continue-on-error: true
     permissions:
       contents: read
       id-token: write
     env:
-      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'kumo-ai/kumo' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       GCP_TEST_SERVICE_ACCOUNT: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
+      GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT: ${{ matrix.restricted_identities && vars.GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT || '' }}
+      GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT: ${{ matrix.restricted_identities && vars.GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT || '' }}
 
     strategy:
       fail-fast: false
       matrix:
-        test_dir: [
-          test/rest/integ/test_gcs_e2e.py,
-          test/rest/integ/test_bigquery_diskgraph_e2e.py,
-          test/rest/integ/test_bigquery_ingestion_diskgraph_e2e.py,
-        ]
+        include:
+          - test_dir: test/rest/integ/test_gcs_e2e.py
+            profile: gcp
+            aws: false
+            restricted_identities: false
+          - test_dir: test/rest/integ/test_bigquery_diskgraph_e2e.py
+            profile: gcp-aws
+            aws: true
+            restricted_identities: false
+          - test_dir: test/rest/integ/test_bigquery_ingestion_diskgraph_e2e.py
+            profile: gcp
+            aws: false
+            restricted_identities: false
+          - test_dir: test/rest/integ/test_gcs_public_api_e2e.py
+            profile: gcp
+            aws: false
+            restricted_identities: false
 
     steps:
       - name: Checkout repository and submodules
@@ -70,80 +72,56 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 40
 
-      - name: Get GCS related changes
-        id: gcs-files-changed
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
-        with:
-          files: |
-            .github/actions/setup/action.yml
-            .github/workflows/testing_gcs.yml
-            kumo/connector/**
-            kumo/testing/gcs.py
-            io_utils/**
-            rest/**
-            setup.py
-            test/rest/integ/test_gcs_e2e.py
-            test/rest/integ/test_bigquery_diskgraph_e2e.py
-            test/rest/integ/test_bigquery_ingestion_diskgraph_e2e.py
-            test/rest/integ/test_cases/test_bigquery_e2e_fixtures.json
-            rest/devserver/configs/diskgraph-test.json
-            kumo/testing/bigquery.py
-            kumo/testing/rest.py
+      - name: Determine test impact
+        id: test-impact
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          # Missing history and manual runs execute conservatively.
+          if [ -z "$BASE_SHA" ] || ! git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" -- > "$RUNNER_TEMP/test-profile-changes"; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          else
+            python3 -c 'import sys; from tools.ci_test_profiles import integration_required; paths = [p for p in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").split("\0") if p]; print("run=" + str(integration_required(paths)).lower())' < "$RUNNER_TEMP/test-profile-changes" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Set up Python
-        if: steps.gcs-files-changed.outputs.any_changed == 'true'
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-        with:
-          python-version: "3.14"
-          activate-environment: true
+      # Package/wheel bootstrap uses public indexes and GitHub cache/artifacts.
+      # Cloud credentials are acquired only after dependency installation.
+      - name: Set up packages
+        if: steps.test-impact.outputs.run == 'true'
+        uses: ./.github/actions/setup
 
-      - name: Configure AWS credentials
-        if: steps.gcs-files-changed.outputs.any_changed == 'true'
+      - name: Configure AWS credentials for the S3 dataplane
+        if: steps.test-impact.outputs.run == 'true' && matrix.aws
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
         with:
           role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
           aws-region: us-west-2
 
-      - name: Set up packages
-        if: steps.gcs-files-changed.outputs.any_changed == 'true' && !contains(matrix.test_dir, 'diskgraph')
-        uses: ./.github/actions/setup
-        with:
-          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
-
-      - name: Set up packages (with diskgraph)
-        if: steps.gcs-files-changed.outputs.any_changed == 'true' && contains(matrix.test_dir, 'diskgraph')
-        uses: ./.github/actions/setup
-        with:
-          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
-
       - name: Authenticate to Google Cloud with GitHub OIDC
-        if: steps.gcs-files-changed.outputs.any_changed == 'true' && env.KUMO_RUN_GCP_TESTS == '1'
+        if: steps.test-impact.outputs.run == 'true'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
 
-      - name: Run E2E tests
-        if: steps.gcs-files-changed.outputs.any_changed == 'true'
+      - name: Run GCP profile tests
+        if: steps.test-impact.outputs.run == 'true'
         timeout-minutes: 60
         run: |
           set -o pipefail
           export SPARK_LOCAL_IP="127.0.0.1"
           source ./tools/ci_pytest_log_controls.sh
           configure_pytest_ci_output
-          GLOG_logtostdout=1 python -X faulthandler -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=1800 --timeout-method=thread ${{ matrix.test_dir }}
+          python -X faulthandler -m tools.ci_test_profiles run "${{ matrix.profile }}" "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=1800 --timeout-method=thread ${{ matrix.test_dir }}
         env:
-          # GCS-specific environment variables
-          IS_GCP_DEPLOY: "1"
           GCS_TEST_BUCKET: 'kumo-test-bucket'
           GCP_STORAGE_TRANSFER_BUCKET: 'kumo-test-bucket'
-          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: "true"
-          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
-          # Standard test environment variables
-          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          AWS_DEFAULT_REGION: "us-west-2"
+          AWS_TEST_ROLE_ARN: ${{ matrix.aws && 'arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3' || '' }}
+          AWS_DEFAULT_REGION: ${{ matrix.aws && 'us-west-2' || '' }}
+          FULL_TEST: ${{ (github.event_name == 'push' || inputs.full_test == true) && '1' || '0' }}
+          GLOG_logtostdout: '1'
           DEPLOY_STAGE: "test"
           TEMPORAL_SERVER: "localhost"
           DATA_SPARK_MEM: "1g"

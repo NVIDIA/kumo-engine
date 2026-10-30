@@ -8,7 +8,6 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - main
-    paths-ignore: ["ui/**", "tools/**"]
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -26,7 +25,6 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
@@ -43,18 +41,14 @@ jobs:
       name: gha-kumo-workflow-tests
       # This job uses environment-scoped OIDC; it does not deploy an application.
       deployment: false
-    name: all-snowflake-tests
+    name: all-snowflake-tests (${{ matrix.test_name }})
     runs-on: ubuntu-24.04
     continue-on-error: true
     permissions:
       contents: read
       id-token: write
     env:
-      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'kumo-ai/kumo' && (contains(matrix.test_dir, 'test/io_utils/fsutil') || contains(matrix.test_dir, 'test/connector') || contains(matrix.test_dir, 'test/rest')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      GCP_TEST_SERVICE_ACCOUNT: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
-      GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT: ${{ vars.GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT }}
-      GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT: ${{ vars.GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT }}
+      KUMO_RUN_GCP_TESTS: '0'
 
     strategy:
       matrix:
@@ -72,78 +66,20 @@ jobs:
         include:
           - test_name: 'connector (test/connector)'
             test_dir: 'test/connector'
-            files_changed: |
-              .github/actions/setup/action.yml
-              .github/workflows/testing_snowflake.yml
-              kumo/connector/**
-              setup.py
-              test/connector/**
           - test_name: 'rest (test/rest)'
             test_dir: 'test/rest --ignore=test/rest/integ/test_snowflake_diskgraph_e2e.py --ignore=test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py'
-            files_changed: |
-              .github/actions/setup/action.yml
-              .github/workflows/testing_snowflake.yml
-              setup.py
-              test/rest/**
           - test_name: 'fsutil (test/io_utils/fsutil)'
             test_dir: 'test/io_utils/fsutil'
-            files_changed: |
-              .github/actions/setup/action.yml
-              .github/workflows/testing_snowflake.yml
-              io_utils/**
-              setup.py
-              test/io_utils/fsutil/**
           - test_name: 'backend - data (test/data/ test/graph/'
             test_dir: 'test/data/ test/graph/**snowflake**'
-            files_changed: |
-              .github/actions/setup/action.yml
-              .github/workflows/testing_snowflake.yml
-              kumo/data/**
-              kumo/stats/**
-              io_utils/**
-              setup.py
-              test/data/
-              test/graph/**snowflake**
           - test_name: 'backend - pquery (test/pquery/bp_generator)'
             test_dir: 'test/pquery/test_pql_batch_pred_generator.py'
-            files_changed: |
-              .github/actions/setup/action.yml
-              .github/workflows/testing_snowflake.yml
-              kumo/data/**
-              kumo/pquery/**
-              io_utils/**
-              kumo/data/data_processing_backend/**
-              setup.py
-              test/pquery/test_pql_batch_pred_generator.py
           - test_name: 'backend - pquery (test/pquery/train_table_generator)'
             test_dir: 'test/pquery/train_table_generator'
-            files_changed: |
-              .github/actions/setup/action.yml
-              .github/workflows/testing_snowflake.yml
-              kumo/data/**
-              kumo/pquery/**
-              io_utils/**
-              setup.py
-              test/pquery/train_table_generator/**
           - test_name: 'snowflake diskgraph e2e (test/rest/integ/test_snowflake_diskgraph_e2e.py)'
             test_dir: "test/rest/integ/test_snowflake_diskgraph_e2e.py"
-            files_changed: |
-              .github/actions/setup/action.yml
-              .github/workflows/testing_snowflake.yml
-              kumo/connector/**
-              rest/backends/data_backend/activities/**
-              test/rest/integ/test_snowflake_diskgraph_e2e.py
-              test/rest/integ/test_cases/test_snowflake_e2e_fixtures.json
-              rest/devserver/configs/diskgraph-test.json
           - test_name: 'snowflake ingestion diskgraph e2e (test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py)'
             test_dir: "test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py"
-            files_changed: |
-              .github/actions/setup/action.yml
-              .github/workflows/testing_snowflake.yml
-              kumo/connector/**
-              rest/backends/data_backend/activities/**
-              test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py
-              rest/devserver/configs/diskgraph-test.json
 
 
     steps:
@@ -153,72 +89,68 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 40
 
-      - name: Get any data backend related changes
-        id: data-backend-files-changed
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
-        with:
-          files: |
-            ${{ matrix.files_changed }}
+      - name: Determine test impact
+        id: test-impact
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          # Missing history and manual runs execute conservatively.
+          if [ -z "$BASE_SHA" ] || ! git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" -- > "$RUNNER_TEMP/test-profile-changes"; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          else
+            python3 -c 'import sys; from tools.ci_test_profiles import integration_required; paths = [p for p in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").split("\0") if p]; print("run=" + str(integration_required(paths)).lower())' < "$RUNNER_TEMP/test-profile-changes" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Configure AWS credentials
-        if: steps.data-backend-files-changed.outputs.any_changed == 'true' && steps.only-ui-files-changed.outputs.only_changed != 'true' && steps.only-rest-files-changed.outputs.only_changed != 'true'
+        if: steps.test-impact.outputs.run == 'true'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
         with:
           role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
           aws-region: us-west-2
 
       - name: Set up packages
-        if: steps.data-backend-files-changed.outputs.any_changed == 'true' && !contains(matrix.test_dir, 'diskgraph') && steps.only-ui-files-changed.outputs.only_changed != 'true' && steps.only-rest-files-changed.outputs.only_changed != 'true'
+        if: steps.test-impact.outputs.run == 'true' && !contains(matrix.test_dir, 'diskgraph')
         uses: ./.github/actions/setup
         with:
           github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
 
       - name: Set up packages (with diskgraph)
-        if: steps.data-backend-files-changed.outputs.any_changed == 'true' && contains(matrix.test_dir, 'diskgraph') && steps.only-ui-files-changed.outputs.only_changed != 'true' && steps.only-rest-files-changed.outputs.only_changed != 'true'
+        if: steps.test-impact.outputs.run == 'true' && contains(matrix.test_dir, 'diskgraph')
         uses: ./.github/actions/setup
         with:
           github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
-
-      - name: Authenticate to Google Cloud with GitHub OIDC
-        if: steps.data-backend-files-changed.outputs.any_changed == 'true' && steps.only-ui-files-changed.outputs.only_changed != 'true' && steps.only-rest-files-changed.outputs.only_changed != 'true' && env.KUMO_RUN_GCP_TESTS == '1'
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3
-        with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
 
       # NOTE here we use coverage.py instead of pytest-cov to obtain JSON
       # outputs that are easier to parse and manage (pytest-cov/455).
       # coverage.py also has additional nice features that may be useful in the
       # future for better coverage reports.
       - name: Run minimal test suite
-        if: steps.data-backend-files-changed.outputs.any_changed == 'true' && github.event_name != 'push' && inputs.full_test != true && steps.only-ui-files-changed.outputs.only_changed != 'true' && steps.only-rest-files-changed.outputs.only_changed != 'true'
+        if: steps.test-impact.outputs.run == 'true' && github.event_name != 'push' && inputs.full_test != true
         timeout-minutes: 120
         run: |
           set -o pipefail
           export SPARK_LOCAL_IP="127.0.0.1"
           source ./tools/ci_pytest_log_controls.sh
           configure_pytest_ci_output
-          GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=30 --runsnowflake ${{ matrix.test_dir }}
+          GLOG_logtostdout=1 python -m coverage run -m pytest -p tools.pytest_test_profiles --test-profile snowflake "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=30 --runsnowflake ${{ matrix.test_dir }}
         env:
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
-          GCS_TEST_BUCKET: 'kumo-test-bucket'
-          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
+          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: 'false'
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Run full test suite
-        if: steps.data-backend-files-changed.outputs.any_changed == 'true' && (github.event_name == 'push' || inputs.full_test == true) && steps.only-ui-files-changed.outputs.only_changed != 'true' && steps.only-rest-files-changed.outputs.only_changed != 'true'
+        if: steps.test-impact.outputs.run == 'true' && (github.event_name == 'push' || inputs.full_test == true)
         timeout-minutes: 120
         run: |
           set -o pipefail
           export SPARK_LOCAL_IP="127.0.0.1"
           source ./tools/ci_pytest_log_controls.sh
           configure_pytest_ci_output
-          FULL_TEST=1 GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=30 --runsnowflake ${{ matrix.test_dir }}
+          FULL_TEST=1 GLOG_logtostdout=1 python -m coverage run -m pytest -p tools.pytest_test_profiles --test-profile snowflake "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=30 --runsnowflake ${{ matrix.test_dir }}
         env:
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
-          GCS_TEST_BUCKET: 'kumo-test-bucket'
-          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
+          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: 'false'
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}

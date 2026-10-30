@@ -8,7 +8,6 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - main
-    paths-ignore: ["ui/**", "tools/**"]
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -41,7 +40,6 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
@@ -76,6 +74,7 @@ jobs:
     uses: ./.github/workflows/_diskgraph-wheel.yml
 
   pytest:
+    name: pytest (${{ matrix.test_dir }})
     needs: [diskgraph-wheel]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
@@ -90,13 +89,9 @@ jobs:
       id-token: write
     env:
       KUMO_RUN_ADLS_TESTS: ${{ github.repository == 'kumo-ai/kumo' && contains(matrix.test_dir, 'test/io_utils/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
-      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'kumo-ai/kumo' && (contains(matrix.test_dir, 'test/io_utils/') || contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
+      KUMO_RUN_GCP_TESTS: '0'
       AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
       AZURE_CONTAINER_NAME: ${{ vars.AZURE_CONTAINER_NAME }}
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      GCP_TEST_SERVICE_ACCOUNT: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
-      GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT: ${{ vars.GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT }}
-      GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT: ${{ vars.GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT }}
 
     strategy:
       fail-fast: false
@@ -144,7 +139,7 @@ jobs:
           "test/docker",
           "test/deploy/test_cloud_storage_preflight.py",
           "test/rest/integ/test_data_variety/test_table_lifecycle.py",
-          # GCS e2e tests moved to testing_gcs.yml (requires IS_GCP_DEPLOY=1)
+          # The profile plugin routes live GCP cases to testing_gcs.yml.
           "--splits 2 --group 1 test/rest/test_*.py",
           "--splits 2 --group 2 test/rest/test_*.py",
           "-k '[local]' test/rest/integ/test_diskgraph_e2e.py",
@@ -159,7 +154,7 @@ jobs:
 
     outputs:
       # Push built coverage report to gh-pages only when pytest is triggered on main.
-      push-gh-pages: ${{ steps.non-pytest-changes.outputs.only_changed != 'true' }}
+      push-gh-pages: ${{ steps.test-impact.outputs.run == 'true' }}
 
     steps:
       - name: Checkout repository and submodules
@@ -168,41 +163,35 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 40
 
+      - name: Determine test impact
+        id: test-impact
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          # Missing history and manual runs execute conservatively.
+          if [ -z "$BASE_SHA" ] || ! git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" -- > "$RUNNER_TEMP/test-profile-changes"; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          else
+            python3 -c 'import sys; from tools.ci_test_profiles import integration_required; paths = [p for p in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").split("\0") if p]; print("run=" + str(integration_required(paths)).lower())' < "$RUNNER_TEMP/test-profile-changes" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Python
+        if: env.FORCE_RUN_TESTS == 'true' || steps.test-impact.outputs.run == 'true'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           python-version: "3.14"
           activate-environment: true
 
-      # This enables us to skip the minimal python tests.
-      # Note, it's not possible use the standard `on.pull_request` method to
-      # do this, as we need to mark the overall workflow as success to satisfy
-      # the main branch protection rule, and this does not happen if we skip
-      # the entire workflow
-      #
-      # uv.lock is deliberately NOT in this list: `uv lock --check` (the
-      # uv_lock job) only proves the lock's metadata is fresh, not that the
-      # resolved versions actually install or import cleanly. A lock-only
-      # dependency bump must still run the real install + test suite.
-      - name: Check for only non pytest required file changes
-        id: non-pytest-changes
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
-        with:
-          files: |
-            ui/**
-            CHANGELOG.md
-            tools/**
-            benchmark/**
-
       - name: Configure AWS credentials
-        if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
+        if: env.FORCE_RUN_TESTS == 'true' || steps.test-impact.outputs.run == 'true'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
         with:
           role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
           aws-region: us-west-2
 
       - name: Set up packages
-        if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
+        if: env.FORCE_RUN_TESTS == 'true' || steps.test-impact.outputs.run == 'true'
         uses: ./.github/actions/setup
         with:
           github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
@@ -210,22 +199,15 @@ jobs:
           install-graphviz: ${{ matrix.test_dir == 'test/graph/' }}
 
       - name: Log in to Azure with GitHub OIDC
-        if: (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true') && env.KUMO_RUN_ADLS_TESTS == '1'
+        if: (env.FORCE_RUN_TESTS == 'true' || steps.test-impact.outputs.run == 'true') && env.KUMO_RUN_ADLS_TESTS == '1'
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43  # v3.0.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Authenticate to Google Cloud with GitHub OIDC
-        if: (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true') && env.KUMO_RUN_GCP_TESTS == '1'
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3
-        with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
-
       - name: Set up coverage artifact name
+        if: env.FORCE_RUN_TESTS == 'true' || steps.test-impact.outputs.run == 'true'
         run: |
           # This name must avoid using special chars and must be unique per:
           # run id (to collect coverage results in the subsequent job)
@@ -233,6 +215,7 @@ jobs:
           echo "ARTIFACT_NAME_SAFE=.coverage-${{ github.run_id }}-$(echo -n ${{ matrix.test_dir }} | sha256sum | awk '{print $1}')" >> $GITHUB_ENV
 
       - name: Set up flake diagnostics
+        if: env.FORCE_RUN_TESTS == 'true' || steps.test-impact.outputs.run == 'true'
         run: |
           mkdir -p "$ARTIFACTS_DIR"
           # Ubuntu runners default to kernel.yama.ptrace_scope=1, which
@@ -245,7 +228,7 @@ jobs:
           uv pip install py-spy || true
 
       - name: Run minimal test suite
-        if: env.RUN_FULL_TEST != 'true' && (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true')
+        if: env.RUN_FULL_TEST != 'true' && (env.FORCE_RUN_TESTS == 'true' || steps.test-impact.outputs.run == 'true')
         timeout-minutes: 60
         run: |
           set -o pipefail
@@ -258,7 +241,7 @@ jobs:
           # exceeds the per-group duration target (e.g.
           # test_db_file_storage::test_compression at ~511s in
           # test/rest/test_*.py). No-op when --splits is not in matrix.test_dir.
-          GLOG_logtostdout=1 python -X faulthandler -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=1800 --timeout-method=signal --splitting-algorithm least_duration ${{ env.STORE_DURATIONS == 'true' && '--store-durations --durations-path=.test_durations' || '' }} ${{ matrix.test_dir }}
+          GLOG_logtostdout=1 python -X faulthandler -m coverage run -m pytest -p tools.pytest_test_profiles --test-profile general "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=1800 --timeout-method=signal --splitting-algorithm least_duration ${{ env.STORE_DURATIONS == 'true' && '--store-durations --durations-path=.test_durations' || '' }} ${{ matrix.test_dir }}
           move_coverage_artifact
         # Mirror local-test-relevant additions in setup.cfg [tool:pytest] env.
         env:
@@ -267,8 +250,7 @@ jobs:
           KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS: "0"
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          GCS_TEST_BUCKET: 'kumo-test-bucket'
-          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
+          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: 'false'
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
           TEMPORAL_SERVER: "localhost"
@@ -281,7 +263,7 @@ jobs:
           DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'test/rest/integ/test_diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Run full test suite
-        if: env.RUN_FULL_TEST == 'true' && steps.non-pytest-changes.outputs.only_changed != 'true'
+        if: env.RUN_FULL_TEST == 'true' && (env.FORCE_RUN_TESTS == 'true' || steps.test-impact.outputs.run == 'true')
         timeout-minutes: 90
         run: |
           set -o pipefail
@@ -291,7 +273,7 @@ jobs:
           # --timeout=4500 fires below the 90-min step cap so pytest-timeout
           # gets a chance to run; --timeout-method=signal so the on-failure
           # flake-diagnostics hook runs before the process exits.
-          FULL_TEST=1 GLOG_logtostdout=1 python -X faulthandler -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=4500 --timeout-method=signal --splitting-algorithm least_duration ${{ matrix.test_dir }}
+          FULL_TEST=1 GLOG_logtostdout=1 python -X faulthandler -m coverage run -m pytest -p tools.pytest_test_profiles --test-profile general "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=4500 --timeout-method=signal --splitting-algorithm least_duration ${{ matrix.test_dir }}
           move_coverage_artifact
         env:
           # Set to "1" in a PR branch to re-enable io_utils.fsutil DEBUG logs
@@ -299,8 +281,7 @@ jobs:
           KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS: "0"
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          GCS_TEST_BUCKET: 'kumo-test-bucket'
-          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
+          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: 'false'
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
           TEMPORAL_SERVER: "localhost"
@@ -312,7 +293,7 @@ jobs:
           DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'test/rest/integ/test_diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Upload coverage artifact
-        if: always()
+        if: always() && env.ARTIFACT_NAME_SAFE != '' && hashFiles(env.ARTIFACT_NAME_SAFE) != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ env.ARTIFACT_NAME_SAFE }}
@@ -786,6 +767,109 @@ jobs:
           path: .test_durations
           include-hidden-files: true
 
+  pytest-gcp:
+    environment:
+      name: gha-kumo-workflow-tests
+      # This job uses environment-scoped OIDC; it does not deploy an application.
+      deployment: false
+    name: pytest-gcp (${{ matrix.test_dir }})
+    needs: [diskgraph-wheel]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      COVERAGE_PREFIX: .coverage-${{ github.run_id }}-gcp-${{ strategy.job-index }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_TEST_SERVICE_ACCOUNT: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
+      GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT: ${{ matrix.restricted_identities && vars.GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT || '' }}
+      GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT: ${{ matrix.restricted_identities && vars.GCP_BIGQUERY_NO_JOB_SERVICE_ACCOUNT || '' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - test_dir: test/connector/test_bigquery_connector.py
+            profile: gcp
+            aws: false
+            restricted_identities: true
+          - test_dir: test/io_utils/fsutil/test_gcs.py test/io_utils/fsutil/test_all.py
+            profile: gcp
+            aws: false
+            restricted_identities: false
+          - test_dir: test/rest/test_tables.py::test_validate_size
+            profile: gcp
+            aws: false
+            restricted_identities: false
+
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 40
+
+      - name: Determine test impact
+        id: test-impact
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          # Missing history and manual runs execute conservatively.
+          if [ -z "$BASE_SHA" ] || ! git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" -- > "$RUNNER_TEMP/test-profile-changes"; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          else
+            python3 -c 'import sys; from tools.ci_test_profiles import integration_required; paths = [p for p in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").split("\0") if p]; print("run=" + str(integration_required(paths)).lower())' < "$RUNNER_TEMP/test-profile-changes" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Package/wheel bootstrap uses public indexes and GitHub cache/artifacts.
+      # Cloud credentials are acquired only after dependency installation.
+      - name: Set up packages
+        if: env.FORCE_RUN_TESTS == 'true' || steps.test-impact.outputs.run == 'true'
+        uses: ./.github/actions/setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+
+      - name: Authenticate to Google Cloud with GitHub OIDC
+        if: env.FORCE_RUN_TESTS == 'true' || steps.test-impact.outputs.run == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
+
+      - name: Run GCP profile tests
+        if: env.FORCE_RUN_TESTS == 'true' || steps.test-impact.outputs.run == 'true'
+        timeout-minutes: 60
+        run: |
+          set -o pipefail
+          export SPARK_LOCAL_IP="127.0.0.1"
+          source ./tools/ci_pytest_log_controls.sh
+          configure_pytest_ci_output
+          python -X faulthandler -m tools.ci_test_profiles run "${{ matrix.profile }}" --coverage-file "$COVERAGE_PREFIX" "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=1800 --timeout-method=thread ${{ matrix.test_dir }}
+        env:
+          GCS_TEST_BUCKET: 'kumo-test-bucket'
+          GCP_STORAGE_TRANSFER_BUCKET: 'kumo-test-bucket'
+          FULL_TEST: ${{ env.RUN_FULL_TEST == 'true' && '1' || '0' }}
+          GLOG_logtostdout: '1'
+          DEPLOY_STAGE: "test"
+          TEMPORAL_SERVER: "localhost"
+          DATA_SPARK_MEM: "1g"
+          MAX_DATA_BACKEND_WORKER_PROCESSES: "1"
+          CUDA: "cpu"
+          KUMO_ENABLE_GLOVE: "False"
+          SPARK_VERSION: "3.5"
+          KUMO_TESTING: "True"
+
+      - name: Upload GCP coverage artifact
+        if: always() && hashFiles(format('{0}*', env.COVERAGE_PREFIX)) != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.COVERAGE_PREFIX }}
+          path: ${{ env.COVERAGE_PREFIX }}*
+          include-hidden-files: true
+
   coverage:
     runs-on: ubuntu-24.04
     permissions:
@@ -798,8 +882,8 @@ jobs:
       group: coverage-gh-pages
       cancel-in-progress: false
     continue-on-error: true
-    needs: [pytest]
-    if: ${{ always() && needs.pytest.result != 'skipped' && needs.pytest.result != 'cancelled' && needs.pytest.outputs.push-gh-pages == 'true'}}
+    needs: [pytest, pytest-gcp]
+    if: ${{ always() && needs.pytest-gcp.result == 'success' && needs.pytest.result != 'skipped' && needs.pytest.result != 'cancelled' && needs.pytest.outputs.push-gh-pages == 'true'}}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
