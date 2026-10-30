@@ -1233,19 +1233,21 @@ class DiskgraphNestedTrainer(Trainer):
                 )
             metrics = {}
 
-        if self.task.task_type.is_link_pred:
-            # Link prediction has no row-wise evaluation frame. A zero-row
-            # loader may also skip the hook that creates ``outputs``.
-            outputs = None
-            self.pl_model.outputs = None
-        else:
-            outputs, self.pl_model.outputs = self.pl_model.outputs, None
+        # A zero-row link-prediction loader may skip the hook that creates
+        # ``outputs``.
+        outputs = getattr(self.pl_model, 'outputs', None)
+        self.pl_model.outputs = None
 
         path = osp.join(self.log_dir, f'{stage.value}_result.csv')
         save_csv(metrics, path, overwrite=True)
 
         if self.task.task_type.is_link_pred:
-            return EvalOutput(metrics, None, None)
+            # Link prediction has no row-wise evaluation frame; its test
+            # outputs are each entity's top score.
+            from kumo_core.evaluation_counts import top_score_counts
+            top = (outputs or {}).get('top_score')
+            return EvalOutput(metrics, None, None, None if top is None else
+                              top_score_counts(top.numpy()))
 
         df = self._build_eval_df(outputs)
         counts = None
@@ -1788,7 +1790,10 @@ class DiskgraphNestedTrainer(Trainer):
         import numpy as np
         import torch
         from kumo_core.callbacks import PredictionProgressLogger
-        from kumo_core.prediction_counts import count_recommendations
+        from kumo_core.prediction_counts import (
+            count_recommendations,
+            count_top_scores,
+        )
         from kumo_core.train.output import (
             PredOutput,
             StreamingPredOutputWriter,
@@ -1934,12 +1939,14 @@ class DiskgraphNestedTrainer(Trainer):
             )
 
         def _count_lp(counts: Counts, prediction: dict[str, Any]) -> None:
-            target = _np(prediction['target']).reshape(-1)
+            target = _np(prediction['target'])
             count_recommendations(
                 counts,
                 np.where(target < 0, -1,
                          np.searchsorted(catalog_node_ids, target)),
                 catalog_node_ids.shape[0])
+            count_top_scores(counts, np.where(
+                target >= 0, _np(prediction['score']), -np.inf).max(axis=1))
 
         def _rhs_embedding_tables(
             output_partition_id: int,

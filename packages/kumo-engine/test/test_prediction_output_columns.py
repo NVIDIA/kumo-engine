@@ -363,9 +363,10 @@ def _assert_label_counts(run, fitted):
             minlength=len(PROBABILITY_EDGES) + 1).tolist()
 
 
-def test_mlops_counts_forecast_horizons_and_recommended_items(
+def test_mlops_counts_forecast_horizons_recommended_items_and_top_scores(
         graph, forecast, link, tmp_path):
     from kumo_core.score_counts import Counts
+    from kumo_core.score_drift import score_drift
 
     _, snapshot, _ = graph
     mlops = kumo.MLOps(str(tmp_path / 'root'))
@@ -397,3 +398,14 @@ def test_mlops_counts_forecast_horizons_and_recommended_items(
             float(counts.arrays['items_recommended']),
             float(counts.arrays['recommendations'])) == (
                 20, (per_item > 0).sum(), len(frame))
+    holdout = Counts.from_dict(link[0].result.manifest.holdout.counts)
+    edges = holdout.edges['top_score']
+    assert counts.edges['top_score'] == edges
+    assert holdout.extents['top_score'] == (edges[0], edges[-1])
+    assert holdout.arrays['top_score'].sum() == \
+        link[0].result.manifest.holdout.rows
+    top = frame.groupby('ENTITY')['SCORE'].max().to_numpy()
+    assert counts.arrays['top_score'].tolist() == np.bincount(
+        np.searchsorted(edges, top, 'right'), minlength=len(edges) + 1).tolist()
+    assert counts.extents['top_score'] == (top.min(), top.max())
+    assert score_drift(counts, holdout) is not None

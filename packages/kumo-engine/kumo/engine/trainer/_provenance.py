@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
+from kumo_core.score_drift import drift_column
 from kumo_core.types import TaskType
 
 from kumo.engine._manifest import (
@@ -50,7 +51,13 @@ def write_provenance(
     finished_at = datetime.now(timezone.utc)
     table = train_table.manifest
     holdout: Optional[HoldoutStats] = None
-    if holdout_path is not None and task_type in SCORE_COLUMNS:
+    if (task_type.is_link_pred and holdout_counts is not None
+            and fit_mode != 'refit_full'):
+        # Link prediction writes no holdout rows, only their top scores' counts.
+        holdout = HoldoutStats(truncated=holdout_truncated,
+                               rows=holdout_rows(holdout_counts), columns={},
+                               counts=holdout_counts)
+    elif holdout_path is not None and task_type in SCORE_COLUMNS:
         try:
             holdout = replace(holdout_baseline(holdout_path, task_type,
                                                truncated=holdout_truncated),
@@ -164,6 +171,12 @@ def holdout_baseline(path: Path, task_type: TaskType, *,
     top = top_score_stats([path])
     return HoldoutStats(truncated=truncated, rows=top['count'],
                         columns={TOP_SCORE: top})
+
+
+def holdout_rows(counts: Dict[str, Any]) -> int:
+    r"""The rows a holdout's score ``counts`` counted."""
+    holdout = Counts.from_dict(counts)
+    return int(holdout.arrays[drift_column(holdout)].sum())
 
 
 def holdout_counts(model: Optional[ModelManifest]) -> Optional[Counts]:

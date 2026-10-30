@@ -471,5 +471,7 @@ def _share(numerator: float, denominator: float) -> Optional[float]:
 
 
 def class_names(target_encoder: Any) -> List[Any]:
-    mapping = getattr(target_encoder.tensor_mapper, 'mapping', None)
+    r"""The classes of ``target_encoder``; none for link prediction's."""
+    mapping = getattr(getattr(target_encoder, 'tensor_mapper', None),
+                      'mapping', None)
     return [] if mapping is None else list(mapping)
