@@ -905,6 +905,7 @@ def execute_b9(spec, output):
         raise ValueError(
             'The spawned worker would use different observer source')
     load_module('b9_helpers', spec['worker']['b9_helper'])
+    (output / 'scratch').mkdir()
     engine.configure(scratch_dir=output / 'scratch')
     measurements = meters.Measurements(output)
     calls = []

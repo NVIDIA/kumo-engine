@@ -19,6 +19,51 @@ def api():
     return runpy.run_path(str(SCRIPT))
 
 
+def test_b9_monitor_scratch_exists_before_its_first_stat(tmp_path):
+    import ast
+    import os
+    from types import SimpleNamespace
+    function = next(
+        node for node in ast.parse(SCRIPT.read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name == 'execute_b9')
+    startup = []
+    for node in function.body:
+        if isinstance(node, ast.Expr) and isinstance(
+                node.value, ast.Call) and isinstance(
+                    node.value.func,
+                    ast.Attribute) and node.value.func.attr in ('mkdir',
+                                                                'configure'):
+            startup.append(node)
+        elif isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == 'measurements'
+                for target in node.targets):
+            startup.append(node)
+        elif isinstance(node, ast.Try):
+            startup.append(node.body[0])
+            break
+    calls = []
+
+    class Measurements:
+        def __init__(self, output):
+            pass
+
+        def start_monitor(self, helper, scratch):
+            os.stat(
+                scratch)  # The exact failed boundary in native _block_device.
+            calls.append(('monitor', scratch.is_dir()))
+
+    environment = dict(
+        output=tmp_path,
+        worker=dict(monitor_helper=dict(path='frozen-monitor.py')),
+        engine=SimpleNamespace(configure=lambda **kwargs: calls.append(
+            ('configure', kwargs['scratch_dir'].is_dir()))),
+        meters=SimpleNamespace(Measurements=Measurements))
+    exec(
+        compile(ast.Module(body=startup, type_ignores=[]), str(SCRIPT), 'exec'),
+        environment)
+    assert calls == [('configure', True), ('monitor', True)]
+
+
 @pytest.mark.parametrize('changed', [None, 'missing', 'unbound', 'changed'])
 def test_b9_binds_separate_reader_before_model_calls(tmp_path, changed):
     reader = tmp_path / 'reader.py'
