@@ -614,12 +614,11 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
                 if getattr(s, 'name', None) == 'drift/input_changes']
     assert ('orders', before, after, (after - before) / before * 100
             ) in changes.rows and changes.brief
-    features = drift.summaries[-2]
+    orders, = [s for s in drift.summaries
+               if getattr(s, 'name', None) == 'drift/inputs/orders']
     amount = report.features['orders']['AMT']
-    assert features.name == 'drift/features'
-    assert ('orders', 'AMT', 'numerical', 'mean shift (sd)',
-            amount['standardized_mean_shift'],
-            amount['delta']['null_rate']) in features.rows
+    assert orders.columns[:3] == ('column', 'type', 'psi')
+    assert ('AMT', 'numerical', amount['psi']) == orders.rows[0][:3]
     labels = snapshots.after.manifest
     name = (f'snapshot-{labels.created_at[:10]}-'
             f"{labels.id.partition('@')[2][:6]}")
@@ -637,7 +636,7 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
 
 
 def test_drift_summaries_log_the_previous_run_and_explain_gaps():
-    from kumo.engine._monitoring import DriftReport, _feature_drift, track
+    from kumo.engine._monitoring import DriftReport, _input_drift, track
 
     report = DriftReport(
         prediction_id='p', bundle_id='b', score='True_PROB', psi=0.5, ks=0.25,
@@ -648,13 +647,20 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
         reasons={'features': 'no drift statistics for the type of users.TS '
                  '(timestamp)'},
         features={'users': {
-            'AGE': {'type': 'numerical', 'standardized_mean_shift': -2.5,
-                    'delta': {'null_rate': 0.0}},
-            'PLAN': {'type': 'categorical', 'psi': 0.75, 'delta': {}},
-            'REGION': {'type': 'categorical', 'psi': 0.05, 'delta': {}},
-            'BIO': {'type': 'text', 'delta': {'null_rate': 0.0}},
+            'AGE': {'type': 'numerical', 'psi': 0.125,
+                    'standardized_mean_shift': -2.5,
+                    'delta': {'null_rate': 0.0}, 'relative': {}},
+            'PLAN': {'type': 'categorical', 'psi': 0.75,
+                     'delta': {'null_rate': 0.5}, 'relative': {}},
+            'REGION': {'type': 'categorical', 'psi': 0.05, 'delta': {},
+                       'relative': {'num_unique': 0.5}},
+            'BIO': {'type': 'text', 'delta': {'null_rate': 0.25},
+                    'relative': {'avg_tokens': -0.5}},
             'ID': {'type': 'categorical', 'type_changed': ['numerical',
-                                                           'categorical']}}})
+                                                           'categorical']}},
+                  'orders': {'TS': {
+                      'type': 'timestamp', 'relative': {},
+                      'delta': {'null_rate': 0.0, 'max_secs': 86400}}}})
     tracker = _Tracker()
     tracked = track(report, SimpleNamespace(
         id='p', bundle_id='b', manifest=None,
@@ -683,24 +689,35 @@ def test_drift_summaries_log_the_previous_run_and_explain_gaps():
                                       'change %'),
               (('orders', 100, 104, 4.0),
                ('orders.USER_ID → users', 100, None, None)), brief=True),
-        Table('drift/features', ('table', 'column', 'type', 'measure',
-                                 'value', 'null-rate change'),
-              (('users', 'AGE', 'numerical', 'mean shift (sd)', -2.5, 0.0),
-               ('users', 'PLAN', 'categorical', 'psi', 0.75, ''),
-               ('users', 'REGION', 'categorical', 'psi', 0.05, ''),
-               ('users', 'BIO', 'text', '', '', 0.0),
-               ('users', 'ID', 'numerical → categorical', '', '', ''))),
-        Note('notes', 'Input columns vs training data: `users.AGE` (mean '
-             'shift -2.5 sd), `users.PLAN` (psi 0.75); all in '
-             '`drift/features.json`.'),
+        Scalar('drift/inputs_max_psi', 0.75),
+        Table('drift/inputs/orders', ('column', 'type',
+                                      'null rate change (pp)',
+                                      'newest value change (days)'),
+              (('TS', 'timestamp', 0.0, 1.0),)),
+        Table('drift/inputs/users', (
+            'column', 'type', 'psi', 'shift', 'mean change (training sd)',
+            'null rate change (pp)', 'distinct values change ≈ (%)',
+            'mean tokens change ≈ (%)'),
+            (('PLAN', 'categorical', 0.75, 'large (> 0.25)', '', 50.0, '',
+              ''),
+             ('AGE', 'numerical', 0.125, 'moderate (0.1–0.25)', -2.5, 0.0,
+              '', ''),
+             ('REGION', 'categorical', 0.05, 'small (< 0.1)', '', '', 50.0,
+              ''),
+             ('BIO', 'text', '', '', '', 25.0, '', -50.0),
+             ('ID', 'numerical → categorical', '', '', '', '', '', ''))),
+        Note('notes', 'Input columns vs training data: most shifted '
+             '`users.PLAN` (psi 0.75, large), `users.AGE` (psi 0.125, '
+             'moderate), `users.REGION` (psi 0.05, small); per table: '
+             '`drift/inputs/orders.json`, `drift/inputs/users.json`.'),
         Note('notes', "The model's holdout file was truncated to fit its "
              'size limit.'),
         Note('notes', 'Input columns vs training data: no drift statistics '
              'for the type of users.TS (timestamp).'))
-    assert _feature_drift({'users': {'AGE': {
-        'type': 'numerical', 'standardized_mean_shift': -0.09, 'delta': {}}}}
-    )[1] == Note('notes', 'Input columns vs training data: no column moved '
-                 'much; all in `drift/features.json`.')
+    assert _input_drift({'users': {'BIO': {
+        'type': 'text', 'delta': {}, 'relative': {}}}}
+    )[1] == Note('notes', 'Input columns vs training data: no psi; per '
+                 'table: `drift/inputs/users.json`.')
 
     tracker.records.clear()
     track(replace(report, bundle_matches=False),
@@ -947,7 +964,7 @@ def test_feature_drift_detects_a_numeric_and_a_categorical_shift(shifted):
     assert reasons == {}
     age, plan = features['users']['AGE'], features['users']['PLAN']
     assert age['type'] == 'numerical'
-    assert age['standardized_mean_shift'] > 2
+    assert age['psi'] > 0.25 and age['standardized_mean_shift'] > 2
     assert age['delta']['mean'] == pytest.approx(15.0, abs=2.0)
     assert set(age['delta']) >= {'mean', 'std', 'min', 'max', 'q25', 'q50',
                                  'q75', 'skewness', 'kurtosis', 'null_rate',
@@ -957,6 +974,7 @@ def test_feature_drift_detects_a_numeric_and_a_categorical_shift(shifted):
 
     same = _compare(_encoding(root, ['AGE', 'PLAN']), before, before, {})
     assert same['users']['AGE']['standardized_mean_shift'] == 0
+    assert same['users']['AGE']['psi'] == pytest.approx(0, abs=1e-9)
     assert same['users']['PLAN']['psi'] == pytest.approx(0, abs=1e-9)
 
 

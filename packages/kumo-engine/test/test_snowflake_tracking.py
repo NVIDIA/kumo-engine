@@ -455,8 +455,8 @@ def _monitoring(monitor, prediction_run=None):
               'kumo.model_version': '6', 'kumo.bundle_id': 'b' * 64},
         model_label='churn', prediction_run=prediction_run, summaries=(
             Scalar('drift/psi_prev', 0.01),
-            Table('drift/features', ('table', 'column', 'psi'),
-                  (('orders', 'AMOUNT', 0.12),)),
+            Table('drift/inputs/orders', ('column', 'psi'),
+                  (('AMOUNT', 0.12),)),
             Table('drift/input_changes', ('table', 'at training', 'now'),
                   (('orders', 100, 104),), brief=True),
             Note('notes', 'Labels mature 2026-11-05.')))
@@ -475,9 +475,9 @@ def test_each_monitoring_call_is_a_run_named_after_its_prediction(fake):
     run = fake._instance.runs['AS_OF_20261029_V6_CHURN_2_DRIFT']
     assert run['status'] == 'FINISHED'
     assert ('drift/psi_prev', 0.01, 0) in run['metrics']
-    assert set(run['artifacts']) == {'drift/features.json', 'run_card.md'}
+    assert set(run['artifacts']) == {'drift/inputs/orders.json', 'run_card.md'}
     assert run['artifacts']['run_card.md'] == '\n'.join([
         'v6 churn', 'Model: `churn` v6.', '',
         '**Input changes:** orders: at training 100 · now 104', '',
         '**Notes:** Labels mature 2026-11-05.', '',
-        'Full lineage: `_provenance.json`. Tables: `drift/features.json`.'])
+        'Full lineage: `_provenance.json`. Tables: `drift/inputs/orders.json`.'])

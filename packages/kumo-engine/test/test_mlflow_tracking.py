@@ -468,8 +468,8 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
             Table('drift/input_changes', ('table or link', 'at training',
                                           'now', 'change %'),
                   (('orders', 100, 104, 4.0),), brief=True),
-            Table('drift/features', ('table', 'column', 'psi'),
-                  (('orders', 'AMOUNT', 0.12),))))) is None
+            Table('drift/inputs/orders', ('column', 'psi'),
+                  (('AMOUNT', 0.12),))))) is None
     assert (later.run_id, later.run_url) == (tracker.run_id, tracker.run_url)
     assert log_run(later, 'log_monitoring', RunRecord(
         tags={**monitoring, 'kumo.monitor': 'evaluate'},
@@ -495,9 +495,9 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
     assert (labels.dataset.name, labels.dataset.source, labels.tags[0].value
             ) == ('g@2', '{"uri": "s3://b/g/2"}', 'labels')
     assert json.loads(mlflow.artifacts.load_text(
-        f'{run.info.artifact_uri}/drift/features.json')) == {
-            'columns': ['table', 'column', 'psi'],
-            'data': [['orders', 'AMOUNT', 0.12]]}
+        f'{run.info.artifact_uri}/drift/inputs/orders.json')) == {
+            'columns': ['column', 'psi'],
+            'data': [['AMOUNT', 0.12]]}
     assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
         'realized map_at_10 0.5 · psi 0.03 vs training · 50 rows as of '
         '2026-10-29', 'Model: bundle `bbbbbbbb`.', '',

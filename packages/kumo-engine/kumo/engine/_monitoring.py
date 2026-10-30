@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 from kumo_core.score_counts import Counts
 from kumo_core.score_drift import PSI_SHIFTS, drift_column, psi_shift
+from kumo_core.score_drift import psi as decile_psi
 from kumo_core.score_drift import score_drift as exact_drift
 from kumo_core.summaries import Dataset, Note, Scalar, Summary, Table, Tag
 
@@ -635,7 +636,7 @@ def _drift_summaries(report: 'DriftReport',
                    if name == 'previous'}
     else:
         summaries += _input_changes(report.input_changes or {})
-        summaries += _feature_drift(report.features)
+        summaries += _input_drift(report.features)
         if report.holdout_truncated:
             summaries.append(Note('notes', "The model's holdout file was "
                                   'truncated to fit its size limit.'))
@@ -723,7 +724,6 @@ _REASONS = {'holdout': 'Score drift vs holdout', 'previous':
             'Input changes', 'features': 'Input columns vs training data',
             'metrics': 'Realized metrics', 'matured': 'Label maturity'}
 _TOP_FEATURES = 3
-_MOVED = 0.1
 
 
 def _reason_notes(reasons: Mapping[str, str]) -> List[Summary]:
@@ -757,41 +757,65 @@ def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
                                      'size: `drift/input_changes.json`.')])]
 
 
-def _feature_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
-                   ) -> List[Summary]:
-    rows = sorted((_feature_row(table, column, change)
-                   for table, columns in features.items()
-                   for column, change in columns.items()),
-                  key=lambda row: (row[4] == '', -abs(row[4] or 0)))
-    if not rows:
+def _input_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
+                 ) -> List[Summary]:
+    r"""Per source table, ``drift/inputs/<table>``: each encoded column's
+    change since training, most shifted first, without the measures no row
+    has; the largest psi as ``drift/inputs_max_psi``, and a note naming the
+    three most shifted columns and the tables."""
+    summaries: List[Summary] = []
+    shifted = []
+    for table, columns in sorted(features.items()):
+        rows = sorted((_input_row(column, change)
+                       for column, change in columns.items()),
+                      key=lambda row: (row[2] == '', -(row[2] or 0),
+                                       -abs(row[5] or 0), row[0]))
+        filled = [i for i in range(len(_INPUT_HEADER))
+                  if i < 2 or any(row[i] != '' for row in rows)]
+        summaries.append(Table(
+            f'drift/inputs/{table}', tuple(_INPUT_HEADER[i] for i in filled),
+            tuple(tuple(row[i] for i in filled) for row in rows)))
+        shifted += [(row[2], f'{table}.{row[0]}') for row in rows
+                    if row[2] != '']
+    if not summaries:
         return []
-    moved = [f'`{table}.{column}` ' + (
-        f'(psi {number(value)})' if measure == 'psi' else
-        f'(mean shift {number(value)} sd)')
-        for table, column, _, measure, value, _ in rows
-        if value != '' and abs(value) >= _MOVED][:_TOP_FEATURES]
-    return [Table('drift/features', ('table', 'column', 'type', 'measure',
-                                     'value', 'null-rate change'),
-                  tuple(rows)),
-            Note('notes', 'Input columns vs training data: '
-                 + (', '.join(moved) if moved else 'no column moved much')
-                 + '; all in `drift/features.json`.')]
+    shifted.sort(key=lambda item: -item[0])
+    if shifted:
+        summaries.insert(0, Scalar('drift/inputs_max_psi', shifted[0][0]))
+    top = ', '.join(f'`{column}` (psi {number(psi)}, {psi_shift(psi)})'
+                    for psi, column in shifted[:_TOP_FEATURES])
+    files = ', '.join(f'`drift/inputs/{table}.json`'
+                      for table in sorted(features))
+    summaries.append(Note('notes', 'Input columns vs training data: '
+                          + (f'most shifted {top}' if top else 'no psi')
+                          + f'; per table: {files}.'))
+    return summaries
 
 
-def _feature_row(table: str, column: str,
-                 change: Mapping[str, Any]) -> Tuple[Any, ...]:
-    r"""A ``drift/features`` row: how far the column moved, as its psi for
-    a category or its mean shift in training standard deviations for a
-    number, blank otherwise."""
-    kind = (' → '.join(map(str, change['type_changed']))
-            if 'type_changed' in change else change['type'])
-    psi, shift = change.get('psi'), change.get('standardized_mean_shift')
-    measure, value = (('psi', psi) if psi is not None else
-                      ('mean shift (sd)', shift) if shift is not None else
-                      ('', ''))
-    null_rate = (change.get('delta') or {}).get('null_rate')
-    return (table, column, kind, measure, value,
-            '' if null_rate is None else null_rate)
+_INPUT_HEADER = ('column', 'type', 'psi', 'shift',
+                 'mean change (training sd)', 'null rate change (pp)',
+                 'distinct values change ≈ (%)', 'newest value change (days)',
+                 'mean tokens change ≈ (%)')
+
+
+def _input_row(column: str, change: Mapping[str, Any]) -> Tuple[Any, ...]:
+    r"""A ``drift/inputs`` row of ``column``, blank where a measure does not
+    apply to its type."""
+    if 'type_changed' in change:
+        return (column, ' → '.join(map(str, change['type_changed'])),
+                *[''] * (len(_INPUT_HEADER) - 2))
+    delta, relative = change['delta'], change['relative']
+
+    def blank(value: Optional[float], scale: float = 1) -> Any:
+        return '' if value is None else value * scale
+
+    psi = change.get('psi')
+    return (column, change['type'], blank(psi), '' if psi is None else _shift(psi),
+            blank(change.get('standardized_mean_shift')),
+            blank(delta.get('null_rate'), 100),
+            blank(relative.get('num_unique'), 100),
+            blank(delta.get('max_secs'), 1 / 86400),
+            blank(relative.get('avg_tokens'), 100))
 
 
 def _count_changes(before: Mapping[str, Mapping[str, int]],
@@ -864,7 +888,7 @@ def _features(trainer: Any, sides: Mapping[str, Mapping[str, Any]],
             reasons['features'] = 'the model records no encoded columns'
             return {}
         features: Dict[str, Dict[str, Any]] = {}
-        absent, uncompared = [], []
+        absent, uncompared, unbinned = [], [], []
         for table, columns in sorted(used.items()):
             if table not in before and table not in after:
                 continue
@@ -880,6 +904,8 @@ def _features(trainer: Any, sides: Mapping[str, Mapping[str, Any]],
                         f"{table}.{column} ({new.get('semantic_type')})")
                 else:
                     features.setdefault(table, {})[column] = change
+                    if change['type'] == 'numerical' and change['psi'] is None:
+                        unbinned.append(f'{table}.{column}')
         notes = []
         if absent:
             notes.append('column statistics missing on a side for ' +
@@ -887,6 +913,10 @@ def _features(trainer: Any, sides: Mapping[str, Mapping[str, Any]],
         if uncompared:
             notes.append('no drift statistics for the type of ' +
                          ', '.join(uncompared))
+        if unbinned:
+            notes.append('no psi for ' + ', '.join(unbinned) + ', since a '
+                         "snapshot's statistics have no value bins; rebuild "
+                         'it to count them')
         if notes:
             reasons['features'] = '; '.join(notes)
         return features
@@ -1023,6 +1053,8 @@ def _column_change(old: Mapping[str, Any],
         shift = change['delta'].get('mean')
         change['standardized_mean_shift'] = (
             shift / std if shift is not None and std else None)
+        change['psi'] = _binned_psi(old.get('value_bins'),
+                                    new.get('value_bins'))
     elif kind in ('categorical', 'multicategorical'):
         change = _deltas(old, new, _CATEGORY_STATS)
         p, q = _distribution(old), _distribution(new)
@@ -1038,6 +1070,21 @@ def _column_change(old: Mapping[str, Any],
     else:
         return None
     return {'type': kind, **change}
+
+
+def _binned_psi(training: Optional[List[List[float]]],
+                scoring: Optional[List[List[float]]]) -> Optional[float]:
+    r"""The psi of the scoring snapshot's ``value_bins`` counts against the
+    training snapshot's, over groups of bins cut at the training deciles."""
+    if not training or not scoring:
+        return None
+    starts = {start: i for i, start in enumerate(
+        sorted({start for start, _ in training + scoring}))}
+    expected, actual = np.zeros(len(starts)), np.zeros(len(starts))
+    for counts, side in ((expected, training), (actual, scoring)):
+        for start, count in side:
+            counts[starts[start]] = count
+    return decile_psi(actual, expected)
 
 
 def _stat(stats: Mapping[str, Any], name: str) -> Optional[float]:
