@@ -139,11 +139,11 @@ def holdout(kind: str, metrics: Mapping[str, float],
 
 def version_headline(metrics: Mapping[str, float],
                      tune: Optional[str]) -> str:
-    r"""A registered version's metrics line: the tuned metric, then the
-    next three holdout metrics."""
+    r"""A registered version's metrics line: the tuned metric, logloss,
+    then the next holdout metrics, four in all."""
     tuned = f"test/{_key(tune or '')}"
     names = [name for name in metrics if name.startswith('test/')]
-    names.sort(key=lambda name: name != tuned)
+    names.sort(key=lambda name: (name != tuned, name != 'test/logloss'))
     return ' · '.join(f'{_key(name)} {number(metrics[name])}'
                       for name in names[:4])
 

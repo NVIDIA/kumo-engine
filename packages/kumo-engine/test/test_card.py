@@ -154,13 +154,17 @@ def test_a_prediction_names_the_model_and_its_fit_run():
         'Drift check of the scores of bundle `bbbbbbbb`.')
 
 
-def test_a_version_headline_leads_with_the_tuned_metric():
+def test_a_version_headline_leads_with_the_tuned_metric_then_logloss():
     metrics = {'test/mae': 0.25, 'before_refit/mae': 0.3, 'test/loss': 0.5,
                'test/mse': 1.0, 'test/rmse': 1.0, 'test/map_at_10': 0.125}
     assert _card.version_headline(metrics, 'loss') == (
         'test/loss 0.5 · test/mae 0.25 · test/mse 1 · test/rmse 1')
     assert _card.version_headline(metrics, 'map@10') == (
         'test/map_at_10 0.125 · test/mae 0.25 · test/loss 0.5 · test/mse 1')
+    binary = {'test/auroc': 0.75, 'test/loss': 0.5, 'test/ap': 0.5,
+              'test/auprc': 0.5, 'test/logloss': 0.25}
+    assert _card.version_headline(binary, 'auroc') == (
+        'test/auroc 0.75 · test/logloss 0.25 · test/loss 0.5 · test/ap 0.5')
 
 
 def test_a_prediction_heading_leads_with_the_tuned_realized_metric():
