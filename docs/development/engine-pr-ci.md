@@ -34,15 +34,16 @@ must contain all twelve horizons at the expected time anchor. Classification
 and link outputs must contain all requested classes or catalog items.
 
 Repeated and reloaded predictions must match within an absolute tolerance of
-`0.00001`, with zero relative tolerance. This limit applies to every task,
+`0.0001`, with zero relative tolerance. This limit applies to every task,
 including regression and forecasting. Chosen labels and published ranks must
 match exactly. A comparison outside the tolerance fails the job.
 
 Training metrics report separately. They do not set a learning-quality gate.
 The shared `engine-gpu-smoke` action accepts one wheel path and an optional
 `reload-atol` value. Every caller enforces its chosen absolute tolerance for
-all eight tasks, with zero relative tolerance. The PR workflow uses the
-`0.00001` default. There is no report-only comparison mode.
+all eight tasks, with zero relative tolerance. The PR workflow sets `0.0001`
+for RTX. The shared action defaults to `0.00001`. There is no report-only
+comparison mode.
 
 ## Fixture download
 

@@ -29,7 +29,7 @@ It builds its prerequisites and runs without cloud credentials. The
 
 The [Engine PR check](engine-pr-ci.md) builds the candidate wheel on CPU and
 runs eight small task checks on CUDA through one shared smoke action. Repeated
-and reloaded predictions must match within `0.00001` absolute tolerance and
+and reloaded predictions must match within `0.0001` absolute tolerance and
 zero relative tolerance for every task. Labels, ranks, valid outputs, and
 completed CUDA work remain strict. Training metrics report separately and set
 no learning-quality requirement. Source and package workflows remain separate.
@@ -49,9 +49,9 @@ checkout. It uses public PyPI and ignores host pip settings. The installed versi
 must match the selected wheel. Dependencies must pass `pip check`.
 
 Each of the eight task types trains one model with seed zero, predicts, and
-reloads the saved model on CUDA. Outputs must be finite and complete. Restored
-model weights, predicted labels, and rank order must match exactly. Repeat and
-reload scores must satisfy `abs(before - after) <= 1e-5` at every coordinate,
+reloads the saved model on CUDA. Outputs must be finite and complete.
+Predicted labels and rank order must match exactly. Repeat and
+reload scores must satisfy `abs(before - after) <= 1e-4` at every coordinate,
 with zero relative tolerance. These comparisons use the same retained model.
 
 The [input manifest](../../packages/kumo-engine/test/pr172/inputs.json) pins

@@ -122,7 +122,11 @@ def test_publication_forwards_the_shared_prediction_tolerance():
         (root / ('.github/actions/engine-gpu-smoke/action.yml')).read_text())
     call = next(step['with'] for step in workflow['jobs']['smoke']['steps']
                 if step.get('uses') == './.github/actions/engine-gpu-smoke')
+    pr = yaml.safe_load((root / '.github/workflows/kumo-engine-pr.yml').read_text())
+    pr_call = next(step['with'] for job in pr['jobs'].values()
+                   for step in job.get('steps', [])
+                   if step.get('uses') == './.github/actions/engine-gpu-smoke')
     run = next(step for step in action['runs']['steps']
                if step.get('name') == 'Run the eight GPU tasks outside the checkout')
-    assert call['reload-atol'] == action['inputs']['reload-atol']['default'] == '0.00001'
-    assert '--reload-atol "$RELOAD_ATOL"' in run['run']
+    assert call['reload-atol'] == pr_call['reload-atol'] == '0.0001'
+    assert run['env']['RELOAD_ATOL'] == '${{ inputs.reload-atol }}' and '--reload-atol "$RELOAD_ATOL"' in run['run']

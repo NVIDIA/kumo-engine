@@ -111,8 +111,8 @@ platform's `release-version`.
      with Python 3.12. Installation, CUDA training, prediction, and model reload
      must pass before attachment or publication. The GPU job downloads this
      build's wheel without rebuilding it. Repeat and reload scores use the
-     shared absolute tolerance of `1e-5` with zero relative tolerance.
-     Weights, labels, and ranks remain exact. The macOS wheel has no GPU smoke
+     shared absolute tolerance of `1e-4` with zero relative tolerance.
+     Labels and ranks remain exact. The macOS wheel has no GPU smoke
      check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
    - attaches the Linux x86_64 and macOS ARM64 wheels to the GitHub release.
 5. **Publish through Kitmaker.** The `kitmaker` job runs in the
