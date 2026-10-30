@@ -10,24 +10,9 @@ the two client libraries the rest of the package uses. That library is
 imported inside the two methods below, so this module loading with the sink
 costs nothing: it is reached only when a model actually moves.
 
-With kumo-engine installed (it registers a builder under
-:data:`MODEL_BUILDER_GROUP`), a version is a runnable Kumo model: it carries the vital
-bundle and scores entity ids against an exported graph snapshot in Snowpark
-Container Services, e.g. with ``ModelVersion.run_batch`` on a GPU compute
-pool. Without kumo-engine (a hosted export), the bundle travels in
-:class:`_BundleModel`, a carrier that refuses to score. Either way the
-registry also buys versioning, lineage, discovery, and the account's own
-access control.
-
-The carrier declares its signature explicitly rather than supplying sample
-data, because supplying sample data makes the packager infer a signature by
-*calling* the model -- and a carrier that answered with plausible-looking
-numbers would be worse than one that refuses.
-
-An import downloads files and hands them to ``kumo_core``, so the bundle is
-found by :func:`_locate_bundle` looking for the spec the export wrote, rather
-than at the path the packager stores artifacts under today. That path is
-snowflake-ml's private layout; the marker is ours.
+A version scores in Snowpark Container Services when kumo-engine registers a
+builder under :data:`MODEL_BUILDER_GROUP`; otherwise :class:`_BundleModel`
+carries the bundle and refuses to score.
 """
 
 import hashlib
@@ -90,18 +75,13 @@ _MODEL_NAME = re.compile(rf'(?:{_IDENTIFIER}\.){{0,2}}{_IDENTIFIER}')
 
 _LOG = logging.getLogger(__name__)
 
-#: Version metric: a digest of the serving environment a runnable version
-#: was registered with.
 SERVING_KEY = 'kumo_serving'
 
 
 class ServingEnvironmentError(ValueError):
-    r"""A runnable version's serving environment could not work, raised at
-    registration rather than when a job builds its image."""
+    r"""A runnable version's serving environment cannot work."""
 
 
-#: Entry-point group of the callable that turns a bundle into ``log_model``
-#: arguments for a runnable version; kumo-engine registers one.
 MODEL_BUILDER_GROUP = 'kumo_snowflake.registry_models'
 
 #: Where a fetched version is unpacked before its bundle is lifted out. Named
@@ -214,8 +194,7 @@ def _carrier_signature() -> Dict[str, "model_signature.ModelSignature"]:
 
 def _model_args(bundle: Path, metadata: Mapping[str, str],
                 connector: SourceConnector, workdir: str) -> Dict[str, Any]:
-    r"""``log_model`` arguments for a runnable model when an installed host
-    provides one (kumo-engine does), else for the carrier."""
+    r"""``log_model`` arguments for a runnable model, else the carrier."""
     try:
         build = _model_builder()
         if build is not None:
@@ -255,8 +234,7 @@ def _serving_target(connector: SourceConnector) -> Dict[str, Optional[str]]:
 
 
 def _serving(args: Mapping[str, Any]) -> Optional[str]:
-    r"""A digest of the environment ``log_model`` arguments serve with;
-    `None` for a version that does not score."""
+    r"""A digest of the serving environment; `None` if it does not score."""
     if 'pip_requirements' not in args:
         return None
     environment = {
@@ -272,8 +250,7 @@ def _serving(args: Mapping[str, Any]) -> Optional[str]:
 def _version_holding(registry: "Registry", model_name: str,
                      bundle_id: Optional[str],
                      serving: Optional[str]) -> Optional["ModelVersion"]:
-    r"""The Kumo version of ``model_name`` that records ``bundle_id`` and
-    was registered for the ``serving`` environment."""
+    r"""The Kumo version holding ``bundle_id`` for ``serving``."""
     if not bundle_id:
         return None
     try:
@@ -320,9 +297,7 @@ def _locate_bundle(root: Path) -> Path:
 
 
 def _export(session: Any, version: "ModelVersion", directory: Path) -> None:
-    r"""Downloads the version's files but the code embedded in it, which
-    loading the bundle back does not import: one LIST, then GETs on a
-    bounded pool (``ModelVersion.export`` GETs every file in turn)."""
+    r"""Downloads the version's files except its embedded code."""
     from kumo_core.sources.layout import confined
 
     root = (f'snow://model/{version.fully_qualified_model_name}/versions/'
@@ -525,9 +500,8 @@ class SnowflakeModelRegistryMixin:
         r"""Registers :obj:`bundle_dir` as a version of a registry model.
 
         The database and schema are the connector's, as they are for a table,
-        so only the model name is given here. A Kumo version of the model
-        that already records this ``kumo_bundle_id`` is returned instead of
-        registering the bundle again.
+        so only the model name is given here. A version already holding
+        this ``kumo_bundle_id`` is returned instead.
 
         Args:
             connector: The Snowflake target whose schema holds the registry.
@@ -540,8 +514,7 @@ class SnowflakeModelRegistryMixin:
                 the one after if a concurrent registration takes it.
             metadata: Returned with the publication result; its
                 ``kumo_bundle_id`` is also recorded in the version's metrics.
-                ``kumo.serving_snapshot`` and ``kumo.serving.<option>``
-                configure a runnable version.
+                ``kumo.serving*`` keys configure a runnable version.
             metrics: The model's holdout metrics, recorded in the version's
                 metrics and as a line after ``location.comment``; also
                 returned with the publication result.
