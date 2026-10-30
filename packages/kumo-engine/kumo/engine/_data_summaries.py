@@ -23,6 +23,7 @@ _LABEL_STATS = {'target_mean': 'label_mean', 'target_median': 'label_q50',
 _COLUMN_STATS = ('count', 'null_rate', 'num_unique', 'min', 'max', 'mean',
                  'std', 'q25', 'q50', 'q75', 'avg_tokens', 'max_tokens')
 _TOP_CATEGORIES = 10
+_TARGET_BINS = 50  # as DiskGraph's node-regression histogram
 _EDGE_STATS = {'FRAC_SRC_NONZERO_DEGREE': 'src_match_frac',
                'FRAC_DST_NONZERO_DEGREE': 'dst_match_frac'}
 # The Kumo platform's data checks.
@@ -63,11 +64,18 @@ def split_summaries(staging_dir: Path) -> List[Summary]:
 
 def target_edges(staging_dir: Path) -> Tuple[float, ...]:
     r"""Bin edges for a numerical target from the training split's
-    statistics, its histogram's bins and quartiles; empty without them."""
+    statistics: its histogram's bins, or `_TARGET_BINS` even bins from its
+    min to its max, and its quartiles; empty without them."""
     target = (_read(staging_dir / 'split_stats.json').get('train_table_stats')
               or {}).get('target_distribution') or {}
+    bins = (target.get('histogram') or {}).get('bins') or ()
+    low, high = (_number(target.get(key))
+                 for key in ('target_min', 'target_max'))
+    if not bins and low is not None and high is not None and high > low:
+        bins = [low + (high - low) * i / _TARGET_BINS
+                for i in range(_TARGET_BINS + 1)]
     edges = {
-        *((target.get('histogram') or {}).get('bins') or ()),
+        *bins,
         *(target[key] for key in ('target_min', 'target_percentile_25',
                                   'target_median', 'target_percentile_75',
                                   'target_max')

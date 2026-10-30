@@ -14,6 +14,7 @@ from kumo.engine._data_summaries import (
     snapshot_summaries,
     split_summaries,
     table_details,
+    target_edges,
 )
 from kumo.engine._manifest import artifact_summaries
 from kumo.engine._scratch import get_scratch_dir
@@ -148,3 +149,13 @@ def test_data_warnings_name_each_table_that_breaks_a_check(tmp_path):
         'orders.AMOUNT: at least 10% invalid values',
         'orders.USER_ID -> users: 10.0% of orders rows match',
     ]))
+
+
+def test_target_edges_are_even_bins_without_a_histogram(tmp_path):
+    target = {'target_min': 0, 'target_percentile_25': 0, 'target_median': 0,
+              'target_percentile_75': 25, 'target_max': 200}
+    (tmp_path / 'split_stats.json').write_text(json.dumps(
+        {'train_table_stats': {'target_distribution': target}}))
+
+    assert target_edges(tmp_path) == tuple(
+        sorted({*(4.0 * i for i in range(51)), 25.0}))
