@@ -123,6 +123,7 @@ class SnowflakeTracking:
         self.tags = dict(tags or {})
         self.native_model_lineage = native_model_lineage
         self.run_id: Optional[str] = None
+        self.logged_run_name: Optional[str] = None
         self._reset()
 
     def _reset(self) -> None:
@@ -178,7 +179,7 @@ class SnowflakeTracking:
 
     def start(self, record: RunRecord) -> None:
         self._reset()
-        self.run_id = None
+        self.run_id = self.logged_run_name = None
         cls = self._module.ExperimentTracking
         tracking = getattr(cls, '_instance', None)
         if tracking is None:
@@ -207,7 +208,7 @@ class SnowflakeTracking:
         self._started = getattr(record, 'started', None) or _now()
         self._run = tracking.start_run(self._new_run_name(
             existing, _snowflake_name(record, self._started, self.run_name)))
-        self.run_id = str(self._run.name)
+        self.run_id = self.logged_run_name = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)
