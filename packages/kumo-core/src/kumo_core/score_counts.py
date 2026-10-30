@@ -105,6 +105,15 @@ class Counts:
                               max(current[1], extent[1]))
 
 
+def bin_bounds(edges: Sequence[float],
+               extent: Optional[Tuple[float, float]] = None) -> np.ndarray:
+    r"""Each bin's ends, ``edges`` with the open end bins closed at
+    ``extent``, the counted values' minimum and maximum, or else at the end
+    edges: bin ``i`` spans ``bounds[i]`` to ``bounds[i + 1]``."""
+    low, high = extent or (edges[0], edges[-1])
+    return np.array([min(low, edges[0]), *edges, max(high, edges[-1])])
+
+
 def merged(counts: Sequence[Counts]) -> Optional[Counts]:
     r"""The sum of ``counts``; ``None`` for none."""
     total: Optional[Counts] = None

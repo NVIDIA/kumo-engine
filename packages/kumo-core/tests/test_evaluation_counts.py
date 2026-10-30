@@ -9,11 +9,12 @@ from kumo_core.evaluation_counts import (
     evaluation_summaries,
 )
 from kumo_core.score_counts import PROBABILITY_EDGES, merged
-from kumo_core.summaries import Confusion, Curve, Histogram, Scalar, Series
+from kumo_core.summaries import Confusion, Histogram, Scalar, Series, Table
 from kumo_core.types import TaskType
 
 
-def _summaries(task_type, threshold=None, classes=(), **columns):
+def _summaries(task_type, threshold=None, classes=(), timeframe=None,
+               **columns):
     halves = [{name: value[part] for name, value in columns.items()
                if not isinstance(value, tuple)}
               for part in np.array_split(np.arange(len(columns['target'])), 2)]
@@ -21,7 +22,8 @@ def _summaries(task_type, threshold=None, classes=(), **columns):
     counts = merged([evaluation_counts(task_type, threshold=threshold,
                                        target_edges=edges, **half)
                      for half in halves])
-    summaries = evaluation_summaries(task_type, counts, threshold, classes)
+    summaries = evaluation_summaries(task_type, counts, threshold, classes,
+                                     timeframe)
     return {summary.name: summary for summary in summaries}
 
 
@@ -29,8 +31,21 @@ def _bin(value, edges):
     return sum(edge <= value for edge in edges)
 
 
-def _points(curve, axis):
-    return dict(getattr(curve, axis).points)
+def _rows(table):
+    return [dict(zip(table.columns, row)) for row in table.rows]
+
+
+def _approx_rows(table, expected):
+    assert len(table.rows) == len(expected)
+    for row, wanted in zip(_rows(table), expected):
+        assert row == pytest.approx(wanted)
+
+
+def _scalars(summaries):
+    assert all(s.role == 'model' for s in summaries.values()
+               if isinstance(s, Scalar))
+    return {name: s.value for name, s in summaries.items()
+            if isinstance(s, Scalar)}
 
 
 def test_binary_summaries_match_brute_force():
@@ -42,36 +57,40 @@ def test_binary_summaries_match_brute_force():
     summaries = _summaries(TaskType.BINARY_CLASSIFICATION, threshold=0.42,
                            prob=prob, target=y.astype(float))
 
-    roc, pr = summaries['test/roc'], summaries['test/pr']
-    for step, t in enumerate(PROBABILITY_EDGES):
-        assert _points(roc, 'y')[step] == pytest.approx(np.mean(p[y] >= t))
-        assert _points(roc, 'x')[step] == pytest.approx(np.mean(p[~y] >= t))
-        if (p >= t).any():
-            assert _points(pr, 'y')[step] == pytest.approx(
-                np.mean(y[p >= t]))
-    calibration = summaries['test/calibration']
+    rows = _rows(summaries['holdout/by_threshold'])
+    assert [row['threshold'] for row in rows] == list(PROBABILITY_EDGES)
+    for row in rows:
+        hit = p >= row['threshold']
+        tp, fp = (hit & y).sum(), (hit & ~y).sum()
+        assert row == pytest.approx({
+            'threshold': row['threshold'], 'share at or above': hit.mean(),
+            'tp': tp, 'fp': fp, 'fn': (~hit & y).sum(),
+            'tn': (~hit & ~y).sum(),
+            'precision': tp / (tp + fp) if tp + fp else None,
+            'recall': tp / y.sum(), 'fpr': fp / (~y).sum()})
     bins = np.array([_bin(v, PROBABILITY_EDGES) for v in p])
-    for bin, observed in _points(calibration, 'y').items():
-        assert observed == pytest.approx(y[bins == bin].mean())
-        assert _points(calibration, 'x')[bin] == pytest.approx(
-            p[bins == bin].mean())
+    bounds = [0.0, *PROBABILITY_EDGES, 1.0]
+    _approx_rows(summaries['holdout/calibration'], [
+        {'from': bounds[b], 'to': bounds[b + 1], 'rows': (bins == b).sum(),
+         'mean predicted': p[bins == b].mean(),
+         'mean observed': y[bins == b].mean()}
+        for b in sorted(set(bins))])
     clipped = np.clip(p, 1e-15, 1 - 1e-15)
     hit = p > 0.42
     tp, fp = (hit & y).sum(), (hit & ~y).sum()
     fn, tn = (~hit & y).sum(), (~hit & ~y).sum()
+    assert summaries['holdout/at_threshold'] == Table(
+        'holdout/at_threshold', ('threshold', 'tp', 'fp', 'fn', 'tn'),
+        ((0.42, tp, fp, fn, tn),), brief=True)
     precision, recall = tp / (tp + fp), tp / (tp + fn)
-    assert {name: s.value for name, s in summaries.items()
-            if isinstance(s, Scalar)} == pytest.approx({
-                'test/logloss': -np.mean(y * np.log(clipped) +
-                                         (1 - y) * np.log(1 - clipped)),
-                'test/brier': np.mean((p - y)**2),
-                'test/label/positive_rate': y.mean(),
-                'test/confusion/tp': tp, 'test/confusion/fp': fp,
-                'test/confusion/fn': fn, 'test/confusion/tn': tn,
-                'test/accuracy': (tp + tn) / p.size,
-                'test/precision': precision, 'test/recall': recall,
-                'test/f1': 2 * precision * recall / (precision + recall),
-            })
+    assert _scalars(summaries) == pytest.approx({
+        'logloss': -np.mean(y * np.log(clipped) +
+                            (1 - y) * np.log(1 - clipped)),
+        'brier': np.mean((p - y)**2),
+        'accuracy': (tp + tn) / p.size,
+        'precision': precision, 'recall': recall,
+        'f1': 2 * precision * recall / (precision + recall),
+    })
 
 
 @pytest.mark.parametrize('size', [4, 25])
@@ -85,46 +104,46 @@ def test_multiclass_summaries_match_brute_force(size):
                            target=target, classes=classes)
 
     predicted = prob.argmax(1)
+    support = np.bincount(target, minlength=size)
     f1 = {}
     for c in range(size):
         tp = ((predicted == c) & (target == c)).sum()
         precision = tp / max((predicted == c).sum(), 1)
-        recall = tp / max((target == c).sum(), 1)
+        recall = tp / max(support[c], 1)
         f1[c] = 2 * precision * recall / (precision + recall) if tp else 0.0
-        if f'test/class/c{c}/f1' in summaries:
-            assert summaries[f'test/class/c{c}/precision'].value == \
-                pytest.approx(precision)
-            assert summaries[f'test/class/c{c}/f1'].value == pytest.approx(
-                f1[c])
-    support = np.bincount(target, minlength=size)
-    assert summaries['test/accuracy'].value == np.mean(predicted == target)
-    assert summaries['test/f1_macro'].value == pytest.approx(
-        np.mean([f1[c] for c in range(size)
-                 if support[c] or (predicted == c).any()]))
-    assert summaries['test/f1_weighted'].value == pytest.approx(
-        sum(f1[c] * support[c] for c in range(size)) / target.size)
-    assert summaries['test/logloss'].value == pytest.approx(
-        -np.mean(np.log(prob[np.arange(target.size), target])))
+    top = sorted(range(size), key=lambda c: -support[c])[:20]
+    _approx_rows(summaries['holdout/by_class'], [
+        {'class': f'c{c}', 'support': support[c],
+         'precision': ((predicted == c) & (target == c)).sum() /
+         max((predicted == c).sum(), 1),
+         'recall': ((predicted == c) & (target == c)).sum() / support[c],
+         'f1': f1[c]} for c in top])
+    assert _scalars(summaries) == pytest.approx({
+        'logloss': -np.mean(np.log(prob[np.arange(target.size), target])),
+        'f1_macro': np.mean([f1[c] for c in range(size)
+                             if support[c] or (predicted == c).any()]),
+        'f1_micro': np.mean(predicted == target),
+        'f1_weighted': sum(f1[c] * support[c] for c in range(size)) /
+        target.size,
+    })
     ranked = np.argsort(-prob, axis=1)
-    top_k = summaries['test/top_k_accuracy'].points
-    assert [k for k, _ in top_k] == list(range(1, min(5, size) + 1))
-    assert [value for _, value in top_k] == pytest.approx(
-        [(ranked[:, :k] == target[:, None]).any(1).mean() for k, _ in top_k])
-    confusion = summaries['test/confusion']
+    top_k = summaries['holdout/by_k/accuracy']
+    assert top_k.x_label == 'k'
+    assert [k for k, _ in top_k.points] == list(range(1, min(5, size) + 1))
+    assert [value for _, value in top_k.points] == pytest.approx(
+        [(ranked[:, :k] == target[:, None]).any(1).mean()
+         for k, _ in top_k.points])
+    confusion = summaries['holdout/confusion']
     assert isinstance(confusion, Confusion)
     assert sum(map(sum, confusion.counts)) == target.size
     assert len(confusion.labels) == min(size, 20) + (size > 20)
-    if size > 20:
-        assert confusion.labels[-1] == 'other'
-    actual = classes.index(confusion.labels[0])
-    assert confusion.counts[0][0] == ((target == actual) &
-                                      (predicted == actual)).sum()
-    reliability = summaries['test/reliability']
     confidence = prob.max(1)
     bins = np.array([_bin(v, PROBABILITY_EDGES) for v in confidence])
-    for bin, accuracy in _points(reliability, 'y').items():
-        assert accuracy == pytest.approx(
-            np.mean(predicted[bins == bin] == target[bins == bin]))
+    assert [(row['rows'], row['accuracy'])
+            for row in _rows(summaries['holdout/calibration'])] == \
+        pytest.approx([((bins == b).sum(),
+                        np.mean(predicted[bins == b] == target[bins == b]))
+                       for b in sorted(set(bins))])
 
 
 def test_regression_summaries_match_brute_force():
@@ -139,29 +158,29 @@ def test_regression_summaries_match_brute_force():
 
     error = pred - target
     nonzero = target != 0
-    assert {name: s.value for name, s in summaries.items()
-            if isinstance(s, Scalar)} == pytest.approx({
-                'test/mae': np.abs(error).mean(),
-                'test/rmse': np.sqrt((error**2).mean()),
-                'test/r2': 1 - (error**2).sum() / (
-                    (target - target.mean())**2).sum(),
-                'test/bias': error.mean(),
-                'test/mape': np.mean(np.abs(error[nonzero]) /
-                                     np.abs(target[nonzero])),
-                'test/smape': np.mean(2 * np.abs(error) /
-                                      (np.abs(target) + np.abs(pred))),
-            })
-    residual = summaries['test/residual/hist']
-    assert isinstance(residual, Histogram)
+    assert _scalars(summaries) == pytest.approx({
+        'mae': np.abs(error).mean(),
+        'rmse': np.sqrt((error**2).mean()),
+        'r2': 1 - (error**2).sum() / ((target - target.mean())**2).sum(),
+        'bias': error.mean(),
+        'mape': np.mean(np.abs(error[nonzero]) / np.abs(target[nonzero])),
+        'smape': np.mean(2 * np.abs(error) / (np.abs(target) + np.abs(pred))),
+    })
+    residual = summaries['holdout/residuals/rows']
     assert list(residual.counts) == np.bincount(
         [_bin(v, residual.edges) for v in error],
         minlength=len(residual.edges) + 1).tolist()
-    assert summaries['test/TARGET_PRED/hist'].edges == edges
-    calibration = summaries['test/calibration']
-    assert isinstance(calibration, Curve)
+    for name, values in (('actual', target), ('predicted', pred)):
+        assert summaries[f'holdout/histogram/{name}'] == Histogram(
+            f'holdout/histogram/{name}', edges, tuple(np.bincount(
+                [_bin(v, edges) for v in values], minlength=14).tolist()))
     bins = np.array([_bin(v, edges) for v in pred])
-    for bin, actual in _points(calibration, 'y').items():
-        assert actual == pytest.approx(target[bins == bin].mean())
+    bounds = [pred.min(), *edges, pred.max()]
+    _approx_rows(summaries['holdout/calibration'], [
+        {'from': bounds[b], 'to': bounds[b + 1], 'rows': (bins == b).sum(),
+         'mean predicted': pred[bins == b].mean(),
+         'mean actual': target[bins == b].mean()}
+        for b in sorted(set(bins))])
 
 
 def test_multilabel_summaries_match_brute_force():
@@ -176,22 +195,33 @@ def test_multilabel_summaries_match_brute_force():
 
     tp, fp, fn = ((pred & target).sum(), (pred & ~target).sum(),
                   (~pred & target).sum())
-    assert summaries['test/f1_micro'].value == pytest.approx(
-        2 * tp / (2 * tp + fp + fn))
+    assert _scalars(summaries) == pytest.approx({
+        'f1_micro': 2 * tp / (2 * tp + fp + fn),
+        'precision_micro': tp / (tp + fp), 'recall_micro': tp / (tp + fn),
+        'f1_macro': np.mean([2 * (pred[:, i] & target[:, i]).sum() / (
+            pred[:, i].sum() + target[:, i].sum()) for i in range(6)])})
+    by_label = {row['label']: row
+                for row in _rows(summaries['holdout/by_label'])}
     for i, label in enumerate('abcdef'):
-        hit = (pred[:, i] & target[:, i]).sum()
-        assert summaries[f'test/label/{label}/precision'].value == \
-            pytest.approx(hit / pred[:, i].sum())
-    roc = summaries['test/roc']
-    for step, t in enumerate(PROBABILITY_EDGES):
-        assert dict(roc.y.points)[step] == pytest.approx(
-            np.mean(prob[target] >= t))
-    assert dict(summaries['test/labels_per_entity'].points) == {
-        n: count for n, count in enumerate(np.bincount(target.sum(1)))
-        if count}
+        assert by_label[label]['precision'] == pytest.approx(
+            (pred[:, i] & target[:, i]).sum() / pred[:, i].sum())
+    for row in _rows(summaries['holdout/by_threshold']):
+        assert row['recall'] == pytest.approx(
+            np.mean(prob[target] >= row['threshold']))
+    for name, values in (('actual entities', target),
+                         ('predicted entities', pred)):
+        series = summaries[f'holdout/by_label_count/{name}']
+        assert series.x_label == 'labels'
+        assert dict(series.points) == {
+            n: np.sum(values.sum(1) == n)
+            for n in sorted({*target.sum(1), *pred.sum(1)})}
 
 
-def test_forecasting_summaries_are_per_horizon():
+@pytest.mark.parametrize('timeframe, windows', [
+    (None, ['horizon 1', 'horizon 2', 'horizon 3']),
+    ((0, 7, 7, 'days'), ['days 0–7', 'days 7–14', 'days 14–21']),
+])
+def test_forecasting_summaries_are_per_horizon(timeframe, windows):
     rng = np.random.default_rng(4)
     horizon = np.tile(np.arange(3), 500)
     target = rng.normal(size=horizon.size)
@@ -199,19 +229,44 @@ def test_forecasting_summaries_are_per_horizon():
     edges = tuple(np.linspace(-3, 3, 7).tolist())
 
     summaries = _summaries(TaskType.FORECASTING, pred=pred, target=target,
-                           horizon=horizon, target_edges=edges)
+                           horizon=horizon, target_edges=edges,
+                           timeframe=timeframe)
 
-    for h in range(3):
-        rows = horizon == h
-        assert dict(summaries['test/horizon/mae'].points)[h + 1] == \
-            pytest.approx(np.abs(pred[rows] - target[rows]).mean())
-        assert sum(summaries[f'test/TARGET_PRED/h{h + 1}/hist'].counts) == \
-            rows.sum()
-    assert summaries['test/mae'].value == pytest.approx(
+    rows = _rows(summaries['holdout/by_horizon'])
+    for h, row in enumerate(rows):
+        kept = horizon == h
+        error = pred[kept] - target[kept]
+        assert row == pytest.approx({
+            'horizon': h + 1, **({} if timeframe is None else
+                                 {'window': windows[h]}),
+            'rows': kept.sum(), 'mae': np.abs(error).mean(),
+            'rmse': np.sqrt((error**2).mean()), 'bias': error.mean(),
+            'r2': 1 - (error**2).sum() / (
+                (target[kept] - target[kept].mean())**2).sum()})
+        assert sum(summaries[f'holdout/histogram/predicted, {windows[h]}']
+                   .counts) == kept.sum()
+    assert len(rows) == 3
+    assert summaries['mae'].value == pytest.approx(
         np.abs(pred - target).mean())
 
 
-def test_ranking_metrics_become_at_k_series():
+def test_ranking_top_scores_are_counted_on_their_percentiles():
+    rng = np.random.default_rng(5)
+    prob = rng.normal(size=(500, 30))
+
+    counts = merged([evaluation_counts(TaskType.MULTILABEL_RANKING,
+                                       prob=prob, target=None)])
+
+    top = prob.max(axis=1)
+    edges = tuple(np.unique(np.quantile(top, np.linspace(0, 1, 101))))
+    assert counts.edges['top_score'] == edges
+    assert counts.arrays['top_score'].tolist() == np.bincount(
+        [_bin(v, edges) for v in top], minlength=len(edges) + 1).tolist()
+    assert counts.extents['top_score'] == (top.min(), top.max())
+    assert evaluation_summaries(TaskType.MULTILABEL_RANKING, counts) == []
+
+
+def test_ranking_metrics_become_at_k_columns():
     assert at_k_summaries({'test_map@10': 0.2, 'test_map@1': 0.5,
                            'test_loss': 1.0, 'val_map@10': 0.3}) == [
-        Series('test/map_at_k', ((1, 0.5), (10, 0.2)), 'k')]
+        Series('holdout/by_k/map', ((1, 0.5), (10, 0.2)), 'k')]

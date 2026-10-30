@@ -72,15 +72,16 @@ def test_binary_test_summaries_count_every_holdout_row(graph):
 
     p = holdout['True_PROB'].to_numpy()
     y = holdout['TARGET'].to_numpy(dtype=bool)
-    roc = summaries['test/roc']
-    for step, t in enumerate(PROBABILITY_EDGES):
-        assert dict(roc.y.points)[step] == pytest.approx(np.mean(p[y] >= t))
-        assert dict(roc.x.points)[step] == pytest.approx(np.mean(p[~y] >= t))
-    assert summaries['test/confusion/tp'].value == ((p > 0.5) & y).sum()
-    assert summaries['test/brier'].value == pytest.approx(np.mean((p - y)**2))
+    table = summaries['holdout/by_threshold']
+    for t, row in zip(PROBABILITY_EDGES, table.rows):
+        row = dict(zip(table.columns, row))
+        assert row['recall'] == pytest.approx(np.mean(p[y] >= t))
+        assert row['fpr'] == pytest.approx(np.mean(p[~y] >= t))
+    assert summaries['holdout/at_threshold'].rows[0][1] == ((p > 0.5) & y).sum()
+    assert summaries['brier'].value == pytest.approx(np.mean((p - y)**2))
     stored = Counts.from_dict(result.manifest.holdout.counts)
     assert stored.arrays['True_PROB'].sum() == len(holdout)
-    assert set(stored.arrays) == {'True_PROB', 'False_PROB'}
+    assert set(stored.arrays) == {'True_PROB'}
 
 
 def test_regression_test_summaries_count_every_holdout_row(graph):
@@ -89,21 +90,22 @@ def test_regression_test_summaries_count_every_holdout_row(graph):
 
     error = (holdout['TARGET_PRED'] - holdout['TARGET']).to_numpy()
     assert result.metrics['test_mae'] == pytest.approx(np.abs(error).mean())
-    assert 'test/mae' not in summaries
-    assert summaries['test/bias'].value == pytest.approx(error.mean())
-    assert sum(summaries['test/residual/hist'].counts) == len(holdout)
+    assert summaries['bias'].value == pytest.approx(error.mean())
+    assert sum(summaries['holdout/residuals/rows'].counts) == len(holdout)
     stored = Counts.from_dict(result.manifest.holdout.counts)
-    assert stored.edges['target'] == summaries['test/TARGET_PRED/hist'].edges
+    assert stored.edges['target'] == summaries[
+        'holdout/histogram/predicted'].edges
 
 
 def test_multiclass_test_summaries_count_every_holdout_row(graph):
     _, summaries, holdout = _fit(graph, 'PREDICT ents.GROUP FOR EACH ents.ID')
 
     top = holdout[holdout['PREDICTED']]
-    assert summaries['test/accuracy'].value == pytest.approx(
+    assert summaries['f1_micro'].value == pytest.approx(
         (top['CLASS'] == top['TARGET']).mean())
-    assert sum(map(sum, summaries['test/confusion'].counts)) == len(top)
-    assert set(summaries['test/confusion'].labels) <= {'a', 'b', 'c'}
+    assert 'accuracy' not in summaries
+    assert sum(map(sum, summaries['holdout/confusion'].counts)) == len(top)
+    assert set(summaries['holdout/confusion'].labels) <= {'a', 'b', 'c'}
 
 
 def test_forecast_test_summaries_are_exact_per_horizon(graph):
@@ -114,5 +116,6 @@ def test_forecast_test_summaries_are_exact_per_horizon(graph):
     horizon = holdout.groupby(['ENTITY', 'ANCHOR_TIMESTAMP'])[
         'TIMESTAMP'].rank(method='first').astype(int)
     error = (holdout['TARGET_PRED'] - holdout['TARGET']).abs()
-    assert dict(summaries['test/horizon/mae'].points) == pytest.approx(
-        error.groupby(horizon).mean().to_dict())
+    table = summaries['holdout/by_horizon']
+    assert {row[0]: row[table.columns.index('mae')] for row in table.rows
+            } == pytest.approx(error.groupby(horizon).mean().to_dict())

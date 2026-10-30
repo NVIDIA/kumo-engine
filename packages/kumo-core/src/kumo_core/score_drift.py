@@ -13,7 +13,7 @@ minimum and maximum.
 from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
-from kumo_core.score_counts import Counts
+from kumo_core.score_counts import Counts, bin_bounds
 
 #: The score column a run's drift is measured on, the first it counted.
 DRIFT_COLUMNS = ('True_PROB', 'confidence', 'top_score', 'TARGET_PRED')
@@ -90,6 +90,5 @@ def _shares(counts: np.ndarray) -> np.ndarray:
 
 def _midpoints(edges: Sequence[float],
                extent: Optional[Tuple[float, float]]) -> np.ndarray:
-    low, high = extent or (edges[0], edges[-1])
-    bounds = np.array([min(low, edges[0]), *edges, max(high, edges[-1])])
+    bounds = bin_bounds(edges, extent)
     return (bounds[:-1] + bounds[1:]) / 2

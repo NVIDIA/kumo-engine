@@ -17,11 +17,12 @@ each catalogue item's recommendations.
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
 import numpy as np
-from kumo_core.evaluation_counts import _horizons, _metric_part
+from kumo_core.evaluation_counts import _horizons
 from kumo_core.score_counts import Counts
 from kumo_core.summaries import Scalar, Series, Summary, Table
 from kumo_core.types import TaskType
@@ -292,3 +293,7 @@ def ks(actual: np.ndarray, expected: np.ndarray) -> float:
 
 def _shares(histogram: np.ndarray) -> np.ndarray:
     return np.maximum(histogram / histogram.sum(), _EPSILON)
+
+
+def _metric_part(name: str) -> str:
+    return re.sub(r'[^A-Za-z0-9_.\- ]', '_', name)
