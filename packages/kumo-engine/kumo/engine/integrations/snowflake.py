@@ -172,9 +172,12 @@ class SnowflakeTracking:
             tracking = cls(self.session)
         elif (not hasattr(tracking, '_run') or tracking._run is not None
               or getattr(tracking, '_session', None) is not self.session):
-            logger.warning('Snowflake ExperimentTracking is in use in this '
-                           'process; this fit is not tracked in Snowflake')
-            return
+            raise RuntimeError(
+                f'Snowflake ExperimentTracking is in use in this process, by '
+                f'an active run or another Snowpark session, so this '
+                f'{record.tags.get("kumo.kind")} run is not tracked in '
+                f'Snowflake; end that run, or pass SnowflakeTracking the '
+                f'session it uses')
         self._tracking = tracking
         database = self.database or self.session.get_current_database()
         schema = self.schema or (None if self.database else
