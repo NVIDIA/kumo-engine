@@ -13,9 +13,9 @@ schedule. Both take their settings as command-line flags.
   and, with `--model-path-file`, writes it to that file.
 - `score_job.py` loads the version `--alias` points at (or `--model-path`)
   through `Trainer.load_from_connector(cfg, ...)`, scores a fresh snapshot
-  (or the stored one `--snapshot` names) and writes `--predictions-table` when
-  given. Inside the block the run is stored under `predictions/<id>/` with its
-  `_provenance.json`.
+  (or the stored one `--snapshot` names) and appends to `--predictions-table`
+  when given, with `PREDICTION_ID` and `BUNDLE_ID` columns. Inside the block
+  the run is stored under `predictions/<id>/` with its `_provenance.json`.
 - `jobs.py` holds what both share: the flags, the graph (users, items, orders),
   the connectors and the `kumo.MLOps` settings. Replace it with your own module;
   list text columns in `TEXT_COLUMNS` (e.g. `('users.BIO',)`), since inference
@@ -42,7 +42,7 @@ schedule. Both take their settings as command-line flags.
 | `--model-path` | score only: `models/<bundle id>` under the artifact root, loaded instead of `--alias` |
 | `--model-path-file` | fit: a file to write `models/<bundle id>` to; score: a file to read `--model-path` from, so a scoring step scores its own fit even after a later fit moved the alias |
 | `--snapshot` | score only: the id of a snapshot stored under the artifact root |
-| `--predictions-table` | score only: a table of the source connector to write |
+| `--predictions-table` | score only: a table of the source connector to append to; with a directory `--source`, a path under it that each run replaces |
 | `--query`, `--num-experiments`, `--threshold` | fit only: the predictive query, the number of experiments and the classification threshold the model scores with |
 | `--scratch-dir` | local disk for snapshots, tables and bundles |
 | `--on-error` | `raise` (default): a failed tracking call or registration fails the job after its result is stored (`kumo.MLOps(on_error="raise")`); `warn`: the job warns and exits 0 |

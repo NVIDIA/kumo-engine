@@ -87,9 +87,14 @@ def test_fit_then_score_locally(tmp_path, monkeypatch, capsys):
     assert any((root / 'snapshots').iterdir())
     assert any((root / 'training_tables').iterdir())
 
-    score = _module('score_job').main(
-        [*flags, '--model-path', f'models/{fit.id}'])
+    score_flags = [*flags, '--model-path', f'models/{fit.id}',
+                   '--predictions-table', 'scores/']
+    first = _module('score_job').main(score_flags)
+    score = _module('score_job').main(score_flags)
     assert score.num_rows == 50
+    assert json.loads((tmp_path / 'data' / 'scores' / '_provenance.json'
+                       ).read_text())['id'] == score.id
+    assert (root / 'predictions' / first.id).is_dir()
     stored = root / 'predictions' / score.id / 'predictions'
     assert any(stored.glob('*.parquet'))
     assert json.loads((stored / '_provenance.json').read_text())[
@@ -130,6 +135,15 @@ def test_a_scoring_step_scores_its_fit_after_a_later_fit_moved_the_alias(
     score = _module('score_job').main(
         [*flags, '--model-path-file', str(tmp_path / 'a')])
     assert score.manifest.parents.model.id == fit_a.id
+
+
+def test_score_jobs_append_to_a_table():
+    from kumoapi.jobs import WriteMode
+
+    output = _module('jobs').prediction_output(
+        SimpleNamespace(predictions_table='CHURN_OUT'),
+        SimpleNamespace(source_type='SNOWFLAKE', sink_backend=None))
+    assert output.write_mode is WriteMode.APPEND
 
 
 def test_the_shared_graph_declares_text_columns(tmp_path, monkeypatch):

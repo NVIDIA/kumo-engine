@@ -7,7 +7,7 @@ import argparse
 from pathlib import Path
 from typing import Optional, Sequence
 
-from kumoapi.jobs import MetadataField
+from kumoapi.jobs import MetadataField, WriteMode
 from kumoapi.typing import Stype
 
 import kumo.engine as kumo
@@ -26,6 +26,7 @@ from kumo.engine.connector import (
     S3Connector,
     SnowflakeConnector,
     connector_for_root,
+    is_file_destination,
 )
 
 # Fits a few months of orders; a 30-day window needs about 6 months.
@@ -172,6 +173,9 @@ def prediction_output(
         connector: Connector) -> Optional[PredictionOutputConfig]:
     if not args.predictions_table:
         return None
+    path = args.predictions_table
     return PredictionOutputConfig(
-        connector, path=args.predictions_table,
+        connector, path=path,
+        write_mode=(WriteMode.OVERWRITE if is_file_destination(
+            connector, path) else WriteMode.APPEND),
         extra_fields=[MetadataField.ANCHOR_TIMESTAMP])
