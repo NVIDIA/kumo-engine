@@ -550,8 +550,9 @@ class SnowflakeModelRegistryMixin:
                           location.model_name, version.version_name,
                           metadata.get(BUNDLE_ID_KEY))
                 _backfill(version, metrics, location.comment)
-            name = location.version or _next_version(registry,
-                                                     location.model_name)
+            else:
+                name = location.version or _next_version(
+                    registry, location.model_name)
             while version is None:
                 try:
                     version = registry.log_model(
