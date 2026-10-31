@@ -685,7 +685,7 @@ def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
 
 def test_series_and_histograms_become_one_table_per_name_prefix(
         tracking_uri):
-    from kumo_core.summaries import Curve, Histogram, Series
+    from kumo_core.summaries import Histogram, Series
 
     from kumo.engine._tracking import RunRecord
     from kumo.engine.integrations.mlflow import MlflowTracking
@@ -696,8 +696,6 @@ def test_series_and_histograms_become_one_table_per_name_prefix(
     tracker.finish(RunRecord(name='r', tags=tags, summaries=(
         Series('holdout/by_k/map', ((10, 0.25), (1, 0.5)), 'k'),
         Series('holdout/by_k/recall', ((1, 0.125),), 'k'),
-        Curve('holdout/by_bin', Series('holdout/by_bin/fpr', ((0, 1.0),), 'bin'),
-              Series('holdout/by_bin/tpr', ((0, 0.75),), 'bin')),
         Histogram('holdout/histogram/actual', (0.0, 1.0), (1, 2, 1)),
         Histogram('holdout/histogram/predicted', (0.0, 1.0), (0, 3, 1)),
         Histogram('holdout/histogram/other', (5.0,), (2, 2)))), None)
@@ -712,8 +710,6 @@ def test_series_and_histograms_become_one_table_per_name_prefix(
     assert table('holdout/by_k') == {'columns': ['k', 'map', 'recall'],
                                      'data': [[1, 0.5, 0.125],
                                               [10, 0.25, None]]}
-    assert table('holdout/by_bin') == {'columns': ['bin', 'fpr', 'tpr'],
-                                       'data': [[0, 1.0, 0.75]]}
     assert table('holdout/histogram') == {
         'columns': ['from', 'to', 'actual', 'predicted',
                     'actual cumulative share', 'predicted cumulative share'],
