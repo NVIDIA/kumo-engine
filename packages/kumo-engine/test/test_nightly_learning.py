@@ -495,3 +495,52 @@ def test_timing_comparison_rejects_batch_reduction_and_unknown_training_work(
     previous.pop('training_work')
     assert not nightly.comparison_context(reference, dict(runtime=runtime),
                                           previous, tmp_path)['compatible']
+
+
+@pytest.mark.parametrize('candidate,declared,torch_version,want', [
+    ('2.6.6', True, '2.14.1', True),
+    ('2.6.6', False, '2.14.1', False),
+    ('2.6.7', True, '2.14.1', False),
+    ('2.6.6', True, '2.15.0', False),
+    (None, 'missing_candidate', '2.14.1', False),
+    ('2.6.6', 'wrong_reference', '2.14.1', False),
+])
+def test_comparison_allows_only_the_approved_dependency_pair(
+        tmp_path, candidate, declared, torch_version, want):
+    config = dict(loader_kwargs=dict(batch_size=64, num_workers=12))
+    nightly.save(tmp_path / 'trainer_config.json', config)
+    epochs = [dict(batches=20, batch_sizes=[64] * 20)] * 10
+    row = dict(work=dict(training_epochs=epochs, optimizer_steps=200),
+               selected_checkpoint_steps=200)
+    nightly.save(tmp_path / 'result.json', row)
+    baseline = dict(gpu='RTX PRO 6000', gpu_count=1, architecture='x86_64',
+                    driver='1', torch='2.14.1', cuda='13', threads=4,
+                    cpu_count=48, system_memory_bytes=512 * 2**30,
+                    cache_protocol='fixed', dependencies={
+                        'torch': '2.14.1', 'pytorch-lightning': '2.6.5'})
+    reference = dict(reference_runtime=dict(observed=baseline))
+    if declared:
+        reference['declared_candidate_dependency_difference'] = {
+            'pytorch-lightning': dict(reference='2.6.5', candidate='2.6.6')}
+        pair = reference['declared_candidate_dependency_difference'][
+            'pytorch-lightning']
+        if declared == 'missing_candidate':
+            pair.pop('candidate')
+        elif declared == 'wrong_reference':
+            pair['reference'] = '2.6.4'
+    current = dict(baseline, dependencies={
+        'torch': torch_version, 'pytorch-lightning': candidate})
+    if candidate is None:
+        current['dependencies'].pop('pytorch-lightning')
+    previous = dict(trainer_config_sha256=nightly.signature(config),
+                    training_work=dict(requested_batch_size=64,
+                                       training_epochs=epochs,
+                                       optimizer_steps=200,
+                                       selected_checkpoint_steps=200,
+                                       early_stopping={}))
+    result = nightly.comparison_context(reference, dict(runtime=current),
+                                        previous, tmp_path)
+    assert result['compatible'] is want
+    if want:
+        assert result['declared_dependency_changes'] == {
+            'pytorch-lightning': dict(reference='2.6.5', candidate='2.6.6')}

@@ -1166,7 +1166,21 @@ def comparison_context(reference, report, previous, directory):
         dependency_signature = signature(observed['dependencies'])
     runtime = report['runtime']
     reasons = []
-    if dependency_signature != signature(runtime['dependencies']):
+    dependencies = runtime['dependencies']
+    paired_dependencies = dict(dependencies)
+    declared_changes = {}
+    if dependency_signature != signature(dependencies):
+        for name, versions in reference.get(
+                'declared_candidate_dependency_difference', {}).items():
+            if (isinstance(versions, dict)
+                    and isinstance(versions.get('reference'), str)
+                    and versions['reference']
+                    and isinstance(versions.get('candidate'), str)
+                    and versions['candidate']
+                    and dependencies.get(name) == versions.get('candidate')):
+                paired_dependencies[name] = versions['reference']
+                declared_changes[name] = versions
+    if dependency_signature != signature(paired_dependencies):
         reasons.append('Dependency profile is missing or different')
     for key in ('gpu', 'gpu_count', 'architecture', 'driver', 'torch', 'cuda',
                 'threads', 'cpu_count', 'system_memory_bytes', 'cache_protocol'):
@@ -1180,6 +1194,9 @@ def comparison_context(reference, report, previous, directory):
     if current_work is None or current_work != previous.get('training_work'):
         reasons.append('Fixed training work is missing, different or batch-reduced')
     return dict(compatible=not reasons, reasons=reasons,
+                declared_dependency_changes=declared_changes,
+                reference_dependencies_signature=dependency_signature,
+                candidate_dependencies_signature=signature(dependencies),
                 reference_trainer_config_sha256=previous.get('trainer_config_sha256'),
                 candidate_trainer_config_sha256=actual)
 

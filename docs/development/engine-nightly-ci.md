@@ -133,6 +133,11 @@ Candidate installation resolves the selected wheel's actual requirements,
 including its Lightning requirement. Run `pip check` and check installed files.
 Record all resolved versions. Two historical loader workers do not qualify
 performance comparisons with twelve current workers.
+The reference can declare a required dependency pair, such as Lightning 2.6.5
+and 2.6.6. Comparison accepts only those exact versions and still checks the
+whole reference dependency fingerprint after applying the declared pair.
+Missing packages and other version changes remain incompatible. Reports retain
+both actual dependency fingerprints and the applied declaration.
 
 Manual `reference_only: true` uses the approved wheel. After complete valid
 execution, comparison prepares `summary/reference.json` without publishing it.
