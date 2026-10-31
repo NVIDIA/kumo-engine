@@ -40,6 +40,7 @@ from kumo_core.pquery import (
     build_generated_training_task_dataset,
     resolve_query_forecast,
 )
+from kumo_core.summaries import Summary
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
 from kumo_core.training.explain_aggregation import aggregate_subgraph_features
 from kumo_core.training.workflow import TrainingWorkflowRequest
@@ -408,6 +409,29 @@ def _store_and_register(
     return registered, error or alias_error
 
 
+def _fit_identity(snapshot: GraphSnapshot,
+                  train_table: TrainingTable) -> Dict[str, Any]:
+    try:
+        return {
+            'snapshot_id': snapshot.id,
+            'query_sha256': query_sha256(train_table.query),
+        }
+    except Exception:
+        return {}
+
+
+def _fit_summaries(snapshot: GraphSnapshot, train_table: TrainingTable,
+                   result: TrainingResult,
+                   settings: Any) -> Tuple[Summary, ...]:
+    index = Path(snapshot.index_path)
+    return (
+        *snapshot_summaries(index, snapshot.graph_config),
+        *([] if result.manifest is None else artifact_summaries(
+            result.manifest, 'training', settings, table_details(index))),
+        *split_summaries(train_table.staging_dir),
+    )
+
+
 def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
                  settings: Any) -> None:
     r"""Copy the bundle to ``<root>/models/<bundle id>/`` unless a complete
@@ -746,14 +770,7 @@ class Trainer:
             [*callbacks, session.on_event] if session.enabled else callbacks)
         deps = Dependencies(settings=settings)
         fit_start = time.monotonic()
-        try:
-            started = {
-                'snapshot_id': snapshot.id,
-                'query_sha256': query_sha256(train_table.query),
-            }
-        except Exception:
-            started = {}
-        events.emit('fit_started', params=started)
+        events.emit('fit_started', params=_fit_identity(snapshot, train_table))
         try:
             result = self._fit(train_table, snapshot=snapshot,
                                export_config=export_config,
@@ -787,13 +804,9 @@ class Trainer:
             settings.registry.alias)
         session.finish(
             lambda: fitted_spec(
-                cast(RunSpec, session.spec), result, seconds, alias, (
-                    *snapshot_summaries(Path(snapshot.index_path),
-                                        snapshot.graph_config),
-                    *([] if result.manifest is None else artifact_summaries(
-                        result.manifest, 'training', settings,
-                        table_details(Path(snapshot.index_path)))),
-                    *split_summaries(train_table.staging_dir))), error)
+                cast(RunSpec, session.spec), result, seconds, alias,
+                _fit_summaries(snapshot, train_table, result, settings)),
+            error)
         raise_on_error(settings, session.error or error,
                        'Trainer.fit (its model is in trainer.result)')
         return result
