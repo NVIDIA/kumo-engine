@@ -37,13 +37,16 @@ jobs:
       manifest_sha256: ${{ steps.config.outputs.manifest_sha256 }}
       reference_sha256: ${{ steps.config.outputs.reference_sha256 }}
     steps:
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
       - name: Bind the two existing execution profiles
         id: config
         env:
           WEEKLY_CONFIG: ${{ vars.KUMO_ENGINE_WEEKLY_CONFIG }}
           MODE: ${{ inputs.mode }}
         run: |
-          python3 - <<'PYCODE'
+          python - <<'PYCODE'
           import json, os, re
           from pathlib import PurePosixPath
           value = json.loads(os.environ['WEEKLY_CONFIG'])
