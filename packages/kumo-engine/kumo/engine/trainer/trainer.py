@@ -54,7 +54,6 @@ from kumo.engine._embeddings import (
     require_trained_embedding_models,
 )
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
-from kumo.engine.connector import model_sink
 from kumo.engine.connector.base import Connector
 from kumo.engine.graph import GraphSnapshot
 from kumo.engine.pquery.prediction_table import PredictionTable
@@ -158,17 +157,14 @@ class PredictionResult:
         self._export(output_config)
 
     def _export(self, output_config: PredictionOutputConfig) -> None:
-        writers = {
-            destination: output_config.writer(destination)
-            for destination in output_config.destinations().values()
-        }
+        writer = output_config.writer()
         outputs = []
         for name, destination in output_config.destinations().items():
             kind = PredictionArtifactType(name.upper())
             files = PredictionResult(self.selection, kind).files
             outputs.append((kind, destination, files))
         for kind, destination, files in outputs:
-            writers[destination].write_files(
+            writer.write_files(
                 output_config.connector, destination, list(files),
                 output_config.write_mode,
                 export_id=f'{self.selection.job_id}-{kind.value}')
@@ -360,7 +356,7 @@ class Trainer:
         from kumo.engine.trainer._runtime import local_training_bindings
 
         if export_config is not None and not isinstance(
-                model_sink(export_config.connector, export_config.path),
+                export_config.connector.sink_backend,
                 ModelPublishingSink):
             raise NotImplementedError(
                 f'{type(export_config.connector).__name__} cannot publish '
@@ -549,8 +545,7 @@ class Trainer:
         )
         if export_config is not None:
             spec = read_training_spec(training_result.bundle_dir)
-            sink = model_sink(export_config.connector, export_config.path)
-            published = sink.publish_model(
+            published = export_config.connector.sink_backend.publish_model(
                 export_config.connector,
                 str(training_result.bundle_dir),
                 path=export_config.path,
@@ -655,10 +650,10 @@ class Trainer:
         )
 
         if output_config is not None:
-            for destination in destinations.values():
-                preflight = getattr(output_config.writer(destination),
-                                    'preflight_write_files', None)
-                if callable(preflight):
+            preflight = getattr(output_config.writer(),
+                                'preflight_write_files', None)
+            if callable(preflight):
+                for destination in destinations.values():
                     preflight(output_config.connector, destination,
                               write_mode=output_config.write_mode)
 
@@ -815,7 +810,7 @@ class Trainer:
         address = ModelOutputConfig(model_registry, path=path,
                                     location=location)
         bundle_dir = trainer_scratch_dir(new_run_id()) / 'fetched-model'
-        sink = model_sink(model_registry, address.path)
+        sink = getattr(model_registry, 'sink_backend')
         if not isinstance(sink, ModelFetchingSink):
             raise TypeError(
                 'model_registry.sink_backend must implement ModelFetchingSink')
