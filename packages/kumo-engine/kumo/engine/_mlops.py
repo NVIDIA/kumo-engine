@@ -7,10 +7,25 @@ import contextlib
 import contextvars
 import os
 import posixpath
-from dataclasses import dataclass, field
-from typing import Any, FrozenSet, Iterable, Iterator, Optional, Tuple, Union
+import re
+import warnings
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import (
+    Any,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    Literal,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+)
 
-from kumo.engine._manifest import KINDS
+from kumoapi.plugin import ModelRegistryLocation, check_model_alias
+
+from kumo.engine._manifest import KINDS, M, read_manifest, write_manifest
 
 
 @dataclass(frozen=True)
@@ -31,24 +46,39 @@ class _Root:
 
 @dataclass(frozen=True)
 class MLOps:
-    r"""Where artifacts go, for :func:`mlops` blocks and ``mlops=``
-    arguments.
+    r"""Where artifacts go and what records them, for :func:`mlops` blocks
+    and ``mlops=`` arguments.
 
     Args:
         artifact_root: an ``s3://``, ``gs://``, ``file://`` or local path
             (``/Volumes/...`` on a Databricks cluster), or a ``(connector,
             path)`` pair for a store a URI cannot reach, such as a volume
             through a ``DatabricksConnector`` or a Snowflake stage.
+        tracking: the experiment tracker, a
+            ``kumo.engine.tracking.Tracking``. Its ``check(registry)``, if
+            any, runs here, so a server or registry that is unreachable or
+            refuses these credentials fails before any work.
+        registry: a ``ModelRegistryLocation`` each fit registers its model
+            at, in the tracker's registry: MLflow's (Unity Catalog, SageMaker
+            MLflow) for ``MlflowTracking``, the Snowflake Model Registry for
+            ``SnowflakeTracking``.
         store: the artifact kinds stored under the root when produced
             (``snapshot``, ``training_table``, ``model``);
             ``True`` for all, ``False`` for none.
+        on_error: what a failure to track a run or register a model does:
+            ``'warn'`` warns and the call returns; ``'raise'`` raises once
+            the call has finished and stored its result, with the failure as
+            the cause.
 
     In ``load_from_connector`` calls, an ``MLOps`` stands in for the
     connector, with paths relative to its artifact root.
     """
 
     artifact_root: Union[str, Tuple[Any, str]]
+    tracking: Any = field(default=None, kw_only=True)
+    registry: Any = field(default=None, kw_only=True)
     store: Union[bool, Iterable[str]] = field(default=True, kw_only=True)
+    on_error: Literal['warn', 'raise'] = field(default='warn', kw_only=True)
     root: _Root = field(init=False, repr=False, compare=False)
     kinds: FrozenSet[str] = field(init=False, repr=False, compare=False)
 
@@ -60,6 +90,9 @@ class MLOps:
 
         if not self.artifact_root:
             raise ValueError('MLOps needs an artifact_root.')
+        if self.on_error not in ('warn', 'raise'):
+            raise ValueError(f"on_error must be 'warn' or 'raise', not "
+                             f"{self.on_error!r}.")
         if isinstance(self.artifact_root, str):
             if self.artifact_root.startswith('@'):
                 raise ValueError(
@@ -83,12 +116,56 @@ class MLOps:
                              f'{list(KINDS)}.')
         if kinds:
             _require_writable(root)
+        if self.registry is not None:
+            self._check_registry()
+        check = getattr(self.tracking, 'check', None)
+        if callable(check):
+            check(self.registry)
         object.__setattr__(self, 'root', root)
         object.__setattr__(self, 'kinds', kinds)
+
+    def _check_registry(self) -> None:
+        from kumo.engine.trainer.output_config import (
+            ModelOutputConfig,
+            check_model_location,
+        )
+
+        registry = self.registry
+        if not isinstance(registry, ModelRegistryLocation):
+            raise TypeError(
+                f'registry takes a ModelRegistryLocation, not '
+                f'{type(registry).__name__}; the tracker registers it.')
+        if registry.alias is not None:
+            check_model_alias(registry.alias)
+        if callable(getattr(self.tracking, 'log_model', None)):
+            if registry.version is not None:
+                raise ValueError('MLflow assigns registered model versions; '
+                                 'leave ModelRegistryLocation.version unset.')
+            return
+        connector = getattr(self.tracking, 'connector', None)
+        if connector is None:
+            raise ValueError(
+                'registry= registers through the tracker: pass '
+                'tracking=MlflowTracking(...) or SnowflakeTracking(connector, '
+                '...).')
+        check_model_location(ModelOutputConfig(connector, location=registry))
+
+    def snapshot_uri(self, snapshot: Any) -> str:
+        r"""Where a `GraphSnapshot`, or a snapshot id, is stored."""
+        return self.root.uri(snapshot_path(snapshot))
 
     def wants(self, kind: str) -> bool:
         r"""Whether artifacts of ``kind`` are stored under the root."""
         return kind in self.kinds
+
+    def locate(self, path: Path, kind: Type[M], relative: str) -> Optional[M]:
+        r"""Sets the manifest at ``path`` to say it is at ``relative``."""
+        location = self.root.uri(relative)
+        manifest = read_manifest(path, kind)
+        if manifest is not None and manifest.location != location:
+            manifest = replace(manifest, location=location)
+            write_manifest(path, manifest)
+        return manifest
 
 
 def _require_within_root(connector: Any, path: str) -> None:
@@ -156,7 +233,8 @@ def mlops(settings: MLOps) -> Iterator[MLOps]:
     r"""Turns MLOps on for the calls in the block (in this thread or asyncio
     task): each snapshot, training table and model is stored
     under ``settings.artifact_root``. An inner block replaces an outer one;
-    an ``mlops=`` argument replaces both for its call."""
+    an ``mlops=`` argument replaces both for its call. Runs are tracked and
+    models registered as ``settings`` says."""
     if not isinstance(settings, MLOps):
         raise TypeError('kumo.mlops() takes a kumo.MLOps')
     token = _CURRENT.set(settings)
@@ -172,6 +250,36 @@ def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
     return settings if settings is not None else _CURRENT.get()
 
 
+def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
+                   call: str, stacklevel: int = 2) -> None:
+    r"""Raises or warns about ``error``, as ``settings.on_error`` says."""
+    if error is None or settings is None:
+        return
+    message = (f'{call} finished, but MLOps storing, tracking or '
+               f'registration failed: {full_error(error)}')
+    if settings.on_error == 'raise':
+        raise RuntimeError(message) from error
+    warn_failure(message, error, stacklevel + 1)
+
+
+def full_error(error: BaseException) -> str:
+    r"""``Type: message``, not shortened."""
+    return f'{type(error).__name__}: {error}'
+
+
+def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
+                 also: Optional[BaseException] = None) -> None:
+    r"""Warns ``message`` once per ``error`` (and ``also``)."""
+    if getattr(error, '_kumo_warned', False):
+        return
+    warnings.warn(message, UserWarning, stacklevel=stacklevel + 1)
+    for reported in (error, also):
+        try:
+            setattr(reported, '_kumo_warned', True)
+        except AttributeError:
+            pass
+
+
 def on_root(source: Any, path: str) -> Tuple[Any, str]:
     r"""The connector and path a ``load_from_connector(source, path=...)``
     reads: an `MLOps` ``source`` reads ``path`` under its artifact root."""
@@ -184,3 +292,21 @@ def snapshot_path(snapshot: Any) -> str:
     r"""Where a snapshot, or a snapshot id, is stored under a root."""
     snapshot_id = snapshot if isinstance(snapshot, str) else snapshot.id
     return 'snapshots/' + snapshot_id.replace('@', '/')
+
+
+_SNAPSHOT_ID = re.compile(r'[0-9a-f]+@[0-9a-f]+')
+
+
+def snapshot_uri(snapshot: Any,
+                 settings: Optional[MLOps] = None) -> Optional[str]:
+    r"""A snapshot location; an object or id is read from the root."""
+    if snapshot is None or (isinstance(snapshot, str)
+                            and not _SNAPSHOT_ID.fullmatch(snapshot)):
+        return snapshot
+    settings = resolve(settings)
+    if settings is None:
+        raise ValueError(
+            'A snapshot given by object or id is read from the artifact '
+            'root: call this in a kumo.mlops block, or pass the location '
+            'snapshot.export(...) returned.')
+    return settings.snapshot_uri(snapshot)

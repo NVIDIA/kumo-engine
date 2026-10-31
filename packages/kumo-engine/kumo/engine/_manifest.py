@@ -18,6 +18,7 @@ from typing import (
     List,
     Mapping,
     Optional,
+    Tuple,
     Type,
     TypeVar,
     Union,
@@ -27,6 +28,7 @@ from typing import (
 )
 
 from kumo_core.io.filesystem import atomic_write_bytes
+from kumo_core.summaries import Dataset, Summary, Tag
 
 SCHEMA_VERSION = 1
 _OMIT_NONE = 'omit_none'
@@ -208,6 +210,48 @@ def _walk(value: Any, key: str, root: Manifest) -> Iterator[Artifact]:
             yield from _walk(item, key, root)
 
 
+#: Connector kinds of the artifact root's URI schemes.
+_SCHEMES = {'s3': 'S3', 'gs': 'GCS', 'file': 'LOCAL_FILE', '': 'LOCAL_FILE'}
+
+Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
+
+
+def artifact_summaries(manifest: Manifest, context: str,
+                       settings: Any = None,
+                       details: Optional[Details] = None) -> List[Summary]:
+    r"""Where ``manifest``'s artifacts are, for its tracked run: each
+    artifact's tag (the nearest of each), ``kumo.artifact_root`` under MLOps
+    ``settings``, and a `Dataset` per stored dataset, read in ``context``
+    or written, with the schema and profile ``details`` gives its id."""
+    located = [item for item in artifacts(manifest) if item.location]
+    tags: Dict[str, str] = {}
+    for item in located:
+        if item.tag:
+            tags.setdefault(item.tag, str(item.location))
+    if settings is not None:
+        tags['kumo.artifact_root'] = settings.root.uri('').rstrip('/')
+    summaries: List[Summary] = [Tag(name, value)
+                                for name, value in tags.items()]
+    for item in located:
+        if not item.is_dataset:
+            continue
+        location = str(item.location)
+        source = {'connector': item.connector or _connector(location),
+                  'location': location, 'version': item.version,
+                  'version_kind': item.version_kind}
+        schema, profile = (details or {}).get(item.id, ({}, {}))
+        summaries.append(Dataset(item.id, source, schema, profile,
+                                 item.context or context))
+    return summaries
+
+
+def _connector(location: str) -> Optional[str]:
+    from urllib.parse import urlparse
+
+    return None if location.startswith('@') else _SCHEMES.get(
+        urlparse(location).scheme)
+
+
 def stamp() -> Dict[str, Any]:
     """Envelope fields for a manifest written now."""
     from kumo.engine._provenance import environment
@@ -294,6 +338,7 @@ class TrainingTableManifest(Manifest):
 class ModelParents(Record):
     training_table: Optional[TrainingTableManifest] = None
     warm_start: Optional['ModelManifest'] = None
+    derived_from: Optional['ModelManifest'] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -304,16 +349,70 @@ class FitTiming(Record):
 
 
 @dataclass(frozen=True, kw_only=True)
+class TrackingRef(Record):
+    r"""A run in an experiment tracker: its ``platform`` (``mlflow``,
+    ``databricks``, ``sagemaker``, ``snowflake``), the platform's own
+    ``run_id`` and, where the platform has one, the run's ``url``."""
+
+    platform: str
+    run_id: str
+    url: Optional[str] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
+class Dependency(Record):
+    r"""One thing a model needs to predict: its ``predictor`` entry point,
+    a ``package`` requirement, or an ``asset`` (content-addressed by
+    ``sha256``, loaded by ``entry_point``, stored at ``location``)."""
+
+    kind: str
+    name: str
+    version: Optional[str] = omit_none()
+    extras: Optional[List[str]] = omit_none()
+    asset_kind: Optional[str] = omit_none()
+    sha256: Optional[str] = omit_none()
+    entry_point: Optional[str] = omit_none()
+    packing: Optional[str] = omit_none()
+    location: Optional[str] = omit_none()
+
+    def as_artifact(self, key: str) -> Optional[Artifact]:
+        kind = _kinds().get(self.kind)
+        return None if kind is None else Artifact(
+            self.kind, str(self.sha256), self.location, kind.IS_DATASET,
+            f'kumo.{self.asset_kind}_uri', version=self.sha256,
+            version_kind='exact')
+
+
+@dataclass(frozen=True, kw_only=True)
 class ModelManifest(Manifest):
     """How a model bundle was fitted: from which training table (embedded,
     with its snapshot) and warm-start model, when, and with which fit
-    mode. Its ``id`` is the bundle id."""
+    mode. Its ``id`` is the bundle id; ``dependencies`` is what predicting
+    needs besides the bundle and a snapshot (none listed: the built-in
+    `Trainer` predictor)."""
 
     kind: str = 'model'
     URI_TAG: ClassVar[Optional[str]] = 'kumo.bundle_uri'
     parents: Optional[ModelParents] = None
     fit: Optional[FitTiming] = None
     fit_mode: Optional[str] = None
+    tracking: Optional[TrackingRef] = omit_none()
+    dependencies: Optional[List[Dependency]] = omit_none()
+
+    EMBED_OMITS = ('tracking', )
+
+
+@dataclass(frozen=True, kw_only=True)
+class AssetManifest(Manifest):
+    """An asset a model depends on, stored once under
+    ``<root>/assets/<asset_kind>/<sha256>/``; its ``id`` is the sha256."""
+
+    kind: str = 'asset'
+    asset_kind: Optional[str] = None
+    name: Optional[str] = None
+    version: Optional[str] = None
+    format: Optional[str] = None
+    source: Optional[str] = None
 
 
 def manifest_bytes(manifest: Manifest) -> bytes:

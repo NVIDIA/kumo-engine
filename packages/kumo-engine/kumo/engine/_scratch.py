@@ -35,13 +35,17 @@ path has already been computed and used.
 
 import hashlib
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Union
+from typing import Iterator, Optional, Union
 
 from kumo_core.chunked_fs import set_spool_dir
 
 _DEFAULT_ROOT = Path.home() / ".cache" / "kumo-engine"
 _root = _DEFAULT_ROOT
+_scoped_root: ContextVar[Optional[Path]] = ContextVar('kumo_scratch_root',
+                                                      default=None)
 
 
 def set_scratch_dir(path: Union[str, Path]) -> None:
@@ -67,7 +71,18 @@ def set_scratch_dir(path: Union[str, Path]) -> None:
 
 
 def get_scratch_dir() -> Path:
-    return _root
+    return _scoped_root.get() or _root
+
+
+@contextmanager
+def scoped_scratch_dir(path: Path) -> Iterator[None]:
+    r"""Nests this thread's (context's) new scratch directories under
+    ``path`` instead of the configured root."""
+    token = _scoped_root.set(path)
+    try:
+        yield
+    finally:
+        _scoped_root.reset(token)
 
 
 set_spool_dir(lambda: str(get_scratch_dir() / "spool"))

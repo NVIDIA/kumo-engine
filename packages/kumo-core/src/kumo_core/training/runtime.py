@@ -20,6 +20,7 @@ from kumo_core.diskgraph.stores import (
 
 if TYPE_CHECKING:
     from kumo_core.embedding_models import EmbeddingModelStore
+    from kumo_core.instrumentation import TrainingInstrumentation
 
 
 class TrainingDataRuntime(Protocol):
@@ -206,6 +207,7 @@ def local_training_bindings(
     run_name: Optional[str] = None,
     embedding_models: Optional[EmbeddingModelStore] = None,
     accelerator: str = 'auto',
+    instrumentation: Optional[TrainingInstrumentation] = None,
 ) -> Any:
     r"""Binds one resolved training input to this process.
 
@@ -224,7 +226,7 @@ def local_training_bindings(
                                          run_name=run_name,
                                          embedding_models=embedding_models,
                                          accelerator=accelerator),
-        instrumentation=NoOpTrainingInstrumentation(),
+        instrumentation=instrumentation or NoOpTrainingInstrumentation(),
         resolve_vital_artifacts=resolve_vital_artifact_sources,
         # The vital bundle lands beside the run. A platform backend would then
         # upload it to a registry; locally the path is the identity.

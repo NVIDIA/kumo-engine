@@ -304,10 +304,16 @@ def prepared_artifact_file(path, extra_columns=None, *, parquet_options=None,
         writer = None
         try:
             for batch in local_parquet_batches(path):
-                frame = batch.to_pandas()
+                # In Arrow: a pandas round trip turns an all-null bool column
+                # into Arrow's null type.
+                table = pa.Table.from_batches([batch])
                 for name, value in (extra_columns or {}).items():
-                    frame[name] = value
-                table = pa.Table.from_pandas(frame, preserve_index=False)
+                    column = pa.array([value] * table.num_rows,
+                                      type=pa.scalar(value).type)
+                    table = (table.set_column(
+                        table.column_names.index(name), name, column)
+                             if name in table.column_names else
+                             table.append_column(name, column))
                 if writer is None:
                     writer = pq.ParquetWriter(staged, table.schema,
                                               **(parquet_options or {}))

@@ -13,6 +13,7 @@ from kumo_core.types import PredictionArtifactType
 from kumoapi.model_plan import ModelPlan
 
 from kumo.engine.pquery.prediction_table import PredictionTable
+from kumo.engine.trainer._scoring import ScoringDefaults
 from kumo.engine.trainer.trainer import Trainer
 
 
@@ -33,7 +34,8 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
     from kumo_core.types import TaskType
 
     trainer = Trainer(ModelPlan())
-    trainer._training_result = SimpleNamespace(artifact_paths={})
+    trainer._training_result = SimpleNamespace(
+        artifact_paths={}, scoring_defaults=ScoringDefaults())
     trainer._snapshot_id = snapshot.id
     trainer._training_query = 'PREDICT users.label FOR EACH users.id'
     table = PredictionTable(trainer._training_query, tmp_path, tmp_path, 8,

@@ -76,7 +76,7 @@ def server():
                 return self.send(dict(registered_models=[model]))
             if path.endswith('/models/versions') and self.command == 'POST':
                 assert payload['source'].startswith('file:')
-                assert payload['tags'] == [{'key': 'kumo_engine', 'value': '1'}]
+                assert {'key': 'kumo_engine', 'value': '1'} in payload['tags']
                 versions[identity] = dict(version=1,
                                           status='PENDING_REGISTRATION',
                                           tags=payload['tags'])

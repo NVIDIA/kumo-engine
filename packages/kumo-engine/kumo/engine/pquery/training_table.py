@@ -142,15 +142,17 @@ class TrainingTable:
 
         path = settings.root.location(f'training_tables/{self.id}/')
         try:
+            settings.locate(self.staging_dir / STAGING_MANIFEST_FILE,
+                            TrainingTableManifest, f'training_tables/{self.id}')
             filesystem, root = file_store(settings.root.connector, path)
             if filesystem.get_file_info(
                     f'{root}/_SUCCESS').type is not FileType.File:
                 self.export(
                     TrainingTableOutputConfig(settings.root.connector, path))
         except Exception as error:
-            warnings.warn(
+            raise RuntimeError(
                 f"Could not store training table {self.id} under the "
-                f"artifact root: {error}", UserWarning, stacklevel=3)
+                f"artifact root: {error}") from error
 
     @classmethod
     def from_source_table(
@@ -312,7 +314,13 @@ def _finish(table: TrainingTable, snapshot: GraphSnapshot, request: Any,
     _record_manifest(table, snapshot, request, seed, source_table=source_table)
     settings = resolve(mlops)
     if settings is not None and settings.wants('training_table'):
-        table._store(settings)
+        from kumo.engine._mlops import raise_on_error
+
+        try:
+            table._store(settings)
+        except Exception as error:
+            raise_on_error(settings, error, 'Training table generation',
+                           stacklevel=3)
     return table
 
 

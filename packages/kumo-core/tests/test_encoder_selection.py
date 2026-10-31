@@ -298,7 +298,14 @@ def test_target_selection_still_requires_numerical_stats():
         select_target_encoder(Stype.numerical, {})
 
 
-def test_text_left_unencoded_is_reported_by_every_inference(caplog):
+@pytest.mark.parametrize("installed", [True, False])
+def test_text_left_unencoded_is_reported_by_every_inference(
+        caplog, monkeypatch, installed):
+    from kumo_core import embedding_models
+
+    monkeypatch.setattr(
+        embedding_models, "_installed",
+        lambda: {embedding_models.DEFAULT_MODEL: None} if installed else {})
     stats = {
         stat_type: _EncoderStat(value=value, approx=True)
         for stat_type, value in (
@@ -314,7 +321,10 @@ def test_text_left_unencoded_is_reported_by_every_inference(caplog):
     assert [record.getMessage() for record in caplog.records] == [
         "Text column 'short' will not be encoded by default: its values are "
         "too short or have too few known words. To encode it anyway, set its "
-        "encoder to TextEmbedding()."
+        "encoder to TextEmbedding()." +
+        ("" if installed else " No word-vector model is installed for it "
+         "either: pip install \"kumo-engine[text]\", or pass embedding_models= "
+         "to Trainer.")
     ] * 2
 
 

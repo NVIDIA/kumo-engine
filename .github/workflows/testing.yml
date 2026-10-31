@@ -723,6 +723,41 @@ jobs:
           cd packages/kumo-sdk && python -m pytest -rs \
             -W "ignore:You have an incompatible version of 'pyarrow' installed:UserWarning"
 
+  mlflow-floor:
+    # kumo-engine's `mlflow` extra allows the MLflow a Databricks Runtime
+    # ships; run the MLflow suites against the extra's floor. The tests left
+    # out read logs, which MLflow 3.5's SQLite migrations reconfigure.
+    needs: [diskgraph-wheel]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up packages
+        uses: ./.github/actions/setup
+        with:
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          diskgraph-wheel-artifact: diskgraph-wheel
+
+      - name: Run the MLflow suites at the mlflow extra's floor
+        run: |
+          uv pip install --no-deps -e packages/kumo-engine
+          # mlflow 3.5.0 pins a pyarrow with no wheel for this Python; the
+          # extra installs mlflow-skinny, which holds the client and stores.
+          uv pip uninstall mlflow mlflow-skinny mlflow-tracing
+          uv pip install "mlflow-skinny==3.5.0"
+          python -c "import mlflow; assert mlflow.__version__ == '3.5.0'"
+          cd packages/kumo-engine && python -m pytest -rs \
+            test/test_mlflow_target.py test/test_mlflow_model.py \
+            test/test_mlflow_tracking.py -k "not (reuses_its_version or \
+            late_one_is_dropped or names_its_cause_and_can_raise or \
+            ends_runs_failed_and_is_not_raised)"
+
   durations-aggregate:
     runs-on: ubuntu-24.04
     needs: [pytest]

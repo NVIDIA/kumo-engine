@@ -157,8 +157,7 @@ def test_predictions_export_through_a_filesystem_only_sink(fitted, connector):
     trainer, table, snapshot = fitted
     output = PredictionOutputConfig(
         connector, output_paths={'predictions': '@stage/preds/'})
-    result = trainer.predict(table, snapshot=snapshot, output_config=output,
-                             binary_classification_threshold=0.5)
+    result = trainer.predict(table, snapshot=snapshot, output_config=output)
     store = connector.sink_backend.store
     assert any(name.startswith('@stage/preds/') for name in store.objects)
     result.export(

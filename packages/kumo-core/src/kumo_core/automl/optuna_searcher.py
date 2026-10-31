@@ -28,11 +28,6 @@ class OptunaSearcher(Searcher[PlanT]):
         max_attempts: int = 50,
         **kwargs: Any,
     ) -> None:
-        warnings.filterwarnings(
-            "ignore",
-            message=".*plot_.*",
-            category=optuna.exceptions.ExperimentalWarning,
-        )
         super().__init__(space, max_attempts)
         direction = "maximize" if self.tune_mode == "max" else "minimize"
         with warnings.catch_warnings():
@@ -66,6 +61,7 @@ class OptunaSearcher(Searcher[PlanT]):
         for _ in range(self.fallback_sampler.max_attempts):
             self.current_trial = self.study.ask()
             cfg = self.fallback_sampler.sample_instance()
+            self.sampled_params = self.fallback_sampler.sampled_params
             if cfg not in [prev_cfg for prev_cfg, _ in self.state]:
                 return cfg
         return cfg
@@ -89,6 +85,13 @@ class OptunaSearcher(Searcher[PlanT]):
         return self.current_trial.suggest_categorical(key, value)
 
     def analyze(self, path: str) -> None:
+        # Optuna flags its matplotlib plots as experimental on every call.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore",
+                                  optuna.exceptions.ExperimentalWarning)
+            self._analyze(path)
+
+    def _analyze(self, path: str) -> None:
         import matplotlib
         import matplotlib.pyplot as plt
         from optuna.visualization.matplotlib import (

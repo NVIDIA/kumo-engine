@@ -31,6 +31,15 @@ class LinkPredictionTable(Protocol):
 
 
 _ANCHOR_TIME_COL = "ANCHOR_TIMESTAMP"
+_CLASS_TASKS = frozenset({
+    TaskType.MULTICLASS_CLASSIFICATION,
+    TaskType.MULTILABEL_CLASSIFICATION,
+})
+_LONG_FORMAT_TASKS = _CLASS_TASKS | {
+    TaskType.MULTILABEL_RANKING,
+    TaskType.TEMPORAL_LINK_PREDICTION,
+    TaskType.STATIC_LINK_PREDICTION,
+}
 
 
 def _get_col_names(
@@ -65,6 +74,23 @@ def _get_col_names(
             col_value = f"{col_value}_PROB"
         result.append(col_value)
     return result
+
+
+def prediction_output_columns(task_type: TaskType) -> list[str]:
+    r"""The prediction columns a scored row carries after its entity column,
+    for a target named ``TARGET`` and a time column named ``TIMESTAMP``."""
+    if task_type in _CLASS_TASKS:
+        return ['PREDICTED', 'CLASS', 'SCORE']
+    if task_type.is_ranking:
+        return ['CLASS', 'SCORE']
+    if task_type == TaskType.FORECASTING:
+        return ['TIMESTAMP', 'TARGET_PRED']
+    if task_type == TaskType.BINARY_CLASSIFICATION:
+        return [
+            'TARGET_PRED',
+            *_get_col_names(pd.Index([]), task_type, is_wide_format=True)
+        ]
+    return ['TARGET_PRED']
 
 
 def _format_prediction_sanity_checks(
@@ -284,13 +310,7 @@ def format_prediction(
             'metadata. Rename the time column before forecasting.')
 
     format: Literal['wide', 'long']
-    if task_type in {
-            TaskType.MULTICLASS_CLASSIFICATION,
-            TaskType.MULTILABEL_CLASSIFICATION,
-            TaskType.MULTILABEL_RANKING,
-            TaskType.TEMPORAL_LINK_PREDICTION,
-            TaskType.STATIC_LINK_PREDICTION,
-    }:
+    if task_type in _LONG_FORMAT_TASKS:
         format = 'long'
     else:
         assert top_k is None, f"`top_k` is not supported for {task_type}."

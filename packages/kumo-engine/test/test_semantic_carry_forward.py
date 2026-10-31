@@ -24,6 +24,7 @@ from kumo.engine.pquery.prediction_table import (
     PredictionTable,
     _compile_prediction_table,
 )
+from kumo.engine.trainer._scoring import ScoringDefaults
 from kumo.engine.trainer.trainer import Trainer, _stage_model_bundle
 
 _SPLIT = SimpleNamespace(stage_counts={'test': 1})
@@ -128,7 +129,6 @@ def test_compile_rejects_invalid_prediction_time(snapshot, tmp_path, value,
 
 @pytest.mark.parametrize('query, threshold, message', [
     ('PREDICT users.age FOR EACH users.id', .5, 'target/entity'),
-    ('PREDICT users.label FOR EACH users.id', None, 'must be specified'),
     ('PREDICT users.label FOR EACH users.id', 1.1, 'between 0 and 1'),
 ])
 def test_prediction_admission_before_materialization(snapshot, tmp_path, query,
@@ -136,7 +136,7 @@ def test_prediction_admission_before_materialization(snapshot, tmp_path, query,
                                                      monkeypatch):
     from kumoapi.model_plan import ModelPlan
     trainer = Trainer(ModelPlan())
-    trainer._training_result = SimpleNamespace()
+    trainer._training_result = SimpleNamespace(scoring_defaults=ScoringDefaults())
     trainer._snapshot_id = snapshot.id
     trainer._training_query = 'PREDICT users.label FOR EACH users.id'
     materialize = Mock(side_effect=AssertionError('must not materialize'))
@@ -164,7 +164,8 @@ def test_binary_predictions_preserve_probabilities_and_metadata_contract(
     _stub_generated_task_dataset_builder(monkeypatch)
     monkeypatch.setattr(type(trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
-    trainer._training_result = SimpleNamespace(artifact_paths={})
+    trainer._training_result = SimpleNamespace(
+        artifact_paths={}, scoring_defaults=ScoringDefaults())
     trainer._snapshot_id = snapshot.id
     trainer._training_query = 'PREDICT users.label FOR EACH users.id'
     table = PredictionTable(trainer._training_query, tmp_path, tmp_path, 0,
@@ -273,7 +274,8 @@ def test_predict_reuses_generated_table_without_recompiling(
     trainer = Trainer(ModelPlan())
     monkeypatch.setattr(type(trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
-    trainer._training_result = SimpleNamespace(artifact_paths={})
+    trainer._training_result = SimpleNamespace(
+        artifact_paths={}, scoring_defaults=ScoringDefaults())
     trainer._snapshot_id = snapshot.id
     trainer._training_query = query
 
@@ -708,7 +710,8 @@ def test_repeated_predict_calls_get_distinct_ingest_targets(
         trainer = Trainer(ModelPlan())
         monkeypatch.setattr(type(trainer), 'scratch_dir',
                             property(lambda _: tmp_path))
-        trainer._training_result = SimpleNamespace(artifact_paths={})
+        trainer._training_result = SimpleNamespace(
+            artifact_paths={}, scoring_defaults=ScoringDefaults())
         trainer._snapshot_id = snapshot.id
         trainer._training_query = query
         trainer.predict(table, snapshot=snapshot, output_config=output,
@@ -720,7 +723,8 @@ def test_repeated_predict_calls_get_distinct_ingest_targets(
     same_trainer = Trainer(ModelPlan())
     monkeypatch.setattr(type(same_trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
-    same_trainer._training_result = SimpleNamespace(artifact_paths={})
+    same_trainer._training_result = SimpleNamespace(
+        artifact_paths={}, scoring_defaults=ScoringDefaults())
     same_trainer._snapshot_id = snapshot.id
     same_trainer._training_query = query
     same_trainer.predict(table, snapshot=snapshot, output_config=output,

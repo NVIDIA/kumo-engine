@@ -14,6 +14,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     ClassVar,
     Iterable,
@@ -25,6 +26,9 @@ from typing import (
 from .io.filesystem import atomic_write_bytes, fsync_directory, local_path
 from .io.json import load_json, save_json
 from .manifest import RunManifest, RunPaths
+
+if TYPE_CHECKING:
+    from .types import TaskType
 
 PROVENANCE_FILE = '_provenance.json'
 
@@ -380,6 +384,26 @@ def add_bundle_file(bundle_dir: Path, role: str, relative_path: str) -> None:
     _write_bundle_manifest(bundle_dir, manifest)
 
 
+def remove_bundle_file(bundle_dir: Path, role: str) -> None:
+    """Delete the file listed under ``role`` and its manifest entry."""
+    from .sources import layout
+
+    bundle_dir = Path(bundle_dir)
+    manifest_path = bundle_dir / VitalArtifactPublicationPolicy.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    entries = manifest.get('artifacts') or []
+    removed = [entry for entry in entries if entry.get('role') == role]
+    if not removed:
+        return
+    manifest['artifacts'] = [
+        entry for entry in entries if entry.get('role') != role
+    ]
+    _write_bundle_manifest(bundle_dir, manifest)
+    for entry in removed:
+        (bundle_dir / layout.confined(entry['relative_path'])).unlink(
+            missing_ok=True)
+
+
 def _write_bundle_manifest(bundle_dir: Path,
                            manifest: Mapping[str, Any]) -> None:
     payload = json.dumps(manifest, indent=2, sort_keys=True) + '\n'
@@ -475,6 +499,14 @@ _BUNDLE_LAYOUT = {
     'prediction_schema': 'prediction-schema.json',
     'metrics': 'metrics.json',
 }
+
+
+def bundle_task_type(artifacts: Mapping[str, str]) -> TaskType:
+    """The task type a bundle's prediction schema records."""
+    from .types import TaskType
+
+    schema = load_json(artifacts['prediction_schema'], dict)
+    return TaskType(schema['task_type'])
 
 
 def stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
