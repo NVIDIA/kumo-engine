@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -115,6 +116,18 @@ class PublicRunnerTest(unittest.TestCase):
                     target = context / core_path / module
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text('# artifact dependency fixture\n')
+                manifests = []
+                if profile == 'public_setup':
+                    workspace = tomllib.loads(
+                        (runner.ROOT / 'pyproject.toml').read_text())
+                    manifests = [
+                        Path(member) / 'pyproject.toml' for member in
+                        workspace['tool']['uv']['workspace']['members']
+                    ]
+                    for manifest in manifests:
+                        target = context / manifest
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_text('# workspace metadata fixture\n')
                 (context / 'Dockerfile').write_text('FROM scratch\nCOPY . /\n')
                 shutil.copyfile(
                     runner.ROOT / 'tests' / profile / 'Dockerfile.dockerignore',
@@ -131,6 +144,9 @@ class PublicRunnerTest(unittest.TestCase):
                 for module in artifact_modules:
                     target = root / 'output' / core_path / module
                     self.assertTrue(target.is_file(), str(module))
+                for manifest in manifests:
+                    self.assertTrue((root / 'output' / manifest).is_file(),
+                                    str(manifest))
 
     @unittest.skipUnless(shutil.which('docker'), 'Docker is required')
     def test_wheel_rebuild_replaces_previous_output(self):

@@ -52,6 +52,7 @@ members = [
   "packages/kumo-bigquery",
   "packages/kumo-databricks",
   "packages/kumo-gcs",
+  "packages/kumo-adls",
   "packages/kumo-s3",
   "packages/kumo-engine",
   "packages/kumo-sdk",
@@ -85,6 +86,7 @@ kumo-pql = { workspace = true }
 kumo-core = { workspace = true }
 diskgraph = { workspace = true }
 kumo-gcs = { workspace = true }
+kumo-adls = { workspace = true }
 kumo-s3 = { workspace = true }
 kumo-snowflake = { workspace = true }
 kumo-bigquery = { workspace = true }
