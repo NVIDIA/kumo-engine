@@ -1,9 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Summaries of a training table's splits and of a graph snapshot, read
-from the statistics their builds wrote (``split_stats.json``,
-``col_stats.json``, ``ingest_stats.json``), with no pass over the data."""
+r"""Split and snapshot summaries, from the stats files builds wrote."""
 
 import json
 import logging
@@ -22,7 +20,6 @@ logger = logging.getLogger(__name__)
 _SPLITS = ('train', 'val', 'test')
 _COLUMN_STATS = ('count', 'null_rate', 'num_unique', 'min', 'max', 'mean',
                  'std', 'q25', 'q50', 'q75', 'avg_tokens', 'max_tokens')
-#: Column statistics' titles, "≈" for the estimated ones.
 _TITLES = {'null_rate': 'null rate', 'num_unique': 'distinct≈',
            'q25': 'q25≈', 'q50': 'q50≈', 'q75': 'q75≈',
            'avg_tokens': 'avg tokens≈', 'max_tokens': 'max tokens≈',
@@ -44,9 +41,7 @@ _MIN_ROWS = 10
 
 
 def split_summaries(staging_dir: Path) -> List[Summary]:
-    r"""The brief table ``data/splits``: each split's rows, entities (by
-    the query's entity table) and label balance, its positive rate or the
-    label's mean; and a note naming a numerical target's bins."""
+    r"""Brief data/splits table and a note on a numerical target's bins."""
     stats = _read(staging_dir / 'split_stats.json')
     tables = {split: stats.get(f'{split}_table_stats') for split in _SPLITS}
     tables = {split: table for split, table in tables.items()
@@ -90,9 +85,7 @@ def _value(table: Mapping[str, Any], target: Mapping[str, Any], name: str,
 
 
 def target_edges(staging_dir: Path) -> Tuple[float, ...]:
-    r"""Bin edges for a numerical target from the training split's
-    statistics: its histogram's bins, or `_TARGET_BINS` equal bins from its
-    min to its max, and its quartiles; empty without them."""
+    r"""A numerical target's bin edges from the training split's statistics."""
     return _target_bins(_train_target(staging_dir))[0]
 
 
@@ -129,9 +122,7 @@ def _bins_note(target: Mapping[str, Any]) -> Optional[str]:
 
 def snapshot_summaries(index: Path,
                        graph_config: Mapping[str, Any]) -> List[Summary]:
-    r"""``data/health``, a row per table and per link; a ``problems`` note
-    per failed Kumo data check, counted by the tag ``kumo.data_warnings``;
-    and ``data/columns``, a row per column."""
+    r"""data/health, data/columns and a problems note per failed data check."""
     ingest = _read(index / 'ingest_stats.json').get('stats') or {}
     columns: Dict[str, Dict[str, Any]] = _read(index / 'col_stats.json')
     relations = _relations(_read(index / 'edge_stats.json'), ingest)
@@ -162,10 +153,7 @@ def _profiles(columns: Mapping[str, Mapping[str, Any]]
 
 def _relations(edge_stats: Mapping[str, Any],
                ingest: Mapping[str, Any]) -> Dict[str, Dict[str, float]]:
-    r"""Each relation's ``count``, ``src_match_frac`` and ``dst_match_frac``
-    (the share of source and destination rows with an edge) and
-    ``fk_lookup_failures``, under DiskGraph's ``<src>_<fkey>_to_<dst>_<pkey>``
-    name."""
+    r"""Each relation's edge count, match shares and lookup failures."""
     relations: Dict[str, Dict[str, float]] = {
         name: {'count': count}
         for name, count in (ingest.get('edge_counts') or {}).items()
@@ -198,8 +186,7 @@ def _links(table: Mapping[str, Any],
 def _health(ingest: Mapping[str, Any], columns: Mapping[str, Any],
             relations: Mapping[str, Mapping[str, float]],
             graph_config: Mapping[str, Any]) -> Table:
-    r"""A row per table, then per link, with '' in the columns that apply
-    only to the other kind."""
+    r"""A row per table, then per link."""
     duplicates = _by_table(ingest.get('pk_duplicate_counts'), ':')
     null_time = _by_table(ingest.get('pk_null_timestamp_drops'), ':shard-')
     dropped = ingest.get('dropped_rows_counts') or {}
@@ -276,9 +263,7 @@ def _problems(ingest: Mapping[str, Any], columns: Mapping[str, Any],
 
 
 def table_details(index: Path, snapshot_id: Optional[str] = None) -> Details:
-    r"""Each source table's schema and profile, its rows and column
-    statistics, for its `Dataset`; given ``snapshot_id``, the snapshot's
-    own profile too, its tables and rows."""
+    r"""Each source table's schema and profile, and the snapshot's."""
     rows = (_read(index / 'ingest_stats.json').get('stats')
             or {}).get('node_counts') or {}
     profiles = _profiles(_read(index / 'col_stats.json'))
@@ -298,8 +283,7 @@ def table_details(index: Path, snapshot_id: Optional[str] = None) -> Details:
 
 
 def training_table_details(table: Any) -> Details:
-    r"""A training table's schema and profile, its rows and columns, from
-    its Parquet metadata alone."""
+    r"""A training table's schema and profile from its Parquet metadata."""
     from pyarrow import parquet
 
     manifest = table.manifest
