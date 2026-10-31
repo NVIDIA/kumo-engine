@@ -460,17 +460,9 @@ class MlflowTracking(TrackingBase):
 
     def _log_points(self, series: Mapping[str, Sequence[Tuple[int, float]]]
                     ) -> None:
-        entities = self._mlflow.entities
-        timestamp = int(time.time() * 1000)
-        metrics = [
-            entities.Metric(metric_key(name), float(value), timestamp, step)
-            for name, points in series.items() for step, value in points
-        ]
-        with self.target.scope():
-            for start in range(0, len(metrics), _BATCH_METRICS):
-                self._client.log_batch(
-                    self._parent,
-                    metrics=metrics[start:start + _BATCH_METRICS])
+        self._log_batch(self._parent, [(name, value, step)
+                                       for name, points in series.items()
+                                       for step, value in points])
 
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         for name, text in artifacts.items():
@@ -514,17 +506,25 @@ class MlflowTracking(TrackingBase):
     def _log_metrics(self, run_id: Optional[str],
                      metrics: Mapping[str, float], step: int = 0,
                      model_id: Optional[str] = None) -> None:
-        if run_id is None or not metrics:
-            return
+        if run_id is not None:
+            self._log_batch(run_id, [(name, value, step)
+                                     for name, value in metrics.items()],
+                            model_id)
+
+    def _log_batch(self, run_id: Optional[str],
+                   points: Sequence[Tuple[str, float, int]],
+                   model_id: Optional[str] = None) -> None:
         entities = self._mlflow.entities
         timestamp = int(time.time() * 1000)
+        metrics = [
+            entities.Metric(metric_key(name), float(value), timestamp, step,
+                            model_id=model_id)
+            for name, value, step in points
+        ]
         with self.target.scope():
-            self._client.log_batch(
-                run_id, metrics=[
-                    entities.Metric(metric_key(key), float(value), timestamp,
-                                    step, model_id=model_id)
-                    for key, value in metrics.items()
-                ])
+            for start in range(0, len(metrics), _BATCH_METRICS):
+                self._client.log_batch(
+                    run_id, metrics=metrics[start:start + _BATCH_METRICS])
 
 
 _BATCH_METRICS = 1000  # MLflow's per-request limit
