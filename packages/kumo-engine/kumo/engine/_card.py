@@ -8,7 +8,7 @@ from typing import Any, List, Mapping, Optional, Sequence
 from urllib.parse import quote
 
 from kumo_core.artifacts import PROVENANCE_FILE
-from kumo_core.score_drift import psi_shift
+from kumo_core.score_drift import holdout_shift, psi_shift
 from kumo_core.summaries import Note, Summary, Table
 
 from kumo.engine._prep_cost import PREP_TABLE
@@ -55,10 +55,10 @@ def heading(kind: str, metrics: Mapping[str, float],
                          f'{number(metrics[realized[0]])}')
         if 'drift/psi' in metrics:
             psi = metrics['drift/psi']
-            link = tags.get('kumo.task_type', '').endswith('link_prediction')
             parts.append(f'psi {number(psi)} vs holdout (' + (
-                'link prediction: compare with the previous run' if link
-                else f'{psi_shift(psi)} shift') + ')')
+                f'{psi_shift(psi)} shift'
+                if holdout_shift(tags.get('kumo.task_type'))
+                else 'link prediction: compare with the previous run') + ')')
         as_of = tags.get('kumo.as_of')
         if 'pred/rows' in metrics:
             parts.append(f"{number(metrics['pred/rows'])} "

@@ -19,7 +19,7 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 from kumo_core.score_counts import Counts
-from kumo_core.score_drift import PSI_SHIFTS, drift_column
+from kumo_core.score_drift import PSI_SHIFTS, drift_column, holdout_shift
 from kumo_core.score_drift import psi as decile_psi
 from kumo_core.score_drift import psi_shift
 from kumo_core.score_drift import score_drift as exact_drift
@@ -550,8 +550,7 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
             if evaluating else _drift_summaries(report, (
                        earlier.run_name if earlier is not None
                        and earlier.platform == platform else None),
-                       link=str(identity.get('kumo.task_type')).endswith(
-                           'link_prediction')))))
+                       shift=holdout_shift(identity.get('kumo.task_type'))))))
     return replace(
         record, tags={**record.tags, **{
             name: value for name, value in identity.items()
@@ -562,7 +561,7 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
 
 
 def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
-                     link: bool) -> List[Summary]:
+                     shift: bool) -> List[Summary]:
     r"""Score drift, input changes and column drift."""
     summaries: List[Summary] = []
     reasons = report.reasons
@@ -580,7 +579,7 @@ def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
         ('holdout scores at training', holdout)]
     sides.append(('previous run', previous))
     rows = tuple((side, values['psi'],
-                  '' if values is holdout and link
+                  '' if values is holdout and not shift
                   else _shift(values['psi']), values['ks'],
                   values['wasserstein'])
                  for side, values in sides if values['psi'] is not None)

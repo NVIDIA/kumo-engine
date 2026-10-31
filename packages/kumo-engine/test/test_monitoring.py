@@ -661,15 +661,15 @@ def test_only_link_prediction_score_drift_vs_holdout_has_no_shift():
         previous_ks=0.25, previous_wasserstein=0.125, input_changes={},
         reasons={})
 
-    def rows(link):
-        table, = (summary for summary in _drift_summaries(report, None, link)
+    def rows(shift):
+        table, = (summary for summary in _drift_summaries(report, None, shift)
                   if isinstance(summary, Table))
         return table.rows
 
-    assert rows(link=True) == (
+    assert rows(shift=False) == (
         ('holdout scores at training', 1.25, '', 0.5, 0.25),
         ('previous run', 0.5, 'large (> 0.25)', 0.25, 0.125))
-    assert rows(link=False)[0][2] == 'large (> 0.25)'
+    assert rows(shift=True)[0][2] == 'large (> 0.25)'
 
 
 def test_drift_summaries_log_the_previous_run_and_explain_gaps():

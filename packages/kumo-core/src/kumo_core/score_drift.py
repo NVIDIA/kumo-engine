@@ -44,6 +44,11 @@ def score_drift(counts: Counts, reference: Counts) -> Optional[Dict[str, float]]
     }
 
 
+def holdout_shift(task_type: Optional[str]) -> bool:
+    r"""Whether psi vs the holdout reads as a shift; a link holdout is partial."""
+    return not str(task_type).endswith('link_prediction')
+
+
 def psi_shift(value: float) -> str:
     r"""The `PSI_SHIFTS` shift a PSI of ``value`` is."""
     return 'small' if value < 0.1 else 'moderate' if value <= 0.25 else 'large'
