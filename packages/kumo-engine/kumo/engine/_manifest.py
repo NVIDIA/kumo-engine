@@ -219,10 +219,8 @@ Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
 def artifact_summaries(manifest: Manifest, context: str,
                        settings: Any = None,
                        details: Optional[Details] = None) -> List[Summary]:
-    r"""Where ``manifest``'s artifacts are, for its tracked run: each
-    artifact's tag (the nearest of each), ``kumo.artifact_root`` under MLOps
-    ``settings``, and a `Dataset` per stored dataset, read in ``context``
-    or written, with the schema and profile ``details`` gives its id."""
+    r"""Tags locating ``manifest``'s artifacts, and a `Dataset` per stored
+    dataset."""
     located = [item for item in artifacts(manifest) if item.location]
     tags: Dict[str, str] = {}
     for item in located:

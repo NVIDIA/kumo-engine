@@ -600,9 +600,7 @@ _UNACTIONABLE = (
 
 
 def _without_unactionable_warnings(method: _F) -> _F:
-    r"""Runs ``method`` without third-party notes users cannot act on:
-    PyG's torch-scatter hint, Lightning's tips and ``__len__`` note, and
-    Python's fork warning."""
+    r"""Runs ``method`` without third-party notes users cannot act on."""
     @functools.wraps(method)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         tips = logging.getLogger('pytorch_lightning.utilities.rank_zero')

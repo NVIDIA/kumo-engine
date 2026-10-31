@@ -109,15 +109,9 @@ class MlflowTracking(TrackingBase):
             server's tracking URI. `None` uses MLflow's own tracking and
             registry URIs, read once here.
 
-    With explicit credentials (a Databricks service principal, an AWS
-    access key or role), each MLflow call sets the state MLflow reads them
-    from for its duration (Databricks: ``DATABRICKS_HOST`` and a short-lived
-    ``DATABRICKS_TOKEN``; SageMaker: the process-wide tracking URI), so do
-    not call MLflow or Databricks yourself on other threads during a fit.
-    Ambient credentials (a notebook, job, profile or instance role) set no
-    credentials, but a Databricks or SageMaker target still sets the
-    process-wide tracking URI for each call: Unity Catalog downloads and the
-    SageMaker plugin route with it.
+    With explicit credentials, each MLflow call sets process-wide state
+    for its duration (docs/mlops.md, "Credentials"): do not call MLflow or
+    Databricks yourself on other threads during a fit.
 
     ``run_id`` is the MLflow id of the latest fit run, once it has started,
     and ``run_url`` its link in the MLflow UI, where the server has one.
