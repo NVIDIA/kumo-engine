@@ -509,8 +509,9 @@ class PredictionResult:
                                                 bundle_id)
             if columns:
                 extra['extra_columns'] = columns
-            output_config._write(destination, list(files),
-                                 export_id=f'{self.id}-{kind.value}', **extra)
+            output_config._write(
+                destination, list(files), export_id=None
+                if self.id is None else f'{self.id}-{kind.value}', **extra)
             if records is not None and written is not None:
                 written.append(records[index])
 
