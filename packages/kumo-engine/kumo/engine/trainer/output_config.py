@@ -101,8 +101,7 @@ class PredictionOutputConfig:
         return sink
 
     def _write(self, destination: str, files: List[str], **kwargs) -> str:
-        r"""Write ``files`` to ``destination``; ``OVERWRITE`` first empties
-        a directory destination unless it holds this export complete."""
+        r"""Write files; OVERWRITE empties a directory first."""
         from kumo_core.object_store_sink import holds_export
 
         store = file_store(self.connector, destination)

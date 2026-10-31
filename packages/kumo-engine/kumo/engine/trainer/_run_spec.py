@@ -36,7 +36,6 @@ class FitContext:
     model_name: Optional[str] = None
 
 
-#: A model-plan option the plan leaves to its defaults.
 _UNSET = '???'
 
 
@@ -64,10 +63,7 @@ def fit_spec(context: FitContext, *,
 
 def fitted_spec(spec: RunSpec, result: Any,
                 summaries: Sequence[Summary] = ()) -> RunSpec:
-    r"""``spec`` once the fit returned ``result``, a `TrainingResult`:
-    its test metrics, since the run's train and validation series show the
-    selected trial's epochs, the version it registered, and
-    ``summaries``."""
+    r"""The fit run's spec once the fit returned."""
     artifacts = dict(spec.artifacts)
     provenance = Path(result.bundle_dir) / PROVENANCE_FILE
     if provenance.is_file():
@@ -80,8 +76,7 @@ def fitted_spec(spec: RunSpec, result: Any,
 
 
 def holdout_metrics(result: Any) -> Dict[str, float]:
-    r"""The trainer's test metrics of ``result``, a `TrainingResult`, as
-    `logged_names` names them."""
+    r"""The trainer's test metrics under their logged names."""
     return logged_names({
         name: value for name, value in result.metrics.items()
         if not name.startswith(('train_', 'val_'))
@@ -89,8 +84,7 @@ def holdout_metrics(result: Any) -> Dict[str, float]:
 
 
 def model_metrics(result: Any) -> Dict[str, float]:
-    r"""The model's own quality, as a logged model and every registry
-    record it: `holdout_metrics` and the ``role='model'`` summaries."""
+    r"""Holdout metrics and model scalars, as registries record them."""
     return {metric_key(name): value for name, value in {
         **holdout_metrics(result),
         **{summary.name: summary.value

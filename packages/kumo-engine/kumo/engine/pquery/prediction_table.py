@@ -71,10 +71,7 @@ class PredictionTable:
     compiler_options: Optional[Mapping[str, Any]] = None
     #: Effective temporal step used by the fitted forecast task.
     forecast_timeframe_step: Optional[int] = None
-    #: ``'pql'`` when generated from the query, ``'custom'`` from a source.
     source: Literal['pql', 'custom'] = 'pql'
-    #: Supplied rows DiskGraph skipped (0 for a generated population), the
-    #: first `SKIPPED_SAMPLE` of their entity ids, and why.
     skipped_rows: int = 0
     skipped_sample: Tuple[Any, ...] = ()
     skip_reason: Optional[str] = None
@@ -253,10 +250,7 @@ def _compile_prediction_table(
     return request, generated, graph_index_id
 
 
-#: Skipped entity ids kept in a prediction record, at most; DiskGraph names
-#: up to 5 rows per reason.
 SKIPPED_SAMPLE = 20
-#: Why DiskGraph skips a supplied prediction row, by its condition name.
 _SKIP_REASONS = {
     'unknown_entity': 'not in snapshot',
     'non_canonical_entity': 'not a canonical node in the snapshot',
@@ -267,9 +261,7 @@ _SKIP_REASONS = {
 
 def skipped_entities(report: Optional[Mapping[str, Any]],
                      rows_path: Path) -> Dict[str, Any]:
-    r"""The skipped-row fields of a `PredictionTable` from DiskGraph's
-    ``row_failures`` report, warning once when rows were skipped. Sample ids
-    are read from the rows DiskGraph names (a few per condition)."""
+    r"""Skipped-row fields from DiskGraph's row_failures; warns once."""
     skipped = int((report or {}).get('skipped_rows') or 0)
     if not skipped:
         return {}

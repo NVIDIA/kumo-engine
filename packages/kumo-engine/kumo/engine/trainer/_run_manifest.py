@@ -42,7 +42,6 @@ from kumo.engine._manifest import (
 from kumo.engine._score_stats import output_counts
 from kumo.engine.trainer._provenance import count_edges, embedded_model
 
-# Object stores locate a path themselves; other sinks' file paths are kept.
 _OBJECT_STORES = frozenset({'LOCAL_FILE', 'S3', 'GCS'})
 
 
@@ -66,11 +65,7 @@ def start(*, result: Any, trainer: Any, snapshot: Any, prediction_table: Any,
 def finish(result: Any, manifest: Optional[PredictionManifest],
            output_config: Any, settings: Any, model: Any = None,
            snapshot: Any = None) -> Optional[TrackingRef]:
-    r"""Export to ``output_config``, record the run (with the outputs
-    written, even if the export fails), store it in the artifact root and
-    track it as a run of ``model``, a `TrainingResult`, on ``snapshot``; a
-    storing or tracking failure raises last under ``on_error='raise'``.
-    Returns the tracked run."""
+    r"""Export, record, store and track a prediction run."""
     from kumo.engine._mlops import raise_on_error
     from kumo.engine._tracking import track_prediction, tracking_ref
 
@@ -117,8 +112,7 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
 
 def _scoring_summaries(manifest: Optional[PredictionManifest],
                        snapshot: Any) -> List[Summary]:
-    r"""The scoring snapshot's graph summaries, and the run's artifacts'
-    tags and datasets."""
+    r"""The scoring snapshot's summaries and the run's artifact summaries."""
     from kumo.engine._data_summaries import snapshot_summaries, table_details
     from kumo.engine._manifest import artifact_summaries
 
@@ -135,9 +129,7 @@ def _scoring_summaries(manifest: Optional[PredictionManifest],
 
 def store(result: Any, manifest: Optional[PredictionManifest],
           settings: Any) -> Optional[PredictionManifest]:
-    r"""Copy the run's outputs and manifest to
-    ``<root>/predictions/<id>/<artifact>/``; returns the manifest, which
-    records where, the copies among its outputs."""
+    r"""Copy the run's outputs and manifest under predictions/<id>/."""
     from kumo_core.train.artifact_manifest import load_prediction_selection
 
     from kumo.engine.trainer.output_config import PredictionOutputConfig
@@ -234,13 +226,7 @@ def _record_predictions(
     started_at: str,
     counts: Optional[Dict[str, Any]] = None,
 ) -> PredictionManifest:
-    r"""The manifest of prediction run ``run_id`` of any ``model``:
-    ``outputs`` maps each artifact (``predictions``, ``embeddings``) to its
-    row count and a call listing its Parquet files; the predictions record
-    ``counts``, their scores' exact `Counts`: the scorers', else counted
-    from the files for ``task_type`` on ``model``'s bins (see the column
-    contract in mlops.md); ``table`` holds the requested, scored and
-    skipped counts."""
+    r"""A prediction run's manifest for any model."""
     stats: Dict[str, Dict[str, Any]] = {}
     for name, (rows, files) in outputs.items():
         stats[name] = {'rows': rows}
@@ -276,8 +262,7 @@ def _record_predictions(
 
 
 def output_records(output_config: Any) -> Optional[List[PredictionOutput]]:
-    r"""Records of ``output_config``'s destinations; None, with a warning,
-    if one cannot be described."""
+    r"""Records of the destinations; None, with a warning, if one fails."""
     try:
         return [
             PredictionOutput(

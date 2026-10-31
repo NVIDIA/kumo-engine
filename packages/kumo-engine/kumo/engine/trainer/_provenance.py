@@ -149,11 +149,7 @@ def holdout_counts(model: Optional[ModelManifest]) -> Optional[Counts]:
 
 def count_edges(model: Optional[ModelManifest], task_type: TaskType
                 ) -> Optional[Dict[str, Tuple[float, ...]]]:
-    r"""The bins a prediction run of ``model`` counts its scores in:
-    probabilities in hundredths, with a multilabel entity's top score; a
-    recommendation's top score on its holdout's bins, if it has them; or
-    the training target's bins its holdout counts; None without a
-    holdout's bins."""
+    r"""The bins a prediction run of model counts its scores in."""
     if task_type in (TaskType.BINARY_CLASSIFICATION,
                      TaskType.MULTICLASS_CLASSIFICATION):
         return {'score': PROBABILITY_EDGES}

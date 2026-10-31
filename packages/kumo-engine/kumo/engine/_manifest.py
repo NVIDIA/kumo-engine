@@ -47,9 +47,7 @@ def omit_none() -> Any:
 
 @dataclass(frozen=True)
 class Artifact:
-    r"""An artifact a manifest names, stored at ``location``, which tracked
-    runs tag as ``tag`` and name ``label``. A dataset is data a run reads,
-    or writes when its ``context`` is ``output``."""
+    r"""An artifact a manifest names, and how tracked runs tag it."""
 
     kind: str
     id: str
@@ -181,7 +179,6 @@ class Manifest(Record):
     EMBED_OMITS = ()
     #: Whether this kind is data a run reads or writes.
     IS_DATASET: ClassVar[bool] = False
-    #: The tag of its location in tracked runs, if it has one.
     URI_TAG: ClassVar[Optional[str]] = None
 
     def as_artifact(self, key: str) -> Artifact:
@@ -229,12 +226,7 @@ Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
 
 def artifact_summaries(manifest: Manifest, context: str,
                        details: Optional[Details] = None) -> List[Summary]:
-    r"""Where ``manifest``'s artifacts are, for its tracked run: the tags
-    ``kumo.bundle_uri`` and ``kumo.output_uri`` or ``kumo.output_table``
-    (the nearest of each); the brief table ``locations`` of each artifact's
-    kind, id and location; and a `Dataset` per stored dataset, read in
-    ``context`` or written, with the schema and profile ``details`` gives
-    its id."""
+    r"""Location tags, the locations table and datasets of a manifest."""
     located = [item for item in artifacts(manifest) if item.location]
     tags: Dict[str, str] = {}
     for item in located:
@@ -260,7 +252,6 @@ def artifact_summaries(manifest: Manifest, context: str,
     return summaries
 
 
-#: Datasets lead with the snapshot, as the run list shows the first.
 _DATASET_ORDER = {'snapshot': 0, 'training_table': 1, 'source_table': 2}
 
 
@@ -322,8 +313,7 @@ def _parent(hint: Type[M], value: Any) -> M:
 
 @dataclass(frozen=True, kw_only=True)
 class BuildCost(Record):
-    r"""When building an artifact started and finished, its wall
-    ``seconds``, and the bytes it left on disk."""
+    r"""When building an artifact ran, how long, and its bytes on disk."""
 
     started_at: str
     finished_at: str
@@ -385,10 +375,7 @@ class FitTiming(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class TrackingRef(Record):
-    r"""A run in an experiment tracker: its ``platform`` (``mlflow``,
-    ``databricks``, ``sagemaker``, ``snowflake``), the platform's own
-    ``run_id``, its ``experiment`` and ``run_name`` and, where the platform
-    has one, the run's ``url``. A notebook shows it as a link to the run."""
+    r"""A run in an experiment tracker."""
 
     platform: str
     run_id: str
@@ -435,11 +422,7 @@ class HoldoutStats(Record):
     rows: int
     columns: Dict[str, Dict[str, Any]]
     label_positive_rate: Optional[float] = omit_none()
-    # `kumo_core.score_counts.Counts.to_dict()` of the test scores, the
-    # bins and counts a prediction run's scores are compared with.
     counts: Optional[Dict[str, Any]] = omit_none()
-    # A temporal query's target window: start, end, the step between a
-    # forecast's horizons, and their unit.
     window: Optional[List[Any]] = omit_none()
 
 
@@ -528,8 +511,7 @@ class ArtifactStats(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class PredictionManifest(Manifest):
-    """A prediction run: its model and scoring snapshot (embedded), the
-    prediction table, scoring options, outputs and score statistics."""
+    """A prediction run's record."""
 
     kind: str = 'prediction'
     parents: PredictionParents

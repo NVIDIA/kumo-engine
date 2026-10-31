@@ -278,8 +278,7 @@ def _changed_columns(before: List[str], after: List[str]) -> str:
 def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
                        after: Mapping[str, Any], stacklevel: int,
                        strict: bool = False) -> None:
-    r"""Warn that a snapshot is of another graph, naming the schema
-    changes; ``strict`` (``on_error='raise'``) raises on a schema change."""
+    r"""Warn of a snapshot of another graph; strict raises on schema change."""
     if before is None:
         warnings.warn(
             f"{message} The model does not record its training graph, so "
