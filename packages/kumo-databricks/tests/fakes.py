@@ -11,7 +11,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import unquote
 
 import pyarrow as pa
-from databricks.sdk.errors import BadRequest, NotFound
+from databricks.sdk.errors import NotFound
 from databricks.sql.exc import DataError
 from sources.recording import RecordingConnection, RecordingCursor
 
@@ -199,29 +199,23 @@ class FakeFiles:
 
 
 class FakeVolume(FakeFiles):
-    """A volume with real directories, uploads and ranged downloads."""
+    """A volume with uploads and ranged downloads."""
     def __init__(self, objects: Mapping[str, bytes] | None = None) -> None:
         super().__init__(objects)
-        self.directories: set[str] = set()
         self.ignore_range = False
-
-    def _is_directory(self, path: str) -> bool:
-        return path in self.directories or any(
-            name.startswith(path + "/") for name in self.objects)
 
     def list_directory_contents(self, path: str) -> list[FakeEntry]:
         path = path.rstrip("/")
-        if not self._is_directory(path):
-            raise NotFound(f"No such directory: {path}")
         children: dict[str, FakeEntry] = {}
-        for name in sorted(self.objects) + sorted(self.directories):
+        for name in sorted(self.objects):
             if not name.startswith(path + "/"):
                 continue
-            child = name[len(path) + 1:].split("/")[0]
-            full = f"{path}/{child}"
-            children[full] = (FakeEntry(full, len(self.objects[full]))
-                              if full in self.objects else FakeEntry(
-                                  full + "/", 0, is_directory=True))
+            child = f"{path}/{name[len(path) + 1:].split('/')[0]}"
+            children[child] = (FakeEntry(child, len(self.objects[child]))
+                               if child in self.objects else FakeEntry(
+                                   child + "/", 0, is_directory=True))
+        if not children:
+            raise NotFound(f"No such directory: {path}")
         return list(children.values())
 
     def upload(self, path: str, contents: Any, *, overwrite: bool) -> None:
@@ -229,21 +223,9 @@ class FakeVolume(FakeFiles):
         self.objects[path] = contents.read()
 
     def get_metadata(self, path: str) -> Any:
-        if path.endswith("/"):
-            raise BadRequest("Bad Request")
         if path not in self.objects:
             raise NotFound(f"No such file: {path}")
         return FakeMetadata(len(self.objects[path]))
-
-    def get_directory_metadata(self, path: str) -> None:
-        if not self._is_directory(path):
-            raise NotFound(f"No such directory: {path}")
-
-    def create_directory(self, path: str) -> None:
-        self.directories.add(path)
-
-    def delete_directory(self, path: str) -> None:
-        self.directories.discard(path.rstrip("/"))
 
     def do(self, method: str, path: str, *, raw: bool,
            response_headers: list[str], headers: Mapping[str, str]) -> dict:
@@ -258,7 +240,6 @@ class FakeVolume(FakeFiles):
         last = last or str(size - 1)
         stream = FakeStreamingResponse(
             self.objects[remote][int(first):int(last) + 1])
-        self.streams.append(stream)
         return {
             "contents": stream,
             "content-range": f"bytes {first}-{last}/{size}"
