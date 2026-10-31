@@ -434,3 +434,30 @@ class FilesystemSink(ObjectStoreSinkBackend):
             raise ArtifactDestinationConflict(
                 f"Output directory '{path}/' already contains data from "
                 f"another export. Choose an empty destination path.")
+
+
+class FileStoreRouting:
+    """Sends ``holds_files`` paths to :class:`FilesystemSink`, the rest on."""
+    def publish_model(self, connector, bundle_dir, *, path=None, location=None,
+                      metadata={}, metrics={}, project_id=None):
+        if location is None and path is not None and self.holds_files(
+                connector, path):
+            return FilesystemSink(self).publish_model(
+                connector, bundle_dir, path=path, metadata=metadata)
+        return super().publish_model(connector, bundle_dir, path=path,
+                                     location=location, metadata=metadata,
+                                     metrics=metrics, project_id=project_id)
+
+    def fetch_model(self, connector, local_dir, *, path=None, location=None,
+                    project_id=None):
+        if location is None and path is not None and self.holds_files(
+                connector, path):
+            return FilesystemSink(self).fetch_model(connector, local_dir,
+                                                    path=path)
+        return super().fetch_model(connector, local_dir, path=path,
+                                   location=location, project_id=project_id)
+
+    def preflight_write_files(self, connector, table_name, write_mode=None):
+        if self.holds_files(connector, table_name):
+            FilesystemSink(self).preflight_write_files(
+                connector, table_name, write_mode)
