@@ -139,14 +139,6 @@ def _warn_low_fk_match_rates(stats: Dict[str, Any],
                 )
 
 
-def _ingest_stats(path: Any) -> Dict[str, Any]:
-    try:
-        stats = json.loads(Path(path).read_text())['stats']
-    except (OSError, ValueError, KeyError, TypeError):
-        return {}
-    return stats if isinstance(stats, dict) else {}
-
-
 def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
     from kumo_core.diskgraph.validation import parse_failure_warning
 
@@ -170,8 +162,11 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
                 warnings.warn(parse_failure_warning(name, column, count),
                               UserWarning, stacklevel=3)
 
-    stats = _ingest_stats(getattr(result, 'ingest_stats_path', None))
-    if not stats:
+    try:
+        stats = json.loads(Path(result.ingest_stats_path).read_text())['stats']
+    except (AttributeError, OSError, ValueError, KeyError, TypeError):
+        return
+    if not isinstance(stats, dict):
         return
     tables = {table['table_name']: table for table in graph_config['tables']}
     duplicates: Dict[str, int] = {}
