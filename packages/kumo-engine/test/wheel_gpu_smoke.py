@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 import traceback
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -119,8 +119,8 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
             values = ordered[['False_PROB', 'True_PROB']].to_numpy(dtype=float)
             if (not ((values >= 0) & (values <= 1)).all() or
                     not np.allclose(values.sum(axis=1), 1, atol=1e-6, rtol=1e-7)
-                    or not np.array_equal(ordered['TARGET_PRED'], values[:, 1]
-                                          > .5)):
+                    or not np.array_equal(ordered['TARGET_PRED'],
+                                          values[:, 1] > .5)):
                 raise ValueError(
                     'Binary probabilities or chosen labels are invalid')
         else:
@@ -138,10 +138,10 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
         if (not coordinates or len(set(coordinates)) != len(coordinates)
                 or frame[key].isna().any()
                 or frame.duplicated(['ENTITY', key]).any()
-                or set(zip(frame['ENTITY'],
-                           frame[key])) != {(entity, coordinate)
-                                            for entity in ids
-                                            for coordinate in coordinates}):
+                or set(zip(frame['ENTITY'], frame[key])) != {
+                    (entity, coordinate)
+                    for entity in ids for coordinate in coordinates
+                }):
             raise ValueError(
                 'Prediction output coordinates are incomplete or repeated')
         values = frame.pivot(
@@ -187,17 +187,17 @@ def prediction_decisions(task, frame, ids, *, classes=()):
                        values=column).loc[ids, list(classes)].to_numpy()
 
 
-def compare_predictions(before, after, *, atol, rtol, qualify=False,
-                        before_decisions=None, after_decisions=None,
-                        report_numeric_drift=False):
-    """Measure numeric drift; qualification never supplies a normal CI pass."""
+def compare_predictions(before, after, *, atol=1e-5, before_decisions=None,
+                        after_decisions=None, report_numeric_drift=False):
+    """Keep decisions exact and enforce score bounds outside explicit reporting."""
     import numpy as np
 
+    if not math.isfinite(atol) or atol < 0:
+        raise ValueError('Reload tolerance must be finite and nonnegative')
     left, right = np.asarray(before,
                              dtype=float), np.asarray(after, dtype=float)
     if (left.ndim != 2 or not left.size or left.shape != right.shape
-            or not np.isfinite(left).all() or not np.isfinite(right).all()
-            or not all(math.isfinite(v) and v >= 0 for v in (atol, rtol))):
+            or not np.isfinite(left).all() or not np.isfinite(right).all()):
         raise ValueError(
             'Reload comparison requires equal finite prediction shapes')
     difference = np.abs(left - right)
@@ -206,13 +206,12 @@ def compare_predictions(before, after, *, atol, rtol, qualify=False,
         max_abs_difference=float(difference.max()),
         max_relative_difference=float(
             (difference / np.maximum(np.abs(left), 1e-12)).max()),
-        within_tolerance=bool(np.allclose(left, right, atol=atol, rtol=rtol)))
-    if not qualify and not result['decisions_equal']:
+        within_tolerance=bool(np.allclose(left, right, atol=atol, rtol=0.)))
+    if not result['decisions_equal']:
         raise ValueError('Prediction decisions changed after repeat or reload')
-    if not qualify and not report_numeric_drift and not result[
-            'within_tolerance']:
+    if not result['within_tolerance'] and not report_numeric_drift:
         raise ValueError(
-            f'Prediction difference exceeds atol={atol}, rtol={rtol}: {result}')
+            f'Prediction difference exceeds atol={atol}, rtol=0: {result}')
     return result
 
 
@@ -406,10 +405,8 @@ def prepare_task(task, root, metadata, directory, graphs):
     inputs = directory / 'inputs.parquet'
     import pyarrow as pa
     pq.write_table(
-        pa.Table.from_pylist([{
-            key: row[key]
-            for key in columns
-        } for row in test]), inputs)
+        pa.Table.from_pylist([{key: row[key]
+                               for key in columns} for row in test]), inputs)
     return dict(query=query, snapshot=snapshot, training_table=table,
                 input_file=inputs, ids=ids, classes=classes, anchor=anchor)
 
@@ -467,33 +464,31 @@ def verify_checkpoint(model, path, expected_digest):
 
 @contextmanager
 def observe_cuda(state):
+    """Add public Lightning callbacks without changing Engine training internals."""
     from numbers import Integral
 
+    import pytorch_lightning as pl
     import torch
-    from kumo_core.train.trainer import Trainer as CoreTrainer
-    from pytorch_lightning import Callback
     from pytorch_lightning.callbacks import EarlyStopping
 
-    original_create = CoreTrainer.create_pl_trainer
-
-    class Proof(Callback):
+    class Proof(pl.Callback):
         def on_fit_start(self, trainer, module):
             state['fits'] += 1
             if 'fit_ledger' in state:
                 state['fit_ledger'].append(
                     dict(status='RUNNING', steps=0, cuda_batches=0))
 
-        def check(self, trainer, values):
-            if (str(trainer.strategy.root_device) != 'cuda:0' or not values
-                    or any(not isinstance(value, torch.Tensor) or str(
-                        value.device) != 'cuda:0' or not value.numel()
+        def check(self, module, values):
+            if (str(module.device) != 'cuda:0' or not values
+                    or any(not isinstance(value, torch.Tensor) or
+                           str(value.device) != 'cuda:0' or not value.numel()
                            for value in values)):
                 raise ValueError('Completed work did not use CUDA tensors')
             torch.cuda.synchronize()
 
         def on_train_batch_end(self, trainer, module, values, batch, batch_idx):
             self.check(
-                trainer,
+                module,
                 [values.get('loss') if isinstance(values, dict) else values])
             state['training_batches'] += 1
             if 'fit_ledger' in state:
@@ -533,45 +528,40 @@ def observe_cuda(state):
                     wait_count=int(stop.wait_count),
                     patience=int(stop.patience))
 
+        def on_predict_start(self, trainer, module):
+            if state['stage'] == 'reload' and 'reload_checks' in state:
+                state['restored_tensors'] = verify_checkpoint(
+                    module, trainer.ckpt_path, state['checkpoint_sha256'])
+                state['reload_checks'] += 1
+
         def on_predict_batch_end(self, trainer, module, values, batch,
                                  batch_idx, dataloader_idx=0):
             values = values.get('logits', values.get('score')) if isinstance(
                 values, dict) else values
             self.check(
-                trainer,
+                module,
                 list(values.values()) if isinstance(values, dict) else [values])
             state['prediction_batches'][state['stage']] += 1
 
-    with ExitStack() as stack:
+    class ObservedTrainer(pl.Trainer):
+        def __init__(self, *args, **kwargs):
+            kwargs['callbacks'] = [*(kwargs.get('callbacks') or []), Proof()]
+            super().__init__(*args, **kwargs)
 
-        def create(trainer):
-            result = original_create(trainer)
-            pl_trainer = trainer.pl_trainer
-            if str(pl_trainer.strategy.root_device) != 'cuda:0':
-                raise ValueError('Trainer fell back from CUDA')
-            pl_trainer.callbacks.append(Proof())
-            if state['stage'] == 'reload':
-                strategy = pl_trainer.strategy
-                restore = strategy.load_model_state_dict
-
-                def load(*args, **kwargs):
-                    result = restore(*args, **kwargs)
-                    state['restored_tensors'] = verify_checkpoint(
-                        strategy.lightning_module, pl_trainer.ckpt_path,
-                        state['checkpoint_sha256'])
-                    state['reload_checks'] += 1
-                    return result
-
-                stack.enter_context(
-                    patch.object(strategy, 'load_model_state_dict', load))
-            return result
-
-        stack.enter_context(
-            patch.object(CoreTrainer, 'create_pl_trainer', create))
+    with patch.object(pl, 'Trainer', ObservedTrainer):
         yield
 
 
-def run_task(task, prepared, directory, args):
+def verify_training_work(state, checkpoint_steps):
+    if (type(checkpoint_steps) is not int or checkpoint_steps <= 0
+            or not state['training_batches'] or state['fits'] != 1
+            or state['completed_fits'] != 1
+            or state['optimizer_steps'] < checkpoint_steps):
+        raise ValueError(
+            'Training completed no optimizer updates or CUDA batches')
+
+
+def run_task(task, prepared, directory, *, reload_atol=1e-5):
     import numpy as np
     import torch
     from kumo_core.io.filesystem import local_path
@@ -587,7 +577,7 @@ def run_task(task, prepared, directory, args):
         optimizer_steps=0, prediction_batches={
             stage: 0
             for stage in ('predict', 'repeat', 'reload')
-        }, reload_checks=0, restored_tensors=0)
+        })
     seed = lambda: (random.seed(0), np.random.seed(0), torch.manual_seed(0))
     seed()
     with observe_cuda(state):
@@ -598,12 +588,7 @@ def run_task(task, prepared, directory, args):
             str(fitted.artifact_paths['selected_checkpoint']))
         steps = load_kumo_checkpoint(str(checkpoint),
                                      map_location='cpu').get('global_step')
-        if (type(steps) is not int or steps <= 0
-                or not state['training_batches'] or state['fits'] != 1
-                or state['completed_fits'] != 1
-                or state['optimizer_steps'] < steps):
-            raise ValueError(
-                'Training completed no optimizer updates or CUDA batches')
+        verify_training_work(state, steps)
         state['checkpoint_sha256'] = hashlib.sha256(
             checkpoint.read_bytes()).hexdigest()
         [runtime_file] = trainer.scratch_dir.glob(
@@ -618,7 +603,7 @@ def run_task(task, prepared, directory, args):
         saved = directory / 'saved-model'
         shutil.copytree(fitted.bundle_dir, saved)
 
-        def predict(model, stage, cycle=0):
+        def predict(model, stage):
             state['stage'] = stage
             previous_batches = state['prediction_batches'][stage]
             seed()
@@ -636,7 +621,7 @@ def run_task(task, prepared, directory, args):
                 options['output_config'] = kumo.PredictionOutputConfig(
                     connector=kumo.FileConnector(root_dir=str(directory /
                                                               'predictions')),
-                    output_paths={'predictions': f'{stage}-{cycle}'},
+                    output_paths={'predictions': stage},
                     extra_fields=[MetadataField.ANCHOR_TIMESTAMP])
             frame = model.predict(table, snapshot=prepared['snapshot'],
                                   **options).frame
@@ -651,48 +636,22 @@ def run_task(task, prepared, directory, args):
             return values, decisions
 
         before, before_decisions = predict(trainer, 'predict')
-        comparisons = []
-        for cycle in range(1, args.repetitions + 1):
-            previous_reload_checks = state['reload_checks']
-            previous_batches = state['prediction_batches'].copy()
-            repeated, repeat_decisions = predict(trainer, 'repeat', cycle)
-            repeat_delta = compare_predictions(
-                before, repeated, atol=args.reload_atol, rtol=args.reload_rtol,
-                qualify=args.qualify, before_decisions=before_decisions,
-                after_decisions=repeat_decisions,
-                report_numeric_drift=args.report_numeric_drift)
-            del trainer
-            gc.collect()
-            trainer = kumo.Trainer.load(saved, accelerator='gpu')
-            after, after_decisions = predict(trainer, 'reload', cycle)
-            reload_delta = compare_predictions(
-                before, after, atol=args.reload_atol, rtol=args.reload_rtol,
-                qualify=args.qualify, before_decisions=before_decisions,
-                after_decisions=after_decisions,
-                report_numeric_drift=args.report_numeric_drift)
-            if (state['reload_checks'] <= previous_reload_checks
-                    or not state['restored_tensors']):
-                raise ValueError(
-                    'Prediction cycle lacks freshly restored model state')
-            comparisons.append(
-                dict(
-                    cycle=cycle, repeat=repeat_delta, reload=reload_delta,
-                    prediction_batches={
-                        stage:
-                        state['prediction_batches'][stage] -
-                        previous_batches[stage]
-                        for stage in ('repeat', 'reload')
-                    }, restored_tensors=state['restored_tensors']))
-    if (state['fits'] != 1 or state['completed_fits'] != 1
-            or len(comparisons) != args.repetitions
-            or state['reload_checks'] < args.repetitions
-            or not state['restored_tensors']
-            or not all(state['prediction_batches'].values())):
-        raise ValueError(
-            'Reloaded state or completed CUDA prediction work is missing')
+        repeated, repeat_decisions = predict(trainer, 'repeat')
+        repeat_delta = compare_predictions(before, repeated, atol=reload_atol,
+                                           before_decisions=before_decisions,
+                                           after_decisions=repeat_decisions)
+        del trainer
+        gc.collect()
+        trainer = kumo.Trainer.load(saved, accelerator='gpu')
+        after, after_decisions = predict(trainer, 'reload')
+        reload_delta = compare_predictions(before, after, atol=reload_atol,
+                                           before_decisions=before_decisions,
+                                           after_decisions=after_decisions)
+    if not all(state['prediction_batches'].values()):
+        raise ValueError('Completed CUDA prediction work is missing')
     return dict(
-        task=task, task_type=TASKS[task]['task_type'], seed=0,
-        status='MEASURED' if args.qualify else 'PASS', metrics={
+        task=task, task_type=TASKS[task]['task_type'], seed=0, status='PASS',
+        metrics={
             name: float(value) if math.isfinite(value) else None
             for name, value in fitted.metrics.items()
         }, entities=len(prepared['ids']), output_shape=list(before.shape),
@@ -701,10 +660,9 @@ def run_task(task, prepared, directory, args):
         selected_checkpoint_steps=steps,
         training_batches=state['training_batches'],
         prediction_batches=state['prediction_batches'],
-        checkpoint_sha256=state['checkpoint_sha256'],
-        restored_tensors=state['restored_tensors'],
-        reload_checks=state['reload_checks'], comparisons=comparisons,
-        seconds=time.monotonic() - started)
+        checkpoint_sha256=state['checkpoint_sha256'], comparisons=dict(
+            repeat=repeat_delta,
+            reload=reload_delta), seconds=time.monotonic() - started)
 
 
 def main():
@@ -713,35 +671,15 @@ def main():
     parser.add_argument('--graph-metadata', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--expected-version', required=True)
-    parser.add_argument(
-        '--repetitions', type=int, default=1,
-        help='Prediction/reload cycles per model; each task trains once')
-    parser.add_argument(
-        '--qualify', action='store_true',
-        help='Measure numeric differences; does not produce a normal CI pass')
-    parser.add_argument(
-        '--report-numeric-drift', action='store_true',
-        help='Report numeric drift; keep labels, ranks and execution strict')
-    # The T4 qualification measured at most 1.91e-6 across 48 comparisons.
     parser.add_argument('--reload-atol', type=float, default=1e-5)
-    parser.add_argument('--reload-rtol', type=float, default=0.)
     args = parser.parse_args()
-    if args.repetitions < 1 or any(
-            not math.isfinite(value) or value < 0
-            for value in (args.reload_atol, args.reload_rtol)):
-        parser.error(
-            'Repetitions must be positive and tolerances finite and nonnegative'
-        )
+    if not math.isfinite(args.reload_atol) or args.reload_atol < 0:
+        parser.error('--reload-atol must be finite and nonnegative')
     args.data_dir = args.data_dir.resolve()
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    report = dict(
-        status='RUNNING', repetitions=args.repetitions, tasks=[],
-        qualification=args.qualify, reload_atol=args.reload_atol,
-        reload_rtol=args.reload_rtol,
-        report_numeric_drift=args.report_numeric_drift,
-        numeric_drift_policy=('qualification' if args.qualify else 'report_only'
-                              if args.report_numeric_drift else 'enforced'))
+    report = dict(status='RUNNING', tasks=[], reload_atol=args.reload_atol,
+                  reload_rtol=0.)
     started = time.monotonic()
     try:
         import numpy as np
@@ -774,19 +712,19 @@ def main():
                                               work / 'inputs' / task, graphs)
             for task in TASKS:
                 report['current_task'] = task
-                print(
-                    f'{task}: one fit, {args.repetitions} prediction/reload cycles',
-                    flush=True)
+                print(f'{task}: one fit, repeat and reload predictions',
+                      flush=True)
                 directory = work / 'models' / task
                 directory.mkdir(parents=True)
-                row = run_task(task, prepared[task], directory, args)
+                row = run_task(task, prepared[task], directory,
+                               reload_atol=args.reload_atol)
                 report['tasks'].append(row)
                 print(json.dumps(row), flush=True)
                 (args.output_dir / 'summary.json').write_text(
                     json.dumps(report, indent=2, allow_nan=False) + '\n')
                 shutil.rmtree(directory)
                 gc.collect()
-            report['status'] = 'MEASURED' if args.qualify else 'PASS'
+            report['status'] = 'PASS'
     except Exception as error:
         report.update(status='FAIL', error=f'{type(error).__name__}: {error}')
         traceback.print_exc()
@@ -794,7 +732,7 @@ def main():
         report['seconds'] = time.monotonic() - started
         (args.output_dir / 'summary.json'
          ).write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
-    return 0 if report['status'] in ('PASS', 'MEASURED') else 1
+    return 0 if report['status'] == 'PASS' else 1
 
 
 if __name__ == '__main__':

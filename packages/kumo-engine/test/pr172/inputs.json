@@ -1,7 +1,7 @@
 {
   "version": "pr172-v1",
-  "bucket": "kumo-test-dataplane-bucket",
-  "key": "engine-testing/anle/20261029/pr172-fixtures/a20a1e1412c963bf732e6323c3aeac3e96e4b2c253d25a3c45c7f5acf37d6c9a/pr172-inputs-v1.tar.gz",
+  "bucket": "kumo-unit-test",
+  "key": "diskgraph-profiles/engine-pr/pr172-fixtures/v1/a20a1e1412c963bf732e6323c3aeac3e96e4b2c253d25a3c45c7f5acf37d6c9a/pr172-inputs-v1.tar.gz",
   "region": "us-west-2",
   "sha256": "a20a1e1412c963bf732e6323c3aeac3e96e4b2c253d25a3c45c7f5acf37d6c9a"
 }

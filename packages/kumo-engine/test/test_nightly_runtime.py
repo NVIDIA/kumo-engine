@@ -175,6 +175,47 @@ class NightlyRuntimeTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 nightly.check_results(bad)
 
+    def test_nightly_numeric_reporting_keeps_the_default_pr_bound_strict(self):
+        compare = nightly.smoke.compare_predictions
+        with self.assertRaises(ValueError):
+            compare([[.5]], [[.501]], atol=1e-4)
+        result = compare([[.5]], [[.501]], atol=0,
+                         report_numeric_drift=True,
+                         before_decisions=[True], after_decisions=[True])
+        self.assertFalse(result['within_tolerance'])
+        self.assertAlmostEqual(result['max_abs_difference'], .001)
+        for after, decisions in (([[.501]], [False]),
+                                 ([[float('nan')]], [True])):
+            with self.assertRaises(ValueError):
+                compare([[.5]], after, report_numeric_drift=True,
+                        before_decisions=[True], after_decisions=decisions)
+
+    def test_nightly_public_callback_keeps_exact_restored_state_proof(self):
+        import pytorch_lightning as pl
+        import torch
+
+        model = pl.LightningModule()
+        model.layer = torch.nn.Linear(2, 1)
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / 'model.ckpt'
+            torch.save({'state_dict': model.state_dict()}, checkpoint)
+            state = dict(stage='reload', reload_checks=0, restored_tensors=0,
+                         checkpoint_sha256=nightly.digest(checkpoint))
+            with nightly.smoke.observe_cuda(state):
+                trainer = pl.Trainer(accelerator='cpu', devices=1,
+                                     logger=False, enable_checkpointing=False,
+                                     enable_model_summary=False)
+                trainer.ckpt_path = str(checkpoint)
+                [proof] = [cb for cb in trainer.callbacks
+                           if type(cb).__name__ == 'Proof']
+                proof.on_predict_start(trainer, model)
+                self.assertEqual(state['reload_checks'], 1)
+                self.assertEqual(state['restored_tensors'], 2)
+                with torch.no_grad():
+                    model.layer.weight.add_(1)
+                with self.assertRaisesRegex(ValueError, 'tensor'):
+                    proof.on_predict_start(trainer, model)
+
 
 if __name__ == '__main__':
     unittest.main()

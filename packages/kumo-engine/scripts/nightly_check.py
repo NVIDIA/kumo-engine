@@ -909,7 +909,7 @@ def run_case(root, manifest, case, graph, snapshot, output):
                 else:
                     report['differences'][label] = smoke.compare_predictions(
                         original if selected is None else original[selected],
-                        other, atol=0, rtol=0, report_numeric_drift=True,
+                        other, atol=0, report_numeric_drift=True,
                         before_decisions=original_decisions
                         if selected is None or original_decisions is None else
                         original_decisions[selected], after_decisions=decisions)

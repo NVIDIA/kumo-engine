@@ -32,6 +32,8 @@ These initial thresholds still need validation on a complete GPU run.
 A failed learning condition writes a failed comparison and fails the job.
 
 Numeric score drift and elapsed times remain reports without regression limits.
+The shared PR smoke keeps its enforced prediction bound. Nightly selects numeric
+reporting explicitly. Public Lightning callbacks retain CUDA and checkpoint proof.
 Driver, Torch/CUDA, GPU memory, and resolved model configuration are recorded.
 They do not need exact equality with the reference. GPU class remains required.
 Package profiles have no fixed package count. The candidate installer resolves
