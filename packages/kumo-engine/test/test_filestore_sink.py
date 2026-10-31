@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from kumo_core.chunked_fs import ChunkedFileHandler
-from kumo_core.object_store_sink import FileStoreRouting, FilesystemSink
+from kumo_core.object_store_sink import FileStoreRouting
 from kumoapi.jobs import PredictionArtifactType
 from kumoapi.plugin import FileStoreSink
 from pyarrow.fs import PyFileSystem
@@ -76,14 +76,6 @@ class StageSink(FileStoreRouting):
     def filesystem(self, connector, path):
         assert self.holds_files(connector, path)
         return PyFileSystem(self.store), path.rstrip('/')
-
-    def write_table(self, connector, table_name, *args, **kwargs):
-        return FilesystemSink(self).write_table(connector, table_name, *args,
-                                                **kwargs)
-
-    def write_files(self, connector, table_name, *args, **kwargs):
-        return FilesystemSink(self).write_files(connector, table_name, *args,
-                                                **kwargs)
 
 
 @pytest.fixture

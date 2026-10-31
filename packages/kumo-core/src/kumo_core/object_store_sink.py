@@ -427,6 +427,23 @@ class FilesystemSink(ObjectStoreSinkBackend):
 
 class FileStoreRouting:
     """Sends ``holds_files`` paths to :class:`FilesystemSink`, the rest on."""
+    def write_table(self, connector, table_name, frame,
+                    write_mode=WriteMode.OVERWRITE, project_id=None, *,
+                    export_id=None):
+        sink = FilesystemSink(self) if self.holds_files(
+            connector, table_name) else super()
+        return sink.write_table(connector, table_name, frame, write_mode,
+                                project_id, export_id=export_id)
+
+    def write_files(self, connector, table_name, files,
+                    write_mode=WriteMode.OVERWRITE, project_id=None, *,
+                    export_id=None, extra_columns=None):
+        sink = FilesystemSink(self) if self.holds_files(
+            connector, table_name) else super()
+        return sink.write_files(connector, table_name, files, write_mode,
+                                project_id, export_id=export_id,
+                                extra_columns=extra_columns)
+
     def publish_model(self, connector, bundle_dir, *, path=None, location=None,
                       metadata={}, metrics={}, project_id=None):
         if location is None and path is not None and self.holds_files(
