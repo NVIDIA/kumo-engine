@@ -19,6 +19,8 @@ from .io.filesystem import local_path
 from .io.json import load_json, save_json
 from .manifest import RunManifest, RunPaths
 
+PROVENANCE_FILE = '_provenance.json'
+
 
 @runtime_checkable
 class ArtifactStore(Protocol):

@@ -38,6 +38,8 @@ import uuid
 from pathlib import Path
 from typing import Union
 
+from kumo_core.chunked_fs import set_spool_dir
+
 _DEFAULT_ROOT = Path.home() / ".cache" / "kumo-engine"
 _root = _DEFAULT_ROOT
 
@@ -66,6 +68,9 @@ def set_scratch_dir(path: Union[str, Path]) -> None:
 
 def get_scratch_dir() -> Path:
     return _root
+
+
+set_spool_dir(lambda: str(get_scratch_dir() / "spool"))
 
 
 def new_run_id() -> str:

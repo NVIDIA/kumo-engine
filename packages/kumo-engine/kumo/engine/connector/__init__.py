@@ -17,6 +17,8 @@ minus the server-registry-only fields (`name`, `description`, `project_id`,
 `_response`) and the `_bind_connector` round-trip. See `kumo.engine.connector.base`.
 """
 
+from typing import Any, Optional, Tuple
+
 from kumo.engine.connector.adls import ADLSConnector
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.bigquery import BigQueryConnector
@@ -35,6 +37,43 @@ from kumo.engine.connector.identity import (
 from kumo.engine.connector.s3 import S3Connector
 from kumo.engine.connector.snowflake import SnowflakeConnector
 from kumo.engine.connector.source_table import SourceTable, SQLSourceTable
+
+
+def _file_sink(connector: Any, path: str) -> Any:
+    from kumoapi.plugin import FileStoreSink
+
+    try:
+        sink = connector.sink_backend
+    except NotImplementedError:
+        return None
+    return sink if isinstance(sink, FileStoreSink) and sink.holds_files(
+        connector, path) else None
+
+
+def is_file_destination(connector: Any, path: str) -> bool:
+    r"""Whether ``path`` is a file location rather than a table."""
+    return _file_sink(connector, path) is not None
+
+
+def file_store(connector: Any, path: str) -> Optional[Tuple[Any, str]]:
+    r"""The ``(filesystem, path)`` of a file destination; None for a table."""
+    sink = _file_sink(connector, path)
+    return None if sink is None else sink.filesystem(connector, path)
+
+
+def model_sink(connector: Any, path: Optional[str]) -> Any:
+    r"""The sink that writes files at ``path``."""
+    from kumo_core.object_store_sink import (
+        FilesystemSink,
+        ObjectStoreSinkBackend,
+    )
+
+    sink = connector.sink_backend
+    if (path is None or isinstance(sink, ObjectStoreSinkBackend)
+            or _file_sink(connector, path) is None):
+        return sink
+    return FilesystemSink(sink)
+
 
 __all__ = [
     "ADLSConnector",
