@@ -260,32 +260,17 @@ _TASKS = {
 
 def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
               query: str) -> None:
-    import diskgraph
-    from kumo_core.pquery import _target_maximum
-    from kumo_core.training import custom_table
-    from kumo_core.types import PredictionArtifactType
-    from kumoapi.pquery.AST import Filter
     from pyarrow import parquet
-
-    from kumo.engine.pquery.predictive_query import PredictiveQuery
 
     reasons = out['reasons']
     out['step'] = 'parsing the query'
-    pquery = PredictiveQuery._from_snapshot(snapshot, query)
-    if isinstance(pquery._parsed.query.entity_ast, Filter):
-        unfiltered = copy.copy(pquery._parsed.query)
-        unfiltered.entity_ast = unfiltered.entity_ast.target
-        pquery = PredictiveQuery._from_snapshot(snapshot,
-                                                unfiltered.to_string())
+    pquery = _unfiltered_query(snapshot, query)
     parsed = pquery._parsed
     static = parsed.query_type == 'static'
     out['task_type'] = parsed.task_type
 
     out['step'] = 'reading the predictions'
-    files = [
-        str(path) for path in replace(
-            run, artifact_type=PredictionArtifactType.PREDICTIONS).files
-    ]
+    files = _prediction_files(run)
     columns = parquet.read_schema(files[0]).names
     manifest = run.manifest
     anchors = () if static or manifest is None else tuple(
@@ -296,31 +281,84 @@ def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
     out['anchors'] = tuple(
         pd.Timestamp(anchor, tz='UTC').isoformat() for anchor in anchors)
     if anchors:
-        frame = parsed.query.get_combined_date_offset_range()
-        try:
-            latest = _target_maximum(parsed, str(snapshot.index_path), min)
-            window_end = (pd.Timestamp(max(anchors)) + frame.end_date_offset +
-                          (parsed.forecast_length - 1) * frame.timeframe)
-            out['matured'] = bool(window_end <= pd.Timestamp(latest))
-        except Exception as error:
-            reasons['matured'] = str(error)
+        _check_maturity(out, parsed, snapshot, anchors)
     task = _TASKS.get(parsed.task_type)
     if task is None:
         reasons['metrics'] = f'{parsed.task_type} metrics are not supported'
         return
-    if not static and not anchors:
-        reasons['metrics'] = 'the run records no anchor timestamps'
-        return
-    if 'ANCHOR_TIMESTAMP' in keys and 'ANCHOR_TIMESTAMP' not in columns:
-        reasons['metrics'] = ('the run has several anchors but its '
-                              'predictions have no ANCHOR_TIMESTAMP column')
+    unsupported = _unsupported(static, anchors, keys, columns)
+    if unsupported is not None:
+        reasons['metrics'] = unsupported
         return
 
     out['step'] = 'generating labels'
-    entity, timestamp, target = (custom_table.entity_column(),
-                                 custom_table.timestamp_column(),
-                                 custom_table.target_column())
     actuals = _actuals_dir(run, snapshot)
+    joined = _join_labels(out, trainer, pquery, snapshot, manifest, files,
+                          columns, anchors, keys, task, actuals)
+    if joined is None:
+        reasons['metrics'] = 'no entity has a label at these anchors'
+        return
+    _record_metrics(out, joined, actuals)
+
+
+def _unfiltered_query(snapshot: Any, query: str) -> Any:
+    from kumoapi.pquery.AST import Filter
+
+    from kumo.engine.pquery.predictive_query import PredictiveQuery
+
+    pquery = PredictiveQuery._from_snapshot(snapshot, query)
+    if not isinstance(pquery._parsed.query.entity_ast, Filter):
+        return pquery
+    unfiltered = copy.copy(pquery._parsed.query)
+    unfiltered.entity_ast = unfiltered.entity_ast.target
+    return PredictiveQuery._from_snapshot(snapshot, unfiltered.to_string())
+
+
+def _prediction_files(run: Any) -> List[str]:
+    from kumo_core.types import PredictionArtifactType
+
+    return [
+        str(path) for path in replace(
+            run, artifact_type=PredictionArtifactType.PREDICTIONS).files
+    ]
+
+
+def _check_maturity(out: Dict[str, Any], parsed: Any, snapshot: Any,
+                    anchors: Tuple[int, ...]) -> None:
+    from kumo_core.pquery import _target_maximum
+
+    frame = parsed.query.get_combined_date_offset_range()
+    try:
+        latest = _target_maximum(parsed, str(snapshot.index_path), min)
+        window_end = (pd.Timestamp(max(anchors)) + frame.end_date_offset +
+                      (parsed.forecast_length - 1) * frame.timeframe)
+        out['matured'] = bool(window_end <= pd.Timestamp(latest))
+    except Exception as error:
+        out['reasons']['matured'] = str(error)
+
+
+def _unsupported(static: bool, anchors: Tuple[int, ...], keys: List[str],
+                 columns: List[str]) -> Optional[str]:
+    if not static and not anchors:
+        return 'the run records no anchor timestamps'
+    if 'ANCHOR_TIMESTAMP' in keys and 'ANCHOR_TIMESTAMP' not in columns:
+        return ('the run has several anchors but its predictions have no '
+                'ANCHOR_TIMESTAMP column')
+    return None
+
+
+def _join_labels(out: Dict[str, Any], trainer: Any, pquery: Any,
+                 snapshot: Any, manifest: Optional[PredictionManifest],
+                 files: List[str], columns: List[str],
+                 anchors: Tuple[int, ...], keys: List[str], task: str,
+                 actuals: Path) -> Optional[Dict[str, Any]]:
+    r"""Predictions joined with labels; None when no entity has a label."""
+    import diskgraph
+    from kumo_core.training import custom_table
+    from pyarrow import parquet
+
+    labels = (custom_table.entity_column(), custom_table.timestamp_column(),
+              custom_table.target_column())
     spill = actuals.parent / f'.spill-{uuid4().hex}'
     try:
         with pquery._label_parts(
@@ -329,35 +367,49 @@ def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
             out['step'] = 'joining labels with predictions'
             label_columns = parquet.read_schema(parts[0]).names
             shutil.rmtree(actuals, ignore_errors=True)
-            emitted = [name for name in _EMITTED[task] if name in columns]
-            spec = {
-                'task': task,
-                'prediction_keys': keys,
-                'label_keys': [entity, timestamp][:len(keys)],
-                'label_target': target,
-                'actuals_dir': str(actuals),
-                'actual_columns': [[entity, 'ENTITY']] +
-                ([[timestamp, 'ANCHOR_TIMESTAMP']]
-                 if timestamp in label_columns and not static else []) +
-                [[target, 'TARGET']],
-                'prediction_columns': [[name, name] for name in emitted],
-                'constant_timestamps': ([[
-                    'ANCHOR_TIMESTAMP', _prediction_time(manifest)
-                ]] if static and manifest is not None else []) +
-                [['EVALUATED_AT', time.time_ns()]],
-                'spill_dir': str(spill),
-            }
-            joined = json.loads(
+            spec = _join_spec(task, keys, labels, label_columns, columns,
+                              pquery._parsed.query_type == 'static',
+                              manifest, actuals, spill)
+            return json.loads(
                 diskgraph.evaluate_prediction_parquet(files, parts,
                                                       json.dumps(spec)))
     except Exception as error:
         if (out['step'] != 'generating labels'
                 or 'empty training table' not in str(error)):
             raise
-        reasons['metrics'] = 'no entity has a label at these anchors'
-        return
+        return None
     finally:
         shutil.rmtree(spill, ignore_errors=True)
+
+
+def _join_spec(task: str, keys: List[str], labels: Tuple[str, str, str],
+               label_columns: List[str], columns: List[str], static: bool,
+               manifest: Optional[PredictionManifest], actuals: Path,
+               spill: Path) -> Dict[str, Any]:
+    entity, timestamp, target = labels
+    emitted = [name for name in _EMITTED[task] if name in columns]
+    return {
+        'task': task,
+        'prediction_keys': keys,
+        'label_keys': [entity, timestamp][:len(keys)],
+        'label_target': target,
+        'actuals_dir': str(actuals),
+        'actual_columns': [[entity, 'ENTITY']] +
+        ([[timestamp, 'ANCHOR_TIMESTAMP']]
+         if timestamp in label_columns and not static else []) +
+        [[target, 'TARGET']],
+        'prediction_columns': [[name, name] for name in emitted],
+        'constant_timestamps': ([[
+            'ANCHOR_TIMESTAMP', _prediction_time(manifest)
+        ]] if static and manifest is not None else []) +
+        [['EVALUATED_AT', time.time_ns()]],
+        'spill_dir': str(spill),
+    }
+
+
+def _record_metrics(out: Dict[str, Any], joined: Mapping[str, Any],
+                    actuals: Path) -> None:
+    reasons = out['reasons']
     out.update(rows=joined['rows'], labelled=joined['labelled'],
                actuals=str(actuals) if joined['labelled'] else None)
     if out['labelled'] == 0:
