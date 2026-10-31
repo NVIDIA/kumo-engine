@@ -57,6 +57,7 @@ from kumo.engine._tracking import (
     RegistrationError,
     RunRecord,
     SingleRunHooks,
+    TrackingBase,
     by_step,
     model_metrics,
 )
@@ -95,7 +96,7 @@ _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
 _HINTED: set = set()
 
 
-class MlflowTracking(SingleRunHooks):
+class MlflowTracking(SingleRunHooks, TrackingBase):
     r"""Records `Trainer.fit` in MLflow: one run per fit (under the active
     run, if any, on the same server) with a child run per trial attempt.
     Source tables are logged as run inputs: Databricks tables as Delta
@@ -123,15 +124,9 @@ class MlflowTracking(SingleRunHooks):
             server's tracking URI. `None` uses MLflow's own tracking and
             registry URIs, read once here.
 
-    With explicit credentials (a Databricks service principal, an AWS
-    access key or role), each MLflow call sets the state MLflow reads them
-    from for its duration (Databricks: ``DATABRICKS_HOST`` and a short-lived
-    ``DATABRICKS_TOKEN``; SageMaker: the process-wide tracking URI), so do
-    not call MLflow or Databricks yourself on other threads during a fit.
-    Ambient credentials (a notebook, job, profile or instance role) set no
-    credentials, but a Databricks or SageMaker target still sets the
-    process-wide tracking URI for each call: Unity Catalog downloads and the
-    SageMaker plugin route with it.
+    With explicit credentials, each MLflow call sets process-wide state
+    for its duration (docs/mlops.md, "Credentials"): do not call MLflow or
+    Databricks yourself on other threads during a fit.
 
     ``run_id`` is the MLflow id of the most recent tracked run, once it has
     started, ``logged_run_name`` its name, ``experiment`` its experiment's
@@ -161,7 +156,6 @@ class MlflowTracking(SingleRunHooks):
         self.tags = dict(tags or {})
         self.logs_model = log_model
         self._outer: Optional[str] = None
-        self.run_id: Optional[str] = None
         self.logged_run_name: Optional[str] = None
         self.experiment: Optional[str] = None
         self._experiment_id: Optional[str] = None
@@ -228,10 +222,8 @@ class MlflowTracking(SingleRunHooks):
         except Exception as error:
             raise RuntimeError(f'MLflow at {uri} is not usable with these '
                                f'credentials: {full_error(error)}') from error
-        if missing:
-            self._create_experiment(client, owned)
-
-    def _create_experiment(self, client: Any, owned: FrozenSet[str]) -> None:
+        if not missing:
+            return
         with _limited_http(owned), self.target.scope():
             try:
                 client.create_experiment(self.experiment_name)
@@ -1276,12 +1268,8 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
     from kumo_core.artifacts import PROVENANCE_FILE
 
     from kumo.engine.integrations import _mlflow_model, _mlflow_model_code
-    from kumo.engine.trainer._spec import (
-        SPEC_FILE,
-        listed_file,
-        read_training_spec,
-    )
-    from kumo.engine.trainer.trainer import registry_pointers
+    from kumo.engine.trainer._spec import SPEC_FILE, read_training_spec
+    from kumo.engine.trainer.trainer import _encoders, registry_pointers
 
     mlflow = import_provider('mlflow', 'mlflow')
     if snapshot is None:
@@ -1325,7 +1313,7 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
                 input_example=example,
                 metadata=pointers,
                 pip_requirements=[
-                    _requirement(listed_file(bundle_dir, 'encoders'))
+                    _requirement(_encoders(bundle_dir))
                 ],
             )
             with target.scope():
@@ -1354,15 +1342,10 @@ def _id(manifest: Optional['ModelManifest']) -> Optional[str]:
     return None if manifest is None else manifest.id
 
 
-def _requirement(encoders: Optional[Path]) -> str:
-    from kumo_core.encoders.config import EncodersConfig
-    from kumo_core.io.json import load_json
+def _requirement(config: Any) -> str:
     from kumoapi.encoder import TextEmbedding
 
     extras = ['s3', 'gcs']
-    path = None if encoders is None else str(encoders)
-    config = (load_json(path, EncodersConfig)
-              if path and Path(path).is_file() else None)
     if config is not None and any(
             isinstance(encoder, TextEmbedding)
             for table in config.encoders.values()
@@ -1524,28 +1507,19 @@ def _dataset_source(entry: Mapping[str, Optional[str]]) -> Any:
         return None
     if connector == 'DATABRICKS':
         delta = import_provider('mlflow.data.delta_dataset_source', 'mlflow')
+        parts = re.findall(r'`((?:[^`]|``)*)`', location)
+        head = (entry.get('version') or '').split('_', 1)[0]
         return delta.DeltaDatasetSource(
-            delta_table_name=_unquoted(location),
-            delta_table_version=_delta_version(entry))
+            delta_table_name='.'.join(part.replace('``', '`')
+                                      for part in parts) or location,
+            delta_table_version=int(head) if entry.get('version_kind')
+            == 'exact' and head.isdigit() else None)
     if connector in _PATH_CONNECTORS:
         registry = import_provider('mlflow.data.dataset_source_registry',
                                    'mlflow')
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             return registry.resolve_dataset_source(location)
-    return None
-
-
-def _unquoted(name: str) -> str:
-    parts = re.findall(r'`((?:[^`]|``)*)`', name)
-    return '.'.join(part.replace('``', '`') for part in parts) or name
-
-
-def _delta_version(entry: Mapping[str, Optional[str]]) -> Optional[int]:
-    version = entry.get('version') or ''
-    head = version.split('_', 1)[0]
-    if entry.get('version_kind') == 'exact' and head.isdigit():
-        return int(head)
     return None
 
 

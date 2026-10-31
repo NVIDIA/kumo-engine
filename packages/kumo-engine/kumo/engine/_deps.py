@@ -31,8 +31,6 @@ from kumo.engine._manifest import (
     stamp,
 )
 
-Location = Union[str, Tuple[Any, str]]
-
 
 class Asset(Protocol):
     r"""A content-addressed file or directory a model predicts with."""
@@ -113,18 +111,15 @@ def imported(entry: str) -> Any:
 class Dependencies:
     r"""Records a fit's dependencies and resolves a model's assets."""
     def __init__(self, records: Sequence[Dependency] = (),
-                 settings: Any = None,
-                 locations: Sequence[Location] = ()) -> None:
+                 settings: Any = None) -> None:
         self.records: List[Dependency] = list(records)
         self.errors: List[BaseException] = []
         self._settings = settings
-        self._locations = list(locations)
 
     @classmethod
-    def of(cls, manifest: Optional[ModelManifest], settings: Any = None,
-           locations: Sequence[Location] = ()) -> 'Dependencies':
-        return cls(getattr(manifest, 'dependencies', None) or (), settings,
-                   locations)
+    def of(cls, manifest: Optional[ModelManifest],
+           settings: Any = None) -> 'Dependencies':
+        return cls((manifest and manifest.dependencies) or (), settings)
 
     def add(self, dependency: Dependency) -> Dependency:
         self.records.append(dependency)
@@ -178,14 +173,7 @@ class Dependencies:
     def candidates(self, record: Dependency) -> List[Tuple[Any, str]]:
         from kumo.engine.connector import connector_for_root
 
-        relative = f'{record.asset_kind}/{record.sha256}'
         found: List[Tuple[Any, str]] = []
-        for location in self._locations:
-            if isinstance(location, str):
-                found.append((connector_for_root(location), relative))
-            else:
-                connector, path = location
-                found.append((connector, f"{path.rstrip('/')}/{relative}"))
         if record.location:
             parent, _, leaf = record.location.rstrip('/').rpartition('/')
             try:
@@ -194,14 +182,9 @@ class Dependencies:
                 pass
         settings = self._settings
         if settings is not None:
-            found.append((settings.root.connector,
-                          settings.root.location(f'assets/{relative}')))
+            found.append((settings.root.connector, settings.root.location(
+                f'assets/{record.asset_kind}/{record.sha256}')))
         return found
-
-
-def asset_cache() -> Path:
-    base = os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache'
-    return Path(base) / 'kumo' / 'assets'
 
 
 def _store(asset: Asset, sha256: str, settings: Any) -> Optional[str]:
@@ -257,7 +240,8 @@ def _fetch(connector: Any, path: str, sha256: str) -> Optional[Path]:
         return None
     if isinstance(filesystem, LocalFileSystem):
         return Path(root)
-    target = asset_cache() / sha256
+    cache = os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache'
+    target = Path(cache) / 'kumo' / 'assets' / sha256
     if (target / PROVENANCE_FILE).is_file():
         return target
     target.parent.mkdir(parents=True, exist_ok=True)

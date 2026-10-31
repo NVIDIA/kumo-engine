@@ -10,7 +10,7 @@ import tempfile
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from kumo_core.instrumentation import format_error
 from kumo_core.sources.sql import resolve_snowflake_identifier
@@ -25,6 +25,7 @@ from kumo.engine._tracking import (
     DROPPED_PARAMS,
     RunRecord,
     SingleRunHooks,
+    TrackingBase,
     by_step,
     model_metrics,
 )
@@ -42,7 +43,7 @@ _MAX_RUNS = 500
 _WARN_RUNS = 450
 
 
-class SnowflakeTracking(SingleRunHooks):
+class SnowflakeTracking(SingleRunHooks, TrackingBase):
     r"""Records fits, prediction runs and monitoring calls in Snowflake
     Experiment Tracking, one run each; tags are logged as params.
 
@@ -65,7 +66,6 @@ class SnowflakeTracking(SingleRunHooks):
     """
 
     platform = 'snowflake'
-    run_url = None
 
     def __init__(
         self,
@@ -93,7 +93,6 @@ class SnowflakeTracking(SingleRunHooks):
         self.run_name = run_name
         self.tags = dict(tags or {})
         self.native_model_lineage = native_model_lineage
-        self.run_id: Optional[str] = None
         self.logged_run_name: Optional[str] = None
         self._reset()
 
@@ -123,15 +122,19 @@ class SnowflakeTracking(SingleRunHooks):
         return Trainer.load_from_connector(self.connector, location=location,
                                            **kwargs)
 
-    def check(self, registry: Any = None) -> None:
-        r"""Raises before any work unless the session can see the
-        experiment's schema (one metadata query, no warehouse)."""
+    def _location(self) -> Tuple[Optional[str], str]:
         database = self.database or self.session.get_current_database()
         schema = self.schema or (None if self.database else
                                  self.session.get_current_schema())
+        return database, schema or 'PUBLIC'
+
+    def check(self, registry: Any = None) -> None:
+        r"""Raises before any work unless the session can see the
+        experiment's schema (one metadata query, no warehouse)."""
+        database, schema = self._location()
         if database is None:
             return
-        name = resolve_snowflake_identifier(schema or 'PUBLIC')
+        name = resolve_snowflake_identifier(schema)
         try:
             rows = self.session.sql(
                 f"SHOW SCHEMAS LIKE '{name.replace(chr(39), chr(39) * 2)}' "
@@ -143,7 +146,7 @@ class SnowflakeTracking(SingleRunHooks):
         if not rows:
             raise ValueError(
                 f'Snowflake Experiment Tracking needs schema {database}.'
-                f'{schema or "PUBLIC"}, which does not exist or this role '
+                f'{schema}, which does not exist or this role '
                 f'cannot see.')
 
     def start(self, record: RunRecord) -> None:
@@ -162,19 +165,17 @@ class SnowflakeTracking(SingleRunHooks):
                 f'Snowflake; end that run, or pass SnowflakeTracking the '
                 f'session it uses')
         self._tracking = tracking
-        database = self.database or self.session.get_current_database()
-        schema = self.schema or (None if self.database else
-                                 self.session.get_current_schema())
+        database, schema = self._location()
         experiment = tracking.set_experiment(self.experiment_name,
                                              database_name=database,
-                                             schema_name=schema or 'PUBLIC')
+                                             schema_name=schema)
         existing = [
             str(row['name'])
             for row in tracking._sql_client.show_runs_in_experiment(
                 experiment_name=experiment.name)
         ]
         self._check_room(len(existing), record.tags.get('kumo.kind'))
-        self._started = getattr(record, 'started', None) or _now()
+        self._started = record.started or _now()
         self._run = tracking.start_run(self._new_run_name(
             existing, _identifier(record_name(record, self.run_name))))
         self.run_id = self.logged_run_name = str(self._run.name)
@@ -215,7 +216,7 @@ class SnowflakeTracking(SingleRunHooks):
                                   if k not in self._start_tags}, _MAX_PARAMS)
                 self._log_artifacts(record.artifacts)
                 self.log_summaries(record.summaries)
-                finished = getattr(record, 'finished', None) or _now()
+                finished = record.finished or _now()
                 self._log_metrics({'duration_seconds': (
                     finished - self._started).total_seconds()}, _MAX_METRICS)
                 self._log_card(record)
@@ -234,8 +235,7 @@ class SnowflakeTracking(SingleRunHooks):
                 self._reset()
 
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
-        if self._run is not None:
-            self._log_metrics(metrics, _EPOCH_METRICS, step=step)
+        self._log_metrics(metrics, _EPOCH_METRICS, step=step)
 
     def _check_room(self, runs: int, kind: Optional[str]) -> None:
         if runs >= _MAX_RUNS:
