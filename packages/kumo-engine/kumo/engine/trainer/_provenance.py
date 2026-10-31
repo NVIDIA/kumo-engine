@@ -36,8 +36,6 @@ def write_provenance(
     train_table: TrainingTable,
     warm_start: Optional[ModelManifest],
     started_at: datetime,
-    task_type: TaskType,
-    holdout_path: Optional[Path],
     holdout_truncated: Optional[bool],
     fit_mode: Optional[str],
     tracking: Optional[TrackingRef] = None,

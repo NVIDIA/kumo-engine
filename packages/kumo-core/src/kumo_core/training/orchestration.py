@@ -114,9 +114,6 @@ class CallableTrainingResult:
     task: Any = field(repr=False, compare=False)
     auto_trainer: Any = field(repr=False, compare=False)
     best_trainer: Any = field(repr=False, compare=False)
-    # Exact counts of the test split's scores: the fit-mode model's, and the
-    # published (most-data) model's.
-    test_counts: Any = field(default=None, repr=False, compare=False)
     published_counts: Any = field(default=None, repr=False, compare=False)
 
     def to_stage_output(self) -> dict[str, Any]:
@@ -432,7 +429,6 @@ def run_callable_training(
         task=task,
         auto_trainer=auto_trainer,
         best_trainer=best_trainer,
-        test_counts=getattr(evaluation, 'counts', None),
         published_counts=getattr(published, 'counts', None),
     )
 

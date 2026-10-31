@@ -1360,8 +1360,6 @@ class Trainer:
                     warm_start_bundle_id),
                 started_at=started_at, fit_mode=fit_mode,
                 tracking=tracking.pointer(),
-                task_type=task_type,
-                holdout_path=holdout_path,
                 holdout_truncated=holdout_truncated,
                 holdout_counts=holdout_counts,
                 holdout_window=_target_window(workflow)),
