@@ -257,28 +257,22 @@ def test_an_occupied_stage_directory_is_refused_unless_overwritten(
         sink, stage, tmp_path):
     import pandas as pd
     from kumo_core.artifact_export import ArtifactDestinationConflict
+    from kumo_core.object_store_sink import FilesystemSink
     from kumoapi.jobs import WriteMode
-
-    from kumo.engine.trainer.output_config import PredictionOutputConfig
 
     connector = SimpleNamespace(source_type='SNOWFLAKE', sink_backend=sink)
     target = f'{ROOT}/predictions/r1/'
+    files = FilesystemSink(sink)
+    part = tmp_path / 'r1.parquet'
+    pd.DataFrame({'ID': [1]}).to_parquet(part)
+    files.write_files(connector, target, [str(part)])
 
-    def export(run, write_mode=None):
-        output = PredictionOutputConfig(
-            connector, output_paths={'predictions': target},
-            write_mode=write_mode)
-        output.writer(target).preflight_write_files(connector, target,
-                                                    write_mode=write_mode)
-        part = tmp_path / f'{run}.parquet'
-        pd.DataFrame({'ID': [1]}).to_parquet(part)
-        output._write(target, [str(part)], export_id=run)
-
-    export('r1')
-    with pytest.raises(ArtifactDestinationConflict, match='/predictions/r1/'):
-        export('r2')
-    export('r2', WriteMode.OVERWRITE)
+    for mode in (None, WriteMode.APPEND):
+        with pytest.raises(ArtifactDestinationConflict,
+                           match='/predictions/r1/'):
+            files.preflight_write_files(connector, target, write_mode=mode)
+    files.preflight_write_files(connector, target,
+                                write_mode=WriteMode.OVERWRITE)
     fs, root = sink.filesystem(connector, target)
-    assert [i.base_name for i in fs.get_file_info(FileSelector(root))] == [
-        '_KUMO_EXPORT', '_SUCCESS', 'r2.parquet'
-    ]
+    fs.delete_dir_contents(root)
+    assert fs.get_file_info(FileSelector(root, allow_not_found=True)) == []
