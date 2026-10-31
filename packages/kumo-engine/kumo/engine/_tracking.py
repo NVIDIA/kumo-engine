@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Platform-neutral run records and the `Tracking` base class."""
+r"""Platform-neutral run records and the `Tracking` protocol."""
 
 import dataclasses
 import json
@@ -11,7 +11,6 @@ import queue
 import threading
 import time
 import warnings
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
@@ -23,6 +22,7 @@ from typing import (
     List,
     Mapping,
     Optional,
+    Protocol,
     Sequence,
     Tuple,
 )
@@ -208,23 +208,39 @@ def trial_spec(events: Sequence[Event]) -> RunSpec:
     )
 
 
-class Tracking(ABC):
+class Tracking(Protocol):
     r"""Records one `Trainer.fit` in an experiment tracker.
 
     Calls come from one background thread. `start` gets the fit run's
     record without metrics, `on_trial` a trial attempt's record so far with
     the event that updated it, and `finish` the fit run's final record
     (`None` if tracking stopped early, which should end the run as failed).
-    Override the optional members a tracker supports. ``log_model(bundle_dir,
-    manifest, snapshot, registry)`` is called after a fit that succeeded and
-    before `finish`, which the fit waits for while the tracking thread is
-    alive, up to an hour (an error, a stopped thread or the time limit ends
-    the run as failed), and returns the version it registered at
-    ``registry``, a ``ModelRegistryLocation``. Without it, ``registry``
-    registers in the model registry of ``connector``. ``platform``,
-    ``run_id`` and ``run_url`` are the tracker's own run once `start`
-    returned, recorded as the model manifest's ``tracking``.
+    Optional members: ``prepare()``, called first on the fit's own thread;
+    ``log_metrics(metrics, step)``, series of the fit run as they come (a
+    single trial's epochs, or a search's best validation metric after each
+    trial); ``tags`` (extra fit-run tags); ``log_model(bundle_dir, manifest,
+    snapshot, registry)``, called after a fit that succeeded and before
+    `finish`, which the fit waits for while the tracking thread is alive, up
+    to an hour (an error, a stopped thread or the time limit ends the run as
+    failed), and which returns the version it registered at ``registry``, a
+    ``ModelRegistryLocation``; ``connector``, a connector whose model
+    registry ``registry`` registers in when there is no ``log_model``; and
+    ``platform``, ``run_id`` and ``run_url``, the tracker's own run once
+    `start` returned, recorded as the model manifest's ``tracking``.
     """
+    def start(self, record: RunRecord) -> None:
+        ...
+
+    def on_trial(self, record: RunRecord, event: Event) -> None:
+        ...
+
+    def finish(self, record: Optional[RunRecord],
+               error: Optional[BaseException]) -> None:
+        ...
+
+
+class TrackingBase(Tracking):
+    r"""`Tracking` with defaults for its optional members."""
 
     run_id: Optional[str] = None
     run_url: Optional[str] = None
@@ -238,33 +254,19 @@ class Tracking(ABC):
     def platform(self) -> str:
         return type(self).__name__
 
-    @abstractmethod
-    def start(self, record: RunRecord) -> None:
-        ...
-
-    @abstractmethod
-    def on_trial(self, record: RunRecord, event: Event) -> None:
-        ...
-
-    @abstractmethod
-    def finish(self, record: Optional[RunRecord],
-               error: Optional[BaseException]) -> None:
-        ...
-
     def prepare(self) -> None:
-        r"""Called first, on the fit's own thread."""
+        pass
 
     def check(self, registry: Optional['ModelRegistryLocation'] = None
               ) -> None:
-        r"""Called when `kumo.MLOps` is built."""
+        pass
 
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
-        r"""The fit run's series: a single trial's epochs, or a search's
-        best validation metric after each trial."""
+        pass
 
 
-class _Foreign(Tracking):
-    r"""A tracker that does not subclass `Tracking`, with its defaults."""
+class _Foreign(TrackingBase):
+    r"""A tracker that does not subclass `TrackingBase`, with its defaults."""
 
     def __init__(self, tracker: Any) -> None:
         self._tracker = tracker
@@ -328,9 +330,9 @@ class _Foreign(Tracking):
         return repr(self._tracker)
 
 
-def as_tracking(tracking: Any) -> Optional[Tracking]:
-    r"""``tracking``, wrapped unless it subclasses `Tracking`."""
-    if tracking is None or isinstance(tracking, Tracking):
+def as_tracking(tracking: Any) -> Optional[TrackingBase]:
+    r"""``tracking``, wrapped unless it subclasses `TrackingBase`."""
+    if tracking is None or isinstance(tracking, TrackingBase):
         return tracking
     return _Foreign(tracking)
 
@@ -412,7 +414,7 @@ class TrackingSession:
                                         name='kumo-tracking', daemon=True)
         self._worker.start()
 
-        def begin(tracker: Tracking) -> None:
+        def begin(tracker: TrackingBase) -> None:
             tracker.start(run_record(dataclasses.replace(value, tags={
                 **value.tags, **(tracker.tags or {})
             })))
@@ -583,7 +585,7 @@ class TrackingSession:
                 logger.warning('Experiment tracking failed: %s',
                                full_error(error), exc_info=_debug())
 
-    def _call(self, call: Callable[[Tracking], Any]) -> None:
+    def _call(self, call: Callable[[TrackingBase], Any]) -> None:
         tracker = self._tracker
         if tracker is None:
             return

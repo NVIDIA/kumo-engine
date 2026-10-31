@@ -53,7 +53,7 @@ from kumo.engine._tracking import (
     DROPPED_PARAMS,
     RegistrationError,
     RunRecord,
-    Tracking,
+    TrackingBase,
     by_step,
 )
 from kumo.engine._version import __version__
@@ -90,7 +90,7 @@ _SAGEMAKER_MODEL = re.compile(r'[a-zA-Z0-9](-*[a-zA-Z0-9]){0,56}')
 _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
 
 
-class MlflowTracking(Tracking):
+class MlflowTracking(TrackingBase):
     r"""Records `Trainer.fit` in MLflow: one run per fit (under the active
     run, if any, on the same server) with a child run per trial attempt.
     Source tables are logged as run inputs: Databricks tables as Delta
