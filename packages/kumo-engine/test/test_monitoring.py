@@ -651,7 +651,7 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
              f'from {name}.'))
 
 
-def test_link_prediction_score_drift_vs_holdout_has_no_shift():
+def test_only_link_prediction_score_drift_vs_holdout_has_no_shift():
     from kumo.engine._monitoring import DriftReport, _drift_summaries
 
     report = DriftReport(
@@ -661,11 +661,15 @@ def test_link_prediction_score_drift_vs_holdout_has_no_shift():
         previous_ks=0.25, previous_wasserstein=0.125, input_changes={},
         reasons={})
 
-    table, = (summary for summary in _drift_summaries(report)
-              if isinstance(summary, Table))
-    assert table.rows == (
+    def rows(link):
+        table, = (summary for summary in _drift_summaries(report, None, link)
+                  if isinstance(summary, Table))
+        return table.rows
+
+    assert rows(link=True) == (
         ('holdout scores at training', 1.25, '', 0.5, 0.25),
         ('previous run', 0.5, 'large (> 0.25)', 0.25, 0.125))
+    assert rows(link=False)[0][2] == 'large (> 0.25)'
 
 
 def test_drift_summaries_log_the_previous_run_and_explain_gaps():

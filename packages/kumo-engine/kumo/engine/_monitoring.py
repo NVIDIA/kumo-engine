@@ -586,7 +586,9 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
             getattr(getattr(manifest, 'prediction_table', None), 'rows', None))
             if evaluating else _drift_summaries(report, (
                        earlier.run_name if earlier is not None
-                       and earlier.platform == platform else None)))))
+                       and earlier.platform == platform else None),
+                       link=str(identity.get('kumo.task_type')).endswith(
+                           'link_prediction')))))
     return replace(
         record, tags={**record.tags, **{
             name: value for name, value in identity.items()
@@ -596,8 +598,8 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
         prediction_run=ref.run_id if tracked else None)
 
 
-def _drift_summaries(report: 'DriftReport',
-                     previous_name: Optional[str] = None) -> List[Summary]:
+def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
+                     link: bool) -> List[Summary]:
     r"""What a tracker logs of ``report``: score drift vs the holdout and
     vs the previous run, named ``previous_name`` (else by its id), and, when
     the run's model is the trainer's, the input changes and column drift
@@ -621,7 +623,7 @@ def _drift_summaries(report: 'DriftReport',
         ('holdout scores at training', holdout)]
     sides.append(('previous run', previous))
     rows = tuple((side, values['psi'],
-                  '' if values is holdout and report.score == 'top_score'
+                  '' if values is holdout and link
                   else _shift(values['psi']), values['ks'],
                   values['wasserstein'])
                  for side, values in sides if values['psi'] is not None)
