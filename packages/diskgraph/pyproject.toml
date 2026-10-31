@@ -42,5 +42,7 @@ python-source = "diskgraph-pybind/python"
 # transitive crate feature) regardless of which interpreter CI links.
 features = ["extension-module", "pyo3/abi3-py311"]
 include = [
+    { path = "diskgraph-gateway/**/*", format = "sdist" },
     { path = "diskgraph-pybind/python/diskgraph/bin/ingest", format = "wheel" },
+    { path = "diskgraph-pybind/python/diskgraph/bin/diskgraph-gateway", format = "wheel" },
 ]

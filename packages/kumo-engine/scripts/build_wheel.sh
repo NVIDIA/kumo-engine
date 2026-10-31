@@ -325,7 +325,7 @@ check_glibc_floor() {
         "$(ls -1 "${WHEELS}"/diskgraph-*.whl | sort | tail -1)" "${probe}"
 
     local worst="0.0" path floor
-    for path in "${probe}/diskgraph/bin/ingest" "${probe}"/diskgraph/_c*.so; do
+    for path in "${probe}/diskgraph/bin/ingest" "${probe}/diskgraph/bin/diskgraph-gateway" "${probe}"/diskgraph/_c*.so; do
         [ -f "${path}" ] || continue
         floor="$(${dumper} "${path}" 2>/dev/null \
             | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/GLIBC_//' \
@@ -354,6 +354,7 @@ NOTICE_GENERATOR="${KUMO_REPO}/scripts/gen_third_party.py"
 NOTICE_ARTIFACT_ARGS=(
     --artifact diskgraph-extension
     --artifact diskgraph-ingest
+    --artifact diskgraph-gateway
     --artifact kumo-core-bundled-source
 )
 
@@ -445,8 +446,9 @@ if 'snowflake' in sources:
         raise SystemExit('kumo_snowflake.backend imported without the '
                          'snowflake extra')
 
-ingest = pathlib.Path(diskgraph.__file__).parent / 'bin' / 'ingest'
-assert ingest.is_file() and os.access(ingest, os.X_OK), ingest
+for name in ('ingest', 'diskgraph-gateway'):
+    binary = pathlib.Path(diskgraph.__file__).parent / 'bin' / name
+    assert binary.is_file() and os.access(binary, os.X_OK), binary
 if importlib.util.find_spec('kumo_glove_6b_50d'):  # only with the `text` extra
     EmbeddingModelStore().get('glove.6B-50d').vectors()
 print('wheel OK', __version__, '| torch', torch.__version__, '| pyg',

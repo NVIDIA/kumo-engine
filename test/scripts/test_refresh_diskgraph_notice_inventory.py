@@ -138,8 +138,8 @@ class RefreshDiskgraphNoticeInventoryTest(unittest.TestCase):
             _package("kept_crate", "2.0.0", "MIT"),
             _package("sample", "1.1.0", "MIT/Apache-2.0"),
         ])
-        manifest["artifacts"][1]["packages"] = manifest["artifacts"][1][
-            "packages"][:1]
+        for artifact in manifest["artifacts"][1:]:
+            artifact["packages"] = artifact["packages"][:1]
 
         with tempfile.TemporaryDirectory() as directory:
             crate = Path(directory) / "index.crates.io-test" / "sample-1.1.0"

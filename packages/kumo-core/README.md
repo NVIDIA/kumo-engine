@@ -86,42 +86,38 @@ Kumo is not yet a uv workspace. These commands operate on `packages/kumo-core` e
 
 ## Remote batch sampling over Arrow Flight
 
-`kumo_core.diskgraph.sampling_service.SamplingService` serves complete native
-DiskGraph batches from a prepared graph index. Each worker owns a disjoint epoch
-shard. The trainer's `RemoteRuntimeIndex` merges these streams in deterministic
-round-robin order and passes the same Arrow-backed batch structure to the local
-training adapter.
+The Rust `diskgraph-gateway` executable serves complete native DiskGraph batches
+from a prepared graph index. It calls `diskgraph-runtime` directly, encodes native
+Arrow data, validates immutable task uploads, and owns flow control and
+cancellation. Each worker produces a disjoint epoch shard. Python's
+`RemoteRuntimeIndex` consumes the resulting streams and passes Arrow-backed
+batches to the training adapter.
 
-Start a worker in its owning process, using a graph replica with the same native
-index files as the trainer:
+Run the bundled executable on a worker with the same graph index files as the
+trainer:
 
-```python
-from pathlib import Path
-from kumo_core.diskgraph.sampling_service import SamplingService, SamplingServiceConfig
-
-service = SamplingService(
-    SamplingServiceConfig(
-        index_path=Path("/local/graph"),
-        host="0.0.0.0",
-        port=8815,
-        max_threads=2,
-    )
-)
-try:
-    service.serve()
-finally:
-    service.close()
+```bash
+sampling_gateway=$(python -c \
+  'import diskgraph; from pathlib import Path; print(Path(diskgraph.__file__).parent / "bin/diskgraph-gateway")')
+"$sampling_gateway" --data /local/graph --host 0.0.0.0 --port 8815 --max-threads 2
 ```
+
+The binary is installed at `diskgraph/bin/diskgraph-gateway` within the Python
+package. `SamplingService(SamplingServiceConfig(...))` launches that executable,
+waits for readiness, and owns its shutdown. `DISKGRAPH_TASK_GATEWAY` can select an
+explicit binary for development. This Python helper implements process ownership
+and health calls; native code handles all server RPCs and batch generation.
 
 The client registers each immutable training-table extension once per worker,
 using bounded file chunks and a content checksum. Epoch requests carry sampling,
 projection, seed, and shard settings. Flight exchanges use a two-batch credit
-window to bound production while the consumer is paused. Completion counts and
-RPC status are checked; failures propagate without replaying an incomplete epoch.
-Closing an iterator cancels its outstanding streams, and data-module teardown
-closes shared worker connections. Ordered RHS catalog scans use one replica to
-preserve the order required by MIPS embedding construction.
+window. Sequence/completion counts and final RPC status are checked; failures
+propagate without replaying an incomplete epoch. Closing an iterator cancels its
+outstanding streams, and data-module teardown closes shared connections. Ordered
+RHS catalog scans use one replica to preserve MIPS embedding order.
 
-`SamplingService.health()` reports readiness, process identity, active streams,
-and task/batch counters. Graph preparation and worker process lifetime belong to
-the caller. Use this transport only between trusted peers on a restricted network.
+The native gateway reports readiness, process identity, active streams, and
+batch counters through its health action. The Python process owner retains the
+native log and readiness record beside the graph directory, including after
+startup failure or shutdown. Graph preparation belongs to the caller. Use the
+transport between trusted peers on a restricted network.
