@@ -255,16 +255,23 @@ def reads(connector: Any, location: str) -> bool:
             and is_file_destination(connector, location))
 
 
+def stored_roots(manifest: Optional[ModelManifest],
+                 accepts: Callable[[str], bool]) -> List[str]:
+    r"""The asset roots of ``manifest``'s stored locations ``accepts``."""
+    return sorted({
+        record.location.rsplit('/', 2)[0]
+        for record in Dependencies.of(manifest).records
+        if record.location and accepts(record.location)
+    })
+
+
 def connector_roots(manifest: Optional[ModelManifest],
                     connector: Any) -> List[Tuple[Any, str]]:
     r"""The asset roots of ``manifest`` that ``connector`` reads."""
     if connector is None:
         return []
-    return [(connector, root) for root in sorted({
-        record.location.rsplit('/', 2)[0]
-        for record in Dependencies.of(manifest).records
-        if record.location and reads(connector, record.location)
-    })]
+    return [(connector, root) for root in stored_roots(
+        manifest, lambda location: reads(connector, location))]
 
 
 @contextmanager
