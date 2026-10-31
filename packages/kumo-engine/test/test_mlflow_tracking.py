@@ -472,7 +472,7 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
     monitoring = {'kumo.kind': 'monitoring', 'kumo.prediction_id': 'pred-1'}
 
     later = MlflowTracking('scores', log_system_metrics=False)
-    assert log_run(later, 'log_monitoring', RunRecord(
+    assert log_run(later, later.log_monitoring, RunRecord(
         tags={**monitoring, 'kumo.monitor': 'drift'}, summaries=(
             Tag('kumo.drift_previous', 'pred-0'),
             Scalar('drift/psi_prev', 0.01),
@@ -484,7 +484,7 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
             Table('drift/inputs/orders', ('column', 'psi'),
                   (('AMOUNT', 0.12),))))) is None
     assert (later.run_id, later.run_url) == (tracker.run_id, tracker.run_url)
-    assert log_run(later, 'log_monitoring', RunRecord(
+    assert log_run(later, later.log_monitoring, RunRecord(
         tags={**monitoring, 'kumo.monitor': 'evaluate'},
         prediction_run=predicted.info.run_id, summaries=(
             Tag('kumo.labels_snapshot_id', 'g@2'),
@@ -526,7 +526,7 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
         '<!-- /kumo:realized -->', '', 'Full lineage: `_provenance.json`.',
         *TAIL]))
 
-    failure = log_run(later, 'log_monitoring', RunRecord(
+    failure = log_run(later, later.log_monitoring, RunRecord(
         tags={**monitoring, 'kumo.prediction_id': 'pred-2'}))
     assert str(failure) == 'No MLflow prediction run has kumo.prediction_id ' \
         'pred-2'

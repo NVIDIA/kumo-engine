@@ -36,7 +36,12 @@ from kumo_core.summaries import Dataset, Note, Scalar, Summary, Table, Tag
 
 from kumo.engine._manifest import PredictionManifest, TrackingRef
 from kumo.engine._text import number
-from kumo.engine._tracking import logged_names, metric_name
+from kumo.engine._tracking import (
+    as_tracking,
+    log_run,
+    logged_names,
+    metric_name,
+)
 
 _EVALUATION_FILE = '_evaluation.json'
 
@@ -544,15 +549,14 @@ def _comparisons(report: 'DriftReport'
 def track(report: Any, run: Any, settings: Any, trainer: Any,
           started: datetime, labels: Any = None, previous: Any = None) -> Any:
     r"""Tracks a monitoring call, following on_error on failure."""
-    tracking = None if settings is None else settings.tracking
-    if tracking is None:
+    tracker = as_tracking(None if settings is None else settings.tracking)
+    if tracker is None:
         return report
 
     from kumo.engine._mlops import full_error, raise_on_error, warn_failure
-    from kumo.engine._tracking import log_run
 
     try:
-        record = _record(report, run, tracking, trainer, started, labels,
+        record = _record(report, run, tracker, trainer, started, labels,
                          previous)
     except Exception as error:
         if settings.on_error == 'warn':
@@ -561,15 +565,14 @@ def track(report: Any, run: Any, settings: Any, trainer: Any,
                 error, 3)
         failure: Optional[BaseException] = error
     else:
-        failure = log_run(tracking, 'log_monitoring', record)
+        failure = log_run(tracker, tracker.log_monitoring, record)
     raise_on_error(settings, failure, f'Monitoring of prediction run '
                    f'{getattr(run, "id", None)}', stacklevel=3)
-    run_id = getattr(tracking, 'run_id', None)
-    if failure is not None or not run_id:
+    if failure is not None or not tracker.run_id:
         return report
     return replace(report, tracking=TrackingRef(
-        platform=str(getattr(tracking, 'platform', type(tracking).__name__)),
-        run_id=str(run_id), url=getattr(tracking, 'run_url', None)))
+        platform=str(tracker.platform), run_id=str(tracker.run_id),
+        url=tracker.run_url))
 
 
 _IDENTITY = ('kumo.prediction_id', 'kumo.bundle_id', 'kumo.as_of',
@@ -592,7 +595,7 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
     if manifest is not None:
         prediction = prediction_record(manifest, model=model)
         identity, label = prediction.tags, prediction.model_label
-    platform = getattr(tracking, 'platform', None)
+    platform = tracking.platform
     ref = getattr(run, 'tracking', None)
     tracked = ref is not None and ref.platform == platform
     earlier = getattr(previous, 'tracking', None)

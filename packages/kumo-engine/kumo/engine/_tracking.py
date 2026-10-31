@@ -19,6 +19,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
+    ContextManager,
     Dict,
     Iterator,
     List,
@@ -337,10 +338,6 @@ def prediction_parents(manifest: Optional['PredictionManifest']
             'task_type': getattr(training_table, 'task_type', None)}
 
 
-def logs_models(tracker: Any) -> bool:
-    return callable(getattr(tracker, 'log_model', None))
-
-
 def fit_run_id(manifest: Any) -> Optional[str]:
     r"""The tracker's run of the fit a `ModelManifest` records."""
     tracking = getattr(manifest, 'tracking', None)
@@ -459,7 +456,8 @@ def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
 @contextmanager
 def system_metrics(tracking: Any) -> Iterator[None]:
     r"""Samples system metrics during the block, if the tracker can."""
-    sample = getattr(tracking, 'sample_system_metrics', None)
+    tracker = as_tracking(tracking)
+    sample = None if tracker is None else tracker.sample_system_metrics
     if sample is None or _rank() != 0:
         yield
         return
@@ -480,7 +478,8 @@ def track_prediction(
         summaries: Callable[[], Sequence['Summary']] = tuple
 ) -> Optional[Exception]:
     r"""Tracks a prediction run; returns the failure instead of raising."""
-    if getattr(tracking, 'log_prediction_run', None) is None:
+    tracker = as_tracking(tracking)
+    if tracker is None or tracker.log_prediction_run is None:
         return None
     try:
         if manifest is None:
@@ -490,7 +489,7 @@ def track_prediction(
         logger.warning('Experiment tracking failed: %s; the prediction run '
                        'is not tracked', full_error(failure), exc_info=_debug())
         return failure
-    return log_run(tracking, 'log_prediction_run', record)
+    return log_run(tracker, tracker.log_prediction_run, record)
 
 
 class SingleRunHooks:
@@ -549,6 +548,11 @@ class TrackingBase(Tracking):
     log_model: Optional[Callable[..., Optional['PublishedModel']]] = None
     register: Optional[Callable[..., 'PublishedModel']] = None
     load_model: Optional[Callable[..., Any]] = None
+    experiment: Optional[str] = None
+    logged_run_name: Optional[str] = None
+    log_prediction_run: Optional[Callable[[RunRecord], None]] = None
+    log_monitoring: Optional[Callable[[RunRecord], None]] = None
+    sample_system_metrics: Optional[Callable[[], ContextManager[None]]] = None
 
     @property
     def platform(self) -> str:
@@ -924,24 +928,23 @@ class TrackingSession:
             self.error = error
 
 
-def tracking_ref(tracker: Any) -> Optional['TrackingRef']:
+def tracking_ref(tracking: Any) -> Optional['TrackingRef']:
     r"""The tracker's latest run."""
     from kumo.engine._manifest import TrackingRef
 
-    run_id = getattr(tracker, 'run_id', None)
-    if tracker is None or not run_id:
+    tracker = as_tracking(tracking)
+    if tracker is None or not tracker.run_id:
         return None
     return TrackingRef(
-        platform=str(getattr(tracker, 'platform', type(tracker).__name__)),
-        run_id=str(run_id), url=getattr(tracker, 'run_url', None),
-        experiment=getattr(tracker, 'experiment', None),
-        run_name=getattr(tracker, 'logged_run_name', None))
+        platform=str(tracker.platform), run_id=str(tracker.run_id),
+        url=tracker.run_url, experiment=tracker.experiment,
+        run_name=tracker.logged_run_name)
 
 
-def log_run(tracking: Any, hook: str,
+def log_run(tracker: TrackingBase,
+            method: Optional[Callable[[RunRecord], None]],
             record: RunRecord) -> Optional[Exception]:
-    r"""Runs tracking.<hook>(record) on a thread; returns the failure."""
-    method = getattr(tracking, hook, None)
+    r"""Runs ``method(record)`` on a thread; returns the failure."""
     if method is None or _rank() != 0:
         return None
     failed: List[Exception] = []
@@ -956,7 +959,7 @@ def log_run(tracking: Any, hook: str,
             failed.append(error)
 
     try:
-        as_tracking(tracking).prepare()
+        tracker.prepare()
     except Exception as error:
         logger.warning('Experiment tracking failed: %s; the %s run is not '
                        'tracked', full_error(error),

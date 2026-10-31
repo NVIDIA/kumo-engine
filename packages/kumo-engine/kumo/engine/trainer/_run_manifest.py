@@ -67,7 +67,11 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
            snapshot: Any = None) -> Optional[TrackingRef]:
     r"""Export, record, store and track a prediction run."""
     from kumo.engine._mlops import raise_on_error
-    from kumo.engine._tracking import track_prediction, tracking_ref
+    from kumo.engine._tracking import (
+        as_tracking,
+        track_prediction,
+        tracking_ref,
+    )
 
     records = ([] if output_config is None else output_records(output_config))
     written: List[PredictionOutput] = []
@@ -99,8 +103,9 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
             untracked = track_prediction(
                 manifest, settings.tracking, error or unstored, model,
                 lambda: _scoring_summaries(manifest, snapshot))
-            tracked = getattr(settings.tracking, 'log_prediction_run', None)
-            if untracked is None and tracked is not None:
+            tracker = as_tracking(settings.tracking)
+            if (untracked is None and tracker is not None
+                    and tracker.log_prediction_run is not None):
                 tracking = tracking_ref(settings.tracking)
     untracked = unstored or untracked
     if untracked is not None:
