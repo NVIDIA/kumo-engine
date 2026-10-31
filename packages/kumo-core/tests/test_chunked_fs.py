@@ -249,13 +249,16 @@ def test_deletes(store):
 def test_parts_spool_under_the_spool_dir_and_are_removed(
         store, tmp_path, monkeypatch):
     handler, fs = store
+    root = [tmp_path / 'scratch']
     monkeypatch.setattr(chunked_fs, '_spool_dir', None)
-    chunked_fs.set_spool_dir(lambda: str(tmp_path / 'scratch'))
+    chunked_fs.set_spool_dir(lambda: str(root[0]))
     _write(fs, 'root/a.bin', b'a' * (2 * PART + 1))
-    handler.spool_dir = str(tmp_path / 'own')
+    root[0] = tmp_path / 'moved'
     _write(fs, 'root/b.bin', b'b')
+    handler.spool_dir = str(tmp_path / 'own')
+    _write(fs, 'root/c.bin', b'c')
     assert handler.spooled == [str(tmp_path / 'scratch')] * 4 + [
-        str(tmp_path / 'own')
+        str(tmp_path / 'moved'), str(tmp_path / 'own')
     ]
     assert not os.listdir(tmp_path / 'scratch')
     assert not os.listdir(tmp_path / 'own')
@@ -364,18 +367,6 @@ def test_a_known_size_streams_without_spooling(size):
     assert any('.chunks/' in name for name in handler.objects) != plain
     # Only the empty _SUCCESS marker of a chunked file is put from disk.
     assert len(handler.spooled) == (0 if plain else 1)
-
-
-def test_the_spool_dir_can_be_read_at_each_write(store, tmp_path,
-                                                 monkeypatch):
-    handler, fs = store
-    root = [tmp_path / 'one']
-    monkeypatch.setattr(chunked_fs, '_spool_dir', None)
-    chunked_fs.set_spool_dir(lambda: str(root[0]))
-    _write(fs, 'root/a.bin', b'a')
-    root[0] = tmp_path / 'two'
-    _write(fs, 'root/b.bin', b'b')
-    assert handler.spooled == [str(tmp_path / 'one'), str(tmp_path / 'two')]
 
 
 def test_reads_spanning_parts_fill_the_callers_buffer(store):
