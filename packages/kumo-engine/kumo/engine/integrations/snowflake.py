@@ -277,17 +277,13 @@ class SnowflakeTracking(SingleRunHooks):
 
     def _log_card(self, record: RunRecord) -> None:
         r"""Writes run_card.md."""
-        tags = record.tags
-        kind = tags.get('kumo.kind', '')
         try:
-            intro = _card.intro(kind, tags, record.params, record.description,
-                                tags.get('kumo.fit_run_id'))
+            card = _card.run_card(record.tags, record.params, self._values,
+                                  model_metrics(record), record.description,
+                                  self._card, record.tags.get('kumo.fit_run_id'))
             files = sorted(name for name in self._artifacts
                            if name.endswith('.json'))
-            self._log_artifacts({_CARD_FILE: '\n'.join([
-                *_card.heading(kind, self._values, tags),
-                *_card.body(intro, [*_card.holdout(kind, model_metrics(record), tags),
-                                    *self._card], files)])})
+            self._log_artifacts({_CARD_FILE: card.text(files)})
         except Exception as error:
             logger.warning('Could not write the card of Snowflake run %s: %s',
                            self.run_id, format_error(error))

@@ -633,13 +633,8 @@ class MlflowTracking(SingleRunHooks):
         if split is None:
             return
         card, user = split
-        lines = card.split('\n')
-        tags = run.data.tags
-        kind = tags.get('kumo.kind', '')
-        lines[:2] = _card.heading(kind, run.data.metrics, tags)
-        if kind == 'fit' and len(lines) > 3:
-            lines[3] = _card.fit_line(tags, run.data.params)
-        card = '\n'.join(lines)
+        card = _card.refreshed(card, run.data.metrics, run.data.tags,
+                               run.data.params)
         items = [s for s in summaries if isinstance(s, Note)
                  or isinstance(s, Table) and s.brief]
 
@@ -650,8 +645,7 @@ class MlflowTracking(SingleRunHooks):
                     if isinstance(item, Table) and item not in kept]))
 
         def minimal(files: Sequence[str]) -> str:
-            return '\n'.join([*lines[:4], '', _card.files_line(files),
-                              *_card.TAIL])
+            return '\n'.join([_card.shortened(card, files), *_card.TAIL])
 
         self._set_card(run, render, minimal, items, user, _budget(user))
 
@@ -665,26 +659,23 @@ class MlflowTracking(SingleRunHooks):
             split = self._editable(run, first=True)
             if split is None:
                 return
-            tags = run.data.tags
-            line = _card.heading(kind, run.data.metrics, tags)
-            intro = _card.intro(kind, tags, run.data.params,
-                                record.description, *self._fit_link())
-            items = [*_card.holdout(kind, model_metrics(record), tags),
-                     *self._card, *_card.charts(run.data.metrics)]
             blocks = ([_part(name, '') for name in _BLOCKS]
                       if kind == 'prediction' else [])
+            card = _card.run_card(
+                run.data.tags, run.data.params, run.data.metrics,
+                model_metrics(record), record.description,
+                [*self._card, *_card.charts(run.data.metrics)],
+                *self._fit_link(), blocks=blocks)
 
             def render(kept: Sequence[Summary], files: Sequence[str]) -> str:
-                return '\n'.join([*line, *_card.body(
-                    intro, kept, files, blocks), *_card.TAIL])
+                return '\n'.join([replace(card, summaries=kept).text(files),
+                                  *_card.TAIL])
 
             def minimal(files: Sequence[str]) -> str:
-                return '\n'.join([*line, '', intro,
-                                  *(['', *blocks] if blocks else []), '',
-                                  _card.files_line(files), *_card.TAIL])
+                return '\n'.join([card.minimal(files), *_card.TAIL])
 
             user = split[1]
-            self._set_card(run, render, minimal, items, user,
+            self._set_card(run, render, minimal, card.summaries, user,
                            _budget(user)
                            - (_MONITORING_BYTES if blocks else 0))
         except Exception as error:
