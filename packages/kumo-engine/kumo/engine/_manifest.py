@@ -411,8 +411,6 @@ class Dependency(Record):
 class HoldoutStats(Record):
     truncated: Optional[bool]
     rows: int
-    columns: Dict[str, Dict[str, Any]]
-    label_positive_rate: Optional[float] = omit_none()
     counts: Optional[Dict[str, Any]] = omit_none()
     window: Optional[List[Any]] = omit_none()
 
