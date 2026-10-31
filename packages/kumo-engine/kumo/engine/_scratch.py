@@ -40,6 +40,8 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Iterator, Optional, Union
 
+from kumo_core.chunked_fs import set_spool_dir
+
 _DEFAULT_ROOT = Path.home() / ".cache" / "kumo-engine"
 _root = _DEFAULT_ROOT
 _scoped_root: ContextVar[Optional[Path]] = ContextVar('kumo_scratch_root',
@@ -83,17 +85,7 @@ def scoped_scratch_dir(path: Path) -> Iterator[None]:
         _scoped_root.reset(token)
 
 
-def _spool_dir() -> str:
-    return str(get_scratch_dir() / "spool")
-
-
-def _spool_parts() -> None:
-    from kumo_core.chunked_fs import set_spool_dir
-
-    set_spool_dir(_spool_dir)
-
-
-_spool_parts()
+set_spool_dir(lambda: str(get_scratch_dir() / "spool"))
 
 
 def new_run_id() -> str:

@@ -30,8 +30,6 @@ from .manifest import RunManifest, RunPaths
 if TYPE_CHECKING:
     from .types import TaskType
 
-#: Every engine artifact's manifest file; underscore-prefixed so Parquet
-#: readers skip it.
 PROVENANCE_FILE = '_provenance.json'
 
 

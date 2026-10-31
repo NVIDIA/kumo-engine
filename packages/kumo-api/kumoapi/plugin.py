@@ -633,17 +633,14 @@ class FileArtifactSink(Protocol):
 
 @runtime_checkable
 class FileStoreSink(Protocol):
-    r"""A sink that also holds files: snapshot exports, model bundles and
-    export manifests go through its filesystem."""
+    r"""A sink that can also hold files."""
     def holds_files(self, connector: SourceConnector, path: str) -> bool:
-        r"""Whether ``path`` is a file location of this sink rather than a
-        table name; decided from the path alone, without I/O."""
+        r"""Whether ``path`` is a file location, decided without I/O."""
         ...
 
     def filesystem(self, connector: SourceConnector,
                    path: str) -> Tuple[Any, str]:
-        r"""A ``pyarrow.fs.FileSystem`` and ``path`` resolved on it, for a
-        path :meth:`holds_files` accepts."""
+        r"""A ``pyarrow.fs.FileSystem`` and ``path`` resolved on it."""
         ...
 
 
