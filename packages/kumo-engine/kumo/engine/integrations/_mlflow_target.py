@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import threading
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, ContextManager, Iterator, Mapping, Optional
 
@@ -138,7 +138,9 @@ def resolve(target: Any) -> Target:
     if isinstance(target, str):
         if SAGEMAKER_ARN.fullmatch(target):
             return _sagemaker(SageMakerMLflow(target))
-        return Target(target, registry_for(target))
+        scheme, colon, rest = target.partition(':')
+        return Target(target, f'databricks-uc{colon}{rest}'
+                      if scheme == 'databricks' else target)
     if isinstance(target, SageMakerMLflow):
         return _sagemaker(target)
     from kumo.engine.connector.databricks import DatabricksConnector
@@ -163,13 +165,6 @@ def _workspace_host() -> Optional[str]:
                                'databricks').Config().host
     except Exception:
         return None
-
-
-def registry_for(tracking_uri: str) -> str:
-    r"""Unity Catalog on Databricks, else the tracking server itself."""
-    scheme, colon, rest = tracking_uri.partition(':')
-    return f'databricks-uc{colon}{rest}' if scheme == 'databricks' else (
-        tracking_uri)
 
 
 def _principal(identity: Any) -> Any:
@@ -230,10 +225,8 @@ def _sagemaker(target: SageMakerMLflow) -> Target:
 def _sagemaker_session(arn: str, session: Any) -> Iterator[None]:
     r"""The SageMaker plugin's state, signing with ``session``."""
     plugin = import_provider('sagemaker_mlflow.session', 'sagemaker')
-    with ExitStack() as stack:
-        stack.enter_context(environ({'SAGEMAKER_MLFLOW_ASSUME_ROLE_ARN': None}))
-        stack.enter_context(global_tracking_uri(arn))
-        stack.enter_context(plugin.use_session(session))
+    with environ({'SAGEMAKER_MLFLOW_ASSUME_ROLE_ARN': None}), \
+            global_tracking_uri(arn), plugin.use_session(session):
         yield
 
 
