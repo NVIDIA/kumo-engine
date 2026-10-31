@@ -311,12 +311,22 @@ def _train_stages_for_fit_mode(fit_mode: FitMode) -> tuple[str, ...]:
     return ("train", )
 
 
-def _runtime_options_from_sampler(sampler_kwargs: Any) -> dict[str, bool]:
-    return {
+def _runtime_options_from_sampler(
+    sampler_kwargs: Any,
+) -> dict[str, bool | str | int | list[str]]:
+    options: dict[str, bool | str | int | list[str]] = {
         "replace": bool(getattr(sampler_kwargs, "replace", False)),
         "disjoint": bool(getattr(sampler_kwargs, "disjoint", True)),
         "adaptive": bool(getattr(sampler_kwargs, "adaptive_sampling", False)),
     }
+    endpoint = getattr(sampler_kwargs, "remote_sampling_endpoint", None)
+    if endpoint is not None:
+        options["remote_sampling_endpoint"] = endpoint
+        options["num_threads"] = int(
+            getattr(sampler_kwargs, "remote_sampling_num_threads", 1)
+        )
+    return options
+
 
 
 def _ttng_estimated_edges(
@@ -915,12 +925,20 @@ class DiskgraphNestedTrainer(Trainer):
         logger.info('[TT-NG] Generated dynamic, model-driven sampling plan: %s',
                     sampling_plan)
         runtime_options = _runtime_options_from_sampler(self.sampler_kwargs)
-        auto_config = _ttng_diskgraph_runtime_config(
-            getattr(self, "diskgraph_runtime", None),
-            tm.graph_runtime_metadata,
-            sampling_plan,
-            train_batch_size,
-        )
+        sampling_options = getattr(
+            getattr(self, "diskgraph_runtime", None), "sampling_options", {})
+        if sampling_options:
+            runtime_options.update(sampling_options)
+        auto_config = None
+        if "remote_sampling_endpoint" in runtime_options:
+            self.loader_kwargs.num_workers = 0
+        else:
+            auto_config = _ttng_diskgraph_runtime_config(
+                getattr(self, "diskgraph_runtime", None),
+                tm.graph_runtime_metadata,
+                sampling_plan,
+                train_batch_size,
+            )
         if auto_config is not None:
             self.loader_kwargs.num_workers = auto_config["num_workers"]
             runtime_options.update(

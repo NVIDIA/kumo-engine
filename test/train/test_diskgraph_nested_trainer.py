@@ -3934,3 +3934,51 @@ def test_nonempty_link_metrics_are_unchanged(tmp_path) -> None:
     result = trainer._eval(TrainingStage.TEST)
 
     assert result.metrics is metrics
+
+
+def test_remote_sampling_skips_local_index_autoconfiguration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Offloading must retain loader settings without inspecting the local graph."""
+    import kumo_core.train.diskgraph_nested_trainer as nested
+
+    def reject_local_configuration(*args: object) -> None:
+        raise AssertionError("Remote sampling must not inspect a local index")
+
+    monkeypatch.setattr(
+        nested, "_ttng_diskgraph_runtime_config", reject_local_configuration)
+    stub = _StubTrainer()
+    stub.sampler_kwargs.remote_sampling_endpoint = "grpc://sampler:50051"
+    stub.sampler_kwargs.remote_sampling_num_threads = 2
+
+    _run_init(stub, monkeypatch=monkeypatch)
+
+    assert stub.loader_kwargs.num_workers == 0
+    assert stub.datamodule_kwargs["runtime_options"] == {
+        "replace": False,
+        "disjoint": True,
+        "adaptive": False,
+        "remote_sampling_endpoint": "grpc://sampler:50051",
+        "num_threads": 2,
+    }
+
+
+def test_runtime_remote_sampling_selects_inline_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine runtime's gateway options reach both fresh and reloaded trainers."""
+    from kumo_core.training.config import SamplerKwargs
+    from kumo_core.training.runtime import LocalDiskgraphTrainingRuntime
+
+    stub = _StubTrainer()
+    stub.diskgraph_runtime = LocalDiskgraphTrainingRuntime(
+        SamplerKwargs(remote_sampling_endpoint="grpc://sampler:50051")
+    )
+    stub.loader_kwargs.num_workers = 8
+
+    _run_init(stub, monkeypatch=monkeypatch)
+
+    assert stub.loader_kwargs.num_workers == 0
+    options = stub.datamodule_kwargs["runtime_options"]
+    assert options["remote_sampling_endpoint"] == "grpc://sampler:50051"
+    assert options["num_threads"] == 1

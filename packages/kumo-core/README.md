@@ -83,3 +83,41 @@ Run commands from the repository worktree after installing the normal Kumo devel
 On a CUDA-capable development machine, `make test-kumo-core-gpu` selects the retained device-parametrized package cases. The focused, non-required Kumo Core GPU workflow runs on manual dispatch and, for trusted in-repository PRs, when the existing `ml-algorithms` component label triggers a workflow event or a labeled PR is subsequently updated; bot-applied labels may require that subsequent update because `GITHUB_TOKEN` events do not launch workflows. The retired Triton workflow is not part of this package.
 
 Kumo is not yet a uv workspace. These commands operate on `packages/kumo-core` explicitly and do not rely on workspace discovery.
+
+## Remote batch sampling over Arrow Flight
+
+`diskgraph.SamplingServer` embeds the Rust Flight gateway inside its owning
+Python process. Rust calls `diskgraph-runtime` directly and owns task uploads,
+sampling, Arrow encoding, flow control, and cancellation. Python manages the
+server handle and consumes Arrow batches through `RemoteRuntimeIndex`.
+
+A sampling actor starts the listener over its completed local graph replica:
+
+```python
+from pathlib import Path
+from kumo_core.diskgraph.sampling_service import SamplingService, SamplingServiceConfig
+
+service = SamplingService(
+    SamplingServiceConfig(Path("/local/graph"), host="0.0.0.0", max_threads=2)
+)
+endpoint = service.endpoint("10.0.0.5")
+# Retain service for the actor's lifetime; call service.close() during teardown.
+```
+
+The wrapper starts the native listener during construction. Its `health()`
+returns native readiness and request/batch counters; its process ID matches the
+actor. `close()` cancels waiting streams and joins Rust serving threads without
+holding the GIL. Native lifecycle/progress messages use the existing Python
+logging bridge and appear in the actor's configured logs.
+
+The client registers each immutable training-table extension once per worker,
+using bounded file chunks and a content checksum. Epoch requests carry sampling,
+projection, seed, and shard settings. Flight exchanges use a two-batch credit
+window. Sequence/completion counts and final RPC status are checked; failures
+propagate without replaying an incomplete epoch. Closing an iterator cancels its
+outstanding streams, and data-module teardown closes shared connections. Ordered
+RHS catalog scans use one replica to preserve MIPS embedding order.
+
+The standalone `diskgraph-gateway` CLI uses the same Rust server implementation.
+Graph preparation belongs to the caller. Use the transport between trusted peers
+on a restricted network.

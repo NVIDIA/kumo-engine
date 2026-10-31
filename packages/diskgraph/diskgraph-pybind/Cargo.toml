@@ -17,6 +17,8 @@ default = []
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
+diskgraph-gateway = { path = "../diskgraph-gateway" }
+tonic = "0.14"
 diskgraph-runtime = { path = "../diskgraph-runtime" }
 # abi3-py311: build a single stable-ABI (limited API) extension whose
 # floor is CPython 3.11 (the org-wide minimum). One `cp311-abi3` wheel
