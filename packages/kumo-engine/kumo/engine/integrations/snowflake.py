@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Snowflake Experiment Tracking for `Trainer.fit`, `Trainer.predict` and
-monitoring (``pip install 'kumo-engine[snowflake]'``)."""
+r"""Snowflake Experiment Tracking (the ``snowflake`` extra)."""
 
 import logging
 import posixpath
@@ -46,15 +45,8 @@ _WARN_RUNS = 450
 
 
 class SnowflakeTracking(SingleRunHooks):
-    r"""Records `Trainer.fit` in Snowflake Experiment Tracking as one run
-    with the selected trial's epochs; each trial of a search adds its
-    params, status and best tuned validation metric under ``TRIAL_<n>/``
-    names (``TRIAL_<n>_ATTEMPT_<m>/`` for a retry). Tags are logged as
-    params. Snowflake has no dataset inputs, so a fit's
-    source tables are not recorded as inputs. The Snowpark session's
-    parameters are not changed. As ``kumo.MLOps(tracking=...)``, it also
-    records each prediction run and each monitoring call as one run;
-    ``tags`` apply to fit runs only.
+    r"""Records fits, prediction runs and monitoring calls in Snowflake
+    Experiment Tracking, one run each; tags are logged as params.
 
     Args:
         source: a ``SnowflakeConnector``, whose identity opens the session
@@ -66,20 +58,12 @@ class SnowflakeTracking(SingleRunHooks):
         database: `None` uses the session's current database.
         schema_name: `None` uses the session's current schema, or ``PUBLIC``
             when `database` is given or the session has none.
-        run_name: replaces ``<MODEL>_V<version>`` in each run's name:
-            ``FIT_<RUN_NAME>``, ``PREDICT_<RUN_NAME>_<as-of date>``, and
-            ``DRIFT_`` or ``EVAL_`` for a monitoring call. `None` names a
-            fit ``FIT_<MODEL>_<YYYYMMDD_HHMMSS>`` (its UTC start) and the
-            others ``PREDICT_<MODEL>_V<version>_<as-of date>``
-            (``<MODEL>_<bundle id[:8]>`` for a model not registered). A
-            taken name gets ``_2``, ``_3`` and so on.
+        run_name: replaces ``<MODEL>_V<version>`` in each run's name.
         tags: extra tags for the fit run.
         native_model_lineage: keep the run open as a context for the whole
             fit, so models registered meanwhile are linked to it.
 
-    ``run_id`` is the most recent tracked run's name (Snowflake runs are
-    identified by name), once it has started. An experiment holds at most
-    500 runs: from 450 each run warns, and at 500 runs are not tracked.
+    ``run_id`` is the latest run's name. An experiment holds 500 runs.
     """
 
     platform = 'snowflake'
@@ -126,7 +110,6 @@ class SnowflakeTracking(SingleRunHooks):
         self._params = 0
         self._start_tags: Set[str] = set()
         self._artifacts: Set[str] = set()
-        # The run's notes and brief tables, for its description.
         self._card: List[Summary] = []
         self._dropped_metrics: Set[str] = set()
         self._dropped_params = 0
@@ -271,9 +254,7 @@ class SnowflakeTracking(SingleRunHooks):
                 self.experiment_name, runs, _MAX_RUNS)
 
     def _new_run_name(self, existing: List[str], run_name: str) -> str:
-        # start_run(name) resumes, or raises on, any run matching name as a
-        # SQL LIKE pattern and cannot create an existing run, so pick a name
-        # that is neither.
+        # start_run matches names as SQL LIKE patterns
         name, number = run_name, 1
         while _taken(name, existing):
             number += 1
@@ -285,8 +266,7 @@ class SnowflakeTracking(SingleRunHooks):
         return name
 
     def log_summaries(self, summaries: Sequence[Summary]) -> None:
-        r"""Logs ``summaries``; charts become tables, and notes and brief
-        tables go on the card."""
+        r"""Logs summaries; charts become tables."""
         if self._run is None:
             return
         routed = route(summaries, charts=False)
@@ -298,9 +278,7 @@ class SnowflakeTracking(SingleRunHooks):
                              for table in routed.tables})
 
     def _log_card(self, record: RunRecord) -> None:
-        r"""Writes ``run_card.md``: the run's heading and sentence, the
-        fit's query and holdout metrics, its notes and brief tables, and its
-        files."""
+        r"""Writes run_card.md."""
         tags = record.tags
         kind = tags.get('kumo.kind', '')
         try:
@@ -372,9 +350,7 @@ def _now() -> datetime:
 
 def _snowflake_name(record: RunRecord, started: datetime,
                     named: Optional[str] = None) -> str:
-    r"""The run's name (see `SnowflakeTracking`) as an upper-case
-    identifier, for a fit started at ``started``; the tracker's ``named``
-    run name replaces the model and version."""
+    r"""The run's name as an upper-case identifier."""
     tags = record.tags
     kind = tags.get('kumo.kind')
     model = getattr(record, 'model_label', None) or 'model'
@@ -392,8 +368,7 @@ def _snowflake_name(record: RunRecord, started: datetime,
 
 
 def _model_param(record: RunRecord) -> Dict[str, str]:
-    r"""``kumo.model``, the registered version a prediction run scored
-    with, as ``<model>/<version>``."""
+    r"""The scoring version as kumo.model=<model>/<version>."""
     tags = record.tags
     if (tags.get('kumo.kind') != 'prediction' or not tags.get('kumo.model_name')
             or not tags.get('kumo.model_version')):
@@ -403,9 +378,7 @@ def _model_param(record: RunRecord) -> Dict[str, str]:
 
 
 def _identifier(name: str) -> str:
-    r"""``name``, which starts with its kind, as an unquoted identifier:
-    snowflake-ml puts a run's name into its artifact URIs, where a quoted
-    name is not found."""
+    r"""An unquoted identifier, as artifact URIs need."""
     return re.sub(r'[^A-Za-z0-9_]+', '_', name).upper()
 
 
