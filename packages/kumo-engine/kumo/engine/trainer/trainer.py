@@ -926,6 +926,90 @@ def _explain(best_trainer: Any, run_id: str) -> None:
             run_id)
 
 
+def _prediction_task_type(training_query: Optional[str], query: str,
+                          graph_config: Any) -> Any:
+    from kumo_core.prediction_options import prediction_query_contract
+    from kumo_core.types import TaskType
+
+    contract = prediction_query_contract(query, graph_config)
+    if training_query is None or prediction_query_contract(
+            training_query, graph_config) != contract:
+        raise ValueError(
+            'Prediction query target/entity contract differs from the trained model'
+        )
+    return TaskType(contract[1])
+
+
+def _requested_artifacts(
+    output_config: Optional[PredictionOutputConfig]
+) -> frozenset[PredictionArtifactType]:
+    destinations = (output_config.destinations()
+                    if output_config is not None else {})
+    return frozenset(
+        PredictionArtifactType(name.upper())
+        for name in destinations) or frozenset(
+            {PredictionArtifactType.PREDICTIONS})
+
+
+def _preflight(output_config: PredictionOutputConfig) -> None:
+    for destination in output_config.destinations().values():
+        preflight = getattr(output_config.writer(destination),
+                            'preflight_write_files', None)
+        if callable(preflight):
+            preflight(output_config.connector, destination,
+                      write_mode=output_config.write_mode)
+
+
+def _materialize_prediction(prediction_table: PredictionTable,
+                            snapshot: GraphSnapshot, parsed: Any,
+                            native_graph: Any, run_id: str,
+                            run_dir: Path) -> Tuple[Any, Any, Any]:
+    r"""The materialized task, its anchor timestamps and forecast options."""
+    from kumo_core.prediction import (
+        GeneratedPredictionTable,
+        PredictionTableRequest,
+        forecast_task_options,
+        materialize_prediction_task,
+    )
+
+    ingest_tt_id = f'{prediction_table.tt_id}-{run_id}'
+    compiler_options = prediction_table.compiler_options or {}
+    lag_offsets = compiler_options.get('lag_offsets_secs')
+    lag_timesteps = (len(lag_offsets) if isinstance(lag_offsets,
+                                                    (tuple, list)) else None)
+    with no_encoder_inference_warnings():
+        task_dataset = build_generated_training_task_dataset(
+            query=parsed,
+            graph=native_graph,
+            graph_index_path=str(snapshot.index_path),
+            run_id=run_id,
+            artifact_dir=str(run_dir),
+            tt_id=ingest_tt_id,
+            required_stages=prediction_table.required_stages,
+            lag_timesteps=lag_timesteps,
+            year_over_year='yoy_offsets_secs' in compiler_options,
+        )
+    request = PredictionTableRequest(
+        query=parsed,
+        graph=native_graph,
+        timestamps=prediction_table.timestamps,
+        index_path=str(snapshot.index_path),
+        tt_id=ingest_tt_id,
+        task_dataset=task_dataset,
+        compiler_options=prediction_table.compiler_options,
+        forecast_timeframe_step=prediction_table.forecast_timeframe_step,
+    )
+    generated = GeneratedPredictionTable(
+        staging_dir=str(prediction_table.staging_dir),
+        table_path=str(prediction_table.table_path),
+        row_count=prediction_table.row_count,
+        tt_id=ingest_tt_id,
+    )
+    materialized = materialize_prediction_task(request, generated,
+                                               graph_index_id=snapshot.id)
+    return materialized, request.timestamps, forecast_task_options(request)
+
+
 def _without_torch_scatter_hint(method: _F) -> _F:
     r"""Runs ``method`` without PyTorch Geometric's GPU hint that min/max
     aggregation "can be accelerated via the 'torch-scatter' package",
@@ -1565,48 +1649,37 @@ class Trainer:
         settings: Optional[Any] = None,
         extra_fields: Sequence[str] = (),
     ) -> PredictionResult:
-        training_result = self._fitted('predict')
-        arguments = binary_classification_threshold, num_classes_to_return
-        if binary_classification_threshold is None:
-            binary_classification_threshold = (
-                training_result.scoring_defaults.binary_classification_threshold)
         from kumo_core.pquery import normalize_graph, parse_and_validate_query
+        from kumo_core.prediction import score_prediction
         from kumo_core.prediction_options import (
-            prediction_query_contract,
             resolve_classification_threshold,
             resolve_num_classes_to_return,
         )
         from kumo_core.types import TaskType
 
+        from kumo.engine.trainer._provenance import count_edges
+
+        training_result = self._fitted('predict')
+        defaults = training_result.scoring_defaults
+        arguments = binary_classification_threshold, num_classes_to_return
+        if binary_classification_threshold is None:
+            binary_classification_threshold = (
+                defaults.binary_classification_threshold)
         graph_config = snapshot.graph_config
-        contract = prediction_query_contract(prediction_table.query,
-                                             graph_config)
-        if self._training_query is None or prediction_query_contract(
-                self._training_query, graph_config) != contract:
-            raise ValueError(
-                'Prediction query target/entity contract differs from the trained model'
-            )
-        task_type = TaskType(contract[1])
+        task_type = _prediction_task_type(self._training_query,
+                                          prediction_table.query, graph_config)
         threshold = (None if binary_classification_threshold is None
                      and task_type is TaskType.BINARY_CLASSIFICATION else
                      resolve_classification_threshold(
                          task_type, binary_classification_threshold))
-        destinations = (output_config.destinations()
-                        if output_config is not None else {})
-        artifacts = frozenset(
-            PredictionArtifactType(name.upper())
-            for name in destinations) or frozenset(
-                {PredictionArtifactType.PREDICTIONS})
+        artifacts = _requested_artifacts(output_config)
         artifact_type = (PredictionArtifactType.PREDICTIONS
                          if PredictionArtifactType.PREDICTIONS in artifacts else
                          PredictionArtifactType.EMBEDDINGS)
-        # Parse against the selected graph so its topology, feature schema,
-        # and index coordinates drive task materialization. The generated
-        # population and anchors still come from the immutable PredictionTable.
         native_graph = normalize_graph(graph_config)
         parsed = parse_and_validate_query(prediction_table.query, native_graph)
         if num_classes_to_return is None and parsed.query.top_k is None:
-            num_classes_to_return = training_result.scoring_defaults.num_classes_to_return
+            num_classes_to_return = defaults.num_classes_to_return
         requested_classes = num_classes_to_return
         num_classes_to_return = resolve_num_classes_to_return(
             task_type,
@@ -1617,87 +1690,22 @@ class Trainer:
 
         run_id = f'{self._id}-predict-{new_run_id()}'
         if output_config is not None:
-            for destination in output_config.destinations().values():
-                preflight = getattr(output_config.writer(destination),
-                                    'preflight_write_files', None)
-                if callable(preflight):
-                    preflight(output_config.connector, destination,
-                              write_mode=output_config.write_mode)
-
-        from kumo_core.encoders.config import EncodersConfig
-        from kumo_core.io.json import load_json
-
-        # Loaded once: the embedding check and the in-process scorer share it.
-        encoders_path = training_result.artifact_paths.get('encoders')
-        encoders = (load_json(encoders_path, EncodersConfig) if encoders_path
-                    and Path(encoders_path).is_file() else None)
-        require_trained_embedding_models(self._embedding_models, encoders)
-
-        from kumo_core.prediction import (
-            GeneratedPredictionTable,
-            PredictionTableRequest,
-            forecast_task_options,
-            materialize_prediction_task,
-            score_prediction,
-        )
-
-        from kumo.engine.trainer._provenance import count_edges
-
+            _preflight(output_config)
+        encoders = self._trained_encoders(training_result)
         started_at = datetime.now(timezone.utc)
         run_dir = self.scratch_dir / 'runs' / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
-
         if self._training_table_generation_plan is not None:
             parsed = resolve_query_forecast(
                 parsed, native_graph, self._training_table_generation_plan)
-        ingest_tt_id = f'{prediction_table.tt_id}-{run_id}'
-        compiler_options = prediction_table.compiler_options or {}
-        lag_offsets = compiler_options.get('lag_offsets_secs')
-        lag_timesteps = (len(lag_offsets) if isinstance(lag_offsets,
-                                                        (tuple,
-                                                         list)) else None)
-        with no_encoder_inference_warnings():
-            task_dataset = build_generated_training_task_dataset(
-                query=parsed,
-                graph=native_graph,
-                graph_index_path=str(snapshot.index_path),
-                run_id=run_id,
-                artifact_dir=str(run_dir),
-                tt_id=ingest_tt_id,
-                required_stages=prediction_table.required_stages,
-                lag_timesteps=lag_timesteps,
-                year_over_year='yoy_offsets_secs' in compiler_options,
-            )
-        request = PredictionTableRequest(
-            query=parsed,
-            graph=native_graph,
-            timestamps=prediction_table.timestamps,
-            index_path=str(snapshot.index_path),
-            tt_id=ingest_tt_id,
-            task_dataset=task_dataset,
-            compiler_options=prediction_table.compiler_options,
-            forecast_timeframe_step=prediction_table.forecast_timeframe_step,
-        )
-        generated = GeneratedPredictionTable(
-            staging_dir=str(prediction_table.staging_dir),
-            table_path=str(prediction_table.table_path),
-            row_count=prediction_table.row_count,
-            tt_id=ingest_tt_id,
-        )
-        materialized = materialize_prediction_task(request, generated,
-                                                   graph_index_id=snapshot.id)
-        timestamps = request.timestamps
-        forecast_options = forecast_task_options(request)
-        # Scoring reloads the materialized feature schema; drop this copy
-        # first so the parent and its forked loader workers never hold both.
-        del request, task_dataset
-
+        materialized, timestamps, forecast_options = (
+            _materialize_prediction(prediction_table, snapshot, parsed,
+                                    native_graph, run_id, run_dir))
         model_dir = str(
             _stage_model_bundle(
                 training_result.artifact_paths,
                 run_dir / 'model_bundle',
             ))
-
         extra_fields = [
             *(f.value for f in (output_config.extra_fields
                                 if output_config is not None else [])),
@@ -1752,6 +1760,16 @@ class Trainer:
         tracking = _run_manifest.finish(result, manifest, output_config,
                                         settings, training_result, snapshot)
         return replace(result, _tracking=tracking)
+
+    def _trained_encoders(self, training_result: TrainingResult) -> Any:
+        from kumo_core.encoders.config import EncodersConfig
+        from kumo_core.io.json import load_json
+
+        path = training_result.artifact_paths.get('encoders')
+        encoders = (load_json(path, EncodersConfig)
+                    if path and Path(path).is_file() else None)
+        require_trained_embedding_models(self._embedding_models, encoders)
+        return encoders
 
     def evaluate(self, run: PredictionResult, *,
                  labels_snapshot: GraphSnapshot,
