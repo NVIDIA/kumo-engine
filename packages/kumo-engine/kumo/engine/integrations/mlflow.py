@@ -49,10 +49,10 @@ from kumo.engine._tracking import (
     DROPPED_PARAMS,
     RegistrationError,
     RunRecord,
+    SingleRunHooks,
     by_step,
     model_label,
     model_metrics,
-    record_failure,
     run_name,
     versioned,
 )
@@ -93,7 +93,7 @@ _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
 _HINTED: set = set()
 
 
-class MlflowTracking:
+class MlflowTracking(SingleRunHooks):
     r"""Records `Trainer.fit` in MLflow: one run per fit (under the active
     run, if any, on the same server) with a child run per trial attempt.
     Source tables are logged as run inputs: Databricks tables as Delta
@@ -477,10 +477,6 @@ class MlflowTracking:
         return self.log_system_metrics and os.environ.get(
             'MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING', '').strip().lower() not in (
                 'false', '0')
-
-    def log_prediction_run(self, record: RunRecord) -> None:
-        self.start(record)
-        self.finish(record, record_failure(record))
 
     def log_monitoring(self, record: RunRecord) -> None:
         r"""Folds a monitoring call into the prediction run it checks: the

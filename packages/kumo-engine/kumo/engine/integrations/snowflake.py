@@ -24,9 +24,9 @@ from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
     RunRecord,
+    SingleRunHooks,
     by_step,
     model_metrics,
-    record_failure,
     run_name,
     versioned,
 )
@@ -45,7 +45,7 @@ _MAX_RUNS = 500
 _WARN_RUNS = 450
 
 
-class SnowflakeTracking:
+class SnowflakeTracking(SingleRunHooks):
     r"""Records `Trainer.fit` in Snowflake Experiment Tracking as one run
     with the selected trial's epochs; each trial of a search adds its
     params, status and best tuned validation metric under ``TRIAL_<n>/``
@@ -204,14 +204,6 @@ class SnowflakeTracking:
         self._log_params({**record.params, **record.tags,
                           **_model_param(record)})
         self._log_artifacts(record.artifacts)
-
-    def log_prediction_run(self, record: RunRecord) -> None:
-        self.start(record)
-        self.finish(record, record_failure(record))
-
-    def log_monitoring(self, record: RunRecord) -> None:
-        self.start(record)
-        self.finish(record, None)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         if self._run is None:

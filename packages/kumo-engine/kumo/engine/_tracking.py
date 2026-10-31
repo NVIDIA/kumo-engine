@@ -563,6 +563,17 @@ def track_prediction(
     return log_run(tracking, 'log_prediction_run', record)
 
 
+class SingleRunHooks:
+    r"""Each prediction run and monitoring call as one run of its own."""
+
+    def log_prediction_run(self, record: RunRecord) -> None:
+        self.start(record)  # type: ignore[attr-defined]
+        self.finish(record,  # type: ignore[attr-defined]
+                    record_failure(record))
+
+    log_monitoring = log_prediction_run
+
+
 class Tracking(Protocol):
     r"""Records one `Trainer.fit` in an experiment tracker.
 
