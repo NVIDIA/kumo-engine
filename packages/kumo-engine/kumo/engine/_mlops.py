@@ -116,15 +116,17 @@ class MLOps:
                              f'{list(KINDS)}.')
         if kinds:
             _require_writable(root)
+        from kumo.engine._tracking import as_tracking
+
+        tracker = as_tracking(self.tracking)
         if self.registry is not None:
-            self._check_registry()
-        check = getattr(self.tracking, 'check', None)
-        if callable(check):
-            check(self.registry)
+            self._check_registry(tracker)
+        if tracker is not None:
+            tracker.check(self.registry)
         object.__setattr__(self, 'root', root)
         object.__setattr__(self, 'kinds', kinds)
 
-    def _check_registry(self) -> None:
+    def _check_registry(self, tracker: Any) -> None:
         from kumo.engine.trainer.output_config import (
             ModelOutputConfig,
             check_model_location,
@@ -137,12 +139,12 @@ class MLOps:
                 f'{type(registry).__name__}; the tracker registers it.')
         if registry.alias is not None:
             check_model_alias(registry.alias)
-        if callable(getattr(self.tracking, 'log_model', None)):
+        if tracker is not None and tracker.log_model is not None:
             if registry.version is not None:
                 raise ValueError('MLflow assigns registered model versions; '
                                  'leave ModelRegistryLocation.version unset.')
             return
-        connector = getattr(self.tracking, 'connector', None)
+        connector = None if tracker is None else tracker.connector
         if connector is None:
             raise ValueError(
                 'registry= registers through the tracker: pass '

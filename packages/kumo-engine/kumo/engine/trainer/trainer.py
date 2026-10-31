@@ -81,7 +81,12 @@ from kumo.engine._manifest import (
 from kumo.engine._mlops import full_error, warn_failure
 from kumo.engine._predictor import TRAINER_PREDICTOR
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
-from kumo.engine._tracking import RunSpec, TrackingSession, fit_inputs
+from kumo.engine._tracking import (
+    RunSpec,
+    TrackingSession,
+    as_tracking,
+    fit_inputs,
+)
 from kumo.engine.connector import model_sink
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
@@ -482,10 +487,10 @@ def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
     if settings.registry is None:
         raise ValueError('export(cfg) registers at cfg.registry, which is '
                          'not set.')
-    register = getattr(settings.tracking, 'register', None)
-    if callable(register):
+    tracker = as_tracking(settings.tracking)
+    if tracker is not None and tracker.register is not None:
         return cast(PublishedModel, _with_metrics(
-            register(result, settings.registry), result.metrics))
+            tracker.register(result, settings.registry), result.metrics))
     registry = cast(ModelOutputConfig, _connector_registry(settings))
     _require_publisher(registry)
     return _publish(result.bundle_dir, result.bundle_id, result.metrics,
@@ -510,12 +515,13 @@ def _connector_registry(settings: Any) -> Optional[ModelOutputConfig]:
     if (settings is None or settings.registry is None
             or _logs_models(settings.tracking)):
         return None
-    return ModelOutputConfig(settings.tracking.connector,
+    return ModelOutputConfig(as_tracking(settings.tracking).connector,
                              location=settings.registry)
 
 
 def _logs_models(tracking: Any) -> bool:
-    return callable(getattr(tracking, 'log_model', None))
+    tracker = as_tracking(tracking)
+    return tracker is not None and tracker.log_model is not None
 
 
 def _publish(bundle_dir: Path, bundle_id: Optional[str],
@@ -1434,7 +1440,8 @@ class Trainer:
         from kumo.engine._mlops import MLOps, on_root
 
         if isinstance(model_registry, MLOps) and location is not None:
-            load = getattr(model_registry.tracking, 'load_model', None)
+            tracker = as_tracking(model_registry.tracking)
+            load = None if tracker is None else tracker.load_model
             if path is not None or load is None:
                 raise TypeError(
                     'Loading a registered model from a kumo.MLOps takes '
