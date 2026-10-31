@@ -4,7 +4,6 @@
 r"""A run's card: a short Markdown summary of a fit or prediction run,
 from its metrics, tags, params, notes and brief tables, for any tracker."""
 
-import math
 import re
 from typing import Any, List, Mapping, Optional, Sequence
 from urllib.parse import quote
@@ -14,6 +13,7 @@ from kumo_core.score_drift import psi_shift
 from kumo_core.summaries import Note, Summary, Table
 
 from kumo.engine._prep_cost import PREP_TABLE
+from kumo.engine._text import metric_key, number
 
 HEADLINE_CHARS = 140
 NOTES_LINE = ("*kumo rewrites everything above this line; editing it stops "
@@ -36,24 +36,18 @@ _CONSOLES = {'s3': 'https://s3.console.aws.amazon.com/s3/buckets/{}?prefix={}/',
              'gs': 'https://console.cloud.google.com/storage/browser/{}/{}'}
 
 
-def entity(query: Optional[str]) -> Optional[str]:
-    r"""The entity table a predictive query predicts for."""
-    found = re.search(r'FOR\s+EACH\s+(\w+)', query or '', re.IGNORECASE)
-    return found and found.group(1)
-
-
 def heading(kind: str, metrics: Mapping[str, float],
             tags: Mapping[str, str]) -> List[str]:
     r"""The card's heading: the run's status and watch numbers, plain text
     of at most `HEADLINE_CHARS` characters, zero counts left out."""
-    metrics = {_key(name): value for name, value in metrics.items()}
+    metrics = {metric_key(name): value for name, value in metrics.items()}
     parts = [f"failed: {tags['kumo.error']}"] if 'kumo.error' in tags else []
     if kind == 'fit':
-        tune = _key(tags.get('kumo.tune_metric') or '')
+        tune = metric_key(tags.get('kumo.tune_metric') or '')
         if f'test/{tune}' in metrics:
             parts.append(f"holdout {tune} {number(metrics[f'test/{tune}'])}")
     else:
-        tuned = f"realized/{_key(tags.get('kumo.tune_metric') or '')}"
+        tuned = f"realized/{metric_key(tags.get('kumo.tune_metric') or '')}"
         realized = sorted((name for name in metrics
                            if name.startswith('realized/')
                            and name != 'realized/labelled_share'),
@@ -102,7 +96,7 @@ def fit_line(tags: Mapping[str, str], params: Mapping[str, str]) -> str:
     of = tags.get('kumo.entity')
     line = 'Fit' + (f' of {_model(tags)}' if _model(tags) else '') + (
         f" for {task}{f' of {of}' if of else ''}" if task else '')
-    tune = f"val {_key(tags.get('kumo.tune_metric') or 'loss')}"
+    tune = f"val {metric_key(tags.get('kumo.tune_metric') or 'loss')}"
     trials = int(params.get('training_job.num_experiments') or 1)
     trial = tags.get('kumo.best_trial') if trials > 1 else None
     epoch = tags.get('kumo.best_epoch')
@@ -122,8 +116,8 @@ def holdout(kind: str, metrics: Mapping[str, float],
     pointing to the others."""
     if kind != 'fit':
         return []
-    tuned = f"test/{_key(tags.get('kumo.tune_metric') or '')}"
-    tested = {_key(name): value for name, value in metrics.items()
+    tuned = f"test/{metric_key(tags.get('kumo.tune_metric') or '')}"
+    tested = {metric_key(name): value for name, value in metrics.items()
               if name.startswith('test/')}
     at = _at(tuned)
     names = sorted((name for name in tested if _at(name) in (None, at)),
@@ -141,8 +135,8 @@ def version_headline(metrics: Mapping[str, float],
                      tune: Optional[str]) -> str:
     r"""A registered version's metrics line: the tuned metric, logloss,
     then the next holdout metrics, four in all."""
-    metrics = {_key(name): value for name, value in metrics.items()}
-    tuned = f"test/{_key(tune or '')}"
+    metrics = {metric_key(name): value for name, value in metrics.items()}
+    tuned = f"test/{metric_key(tune or '')}"
     names = [name for name in metrics if name.startswith('test/')]
     names.sort(key=lambda name: (name != tuned, name != 'test/logloss'))
     return ' · '.join(f'{name} {number(metrics[name])}'
@@ -241,17 +235,6 @@ def table_text(table: Table) -> str:
     ])
 
 
-def number(value: Any) -> str:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return str(value)
-    if float(value).is_integer() and abs(value) < 1e15:
-        return f'{int(value):,}'
-    if not math.isfinite(value) or abs(value) >= 1000:
-        return f'{value:,.0f}'
-    digits = 2 - math.floor(math.log10(abs(value)))
-    return f'{value:.{digits}f}'.rstrip('0').rstrip('.')
-
-
 def _size(count: float) -> str:
     for unit in ('B', 'KiB', 'MiB', 'GiB'):
         if count < 1024:
@@ -321,7 +304,3 @@ def _cell(value: Any) -> str:
 def _at(name: str) -> Optional[str]:
     found = re.search(r'_at_(\d+)$', name)
     return found and found.group(1)
-
-
-def _key(name: str) -> str:
-    return name.replace('@', '_at_')

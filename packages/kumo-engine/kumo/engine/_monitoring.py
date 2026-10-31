@@ -25,8 +25,8 @@ from kumo_core.score_drift import psi_shift
 from kumo_core.score_drift import score_drift as exact_drift
 from kumo_core.summaries import Dataset, Note, Scalar, Summary, Table, Tag
 
-from kumo.engine._card import number
 from kumo.engine._manifest import PredictionManifest, TrackingRef
+from kumo.engine._text import number
 from kumo.engine._tracking import metric_name
 
 _EVALUATION_FILE = '_evaluation.json'

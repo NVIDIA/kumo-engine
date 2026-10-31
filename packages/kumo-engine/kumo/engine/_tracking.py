@@ -33,9 +33,9 @@ from typing import (
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.instrumentation import format_error
 
-from kumo.engine._card import entity, number
 from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
+from kumo.engine._text import entity, number
 from kumo.engine._version import __version__
 
 if TYPE_CHECKING:

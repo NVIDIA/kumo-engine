@@ -14,8 +14,8 @@ from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.instrumentation import format_error
 from kumo_core.summaries import Note, Summary, Table, Tag
 
-from kumo.engine._card import entity
 from kumo.engine._manifest import Details
+from kumo.engine._text import entity
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.summaries import Scalar, Summary
 
-from kumo.engine._card import entity
+from kumo.engine._text import entity, metric_key
 from kumo.engine._tracking import (
     RunSpec,
     _flatten,
@@ -91,7 +91,7 @@ def holdout_metrics(result: Any) -> Dict[str, float]:
 def model_metrics(result: Any) -> Dict[str, float]:
     r"""The model's own quality, as a logged model and every registry
     record it: `holdout_metrics` and the ``role='model'`` summaries."""
-    return {name.replace('@', '_at_'): value for name, value in {
+    return {metric_key(name): value for name, value in {
         **holdout_metrics(result),
         **{summary.name: summary.value
            for summary in getattr(result, '_summaries', ())
