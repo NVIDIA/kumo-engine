@@ -771,6 +771,18 @@ def test_prediction_run_without_a_manifest_or_hook_is_skipped(caplog):
     assert 'not tracked' in caplog.text
 
 
+def test_a_failing_summary_is_a_tracking_failure_not_a_predict_one():
+    recorder = _Recorder()
+    recorder.log_prediction_run = recorder.calls.append
+
+    def broken():
+        raise OSError('stats unreadable')
+
+    failure = track_prediction(PREDICTION_MANIFEST, recorder,
+                               summaries=broken)
+    assert isinstance(failure, OSError) and recorder.calls == []
+
+
 def test_every_summary_type_has_a_sink_in_each_tracker():
     from typing import get_args
 

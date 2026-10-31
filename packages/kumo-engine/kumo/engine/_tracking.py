@@ -545,7 +545,8 @@ def track_prediction(
         manifest: Optional['PredictionManifest'], tracking: Any,
         error: Optional[BaseException] = None,
         model: Any = None,
-        summaries: Sequence['Summary'] = ()) -> Optional[Exception]:
+        summaries: Callable[[], Sequence['Summary']] = tuple
+) -> Optional[Exception]:
     r"""Record a prediction run of ``model`` in ``tracking``, failed if
     ``error`` ended it, with ``summaries`` besides its scores'; returns the
     tracking failure instead of raising it."""
@@ -554,7 +555,7 @@ def track_prediction(
     try:
         if manifest is None:
             raise ValueError('the run has no prediction manifest')
-        record = prediction_record(manifest, error, model, summaries)
+        record = prediction_record(manifest, error, model, summaries())
     except Exception as failure:
         logger.warning('Experiment tracking failed: %s; the prediction run '
                        'is not tracked', full_error(failure), exc_info=_debug())

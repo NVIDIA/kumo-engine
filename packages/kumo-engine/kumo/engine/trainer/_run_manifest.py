@@ -103,7 +103,7 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
                     unstored = failure
             untracked = track_prediction(
                 manifest, settings.tracking, error or unstored, model,
-                _scoring_summaries(manifest, snapshot))
+                lambda: _scoring_summaries(manifest, snapshot))
             tracked = getattr(settings.tracking, 'log_prediction_run', None)
             if untracked is None and tracked is not None:
                 tracking = tracking_ref(settings.tracking)
