@@ -39,7 +39,9 @@ class KumoModel(custom_model.CustomModel):
                 prediction_time: str = '',
                 binary_classification_threshold: float = -1.0,
                 num_classes_to_return: int = 0) -> pd.DataFrame:
-        from kumo.engine.integrations._serving import score_registered
+        from kumo.engine.integrations._snowflake_serving import (
+            score_registered,
+        )
 
         params = {
             'snapshot': snapshot or None,
@@ -57,7 +59,8 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
                    target: Mapping[str, Optional[str]],
                    workdir: str) -> Dict[str, Any]:
     r"""``Registry.log_model`` arguments for the bundle as a `KumoModel`."""
-    from kumo.engine.integrations._serving import output_columns
+    from kumo_core.artifacts import bundle_task_type
+
     from kumo.engine.trainer._spec import read_bundle_artifact_paths
     from kumo.engine.trainer.output_config import (
         SERVING_OPTION_PREFIX,
@@ -65,11 +68,13 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
     )
 
     bundle = Path(bundle_dir)
+    paths, _ = read_bundle_artifact_paths(bundle)
+    task = bundle_task_type(paths)
     serving = Path(workdir) / 'serving.json'
     serving.write_text(
         json.dumps({
             'snapshot': metadata.get(SERVING_SNAPSHOT_KEY),
-            'columns': output_columns(bundle),
+            'columns': output_columns(task),
             **target
         }))
     options = {
@@ -89,7 +94,6 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
             f"registering Python {DEFAULTS['python_version']}: snowflake-ml "
             f"pickles the model by value, so the container must run the same "
             f"Python. Register from Python {python} instead.")
-    paths, _ = read_bundle_artifact_paths(bundle)
     environment: Dict[str, Any] = dict(
         pip_requirements=pip_requirements() +
         text_requirements(paths.get('encoders')),
@@ -102,7 +106,7 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
                 'bundle': str(bundle),
                 'serving': str(serving),
             })),
-        signatures={'predict': signature(bundle)},
+        signatures={'predict': signature(task)},
         target_platforms=['SNOWPARK_CONTAINER_SERVICES'],
         python_version=python,
         options=options,
@@ -217,13 +221,17 @@ def _pinned(req: Any) -> str:
     return req.name + ','.join(sorted(specs))
 
 
-def signature(bundle: Path) -> Any:
+def output_columns(task: Any) -> List[str]:
+    from kumo_core.train.formatting import prediction_output_columns
+
+    return ['ENTITY', *prediction_output_columns(task)]
+
+
+def signature(task: Any) -> Any:
     from kumo_core.types import TaskType
     ms = import_provider('snowflake.ml.model.model_signature', 'snowflake')
 
-    from kumo.engine.integrations._serving import output_columns, task_type
-
-    binary = task_type(bundle) is TaskType.BINARY_CLASSIFICATION
+    binary = task is TaskType.BINARY_CLASSIFICATION
     dtypes = {
         'PREDICTED': ms.DataType.BOOL,
         'CLASS': ms.DataType.STRING,
@@ -237,7 +245,7 @@ def signature(bundle: Path) -> Any:
             ms.FeatureSpec(
                 name, ms.DataType.STRING if name == 'ENTITY' else dtypes.get(
                     name, ms.DataType.DOUBLE))
-            for name in output_columns(bundle)
+            for name in output_columns(task)
         ],
         params=[
             ms.ParamSpec('snapshot', ms.DataType.STRING, ''),

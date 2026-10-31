@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 import kumo.engine as kumo
-from kumo.engine.integrations import _serving
+from kumo.engine.integrations import _serving, _snowflake_serving
 
 pytest.importorskip('snowflake.ml.model')
 
@@ -21,8 +21,8 @@ TARGET = {'warehouse': 'WH', 'database': 'DB', 'schema': 'ML'}
 
 @pytest.fixture
 def served(fitted, tmp_path, monkeypatch):
-    monkeypatch.setattr(_serving, '_predictors', {})
-    monkeypatch.setattr(_serving, '_snapshots', {})
+    monkeypatch.setattr(_snowflake_serving, '_predictors', {})
+    monkeypatch.setattr(_snowflake_serving, '_snapshots', {})
     trainer, table, snapshot = fitted
     exports = tmp_path / 'exports'
     location = snapshot.export(
@@ -94,7 +94,7 @@ def test_a_packaged_version_scores_like_the_trainer(served, tmp_path,
     pd.testing.assert_frame_equal(
         scored.sort_values('ENTITY').reset_index(drop=True),
         expected.sort_values('ENTITY').reset_index(drop=True), rtol=1e-4)
-    assert list(_serving._snapshots) == [uri]
+    assert list(_snowflake_serving._snapshots) == [uri]
     assert list(model.predict(rows.iloc[:0]).columns) == list(scored.columns)
 
 
@@ -210,8 +210,9 @@ def test_a_stage_snapshot_is_read_with_the_container_identity(monkeypatch):
     monkeypatch.setattr(
         kumo.GraphSnapshot, 'load_from_connector',
         classmethod(lambda cls, connector, path: (connector, path)))
-    assert _serving.load_snapshot('@DB.ML.KUMO/snapshots/s1',
-                                  TARGET) == ('sf', '@DB.ML.KUMO/snapshots/s1')
+    assert _snowflake_serving.load_snapshot(
+        '@DB.ML.KUMO/snapshots/s1', TARGET) == ('sf',
+                                                '@DB.ML.KUMO/snapshots/s1')
     assert calls == [{
         'warehouse': 'WH',
         'database': 'DB',

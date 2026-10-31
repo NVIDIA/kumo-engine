@@ -374,17 +374,17 @@ def test_a_model_that_was_not_stored_is_not_registered(
 def test_the_snowflake_model_scores_with_the_bundles_predictor(
         tmp_path, monkeypatch):
     from kumo.engine.connector.snowflake import SnowflakeConnector
-    from kumo.engine.integrations import _serving
+    from kumo.engine.integrations import _snowflake_serving as scoring
 
-    monkeypatch.setattr(_serving, '_predictors', {})
-    monkeypatch.setattr(_serving, '_snapshots', {})
-    monkeypatch.setattr(_serving, 'load_snapshot', lambda uri, record: uri)
+    monkeypatch.setattr(scoring, '_predictors', {})
+    monkeypatch.setattr(scoring, '_snapshots', {})
+    monkeypatch.setattr(scoring, 'load_snapshot', lambda uri, record: uri)
     bundle, manifest = _toy_bundle(tmp_path / 'toy')
     serving = tmp_path / 'serving.json'
     serving.write_text(json.dumps({'snapshot': 's', 'columns': ['ENTITY',
                                                                 'SCORE']}))
-    frame = _serving.score_registered(str(bundle), str(serving),
-                                      pd.DataFrame({'ENTITY': [1, 2]}), {})
+    frame = scoring.score_registered(str(bundle), str(serving),
+                                     pd.DataFrame({'ENTITY': [1, 2]}), {})
     assert frame.to_dict('list') == {'ENTITY': ['1', '2'], 'SCORE': [2.0, 4.0]}
 
     staged = replace(manifest, dependencies=[
@@ -396,7 +396,7 @@ def test_the_snowflake_model_scores_with_the_bundles_predictor(
     write_manifest(bundle / PROVENANCE_FILE, staged)
     monkeypatch.setattr(SnowflakeConnector, 'from_spcs_env',
                         classmethod(lambda cls, **kw: 'sf'))
-    assert _serving._staged(str(bundle), {}, lambda b: [
+    assert scoring._staged(str(bundle), {}, lambda b: [
         location for location in Dependencies().candidates(staged.
                                                            dependencies[-1])
         if location[0] == 'sf'

@@ -3,12 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Scoring rows with a registered bundle, for MLflow and Snowflake."""
 
-import json
 import logging
 import tempfile
-import threading
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 import pandas as pd
 
@@ -17,9 +15,6 @@ from kumo.engine.graph import GraphSnapshot
 
 logger = logging.getLogger(__name__)
 _ANCHOR = 'ANCHOR_TIMESTAMP'
-_lock = threading.Lock()
-_predictors: Dict[str, Any] = {}
-_snapshots: Dict[str, GraphSnapshot] = {}
 
 
 def predict(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
@@ -83,7 +78,7 @@ def _in_input_order(rows: pd.DataFrame, scored: pd.DataFrame) -> pd.DataFrame:
     return scored.iloc[order.to_numpy()].reset_index(drop=True)
 
 
-def _parsed(trainer: Any, snapshot: GraphSnapshot) -> Any:
+def parsed_query(trainer: Any, snapshot: GraphSnapshot) -> Any:
     from kumo.engine.pquery import PredictiveQuery
 
     return PredictiveQuery._from_snapshot(snapshot,
@@ -93,7 +88,7 @@ def _parsed(trainer: Any, snapshot: GraphSnapshot) -> Any:
 def _temporal(trainer: Any, snapshot: GraphSnapshot) -> bool:
     from kumo_core.pquery import query_is_temporal
 
-    return query_is_temporal(_parsed(trainer, snapshot),
+    return query_is_temporal(parsed_query(trainer, snapshot),
                              snapshot._native_graph)
 
 
@@ -118,102 +113,3 @@ def snapshot_location(uri: str) -> Tuple[Connector, str]:
 
     parent, slash, name = uri.rstrip('/').rpartition('/')
     return connector_for_root(parent or slash or '.'), name
-
-
-def task_type(bundle: Path) -> Any:
-    from kumo_core.types import TaskType
-
-    schema = json.loads((bundle / 'prediction-schema.json').read_text())
-    return TaskType(schema['task_type'])
-
-
-def output_columns(bundle: Path) -> List[str]:
-    from kumo_core.train.formatting import prediction_output_columns
-
-    return ['ENTITY', *prediction_output_columns(task_type(bundle))]
-
-
-def score_registered(bundle: str, serving: str, rows: pd.DataFrame,
-                     params: Mapping[str, Any]) -> pd.DataFrame:
-    r"""Scores ``rows`` against ``params``' or ``serving``'s snapshot."""
-    from kumo.engine._predictor import load_predictor
-
-    record = json.loads(Path(serving).read_text())
-    columns = record.get('columns') or output_columns(Path(bundle))
-    if rows.empty:
-        return pd.DataFrame(columns=columns)
-    uri = params.get('snapshot') or record.get('snapshot')
-    if not uri:
-        raise ValueError(
-            "No snapshot to score against: fit with a stage artifact root, "
-            "which stores the training snapshot there, or pass "
-            "InputSpec(params={'snapshot': '@DB.SCHEMA.STAGE/...'})")
-    predictor = _cached(_predictors, bundle,
-                        lambda: _staged(bundle, record, load_predictor))
-    snapshot = _cached(_snapshots, uri, lambda: load_snapshot(uri, record))
-    trainer = getattr(predictor, 'trainer', None)
-    if trainer is not None:
-        rows = rows.assign(
-            ENTITY=_entities(rows['ENTITY'], trainer, snapshot))
-    frame = predictor.predict(
-        rows, snapshot, {k: v
-                         for k, v in params.items() if k != 'snapshot'})
-    frame = frame.reindex(columns=columns)
-    for column in ('ENTITY', 'CLASS'):
-        if column in frame:
-            frame[column] = frame[column].astype(str)
-    return frame
-
-
-def _staged(bundle: str, target: Mapping[str, Any],
-            load: Callable[[str], Any]) -> Any:
-    r"""``load(bundle)``, reading its staged assets as the container."""
-    from kumo.engine._deps import Dependencies, asset_locations
-    from kumo.engine.trainer._provenance import read_provenance
-
-    roots = sorted({
-        record.location.rsplit('/', 2)[0]
-        for record in Dependencies.of(read_provenance(Path(bundle))).records
-        if (record.location or '').startswith('@')
-    })
-    if not roots:
-        return load(bundle)
-    connector = _container_connector(target)
-    with asset_locations([(connector, root) for root in roots]):
-        return load(bundle)
-
-
-def load_snapshot(uri: str, target: Mapping[str, Any]) -> GraphSnapshot:
-    r"""Loads an exported snapshot, a stage's as the container."""
-    if uri.startswith('@'):
-        return GraphSnapshot.load_from_connector(_container_connector(target),
-                                                 path=uri)
-    connector, path = snapshot_location(uri)
-    return GraphSnapshot.load_from_connector(connector, path=path)
-
-
-def _container_connector(target: Mapping[str, Any]) -> Connector:
-    from kumo.engine.connector.snowflake import SnowflakeConnector
-
-    return SnowflakeConnector.from_spcs_env(
-        warehouse=target.get('warehouse'), database=target.get('database'),
-        schema_name=target.get('schema'))
-
-
-def _cached(cache: Dict[str, Any], key: str, load: Callable[[], Any]) -> Any:
-    with _lock:
-        if key not in cache:
-            cache[key] = load()
-        return cache[key]
-
-
-def _entities(values: pd.Series, trainer: Any,
-              snapshot: GraphSnapshot) -> pd.Series:
-    entity = snapshot._native_graph.table(
-        _parsed(trainer, snapshot).entity_table)
-    dtype = str(entity.column(entity.primary_key).dtype)
-    if dtype.startswith('int') or dtype.startswith('uint'):
-        return pd.to_numeric(values).astype('int64')
-    if dtype.startswith('float'):
-        return pd.to_numeric(values).astype('float64')
-    return values.astype(str)
