@@ -1,72 +1,126 @@
-# Engine nightly learning check
+# Engine nightly on the fixed AWS VM
 
-The workflow runs manually on one authorized RTX PRO 6000 runner and GPU0.
-It has no schedule or push trigger. Each run has a three-hour timeout.
-Concurrency is separate for each workflow ref.
-Keep scheduling disabled until a complete reference and candidate run passes.
+The manual workflow builds the selected wheel on a CPU GitHub runner.
+A separate CPU job stages it and the trusted harness in S3, then controls
+`i-06dd0e3c558780731` in `us-east-2` through Systems Manager Run Command (SSM).
+The VM has no GitHub runner. Scheduling remains disabled.
+The workflow publishes no release, wheel, or reference.
 
-The workload has sixteen sequential fits. Eight tasks each use normal labels
-and independently scrambled labels with seed zero. It uses the existing full
-PR172 approximately 100M-row inputs and the shared model recipe.
-This change does not reduce the data or create a machine.
+## Execution and cancellation
 
-## Required results
+The build job has no AWS role or OIDC permission. It uses the existing wheel
+builder and records the exact revision, tree, version, and wheel hash.
+The controller job uses the protected test environment. Its temporary AWS
+credentials stay in the controller step. It renews expired credentials through
+[GitHub OIDC](https://docs.github.com/en/actions/reference/security/oidc)
+without changing IAM or forwarding controller credentials to the VM.
 
-Require actual CUDA training and prediction, complete finite outputs, exact
-restored checkpoint state, and unchanged labels and ranks after repeat,
-partial-input prediction, and reload. Keep the product's prediction and
-evaluation recovery when GPU memory runs out.
-Record partial training batches and actual early stopping without requiring
-an exact batch size or patience value.
+The request binds the run ID, attempt, nonce, source commit, wheel, three code
+files, and frozen inputs. The VM checks the request and payload hashes.
+Each run gets a fresh environment and result directory. Reuse immutable input
+files only after their identities pass. Keep models and indexes remote.
+JSON reports and logs return through S3 and GitHub artifacts on success or failure.
 
-Each normal model must beat its frozen baseline. Each scrambled model must
-remain near its own frozen baseline. The baseline is the existing simple
-predictor recorded in the reference, not the reference model's learned score.
-AUROC, accuracy, average precision, and recall range from zero to one.
-For these metrics, use 10% of the smaller of the baseline and its remaining
-distance to one. Require at least that normal gain and at most that control
-difference. This keeps a reachable margin for high baselines and small recall.
-For mean absolute error, require at least 10% lower normal error and control
-error within 10% of its baseline. Mean absolute error measures prediction error.
-These initial thresholds still need validation on a complete GPU run.
-A failed learning condition writes a failed comparison and fails the job.
+The selected `g7e.12xlarge` has 48 CPUs, 512 GiB nominal RAM, local NVMe, and
+two RTX PRO 6000 GPUs. Only GPU0 is visible to model execution.
+The host records actual capacity and rejects a busy host without stopping its
+existing workload. It holds one lock across installation and model execution.
+The unprivileged subprocesses inherit that lock. Cancellation stops their whole
+process group before the host releases it. A systemd deadline bounds the group
+independently of CI. The model receives a clean environment, separate home,
+and short private temporary directory, with no personal AWS configuration.
 
-Numeric score drift and elapsed times remain reports without regression limits.
-The shared PR smoke keeps its enforced prediction bound. Nightly selects numeric
-reporting explicitly. Public Lightning callbacks retain CUDA and checkpoint proof.
-Driver, Torch/CUDA, GPU memory, and resolved model configuration are recorded.
-They do not need exact equality with the reference. GPU class remains required.
-Package profiles have no fixed package count. The candidate installer resolves
-the selected wheel's actual requirements. It runs `pip check` after installation.
-Candidate dependency changes from the historical profile are recorded, not rejected.
+The CI role lacks `CancelCommand`. The controller instead uploads a cancellation
+marker bound to the exact request and waits for the same invocation to end.
+The host polls the marker during setup and model execution.
+A separate cleanup job repeats cancellation and confirms termination when the
+controller fails or GitHub cancels its step. It can also use a bound terminal VM
+receipt if dispatch returned no command ID. The cleanup job allows eight minutes.
+Unconfirmed termination remains an error. The host lock and deadline stay in force.
 
-## Inputs and reference
+The host allows 180 minutes for setup and execution. The service deadline is
+185 minutes. SSM allows 11,200 seconds, and the controller waits 11,300 seconds
+before requesting cancellation. The controller job allows 195 minutes.
+The separate CPU build allows 60 minutes. These are provisional bounds based
+on the existing three-hour job allowance, not a measured complete runtime.
+The workflow does not stop, resize, or provision the VM.
+
+## Workload and required proof
+
+Run sixteen sequential primary fits: eight tasks with seed zero, normal labels,
+and independently scrambled controls. Keep the full approximately 100M-row
+adtech, delivery, and commerce inputs. Do not run the eight small PR fits first.
+The shared PR action and helper remain unchanged from PR135.
+Installation receipts, resource sampling, saved-state proof, source mappings,
+and numerical reporting belong to nightly-owned code.
+
+Require actual CUDA work, finite complete outputs, valid IDs, exact restored
+checkpoint state, and unchanged decisions and ranks after repeat, partial
+prediction, and reload. Keep product OOM recovery and record actual batches
+and early stopping. Failed assertions and missing measurements invalidate results.
+Historical metadata and score replay cannot satisfy a new sixteen-case run.
+
+CUDA synchronization surrounds timed operations. Record preparation, training,
+prediction, repeat, partial, reload, and complete-case scope separately.
+Record controller CLI time in `controller-job-time.json`, including staging,
+waiting, collection, and validation. Host elapsed time covers setup through
+process cleanup and excludes final packaging and upload. GitHub records the
+whole workflow and separate build duration. These fit times do not represent a separate
+steady-state 200-step benchmark.
+Resource records contain sampled process-tree PSS/RSS, device memory used,
+Torch allocated/reserved memory, and sampling interval and errors.
+PSS apportions shared pages. RSS counts shared pages in each process.
+These sampled values do not guarantee instantaneous peaks.
+Missing CPU or GPU measurements invalidate a primary measurement.
+
+## Reporting and references
+
+Normal-model quality reports a 5% relative degradation margin.
+Training/prediction time, CPU memory, and GPU memory report 20% margins.
+Crossing a margin does not fail CI, merge, or publication.
+Normal gain, scrambled controls, and numerical score differences remain diagnostic.
+There is no absolute learning-quality gate. The PR smoke keeps its own enforced
+prediction tolerance.
+
+Percentages require matching inputs, model configuration, dependencies,
+hardware, driver, cache conditions, scope, and actual training work.
+Batch reduction, missing work records, or different epoch counts cannot qualify
+a timing comparison. Missing, zero, invalid, or incompatible references retain
+raw values and absolute differences. Their percentages remain unavailable.
 
 The [descriptor](../../packages/kumo-engine/test/nightly/inputs.json) pins the
-existing S3 archive, manifest, and predecessor reference by SHA-256.
-The historical `T4` label in input metadata does not select the runtime GPU.
-Input bytes stay unchanged. No new data archive is needed for driver updates.
-The approved reference wheel is `kumo-engine==1.0.0` with its recorded hash.
-Use each wheel's supported default device selection and require observed CUDA.
-The reference profile uses Lightning 2.6.5. The historical candidate profile
-uses 2.6.6. Reference preparation keeps its profile pins.
+unchanged archive, manifest, and predecessor reference by SHA-256.
+Its historical `T4` label does not select hardware.
+The approved wheel is `kumo-engine==1.0.0` at its recorded hash.
+Reference installation uses frozen dependencies, including Lightning 2.6.5.
+Candidate installation resolves the selected wheel's actual requirements,
+including its Lightning requirement. Run `pip check` and check installed files.
+Record all resolved versions. Two historical loader workers do not qualify
+performance comparisons with twelve current workers.
 
-Use manual input `reference_only: true` to prepare a reference on the selected
-runner. After all sixteen cases and learning conditions pass, retain
-`nightly-summary/reference.json` from the uploaded artifact.
-Store that file at an immutable S3 key through the normal approved publishing
-process. Update `reference_key` and `reference_sha256` in the descriptor.
-The workflow itself does not publish or replace the reference.
-An ordinary candidate run requires that reviewed reference and matching inputs.
+Manual `reference_only: true` uses the approved wheel. After complete valid
+execution, comparison prepares `summary/reference.json` without publishing it.
+Reference admission requires review. Preserve every predecessor and descriptor.
 
-## Scope and current evidence
+## Reuse audit and qualification gaps
 
-Reuse the existing wheel builder, installer, CUDA observer, and output checks.
-Keep the weighted-table and isolated model-reuse tests in a separate local
-change. The CUDA reuse test skips on CPU in that separate change.
-The nightly does not rerun those package tests or add their model fits.
-It uploads results directly and excludes graph work directories.
+Audit each retained case before another fit. Match inputs, wheel, dependencies,
+model settings, batch configuration, checkpoint, actual work, and predictions.
+Reuse matching predictions for scores and compatible saved models for missing
+prediction checks. Locate old artifacts before deciding on training.
+Preserve every failed and interrupted result. This review procedure does not
+change the routine sixteen-case nightly roster.
 
-The complete managed-runner workload, available capacity, and elapsed time
-remain unverified. Local CPU tests do not qualify the GPU workflow.
-Keep this change local and keep scheduling disabled until that evidence exists.
+Twelve retained cases support score replay without another fit.
+The saved static-link normal model passed repeat and partial checks on GPU.
+Reload swapped positions four and five for one of 176,856 entities.
+The same five items, recall@5, and checkpoint identity remain unchanged.
+The strict order check remains FAIL. Its cause is not established.
+Static-link control and both temporal-link cases still lack located and
+verified historical models and raw predictions.
+
+The separate [wheel-delivery run](https://github.com/NVIDIA/kumo-engine/actions/runs/41146970366)
+passed CPU build, transfer, isolated installation, and imports with zero fits.
+It does not verify this full SSM model-suite route or its cancellation path.
+Local CPU checks do not establish a full current GPU PASS.
+Keep the PR draft and scheduling disabled while these gaps remain.

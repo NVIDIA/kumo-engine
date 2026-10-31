@@ -16,113 +16,28 @@ on:  # yamllint disable-line rule:truthy
         default: false
 permissions:
   contents: read
-  id-token: write
 concurrency:
-  group: engine-nightly-${{ github.ref }}
+  group: engine-nightly-fixed-aws-vm
   cancel-in-progress: false
 env:
   PIP_CONFIG_FILE: /dev/null
+  REFERENCE_ONLY: ${{ inputs.reference_only && 'true' || 'false' }}
+  REFERENCE_WHEEL_SHA256: 1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e
 jobs:
-  nightly:
-    name: kumo-engine-nightly
-    runs-on:
-      group: nv-gpu-amd64-rtxpro6000-1gpu
-      labels: linux-amd64-gpu-rtxpro6000-latest-1
-    timeout-minutes: 180
-    environment:
-      name: gha-kumo-workflow-tests
-      deployment: false
+  build:
+    name: Build the selected wheel on CPU
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
     env:
-      CUDA_VISIBLE_DEVICES: '0'
       CARGO_BUILD_JOBS: '4'
-      OMP_NUM_THREADS: '4'
-      MKL_NUM_THREADS: '4'
-      OPENBLAS_NUM_THREADS: '4'
-      PYTHONDONTWRITEBYTECODE: '1'
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      REFERENCE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_only && 'true' || 'false' }}
-      REFERENCE_WHEEL_SHA256: 1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Use temporary job storage
-        run: |
-          echo "NIGHTLY_ROOT=$RUNNER_TEMP/engine-nightly" >> "$GITHUB_ENV"
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: '3.12'
-      - name: Record managed runner capacity
-        run: |
-          python - <<'PY'
-          import csv, json, os, shutil, subprocess
-          from pathlib import Path
-          root = Path(os.environ['RUNNER_TEMP'])
-          (root / 'nightly-wheel').mkdir()
-          capacity = dict(cpu_count=os.cpu_count(),
-              system_memory_bytes=os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES'),
-              free_scratch_bytes=shutil.disk_usage(root).free)
-          for name in ('cpu.max', 'memory.max'):
-              path = Path('/sys/fs/cgroup') / name
-              if path.is_file():
-                  capacity[name.replace('.', '_')] = path.read_text().strip()
-          try:
-              rows = subprocess.check_output(['nvidia-smi', '--query-gpu=name,memory.total,driver_version',
-                  '--format=csv,noheader,nounits'], text=True)
-              capacity['gpus'] = [dict(model=r[0].strip(), memory_mib=int(r[1]),
-                  driver=r[2].strip()) for r in csv.reader(rows.splitlines())]
-          finally:
-              (root / 'nightly-wheel/capacity.json').write_text(json.dumps(capacity, indent=2))
-          PY
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
-        with:
-          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
-          aws-region: us-west-2
-      - name: Download the frozen inputs and reference
-        id: inputs
-        run: |
-          python -I -m pip --isolated install --index-url https://pypi.org/simple boto3
-          python - <<'PY'
-          import hashlib, json, os
-          from pathlib import Path
-          import tarfile
-          import boto3
-          spec = json.loads(Path('packages/kumo-engine/test/nightly/inputs.json').read_text())
-          root = Path(os.environ['NIGHTLY_ROOT'])
-          root.mkdir()
-          client = boto3.client('s3', region_name=spec['region'])
-          archive = root / 'inputs.tar'
-          reference = root / 'reference.json'
-          for key, path, checksum in [(spec['key'], archive, spec['sha256']),
-                                    (spec['reference_key'], reference, spec['reference_sha256'])]:
-              client.download_file(spec['bucket'], key, str(path))
-              with path.open('rb') as stream:
-                  if hashlib.file_digest(stream, 'sha256').hexdigest() != checksum:
-                      raise SystemExit('Downloaded nightly checksum differs')
-          with tarfile.open(archive) as source:
-              source.extractall(root / 'inputs', filter='data')
-          manifest = root / 'inputs/manifest.json'
-          if hashlib.sha256(manifest.read_bytes()).hexdigest() != spec['input_manifest_sha256']:
-              raise SystemExit('Admitted nightly metadata checksum differs')
-          data = json.loads(manifest.read_text())
-          baseline = json.loads(reference.read_text())
-          reference_only = os.environ['REFERENCE_ONLY'] == 'true'
-          if (baseline['input_manifest_sha256'] != spec['input_manifest_sha256']
-                  or baseline['version'] != '1.0.0' or len(baseline['cases']) != 16):
-              raise SystemExit('Reference input binding or case roster is not admitted')
-          profile = data['reference_dependencies' if reference_only else 'candidate_dependencies']
-          resolved = (manifest.parent / profile).resolve()
-          if (not resolved.is_relative_to(manifest.parent.resolve())
-                  or hashlib.sha256(resolved.read_bytes()).hexdigest() != data['files'][profile]):
-              raise SystemExit('Dependency profile path or checksum differs')
-          with open(os.environ['GITHUB_ENV'], 'a') as stream:
-              stream.write(f'INPUT_SHA256={spec["input_manifest_sha256"]}\nREFERENCE_SHA256={spec["reference_sha256"]}\n')
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
-              install_profile = str(resolved) if reference_only else ''
-              install_hash = data['files'][profile] if reference_only else ''
-              stream.write(f'profile={install_profile}\nprofile_sha256={install_hash}\n')
-          PY
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         if: env.REFERENCE_ONLY != 'true'
         with:
@@ -145,8 +60,6 @@ jobs:
         if: env.REFERENCE_ONLY != 'true'
         run: |
           set -euo pipefail
-          processes="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)"
-          test -z "$processes"
           mkdir -p "$RUNNER_TEMP/nightly-wheel"
           test -z "$(git -C product status --porcelain)"
           git -C product rev-parse HEAD 'HEAD^{tree}' > "$RUNNER_TEMP/nightly-wheel/source.txt"
@@ -192,51 +105,102 @@ jobs:
           (root / 'build.json').write_text(json.dumps(dict(format='kumo-engine-published-reference-v1',
               version='1.0.0', wheel_sha256=digest, harness=os.environ['GITHUB_SHA']), indent=2))
           PY
-      - uses: ./.github/actions/engine-gpu-smoke
-        with:
-          wheel-path: ${{ runner.temp }}/nightly-wheel/*.whl
-          install-only: 'true'
-          dependency-profile: ${{ steps.inputs.outputs.profile }}
-          dependency-profile-sha256: ${{ steps.inputs.outputs.profile_sha256 }}
-      - name: Run sixteen primary fits
-        run: |
-          set -euo pipefail
-          processes="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)"
-          test -z "$processes"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          out="$RUNNER_TEMP/nightly-result"
-          mkdir -p "$out/setup" "$RUNNER_TEMP/nightly-harness"
-          cp "$RUNNER_TEMP/nightly-wheel/build.json" "$out/setup/"
-          cp "$RUNNER_TEMP/engine-gpu-smoke/"*.json "$out/setup/"
-          cp packages/kumo-engine/scripts/nightly_check.py packages/kumo-engine/test/wheel_gpu_smoke.py "$RUNNER_TEMP/nightly-harness/"
-          python="$RUNNER_TEMP/engine-smoke-venv/bin/python"
-          flags=(--reference "$NIGHTLY_ROOT/reference.json" --reference-sha256 "$REFERENCE_SHA256")
-          if [[ "$REFERENCE_ONLY" == true ]]; then flags+=(--reference-only); fi
-          "$python" -I "$RUNNER_TEMP/nightly-harness/nightly_check.py" run --input-root "$NIGHTLY_ROOT/inputs" --input-sha256 "$INPUT_SHA256" --output-dir "$out" --expected-version "$ENGINE_SMOKE_VERSION" "${flags[@]}" 2>&1 | tee "$RUNNER_TEMP/nightly-run.log"
-      - name: Retain results and failures without full input indexes
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         if: always()
-        run: |
-          mkdir -p "$RUNNER_TEMP/nightly-result/setup"
-          if [[ -f "$RUNNER_TEMP/nightly-run.log" ]]; then cp "$RUNNER_TEMP/nightly-run.log" "$RUNNER_TEMP/nightly-result/run.log"; fi
-          for path in "$RUNNER_TEMP/nightly-wheel/build.json" "$RUNNER_TEMP/nightly-wheel/capacity.json" "$RUNNER_TEMP/engine-gpu-smoke/"*.json; do
-            if [[ -f "$path" ]]; then cp "$path" "$RUNNER_TEMP/nightly-result/setup/"; fi
-          done
-          if [[ -f "$NIGHTLY_ROOT/reference.json" ]]; then cp "$NIGHTLY_ROOT/reference.json" "$RUNNER_TEMP/nightly-result/reference.json"; fi
-      - name: Validate the complete candidate comparison
+        with:
+          name: engine-nightly-wheel
+          path: ${{ runner.temp }}/nightly-wheel
+          if-no-files-found: error
+          compression-level: 0
+  nightly:
+    name: Control the fixed AWS GPU VM
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 195
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: engine-nightly-wheel
+          path: ${{ runner.temp }}/nightly-wheel
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        id: nightly-credentials
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-east-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Run and validate the fixed-VM nightly
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.nightly-credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.nightly-credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.nightly-credentials.outputs.aws-session-token }}
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/nightly-result"
-          flags=(--reference "$root/reference.json" --reference-sha256 "$REFERENCE_SHA256")
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mapfile -t wheels < <(find "$RUNNER_TEMP/nightly-wheel" -maxdepth 1 -name '*.whl' -type f)
+          test "${#wheels[@]}" = 1
+          flags=()
           if [[ "$REFERENCE_ONLY" == true ]]; then flags+=(--reference-only); fi
-          "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I "$RUNNER_TEMP/nightly-harness/nightly_check.py" compare --input-root "$root/input-metadata" --input-sha256 "$INPUT_SHA256" --results-dir "$root" --output-dir "$RUNNER_TEMP/nightly-summary" "${flags[@]}"
+          python -I scripts/engine_nightly_run.py --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --source-sha "$GITHUB_SHA" --wheel "${wheels[0]}" --build-receipt "$RUNNER_TEMP/nightly-wheel/build.json" --input-spec packages/kumo-engine/test/nightly/inputs.json --output-dir "$RUNNER_TEMP/engine-nightly" "${flags[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         if: always()
         with:
           name: engine-nightly-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/nightly-wheel
-            ${{ runner.temp }}/nightly-result
-            !${{ runner.temp }}/nightly-result/work/**
-            ${{ runner.temp }}/nightly-summary
+          path: ${{ runner.temp }}/engine-nightly
           if-no-files-found: error
           compression-level: 0
+  cleanup:
+    name: Confirm failed or cancelled VM work stops
+    needs: nightly
+    if: ${{ always() && needs.nightly.result != 'success' && needs.nightly.result != 'skipped' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        id: cleanup-credentials
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-east-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Cancel and confirm the fixed-VM workload
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.cleanup-credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.cleanup-credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.cleanup-credentials.outputs.aws-session-token }}
+        run: |
+          python -I scripts/engine_nightly_run.py --cancel-only --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --source-sha "$GITHUB_SHA" --output-dir "$RUNNER_TEMP/engine-nightly-cancel"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: always()
+        with:
+          name: engine-nightly-cancel-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/engine-nightly-cancel
+          if-no-files-found: error

@@ -74,28 +74,6 @@ TASKS = {
 }
 
 
-def verify_installed_files(wheel, distribution):
-    """Match installed files to the finished archive, except pip's rewritten RECORD."""
-    from zipfile import ZipFile
-
-    location = Path(distribution.locate_file('')).resolve()
-    checked = 0
-    with ZipFile(wheel) as archive:
-        for name in archive.namelist():
-            if name.endswith('/') or name.endswith('.dist-info/RECORD'):
-                continue
-            destination = Path(distribution.locate_file(name)).resolve()
-            if (not destination.is_relative_to(location)
-                    or not destination.is_file()
-                    or hashlib.sha256(destination.read_bytes()).digest()
-                    != hashlib.sha256(archive.read(name)).digest()):
-                raise ValueError(f'Installed wheel member differs: {name}')
-            checked += 1
-    if not checked:
-        raise ValueError('Wheel contains no installed files')
-    return checked
-
-
 def prediction_values(task, frame, ids, *, classes=(), anchor=None,
                       time_column='TIMESTAMP'):
     """Require complete, unique output coordinates before aligning values."""
@@ -188,8 +166,8 @@ def prediction_decisions(task, frame, ids, *, classes=()):
 
 
 def compare_predictions(before, after, *, atol=1e-5, before_decisions=None,
-                        after_decisions=None, report_numeric_drift=False):
-    """Keep decisions exact and enforce score bounds outside explicit reporting."""
+                        after_decisions=None):
+    """Enforce the same absolute score bound and exact decisions for every task."""
     import numpy as np
 
     if not math.isfinite(atol) or atol < 0:
@@ -209,7 +187,7 @@ def compare_predictions(before, after, *, atol=1e-5, before_decisions=None,
         within_tolerance=bool(np.allclose(left, right, atol=atol, rtol=0.)))
     if not result['decisions_equal']:
         raise ValueError('Prediction decisions changed after repeat or reload')
-    if not result['within_tolerance'] and not report_numeric_drift:
+    if not result['within_tolerance']:
         raise ValueError(
             f'Prediction difference exceeds atol={atol}, rtol=0: {result}')
     return result
@@ -299,7 +277,7 @@ def target_classes(task, targets):
     return sorted({category for value in members for category in value})
 
 
-def build_graph(spec, directory, *, static=False, sources=None):
+def build_graph(spec, directory, *, static=False):
     from kumoapi.graph import Edge
     from kumoapi.table import Column
 
@@ -310,8 +288,7 @@ def build_graph(spec, directory, *, static=False, sources=None):
     for name, definition in spec['tables'].items():
         columns = [Column(**column) for column in definition['cols']]
         table = kumo.Table.from_source_table(
-            files[(sources
-                   or {}).get(name, name)], [column.name for column in columns],
+            files[name], [column.name for column in columns],
             primary_key=definition.get('pkey'),
             time_column=None if static else definition.get('time_col'),
             end_time_column=None if static else definition.get('end_time_col'),
@@ -411,72 +388,15 @@ def prepare_task(task, root, metadata, directory, graphs):
                 input_file=inputs, ids=ids, classes=classes, anchor=anchor)
 
 
-def verify_checkpoint(model, path, expected_digest):
-    """Compare the weights that Lightning actually restored, with no tolerance."""
-    import numpy as np
-    import pandas as pd
-    import torch
-    from kumo_core.io.filesystem import local_path
-    from kumo_core.train.checkpoint import load_kumo_checkpoint
-
-    if path is None:
-        raise ValueError('Reload did not select a checkpoint')
-    path = local_path(str(path))
-    if hashlib.sha256(path.read_bytes()).hexdigest() != expected_digest:
-        raise ValueError('Reload selected a different checkpoint')
-    expected = load_kumo_checkpoint(str(path), map_location='cpu')['state_dict']
-    actual = model.state_dict()
-    tensors = 0
-
-    def equal(left, right):
-        nonlocal tensors
-        if isinstance(left, torch.Tensor) and isinstance(right, torch.Tensor):
-            if (left.dtype != right.dtype or left.shape != right.shape
-                    or not torch.equal(left.detach().cpu(),
-                                       right.detach().cpu())):
-                raise ValueError(
-                    'Restored model tensor differs from its checkpoint')
-            tensors += 1
-        elif type(left) is not type(right):
-            raise ValueError('Restored model state types differ')
-        elif isinstance(left, dict):
-            if set(left) != set(right):
-                raise ValueError('Restored model state keys differ')
-            for key in left:
-                equal(left[key], right[key])
-        elif isinstance(left, (list, tuple)):
-            if len(left) != len(right):
-                raise ValueError('Restored model state lengths differ')
-            for old, new in zip(left, right):
-                equal(old, new)
-        elif isinstance(left, pd.DataFrame):
-            pd.testing.assert_frame_equal(left, right, check_exact=True)
-        elif isinstance(left, np.ndarray):
-            np.testing.assert_array_equal(left, right)
-        elif left != right:
-            raise ValueError('Restored model state values differ')
-
-    equal(expected, actual)
-    if not tensors:
-        raise ValueError('Reload checked no model tensors')
-    return tensors
-
-
 @contextmanager
 def observe_cuda(state):
     """Add public Lightning callbacks without changing Engine training internals."""
-    from numbers import Integral
-
     import pytorch_lightning as pl
     import torch
-    from pytorch_lightning.callbacks import EarlyStopping
 
     class Proof(pl.Callback):
         def on_fit_start(self, trainer, module):
             state['fits'] += 1
-            if 'fit_ledger' in state:
-                state['fit_ledger'].append(
-                    dict(status='RUNNING', steps=0, cuda_batches=0))
 
         def check(self, module, values):
             if (str(module.device) != 'cuda:0' or not values
@@ -491,48 +411,10 @@ def observe_cuda(state):
                 module,
                 [values.get('loss') if isinstance(values, dict) else values])
             state['training_batches'] += 1
-            if 'fit_ledger' in state:
-                state['fit_ledger'][-1]['cuda_batches'] += 1
-            if 'training_epochs' in state:
-                seed = (getattr(module, 'lhs_name', None)
-                        or getattr(module, 'entity_table_name', None)
-                        or getattr(batch, 'input_type', None))
-                size = batch[seed].batch_size
-                if isinstance(
-                        size,
-                        bool) or not isinstance(size, Integral) or size < 1:
-                    raise ValueError(
-                        'Training batch has no valid seed-row count')
-                state['training_epochs'][-1]['batch_sizes'].append(int(size))
-                state['training_epochs'][-1]['batches'] += 1
-
-        def on_train_epoch_start(self, trainer, module):
-            if 'training_epochs' in state:
-                state['training_epochs'].append(
-                    dict(epoch=int(trainer.current_epoch), batches=0,
-                         batch_sizes=[]))
 
         def on_fit_end(self, trainer, module):
             state['completed_fits'] += 1
             state['optimizer_steps'] += int(trainer.global_step)
-            if 'fit_ledger' in state:
-                state['fit_ledger'][-1].update(status='PASS',
-                                               steps=int(trainer.global_step))
-            if 'training_epochs' in state:
-                [stop] = [
-                    callback for callback in trainer.callbacks
-                    if isinstance(callback, EarlyStopping)
-                ]
-                state['early_stopping'] = dict(
-                    stopped_epoch=int(stop.stopped_epoch),
-                    wait_count=int(stop.wait_count),
-                    patience=int(stop.patience))
-
-        def on_predict_start(self, trainer, module):
-            if state['stage'] == 'reload' and 'reload_checks' in state:
-                state['restored_tensors'] = verify_checkpoint(
-                    module, trainer.ckpt_path, state['checkpoint_sha256'])
-                state['reload_checks'] += 1
 
         def on_predict_batch_end(self, trainer, module, values, batch,
                                  batch_idx, dataloader_idx=0):

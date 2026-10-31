@@ -18,10 +18,13 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import uuid
 from contextlib import contextmanager
+from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
@@ -36,6 +39,12 @@ PREDICTIONS = ('predict', 'repeat', 'partial', 'reload')
 KEY_FAILURES = ('key_parse_failures', 'key_lookup_failures',
                 'key_membership_failures', 'pk_duplicate_total')
 REFERENCE_WHEEL = '1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e'
+RESOURCE_FIELDS = ('elapsed_seconds', 'cpu_self_seconds',
+                   'cpu_tree_pss_sampled_peak_bytes',
+                   'cpu_tree_rss_sampled_peak_bytes',
+                   'cuda_device_used_sampled_peak_bytes',
+                   'torch_allocated_sampled_peak_bytes',
+                   'torch_reserved_sampled_peak_bytes')
 
 
 def digest(path):
@@ -61,13 +70,104 @@ def read(path):
     return json.loads(Path(path).read_text())
 
 
+def start_measurement(scope):
+    """Reuse the original nightly process-tree and CUDA sampling protocol."""
+    import psutil
+    import torch
+
+    started, cpu = time.monotonic(), time.process_time()
+    result = dict(format='kumo-nightly-resources-v1', scope=scope,
+                  sample_interval_seconds=.2, samples=0, cpu_read_errors=0,
+                  cuda_read_errors=0)
+    fields = RESOURCE_FIELDS[2:]
+    result.update({key: None for key in RESOURCE_FIELDS})
+    process, stopped = psutil.Process(), threading.Event()
+
+    def sample():
+        result['samples'] += 1
+        rss, pss = 0, 0
+        try:
+            for child in [process, *process.children(recursive=True)]:
+                try:
+                    memory = child.memory_full_info()
+                    rss += memory.rss
+                    pss += memory.pss
+                except psutil.NoSuchProcess:
+                    continue
+            for key, value in zip(fields[:2], (pss, rss), strict=True):
+                result[key] = max(result[key] or 0, value)
+        except (psutil.Error, AttributeError):
+            result['cpu_read_errors'] += 1
+        try:
+            free, total = torch.cuda.mem_get_info()
+            result[fields[2]] = max(result[fields[2]] or 0, total - free)
+            memory = torch.cuda.memory_allocated(), torch.cuda.memory_reserved()
+            for key, value in zip(fields[3:], memory, strict=True):
+                result[key] = max(result[key] or 0, value)
+        except (RuntimeError, AssertionError, AttributeError, OSError):
+            result['cuda_read_errors'] += 1
+
+    def monitor():
+        while not stopped.wait(result['sample_interval_seconds']):
+            sample()
+
+    sample()
+    thread = threading.Thread(target=monitor, daemon=True)
+    thread.start()
+
+    def finish():
+        stopped.set()
+        thread.join()
+        sample()
+        result.update(elapsed_seconds=time.monotonic() - started,
+                      cpu_self_seconds=time.process_time() - cpu)
+        if result['cpu_read_errors']:
+            result.update({key: None for key in fields[:2]})
+        if result['cuda_read_errors']:
+            result.update({key: None for key in fields[2:]})
+
+    return result, finish
+
+
+def validate_measurement(values):
+    if (values.get('format') != 'kumo-nightly-resources-v1'
+            or not values.get('scope') or values.get('samples', 0) < 2
+            or values.get('cpu_read_errors') or values.get('cuda_read_errors')
+            or any(type(values.get(key)) not in (int, float)
+                   or not math.isfinite(values[key]) or values[key] < 0
+                   for key in RESOURCE_FIELDS)):
+        raise ValueError('Resource measurement is missing or invalid')
+
+
+def validate_case_measurements(row):
+    values = row.get('measurements', {})
+    validate_measurement(values)
+    if values['scope'] != 'complete_case':
+        raise ValueError('Case measurement scope differs')
+    for name in ('training', 'predict', 'repeat', 'partial',
+                 'reloaded_prediction'):
+        operation = row.get('operation_measurements', {}).get(name, {})
+        validate_measurement(operation)
+        if (operation['scope'] != name or row.get('timings', {}).get(name)
+                != operation['elapsed_seconds']):
+            raise ValueError('Operation measurement scope or elapsed time differs')
+
+
 @contextmanager
 def measure_operation(report, name):
-    started = time.monotonic()
+    import torch
+
+    torch.cuda.synchronize()
+    values, finish = start_measurement(name)
+    report.setdefault('operation_measurements', {})[name] = values
     try:
         yield
     finally:
-        report.setdefault('timings', {})[name] = time.monotonic() - started
+        try:
+            torch.cuda.synchronize()
+        finally:
+            finish()
+            report.setdefault('timings', {})[name] = values['elapsed_seconds']
 
 
 def verify_artifacts(root, files, required=()):
@@ -259,7 +359,11 @@ def verify_runtime(version, profile, *, reference_only=False):
                                     properties.minor], gpu_uuid=identifier,
                 gpu_memory_bytes=int(properties.total_memory),
                 torch=torch.__version__, cuda=torch.version.cuda, threads=4,
-                import_path=kumo.__file__, wheel_sha256=wheel_hash)
+                import_path=kumo.__file__, wheel_sha256=wheel_hash,
+                cpu_count=os.cpu_count(),
+                system_memory_bytes=os.sysconf('SC_PAGE_SIZE') *
+                os.sysconf('SC_PHYS_PAGES'),
+                cache_protocol='hash-verified inputs; fresh native indexes; fixed case order')
 
 
 def load_table(root, files, case):
@@ -396,6 +500,12 @@ def check_recipe(case, directory):
         raise ValueError('Nightly must not refit the selected model')
 
 
+def stable_trainer(value):
+    # Preserve the original reference's normalization of run-specific fields.
+    return {key: item for key, item in value.items()
+            if key not in ('root_dir', 'version', 'kumo_version', 'refit_cfg')}
+
+
 def input_signature(manifest, case):
     return dict(descriptor=manifest['files'][case['descriptor']],
                 prediction=manifest['files'][case['prediction_input']],
@@ -502,6 +612,195 @@ def ordered_batches(files, directory):
             yield batch.to_pandas()
 
 
+def verify_installed_files(wheel, distribution):
+    """Match installed files to the finished archive, except pip's rewritten RECORD."""
+    from zipfile import ZipFile
+
+    location = Path(distribution.locate_file('')).resolve()
+    checked = 0
+    with ZipFile(wheel) as archive:
+        for name in archive.namelist():
+            if name.endswith('/') or name.endswith('.dist-info/RECORD'):
+                continue
+            destination = Path(distribution.locate_file(name)).resolve()
+            if (not destination.is_relative_to(location)
+                    or not destination.is_file()
+                    or hashlib.sha256(destination.read_bytes()).digest()
+                    != hashlib.sha256(archive.read(name)).digest()):
+                raise ValueError(f'Installed wheel member differs: {name}')
+            checked += 1
+    if not checked:
+        raise ValueError('Wheel contains no installed files')
+    return checked
+
+
+def verify_checkpoint(model, path, expected_digest):
+    """Compare the weights that Lightning actually restored, with no tolerance."""
+    import numpy as np
+    import pandas as pd
+    import torch
+    from kumo_core.io.filesystem import local_path
+    from kumo_core.train.checkpoint import load_kumo_checkpoint
+
+    if path is None:
+        raise ValueError('Reload did not select a checkpoint')
+    path = local_path(str(path))
+    if hashlib.sha256(path.read_bytes()).hexdigest() != expected_digest:
+        raise ValueError('Reload selected a different checkpoint')
+    expected = load_kumo_checkpoint(str(path), map_location='cpu')['state_dict']
+    actual = model.state_dict()
+    tensors = 0
+
+    def equal(left, right):
+        nonlocal tensors
+        if isinstance(left, torch.Tensor) and isinstance(right, torch.Tensor):
+            if (left.dtype != right.dtype or left.shape != right.shape
+                    or not torch.equal(left.detach().cpu(),
+                                       right.detach().cpu())):
+                raise ValueError(
+                    'Restored model tensor differs from its checkpoint')
+            tensors += 1
+        elif type(left) is not type(right):
+            raise ValueError('Restored model state types differ')
+        elif isinstance(left, dict):
+            if set(left) != set(right):
+                raise ValueError('Restored model state keys differ')
+            for key in left:
+                equal(left[key], right[key])
+        elif isinstance(left, (list, tuple)):
+            if len(left) != len(right):
+                raise ValueError('Restored model state lengths differ')
+            for old, new in zip(left, right):
+                equal(old, new)
+        elif isinstance(left, pd.DataFrame):
+            pd.testing.assert_frame_equal(left, right, check_exact=True)
+        elif isinstance(left, np.ndarray):
+            np.testing.assert_array_equal(left, right)
+        elif left != right:
+            raise ValueError('Restored model state values differ')
+
+    equal(expected, actual)
+    if not tensors:
+        raise ValueError('Reload checked no model tensors')
+    return tensors
+
+
+def build_graph(spec, directory, *, static=False, sources=None):
+    from kumoapi.graph import Edge
+    from kumoapi.table import Column
+
+    import kumo.engine as kumo
+
+    files = kumo.FileConnector(root_dir=str(directory))
+    tables = {}
+    for name, definition in spec['tables'].items():
+        columns = [Column(**column) for column in definition['cols']]
+        table = kumo.Table.from_source_table(
+            files[(sources
+                   or {}).get(name, name)], [column.name for column in columns],
+            primary_key=definition.get('pkey'),
+            time_column=None if static else definition.get('time_col'),
+            end_time_column=None if static else definition.get('end_time_col'),
+            dtypes={column.name: column.dtype
+                    for column in columns})
+        tables[name] = replace(
+            table, definition=replace(
+                table.definition, cols=columns,
+                time_col=None if static else definition.get('time_col'),
+                end_time_col=None
+                if static else definition.get('end_time_col')))
+    graph = kumo.Graph(tables, [Edge(**edge) for edge in spec['edges']])
+    graph.validate()
+    return graph, graph.snapshot()
+
+
+def compare_predictions(before, after, *, atol=0, before_decisions=None,
+                        after_decisions=None):
+    """Keep decisions exact and enforce score bounds outside explicit reporting."""
+    import numpy as np
+
+    if not math.isfinite(atol) or atol < 0:
+        raise ValueError('Reload tolerance must be finite and nonnegative')
+    left, right = np.asarray(before,
+                             dtype=float), np.asarray(after, dtype=float)
+    if (left.ndim != 2 or not left.size or left.shape != right.shape
+            or not np.isfinite(left).all() or not np.isfinite(right).all()):
+        raise ValueError(
+            'Reload comparison requires equal finite prediction shapes')
+    difference = np.abs(left - right)
+    result = dict(
+        decisions_equal=bool(np.array_equal(before_decisions, after_decisions)),
+        max_abs_difference=float(difference.max()),
+        max_relative_difference=float(
+            (difference / np.maximum(np.abs(left), 1e-12)).max()),
+        within_tolerance=bool(np.allclose(left, right, atol=atol, rtol=0.)))
+    if not result['decisions_equal']:
+        raise ValueError('Prediction decisions changed after repeat or reload')
+    result['policy'] = 'report_only'
+    return result
+
+
+@contextmanager
+def observe_cuda(state):
+    """Extend the shared public CUDA observer with nightly-only work proof."""
+    from numbers import Integral
+
+    import pytorch_lightning as pl
+    from pytorch_lightning.callbacks import EarlyStopping
+
+    class Proof(pl.Callback):
+        def on_fit_start(self, trainer, module):
+            if 'fit_ledger' in state:
+                state['fit_ledger'].append(
+                    dict(status='RUNNING', steps=0, cuda_batches=0))
+
+        def on_train_epoch_start(self, trainer, module):
+            if 'training_epochs' in state:
+                state['training_epochs'].append(dict(
+                    epoch=int(trainer.current_epoch), batches=0, batch_sizes=[]))
+
+        def on_train_batch_end(self, trainer, module, values, batch, batch_idx):
+            if 'fit_ledger' in state:
+                state['fit_ledger'][-1]['cuda_batches'] += 1
+            if 'training_epochs' in state:
+                seed = (getattr(module, 'lhs_name', None)
+                        or getattr(module, 'entity_table_name', None)
+                        or getattr(batch, 'input_type', None))
+                size = batch[seed].batch_size
+                if isinstance(size, bool) or not isinstance(size, Integral) or size < 1:
+                    raise ValueError('Training batch has no valid seed-row count')
+                state['training_epochs'][-1]['batch_sizes'].append(int(size))
+                state['training_epochs'][-1]['batches'] += 1
+
+        def on_fit_end(self, trainer, module):
+            if 'fit_ledger' in state:
+                state['fit_ledger'][-1].update(status='PASS',
+                                               steps=int(trainer.global_step))
+            if 'training_epochs' in state:
+                [stop] = [callback for callback in trainer.callbacks
+                          if isinstance(callback, EarlyStopping)]
+                state['early_stopping'] = dict(
+                    stopped_epoch=int(stop.stopped_epoch),
+                    wait_count=int(stop.wait_count), patience=int(stop.patience))
+
+        def on_predict_start(self, trainer, module):
+            if state['stage'] == 'reload' and 'reload_checks' in state:
+                state['restored_tensors'] = verify_checkpoint(
+                    module, trainer.ckpt_path, state['checkpoint_sha256'])
+                state['reload_checks'] += 1
+
+    with smoke.observe_cuda(state):
+        base = pl.Trainer
+
+        class ObservedTrainer(base):
+            def __init__(self, *args, **kwargs):
+                kwargs['callbacks'] = [*(kwargs.get('callbacks') or []), Proof()]
+                super().__init__(*args, **kwargs)
+
+        with patch.object(pl, 'Trainer', ObservedTrainer):
+            yield
+
+
 def quality(task, truth, values, classes):
     import numpy as np
     from sklearn import metrics
@@ -538,62 +837,123 @@ def quality(task, truth, values, classes):
 
 
 def check_learning(rows):
-    """Require useful normal predictions and a scrambled model near baseline.
-
-    Bounded scores use 10% of the smaller baseline or remaining headroom.
-    Error metrics use 10% of the baseline error.
-    These initial learning thresholds need a full GPU run before scheduling.
-    """
+    """Report normal gain and scrambled controls without unapproved bounds."""
     tasks = {}
     for task in sorted({row['task'] for row in rows}):
         pair = [row for row in rows if row['task'] == task]
-        entry = tasks[task] = dict(status='FAIL')
-        if len(pair) != 2 or {row['arm']
-                              for row in pair} != {'normal', 'control'}:
-            entry[
-                'reason'] = 'Exactly one normal and one control result required'
-            continue
-        normal, control = [
-            next(row for row in pair if row['arm'] == arm)
-            for arm in ('normal', 'control')
-        ]
-        if any(
-                type(row.get(key)) not in (int,
-                                           float) or not math.isfinite(row[key])
-                for row in pair for key in ('score', 'baseline')):
-            entry['reason'] = 'Learning scores and baselines must be finite'
-            continue
+        if len(pair) != 2 or {row['arm'] for row in pair} != {'normal', 'control'}:
+            raise ValueError('Exactly one normal and control measurement required')
+        normal, control = [next(row for row in pair if row['arm'] == arm)
+                           for arm in ('normal', 'control')]
+        for row in pair:
+            validate_quality_measurement(task, row.get('score'))
+            validate_quality_measurement(task, row.get('baseline'))
         lower = task in ('regression', 'forecasting')
-        if any(row['baseline'] <= 0 or row['score'] < 0 for row in pair):
-            entry[
-                'reason'] = 'Learning needs positive baselines and nonnegative scores'
-            continue
-        if not lower and any(row['baseline'] >= 1 or row['score'] > 1
-                             for row in pair):
-            entry[
-                'reason'] = 'Bounded metrics need scores at most one and baseline below one'
-            continue
-        normal_scale, control_scale = normal['baseline'], control['baseline']
-        if not lower:
-            normal_scale = min(normal_scale, 1 - normal_scale)
-            control_scale = min(control_scale, 1 - control_scale)
-        normal_margin = .1 * normal_scale
-        control_tolerance = .1 * control_scale
-        gain = (normal['baseline'] -
-                normal['score'] if lower else normal['score'] -
-                normal['baseline'])
-        drift = abs(control['score'] - control['baseline'])
-        entry.update(
+        tasks[task] = dict(
             normal_score=normal['score'], control_score=control['score'],
             normal_baseline=normal['baseline'],
-            control_baseline=control['baseline'], normal_gain=gain,
-            normal_margin=normal_margin, control_drift=drift,
-            control_tolerance=control_tolerance, status='PASS'
-            if gain >= normal_margin and drift <= control_tolerance else 'FAIL')
-    return dict(
-        status='PASS' if tasks and all(v['status'] == 'PASS'
-                                       for v in tasks.values()) else 'FAIL',
-        tasks=tasks)
+            control_baseline=control['baseline'],
+            normal_gain=normal['baseline'] - normal['score'] if lower else
+            normal['score'] - normal['baseline'],
+            control_drift=abs(control['score'] - control['baseline']))
+    if not tasks:
+        raise ValueError('Learning measurements are missing')
+    return dict(policy='report_only', tasks=tasks)
+
+
+def validate_quality_measurement(task, score):
+    if (type(score) not in (int, float) or not math.isfinite(score)
+            or score < 0 or task not in ('regression', 'forecasting')
+            and score > 1):
+        raise ValueError('Quality measurement is missing or invalid')
+
+
+def reporting_change(reference, candidate, margin, *, lower_is_better=True,
+                     compatible=True):
+    valid = lambda value: type(value) in (int, float) and math.isfinite(value)
+    result = dict(reference=reference, candidate=candidate,
+                  absolute_difference=candidate - reference
+                  if valid(candidate) and valid(reference) else None,
+                  percentage_change=None, relative_degradation_percent=None,
+                  reporting_margin_percent=margin,
+                  above_reporting_margin=None, policy='report_only')
+    if (not compatible or not valid(reference) or reference <= 0
+            or not valid(candidate) or candidate < 0):
+        result['unavailable_reason'] = (
+            'Inputs, configuration, runtime or measurement scope differ'
+            if not compatible else 'Missing, zero or invalid reference/value')
+        return result
+    change = 100 * (candidate - reference) / reference
+    if margin is None:
+        result.update(percentage_change=change)
+        return result
+    previous, current = Decimal(str(reference)), Decimal(str(candidate))
+    fraction = Decimal(str(margin)) / 100
+    result.update(
+        percentage_change=change,
+        relative_degradation_percent=change if lower_is_better else -change,
+        above_reporting_margin=bool(current > previous * (1 + fraction)
+                                    if lower_is_better else
+                                    current < previous * (1 - fraction)))
+    return result
+
+
+def measurement_changes(current, baseline, *, compatible=True):
+    same_scope = (current.get('format') == baseline.get('format') ==
+                  'kumo-nightly-resources-v1' and bool(current.get('scope'))
+                  and current.get('scope') == baseline.get('scope')
+                  and current.get('sample_interval_seconds') ==
+                  baseline.get('sample_interval_seconds'))
+    operation = current.get('scope') in (
+        'training', 'predict', 'repeat', 'partial', 'reloaded_prediction')
+    return {
+        key: reporting_change(
+            baseline.get(key), current.get(key),
+            20 if key in RESOURCE_FIELDS[2:] or
+            key == 'elapsed_seconds' and operation else None,
+            compatible=compatible and same_scope)
+        for key in RESOURCE_FIELDS
+    }
+
+
+def training_work(row, trainer):
+    work = row.get('work', {})
+    batch = trainer.get('loader_kwargs', {}).get('batch_size')
+    epochs = work.get('training_epochs', [])
+    if (type(batch) is not int or batch <= 0 or not epochs
+            or any(size != batch for epoch in epochs
+                   for size in epoch.get('batch_sizes', []))):
+        return None
+    return dict(requested_batch_size=batch, training_epochs=epochs,
+                optimizer_steps=work.get('optimizer_steps'),
+                selected_checkpoint_steps=row.get('selected_checkpoint_steps'),
+                early_stopping=work.get('early_stopping', {}))
+
+
+def comparison_context(reference, report, previous, directory):
+    prior = reference.get('reference_runtime', {})
+    observed = prior.get('observed', {})
+    dependency_signature = prior.get('reference_dependencies_signature')
+    if dependency_signature is None and observed.get('dependencies'):
+        dependency_signature = signature(observed['dependencies'])
+    runtime = report['runtime']
+    reasons = []
+    if dependency_signature != signature(runtime['dependencies']):
+        reasons.append('Dependency profile is missing or different')
+    for key in ('gpu', 'gpu_count', 'architecture', 'driver', 'torch', 'cuda',
+                'threads', 'cpu_count', 'system_memory_bytes', 'cache_protocol'):
+        if observed.get(key) is None or observed[key] != runtime.get(key):
+            reasons.append(f'Runtime comparison field is missing or different: {key}')
+    actual = signature(stable_trainer(read(directory / 'trainer_config.json')))
+    if actual != previous.get('trainer_config_sha256'):
+        reasons.append('Effective trainer configuration is missing or different')
+    current_work = training_work(read(directory / 'result.json'),
+                                 read(directory / 'trainer_config.json'))
+    if current_work is None or current_work != previous.get('training_work'):
+        reasons.append('Fixed training work is missing, different or batch-reduced')
+    return dict(compatible=not reasons, reasons=reasons,
+                reference_trainer_config_sha256=previous.get('trainer_config_sha256'),
+                candidate_trainer_config_sha256=actual)
 
 
 @contextmanager
@@ -705,6 +1065,7 @@ def run_case(root, manifest, case, graph, snapshot, output):
     report = dict(task=task, arm=case['arm'], seed=0, status='RUNNING',
                   work=state)
     state['ledger_path'] = str(output / 'core-fits.json')
+    measurements, finish_measurement = start_measurement('complete_case')
     try:
         with measure_operation(report, 'preparation'):
             table, stages, descriptor = load_table(root, manifest['files'],
@@ -749,7 +1110,7 @@ def run_case(root, manifest, case, graph, snapshot, output):
             work = output.parent / 'work' / output.name
             kumo.configure(scratch_dir=work)
             seed()
-        with smoke.observe_cuda(state), native_calls(state):
+        with observe_cuda(state), native_calls(state):
             trainer = kumo.Trainer(plan)
             torch.cuda.synchronize()
             with measure_operation(report, 'training'):
@@ -908,9 +1269,9 @@ def run_case(root, manifest, case, graph, snapshot, output):
                     report['differences'][label] = ranked_difference(
                         before, other)
                 else:
-                    report['differences'][label] = smoke.compare_predictions(
+                    report['differences'][label] = compare_predictions(
                         original if selected is None else original[selected],
-                        other, atol=0, report_numeric_drift=True,
+                        other, atol=0,
                         before_decisions=original_decisions
                         if selected is None or original_decisions is None else
                         original_decisions[selected], after_decisions=decisions)
@@ -943,8 +1304,20 @@ def run_case(root, manifest, case, graph, snapshot, output):
                               traceback=traceback.format_exc())
                 raise
         finally:
+            finish_measurement()
+            report['measurements'] = measurements
+            measurement_error = None
+            if report['status'] != 'FAIL':
+                try:
+                    validate_case_measurements(report)
+                except ValueError as error:
+                    measurement_error = error
+                    report.update(status='FAIL', error=str(error),
+                                  traceback=traceback.format_exc())
             report['seconds'] = time.monotonic() - started
             save(output / 'result.json', report)
+            if measurement_error is not None:
+                raise measurement_error
 
     return report
 
@@ -1018,7 +1391,7 @@ def run(args):
                 spec = manifest['graphs'][key]
                 with measure_operation(report, 'graph.' + key):
                     kumo.configure(scratch_dir=output / 'work' / 'graphs' / key)
-                    graphs[key] = smoke.build_graph(
+                    graphs[key] = build_graph(
                         read(root / spec['schema'])[spec['profile']], root,
                         static=spec['static'], sources=spec['sources'])
                     report.setdefault('graphs', {})[key] = check_snapshot(
@@ -1100,6 +1473,7 @@ def compare(args):
               'input-metadata/manifest.json') != args.input_sha256:
         raise ValueError('Run did not retain the exact admitted input manifest')
     for row in report['runs']:
+        validate_case_measurements(row)
         directory = path.parent / (row['task'] + '-' + row['arm'])
         if read(directory / 'result.json') != row:
             raise ValueError(
@@ -1150,6 +1524,10 @@ def compare(args):
     comparisons = []
     for row in rows:
         previous = references[(row['task'], row['arm'])]
+        validate_quality_measurement(row['task'], row['score'])
+        context = comparison_context(
+            reference, report, previous,
+            path.parent / (row['task'] + '-' + row['arm']))
         comparisons.append(
             dict(
                 task=row['task'], arm=row['arm'], score=row['score'],
@@ -1159,11 +1537,27 @@ def compare(args):
                 or row['score'] is None else row['score'] - previous['score'],
                 seconds=row['seconds'], differences=row['differences'],
                 fit_id=row['fit_id'],
-                checkpoint_sha256=row['checkpoint_sha256']))
+                checkpoint_sha256=row['checkpoint_sha256'],
+                comparison_context=context,
+                resource_changes=measurement_changes(
+                    row['measurements'], previous.get('measurements', {}),
+                    compatible=context['compatible']),
+                operation_changes={
+                    name: measurement_changes(
+                        values,
+                        previous.get('operation_measurements', {}).get(name, {}),
+                        compatible=context['compatible'])
+                    for name, values in row['operation_measurements'].items()
+                },
+                quality_change=reporting_change(
+                    previous['score'], row['score'], 5,
+                    lower_is_better=row['task'] in ('regression', 'forecasting'),
+                    compatible=context['compatible'])
+                if row['arm'] == 'normal' else None))
     learning = check_learning(comparisons)
     save(
         args.output_dir / 'comparison.json',
-        dict(status=learning['status'], quality_policy='enforced',
+        dict(status='PASS', quality_policy='report_only',
              learning=learning, numerical_difference_policy='report_only',
              performance_policy='report_only',
              reference_only=args.reference_only,
@@ -1171,28 +1565,34 @@ def compare(args):
              reference_sha256=args.reference_sha256, primary_physical_fits=16,
              seconds=report['seconds'], runtime=report['runtime'],
              cases=comparisons))
-    if learning['status'] != 'PASS':
-        raise ValueError(
-            'Normal learning or scrambled-answer control failed; see comparison.json'
-        )
     if args.reference_only:
         cases = [
             dict(references[(row['task'], row['arm'])], score=row['score'],
                  fit_id=row['fit_id'],
                  checkpoint_sha256=row['checkpoint_sha256'],
-                 seconds=row['seconds']) for row in rows
+                 seconds=row['seconds'], timings=row['timings'],
+                 measurements=row['measurements'],
+                 operation_measurements=row['operation_measurements'],
+                 training_work=training_work(row, read(
+                     path.parent / (row['task'] + '-' + row['arm']) /
+                     'trainer_config.json')),
+                 trainer_config_sha256=signature(stable_trainer(read(
+                     path.parent / (row['task'] + '-' + row['arm']) /
+                     'trainer_config.json')))) for row in rows
         ]
         save(
             args.output_dir / 'reference.json',
             dict(
                 format='kumo-engine-nightly-reference-v1', version='1.0.0',
-                wheel_sha256=REFERENCE_WHEEL, quality_policy='enforced',
+                wheel_sha256=REFERENCE_WHEEL, quality_policy='report_only',
                 input_manifest_sha256=args.input_sha256, cases=cases,
                 predecessor_reference_sha256=args.reference_sha256,
                 source_report_sha256=digest(path),
                 runner_sha256=report['runner_sha256'],
                 helper_sha256=report['helper_sha256'], reference_runtime=dict(
                     reference_hardware=hardware_profile(report['runtime']),
+                    reference_dependencies_signature=signature(
+                        report['runtime']['dependencies']),
                     observed=report['runtime'])))
 
 

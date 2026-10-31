@@ -11,20 +11,11 @@ inputs:
   reload-atol:
     description: Absolute prediction tolerance enforced for every task
     default: '0.00001'
-  install-only:
-    description: Install and verify the wheel without downloading or fitting small PR tasks
-    default: 'false'
-  dependency-profile:
-    description: Optional frozen JSON package-version map for nightly
-    default: ''
-  dependency-profile-sha256:
-    description: SHA-256 of the frozen dependency map
-    default: ''
 runs:
   using: composite
   steps:
     - name: Set up the cached wheel installer
-      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       with:
         version: '0.11.28'
         enable-cache: true
@@ -34,9 +25,6 @@ runs:
       shell: bash
       env:
         WHEEL_PATTERN: ${{ inputs.wheel-path }}
-        INSTALL_ONLY: ${{ inputs.install-only }}
-        DEPENDENCY_PROFILE: ${{ inputs.dependency-profile }}
-        PROFILE_SHA256: ${{ inputs.dependency-profile-sha256 }}
       run: |
         set -euo pipefail
         uv_cache="${UV_CACHE_DIR:-$RUNNER_TEMP/setup-uv-cache}"
@@ -45,7 +33,7 @@ runs:
         mkdir -p "$RUNNER_TEMP/engine-gpu-smoke"
         python -m venv "$RUNNER_TEMP/engine-smoke-venv"
         python - <<'PY'
-        import email, glob, hashlib, json, os, re, zipfile
+        import email, glob, os, zipfile
         from pathlib import Path
         wheels = glob.glob(os.environ['WHEEL_PATTERN'])
         if len(wheels) != 1:
@@ -58,65 +46,17 @@ runs:
             metadata = email.message_from_bytes(archive.read(names[0]))
         if metadata['Name'].replace('_', '-') != 'kumo-engine':
             raise SystemExit('Expected the finished kumo-engine wheel')
-        if os.environ['DEPENDENCY_PROFILE']:
-            profile = Path(os.environ['DEPENDENCY_PROFILE'])
-            if hashlib.sha256(profile.read_bytes()).hexdigest() != os.environ['PROFILE_SHA256']:
-                raise SystemExit('Frozen dependency checksum differs')
-            versions = json.loads(profile.read_text())
-            if (not isinstance(versions, dict) or not versions
-                    or 'kumo-engine' in versions
-                    or any(not re.fullmatch(r'[a-z0-9][a-z0-9._-]*', name)
-                           or not isinstance(version, str)
-                           or not re.fullmatch(r'[0-9][0-9A-Za-z.!+_-]*', version)
-                           for name, version in versions.items())):
-                raise SystemExit('Expected a nonempty package-version profile')
-            (Path(os.environ['RUNNER_TEMP']) / 'engine-gpu-smoke/requirements.txt').write_text(
-                ''.join(f'{name}=={version}\n' for name, version in sorted(versions.items())))
-        if os.environ['INSTALL_ONLY'] == 'true':
-            print('Wheel SHA-256:', hashlib.sha256(wheel.read_bytes()).hexdigest(), flush=True)
         with open(os.environ['GITHUB_ENV'], 'a') as stream:
             stream.write(f'ENGINE_SMOKE_WHEEL={wheel}\nENGINE_SMOKE_VERSION={metadata["Version"]}\n')
         PY
         wheel="$(python -c 'import glob,os; print(glob.glob(os.environ["WHEEL_PATTERN"])[0])')"
-        if [[ -n "$DEPENDENCY_PROFILE" ]]; then
-          uv --no-config pip install --python "$RUNNER_TEMP/engine-smoke-venv/bin/python" \
-            --cache-dir "$uv_cache" --default-index https://pypi.org/simple \
-            -r "$RUNNER_TEMP/engine-gpu-smoke/requirements.txt"
-        else
-          uv --no-config pip install --python "$RUNNER_TEMP/engine-smoke-venv/bin/python" \
-            --cache-dir "$uv_cache" --default-index https://pypi.org/simple \
-            "$wheel" 'boto3>=1.34,<2'
-        fi
-        if [[ "$INSTALL_ONLY" == true ]]; then
-          "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I -m pip --isolated install \
-            --no-index --no-deps --force-reinstall --no-compile \
-            --report "$RUNNER_TEMP/engine-gpu-smoke/install.json" "$wheel"
-        fi
+        uv --no-config pip install --python "$RUNNER_TEMP/engine-smoke-venv/bin/python" \
+          --cache-dir "$uv_cache" --default-index https://pypi.org/simple \
+          "$wheel" 'boto3>=1.34,<2'
         "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I -m pip --isolated check
-    - name: Check the installed wheel identity
-      if: ${{ inputs.install-only == 'true' }}
-      shell: bash
-      run: |
-        "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I - <<'PY'
-        import hashlib, importlib.metadata, json, os, runpy
-        from pathlib import Path
-        root = Path(os.environ['RUNNER_TEMP']) / 'engine-gpu-smoke'
-        wheel = Path(os.environ['ENGINE_SMOKE_WHEEL'])
-        digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-        report = json.loads((root / 'install.json').read_text())
-        entries = [r for r in report['install'] if r['metadata']['name'].replace('_', '-').lower() == 'kumo-engine']
-        if (len(entries) != 1 or entries[0]['download_info']['archive_info']['hashes']['sha256'] != digest
-                or importlib.metadata.version('kumo-engine') != os.environ['ENGINE_SMOKE_VERSION']):
-            raise SystemExit('Installed wheel identity differs from the finished artifact')
-        helper = runpy.run_path('packages/kumo-engine/test/wheel_gpu_smoke.py')
-        checked = helper['verify_installed_files'](wheel, importlib.metadata.distribution('kumo-engine'))
-        (root / 'wheel.json').write_text(json.dumps(dict(filename=wheel.name, sha256=digest,
-            version=os.environ['ENGINE_SMOKE_VERSION'], installed_files=checked), indent=2) + '\n')
-        PY
     - name: Read the private fixture object
-      if: ${{ inputs.install-only != 'true' }}
       id: fixture-credentials
-      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
       with:
         role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
         aws-region: us-west-2
@@ -124,7 +64,6 @@ runs:
         output-credentials: true
         unset-current-credentials: true
     - name: Download the pinned PR172 inputs
-      if: ${{ inputs.install-only != 'true' }}
       shell: bash
       env:
         AWS_ACCESS_KEY_ID: ${{ steps.fixture-credentials.outputs.aws-access-key-id }}
@@ -147,7 +86,6 @@ runs:
         print('Inputs:', spec['version'], spec['sha256'], flush=True)
         PY
     - name: Run the eight GPU tasks outside the checkout
-      if: ${{ inputs.install-only != 'true' }}
       shell: bash
       env:
         RELOAD_ATOL: ${{ inputs.reload-atol }}

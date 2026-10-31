@@ -18,6 +18,37 @@ APPROVED = '1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e'
 
 
 class NightlyRuntimeTest(unittest.TestCase):
+    def test_resource_capture_keeps_cpu_tree_and_gpu_measures_separate(self):
+        import torch
+        from unittest.mock import patch
+
+        with patch.object(torch.cuda, 'mem_get_info', return_value=(1000, 9000)), \
+                patch.object(torch.cuda, 'memory_allocated', return_value=2000), \
+                patch.object(torch.cuda, 'memory_reserved', return_value=3000):
+            values, finish = nightly.start_measurement('training')
+            finish()
+        nightly.validate_measurement(values)
+        self.assertGreaterEqual(values['samples'], 2)
+        self.assertGreater(values['cpu_tree_pss_sampled_peak_bytes'], 0)
+        self.assertGreaterEqual(values['cpu_tree_rss_sampled_peak_bytes'],
+                                values['cpu_tree_pss_sampled_peak_bytes'])
+        self.assertEqual(values['cuda_device_used_sampled_peak_bytes'], 8000)
+        self.assertEqual(values['torch_allocated_sampled_peak_bytes'], 2000)
+        self.assertEqual(values['torch_reserved_sampled_peak_bytes'], 3000)
+        self.assertGreater(values['elapsed_seconds'], 0)
+
+    def test_missing_gpu_measurement_invalidates_the_measurement(self):
+        import torch
+        from unittest.mock import patch
+
+        with patch.object(torch.cuda, 'mem_get_info',
+                          side_effect=RuntimeError('GPU query failed')):
+            values, finish = nightly.start_measurement('training')
+            finish()
+        self.assertIsNone(values['cuda_device_used_sampled_peak_bytes'])
+        with self.assertRaisesRegex(ValueError, 'measurement'):
+            nightly.validate_measurement(values)
+
     def rows(self):
         return [
             dict(task=task, arm=arm, seed=0, status='MEASURED', physical_fits=1,
@@ -219,18 +250,17 @@ class NightlyRuntimeTest(unittest.TestCase):
                 nightly.check_results(bad)
 
     def test_nightly_numeric_reporting_keeps_the_default_pr_bound_strict(self):
-        compare = nightly.smoke.compare_predictions
         with self.assertRaises(ValueError):
-            compare([[.5]], [[.501]], atol=1e-4)
+            nightly.smoke.compare_predictions([[.5]], [[.501]], atol=1e-4)
+        compare = nightly.compare_predictions
         result = compare([[.5]], [[.501]], atol=0,
-                         report_numeric_drift=True,
                          before_decisions=[True], after_decisions=[True])
         self.assertFalse(result['within_tolerance'])
         self.assertAlmostEqual(result['max_abs_difference'], .001)
         for after, decisions in (([[.501]], [False]),
                                  ([[float('nan')]], [True])):
             with self.assertRaises(ValueError):
-                compare([[.5]], after, report_numeric_drift=True,
+                compare([[.5]], after,
                         before_decisions=[True], after_decisions=decisions)
 
     def test_nightly_public_callback_keeps_exact_restored_state_proof(self):
@@ -244,13 +274,13 @@ class NightlyRuntimeTest(unittest.TestCase):
             torch.save({'state_dict': model.state_dict()}, checkpoint)
             state = dict(stage='reload', reload_checks=0, restored_tensors=0,
                          checkpoint_sha256=nightly.digest(checkpoint))
-            with nightly.smoke.observe_cuda(state):
+            with nightly.observe_cuda(state):
                 trainer = pl.Trainer(accelerator='cpu', devices=1,
                                      logger=False, enable_checkpointing=False,
                                      enable_model_summary=False)
                 trainer.ckpt_path = str(checkpoint)
                 [proof] = [cb for cb in trainer.callbacks
-                           if type(cb).__name__ == 'Proof']
+                           if type(cb).__module__ == nightly.__name__]
                 proof.on_predict_start(trainer, model)
                 self.assertEqual(state['reload_checks'], 1)
                 self.assertEqual(state['restored_tensors'], 2)
