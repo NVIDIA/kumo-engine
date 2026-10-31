@@ -76,10 +76,10 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         **holdout,
         **{summary.name: summary.value for summary in result._summaries
            if isinstance(summary, Scalar) and summary.role == 'model'}}
-    training, = (item.dataset for item in parent.inputs.dataset_inputs
-                 if item.dataset.name.startswith('training-table'))
+    assert [item.dataset.name for item in parent.inputs.dataset_inputs
+            if item.dataset.name.startswith('training-table')]
     assert {(metric.dataset_name, metric.dataset_digest)
-            for metric in model.metrics} == {(training.name, training.digest)}
+            for metric in model.metrics} == {(None, None)}
     assert version.source == model.model_uri
     assert parent.data.tags.items() >= {
         'kumo.kind': 'fit', 'kumo.bundle_id': result.id,

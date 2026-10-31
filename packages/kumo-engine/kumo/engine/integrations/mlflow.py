@@ -177,7 +177,6 @@ class MlflowTracking(SingleRunHooks):
         self._artifacts: Set[str] = set()
         self._card: List[Summary] = []
         self._model_id: Optional[str] = None
-        self._holdout: Any = None
         self._published: Optional[PublishedModel] = None
         self._fit: Tuple[Any, Any] = (None, None)
         self._http_owned: FrozenSet[str] = frozenset()
@@ -320,12 +319,8 @@ class MlflowTracking(SingleRunHooks):
                         location.model_name) if fit is None else
                                    fit.experiment_id), serving_snapshot=None)
                 if fit is not None:
-                    with self.target.scope():
-                        inputs = client.get_run(
-                            fit.run_id).inputs.dataset_inputs
                     self._log_metrics(fit.run_id, model_metrics(result),
-                                      model_id=info.model_id,
-                                      dataset=_holdout_dataset(inputs))
+                                      model_id=info.model_id)
             published = _register(self.target, client, info, location,
                                   pointers)
             if fit is None:
@@ -592,8 +587,7 @@ class MlflowTracking(SingleRunHooks):
                     self._log_metrics(self._parent, metrics, epoch)
                 self.log_summaries(record.summaries)
                 self._log_metrics(self._parent, record.metrics,
-                                  model_id=self._model_id,
-                                  dataset=self._holdout)
+                                  model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
                 self._log_artifacts(record.artifacts)
                 if kind == 'prediction':
@@ -823,11 +817,10 @@ class MlflowTracking(SingleRunHooks):
         if datasets:
             with self.target.scope():
                 self._client.log_inputs(run_id, datasets=datasets)
-        self._holdout = _holdout_dataset(datasets)
         scalars = routed.scalars
         self._log_metrics(run_id, {s.name: s.value for s in scalars
                                    if s.role == 'model'},
-                          model_id=self._model_id, dataset=self._holdout)
+                          model_id=self._model_id)
         self._log_metrics(run_id, {s.name: s.value for s in scalars
                                    if s.role != 'model'})
         if routed.charts:
@@ -920,29 +913,20 @@ class MlflowTracking(SingleRunHooks):
 
     def _log_metrics(self, run_id: Optional[str],
                      metrics: Mapping[str, float], step: int = 0,
-                     model_id: Optional[str] = None,
-                     dataset: Any = None) -> None:
+                     model_id: Optional[str] = None) -> None:
         if run_id is None or not metrics:
             return
         entities = self._mlflow.entities
         timestamp = int(time.time() * 1000)
         batch = [
             entities.Metric(metric_key(key), float(value), timestamp, step,
-                            model_id=model_id,
-                            dataset_name=getattr(dataset, 'name', None),
-                            dataset_digest=getattr(dataset, 'digest', None))
+                            model_id=model_id)
             for key, value in metrics.items()
         ]
         with self.target.scope():
             for start in range(0, len(batch), _BATCH_METRICS):
                 self._client.log_batch(
                     run_id, metrics=batch[start:start + _BATCH_METRICS])
-
-
-def _holdout_dataset(inputs: Sequence[Any]) -> Any:
-    r"""The training table among a fit's inputs."""
-    return next((item.dataset for item in inputs
-                 if item.dataset.name.startswith('training-table')), None)
 
 
 def _digest(name: str, source: Mapping[str, Optional[str]],
