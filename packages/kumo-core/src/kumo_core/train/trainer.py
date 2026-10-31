@@ -1507,6 +1507,7 @@ class Trainer(PortableConfigMixin):
         self,
         local: bool = False,
         original: bool = False,
+        fit_mode: FitMode | None = None,
     ) -> str:
         r"""Switch the log directory based on `self.fit_mode`.
         `version_xx/`: fit mode.
@@ -1516,16 +1517,17 @@ class Trainer(PortableConfigMixin):
 
         If `original=True`, then we get the original (non-refitting) log
         directory. This way, we can update `config.json` in the original
-        directory"""
+        directory. `fit_mode` overrides `self.fit_mode`."""
+        fit_mode = self.fit_mode if fit_mode is None else fit_mode
         path = self.root_dir if not local else self.local_root_dir
 
         # In case the `root_dir` contains a trainer config, it is a log dir
         # for a previous model version.
         if fsutil.exists(osp.join(path, 'config.json')):
-            if not original and self.fit_mode.is_refit:
+            if not original and fit_mode.is_refit:
                 if path[-1] == '/':
                     path = path[:-1]
-                path = f"{path}_{self.fit_mode.value}"
+                path = f"{path}_{fit_mode.value}"
                 fsutil.makedirs(path, exist_ok=True)
                 return path
             else:
@@ -1535,10 +1537,10 @@ class Trainer(PortableConfigMixin):
             path = osp.join(path, self.name)
         if self.track_version:
             path = osp.join(path, self.version_dir_name)
-        if not original and self.fit_mode.is_refit:
+        if not original and fit_mode.is_refit:
             if path[-1] == '/':
                 path = path[:-1]
-            path = f"{path}_{self.fit_mode.value}"
+            path = f"{path}_{fit_mode.value}"
         fsutil.makedirs(path, exist_ok=True)
         return path
 
@@ -2531,16 +2533,21 @@ class Trainer(PortableConfigMixin):
 
     # Batch prediction ########################################################
 
+    def published_fit_mode(self) -> FitMode | None:
+        r"""The fit mode predictions use by default: the model trained on the
+        most data, or `None` before fitting."""
+        if self.refit_cfg.refitted_full:
+            return FitMode.refit_full
+        if self.refit_cfg.refitted_trainval:
+            return FitMode.refit_trainval
+        if self.refit_cfg.fitted:
+            return FitMode.fit
+        return None
+
     def _set_fit_mode_to_use(self, fit_mode_to_use: FitMode | None = None):
-        # Infer `fit_mode_to_use` - Use model that's trained on most data:
         if fit_mode_to_use is None:
-            if self.refit_cfg.refitted_full:
-                fit_mode_to_use = FitMode.refit_full
-            elif self.refit_cfg.refitted_trainval:
-                fit_mode_to_use = FitMode.refit_trainval
-            elif self.refit_cfg.fitted:
-                fit_mode_to_use = FitMode.fit
-            else:
+            fit_mode_to_use = self.published_fit_mode()
+            if fit_mode_to_use is None:
                 raise RuntimeError("Trainer is not fitted yet.")
         else:
             self._check_readiness_for_prediction(fit_mode_to_use)
