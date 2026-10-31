@@ -37,7 +37,7 @@ def auto_setup_kumo_backend() -> bool:
 
 @pytest.fixture(scope="module")
 def remote_task(prepared_task: str) -> Iterator[tuple[str, str]]:
-    """Serve real task iterators in an independent native gateway process."""
+    """Serve real task iterators through the embedded native listener."""
     source = Path(prepared_task).parent / "graph"
     root = source.parent / "sampler_graph"
     shutil.copytree(
@@ -46,8 +46,7 @@ def remote_task(prepared_task: str) -> Iterator[tuple[str, str]]:
     assert not (root / "train_tables").exists()
     service = SamplingService(SamplingServiceConfig(root))
     try:
-        assert service.health()["pid"] == service._process.pid
-        assert service.health()["pid"] != os.getpid()
+        assert service.health()["pid"] == os.getpid()
         yield prepared_task, service.endpoint()
         deadline = time.monotonic() + 5
         while service.health()["active_streams"] and time.monotonic() < deadline:
@@ -81,7 +80,7 @@ def test_health_action(remote_task: tuple[str, str]) -> None:
         results = list(client.do_action(flight.Action("health", b"")))
     health = orjson.loads(results[0].body.to_pybytes())
     assert health["ready"] is True
-    assert health["pid"] != os.getpid()
+    assert health["pid"] == os.getpid()
 
 
 @pytest.mark.parametrize("replica_count", [1, 3])
@@ -175,10 +174,13 @@ def test_service_rejects_invalid_engine_seeds(prepared_task: str, seed: int) -> 
         service.close()
 
 
-def test_native_progress_logs_are_retained(prepared_task: str) -> None:
-    """The native producer emits lifecycle and batch progress into a durable log."""
+def test_native_progress_logs_reach_python(
+    prepared_task: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Native lifecycle and progress events reach the actor's Python logger."""
     from kumo_core.diskgraph.remote_sampling import RemoteRuntimeIndex
 
+    caplog.set_level("INFO")
     service = SamplingService(
         SamplingServiceConfig(Path(prepared_task).parent / "graph")
     )
@@ -200,7 +202,7 @@ def test_native_progress_logs_are_retained(prepared_task: str) -> None:
     finally:
         runtime.close()
         service.close()
-    log = service.log_path.read_text()
+    log = caplog.text
     for message in (
         "SAMPLING_LISTENER_READY",
         "SAMPLING_PROGRESS",

@@ -7,7 +7,7 @@ use arrow_flight::{
     flight_service_client::FlightServiceClient, flight_service_server::FlightServiceServer, Action,
     Empty,
 };
-use diskgraph_gateway::SamplerGateway;
+use diskgraph_gateway::{SamplerGateway, SamplingServer, ServerConfig};
 use futures::StreamExt;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::Request;
@@ -58,4 +58,37 @@ async fn native_listener_reports_its_process_and_shutdown_state() {
     gateway.shutdown();
     stop.send(()).unwrap();
     server.await.unwrap().unwrap();
+}
+
+#[test]
+fn owned_listener_closes_and_releases_its_bound_port() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("index_metadata.json"), b"{}").unwrap();
+    let mut server = SamplingServer::start(ServerConfig {
+        index_path: root.path().to_path_buf(),
+        address: "127.0.0.1:0".parse().unwrap(),
+        max_streams: 1,
+        max_threads: 1,
+    })
+    .unwrap();
+    assert_eq!(server.health()["pid"], std::process::id());
+    assert_eq!(server.health()["ready"], true);
+    assert!(std::net::TcpListener::bind(server.address()).is_err());
+    server.close().unwrap();
+    server.close().unwrap();
+    assert_eq!(server.health()["ready"], false);
+    let _replacement = std::net::TcpListener::bind(server.address()).unwrap();
+}
+
+#[test]
+fn owned_listener_rejects_invalid_budgets() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("index_metadata.json"), b"{}").unwrap();
+    assert!(SamplingServer::start(ServerConfig {
+        index_path: root.path().to_path_buf(),
+        address: "127.0.0.1:0".parse().unwrap(),
+        max_streams: 0,
+        max_threads: 1,
+    })
+    .is_err());
 }

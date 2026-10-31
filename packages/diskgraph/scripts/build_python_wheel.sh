@@ -10,17 +10,17 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build_python_wheel.sh --python <python> --out <dir> [--version <version>] [--zig]
 
-Build the diskgraph Python wheel, including the standalone ingest and Flight gateway binaries.
+Build the diskgraph Python wheel, including the standalone ingest binary.
 
 Options:
   --python    Python interpreter to build for.
   --out       Output directory for the wheel.
   --version   Optional Python package version to stamp before building.
-  --zig       Build a manylinux2014 Linux wheel and standalone binaries
+  --zig       Build a manylinux2014 Linux wheel and standalone ingest binary
               with Zig/cargo-zigbuild.
 
 This script prepares an optional stamped source tree and invokes the root
-Python package build. The package backend owns native binary staging so
+Python package build. The package backend owns ingest binary staging so
 downstream repos can install from a plain Git URL.
 EOF
 }
@@ -133,11 +133,10 @@ if [ "$USE_ZIG" = "1" ] && ! basename "$WHEEL_PATH" | grep -q 'manylinux'; then
   exit 1
 fi
 
-for binary in ingest diskgraph-gateway; do
-  if ! "$PYTHON_BIN" -m zipfile -l "$WHEEL_PATH" | grep -q "diskgraph/bin/$binary"; then
-    echo "ERROR: wheel does not contain diskgraph/bin/$binary" >&2
-    exit 1
-  fi
-done
+if ! "$PYTHON_BIN" -m zipfile -l "$WHEEL_PATH" | grep -q 'diskgraph/bin/ingest'; then
+  echo "ERROR: wheel does not contain diskgraph/bin/ingest" >&2
+  "$PYTHON_BIN" -m zipfile -l "$WHEEL_PATH" | grep -E 'diskgraph/(bin|_c)' >&2 || true
+  exit 1
+fi
 
 echo "$WHEEL_PATH"

@@ -157,7 +157,7 @@ def test_credits_bound_production_and_cancel_early(
 def test_gateway_shutdown_cancels_a_producer_waiting_for_credits(
     prepared_task: str,
 ) -> None:
-    """SIGTERM wakes a paused native epoch without waiting for client cleanup."""
+    """Closing the native handle wakes a paused epoch before client cleanup."""
     service = SamplingService(
         SamplingServiceConfig(Path(prepared_task).parent / "graph")
     )
@@ -172,7 +172,7 @@ def test_gateway_shutdown_cancels_a_producer_waiting_for_credits(
         started = time.monotonic()
         service.close()
 
-        assert service._process.returncode == 0
+        assert service.health()["ready"] is False
         assert time.monotonic() - started < 5
     finally:
         runtime.close()
@@ -490,7 +490,9 @@ def test_invalid_task_transfer_is_not_published(
                         writer.write_batch(frame)
                     writer.done_writing()
                     metadata.read()
-            assert not (service._root / "train_tables/invalid-task").exists()
+            assert not (
+                Path(prepared_task).parent / "graph/train_tables/invalid-task"
+            ).exists()
             status = list(
                 client.do_action(
                     flight.Action(

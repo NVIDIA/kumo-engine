@@ -65,6 +65,7 @@
         "rust:arrow-cast@58.4.0",
         "rust:arrow-csv@58.4.0",
         "rust:arrow-data@58.4.0",
+        "rust:arrow-flight@58.4.0",
         "rust:arrow-ipc@58.4.0",
         "rust:arrow-json@58.4.0",
         "rust:arrow-ord@58.4.0",
@@ -99,6 +100,8 @@
         "rust:aws-smithy-types@1.4.9",
         "rust:aws-smithy-xml@0.60.15",
         "rust:aws-types@1.3.16",
+        "rust:axum-core@0.5.6",
+        "rust:axum@0.8.9",
         "rust:backtrace@0.3.76",
         "rust:base64-simd@0.8.0",
         "rust:base64@0.21.7",
@@ -202,9 +205,11 @@
         "rust:http@0.2.12",
         "rust:http@1.4.2",
         "rust:httparse@1.10.1",
+        "rust:httpdate@1.0.3",
         "rust:humantime@2.3.0",
         "rust:hybrid-array@0.4.12",
         "rust:hyper-rustls@0.27.9",
+        "rust:hyper-timeout@0.5.2",
         "rust:hyper-util@0.1.20",
         "rust:hyper@1.10.1",
         "rust:iana-time-zone@0.1.65",
@@ -246,12 +251,14 @@
         "rust:lz4-flex@0.13.1",
         "rust:maligned@0.2.1",
         "rust:matchers@0.2.0",
+        "rust:matchit@0.8.4",
         "rust:md-5@0.10.6",
         "rust:mem-dbg-derive@0.2.1",
         "rust:mem-dbg@0.3.4",
         "rust:memchr@2.8.2",
         "rust:memmap2@0.9.11",
         "rust:memoffset@0.7.1",
+        "rust:mime@0.3.17",
         "rust:minimal-lexical@0.2.1",
         "rust:miniz-oxide@0.8.9",
         "rust:mio@1.2.1",
@@ -277,7 +284,9 @@
         "rust:parquet@58.4.0",
         "rust:paste@1.0.15",
         "rust:percent-encoding@2.3.2",
+        "rust:pin-project-internal@1.1.13",
         "rust:pin-project-lite@0.2.17",
+        "rust:pin-project@1.1.13",
         "rust:pin-utils@0.1.0",
         "rust:portable-atomic@1.13.1",
         "rust:potential-utf@0.1.5",
@@ -288,7 +297,10 @@
         "rust:proc-macro-error2@2.0.1",
         "rust:proc-macro2@1.0.106",
         "rust:prost-derive@0.12.6",
+        "rust:prost-derive@0.14.4",
+        "rust:prost-types@0.14.4",
         "rust:prost@0.12.6",
+        "rust:prost@0.14.4",
         "rust:pyo3-build-config@0.28.3",
         "rust:pyo3-ffi@0.28.3",
         "rust:pyo3-log@0.13.3",
@@ -370,8 +382,11 @@
         "rust:tinystr@0.8.3",
         "rust:tokio-macros@2.7.0",
         "rust:tokio-rustls@0.26.4",
+        "rust:tokio-stream@0.1.18",
         "rust:tokio-util@0.7.18",
         "rust:tokio@1.52.3",
+        "rust:tonic-prost@0.14.6",
+        "rust:tonic@0.14.6",
         "rust:tower-http@0.6.11",
         "rust:tower-layer@0.3.3",
         "rust:tower-service@0.3.3",
@@ -847,400 +862,6 @@
       ],
       "id": "kumo-sdk-bundled-source",
       "label": "Starlette-derived source distributed in kumoai-studio and aggregate Kumo artifacts"
-    },
-    {
-      "id": "diskgraph-gateway",
-      "label": "DiskGraph native Flight gateway bundled in the Python wheel",
-      "root": "diskgraph-gateway",
-      "components": [
-        "rust:addr2line@0.25.1",
-        "rust:adler2@2.0.1",
-        "rust:ahash@0.8.12",
-        "rust:aho-corasick@1.1.4",
-        "rust:aligned-vec@0.6.4",
-        "rust:alloc-no-stdlib@2.0.4",
-        "rust:alloc-stdlib@0.2.2",
-        "rust:anstream@1.0.0",
-        "rust:anstyle-parse@1.0.0",
-        "rust:anstyle-query@1.1.5",
-        "rust:anstyle@1.0.14",
-        "rust:anyhow@1.0.104",
-        "rust:arc-swap@1.9.1",
-        "rust:arrow-arith@58.4.0",
-        "rust:arrow-array@58.4.0",
-        "rust:arrow-buffer@58.4.0",
-        "rust:arrow-cast@58.4.0",
-        "rust:arrow-csv@58.4.0",
-        "rust:arrow-data@58.4.0",
-        "rust:arrow-flight@58.4.0",
-        "rust:arrow-ipc@58.4.0",
-        "rust:arrow-json@58.4.0",
-        "rust:arrow-ord@58.4.0",
-        "rust:arrow-row@58.4.0",
-        "rust:arrow-schema@58.4.0",
-        "rust:arrow-select@58.4.0",
-        "rust:arrow-string@58.4.0",
-        "rust:arrow@58.4.0",
-        "rust:async-trait@0.1.89",
-        "rust:atoi@2.0.0",
-        "rust:atomic-waker@1.1.2",
-        "rust:aws-config@1.8.18",
-        "rust:aws-credential-types@1.2.14",
-        "rust:aws-lc-rs@1.18.1",
-        "rust:aws-lc-sys@0.45.0",
-        "rust:aws-runtime@1.7.4",
-        "rust:aws-sdk-sso@1.101.0",
-        "rust:aws-sdk-ssooidc@1.103.0",
-        "rust:aws-sdk-sts@1.106.0",
-        "rust:aws-sigv4@1.4.5",
-        "rust:aws-smithy-async@1.2.14",
-        "rust:aws-smithy-http-client@1.1.13",
-        "rust:aws-smithy-http@0.63.6",
-        "rust:aws-smithy-json@0.62.7",
-        "rust:aws-smithy-observability@0.2.6",
-        "rust:aws-smithy-query@0.60.15",
-        "rust:aws-smithy-runtime-api-macros@1.0.0",
-        "rust:aws-smithy-runtime-api@1.12.3",
-        "rust:aws-smithy-runtime@1.11.3",
-        "rust:aws-smithy-schema@0.1.0",
-        "rust:aws-smithy-types@1.4.9",
-        "rust:aws-smithy-xml@0.60.15",
-        "rust:aws-types@1.3.16",
-        "rust:axum-core@0.5.6",
-        "rust:axum@0.8.9",
-        "rust:backtrace@0.3.76",
-        "rust:base64-simd@0.8.0",
-        "rust:base64@0.21.7",
-        "rust:base64@0.22.1",
-        "rust:bincode@1.3.3",
-        "rust:bitflags@1.3.2",
-        "rust:bitflags@2.13.0",
-        "rust:bitvec@1.0.1",
-        "rust:block-buffer@0.10.4",
-        "rust:block-buffer@0.12.1",
-        "rust:brotli-decompressor@5.0.1",
-        "rust:brotli@8.0.3",
-        "rust:byteorder@1.5.0",
-        "rust:bytes-utils@0.1.4",
-        "rust:bytes@1.11.1",
-        "rust:cacheline-ef@1.1.0",
-        "rust:cfg-if@1.0.4",
-        "rust:chacha20@0.10.2",
-        "rust:chrono@0.4.45",
-        "rust:clap-builder@4.6.0",
-        "rust:clap-derive@4.6.1",
-        "rust:clap-lex@1.1.0",
-        "rust:clap@4.6.1",
-        "rust:cmov@0.5.4",
-        "rust:colorchoice@1.0.5",
-        "rust:combine@4.6.7",
-        "rust:common-traits@0.11.4",
-        "rust:console@0.15.11",
-        "rust:const-oid@0.10.2",
-        "rust:cpp-demangle@0.4.5",
-        "rust:cpufeatures@0.2.17",
-        "rust:cpufeatures@0.3.0",
-        "rust:crc32fast@1.5.0",
-        "rust:crossbeam-channel@0.5.15",
-        "rust:crossbeam-deque@0.8.6",
-        "rust:crossbeam-epoch@0.9.21",
-        "rust:crossbeam-utils@0.8.21",
-        "rust:crypto-common@0.1.7",
-        "rust:crypto-common@0.2.2",
-        "rust:csv-core@0.1.13",
-        "rust:csv@1.4.0",
-        "rust:ctutils@0.4.2",
-        "rust:darling-core@0.23.0",
-        "rust:darling-macro@0.23.0",
-        "rust:darling@0.23.0",
-        "rust:dashmap@6.2.1",
-        "rust:debugid@0.8.0",
-        "rust:deranged@0.5.8",
-        "rust:digest@0.10.7",
-        "rust:digest@0.11.3",
-        "rust:diskgraph-ptrhash@1.1.0",
-        "rust:displaydoc@0.2.6",
-        "rust:either@1.16.0",
-        "rust:endian-type@0.1.2",
-        "rust:enum-as-inner@0.6.1",
-        "rust:epserde-derive@0.8.0",
-        "rust:epserde@0.8.0",
-        "rust:equator-macro@0.4.2",
-        "rust:equator@0.4.2",
-        "rust:equivalent@1.0.2",
-        "rust:errno@0.3.14",
-        "rust:fast-float2@0.2.4",
-        "rust:fasteval@0.2.4",
-        "rust:fastrand@2.4.1",
-        "rust:fd-lock@3.0.13",
-        "rust:filetime@0.2.29",
-        "rust:findshlibs@0.10.2",
-        "rust:flatbuffers@25.12.19",
-        "rust:flate2@1.1.9",
-        "rust:fnv@1.0.7",
-        "rust:form-urlencoded@1.2.2",
-        "rust:funty@2.0.0",
-        "rust:futures-channel@0.3.32",
-        "rust:futures-core@0.3.32",
-        "rust:futures-executor@0.3.32",
-        "rust:futures-io@0.3.32",
-        "rust:futures-macro@0.3.32",
-        "rust:futures-sink@0.3.32",
-        "rust:futures-task@0.3.32",
-        "rust:futures-util@0.3.32",
-        "rust:futures@0.3.32",
-        "rust:generic-array@0.14.7",
-        "rust:getrandom@0.2.17",
-        "rust:getrandom@0.3.4",
-        "rust:getrandom@0.4.2",
-        "rust:gimli@0.32.3",
-        "rust:gxhash@3.5.0",
-        "rust:h2@0.4.19",
-        "rust:half@2.7.1",
-        "rust:hashbrown@0.14.5",
-        "rust:hashbrown@0.17.1",
-        "rust:hdrhistogram@7.5.4",
-        "rust:heck@0.5.0",
-        "rust:hex@0.4.3",
-        "rust:hmac@0.13.0",
-        "rust:home@0.5.12",
-        "rust:http-body-util@0.1.3",
-        "rust:http-body@0.4.6",
-        "rust:http-body@1.0.1",
-        "rust:http@0.2.12",
-        "rust:http@1.4.2",
-        "rust:httparse@1.10.1",
-        "rust:httpdate@1.0.3",
-        "rust:humantime@2.3.0",
-        "rust:hybrid-array@0.4.12",
-        "rust:hyper-rustls@0.27.9",
-        "rust:hyper-timeout@0.5.2",
-        "rust:hyper-util@0.1.20",
-        "rust:hyper@1.10.1",
-        "rust:iana-time-zone@0.1.65",
-        "rust:icu-collections@2.2.0",
-        "rust:icu-locale-core@2.2.0",
-        "rust:icu-normalizer-data@2.2.0",
-        "rust:icu-normalizer@2.2.0",
-        "rust:icu-properties-data@2.2.0",
-        "rust:icu-properties@2.2.0",
-        "rust:icu-provider@2.2.0",
-        "rust:ident-case@1.0.1",
-        "rust:idna-adapter@1.2.2",
-        "rust:idna@1.1.0",
-        "rust:impl-tools-lib@0.11.4",
-        "rust:impl-tools@0.10.3",
-        "rust:indexmap@2.14.0",
-        "rust:indicatif@0.17.11",
-        "rust:integer-encoding@3.0.4",
-        "rust:ipnet@2.12.0",
-        "rust:is-terminal-polyfill@1.70.2",
-        "rust:itertools@0.12.1",
-        "rust:itertools@0.14.0",
-        "rust:itoa@1.0.18",
-        "rust:lazy-static@1.5.0",
-        "rust:lexical-core@1.0.6",
-        "rust:lexical-parse-float@1.0.6",
-        "rust:lexical-parse-integer@1.0.6",
-        "rust:lexical-util@1.0.7",
-        "rust:lexical-write-float@1.0.6",
-        "rust:lexical-write-integer@1.0.6",
-        "rust:libc@0.2.186",
-        "rust:libm@0.2.16",
-        "rust:linux-raw-sys@0.12.1",
-        "rust:linux-raw-sys@0.4.15",
-        "rust:litemap@0.8.2",
-        "rust:lock-api@0.4.14",
-        "rust:log@0.4.32",
-        "rust:lz4-flex@0.12.2",
-        "rust:lz4-flex@0.13.1",
-        "rust:maligned@0.2.1",
-        "rust:matchers@0.2.0",
-        "rust:matchit@0.8.4",
-        "rust:md-5@0.10.6",
-        "rust:mem-dbg-derive@0.2.1",
-        "rust:mem-dbg@0.3.4",
-        "rust:memchr@2.8.2",
-        "rust:memmap2@0.9.11",
-        "rust:memoffset@0.7.1",
-        "rust:mime@0.3.17",
-        "rust:minimal-lexical@0.2.1",
-        "rust:miniz-oxide@0.8.9",
-        "rust:mio@1.2.1",
-        "rust:mmap-rs@0.6.1",
-        "rust:nibble-vec@0.1.0",
-        "rust:nix@0.26.4",
-        "rust:nom@7.1.3",
-        "rust:nu-ansi-term@0.50.3",
-        "rust:num-bigint@0.4.6",
-        "rust:num-complex@0.4.6",
-        "rust:num-conv@0.2.2",
-        "rust:num-integer@0.1.46",
-        "rust:num-traits@0.2.19",
-        "rust:number-prefix@0.4.0",
-        "rust:object-store@0.13.2",
-        "rust:object@0.37.3",
-        "rust:once-cell@1.21.4",
-        "rust:openssl-probe@0.2.1",
-        "rust:ordered-float@2.10.1",
-        "rust:outref@0.5.2",
-        "rust:parking-lot-core@0.9.12",
-        "rust:parking-lot@0.12.5",
-        "rust:parquet@58.4.0",
-        "rust:paste@1.0.15",
-        "rust:percent-encoding@2.3.2",
-        "rust:pin-project-internal@1.1.13",
-        "rust:pin-project-lite@0.2.17",
-        "rust:pin-project@1.1.13",
-        "rust:pin-utils@0.1.0",
-        "rust:portable-atomic@1.13.1",
-        "rust:potential-utf@0.1.5",
-        "rust:powerfmt@0.2.0",
-        "rust:pprof@0.14.1",
-        "rust:ppv-lite86@0.2.21",
-        "rust:proc-macro-error-attr2@2.0.0",
-        "rust:proc-macro-error2@2.0.1",
-        "rust:proc-macro2@1.0.106",
-        "rust:prost-derive@0.12.6",
-        "rust:prost-derive@0.14.4",
-        "rust:prost-types@0.14.4",
-        "rust:prost@0.12.6",
-        "rust:prost@0.14.4",
-        "rust:quick-xml@0.39.4",
-        "rust:quote@1.0.45",
-        "rust:radium@0.7.0",
-        "rust:radix-trie@0.2.1",
-        "rust:rand-chacha@0.3.1",
-        "rust:rand-core@0.10.1",
-        "rust:rand-core@0.6.4",
-        "rust:rand@0.10.1",
-        "rust:rand@0.8.6",
-        "rust:rayon-core@1.13.0",
-        "rust:rayon@1.12.0",
-        "rust:regex-automata@0.4.14",
-        "rust:regex-lite@0.1.9",
-        "rust:regex-syntax@0.8.11",
-        "rust:regex@1.12.4",
-        "rust:reqwest@0.12.28",
-        "rust:ring@0.17.14",
-        "rust:rmp@0.8.15",
-        "rust:rustc-demangle@0.1.27",
-        "rust:rustix@0.38.44",
-        "rust:rustix@1.1.4",
-        "rust:rustls-native-certs@0.8.4",
-        "rust:rustls-pki-types@1.14.1",
-        "rust:rustls-webpki@0.103.15",
-        "rust:rustls@0.23.45",
-        "rust:rustversion@1.0.22",
-        "rust:rustyline@12.0.0",
-        "rust:ryu@1.0.23",
-        "rust:same-file@1.0.6",
-        "rust:scopeguard@1.2.0",
-        "rust:sealed@0.6.0",
-        "rust:seq-macro@0.3.6",
-        "rust:serde-core@1.0.228",
-        "rust:serde-derive@1.0.228",
-        "rust:serde-json@1.0.150",
-        "rust:serde-urlencoded@0.7.1",
-        "rust:serde-with-macros@3.21.0",
-        "rust:serde-with@3.21.0",
-        "rust:serde@1.0.228",
-        "rust:sha1@0.10.6",
-        "rust:sha2@0.10.9",
-        "rust:sha2@0.11.0",
-        "rust:sharded-slab@0.1.7",
-        "rust:signal-hook-registry@1.4.8",
-        "rust:simd-adler32@0.3.9",
-        "rust:simdutf8@0.1.5",
-        "rust:slab@0.4.12",
-        "rust:smallvec@1.15.2",
-        "rust:snap@1.1.1",
-        "rust:socket2@0.6.4",
-        "rust:spin@0.10.1",
-        "rust:stable-deref-trait@1.2.1",
-        "rust:strsim@0.11.1",
-        "rust:subtle@2.6.1",
-        "rust:symbolic-common@12.18.3",
-        "rust:symbolic-demangle@12.18.3",
-        "rust:syn@2.0.117",
-        "rust:sync-wrapper@1.0.2",
-        "rust:synstructure@0.13.2",
-        "rust:sysctl@0.5.5",
-        "rust:sysinfo@0.30.13",
-        "rust:tap@1.0.1",
-        "rust:tempfile@3.27.0",
-        "rust:thiserror-impl@1.0.69",
-        "rust:thiserror-impl@2.0.18",
-        "rust:thiserror@1.0.69",
-        "rust:thiserror@2.0.18",
-        "rust:thread-local@1.1.9",
-        "rust:thrift@0.17.0",
-        "rust:time-core@0.1.8",
-        "rust:time@0.3.47",
-        "rust:tinystr@0.8.3",
-        "rust:tokio-macros@2.7.0",
-        "rust:tokio-rustls@0.26.4",
-        "rust:tokio-stream@0.1.18",
-        "rust:tokio-util@0.7.18",
-        "rust:tokio@1.52.3",
-        "rust:tonic-prost@0.14.6",
-        "rust:tonic@0.14.6",
-        "rust:tower-http@0.6.11",
-        "rust:tower-layer@0.3.3",
-        "rust:tower-service@0.3.3",
-        "rust:tower@0.5.3",
-        "rust:tracing-attributes@0.1.31",
-        "rust:tracing-core@0.1.36",
-        "rust:tracing-log@0.2.0",
-        "rust:tracing-subscriber@0.3.23",
-        "rust:tracing@0.1.44",
-        "rust:try-lock@0.2.5",
-        "rust:twox-hash@2.1.3",
-        "rust:typenum@1.20.1",
-        "rust:unicode-ident@1.0.24",
-        "rust:unicode-segmentation@1.13.3",
-        "rust:unicode-width@0.1.14",
-        "rust:unicode-width@0.2.2",
-        "rust:untrusted@0.9.0",
-        "rust:ureq@2.12.1",
-        "rust:url@2.5.8",
-        "rust:urlencoding@2.1.3",
-        "rust:utf8-iter@1.0.4",
-        "rust:utf8parse@0.2.2",
-        "rust:uuid-simd@0.8.0",
-        "rust:uuid@1.23.3",
-        "rust:vsimd@0.8.0",
-        "rust:walkdir@2.5.0",
-        "rust:want@0.3.1",
-        "rust:writeable@0.6.3",
-        "rust:wyz@0.5.1",
-        "rust:xmlparser@0.13.6",
-        "rust:xxhash-rust@0.8.19",
-        "rust:yoke-derive@0.8.2",
-        "rust:yoke@0.8.3",
-        "rust:zerocopy-derive@0.8.52",
-        "rust:zerocopy@0.8.52",
-        "rust:zerofrom-derive@0.1.7",
-        "rust:zerofrom@0.1.8",
-        "rust:zeroize@1.9.0",
-        "rust:zerotrie@0.2.4",
-        "rust:zerovec-derive@0.11.3",
-        "rust:zerovec@0.11.6",
-        "rust:zlib-rs@0.6.3",
-        "rust:zmij@1.0.21",
-        "rust:zstd-safe@7.2.4",
-        "rust:zstd-sys@2.0.16+zstd.1.5.7",
-        "rust:zstd@0.13.3"
-      ],
-      "targets": [
-        "x86_64-unknown-linux-gnu",
-        "aarch64-unknown-linux-gnu"
-      ],
-      "features": [],
-      "default_features": true,
-      "dependency_kinds": [
-        "normal"
-      ]
     }
   ],
   "components": [
@@ -1475,7 +1096,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -1509,7 +1129,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -1548,7 +1167,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -1582,7 +1200,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -1621,7 +1238,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -1648,7 +1264,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -1675,7 +1290,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -1705,7 +1319,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -1739,7 +1352,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -1773,7 +1385,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -1807,7 +1418,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -1841,7 +1451,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -1873,7 +1482,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -1906,8 +1514,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright 2016-2026 The Apache Software Foundation",
@@ -1940,7 +1547,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -1979,7 +1585,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2013,7 +1618,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2047,7 +1651,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2081,7 +1684,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2114,7 +1716,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright 2016-2026 The Apache Software Foundation",
@@ -2147,7 +1749,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2180,8 +1781,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright 2016-2026 The Apache Software Foundation",
@@ -2214,7 +1814,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2275,8 +1874,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright 2016-2026 The Apache Software Foundation",
@@ -2309,7 +1907,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2343,7 +1940,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2376,8 +1972,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright 2016-2026 The Apache Software Foundation",
@@ -2409,8 +2004,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright 2016-2026 The Apache Software Foundation",
@@ -2443,7 +2037,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2475,7 +2068,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2502,7 +2094,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2542,7 +2133,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2567,7 +2157,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2592,7 +2181,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2621,7 +2209,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2660,7 +2247,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2685,7 +2271,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2712,7 +2297,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2739,7 +2323,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -2766,7 +2349,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2791,7 +2373,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2816,7 +2397,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2841,7 +2421,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2866,7 +2445,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2891,7 +2469,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2916,7 +2493,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2941,7 +2517,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2966,7 +2541,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -2991,7 +2565,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -3016,7 +2589,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -3041,7 +2613,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -3066,7 +2637,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -3091,7 +2661,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -3115,7 +2684,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2019–2025 axum Contributors"
@@ -3140,7 +2709,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2019 axum Contributors"
@@ -3166,7 +2735,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3200,7 +2768,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -3229,8 +2796,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2015 Alice Maz"
@@ -3263,7 +2829,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3297,7 +2862,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3324,7 +2888,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3358,7 +2921,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3392,7 +2954,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3419,7 +2980,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3453,7 +3013,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3487,7 +3046,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3516,7 +3074,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3549,7 +3106,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3588,7 +3144,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3622,7 +3177,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3649,7 +3203,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -3679,7 +3232,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3713,7 +3265,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3747,7 +3298,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3776,7 +3326,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3810,7 +3359,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3844,7 +3392,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3878,7 +3425,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3912,7 +3458,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3946,7 +3491,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -3980,7 +3524,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4007,7 +3550,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4040,7 +3582,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4067,7 +3608,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4101,7 +3641,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4135,7 +3674,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4169,7 +3707,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4202,8 +3739,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors"
@@ -4235,8 +3771,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2019 The Crossbeam Project Developers",
@@ -4276,7 +3811,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4310,7 +3844,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4344,7 +3877,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4378,7 +3910,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4412,7 +3943,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4446,7 +3976,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4485,7 +4014,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4524,7 +4052,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4558,7 +4085,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4585,7 +4111,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4612,7 +4137,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4639,7 +4163,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4666,7 +4189,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -4691,7 +4213,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4726,7 +4247,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4760,7 +4280,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4795,7 +4314,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4823,7 +4341,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -4855,7 +4372,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4889,7 +4405,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4916,7 +4431,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4951,7 +4465,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -4986,7 +4499,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5021,7 +4533,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5048,7 +4559,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5075,7 +4585,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5109,7 +4618,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5143,7 +4651,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5177,7 +4684,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5204,7 +4710,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -5236,7 +4741,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5271,7 +4775,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5305,7 +4808,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5339,7 +4841,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -5369,7 +4870,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5403,7 +4903,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5437,7 +4936,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5471,7 +4969,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5498,7 +4995,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5533,7 +5029,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5568,7 +5063,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5603,7 +5097,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5638,7 +5131,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5673,7 +5165,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5708,7 +5199,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5743,7 +5233,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5778,7 +5267,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5813,7 +5301,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5840,7 +5327,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5875,7 +5361,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5910,7 +5395,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5945,7 +5429,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -5979,7 +5462,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6006,7 +5488,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6033,7 +5514,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -6065,7 +5545,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6131,7 +5610,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6164,8 +5642,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2016 Jon Gjengset"
@@ -6198,7 +5675,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6232,7 +5708,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6267,7 +5742,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6301,7 +5775,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -6333,7 +5806,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6360,7 +5832,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6387,7 +5858,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6414,7 +5884,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6449,7 +5918,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6484,7 +5952,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6517,7 +5984,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2016 Pyfisch"
@@ -6550,7 +6017,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6586,7 +6052,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6620,7 +6085,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6659,7 +6123,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2016 The weldr Project Developers"
@@ -6692,7 +6156,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6719,7 +6182,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6746,7 +6208,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6781,7 +6242,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6809,7 +6269,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6837,7 +6296,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6865,7 +6323,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6893,7 +6350,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6921,7 +6377,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6949,7 +6404,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -6977,7 +6431,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -7004,7 +6457,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7038,7 +6490,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7072,7 +6523,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -7104,7 +6554,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -7136,7 +6585,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7170,7 +6618,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7197,7 +6644,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7225,7 +6671,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7259,7 +6704,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7293,7 +6737,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7327,7 +6770,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7361,7 +6803,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -7393,7 +6834,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7427,7 +6867,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7468,7 +6907,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7509,7 +6947,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7550,7 +6987,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -7582,7 +7018,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7623,7 +7058,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7664,7 +7098,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7698,7 +7131,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7732,7 +7164,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -7769,7 +7200,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -7806,7 +7236,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7834,7 +7263,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7868,7 +7296,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7902,7 +7329,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7929,7 +7355,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -7956,7 +7381,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -7988,7 +7412,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8014,7 +7437,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2022 Ibraheem Ahmed",
@@ -8046,7 +7469,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8082,7 +7504,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -8114,7 +7535,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -8146,7 +7566,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8185,7 +7604,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8221,7 +7639,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8247,7 +7664,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2014 Sean McArthur"
@@ -8279,8 +7696,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2009 The Go Authors. All rights reserved"
@@ -8318,7 +7734,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8366,7 +7781,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8393,7 +7807,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -8425,7 +7838,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8452,7 +7864,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8478,8 +7889,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2014-2019 Geoffroy Couprie"
@@ -8505,7 +7915,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8533,7 +7942,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8567,7 +7975,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8601,7 +8008,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8635,7 +8041,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8669,7 +8074,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8703,7 +8107,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -8733,7 +8136,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8767,7 +8169,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8801,7 +8202,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -8833,7 +8233,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8867,7 +8266,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8894,7 +8292,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8921,7 +8318,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8955,7 +8351,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -8989,7 +8384,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9023,7 +8417,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -9055,7 +8448,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9088,7 +8480,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [],
       "declared_expression": "Apache-2.0 OR MIT",
@@ -9119,7 +8511,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -9150,7 +8541,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [],
       "declared_expression": "Apache-2.0 OR MIT",
@@ -9181,7 +8572,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9216,7 +8606,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -9248,7 +8637,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9276,7 +8664,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9311,7 +8698,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9338,7 +8724,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9373,7 +8758,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9408,7 +8792,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9443,7 +8826,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -9475,7 +8857,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -9499,7 +8880,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [],
       "declared_expression": "Apache-2.0",
@@ -9522,7 +8903,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [],
       "declared_expression": "Apache-2.0",
@@ -9546,7 +8927,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -9575,7 +8955,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [],
       "declared_expression": "Apache-2.0",
@@ -9796,7 +9176,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9823,7 +9202,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -9855,7 +9233,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9882,7 +9259,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9909,7 +9285,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9944,7 +9319,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -9978,7 +9352,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10013,7 +9386,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10048,7 +9420,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10083,7 +9454,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10117,7 +9487,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10151,7 +9520,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10185,7 +9553,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10219,7 +9586,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10253,7 +9619,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10287,7 +9652,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10322,7 +9686,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10361,7 +9724,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10388,7 +9750,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10422,7 +9783,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -10459,7 +9819,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -10496,7 +9855,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10541,7 +9899,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10576,7 +9933,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10603,7 +9959,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10643,7 +9998,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -10675,7 +10029,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10702,7 +10055,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -10734,7 +10086,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10773,7 +10124,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -10807,7 +10157,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -10839,7 +10188,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -10871,7 +10219,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -10903,7 +10250,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -10935,7 +10281,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -10967,7 +10312,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11001,7 +10345,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11035,7 +10378,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11069,7 +10411,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -11101,7 +10442,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11137,7 +10477,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11173,7 +10512,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11210,7 +10548,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11237,7 +10574,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11270,8 +10606,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-extension",
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) [2021] [Marvin Countryman]"
@@ -11297,7 +10632,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -11329,7 +10663,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11356,7 +10689,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11390,7 +10722,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11417,7 +10748,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11451,7 +10781,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11478,7 +10807,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11512,7 +10840,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11541,7 +10868,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11569,7 +10895,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -11599,7 +10924,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -11629,7 +10953,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -11661,7 +10984,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -11686,7 +11008,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11713,7 +11034,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11740,7 +11060,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11767,7 +11086,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11817,7 +11135,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -11851,7 +11168,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -11883,7 +11199,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -11915,7 +11230,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -11947,7 +11261,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -11979,7 +11292,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12013,7 +11325,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -12043,7 +11354,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12077,7 +11387,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12111,7 +11420,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12139,7 +11447,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12167,7 +11474,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12201,7 +11507,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) Tokio Contributors"
@@ -12227,7 +11533,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12254,7 +11559,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12280,7 +11584,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [],
       "declared_expression": "MIT",
@@ -12308,7 +11612,7 @@
     },
     {
       "artifact_ids": [
-        "diskgraph-gateway"
+        "diskgraph-extension"
       ],
       "copyright": [
         "Copyright (c) 2025 Lucio Franco"
@@ -12334,7 +11638,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12361,7 +11664,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12388,7 +11690,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12415,7 +11716,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12442,7 +11742,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12469,7 +11768,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12496,7 +11794,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12523,7 +11820,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12550,7 +11846,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12577,7 +11872,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12605,7 +11899,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12632,7 +11925,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12672,7 +11964,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12712,7 +12003,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12746,7 +12036,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12780,7 +12069,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12814,7 +12102,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12841,7 +12128,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12875,7 +12161,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12909,7 +12194,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12937,7 +12221,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -12971,7 +12254,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13005,7 +12287,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -13035,7 +12316,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13070,7 +12350,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -13100,7 +12379,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13139,7 +12417,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13166,7 +12443,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13194,7 +12470,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13221,7 +12496,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13255,7 +12529,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -13280,7 +12553,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13308,7 +12580,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13336,7 +12607,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13376,7 +12646,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13416,7 +12685,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13444,7 +12712,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13472,7 +12739,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13506,7 +12772,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13534,7 +12799,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13562,7 +12826,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13590,7 +12853,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -13615,7 +12877,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [],
@@ -13640,7 +12901,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13679,7 +12939,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [
@@ -13724,7 +12983,6 @@
     {
       "artifact_ids": [
         "diskgraph-extension",
-        "diskgraph-gateway",
         "diskgraph-ingest"
       ],
       "copyright": [

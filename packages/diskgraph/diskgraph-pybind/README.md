@@ -30,8 +30,8 @@ export RUSTFLAGS="-C target-feature=+aes,+neon"
 ```
 
 Do not use `-C target-cpu=native` for wheels or Kumo-deployed builds. It can
-embed host-specific instructions such as AVX-512 into the standalone ingestion
-and gateway binaries, causing `SIGILL` on workers with a
+embed host-specific instructions such as AVX-512 into the standalone ingest
+binary packaged at `diskgraph/bin/ingest`, causing `SIGILL` on workers with a
 different CPU. Package builds reject `target-cpu=native`.
 
 ### Quick build (no venv setup needed)
@@ -119,7 +119,7 @@ pytest -v "$TEST_DIR"
 ```
 
 This installs the package through the same backend used by Git URL installs, so
-the standalone `ingest` and `diskgraph-gateway` binaries are bundled before tests run.
+the standalone `ingest` binary is bundled before tests run.
 
 Rust unit tests (`diskgraph-pybind` crate):
 
@@ -176,3 +176,24 @@ Handles table type detection, FK resolution, timestamp format inference, num_sha
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EDGE_BATCH_SIZE_ROWS` | 65536 | Rows per edge batch sent to Python |
+
+### Embedded native sampling server
+
+`diskgraph.SamplingServer` starts the Rust Flight gateway on native background
+threads inside the Python process. No sampling subprocess is required.
+
+```python
+import diskgraph
+
+with diskgraph.SamplingServer(
+    "/local/graph", host="0.0.0.0", max_streams=4, max_threads=2
+) as server:
+    endpoint = server.endpoint("10.0.0.5")
+    # Keep the handle alive while remote trainers use this endpoint.
+```
+
+`port` reports the actual bound port; `health()` reports native counters and
+readiness. `close()` cancels streams and joins the listener while releasing the
+GIL. Dropping a handle signals asynchronous shutdown; use explicit close or the
+context manager for deterministic cleanup. Configure Python logging before
+starting the server to receive native lifecycle and progress events.
