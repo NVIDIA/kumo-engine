@@ -137,8 +137,8 @@ def test_a_write_removes_the_other_form(store, first, second):
 @pytest.mark.parametrize('sized', [False, True])
 @pytest.mark.parametrize('streams', [False, True])
 @pytest.mark.parametrize('old', [3, 2 * PART])
-def test_a_failed_chunked_write_leaves_the_old_file(monkeypatch, streams,
-                                                     sized, old):
+def test_a_failed_chunked_write_leaves_the_old_file(
+        monkeypatch, streams, sized, old):
     from kumo_core.object_store_sink import open_sized
 
     handler = StreamingHandler() if streams else MemoryHandler()
@@ -165,6 +165,27 @@ def test_a_failed_chunked_write_leaves_the_old_file(monkeypatch, streams,
     assert list(_generations(handler).values()) == [
         ['00000', '00001', '00002', '_SUCCESS']
     ]
+
+
+def test_a_failed_plain_stream_is_aborted_not_committed(monkeypatch):
+    from kumo_core.object_store_sink import open_sized
+
+    def fail(self, data):
+        raise OSError('upload failed')
+
+    def abort(self):
+        aborted.append(self.path)
+        io.BytesIO.close(self)
+
+    handler = StreamingHandler()
+    aborted = []
+    monkeypatch.setattr(_Upload, 'write', fail)
+    monkeypatch.setattr(_Upload, 'abort', abort, raising=False)
+    with pytest.raises(OSError, match='upload failed'):
+        with open_sized(PyFileSystem(handler), 'root/a.bin', 3) as writer:
+            writer.write(b'abc')
+    assert aborted == ['root/a.bin']
+    assert handler.objects == {}
 
 
 def test_the_newest_committed_generation_is_read(store):
@@ -229,7 +250,7 @@ def test_parts_spool_under_the_spool_dir_and_are_removed(
         store, tmp_path, monkeypatch):
     handler, fs = store
     monkeypatch.setattr(chunked_fs, '_spool_dir', None)
-    chunked_fs.set_spool_dir(str(tmp_path / 'scratch'))
+    chunked_fs.set_spool_dir(lambda: str(tmp_path / 'scratch'))
     _write(fs, 'root/a.bin', b'a' * (2 * PART + 1))
     handler.spool_dir = str(tmp_path / 'own')
     _write(fs, 'root/b.bin', b'b')

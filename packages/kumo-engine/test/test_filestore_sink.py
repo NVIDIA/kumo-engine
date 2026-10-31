@@ -68,8 +68,6 @@ class MemoryStore(ChunkedFileHandler):
 
 
 class StageSink:
-    r"""Not an object store: holds '@stage/...' paths through
-    ``filesystem``; anything else is a table."""
     def __init__(self):
         self.store = MemoryStore()
 
@@ -97,7 +95,8 @@ def test_sinks_with_a_filesystem_hold_files(tmp_path, connector):
     assert is_file_destination(connector, '@stage/p')
     assert not is_file_destination(connector, 'DB.SCHEMA.T')
     assert file_store(connector, 'DB.SCHEMA.T') is None
-    assert not is_file_destination(SimpleNamespace(), 'x')
+    assert not is_file_destination(SimpleNamespace(sink_backend=object()),
+                                   'x')
 
 
 def test_output_configs_take_a_sinks_file_paths(connector):
@@ -191,3 +190,14 @@ def test_parquet_writes_stay_plain_up_to_one_part(tmp_path, connector):
     assert files.write_files(connector, '@stage/out/', [str(part)])
     assert pd.read_parquet('@stage/out/part-0.parquet',
                            filesystem=PyFileSystem(store)).equals(frame)
+
+
+def test_an_occupied_directory_is_refused_before_scoring(tmp_path, connector):
+    from kumo_core.artifact_export import ArtifactDestinationConflict
+
+    files = FilesystemSink(connector.sink_backend)
+    files.preflight_write_files(connector, '@stage/out/')
+    connector.sink_backend.store.objects['@stage/out/old.parquet'] = b'x'
+    for mode in (None, 'OVERWRITE', 'APPEND'):
+        with pytest.raises(ArtifactDestinationConflict, match='already'):
+            files.preflight_write_files(connector, '@stage/out/', mode)
