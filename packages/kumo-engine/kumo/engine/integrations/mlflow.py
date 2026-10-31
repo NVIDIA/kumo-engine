@@ -207,10 +207,8 @@ class MlflowTracking(TrackingBase):
         except Exception as error:
             raise RuntimeError(f'MLflow at {uri} is not usable with these '
                                f'credentials: {full_error(error)}') from error
-        if missing:
-            self._create_experiment(client, owned)
-
-    def _create_experiment(self, client: Any, owned: FrozenSet[str]) -> None:
+        if not missing:
+            return
         with _limited_http(owned), self.target.scope():
             try:
                 client.create_experiment(self.experiment_name)
@@ -975,28 +973,19 @@ def _dataset_source(entry: Mapping[str, Optional[str]]) -> Any:
         return None
     if connector == 'DATABRICKS':
         delta = import_provider('mlflow.data.delta_dataset_source', 'mlflow')
+        parts = re.findall(r'`((?:[^`]|``)*)`', location)
+        head = (entry.get('version') or '').split('_', 1)[0]
         return delta.DeltaDatasetSource(
-            delta_table_name=_unquoted(location),
-            delta_table_version=_delta_version(entry))
+            delta_table_name='.'.join(part.replace('``', '`')
+                                      for part in parts) or location,
+            delta_table_version=int(head) if entry.get('version_kind')
+            == 'exact' and head.isdigit() else None)
     if connector in _PATH_CONNECTORS:
         registry = import_provider('mlflow.data.dataset_source_registry',
                                    'mlflow')
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             return registry.resolve_dataset_source(location)
-    return None
-
-
-def _unquoted(name: str) -> str:
-    parts = re.findall(r'`((?:[^`]|``)*)`', name)
-    return '.'.join(part.replace('``', '`') for part in parts) or name
-
-
-def _delta_version(entry: Mapping[str, Optional[str]]) -> Optional[int]:
-    version = entry.get('version') or ''
-    head = version.split('_', 1)[0]
-    if entry.get('version_kind') == 'exact' and head.isdigit():
-        return int(head)
     return None
 
 
