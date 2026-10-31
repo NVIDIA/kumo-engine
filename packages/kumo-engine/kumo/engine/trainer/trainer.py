@@ -744,7 +744,9 @@ def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
 
 def _target_window(workflow: Any) -> Optional[Tuple[int, int, int, str]]:
     r"""A temporal query's target window, step and unit; None if static."""
-    if not workflow.query.query.get_all_target_aggregations():
+    aggregations = workflow.query.query.get_all_target_aggregations()
+    if not aggregations or any(aggregation.aggr_time_range is None
+                               for aggregation in aggregations):
         return None
     offset = workflow.query.query.get_combined_date_offset_range()
     start, end = int(offset.start or 0), int(offset.end)
