@@ -28,12 +28,21 @@ from typing import (
 )
 
 from kumo_core.instrumentation import format_error
+from kumo_core.summaries import (
+    Confusion,
+    Curve,
+    Dataset,
+    Histogram,
+    Scalar,
+    Summary,
+    Table,
+    Tag,
+)
 
 from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
 
 if TYPE_CHECKING:
-    from kumo_core.summaries import Summary
     from kumoapi.plugin import ModelRegistryLocation, PublishedModel
 
     from kumo.engine._manifest import ModelManifest, TrackingRef
@@ -60,7 +69,7 @@ class RunRecord:
     artifacts: Mapping[str, str] = field(default_factory=dict)
     inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
         default_factory=dict)
-    summaries: Tuple['Summary', ...] = ()
+    summaries: Tuple[Summary, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -78,7 +87,7 @@ class RunSpec:
         default_factory=dict)
     parents: Mapping[str, Optional[str]] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
-    summaries: Sequence['Summary'] = ()
+    summaries: Sequence[Summary] = ()
     status: Optional[str] = None
     error: Optional[str] = None
 
@@ -263,6 +272,58 @@ class TrackingBase(Tracking):
 
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         pass
+
+    def log_summaries(self, summaries: Sequence[Summary]) -> None:
+        for summary in summaries:
+            if isinstance(summary, Scalar):
+                self._log_scalar(summary)
+            elif isinstance(summary, Tag):
+                self._log_tag(summary)
+            elif isinstance(summary, Dataset):
+                self._log_dataset(summary)
+            elif isinstance(summary, (Table, Confusion)):
+                self._log_table(_as_table(summary))
+            else:
+                self._log_points(_points(summary))
+
+    def _log_scalar(self, summary: Scalar) -> None:
+        raise NotImplementedError
+
+    def _log_tag(self, summary: Tag) -> None:
+        raise NotImplementedError
+
+    def _log_points(self, series: Mapping[str, Sequence[Tuple[int, float]]]
+                    ) -> None:
+        raise NotImplementedError
+
+    def _log_table(self, summary: Table) -> None:
+        raise NotImplementedError
+
+    def _log_dataset(self, summary: Dataset) -> None:
+        pass
+
+
+def _points(summary: Summary) -> Dict[str, Sequence[Tuple[int, float]]]:
+    if isinstance(summary, Curve):
+        return {summary.x.name: summary.x.points,
+                summary.y.name: summary.y.points}
+    if isinstance(summary, Histogram):
+        return {f'{summary.name}/count': tuple(enumerate(summary.counts)),
+                f'{summary.name}/lower_edge': tuple(enumerate(summary.edges, 1))}
+    return {summary.name: summary.points}
+
+
+def _as_table(summary: Summary) -> Table:
+    if isinstance(summary, Confusion):
+        return Table(summary.name, ('actual', *summary.labels),
+                     tuple((label, *row) for label, row in zip(
+                         summary.labels, summary.counts)))
+    return summary
+
+
+def table_json(table: Table) -> str:
+    return json.dumps({'columns': list(table.columns),
+                       'data': [list(row) for row in table.rows]}, default=str)
 
 
 class _Foreign(TrackingBase):

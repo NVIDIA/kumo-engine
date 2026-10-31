@@ -34,17 +34,7 @@ from typing import (
 from urllib.parse import quote
 
 from kumo_core.instrumentation import format_error
-from kumo_core.summaries import (
-    Confusion,
-    Curve,
-    Dataset,
-    Histogram,
-    Scalar,
-    Series,
-    Summary,
-    Table,
-    Tag,
-)
+from kumo_core.summaries import Dataset, Scalar, Table, Tag
 from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
 from kumo.engine._events import Event
@@ -55,6 +45,7 @@ from kumo.engine._tracking import (
     RunRecord,
     TrackingBase,
     by_step,
+    table_json,
 )
 from kumo.engine._version import __version__
 from kumo.engine.connector._extras import import_provider
@@ -428,10 +419,6 @@ class MlflowTracking(TrackingBase):
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         self._log_metrics(self._parent, metrics, step)
 
-    def log_summaries(self, summaries: Sequence[Summary]) -> None:
-        for summary in summaries:
-            _SINKS[type(summary)](self, summary)
-
     def _log_scalar(self, summary: Scalar) -> None:
         model_id = self._model_id if summary.name.startswith('test/') else None
         self._log_metrics(self._parent, {summary.name: summary.value},
@@ -440,25 +427,9 @@ class MlflowTracking(TrackingBase):
     def _log_tag(self, summary: Tag) -> None:
         self._log_tags(self._parent, {summary.name: summary.value})
 
-    def _log_series(self, summary: Series) -> None:
-        self._log_points({summary.name: summary.points})
-
-    def _log_curve(self, summary: Curve) -> None:
-        self._log_points({summary.x.name: summary.x.points,
-                          summary.y.name: summary.y.points})
-
-    def _log_histogram(self, summary: Histogram) -> None:
-        self._log_points({
-            f'{summary.name}/count': tuple(enumerate(summary.counts)),
-            f'{summary.name}/lower_edge': tuple(enumerate(summary.edges, 1)),
-        })
-
     def _log_table(self, summary: Table) -> None:
         path = f'{summary.name}.json'
-        self._log_artifacts({path: json.dumps({
-            'columns': list(summary.columns),
-            'data': [list(row) for row in summary.rows],
-        }, default=str)})
+        self._log_artifacts({path: table_json(summary)})
         with self.target.scope():
             tags = self._client.get_run(self._parent).data.tags
             logged = json.loads(tags.get('mlflow.loggedArtifacts', '[]'))
@@ -466,12 +437,6 @@ class MlflowTracking(TrackingBase):
             if entry not in logged:
                 self._client.set_tag(self._parent, 'mlflow.loggedArtifacts',
                                      json.dumps([*logged, entry]))
-
-    def _log_confusion(self, summary: Confusion) -> None:
-        self._log_table(Table(
-            summary.name, ('actual', *summary.labels),
-            tuple((label, *row)
-                  for label, row in zip(summary.labels, summary.counts))))
 
     def _log_dataset(self, summary: Dataset) -> None:
         source = _dataset_source(summary.source)
@@ -564,16 +529,6 @@ class MlflowTracking(TrackingBase):
                 ])
 
 
-_SINKS: Dict[type, Callable[[MlflowTracking, Any], None]] = {
-    Scalar: MlflowTracking._log_scalar,
-    Tag: MlflowTracking._log_tag,
-    Series: MlflowTracking._log_series,
-    Curve: MlflowTracking._log_curve,
-    Histogram: MlflowTracking._log_histogram,
-    Table: MlflowTracking._log_table,
-    Confusion: MlflowTracking._log_confusion,
-    Dataset: MlflowTracking._log_dataset,
-}
 _BATCH_METRICS = 1000  # MLflow's per-request limit
 _SYSTEM_METRICS_FAILURES = 6
 _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
