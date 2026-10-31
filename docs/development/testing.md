@@ -34,6 +34,34 @@ zero relative tolerance for every task. Labels, ranks, valid outputs, and
 completed CUDA work remain strict. Training metrics report separately and set
 no learning-quality requirement. Source and package workflows remain separate.
 
+## Finished Kumo Engine wheel
+
+After each manual or release build, `wheel-smoke` downloads the finished Linux
+x86_64 wheel from that run. It uses Python 3.12 and the authorized RTX PRO 6000 runner.
+It does not rebuild the wheel. Failure blocks release attachment and Kitmaker
+publication. The macOS wheel has no GPU smoke check. The GPU job has a 22-minute
+limit.
+
+The job uses the same [GPU test script](../../packages/kumo-engine/test/wheel_gpu_smoke.py)
+and [setup action](../../.github/actions/engine-gpu-smoke/action.yml) as the PR
+check. The action installs the selected wheel in a fresh environment outside the
+checkout. It uses public PyPI and ignores host pip settings. The installed version
+must match the selected wheel. Dependencies must pass `pip check`.
+
+Each of the eight task types trains one model with seed zero, predicts, and
+reloads the saved model on CUDA. Outputs must be finite and complete.
+Predicted labels and rank order must match exactly. Repeat and
+reload scores must satisfy `abs(before - after) <= 1e-4` at every coordinate,
+with zero relative tolerance. These comparisons use the same retained model.
+
+The [input manifest](../../packages/kumo-engine/test/pr172/inputs.json) pins
+the prepared S3 data and its checksum. The workflow uses its existing AWS test role.
+The job preserves GPU results and logs in the `kumo-engine-wheel-smoke-*` artifact.
+
+To test a new wheel without publication, run Kumo Engine - Build and publish
+wheel manually at the selected commit. Candidate PR feedback runs separately
+through the trusted PR GPU workflow.
+
 ## Report evidence
 
 Record the command, environment, result, and any untested dependency. Keep

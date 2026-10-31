@@ -107,9 +107,16 @@ platform's `release-version`.
    - builds the wheels with `--release`, so the version is exactly the tag's;
    - resolves each platform's wheel against PyPI, alone and with each extra, on
      every Python version it claims, and stops if any fails;
+   - runs the shared eight-task GPU check on the finished Linux x86_64 wheel
+     with Python 3.12. Installation, CUDA training, prediction, and model reload
+     must pass before attachment or publication. The GPU job downloads this
+     build's wheel without rebuilding it. Repeat and reload scores use the
+     shared absolute tolerance of `1e-4` with zero relative tolerance.
+     Labels and ranks remain exact. The macOS wheel has no GPU smoke
+     check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
    - attaches the Linux x86_64 and macOS ARM64 wheels to the GitHub release.
-5. **Approve the publication.** The `kitmaker` job waits for approval on the
-   `kumo-engine-release` environment. It then checks that the Portal project
+5. **Publish through Kitmaker.** The `kitmaker` job runs in the
+   `kumo-engine-release` environment. It checks that the Portal project
    has the expected name and owner and that the attached wheel is the one this
    run built, has Kitmaker dry-run it, and only then publishes it to PyPI and
    pypi.nvidia.com, where it confirms both serve exactly those bytes. Both
@@ -135,6 +142,7 @@ this workflow.
 | --- | --- |
 | Tag does not match `VERSION` | Delete the release and tag, fix the version (or the tag), publish again. Nothing was uploaded. |
 | `check-requirements` fails | A requirement is not on PyPI yet, usually `kumo-glove-6b-50d`. Publish it, then re-run the failed jobs. Nothing was attached or published. |
+| `wheel-smoke` fails | Read `summary.json` and the logs in the `kumo-engine-wheel-smoke-*` artifact. For a transient failure, re-run the failed jobs. For a code defect, fix the code. Delete the blocked GitHub release and tag, then recreate them at the fixed commit. Attachment and publication remain blocked. |
 | Build or glibc-floor check fails | Fix on the branch, delete the release and tag, then recreate the tag on the fixed commit. Nothing was uploaded. |
 | `kitmaker` fails before *publication* starts | Nothing was published. Fix the cause and re-run the failed job. |
 | `kitmaker` fails during *publication* | Check PyPI first: a file that reached it stays there. Re-run only if the file is missing. |
@@ -143,7 +151,8 @@ this workflow.
 ## Manual builds
 
 Running the workflow by hand (Actions, *Run workflow*) builds the wheel as
-`<version>+<commit>` and keeps it as a workflow artifact for 30 days. It never
+`<version>+<commit>`, runs dependency and GPU checks, and keeps the wheel
+as a workflow artifact for 30 days. It never
 attaches or publishes anything: attaching runs only for release events, and PyPI
 rejects local versions anyway.
 
@@ -175,7 +184,7 @@ Kitmaker downloads the wheels from the GitHub release, the repository must be
 public when a release is published. The `kumo-engine-release` environment
 needs:
 
-- required reviewers, since its approval is what publishes;
+- required reviewers for a manual approval gate;
 - the secret `KITMAKER_API_TOKEN`, a token for a Kitmaker service account
   owned by the Portal projects' owner;
 - the variable `KITMAKER_PIC`, that owner's email address.

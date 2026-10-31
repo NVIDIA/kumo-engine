@@ -95,7 +95,7 @@ def test_release_steps_use_the_matching_platform_and_wheel(
         assert command['target'] == '14.0'
 
 
-def test_all_platforms_require_validation_and_release_approval():
+def test_all_platforms_require_validation_and_release_environment():
     arches = {build['arch'] for build in BUILDS}
     assert len(arches) == len(BUILDS)
     for job in ['check-requirements', 'kitmaker']:
@@ -103,9 +103,30 @@ def test_all_platforms_require_validation_and_release_approval():
             'include']} == arches
     assert JOBS['check-requirements']['needs'] == ['build']
     assert set(JOBS['attach-to-release']['needs']) == {
-        'build', 'check-requirements'
+        'build', 'check-requirements', 'wheel-smoke'
     }
     assert JOBS['kitmaker']['needs'] == ['attach-to-release']
     assert JOBS['kitmaker']['environment'] == 'kumo-engine-release'
     for job in ['attach-to-release', 'kitmaker']:
         assert JOBS[job]['if'] == "${{ github.event_name == 'release' }}"
+    smoke = yaml.safe_load((WORKFLOW.parent /
+                            'kumo-engine-wheel-smoke.yml').read_text())
+    assert set(smoke[True]) == {'workflow_call'}
+
+
+def test_publication_forwards_the_shared_prediction_tolerance():
+    root = WORKFLOW.parents[2]
+    workflow = yaml.safe_load(
+        (root / ('.github/workflows/kumo-engine-wheel-smoke.yml')).read_text())
+    action = yaml.safe_load(
+        (root / ('.github/actions/engine-gpu-smoke/action.yml')).read_text())
+    call = next(step['with'] for step in workflow['jobs']['smoke']['steps']
+                if step.get('uses') == './.github/actions/engine-gpu-smoke')
+    pr = yaml.safe_load((root / '.github/workflows/kumo-engine-pr.yml').read_text())
+    pr_call = next(step['with'] for job in pr['jobs'].values()
+                   for step in job.get('steps', [])
+                   if step.get('uses') == './.github/actions/engine-gpu-smoke')
+    run = next(step for step in action['runs']['steps']
+               if step.get('name') == 'Run the eight GPU tasks outside the checkout')
+    assert call['reload-atol'] == pr_call['reload-atol'] == '0.0001'
+    assert run['env']['RELOAD_ATOL'] == '${{ inputs.reload-atol }}' and '--reload-atol "$RELOAD_ATOL"' in run['run']

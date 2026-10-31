@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo Engine - Wheel smoke
+
+# The build workflow supplies its finished wheel. Candidate PR feedback runs
+# separately through the trusted copy-pr-bot route in Kumo Engine PR.
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      wheel_artifact:
+        description: Artifact from this run containing the finished wheel.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  smoke:
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    timeout-minutes: 22
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    env:
+      CUDA_VISIBLE_DEVICES: '0'
+      KUMO_ACCELERATOR: gpu
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+      OPENBLAS_NUM_THREADS: '4'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Checkout the shared GPU check
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+
+      - name: Download the finished wheel from this build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: ${{ inputs.wheel_artifact }}
+          path: ${{ runner.temp }}/wheel-smoke-input
+
+      - name: Test the finished wheel on all eight GPU tasks
+        uses: ./.github/actions/engine-gpu-smoke
+        with:
+          wheel-path: ${{ runner.temp }}/wheel-smoke-input/*.whl
+          reload-atol: '0.0001'
+
+      - name: Preserve GPU results and logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: kumo-engine-wheel-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/engine-gpu-smoke
+          retention-days: 14
+          if-no-files-found: warn
