@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Platform-neutral run records and the `Tracking` protocol."""
+r"""Platform-neutral run records and the `Tracking` base class."""
 
 import dataclasses
 import json
@@ -11,6 +11,7 @@ import queue
 import threading
 import time
 import warnings
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
@@ -22,7 +23,6 @@ from typing import (
     List,
     Mapping,
     Optional,
-    Protocol,
     Sequence,
     Tuple,
 )
@@ -208,35 +208,135 @@ def trial_spec(events: Sequence[Event]) -> RunSpec:
     )
 
 
-class Tracking(Protocol):
+class Tracking(ABC):
     r"""Records one `Trainer.fit` in an experiment tracker.
 
     Calls come from one background thread. `start` gets the fit run's
     record without metrics, `on_trial` a trial attempt's record so far with
     the event that updated it, and `finish` the fit run's final record
     (`None` if tracking stopped early, which should end the run as failed).
-    Optional members: ``prepare()``, called first on the fit's own thread;
-    ``log_metrics(metrics, step)``, series of the fit run as they come (a
-    single trial's epochs, or a search's best validation metric after each
-    trial); ``tags`` (extra fit-run tags); ``log_model(bundle_dir, manifest,
-    snapshot, registry)``, called after a fit that succeeded and before
-    `finish`, which the fit waits for while the tracking thread is alive, up
-    to an hour (an error, a stopped thread or the time limit ends the run as
-    failed), and which returns the version it registered at ``registry``, a
-    ``ModelRegistryLocation``; ``connector``, a connector whose model
-    registry ``registry`` registers in when there is no ``log_model``; and
-    ``platform``, ``run_id`` and ``run_url``, the tracker's own run once
-    `start` returned, recorded as the model manifest's ``tracking``.
+    Override the optional members a tracker supports. ``log_model(bundle_dir,
+    manifest, snapshot, registry)`` is called after a fit that succeeded and
+    before `finish`, which the fit waits for while the tracking thread is
+    alive, up to an hour (an error, a stopped thread or the time limit ends
+    the run as failed), and returns the version it registered at
+    ``registry``, a ``ModelRegistryLocation``. Without it, ``registry``
+    registers in the model registry of ``connector``. ``platform``,
+    ``run_id`` and ``run_url`` are the tracker's own run once `start`
+    returned, recorded as the model manifest's ``tracking``.
     """
+
+    run_id: Optional[str] = None
+    run_url: Optional[str] = None
+    tags: Optional[Mapping[str, str]] = None
+    connector: Any = None
+    log_model: Optional[Callable[..., Optional['PublishedModel']]] = None
+    register: Optional[Callable[..., 'PublishedModel']] = None
+    load_model: Optional[Callable[..., Any]] = None
+
+    @property
+    def platform(self) -> str:
+        return type(self).__name__
+
+    @abstractmethod
     def start(self, record: RunRecord) -> None:
         ...
 
+    @abstractmethod
     def on_trial(self, record: RunRecord, event: Event) -> None:
         ...
 
+    @abstractmethod
     def finish(self, record: Optional[RunRecord],
                error: Optional[BaseException]) -> None:
         ...
+
+    def prepare(self) -> None:
+        r"""Called first, on the fit's own thread."""
+
+    def check(self, registry: Optional['ModelRegistryLocation'] = None
+              ) -> None:
+        r"""Called when `kumo.MLOps` is built."""
+
+    def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
+        r"""The fit run's series: a single trial's epochs, or a search's
+        best validation metric after each trial."""
+
+
+class _Foreign(Tracking):
+    r"""A tracker that does not subclass `Tracking`, with its defaults."""
+
+    def __init__(self, tracker: Any) -> None:
+        self._tracker = tracker
+
+    def start(self, record: RunRecord) -> None:
+        self._tracker.start(record)
+
+    def on_trial(self, record: RunRecord, event: Event) -> None:
+        self._tracker.on_trial(record, event)
+
+    def finish(self, record: Optional[RunRecord],
+               error: Optional[BaseException]) -> None:
+        self._tracker.finish(record, error)
+
+    def prepare(self) -> None:
+        getattr(self._tracker, 'prepare', _none)()
+
+    def check(self, registry: Optional['ModelRegistryLocation'] = None
+              ) -> None:
+        check = getattr(self._tracker, 'check', None)
+        if callable(check):
+            check(registry)
+
+    def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
+        getattr(self._tracker, 'log_metrics', _none)(metrics, step)
+
+    @property
+    def platform(self) -> str:
+        return getattr(self._tracker, 'platform',
+                       type(self._tracker).__name__)
+
+    @property
+    def run_id(self) -> Optional[str]:
+        return getattr(self._tracker, 'run_id', None)
+
+    @property
+    def run_url(self) -> Optional[str]:
+        return getattr(self._tracker, 'run_url', None)
+
+    @property
+    def tags(self) -> Optional[Mapping[str, str]]:
+        return getattr(self._tracker, 'tags', None)
+
+    @property
+    def connector(self) -> Any:
+        return getattr(self._tracker, 'connector', None)
+
+    @property
+    def log_model(self) -> Optional[Callable[..., Any]]:
+        return _callable(getattr(self._tracker, 'log_model', None))
+
+    @property
+    def register(self) -> Optional[Callable[..., Any]]:
+        return _callable(getattr(self._tracker, 'register', None))
+
+    @property
+    def load_model(self) -> Optional[Callable[..., Any]]:
+        return getattr(self._tracker, 'load_model', None)
+
+    def __repr__(self) -> str:
+        return repr(self._tracker)
+
+
+def as_tracking(tracking: Any) -> Optional[Tracking]:
+    r"""``tracking``, wrapped unless it subclasses `Tracking`."""
+    if tracking is None or isinstance(tracking, Tracking):
+        return tracking
+    return _Foreign(tracking)
+
+
+def _callable(value: Any) -> Any:
+    return value if callable(value) else None
 
 
 @dataclass
@@ -277,9 +377,8 @@ class RegistrationError(Exception):
 
 
 class TrackingSession:
-    def __init__(self, tracking: Optional[Tracking],
-                 warn: bool = True) -> None:
-        self._tracker = tracking if _rank() == 0 else None
+    def __init__(self, tracking: Any, warn: bool = True) -> None:
+        self._tracker = as_tracking(tracking) if _rank() == 0 else None
         self._warn = warn
         self.spec: Optional[RunSpec] = None
         self._trials: Dict[int, List[Event]] = {}
@@ -308,14 +407,14 @@ class TrackingSession:
             return
         self.spec = value
         self._search = _Search.of(value.params)
-        self._call(lambda tracker: getattr(tracker, 'prepare', _none)())
+        self._call(lambda tracker: tracker.prepare())
         self._worker = threading.Thread(target=self._work,
                                         name='kumo-tracking', daemon=True)
         self._worker.start()
 
         def begin(tracker: Tracking) -> None:
             tracker.start(run_record(dataclasses.replace(value, tags={
-                **value.tags, **(getattr(tracker, 'tags', None) or {})
+                **value.tags, **(tracker.tags or {})
             })))
 
         started = self._submit(lambda: self._call(begin))
@@ -329,12 +428,11 @@ class TrackingSession:
         if self.spec is None or not self._started.wait(FINISH_SECONDS):
             return None
         tracker = self._tracker
-        run_id = getattr(tracker, 'run_id', None)
+        run_id = None if tracker is None else tracker.run_id
         if tracker is None or not run_id:
             return None
-        return TrackingRef(
-            platform=str(getattr(tracker, 'platform', type(tracker).__name__)),
-            run_id=str(run_id), url=getattr(tracker, 'run_url', None))
+        return TrackingRef(platform=str(tracker.platform), run_id=str(run_id),
+                           url=tracker.run_url)
 
     def on_event(self, event: Event) -> None:
         if self.spec is None or event.trial is None:
@@ -356,8 +454,7 @@ class TrackingSession:
         if series is not None:
             metrics, step = logged_names(series[0]), series[1]
             self._submit(lambda: self._call(
-                lambda tracker: getattr(tracker, 'log_metrics', _none)(
-                    metrics, step)))
+                lambda tracker: tracker.log_metrics(metrics, step)))
 
     def log_model(
         self,
@@ -367,8 +464,8 @@ class TrackingSession:
         registry: Optional['ModelRegistryLocation'] = None,
     ) -> Tuple[Optional['PublishedModel'], Optional[BaseException]]:
         r"""The tracker's ``log_model``, run on the tracking thread."""
-        if self._worker is None or (self._tracker is not None and not callable(
-                getattr(self._tracker, 'log_model', None))):
+        if self._worker is None or (self._tracker is not None
+                                    and self._tracker.log_model is None):
             return None, None
         done = threading.Event()
         failed: List[BaseException] = []
@@ -382,9 +479,8 @@ class TrackingSession:
                         'tracking stopped after an earlier failure' + (
                             '' if self.error is None else
                             f' ({full_error(self.error)})'))
-                registered.append(
-                    getattr(tracker, 'log_model')(bundle_dir, manifest,
-                                                  snapshot, registry))
+                registered.append(tracker.log_model(bundle_dir, manifest,
+                                                    snapshot, registry))
             except BaseException as error:
                 failed.append(error)
             finally:
