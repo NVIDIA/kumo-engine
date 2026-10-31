@@ -22,16 +22,23 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 import pandas as pd
 from databricks.sql.client import Connection
+from kumo_core.object_store_sink import FilesystemSink
 from kumo_databricks.registry import DatabricksModelRegistryMixin
 from kumo_databricks.session import _target_config
+from kumo_databricks.volume import is_volume_path, volume_filesystem
 from kumo_databricks.write import RunVolume
 from kumoapi.data_source import DataSourceType
 from kumoapi.jobs import WriteMode
-from kumoapi.plugin import SourceConnector
+from kumoapi.plugin import (
+    ModelRegistryLocation,
+    PublishedModel,
+    SourceConnector,
+)
+from pyarrow.fs import FileSystem
 
 
 class DatabricksSinkBackend(DatabricksModelRegistryMixin):
@@ -125,6 +132,9 @@ class DatabricksSinkBackend(DatabricksModelRegistryMixin):
                 names a schema other than the connector's, or if the staging
                 volume is neither reachable nor creatable.
         """
+        if self.holds_files(connector, table_name):
+            return FilesystemSink(self).write_table(
+                connector, table_name, frame, write_mode, export_id=export_id)
         del project_id, export_id
         from kumo_databricks import output, sql, write
 
@@ -153,7 +163,11 @@ class DatabricksSinkBackend(DatabricksModelRegistryMixin):
     def write_files(self, connector, table_name, files,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
                     export_id=None, extra_columns=None):
-        """Pass selected Parquet directly to the existing hosted COPY owner."""
+        """Copy Parquet to a volume path, or COPY it into a table."""
+        if self.holds_files(connector, table_name):
+            return FilesystemSink(self).write_files(
+                connector, table_name, files, write_mode,
+                export_id=export_id, extra_columns=extra_columns)
         del project_id, export_id
         from functools import partial
 
@@ -186,6 +200,62 @@ class DatabricksSinkBackend(DatabricksModelRegistryMixin):
                     replace=write_mode == WriteMode.OVERWRITE,
                     prepare_file=prepare)
         return sql.qualified_name(config.catalog, schema, table)
+
+    def publish_model(
+        self,
+        connector: SourceConnector,
+        bundle_dir: str,
+        *,
+        path: Optional[str] = None,
+        location: Optional[ModelRegistryLocation] = None,
+        metadata: Mapping[str, str] = {},
+        metrics: Mapping[str, float] = {},
+        project_id: Optional[str] = None,
+    ) -> PublishedModel:
+        """Register in Unity Catalog, or copy to a volume ``path``."""
+        if location is None and path and self.holds_files(connector, path):
+            return FilesystemSink(self).publish_model(
+                connector, bundle_dir, path=path, metadata=metadata)
+        return super().publish_model(connector, bundle_dir, path=path,
+                                     location=location, metadata=metadata,
+                                     metrics=metrics, project_id=project_id)
+
+    def fetch_model(
+        self,
+        connector: SourceConnector,
+        local_dir: str,
+        *,
+        path: Optional[str] = None,
+        location: Optional[ModelRegistryLocation] = None,
+        project_id: Optional[str] = None,
+    ) -> PublishedModel:
+        """Download from Unity Catalog, or from a volume ``path``."""
+        if location is None and path and self.holds_files(connector, path):
+            return FilesystemSink(self).fetch_model(connector, local_dir,
+                                                    path=path)
+        return super().fetch_model(connector, local_dir, path=path,
+                                   location=location, project_id=project_id)
+
+    def preflight_write_files(self, connector: SourceConnector,
+                              table_name: str,
+                              write_mode: Optional[WriteMode] = None) -> None:
+        """Refuse an occupied volume directory; tables are not checked."""
+        if self.holds_files(connector, table_name):
+            FilesystemSink(self).preflight_write_files(
+                connector, table_name, write_mode)
+
+    def holds_files(self, connector: SourceConnector, path: str) -> bool:
+        """Volume paths hold files; anything else is a table."""
+        return is_volume_path(path)
+
+    def filesystem(self, connector: SourceConnector,
+                   path: str) -> tuple[FileSystem, str]:
+        """A volume path's filesystem, as the connector's identity."""
+        if not self.holds_files(connector, path):
+            raise ValueError(
+                f"{path!r} is not a Unity Catalog volume path; Databricks "
+                f"artifacts go under /Volumes/<catalog>/<schema>/<volume>/.")
+        return volume_filesystem(self._client(connector)), path.rstrip('/')
 
     def __repr__(self) -> str:
         return f'DatabricksSinkBackend(identity={self._identity!r})'
