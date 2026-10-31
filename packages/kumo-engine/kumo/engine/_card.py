@@ -280,7 +280,8 @@ def _row(cells: Sequence[str]) -> str:
 
 
 def _cell(value: Any) -> str:
-    return '' if value is None else number(value).replace('|', '\\|')
+    return '' if value is None else ' '.join(
+        number(value).replace('|', '\\|').split())
 
 
 def _at(name: str) -> Optional[str]:

@@ -208,3 +208,8 @@ def test_data_preparation_marks_a_snapshot_built_by_another_process(
         'prep.training_table.seconds': '12.5',
         'prep.training_table.bytes': '536870912'}
     assert _prep_cost.prep_summaries(SnapshotManifest(id='old')) == []
+
+
+def test_a_cell_with_a_newline_stays_on_its_row():
+    table = Table('data/columns', ('column', 'top values'), (('BIO', 'a\nb|c'),))
+    assert _card.table_text(table).splitlines()[-1] == '| BIO | a b\\|c |'
