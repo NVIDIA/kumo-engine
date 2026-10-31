@@ -205,7 +205,10 @@ def _model_args(bundle: Path, metadata: Mapping[str, str],
         _LOG.warning(
             'Registering the bundle as a version that does not score in '
             'Snowflake: %s', error)
-    return _carrier_args(bundle)
+    return {
+        'model': _bundle_model(str(bundle)),
+        'signatures': _carrier_signature()
+    }
 
 
 def _model_builder() -> Optional[Callable[..., Dict[str, Any]]]:
@@ -214,13 +217,6 @@ def _model_builder() -> Optional[Callable[..., Dict[str, Any]]]:
     for entry in entry_points(group=MODEL_BUILDER_GROUP):
         return entry.load()
     return None
-
-
-def _carrier_args(bundle: Path) -> Dict[str, Any]:
-    return {
-        'model': _bundle_model(str(bundle)),
-        'signatures': _carrier_signature()
-    }
 
 
 def _serving_target(connector: SourceConnector) -> Dict[str, Optional[str]]:
