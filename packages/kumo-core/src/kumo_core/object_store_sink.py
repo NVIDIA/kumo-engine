@@ -6,9 +6,8 @@ import os
 import posixpath
 import shutil
 from abc import ABC, abstractmethod
-from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 import pandas as pd
 from kumoapi.jobs import WriteMode
@@ -55,44 +54,18 @@ def download_file(filesystem: FileSystem, source: str,
         shutil.copyfileobj(reader, writer, _CHUNK)
 
 
-def upload_bundle(filesystem: FileSystem, destination: str, bundle_dir: str,
-                  upload: Optional[Callable[[str, str], None]] = None) -> None:
+def upload_bundle(filesystem: FileSystem, destination: str,
+                  bundle_dir: str) -> None:
     """Copy ``bundle_dir`` under ``destination``, provenance last."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
-    upload = upload or partial(upload_file, filesystem)
     root = Path(bundle_dir)
     for source in sorted((item for item in root.rglob('*') if item.is_file()),
                          key=lambda item:
                          (item.name == PROVENANCE_FILE, item)):
         target = f'{destination}/{source.relative_to(root).as_posix()}'
         _prepared(filesystem, posixpath.dirname(target))
-        upload(str(source), target)
-
-
-def download_bundle(
-        filesystem: FileSystem, source: str, local_dir: str,
-        download: Optional[Callable[[str, str], None]] = None) -> bool:
-    """Replace ``local_dir`` with ``source``; False if it is empty."""
-    from kumo_core.sources.layout import confined
-    from pyarrow.fs import FileSelector, FileType
-
-    download = download or partial(download_file, filesystem)
-    destination = Path(local_dir)
-    if destination.exists():
-        shutil.rmtree(destination)
-    destination.mkdir(parents=True)
-    found = False
-    selector = FileSelector(source, recursive=True, allow_not_found=True)
-    for info in filesystem.get_file_info(selector):
-        if info.type is not FileType.File:
-            continue
-        found = True
-        # Remote keys are untrusted.
-        target = destination / confined(info.path[len(source) + 1:])
-        target.parent.mkdir(parents=True, exist_ok=True)
-        download(info.path, str(target))
-    return found
+        upload_file(filesystem, str(source), target)
 
 
 class ObjectStoreSinkBackend(ABC):
@@ -214,6 +187,9 @@ class ObjectStoreSinkBackend(ABC):
     ) -> PublishedModel:
         """Replace the local directory with the published bundle."""
         del project_id
+        from kumo_core.sources.layout import confined
+        from pyarrow.fs import FileSelector, FileType
+
         if location is not None:
             raise NotImplementedError(
                 f"The local backend does not import a model by name from "
@@ -227,8 +203,21 @@ class ObjectStoreSinkBackend(ABC):
                 f"config.")
 
         filesystem, source = self.filesystem(connector, path)
-        if not download_bundle(filesystem, source, local_dir,
-                               partial(self._download_file, filesystem)):
+        destination = Path(local_dir)
+        if destination.exists():
+            shutil.rmtree(destination)
+        destination.mkdir(parents=True)
+        found = False
+        selector = FileSelector(source, recursive=True, allow_not_found=True)
+        for info in filesystem.get_file_info(selector):
+            if info.type is not FileType.File:
+                continue
+            found = True
+            # Remote keys are untrusted.
+            target = destination / confined(info.path[len(source) + 1:])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._download_file(filesystem, info.path, str(target))
+        if not found:
             raise ValueError(
                 f"Nothing is published at {self._uri(source)}. Check the "
                 f"path the model was exported to.")
