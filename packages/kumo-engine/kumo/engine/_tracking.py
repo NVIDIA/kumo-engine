@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import queue
-import re
 import threading
 import time
 import warnings
@@ -35,6 +34,7 @@ from kumo_core.instrumentation import format_error
 
 from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
+from kumo.engine._run_names import model_label, run_name, scored_model
 from kumo.engine._text import entity, number
 from kumo.engine._version import __version__
 
@@ -185,14 +185,6 @@ def logged_names(metrics: Mapping[str, Any],
     return named
 
 
-def model_label(registered: Optional[str], query: Optional[str],
-                task_type: Optional[str]) -> str:
-    r"""The registered name's last part, else <entity>-<task type>."""
-    if registered:
-        return registered.rsplit('.', 1)[-1]
-    return '-'.join(filter(None, (entity(query), task_type))) or 'model'
-
-
 def by_step(steps: Mapping[str, Sequence[Tuple[int, float]]]
             ) -> List[Tuple[int, Dict[str, float]]]:
     r"""Each step's metrics, in step order."""
@@ -302,9 +294,9 @@ def prediction_record(manifest: 'PredictionManifest',
     return run_record(
         RunSpec(
             kind='prediction',
-            name=run_name('prediction', (
-                f'{label}-{manifest.parents.model.id[:8]}' if registered is None
-                else versioned(label, registered.version)), suffix),
+            name=run_name('prediction', scored_model(
+                label, getattr(registered, 'version', None),
+                manifest.parents.model.id), suffix),
             name_suffix=suffix,
             model_label=label,
             started=_started(manifest),
@@ -351,21 +343,6 @@ def prediction_parents(manifest: Optional['PredictionManifest']
 
 def logs_models(tracker: Any) -> bool:
     return callable(getattr(tracker, 'log_model', None))
-
-
-def run_name(kind: str, core: str, suffix: Optional[str] = None) -> str:
-    r"""<kind>-<core><suffix>, the kind not repeated."""
-    word = _KIND_WORDS.get(kind, kind)
-    named = re.match(rf'{word}([-_]|$)', core, re.IGNORECASE)
-    return (core if named else f'{word}-{core}') + (suffix or '')
-
-
-_KIND_WORDS = {'prediction': 'predict'}
-
-
-def versioned(model: str, version: str) -> str:
-    r"""<model>-v<version>, or <model>-<version> for a named version."""
-    return f'{model}-v{version}' if version.isdigit() else f'{model}-{version}'
 
 
 def fit_run_id(manifest: Any) -> Optional[str]:

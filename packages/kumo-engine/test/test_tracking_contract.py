@@ -713,7 +713,7 @@ def test_a_prediction_is_as_of_its_anchors_else_its_snapshot(
      'PREDICT_nightly-2024-04-29'),
 ])
 def test_a_run_name_starts_with_its_kind_once(kind, core, suffix, name):
-    from kumo.engine._tracking import run_name
+    from kumo.engine._run_names import run_name
 
     assert run_name(kind, core, suffix) == name
 

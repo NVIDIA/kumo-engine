@@ -44,6 +44,13 @@ from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 from kumo.engine import _card
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
+from kumo.engine._run_names import (
+    is_dated_fit,
+    model_label,
+    record_name,
+    registered_fit_name,
+    trial_name,
+)
 from kumo.engine._summary_tables import Routed, route, table_json
 from kumo.engine._tracking import (
     DROPPED_PARAMS,
@@ -51,10 +58,7 @@ from kumo.engine._tracking import (
     RunRecord,
     SingleRunHooks,
     by_step,
-    model_label,
     model_metrics,
-    run_name,
-    versioned,
 )
 from kumo.engine._version import __version__
 from kumo.engine.connector._extras import import_provider
@@ -362,10 +366,9 @@ class MlflowTracking(SingleRunHooks):
 
     def _rename_fit(self, fit: Any, published: PublishedModel) -> None:
         r"""Names the fit run after its first registered version."""
-        if not re.search(r'-\d{8}-\d{6}$', fit.run_name):
+        if not is_dated_fit(fit.run_name):
             return
-        name = run_name('fit', versioned(
-            model_label(published.name, None, None), published.version))
+        name = registered_fit_name(published.name, published.version)
         with self.target.scope():
             self._client.update_run(fit.run_id, name=name)
             for trial in self._client.search_runs(
@@ -416,7 +419,7 @@ class MlflowTracking(SingleRunHooks):
             if self._outer is not None:
                 tags['mlflow.parentRunId'] = self._outer
             kind = record.tags.get('kumo.kind')
-            name = (run_name(kind, self.run_name, record.name_suffix)
+            name = (record_name(record, self.run_name)
                     if self.run_name and kind in ('fit', 'prediction')
                     else record.name)
             if kind == 'prediction' and name:
@@ -517,7 +520,7 @@ class MlflowTracking(SingleRunHooks):
         if event.name == 'trial_started':
             with self.target.scope():
                 run = self._client.create_run(
-                    self._experiment_id, run_name=_trial_name(
+                    self._experiment_id, run_name=trial_name(
                         *key, cast(str, self.logged_run_name)),
                     tags={**record.tags, 'mlflow.parentRunId': self._parent})
             self._children[key] = self._trials[key] = run.info.run_id
@@ -737,13 +740,12 @@ class MlflowTracking(SingleRunHooks):
         version = record.tags.get('kumo.model_version')
         if version is None:
             return
-        model = model_label(record.tags['kumo.model_name'], None, None)
-        name = run_name('fit', versioned(model, version))
+        name = registered_fit_name(record.tags['kumo.model_name'], version)
         self.logged_run_name = name
         with self.target.scope():
             self._client.update_run(cast(str, self._parent), name=name)
             for key, run_id in self._trials.items():
-                self._client.update_run(run_id, name=_trial_name(*key, name))
+                self._client.update_run(run_id, name=trial_name(*key, name))
 
     def _describe_version(self, record: RunRecord) -> None:
         r"""Adds the fit's headline metrics, run and bundle to its version."""
@@ -1014,11 +1016,6 @@ def _free_name(client: Any, experiment_id: str, name: str) -> str:
 
 def _millis(moment: Optional[datetime]) -> Optional[int]:
     return None if moment is None else int(moment.timestamp() * 1000)
-
-
-def _trial_name(trial: int, attempt: int, fit: str) -> str:
-    return f'trial-{trial}-{fit}' + (f'-attempt-{attempt}' if attempt > 1
-                                     else '')
 
 
 def _part(name: str, text: str) -> str:

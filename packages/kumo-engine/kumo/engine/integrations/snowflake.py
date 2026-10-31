@@ -18,6 +18,7 @@ from kumo_core.summaries import Summary
 
 from kumo.engine import _card
 from kumo.engine._events import Event
+from kumo.engine._run_names import record_name
 from kumo.engine._summary_tables import route, table_json
 from kumo.engine._tracking import (
     DROPPED_METRICS,
@@ -26,8 +27,6 @@ from kumo.engine._tracking import (
     SingleRunHooks,
     by_step,
     model_metrics,
-    run_name,
-    versioned,
 )
 from kumo.engine.connector._extras import import_provider
 
@@ -177,7 +176,7 @@ class SnowflakeTracking(SingleRunHooks):
         self._check_room(len(existing), record.tags.get('kumo.kind'))
         self._started = getattr(record, 'started', None) or _now()
         self._run = tracking.start_run(self._new_run_name(
-            existing, _snowflake_name(record, self._started, self.run_name)))
+            existing, _identifier(record_name(record, self.run_name))))
         self.run_id = self.logged_run_name = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
@@ -345,25 +344,6 @@ class SnowflakeTracking(SingleRunHooks):
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _snowflake_name(record: RunRecord, started: datetime,
-                    named: Optional[str] = None) -> str:
-    r"""The run's name as an upper-case identifier."""
-    tags = record.tags
-    kind = tags.get('kumo.kind')
-    model = getattr(record, 'model_label', None) or 'model'
-    if kind == 'fit':
-        return _identifier(run_name('fit', named or (
-            f"{model}-{started.astimezone(timezone.utc):%Y%m%d-%H%M%S}")))
-    version = tags.get('kumo.model_version')
-    core = named or (versioned(model, version) if version else
-                     f"{model}-{tags.get('kumo.bundle_id', '')[:8]}")
-    suffix = record.name_suffix or (
-        f"-{tags['kumo.as_of']}" if tags.get('kumo.as_of') else '')
-    word = (kind if kind != 'monitoring' else
-            'eval' if tags.get('kumo.monitor') == 'evaluate' else 'drift')
-    return _identifier(run_name(word, core, suffix))
 
 
 def _model_param(record: RunRecord) -> Dict[str, str]:
