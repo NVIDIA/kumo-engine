@@ -179,3 +179,4 @@ def test_an_occupied_volume_directory_is_refused_before_scoring(tmp_path):
                                        write_mode=mode)
     sink.preflight_write_files(SimpleNamespace(), f'{ROOT}/other/')
     sink.preflight_write_files(SimpleNamespace(), 'main.ml.scores')
+
