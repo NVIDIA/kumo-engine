@@ -192,7 +192,7 @@ def test_data_preparation_marks_a_snapshot_built_by_another_process(
                      finished_at='2026-10-29T06:01:30+00:00', seconds=90.0,
                      disk_bytes=3 * 1024**3)
     monkeypatch.setattr(_prep_cost, '_built_here', {'tt'})
-    table, = _prep_cost.prep_summaries(
+    table, *tags = _prep_cost.prep_summaries(
         SnapshotManifest(id='snap', build=cost),
         TrainingTableManifest(id='tt', build=BuildCost(
             started_at='', finished_at='', seconds=12.5,
@@ -203,7 +203,7 @@ def test_data_preparation_marks_a_snapshot_built_by_another_process(
         '| --- | ---: | --- |',
         '| Graph snapshot (built earlier, reused) | 90 | 3 GiB |',
         '| Training table | 12.5 | 512 MiB |'])
-    assert _prep_cost.prep_params(table) == {
+    assert {tag.name: tag.value for tag in tags} == {
         'prep.snapshot.seconds': '90.0', 'prep.snapshot.bytes': '3221225472',
         'prep.training_table.seconds': '12.5',
         'prep.training_table.bytes': '536870912'}
