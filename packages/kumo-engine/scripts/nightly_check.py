@@ -494,6 +494,7 @@ def ordered_batches(files, directory):
     directory.mkdir(parents=True, exist_ok=True)
     with duckdb.connect(config={
             'memory_limit': '256MB',
+            'threads': 4,
             'temp_directory': str(directory)
     }) as db:
         for batch in db.read_parquet(list(files)).order(

@@ -106,6 +106,49 @@ class NightlyRuntimeTest(unittest.TestCase):
             nightly.ranked_rows([frame], [1], list(range(600)),
                                 [list(range(499))], 5, 500)
 
+    def test_ranked_sort_spills_without_losing_or_reordering_rows(self):
+        import numpy as np
+        import pytest
+        from unittest.mock import patch
+
+        duckdb = pytest.importorskip('duckdb')
+        connect = duckdb.connect
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'ranked.parquet'
+            with connect(config={'threads': 4}) as db:
+                db.sql("SELECT i AS ROW_ID, "
+                       "(hash(i)%100000000000)::BIGINT AS ENTITY, "
+                       "(i%500)::BIGINT AS CLASS, "
+                       "(hash(i+2)%1000000)::DOUBLE / 1000000 AS SCORE "
+                       "FROM range(8000000) t(i)").write_parquet(str(source))
+            seen = np.zeros(8000000, dtype=bool)
+            count, previous = 0, None
+            # Reproduce the worker's 48-core default with a real DuckDB query.
+            with patch.object(duckdb, 'connect', side_effect=lambda *, config:
+                              connect(config={'threads': 48, **config})):
+                for frame in nightly.ordered_batches([str(source)],
+                                                     root / 'spill'):
+                    pd.testing.assert_frame_equal(
+                        frame, frame.sort_values(
+                            ['ENTITY', 'SCORE', 'CLASS'],
+                            ascending=[True, False, True]))
+                    first = (int(frame.ENTITY.iloc[0]),
+                             -float(frame.SCORE.iloc[0]),
+                             int(frame.CLASS.iloc[0]))
+                    if previous is not None:
+                        self.assertLessEqual(previous, first)
+                    previous = (int(frame.ENTITY.iloc[-1]),
+                                -float(frame.SCORE.iloc[-1]),
+                                int(frame.CLASS.iloc[-1]))
+                    positions = frame.ROW_ID.to_numpy()
+                    self.assertTrue(((positions >= 0) &
+                                     (positions < len(seen))).all())
+                    seen[positions] = True
+                    count += len(frame)
+            self.assertEqual(count, 8000000)
+            self.assertTrue(seen.all())
+
     def test_reported_recall_uses_all_positives_not_only_k(self):
         truth = pd.DataFrame({'TARGET1': [[1, 2, 3, 4, 5, 6]]})
         score = nightly.quality('static_link', truth,
