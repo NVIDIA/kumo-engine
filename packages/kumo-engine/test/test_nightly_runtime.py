@@ -226,7 +226,6 @@ class TrainingWindowTest(unittest.TestCase):
 class NightlyRuntimeTest(unittest.TestCase):
     def test_resource_capture_keeps_cpu_tree_and_gpu_measures_separate(self):
         import torch
-        from unittest.mock import patch
 
         with patch.object(torch.cuda, 'mem_get_info', return_value=(1000, 9000)), \
                 patch.object(torch.cuda, 'memory_allocated', return_value=2000), \
@@ -245,7 +244,6 @@ class NightlyRuntimeTest(unittest.TestCase):
 
     def test_missing_gpu_measurement_invalidates_the_measurement(self):
         import torch
-        from unittest.mock import patch
 
         with patch.object(torch.cuda, 'mem_get_info',
                           side_effect=RuntimeError('GPU query failed')):
@@ -346,7 +344,6 @@ class NightlyRuntimeTest(unittest.TestCase):
     def test_ranked_sort_spills_without_losing_or_reordering_rows(self):
         import numpy as np
         import pytest
-        from unittest.mock import patch
 
         duckdb = pytest.importorskip('duckdb')
         connect = duckdb.connect
