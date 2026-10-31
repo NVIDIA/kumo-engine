@@ -25,6 +25,7 @@ OPTIONAL_THIRD_PARTY = (
     'botocore',
     's3fs',
     'google',
+    'azure',
     'gcsfs',
 )
 PROVIDER_PACKAGES = (
@@ -32,6 +33,7 @@ PROVIDER_PACKAGES = (
     'kumo_databricks',
     'kumo_s3',
     'kumo_gcs',
+    'kumo_adls',
     'kumo_bigquery',
 )
 FORBIDDEN_AT_IMPORT = PROVIDER_PACKAGES + OPTIONAL_THIRD_PARTY
@@ -92,6 +94,7 @@ _BARE_INSTALL = textwrap.dedent('''
     # dependency, naming the extra, or the provider defers that import
     # further and fails later.
     for cls, extra in (
+            (engine.ADLSConnector, 'adls'),
             (engine.SnowflakeConnector, 'snowflake'),
             (engine.DatabricksConnector, 'databricks'),
             (engine.S3Connector, 's3'),

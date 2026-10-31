@@ -49,6 +49,7 @@ FIRST_PARTY_DISTRIBUTIONS = {
     "kumo-core",
     "kumo-databricks",
     "kumo-gcs",
+    "kumo-adls",
     "kumo-pql",
     "kumo-s3",
     "kumo-snowflake",
