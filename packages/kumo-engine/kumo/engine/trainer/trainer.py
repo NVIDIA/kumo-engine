@@ -564,8 +564,14 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
     )
     if location and alias:
         try:
-            _set_alias(export_config.connector,
-                       replace(location, version=published.version), alias)
+            aliasing = export_config.connector.sink_backend
+            if not isinstance(aliasing, ModelAliasingSink):
+                raise NotImplementedError(
+                    f'{type(export_config.connector).__name__} cannot set '
+                    f'model aliases')
+            aliasing.set_model_alias(
+                cast(SourceConnector, export_config.connector),
+                replace(location, version=published.version), alias)
         except Exception as error:
             if warn:
                 warn_failure(
@@ -1509,15 +1515,6 @@ def _encoders(bundle_dir: Path) -> Any:
     path = listed_file(bundle_dir, 'encoders')
     return (load_json(str(path), EncodersConfig)
             if path is not None and path.is_file() else None)
-
-
-def _set_alias(connector: Connector, location: ModelRegistryLocation,
-               alias: str) -> None:
-    sink = connector.sink_backend
-    if not isinstance(sink, ModelAliasingSink):
-        raise NotImplementedError(
-            f'{type(connector).__name__} cannot set model aliases')
-    sink.set_model_alias(cast(SourceConnector, connector), location, alias)
 
 
 def warn_if_other_bundle(metadata: Optional[Mapping[str, Any]],
