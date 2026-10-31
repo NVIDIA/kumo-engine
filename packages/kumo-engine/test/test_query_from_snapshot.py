@@ -121,3 +121,52 @@ def test_each_fit_result_scores_with_its_own_model(fitted):
         own = kumo.Trainer.load(result.bundle_dir)
         pd.testing.assert_frame_equal(
             score, _scores(own, prediction_table, snapshot))
+
+
+def test_entities_missing_from_the_snapshot_are_recorded_as_skipped(
+        fitted, tmp_path):
+    trainer, graph_table, snapshot = fitted
+    anchor = pd.Timestamp(graph_table.timestamps[0])
+    pd.DataFrame({
+        'ENTITY1': [*range(10), *range(1000, 1004)],
+        'TIMESTAMP': [anchor] * 14,
+    }).to_parquet(tmp_path / 'rows.parquet')
+    rows = kumo.FileConnector(root_dir=str(tmp_path))['rows.parquet']
+
+    with pytest.warns(UserWarning, match=r'^Prediction skipped 4 of 14 '
+                      r'requested entities \(28\.6%\): not in snapshot$'):
+        result = trainer.predict(snapshot, entities=rows,
+                                 binary_classification_threshold=0.5)
+    assert sorted(result.frame['ENTITY']) == list(range(10))
+    assert (result.requested_rows, result.scored_rows,
+            result.skipped_rows) == (14, 10, 4)
+    table = result.manifest.prediction_table
+    assert sorted(table.skipped_sample) == [1000, 1001, 1002, 1003]
+    assert table.skip_reason == 'not in snapshot'
+
+    from kumo_core.summaries import Note, Scalar
+
+    from kumo.engine._tracking import prediction_record
+    summaries = prediction_record(result.manifest).summaries
+    logged = {s.name: s.value for s in summaries if isinstance(s, Scalar)}
+    assert logged['pred/skipped_share'] == pytest.approx(4 / 14)
+    assert any(isinstance(s, Note) and s.text.startswith('4 requested rows')
+               for s in summaries)
+
+    full = trainer.predict(snapshot, binary_classification_threshold=0.5)
+    assert full.skipped_rows == 0
+    assert full.requested_rows == full.scored_rows == 50
+    assert full.manifest.prediction_table.skipped_sample == []
+
+
+def test_skipped_samples_count_rows_from_the_chunks_first_row_group(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from kumo.engine.pquery.prediction_table import _sample_ids
+
+    pq.write_table(pa.table({'ENTITY1': [10, 11, 12, 13, 14]}),
+                   tmp_path / 'rows.parquet', row_group_size=2)
+    conditions = [{'column': 'ENTITY1',
+                   'samples': ['rows.parquet row group 1 row 2']}]
+    assert _sample_ids(conditions, tmp_path / 'rows.parquet') == (14, )

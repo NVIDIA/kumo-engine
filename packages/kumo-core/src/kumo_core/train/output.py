@@ -183,6 +183,8 @@ class EvalOutput:
     # outputs. See formatting.py/format_embeddings for more details:
     embedding: pd.DataFrame | None = None
 
+    counts: Any = None
+
     def save_all(
         self,
         root_dir: str,

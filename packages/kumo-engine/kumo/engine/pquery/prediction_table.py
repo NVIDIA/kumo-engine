@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Materialized prediction tables and their shared compile path."""
 
+import warnings
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
 from kumo_core.model_plan import \
     TrainingTableGenerationPlan as CoreGenerationPlan
@@ -70,6 +71,15 @@ class PredictionTable:
     compiler_options: Optional[Mapping[str, Any]] = None
     #: Effective temporal step used by the fitted forecast task.
     forecast_timeframe_step: Optional[int] = None
+    source: Literal['pql', 'custom'] = 'pql'
+    skipped_rows: int = 0
+    skipped_sample: Tuple[Any, ...] = ()
+    skip_reason: Optional[str] = None
+
+    @property
+    def requested_rows(self) -> int:
+        r"""Rows asked for: the scored rows plus the skipped ones."""
+        return self.row_count + self.skipped_rows
 
     @classmethod
     def from_source_table(
@@ -125,6 +135,7 @@ class PredictionTable:
             request,
             PreparedCustomPredictionTable(str(rows_path)),
         )
+        skipped = skipped_entities(generated.row_failures, rows_path)
         return cls(
             query=pq.query,
             table_path=Path(generated.table_path),
@@ -135,6 +146,8 @@ class PredictionTable:
             required_stages=request.task_dataset.required_stages,
             compiler_options=request.compiler_options,
             forecast_timeframe_step=request.forecast_timeframe_step,
+            source='custom',
+            **skipped,
         )
 
 
@@ -235,3 +248,65 @@ def _compile_prediction_table(
     )
     generated = generate_prediction_table(request)
     return request, generated, graph_index_id
+
+
+SKIPPED_SAMPLE = 20
+_SKIP_REASONS = {
+    'unknown_entity': 'not in snapshot',
+    'non_canonical_entity': 'not a canonical node in the snapshot',
+    'null_entity': 'null entity id',
+    'null_timestamp': 'null anchor time',
+}
+
+
+def skipped_entities(report: Optional[Mapping[str, Any]],
+                     rows_path: Path) -> Dict[str, Any]:
+    r"""Skipped-row fields from DiskGraph's row_failures; warns once."""
+    skipped = int((report or {}).get('skipped_rows') or 0)
+    if not skipped:
+        return {}
+    conditions = report.get('by_condition') or []
+    reasons = [(_SKIP_REASONS.get(entry.get('condition'),
+                                  str(entry.get('condition')).replace(
+                                      '_', ' ')), int(entry.get('count') or 0))
+               for entry in conditions]
+    reason = (reasons[0][0] if len(reasons) == 1 else '; '.join(
+        f'{name} ({count:,})' for name, count in reasons)) or None
+    requested = int(report.get('rows_read') or 0)
+    warnings.warn(
+        f'Prediction skipped {skipped:,} of {requested:,} requested entities '
+        f'({skipped / requested if requested else 1:.1%}): {reason}',
+        UserWarning, stacklevel=3)
+    return {
+        'skipped_rows': skipped,
+        'skipped_sample': _sample_ids(conditions, rows_path),
+        'skip_reason': reason,
+    }
+
+
+def _sample_ids(conditions: Any, rows_path: Path) -> Tuple[Any, ...]:
+    import re
+
+    import pyarrow.parquet as pq
+
+    ids: List[Any] = []
+    try:
+        for entry in conditions:
+            for location in entry.get('samples') or ():
+                found = re.fullmatch(r'(.+) row group (\d+) row (\d+)',
+                                     str(location))
+                if found is None or len(ids) >= SKIPPED_SAMPLE:
+                    continue
+                part = Path(rows_path)
+                part = part / found.group(1) if part.is_dir() else part
+                reader = pq.ParquetFile(part)
+                group, row = int(found.group(2)), int(found.group(3))
+                while row >= reader.metadata.row_group(group).num_rows:
+                    row -= reader.metadata.row_group(group).num_rows
+                    group += 1
+                column = reader.read_row_group(
+                    group, columns=[entry['column']]).column(0)
+                ids.append(column[row].as_py())
+    except Exception:
+        pass
+    return tuple(ids)

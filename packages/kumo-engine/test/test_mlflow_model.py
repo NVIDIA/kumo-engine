@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from kumo_core.artifacts import PROVENANCE_FILE
+from kumo_core.summaries import Scalar
 from kumoapi.model_plan import ModelPlan
 from kumoapi.plugin import PublishedModel
 from test_mlflow_tracking import (  # noqa: F401
@@ -19,8 +20,12 @@ from test_mlflow_tracking import (  # noqa: F401
 )
 
 import kumo.engine as kumo
+from kumo.engine import _card
+from kumo.engine._mlops import resolve
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._tracking import logged_names
+from kumo.engine.integrations.mlflow import _card_hash
+from kumo.engine.trainer._run_spec import model_metrics
 
 mlflow = pytest.importorskip('mlflow')
 
@@ -47,8 +52,9 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     plan = _plan()
     cfg = kumo.MLOps(str(tmp_path / 'root'),
                      tracking=MlflowTracking(log_system_metrics=False),
-                     registry=kumo.ModelRegistryLocation('m',
-                                                         alias='champion'))
+                     registry=kumo.ModelRegistryLocation(
+                         'm', alias='champion', comment='Mine.'))
+    table._store(resolve(cfg))
     trainer = kumo.Trainer(plan)
     result = trainer.fit(table, snapshot=snapshot, mlops=cfg)
 
@@ -58,22 +64,39 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         if 'mlflow.parentRunId' not in run.data.tags
     ]
     model, = mlflow.search_logged_models(output_format='list')
-    assert model.source_run_id == parent.info.run_id
-    metrics = {metric.key: metric.value for metric in model.metrics}
-    assert metrics == {
-        **{name: value for name, value in logged_names(result.metrics).items()
-           if name.startswith('test/')}, 'seconds': metrics['seconds']}
+    assert (model.name, model.source_run_id) == ('m', parent.info.run_id)
     version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
+    assert parent.info.run_name == f'fit-m-v{version.version}'
+    assert (result.tracking.run_name, trainer.result.tracking.run_name) == (
+        parent.info.run_name, parent.info.run_name)
+    metrics = {metric.key: metric.value for metric in model.metrics}
+    holdout = {name: value for name, value in logged_names(
+        result.metrics).items() if not name.startswith(('train/', 'val/'))}
+    assert metrics == {
+        **holdout,
+        **{summary.name: summary.value for summary in result._summaries
+           if isinstance(summary, Scalar) and summary.role == 'model'}}
+    training, = (item.dataset for item in parent.inputs.dataset_inputs
+                 if item.dataset.name.startswith('training-table'))
+    assert {(metric.dataset_name, metric.dataset_digest)
+            for metric in model.metrics} == {(training.name, training.digest)}
     assert version.source == model.model_uri
     assert parent.data.tags.items() >= {
         'kumo.kind': 'fit', 'kumo.bundle_id': result.id,
-        'kumo.model_name': 'm', 'kumo.model_version': str(version.version),
-        'kumo.model_alias': 'champion'}.items()
+        'kumo.model_name': 'm',
+        'kumo.model_version': str(version.version)}.items()
     assert result.registered_model == PublishedModel(
         name='m', version=str(version.version),
         uri=f'models:/m/{version.version}',
-        metadata={'kumo_bundle_id': result.id}, metrics=result.metrics)
+        metadata={'kumo_bundle_id': result.id}, metrics=model_metrics(result))
     assert version.tags == {'kumo_bundle_id': result.id}
+    kumo_text = '\n'.join([
+        _card.version_headline(model_metrics(result), 'mae'),
+        f'Trained by `{parent.info.run_name}`. Bundle '
+        f"`{tmp_path / 'root' / 'models' / result.id}`."])
+    assert version.description == (
+        f'{kumo_text}\n<!-- /kumo:version sha256={_card_hash(kumo_text)} -->'
+        '\n\nMine.')
     assert trainer.result is result
 
     info = mlflow.models.get_model_info('models:/m@champion')
@@ -95,10 +118,20 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         params={'snapshot': str(tmp_path / 'exports' / location)})
     assert list(served) == ['ENTITY', 'TARGET_PRED']
     assert len(served) == len(range(0, 400, 7))
+    with pytest.warns(UserWarning, match='skipped 1 of 2 requested '
+                      r'entities \(50\.0%\): not in snapshot'):
+        partial = mlflow.pyfunc.load_model('models:/m@champion').predict(
+            pd.DataFrame({'ENTITY': [7, 10**9]}),
+            params={'snapshot': str(tmp_path / 'exports' / location)})
+    assert list(partial['ENTITY']) == [7]
     assert load_model('models:/m@champion').result.id == result.id
     champion = kumo.Trainer.load_from_connector(
         cfg, location=kumo.ModelRegistryLocation('m', alias='champion'))
     assert champion.result.id == result.id
+    assert champion.result.registered_model == PublishedModel(
+        'm', str(version.version), f'models:/m/{version.version}')
+    assert (champion.result.registered_alias,
+            result.registered_alias) == ('champion', 'champion')
     assert champion.export(cfg).version == str(version.version)
     client = mlflow.MlflowClient()
     assert len(client.search_model_versions("name = 'm'")) == 1
@@ -106,6 +139,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
                        registry=kumo.ModelRegistryLocation('m2'))
     first = champion.export(other)
     assert first.version == '1' and champion.export(other) == first
+    assert len(mlflow.search_logged_models(output_format='list')) == 1
     assert load_model('models:/m2/1').result.id == result.id
 
     original = mlflow.models.Model.load
@@ -138,9 +172,11 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
     requirements = mlflow.pyfunc.get_model_dependencies(info.model_uri)
     assert f'kumo-engine[gcs,s3]=={kumo.__version__}' in open(
         requirements).read().splitlines()
-    assert {metric.key
+    assert {metric.key: metric.value
             for metric in mlflow.get_logged_model(info.model_id).metrics
-            } == set(trainer.result.metrics)
+            } == model_metrics(trainer.result)
+    assert mlflow.get_logged_model(info.model_id).name == (
+        'ents-binary_classification')
     assert [c['name'] for c in info.signature.outputs.to_dict()
             ] == ['ENTITY', 'TARGET_PRED', 'False_PROB', 'True_PROB']
     pyfunc = mlflow.pyfunc.load_model(info.model_uri)
@@ -522,3 +558,79 @@ def test_a_tracking_start_failure_names_its_cause_and_can_raise(
         'earlier failure (MlflowException: RESOURCE_DOES_NOT_EXIST: Parent '
         'of /NoSuchFolder/churn does not exist.)'
     ]
+
+
+def test_an_alias_names_one_version_to_load_and_record(
+        tracking_uri, monkeypatch):
+    import contextlib
+
+    from kumo.engine.integrations import mlflow as integration
+
+    aliases = {'champion': '1'}
+    client = SimpleNamespace(get_model_version_by_alias=lambda name, alias:
+                             SimpleNamespace(version=aliases[alias]))
+    recorded = []
+
+    def promote_while_downloading(uri, **kwargs):
+        name, at, alias = uri.removeprefix('models:/').partition('@')
+        bundle = aliases[alias] if at else name.partition('/')[2]
+        aliases['champion'] = '2'
+        return SimpleNamespace(_from_registry=lambda model, alias: recorded
+                               .append((bundle, model.version)))
+
+    monkeypatch.setattr(integration, 'load_model', promote_while_downloading)
+    tracking = integration.MlflowTracking(log_system_metrics=False)
+    tracking.target = SimpleNamespace(scope=contextlib.nullcontext,
+                                      client=lambda: client)
+    tracking.load_model(kumo.ModelRegistryLocation('m', alias='champion'))
+
+    assert recorded == [('1', '1')]
+
+
+def test_a_logged_model_is_named_after_its_model():
+    from kumo.engine.integrations.mlflow import logged_model_name
+
+    manifest = SimpleNamespace(parents=SimpleNamespace(
+        training_table=SimpleNamespace(
+            query='PREDICT users.CHURN FOR EACH users.ID',
+            task_type='binary_classification')))
+    assert logged_model_name('main.ml.churn', manifest) == 'churn'
+    assert logged_model_name('a/b:c%d"e\'f', None) == 'a-b-c-d-e-f'
+    assert logged_model_name(None, manifest) == 'users-binary_classification'
+    assert logged_model_name(None, None) == 'model'
+
+
+def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
+        table_and_snapshot, tmp_path, tracking_uri):
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    table, snapshot = table_and_snapshot
+    tracking = MlflowTracking('fits', log_system_metrics=False)
+    result = kumo.Trainer(_plan()).fit(table, snapshot=snapshot, mlops=(
+        kumo.MLOps(str(tmp_path / 'root'), tracking=tracking)))
+    fits = [mlflow.get_experiment_by_name('fits').experiment_id]
+    assert mlflow.MlflowClient().search_logged_models(fits) == []
+    published = tracking.register(result, kumo.ModelRegistryLocation('m'))
+
+    fit = mlflow.get_run(result.tracking.run_id)
+    model, = mlflow.MlflowClient().search_logged_models(fits)
+    assert (published.version, fit.info.run_name, model.source_run_id,
+            model.name) == ('1', 'fit-m-v1', fit.info.run_id, 'm')
+    assert {m.key: m.value for m in model.metrics} == model_metrics(result)
+    assert fit.data.tags['kumo.model_version'] == '1'
+    assert fit.data.tags['mlflow.note.content'].split('\n')[3].startswith(
+        'Fit of `m` v1 for ')
+
+    other = f'sqlite:///{tmp_path / "other.db"}'
+    mlflow.set_tracking_uri(other)
+    untracked = MlflowTracking(log_system_metrics=False)
+    assert untracked.register(result, kumo.ModelRegistryLocation('m')) == (
+        published)
+    client = mlflow.MlflowClient(other)
+    experiment = client.get_experiment_by_name('m').experiment_id
+    model, = client.search_logged_models([experiment])
+    assert (model.source_run_id, client.search_runs([experiment])) == (
+        None, [])
+    headline = _card.version_headline(model_metrics(result), None)
+    assert client.get_model_version('m', '1').description == (
+        f'{headline}\n<!-- /kumo:version sha256={_card_hash(headline)} -->')

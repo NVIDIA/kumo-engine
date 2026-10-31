@@ -45,6 +45,7 @@ use crate::split_decider::{
     DateOffsetDecider, FixedDecider, ManualDecider, NoSplitDecider, OffsetUnit, RandomDecider,
     RandomLinkDecider, SplitDecider, TemporalDecider, TimeRangeDecider,
 };
+use crate::split_stats::TargetHistogram;
 use crate::ttgen_accumulator::{hash_i64, hash_str, hash_value, Accumulator};
 use crate::ttgen_filter::{
     compare_values, eval_row_filter, eval_stage_filter, is_nullish_filter_value,
@@ -1066,7 +1067,9 @@ where
     let (total_rows, mut stats, per_anchor_parts) = pass_outputs?;
     let row_failures: Option<RowFailuresReport> = custom_tt_source_ref.map(|source| {
         let report = stats.take_source_rows().failures.report(source.on_error);
-        report.warn_if_any(total_rows);
+        if !plan.is_prediction {
+            report.warn_if_any(total_rows);
+        }
         report
     });
     // Node-task categorical targets require exact CATEGORY_COUNTS for encoder
@@ -1406,12 +1409,25 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 &out_schema,
                 forecasting_horizon,
                 fact_pseudo_time.as_deref(),
+                node_target_histogram(resolved, &stats),
             )?)
         }
         PassBMode::Deferred => None,
     };
 
     Ok((total_rows, stats, stage_parts))
+}
+
+fn node_target_histogram<U: UnitSystem>(
+    plan: &ResolvedPlan<U>,
+    stats: &StatsMerger<U>,
+) -> Option<TargetHistogram> {
+    if !matches!(plan.prediction_type, PredictionType::Node) || plan.target_stype != "numerical" {
+        return None;
+    }
+    stats
+        .target_range()
+        .map(|(min, max)| TargetHistogram::new(min, max))
 }
 
 /// The directory containing `tt.parquet` — the staging dir where per-stage

@@ -40,7 +40,7 @@ use crate::route::{
     LinkAssigner,
 };
 use crate::split_decider::SplitDecider;
-use crate::split_stats::{observe_pass_b_stage_batch, KumoStageStats};
+use crate::split_stats::{observe_pass_b_stage_batch, KumoStageStats, TargetHistogram};
 use diskgraph_core::time::UnitSystem;
 
 /// TIMESTAMP column name. Always present in tt.parquet; the router uses it for
@@ -124,6 +124,7 @@ fn run_pass_b_routed<F>(
     out_schema: &SchemaRef,
     route: F,
     fact_pseudo_time: Option<&FactPseudoTime>,
+    target_histogram: Option<TargetHistogram>,
 ) -> TTGenResult<[StagePartsOut; 3]>
 where
     F: Fn(&RecordBatch, u64) -> TTGenResult<[RecordBatch; 3]> + Sync,
@@ -136,9 +137,11 @@ where
         None,
         route,
         fact_pseudo_time,
+        target_histogram,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_pass_b_routed_impl<F>(
     tt_parquet: &Path,
     output_dir: &Path,
@@ -147,6 +150,7 @@ fn run_pass_b_routed_impl<F>(
     source_row_groups_per_part_override: Option<usize>,
     route: F,
     fact_pseudo_time: Option<&FactPseudoTime>,
+    target_histogram: Option<TargetHistogram>,
 ) -> TTGenResult<[StagePartsOut; 3]>
 where
     F: Fn(&RecordBatch, u64) -> TTGenResult<[RecordBatch; 3]> + Sync,
@@ -222,6 +226,7 @@ where
                 group_idx,
                 &route,
                 fact_pseudo_time,
+                target_histogram,
             )
         })
         .collect();
@@ -268,6 +273,7 @@ fn run_pass_b_row_group_span<F>(
     group_idx: usize,
     route: &F,
     fact_pseudo_time: Option<&FactPseudoTime>,
+    target_histogram: Option<TargetHistogram>,
 ) -> TTGenResult<[WorkerStageResult; 3]>
 where
     F: Fn(&RecordBatch, u64) -> TTGenResult<[RecordBatch; 3]>,
@@ -276,7 +282,8 @@ where
     let mut writers: [Option<ArrowWriter<File>>; 3] = [None, None, None];
     let mut counts: [u64; 3] = [0; 3];
     let mut seed_times: [Option<(i64, i64)>; 3] = [None, None, None];
-    let mut split_stats: [KumoStageStats; 3] = Default::default();
+    let mut split_stats: [KumoStageStats; 3] =
+        std::array::from_fn(|_| KumoStageStats::new(target_histogram));
 
     for source in source_row_groups {
         let file = File::open(&source.path)?;
@@ -429,6 +436,7 @@ pub(crate) fn run_pass_b_per_anchor<U: UnitSystem, D: SplitDecider<U> + Sync>(
     out_schema: &SchemaRef,
     forecasting_horizon: Option<(i64, i64)>,
     fact_pseudo_time: Option<&FactPseudoTime>,
+    target_histogram: Option<TargetHistogram>,
 ) -> TTGenResult<[StagePartsOut; 3]> {
     let horizon_policy = if let Some((step_ns, length)) = forecasting_horizon {
         let max_ts = stage_max_timestamps::<U, D>(tt_parquet, decider)?;
@@ -451,6 +459,7 @@ pub(crate) fn run_pass_b_per_anchor<U: UnitSystem, D: SplitDecider<U> + Sync>(
             )
         },
         fact_pseudo_time,
+        target_histogram,
     )
 }
 
@@ -516,6 +525,7 @@ pub(crate) fn run_pass_b_per_link(
         out_schema,
         |batch, _offset| route_per_link(batch, assigner),
         fact_pseudo_time,
+        None,
     )
 }
 
@@ -580,15 +590,17 @@ mod tests {
         schema
     }
 
-    fn write_numeric_tt_parquet(path: &Path, ts_secs: &[i64], max_rg_rows: usize) -> SchemaRef {
+    fn write_numeric_tt_parquet(
+        path: &Path,
+        ts_secs: &[i64],
+        targets: &[f64],
+        max_rg_rows: usize,
+    ) -> SchemaRef {
         std::fs::create_dir(path).unwrap();
         let entities = (0..ts_secs.len() as i64).collect::<Vec<_>>();
         let ts_nanos = ts_secs
             .iter()
             .map(|seconds| seconds * 1_000_000_000)
-            .collect::<Vec<_>>();
-        let targets = (0..ts_secs.len())
-            .map(|row| (row % 11) as f64 * 0.25)
             .collect::<Vec<_>>();
         let schema = StdArc::new(Schema::new(vec![
             Field::new("ENTITY1", DataType::Int64, false),
@@ -604,7 +616,7 @@ mod tests {
             vec![
                 StdArc::new(Int64Array::from(entities)),
                 StdArc::new(TimestampNanosecondArray::from(ts_nanos)),
-                StdArc::new(arrow_array::Float64Array::from(targets)),
+                StdArc::new(arrow_array::Float64Array::from(targets.to_vec())),
             ],
         )
         .unwrap();
@@ -737,6 +749,7 @@ mod tests {
                 route_per_anchor::<Seconds, D>(batch, decider, offset, None, None)
             },
             None,
+            None,
         )
     }
 
@@ -781,7 +794,10 @@ mod tests {
         let timestamps = (0..64)
             .map(|row| [10_i64, 110, 210, 310][row % 4])
             .collect::<Vec<_>>();
-        let schema = write_numeric_tt_parquet(&tt, &timestamps, 1);
+        let targets = (0..64)
+            .map(|row| (row % 11) as f64 * 0.25)
+            .collect::<Vec<_>>();
+        let schema = write_numeric_tt_parquet(&tt, &timestamps, &targets, 1);
         let decider = time_range_decider();
 
         let one_part_per_row_group = tempfile::tempdir().unwrap();
@@ -827,6 +843,63 @@ mod tests {
     }
 
     #[test]
+    fn node_regression_histogram_matches_brute_force() {
+        let source = tempfile::tempdir().unwrap();
+        let tt = source.path().join("tt.parquet");
+        let timestamps = (0..64)
+            .map(|row| [10_i64, 110, 210, 310][row % 4])
+            .collect::<Vec<_>>();
+        let mut targets = (0..64)
+            .map(|row| ((row * 37) % 23) as f64 * 0.5 - 3.0)
+            .collect::<Vec<_>>();
+        targets[4] = f64::NAN;
+        targets[9] = f64::INFINITY;
+        let finite = || targets.iter().copied().filter(|v| v.is_finite());
+        let min = finite().fold(f64::INFINITY, f64::min);
+        let max = finite().fold(f64::NEG_INFINITY, f64::max);
+        let schema = write_numeric_tt_parquet(&tt, &timestamps, &targets, 4);
+        let output = tempfile::tempdir().unwrap();
+        let parts = run_pass_b_per_anchor::<Seconds, _>(
+            &tt,
+            &time_range_decider(),
+            output.path(),
+            timestamps.len() as u64,
+            None,
+            &schema,
+            None,
+            None,
+            Some(TargetHistogram::new(min, max)),
+        )
+        .unwrap();
+        let stats: serde_json::Value =
+            serde_json::from_slice(&write_split_stats(output.path(), &parts)).unwrap();
+
+        let width = (max - min) / 50.0;
+        for (stage, key) in ["train_table_stats", "val_table_stats", "test_table_stats"]
+            .into_iter()
+            .enumerate()
+        {
+            let values = (stage..targets.len())
+                .step_by(4)
+                .map(|row| targets[row])
+                .filter(|v| v.is_finite())
+                .collect::<Vec<_>>();
+            let mut expected = [0u64; 50];
+            for v in &values {
+                expected[(((v - min) / width) as usize).min(49)] += 1;
+            }
+            let histogram = &stats[key]["target_distribution"]["histogram"];
+            assert_eq!(histogram["counts"], serde_json::json!(expected.as_slice()));
+            assert_eq!(expected.iter().sum::<u64>(), values.len() as u64);
+            assert_eq!(histogram["num_bins"], 50);
+            assert_eq!(histogram["bin_width"].as_f64(), Some(width));
+            let bins = histogram["bins"].as_array().unwrap();
+            assert_eq!(bins.len(), 51);
+            assert_eq!(bins[0].as_f64(), Some(min));
+        }
+    }
+
+    #[test]
     fn cross_file_routing_uses_global_offsets_and_preserves_order() {
         use arrow_array::BooleanArray;
         use arrow_select::filter::filter_record_batch;
@@ -857,6 +930,7 @@ mod tests {
                     filter_record_batch(batch, &masks[2]).unwrap(),
                 ])
             },
+            None,
             None,
         )
         .unwrap();
@@ -905,6 +979,7 @@ mod tests {
                         &schema,
                         None,
                         None,
+                        None,
                     )
                 })
                 .unwrap();
@@ -941,6 +1016,7 @@ mod tests {
             ts_secs.len() as u64,
             None,
             &schema,
+            None,
             None,
             None,
         )
@@ -982,6 +1058,7 @@ mod tests {
             &schema,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(out[0].row_count, 3);
@@ -1019,6 +1096,7 @@ mod tests {
             &schema,
             None,
             None,
+            None,
         )
         .unwrap();
         for s in &out {
@@ -1043,6 +1121,7 @@ mod tests {
             ts_secs.len() as u64,
             None,
             &schema,
+            None,
             None,
             None,
         )
@@ -1122,6 +1201,7 @@ mod tests {
             4,
             Some("split_col"),
             &out_schema,
+            None,
             None,
             None,
         )

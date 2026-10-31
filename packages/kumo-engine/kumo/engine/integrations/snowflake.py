@@ -1,49 +1,33 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Snowflake Experiment Tracking for `Trainer.fit`
-(``pip install 'kumo-engine[snowflake]'``)."""
+r"""Snowflake Experiment Tracking (the ``snowflake`` extra)."""
 
-import json
 import logging
 import posixpath
 import re
 import tempfile
-import uuid
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Mapping,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
-)
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set
 
 from kumo_core.instrumentation import format_error
 from kumo_core.sources.sql import resolve_snowflake_identifier
-from kumo_core.summaries import (
-    Confusion,
-    Curve,
-    Dataset,
-    Histogram,
-    Scalar,
-    Series,
-    Summary,
-    Table,
-    Tag,
-)
+from kumo_core.summaries import Summary
 
+from kumo.engine import _card
 from kumo.engine._events import Event
+from kumo.engine._summary_tables import route, table_json
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
     RunRecord,
+    SingleRunHooks,
     by_step,
+    model_metrics,
+    run_name,
+    versioned,
 )
 from kumo.engine.connector._extras import import_provider
 
@@ -54,14 +38,14 @@ _MAX_PARAMS = 1000
 _EPOCH_METRICS = _MAX_METRICS - 60
 _SUMMARY_METRICS = _MAX_METRICS - 30
 _FINISH_PARAMS = 20
+_CARD_FILE = 'run_card.md'
+_MAX_RUNS = 500
+_WARN_RUNS = 450
 
 
-class SnowflakeTracking:
-    r"""Records `Trainer.fit` in Snowflake Experiment Tracking as one run;
-    trial attempts are logged in it under ``trial-<n>-attempt-<m>/`` names and
-    tags are logged as params. Snowflake has no dataset inputs, so a fit's
-    source tables are not recorded as inputs. The Snowpark session's
-    parameters are not changed.
+class SnowflakeTracking(SingleRunHooks):
+    r"""Records fits, prediction runs and monitoring calls in Snowflake
+    Experiment Tracking, one run each; tags are logged as params.
 
     Args:
         source: a ``SnowflakeConnector``, whose identity opens the session
@@ -73,15 +57,12 @@ class SnowflakeTracking:
         database: `None` uses the session's current database.
         schema_name: `None` uses the session's current schema, or ``PUBLIC``
             when `database` is given or the session has none.
-        run_name: name of the fit run. `None` names it after its registry
-            model and UTC start, as ``fit_users_churn_20261027_0618``; a
-            taken name gets a random suffix.
+        run_name: replaces ``<MODEL>_V<version>`` in each run's name.
         tags: extra tags for the fit run.
         native_model_lineage: keep the run open as a context for the whole
             fit, so models registered meanwhile are linked to it.
 
-    ``run_id`` is the latest fit run's name (Snowflake runs are identified
-    by name), once it has started.
+    ``run_id`` is the latest run's name. An experiment holds 500 runs.
     """
 
     platform = 'snowflake'
@@ -114,17 +95,21 @@ class SnowflakeTracking:
         self.tags = dict(tags or {})
         self.native_model_lineage = native_model_lineage
         self.run_id: Optional[str] = None
+        self.logged_run_name: Optional[str] = None
         self._reset()
 
     def _reset(self) -> None:
         self._tracking: Any = None
         self._run: Any = None
         self._run_context = ExitStack()
-        self._trial_tags: Dict[Tuple[int, int], Set[str]] = {}
+        self._tune = 'loss'
         self._metrics: Set[str] = set()
+        self._values: Dict[str, float] = {}
+        self._started = _now()
         self._params = 0
         self._start_tags: Set[str] = set()
         self._artifacts: Set[str] = set()
+        self._card: List[Summary] = []
         self._dropped_metrics: Set[str] = set()
         self._dropped_params = 0
 
@@ -164,7 +149,7 @@ class SnowflakeTracking:
 
     def start(self, record: RunRecord) -> None:
         self._reset()
-        self.run_id = None
+        self.run_id = self.logged_run_name = None
         cls = self._module.ExperimentTracking
         tracking = getattr(cls, '_instance', None)
         if tracking is None:
@@ -184,39 +169,39 @@ class SnowflakeTracking:
         experiment = tracking.set_experiment(self.experiment_name,
                                              database_name=database,
                                              schema_name=schema or 'PUBLIC')
-        self._run = tracking.start_run(
-            self._new_run_name(
-                tracking, experiment.name,
-                self.run_name or _run_identifier(record.name or 'fit')))
-        self.run_id = str(self._run.name)
+        existing = [
+            str(row['name'])
+            for row in tracking._sql_client.show_runs_in_experiment(
+                experiment_name=experiment.name)
+        ]
+        self._check_room(len(existing), record.tags.get('kumo.kind'))
+        self._started = getattr(record, 'started', None) or _now()
+        self._run = tracking.start_run(self._new_run_name(
+            existing, _snowflake_name(record, self._started, self.run_name)))
+        self.run_id = self.logged_run_name = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)
-        self._log_params({**record.params, **record.tags})
+        self._tune = record.tags.get('kumo.tune_metric', 'loss')
+        self._log_params({**record.params, **record.tags,
+                          **_model_param(record)})
         self._log_artifacts(record.artifacts)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         if self._run is None:
             return
-        prefix = f'{record.name}/'
-        key = (event.trial or 0, int(event.params['attempt']))
+        attempt = int(event.params['attempt'])
+        prefix = f'TRIAL_{event.trial or 0}' + (
+            f'_ATTEMPT_{attempt}/' if attempt > 1 else '/')
         if event.name == 'trial_started':
-            self._trial_tags[key] = set(record.tags)
-            self._log_params({prefix + k: v
-                              for k, v in {**record.params,
-                                           **record.tags}.items()})
-        elif event.name == 'epoch_ended':
-            self._log_metrics({prefix + k: v
-                               for k, v in event.metrics.items()},
-                              _EPOCH_METRICS, step=event.epoch or 0)
+            self._log_params({prefix + k: v for k, v in record.params.items()})
         elif event.name == 'trial_ended':
-            self._log_metrics({prefix + k: v
-                               for k, v in record.metrics.items()},
-                              _SUMMARY_METRICS)
-            logged = self._trial_tags.pop(key, set())
-            self._log_params({prefix + k: v
-                              for k, v in record.tags.items()
-                              if k not in logged})
+            best = f'val/best_{self._tune}'
+            self._log_metrics({prefix + best: value
+                               for name, value in record.metrics.items()
+                               if name == best}, _SUMMARY_METRICS)
+            self._log_params({prefix + k: v for k, v in record.tags.items()
+                              if k in ('kumo.status', 'kumo.error')})
 
     def finish(self, record: Optional[RunRecord],
                error: Optional[BaseException]) -> None:
@@ -231,6 +216,10 @@ class SnowflakeTracking:
                                   if k not in self._start_tags}, _MAX_PARAMS)
                 self._log_artifacts(record.artifacts)
                 self.log_summaries(record.summaries)
+                finished = getattr(record, 'finished', None) or _now()
+                self._log_metrics({'duration_seconds': (
+                    finished - self._started).total_seconds()}, _MAX_METRICS)
+                self._log_card(record)
                 self._log_dropped()
                 if error is None:
                     status = 'FINISHED'
@@ -249,70 +238,60 @@ class SnowflakeTracking:
         if self._run is not None:
             self._log_metrics(metrics, _EPOCH_METRICS, step=step)
 
-    def _new_run_name(self, tracking: Any, experiment: Any,
-                      run_name: Optional[str]) -> Optional[str]:
-        if run_name is None:
-            return None
-        # start_run matches name as a LIKE pattern.
-        existing = [
-            str(row['name'])
-            for row in tracking._sql_client.show_runs_in_experiment(
-                experiment_name=experiment)
-        ]
-        short = uuid.uuid4().hex
-        for name in (run_name, _suffixed(run_name, short[:8]),
-                     _suffixed(run_name, short)):
-            if not _taken(name, existing):
-                break
-        else:
-            name = None
-        if name != run_name:
+    def _check_room(self, runs: int, kind: Optional[str]) -> None:
+        if runs >= _MAX_RUNS:
+            raise RuntimeError(
+                f'Snowflake experiment {self.experiment_name} holds {runs} '
+                f'runs, the most it can ({_MAX_RUNS}), so this {kind} run is '
+                f'not tracked; track into a new experiment, e.g. '
+                f'SnowflakeTracking(..., experiment_name='
+                f"'{self.experiment_name}_2')")
+        if runs >= _WARN_RUNS:
+            logger.warning(
+                'Snowflake experiment %s holds %d of the %d runs it can; '
+                'track into a new experiment before it is full',
+                self.experiment_name, runs, _MAX_RUNS)
+
+    def _new_run_name(self, existing: List[str], run_name: str) -> str:
+        # start_run matches names as SQL LIKE patterns
+        name, number = run_name, 1
+        while _taken(name, existing):
+            number += 1
+            name = f'{run_name}_{number}'
+        if number > 1:
             logger.warning(
                 'Snowflake run %s already exists in experiment %s; recording '
-                'this fit as %s', run_name, self.experiment_name,
-                name or 'a generated run name')
+                'this run as %s', run_name, self.experiment_name, name)
         return name
 
     def log_summaries(self, summaries: Sequence[Summary]) -> None:
-        if self._run is not None:
-            for summary in summaries:
-                _SINKS[type(summary)](self, summary)
+        r"""Logs summaries; charts become tables."""
+        if self._run is None:
+            return
+        routed = route(summaries, charts=False)
+        self._card += routed.card
+        self._log_metrics({s.name: s.value for s in routed.scalars},
+                          _MAX_METRICS)
+        self._log_params(routed.tags)
+        self._log_artifacts({f'{table.name}.json': table_json(table)
+                             for table in routed.tables})
 
-    def _log_scalar(self, summary: Scalar) -> None:
-        self._log_metrics({summary.name: summary.value}, _MAX_METRICS)
-
-    def _log_tag(self, summary: Tag) -> None:
-        self._log_params({summary.name: summary.value})
-
-    def _log_series(self, summary: Series) -> None:
-        self._log_points({summary.name: summary.points})
-
-    def _log_curve(self, summary: Curve) -> None:
-        self._log_points({summary.x.name: summary.x.points,
-                          summary.y.name: summary.y.points})
-
-    def _log_histogram(self, summary: Histogram) -> None:
-        self._log_points({
-            f'{summary.name}/count': tuple(enumerate(summary.counts)),
-            f'{summary.name}/lower_edge': tuple(enumerate(summary.edges, 1)),
-        })
-
-    def _log_table(self, summary: Table) -> None:
-        self._log_artifacts({f'{summary.name}.json': json.dumps({
-            'columns': list(summary.columns),
-            'data': [list(row) for row in summary.rows],
-        }, default=str)})
-
-    def _log_confusion(self, summary: Confusion) -> None:
-        self._log_table(Table(
-            summary.name, ('actual', *summary.labels),
-            tuple((label, *row)
-                  for label, row in zip(summary.labels, summary.counts))))
-
-    def _log_points(self, series: Mapping[str, Sequence[Tuple[int, float]]]
-                    ) -> None:
-        for step, metrics in by_step(series):
-            self._log_metrics(metrics, _SUMMARY_METRICS, step=step)
+    def _log_card(self, record: RunRecord) -> None:
+        r"""Writes run_card.md."""
+        tags = record.tags
+        kind = tags.get('kumo.kind', '')
+        try:
+            intro = _card.intro(kind, tags, record.params, record.description,
+                                tags.get('kumo.fit_run_id'))
+            files = sorted(name for name in self._artifacts
+                           if name.endswith('.json'))
+            self._log_artifacts({_CARD_FILE: '\n'.join([
+                *_card.heading(kind, self._values, tags),
+                *_card.body(intro, [*_card.holdout(kind, model_metrics(record), tags),
+                                    *self._card], files)])})
+        except Exception as error:
+            logger.warning('Could not write the card of Snowflake run %s: %s',
+                           self.run_id, format_error(error))
 
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -361,37 +340,48 @@ class SnowflakeTracking:
             kept[name] = value
         if kept:
             self._tracking.log_metrics(kept, step=step)
+            self._values.update(kept)
 
 
-_SINKS: Dict[type, Callable[[SnowflakeTracking, Any], None]] = {
-    Scalar: SnowflakeTracking._log_scalar,
-    Tag: SnowflakeTracking._log_tag,
-    Series: SnowflakeTracking._log_series,
-    Curve: SnowflakeTracking._log_curve,
-    Histogram: SnowflakeTracking._log_histogram,
-    Table: SnowflakeTracking._log_table,
-    Confusion: SnowflakeTracking._log_confusion,
-    Dataset: lambda tracker, summary: None,
-}
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-def _run_identifier(name: str) -> str:
-    r"""``name`` as an unquoted identifier, which artifact URIs need."""
-    name = re.sub(r'[^A-Za-z0-9_]', '_', name)
-    return name if re.match(r'[A-Za-z_]', name) else f'_{name}'
+def _snowflake_name(record: RunRecord, started: datetime,
+                    named: Optional[str] = None) -> str:
+    r"""The run's name as an upper-case identifier."""
+    tags = record.tags
+    kind = tags.get('kumo.kind')
+    model = getattr(record, 'model_label', None) or 'model'
+    if kind == 'fit':
+        return _identifier(run_name('fit', named or (
+            f"{model}-{started.astimezone(timezone.utc):%Y%m%d-%H%M%S}")))
+    version = tags.get('kumo.model_version')
+    core = named or (versioned(model, version) if version else
+                     f"{model}-{tags.get('kumo.bundle_id', '')[:8]}")
+    suffix = record.name_suffix or (
+        f"-{tags['kumo.as_of']}" if tags.get('kumo.as_of') else '')
+    word = (kind if kind != 'monitoring' else
+            'eval' if tags.get('kumo.monitor') == 'evaluate' else 'drift')
+    return _identifier(run_name(word, core, suffix))
 
 
-def _suffixed(name: str, suffix: str) -> str:
-    if len(name) > 1 and name[0] == name[-1] == '"':
-        return f'{name[:-1]}_{suffix}"'
-    return f'{name}_{suffix}'
+def _model_param(record: RunRecord) -> Dict[str, str]:
+    r"""The scoring version as kumo.model=<model>/<version>."""
+    tags = record.tags
+    if (tags.get('kumo.kind') != 'prediction' or not tags.get('kumo.model_name')
+            or not tags.get('kumo.model_version')):
+        return {}
+    return {'kumo.model':
+            f"{tags['kumo.model_name']}/{tags['kumo.model_version']}"}
+
+
+def _identifier(name: str) -> str:
+    r"""An unquoted identifier, as artifact URIs need."""
+    return re.sub(r'[^A-Za-z0-9_]+', '_', name).upper()
 
 
 def _taken(name: str, existing: List[str]) -> bool:
-    resolved = resolve_snowflake_identifier(name)
-    regex = ''.join('.*' if c == '%' else '.' if c == '_' else re.escape(c)
-                    for c in name)
-    return any(
-        other == resolved
-        or re.fullmatch(regex, other, re.IGNORECASE | re.DOTALL) is not None
-        for other in existing)
+    regex = ''.join('.' if c == '_' else re.escape(c) for c in name)
+    return any(re.fullmatch(regex, other, re.IGNORECASE | re.DOTALL)
+               for other in existing)

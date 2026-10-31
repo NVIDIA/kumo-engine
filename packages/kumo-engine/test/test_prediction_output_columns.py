@@ -322,5 +322,89 @@ def test_multilabel_thresholds_preserve_scores(tmp_path, num_workers):
             with pytest.raises(ValueError, match='between 0 and 1'):
                 trainer.predict(table, snapshot=snapshot,
                                 binary_classification_threshold=threshold)
+        _assert_label_counts(trainer.predict(
+            table, snapshot=snapshot, num_workers=num_workers,
+            binary_classification_threshold=0.25,
+            mlops=kumo.MLOps(str(tmp_path / 'root'))), result)
     finally:
         kumo.configure(scratch_dir=previous)
+
+
+def _top_scores(frame):
+    from kumo_core.score_counts import PROBABILITY_EDGES
+
+    return np.bincount(
+        np.searchsorted(PROBABILITY_EDGES,
+                        frame.groupby('ENTITY')['SCORE'].max(), 'right'),
+        minlength=len(PROBABILITY_EDGES) + 1).tolist()
+
+
+def _assert_label_counts(run, fitted):
+    from kumo_core.score_counts import PROBABILITY_EDGES, Counts
+
+    counts = Counts.from_dict(run.manifest.stats['predictions'].counts)
+    output = run.frame
+    holdout = Counts.from_dict(fitted.manifest.holdout.counts)
+    assert holdout.arrays['top_score'].tolist() == _top_scores(
+        fitted.holdout_df())
+    assert counts.arrays['top_score'].tolist() == _top_scores(output)
+    labels = [name.removesuffix('_PROB') for name in counts.extents
+              if name != 'top_score']
+    assert dict(zip(labels, counts.arrays['label_positive'].tolist())) == (
+        output.groupby('CLASS')['PREDICTED'].sum().to_dict())
+    assert counts.arrays['predicted_labels'].tolist() == np.bincount(
+        output.groupby('ENTITY')['PREDICTED'].sum(),
+        minlength=len(labels) + 1).tolist()
+    for label in labels:
+        scores = output.loc[output['CLASS'] == label, 'SCORE']
+        assert counts.arrays[f'{label}_PROB'].tolist() == np.bincount(
+            np.searchsorted(PROBABILITY_EDGES, scores, 'right'),
+            minlength=len(PROBABILITY_EDGES) + 1).tolist()
+
+
+def test_mlops_counts_forecast_horizons_recommended_items_and_top_scores(
+        graph, forecast, link, tmp_path):
+    from kumo_core.score_counts import Counts
+    from kumo_core.score_drift import score_drift
+
+    _, snapshot, _ = graph
+    mlops = kumo.MLOps(str(tmp_path / 'root'))
+
+    def counted(fitted, **options):
+        trainer, _, table = fitted
+        run = trainer.predict(table, snapshot=snapshot, mlops=mlops,
+                              **options)
+        return (Counts.from_dict(run.manifest.stats['predictions'].counts),
+                run.frame)
+
+    counts, frame = counted(forecast)
+    edges = np.array(counts.edges['target'])
+    frame = frame.sort_values(['ENTITY', 'TIMESTAMP'])
+    horizon = frame.groupby('ENTITY').cumcount().to_numpy()
+    values = frame['TARGET_PRED'].to_numpy(dtype=np.float64)
+    for h in range(3):
+        assert counts.arrays[f'TARGET_PRED_h{h + 1}'].tolist() == np.bincount(
+            np.searchsorted(edges, values[horizon == h], 'right'),
+            minlength=edges.size + 1).tolist()
+
+    counts, frame = counted(link, num_classes_to_return=3)
+    per_item = frame['CLASS'].value_counts().reindex(range(20), fill_value=0)
+    log2 = np.array(counts.edges['recommendations'])
+    assert counts.arrays['item_frequency'].tolist() == np.bincount(
+        np.searchsorted(log2, per_item.to_numpy(), 'right'),
+        minlength=log2.size + 1).tolist()
+    assert (float(counts.arrays['catalogue']),
+            float(counts.arrays['items_recommended']),
+            float(counts.arrays['recommendations'])) == (
+                20, (per_item > 0).sum(), len(frame))
+    holdout = Counts.from_dict(link[0].result.manifest.holdout.counts)
+    edges = holdout.edges['top_score']
+    assert counts.edges['top_score'] == edges
+    assert holdout.extents['top_score'] == (edges[0], edges[-1])
+    assert holdout.arrays['top_score'].sum() == \
+        link[0].result.manifest.holdout.rows
+    top = frame.groupby('ENTITY')['SCORE'].max().to_numpy()
+    assert counts.arrays['top_score'].tolist() == np.bincount(
+        np.searchsorted(edges, top, 'right'), minlength=len(edges) + 1).tolist()
+    assert counts.extents['top_score'] == (top.min(), top.max())
+    assert score_drift(counts, holdout) is not None

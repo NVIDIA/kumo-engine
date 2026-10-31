@@ -1,0 +1,179 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+bundle:
+  name: kumo-engine-users-churn
+
+sync:
+  paths:
+    - ..
+
+variables:
+  catalog:
+    description: Unity Catalog catalog holding the users, items and orders tables
+    default: <catalog>
+  schema:
+    description: schema holding the tables, the registered model and the predictions
+    default: <schema>
+  volume:
+    description: Unity Catalog volume for exported models and snapshots
+    default: <volume>
+  artifact_root:
+    description: MLOps artifact root, a directory on the volume
+    default: /Volumes/${var.catalog}/${var.schema}/${var.volume}/kumo
+  warehouse_id:
+    description: SQL warehouse that reads the source tables and writes predictions
+    default: <warehouse_id>
+  kumo_engine_wheel:
+    description: kumo-engine wheel on a volume or workspace path
+    default: /Volumes/<catalog>/<schema>/<volume>/wheels/<kumo_engine_wheel>.whl
+  requirements:
+    description: requirements.txt for kumo-engine's dependencies; see README.md
+    default: /Volumes/<catalog>/<schema>/<volume>/wheels/requirements.txt
+  spark_version:
+    description: Databricks Runtime 17.3 LTS ML or later
+    default: <dbr_version>
+  node_type_id:
+    description: GPU node type, e.g. g5.xlarge
+    default: <node_type>
+  experiment:
+    description: MLflow experiment (workspace path) for train and score runs
+    default: /Shared/kumo-engine/users-churn
+  model_name:
+    description: registered model, created as <catalog>.<schema>.<model_name>
+    default: users_churn
+  predictions_table:
+    description: table in <catalog>.<schema> the score job appends to
+    default: users_churn_predictions
+  table_prefix:
+    description: prefix of the users, items and orders table names, e.g. demo_ for demo_users
+    default: ""
+  on_error:
+    description: raise fails a job whose tracking or registration fails; warn lets it succeed
+    default: raise
+  query:
+    description: predictive query kumo_train fits; a 30-day window needs about 6 months of orders
+    default: PREDICT COUNT(orders.*, 0, 7, days) > 0 FOR EACH users.USER_ID
+  alias:
+    description: alias kumo_train moves to its new version; promote it to score_alias yourself
+    default: candidate
+  score_alias:
+    description: alias kumo_score loads
+    default: champion
+
+resources:
+  jobs:
+    kumo_train:
+      name: kumo-engine-train
+      max_concurrent_runs: 1
+      job_clusters:
+        - job_cluster_key: kumo
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
+            spark_env_vars:
+              MLFLOW_TRACKING_URI: databricks
+              MLFLOW_REGISTRY_URI: databricks-uc
+              MLFLOW_EXPERIMENT_NAME: ${var.experiment}
+      tasks:
+        - task_key: fit
+          job_cluster_key: kumo
+          libraries:
+            - requirements: ${var.requirements}
+            - whl: ${var.kumo_engine_wheel}
+          spark_python_task:
+            python_file: ${workspace.file_path}/fit_job.py
+            parameters:
+              - --artifact-root
+              - ${var.artifact_root}
+              - --source
+              - databricks
+              - --catalog
+              - ${var.catalog}
+              - --schema
+              - ${var.schema}
+              - --warehouse
+              - ${var.warehouse_id}
+              - --registry
+              - mlflow
+              - --model-name
+              - ${var.catalog}.${var.schema}.${var.model_name}
+              - --table-prefix=${var.table_prefix}
+              - --on-error
+              - ${var.on_error}
+              - --alias
+              - ${var.alias}
+              - --query
+              - ${var.query}
+              - --scratch-dir
+              - /local_disk0/kumo
+
+    kumo_score:
+      name: kumo-engine-score
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: 0 0 3 * * ?
+        timezone_id: UTC
+        pause_status: PAUSED
+      job_clusters:
+        - job_cluster_key: kumo
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
+            spark_env_vars:
+              MLFLOW_TRACKING_URI: databricks
+              MLFLOW_REGISTRY_URI: databricks-uc
+              MLFLOW_EXPERIMENT_NAME: ${var.experiment}
+      tasks:
+        - task_key: score
+          job_cluster_key: kumo
+          libraries:
+            - requirements: ${var.requirements}
+            - whl: ${var.kumo_engine_wheel}
+          spark_python_task:
+            python_file: ${workspace.file_path}/score_job.py
+            parameters:
+              - --artifact-root
+              - ${var.artifact_root}
+              - --source
+              - databricks
+              - --catalog
+              - ${var.catalog}
+              - --schema
+              - ${var.schema}
+              - --warehouse
+              - ${var.warehouse_id}
+              - --registry
+              - mlflow
+              - --model-name
+              - ${var.catalog}.${var.schema}.${var.model_name}
+              - --table-prefix=${var.table_prefix}
+              - --on-error
+              - ${var.on_error}
+              - --alias
+              - ${var.score_alias}
+              - --scratch-dir
+              - /local_disk0/kumo
+              - --predictions-table
+              - ${var.predictions_table}
+
+targets:
+  dev:
+    default: true
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

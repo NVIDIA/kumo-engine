@@ -60,6 +60,7 @@ class KumoModel(_pyfunc.PythonModel):
 
 def predict(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
             params: Mapping[str, Any]) -> pd.DataFrame:
+    from kumo.engine._mlops import resolve
     from kumo.engine._scratch import scoped_scratch_dir
     from kumo.engine.connector.file import FileConnector
 
@@ -89,7 +90,7 @@ def predict(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
         scored = trainer._predict(
             trainer._prediction_table(snapshot, entities, None),
             snapshot=snapshot, extra_fields=[_ANCHOR] if timed else [],
-            **options).frame
+            settings=resolve(), **options).frame
         return _in_input_order(rows, scored)
 
 

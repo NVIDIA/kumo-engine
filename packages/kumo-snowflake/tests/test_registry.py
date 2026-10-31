@@ -86,7 +86,7 @@ def test_invalid_metrics_preserve_previous_destination(fetch, payload):
     'kumo_bundle_id': 'b1',
     'kumo_engine': '0'
 }])
-def test_publish_records_only_pointers_in_catalog(
+def test_publish_records_pointers_and_holdout_metrics_in_catalog(
         tmp_path, monkeypatch, metadata):
     bundle = tmp_path / 'bundle'
     bundle.mkdir()
@@ -99,23 +99,85 @@ def test_publish_records_only_pointers_in_catalog(
         calls.append(kwargs)
         return version
 
+    def get_model(_):
+        raise ValueError('Unable to find model CHURN')
+
     @contextmanager
     def registry(_):
-        yield SimpleNamespace(log_model=log_model)
+        yield SimpleNamespace(log_model=log_model, get_model=get_model)
+
+    sink = SnowflakeModelRegistryMixin()
+    monkeypatch.setattr(sink, '_registry', registry)
+    monkeypatch.setattr(registry_module, '_bundle_model', lambda _: object())
+    monkeypatch.setattr(registry_module, '_carrier_signature', lambda: {})
+    metrics = {'auroc': 0.9213, 'holdout_loss': 0.5, 'brier': float('nan')}
+    published = sink.publish_model(
+        SimpleNamespace(), str(bundle),
+        location=ModelRegistryLocation('CHURN', comment='Weekly retrain.'),
+        metadata=metadata, metrics=metrics)
+    assert calls[0]['metrics'] == {
+        'auroc': 0.9213, 'holdout_loss': 0.5,
+        **({'kumo_bundle_id': 'b1'} if metadata else {}), 'kumo_engine': '1'
+    }
+    assert calls[0]['version_name'] == 'V1'
+    assert calls[0]['comment'] == ('Weekly retrain.\n'
+                                   'Holdout: auroc 0.921 · holdout_loss 0.5')
+    assert published.metadata == metadata
+    assert published.metrics == metrics
+
+
+def test_publish_names_the_next_version_and_retries_a_taken_one(
+        tmp_path, monkeypatch):
+    bundle = tmp_path / 'bundle'
+    bundle.mkdir()
+    (bundle / 'training-spec.json').write_text('{}')
+    names = ['V1', 'SLIMY_DONKEY_1', 'V3']
+    tried = []
+
+    def log_model(*args, version_name, **kwargs):
+        tried.append(version_name)
+        if version_name == 'V4':
+            names.append('V4')
+            raise ValueError('Model CHURN version V4 already existed.')
+        return SimpleNamespace(model_name='CHURN', version_name=version_name,
+                               fully_qualified_model_name='DB.SCHEMA.CHURN')
+
+    model = SimpleNamespace(versions=lambda: [
+        SimpleNamespace(version_name=name) for name in names])
+
+    @contextmanager
+    def registry(_):
+        yield SimpleNamespace(log_model=log_model, get_model=lambda _: model)
 
     sink = SnowflakeModelRegistryMixin()
     monkeypatch.setattr(sink, '_registry', registry)
     monkeypatch.setattr(registry_module, '_bundle_model', lambda _: object())
     monkeypatch.setattr(registry_module, '_carrier_signature', lambda: {})
     published = sink.publish_model(SimpleNamespace(), str(bundle),
-                                   location=ModelRegistryLocation('CHURN'),
-                                   metadata=metadata,
-                                   metrics={'auc': 0.92, 'loss': float('nan')})
-    assert calls[0]['metrics'] == {
-        **({'kumo_bundle_id': 'b1'} if metadata else {}), 'kumo_engine': '1'
-    }
-    assert published.metadata == metadata
-    assert published.metrics['auc'] == 0.92
+                                   location=ModelRegistryLocation('CHURN'))
+    assert tried == ['V4', 'V5']
+    assert published.version == 'V5'
+    with pytest.raises(ValueError, match='already existed'):
+        sink.publish_model(SimpleNamespace(), str(bundle),
+                           location=ModelRegistryLocation('CHURN',
+                                                          version='V4'))
+
+    def fail_after_creating(*args, version_name, **kwargs):
+        tried.append(version_name)
+        names.append(version_name)
+        raise RuntimeError('upload failed')
+
+    @contextmanager
+    def failing(_):
+        yield SimpleNamespace(log_model=fail_after_creating,
+                              get_model=lambda _: model)
+
+    tried.clear()
+    monkeypatch.setattr(sink, '_registry', failing)
+    with pytest.raises(RuntimeError, match='upload failed'):
+        sink.publish_model(SimpleNamespace(), str(bundle),
+                           location=ModelRegistryLocation('CHURN'))
+    assert len(tried) == 3
 
 
 def test_listing_filters_engine_marker_and_returns_lineage(monkeypatch):
@@ -290,7 +352,7 @@ def test_publish_records_the_task_type_monitors_need(tmp_path, monkeypatch,
     monkeypatch.setattr(registry_module, '_bundle_model', lambda _: object())
     monkeypatch.setattr(registry_module, '_carrier_signature', lambda: {})
     sink.publish_model(SimpleNamespace(), str(bundle),
-                       location=ModelRegistryLocation('CHURN'))
+                       location=ModelRegistryLocation('CHURN', version='V1'))
     assert calls[0].get('task') == expected
 
 

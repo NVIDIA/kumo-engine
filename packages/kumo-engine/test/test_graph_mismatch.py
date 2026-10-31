@@ -29,13 +29,14 @@ def _moved(tables):
         table['source_table_name'] = 'prod.' + table['source_table_name']
 
 
-def _predict(trainer, snapshot, monkeypatch):
+def _predict(trainer, snapshot, monkeypatch, **kwargs):
     def stop(*args, **kwargs):
         raise _Stop
 
     monkeypatch.setattr(PredictiveQuery, '_from_snapshot', stop)
     with pytest.raises(_Stop):
-        trainer.predict(snapshot, binary_classification_threshold=.5)
+        trainer.predict(snapshot, binary_classification_threshold=.5,
+                        **kwargs)
 
 
 def test_predict_says_what_differs_from_the_training_graph(
@@ -55,6 +56,14 @@ def test_predict_says_what_differs_from_the_training_graph(
     with pytest.warns(UserWarning, match=r'trained on a snapshot of graph '
                       r'\w+\. Schema changes: events edges\.$'):
         _predict(trainer, _other(snapshot, dropped), monkeypatch)
+
+    strict = kumo.MLOps(str(tmp_path / 'root'), on_error='raise')
+    with pytest.raises(ValueError, match=r"Schema changes: events edges\. "
+                       r"With on_error='raise'"):
+        trainer.predict(_other(snapshot, dropped), mlops=strict,
+                        binary_classification_threshold=.5)
+    with pytest.warns(UserWarning, match='The schema is the same'):
+        _predict(trainer, _other(snapshot, _moved), monkeypatch, mlops=strict)
 
     monkeypatch.setattr(trainer, '_graph_config', None)
     with pytest.warns(UserWarning, match='does not record its training graph'):
@@ -82,4 +91,4 @@ def test_schema_changes_ignore_connectors_and_locations():
     assert schema_changes(
         config('dev', [age]),
         config('dev', [{**age, 'dtype': 'float64'}], tables=('users', 'x'))
-    ) == ['table x added', 'users columns']
+    ) == ['table x added', 'users columns (age)']

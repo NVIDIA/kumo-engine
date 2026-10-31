@@ -231,7 +231,7 @@ def test_finish_fit_forwards_publication_details_and_returns_assigned_version(
         tmp_path, path, location):
     bundle = _fake_published_bundle(tmp_path)
     trainer = Trainer(ModelPlan())
-    original = TrainingResult({'val_auroc': .9}, {}, bundle)
+    original = TrainingResult({'val_auroc': .9, 'test_auroc': .8}, {}, bundle)
     published = PublishedModel(name='CHURN_GNN', version='assigned-v7',
                                uri='provider://models/CHURN_GNN/assigned-v7')
     calls = []
@@ -262,7 +262,7 @@ def test_finish_fit_forwards_publication_details_and_returns_assigned_version(
     assert calls[0][1] == str(bundle)
     assert calls[0][2]['path'] == path
     assert calls[0][2]['location'] == location
-    assert calls[0][2]['metrics'] == {'val_auroc': .9}
+    assert calls[0][2]['metrics'] == {'test/auroc': .8}
     assert calls[0][2]['metadata']['kumo_bundle_id'] == result.bundle_id
     assert result.published_model is published
     assert result.metrics == original.metrics
@@ -348,6 +348,9 @@ def test_load_from_connector_fetches_then_uses_local_loader(
     assert loaded._training_result is not None
     assert loaded._training_result.bundle_dir != bundle.resolve()
     assert loaded._training_result.bundle_dir.name == 'fetched-model'
+    assert loaded.result.registered_model == PublishedModel(
+        name='CHURN_GNN', version='V1', uri='fake://CHURN_GNN@latest')
+    assert loaded.result.registered_alias is None
 
 
 def test_local_bundle_reloads_in_a_fresh_process(tmp_path: Path) -> None:

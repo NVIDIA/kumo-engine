@@ -8,9 +8,10 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+from kumo_core.artifact_export import ArtifactDestinationConflict
 from kumo_core.chunked_fs import ChunkedFileHandler
 from kumo_core.object_store_sink import FilesystemSink
-from kumoapi.jobs import PredictionArtifactType
+from kumoapi.jobs import PredictionArtifactType, WriteMode
 from kumoapi.plugin import FileStoreSink
 from pyarrow.fs import PyFileSystem
 
@@ -138,19 +139,14 @@ def test_a_trainer_publishes_and_loads_through_a_filesystem_only_sink(
     trainer, *_ = fitted
     connector = SimpleNamespace(source_type='SNOWFLAKE',
                                 sink_backend=StageSink())
-    result = trainer._finish_fit(
-        trainer._training_result, predictive_query=trainer._training_query,
-        snapshot_id=trainer._snapshot_id,
-        training_table_generation=trainer.training_table_generation_plan,
-        export_config=kumo.ModelOutputConfig(connector,
-                                             path='@stage/models/m'))
-    assert result.published_model.uri == '@stage/models/m'
+    published = trainer.result.export(
+        kumo.ModelOutputConfig(connector, path='@stage/models/m'))
+    assert published.uri == '@stage/models/m'
     loaded = kumo.Trainer.load_from_connector(connector,
                                               path='@stage/models/m')
-    assert loaded._snapshot_id == trainer._snapshot_id
+    assert loaded.result.id == trainer.result.id
     with pytest.raises(NotImplementedError, match='cannot publish'):
-        trainer.fit(None, snapshot=None,
-                    export_config=kumo.ModelOutputConfig(connector, path='T'))
+        trainer.result.export(kumo.ModelOutputConfig(connector, path='T'))
 
 
 def test_predictions_export_through_a_filesystem_only_sink(fitted, connector):
@@ -216,12 +212,24 @@ def test_publishing_an_identical_bundle_again_reuses_the_copy(
     assert len(uploads) == 1
 
 
-def test_an_occupied_directory_is_refused_before_scoring(tmp_path, connector):
-    from kumo_core.artifact_export import ArtifactDestinationConflict
+def test_an_occupied_directory_is_refused_by_its_full_location(
+        tmp_path, connector):
+    files = FilesystemSink(connector.sink_backend)
+    part = tmp_path / 'part-0.parquet'
+    pd.DataFrame({'x': range(3)}).to_parquet(part)
+    files.write_files(connector, '@stage/out/', [str(part)])
 
+    files.preflight_write_files(connector, '@stage/new/')
+    files.preflight_write_files(connector, '@stage/out/',
+                                write_mode=WriteMode.OVERWRITE)
+    with pytest.raises(ArtifactDestinationConflict, match="'@stage/out/'"):
+        files.preflight_write_files(connector, '@stage/out/')
+
+
+def test_an_occupied_directory_is_refused_before_scoring(tmp_path, connector):
     files = FilesystemSink(connector.sink_backend)
     files.preflight_write_files(connector, '@stage/out/')
     connector.sink_backend.store.objects['@stage/out/old.parquet'] = b'x'
-    for mode in (None, 'OVERWRITE', 'APPEND'):
+    for mode in (None, WriteMode.APPEND):
         with pytest.raises(ArtifactDestinationConflict, match='already'):
             files.preflight_write_files(connector, '@stage/out/', mode)

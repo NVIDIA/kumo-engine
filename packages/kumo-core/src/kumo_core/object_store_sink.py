@@ -188,7 +188,10 @@ class ObjectStoreSinkBackend(ABC):
         if write_mode is not WriteMode.OVERWRITE:
             raise NotImplementedError(
                 'Object-store artifact output does not support APPEND')
-        from kumo_core.artifact_export import export_selected_files
+        from kumo_core.artifact_export import (
+            ArtifactDestinationConflict,
+            export_selected_files,
+        )
         from kumo_core.sources import layout
         filesystem, path = self._destination(connector, table_name)
         kind = layout.file_type(path.rstrip('/')) or layout.PARQUET
@@ -199,12 +202,36 @@ class ObjectStoreSinkBackend(ABC):
         storage = _ArrowExportFiles(
             filesystem, extra_columns, upload=partial(self._upload_file,
                                                       filesystem))
-        _, output = export_selected_files(files, path, fs=storage,
-                                          identity=export_id or str(files),
-                                          file_type=kind,
-                                          convert_csv=storage.convert_csv,
-                                          sidecars=sidecars)
+        try:
+            _, output = export_selected_files(
+                files, path, fs=storage, identity=export_id or str(files),
+                file_type=kind, convert_csv=storage.convert_csv,
+                sidecars=sidecars)
+        except ArtifactDestinationConflict:
+            raise self._conflict(path, '') from None
         return self._uri(output)
+
+    def preflight_write_files(self, connector, table_name, write_mode=None):
+        """Refuse an occupied directory unless ``write_mode`` overwrites."""
+        from pyarrow.fs import FileSelector
+
+        if write_mode is WriteMode.OVERWRITE or not table_name.endswith('/'):
+            return
+        filesystem, path = self._destination(connector, table_name)
+        if filesystem.get_file_info(
+                FileSelector(path.rstrip('/'), allow_not_found=True)):
+            raise self._conflict(path)
+
+    def _conflict(
+        self, path: str,
+        hint: str = ', or replace it with write_mode=WriteMode.OVERWRITE'
+    ) -> ValueError:
+        from kumo_core.artifact_export import ArtifactDestinationConflict
+
+        return ArtifactDestinationConflict(
+            f"Output directory '{self._uri(path.rstrip('/'))}/' already "
+            f"contains data from another export. Choose an empty destination "
+            f"path{hint}.")
 
     def publish_model(
         self,
@@ -493,17 +520,3 @@ class FilesystemSink(ObjectStoreSinkBackend):
 
     def _uri(self, path: str) -> str:
         return path
-
-    def preflight_write_files(self, connector, table_name, write_mode=None):
-        """Refuse an occupied output directory before scoring."""
-        del write_mode
-        from kumo_core.artifact_export import ArtifactDestinationConflict
-        from pyarrow.fs import FileSelector
-
-        if not table_name.endswith('/'):
-            return
-        filesystem, path = self._sink.filesystem(connector, table_name)
-        if filesystem.get_file_info(FileSelector(path, allow_not_found=True)):
-            raise ArtifactDestinationConflict(
-                f"Output directory '{path}/' already contains data from "
-                f"another export. Choose an empty destination path.")

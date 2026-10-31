@@ -108,7 +108,8 @@ def _finish_stub_fit(bundle, trainer, warm_start=None, settings=None):
         snapshot_id='snap', export_config=None,
         training_table_generation=TrainingTableGenerationPlan(),
         provenance=dict(train_table=table, warm_start=warm_start,
-                        started_at=datetime.now(timezone.utc), fit_mode=None))
+                        started_at=datetime.now(timezone.utc), fit_mode=None,
+                        holdout_truncated=False))
     _store_and_register(result.bundle_dir, result.manifest, settings)
     return result
 

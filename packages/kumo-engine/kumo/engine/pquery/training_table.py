@@ -24,6 +24,7 @@ from kumo.engine._manifest import (
     stamp,
     write_manifest,
 )
+from kumo.engine._prep_cost import Start, build_cost, directory_bytes, start
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
 
@@ -216,6 +217,7 @@ class TrainingTable:
                 split=(f"ManualSplit(col={split_column!r}, train_value=0, "
                        "val_value=1, test_value=2)"),
             )
+        started = start()
         run_id = new_run_id()
         run_dir = train_table_scratch_dir(run_id)
         rows_path, version = stage_source_table(source_table,
@@ -290,7 +292,7 @@ class TrainingTable:
                 source_table.connector, source_table.table_name,
                 source_table.sql, version,
                 record_sources=_record_sources(snapshot)),
-            source_version=version)
+            source_version=version, started=started)
 
 
 def _record_sources(snapshot: GraphSnapshot) -> bool:
@@ -303,16 +305,18 @@ def _record_sources(snapshot: GraphSnapshot) -> bool:
 def _finish(table: TrainingTable, snapshot: GraphSnapshot, request: Any,
             mlops: Optional[Any], *,
             source_table: Optional[SourceTableEntry] = None,
-            source_version: Any = None) -> TrainingTable:
+            source_version: Any = None,
+            started: Optional[Start] = None) -> TrainingTable:
     from kumo.engine._mlops import resolve
 
+    settings = resolve(mlops)
     seed = None
     if getattr(request, 'split_family', None) in _RANDOM_SPLITS:
         seed = (request.split_config or {}).get('rnd_seed') or 0
     table = replace(table, id=_table_id(table, snapshot, seed, source_version,
                                         custom=source_table is not None))
-    _record_manifest(table, snapshot, request, seed, source_table=source_table)
-    settings = resolve(mlops)
+    _record_manifest(table, snapshot, request, seed, source_table=source_table,
+                     started=None if settings is None else started)
     if settings is not None and settings.wants('training_table'):
         from kumo.engine._mlops import raise_on_error
 
@@ -345,7 +349,8 @@ def _table_id(table: TrainingTable, snapshot: GraphSnapshot,
 
 def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
                      request: Any, seed: Optional[int], *,
-                     source_table: Optional[SourceTableEntry] = None) -> None:
+                     source_table: Optional[SourceTableEntry] = None,
+                     started: Optional[Start] = None) -> None:
     from kumo.engine._manifest import embedded, stub
 
     path = table.staging_dir / STAGING_MANIFEST_FILE
@@ -365,6 +370,8 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
                 generation_plan=to_json_dict(table.generation_plan),
                 task_type=request.task_type,
                 split_seed=seed,
+                build=None if started is None else build_cost(
+                    table.id, started, directory_bytes(table.staging_dir)),
                 **stamp(),
             ))
     except Exception as error:

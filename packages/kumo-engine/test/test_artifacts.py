@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from kumo_core.artifacts import bundle_id_from_manifest
-from kumo_core.summaries import Dataset, Tag
+from kumo_core.summaries import Dataset, Table, Tag
 
 import kumo.engine as kumo
 from kumo.engine._deps import Dependencies, FileAsset
@@ -16,7 +16,13 @@ from kumo.engine._manifest import (
     Manifest,
     ModelManifest,
     ModelParents,
+    OutputDestination,
+    PredictionManifest,
+    PredictionOutput,
+    PredictionParents,
+    PredictionTableRecord,
     Record,
+    RunScoring,
     SnapshotManifest,
     SnapshotParents,
     SourceTableEntry,
@@ -61,15 +67,15 @@ def test_a_new_kind_names_its_artifacts_without_other_changes():
 
     assert artifacts(report) == [
         Artifact('report', 'r', 's3://root/reports/r', True,
-                 'kumo.report_uri', version='r', version_kind='exact'),
+                 version='r', version_kind='exact'),
         Artifact('snapshot', 'g@d', 's3://root/snapshots/g/d', True,
-                 'kumo.snapshot_uri', version='g@d', version_kind='exact'),
+                 version='g@d', version_kind='exact'),
         Artifact('source_table', 'orders', 's3://data/orders', True,
                  connector='S3', version='7', version_kind='exact'),
         Artifact('model', 'm', 's3://root/models/m', False,
                  'kumo.bundle_uri', version='m', version_kind='exact'),
-        Artifact('snapshot', 'p', None, True, 'kumo.snapshot_uri',
-                 version='p', version_kind='exact'),
+        Artifact('snapshot', 'p', None, True, version='p',
+                 version_kind='exact'),
     ]
 
 
@@ -108,17 +114,16 @@ def test_a_new_kind_and_asset_reach_tags_and_datasets(tmp_path):
 
     assert dependency.location == f'{root}/assets/dummy/{dependency.sha256}'
     assert ReportManifest.from_dict(report.to_dict()) == report
-    assert artifact_summaries(report, 'training', settings, {
+    assert artifact_summaries(report, 'training', {
         'orders': ({'ID': {'stype': 'ID', 'dtype': 'int64'}}, {'rows': 3})
     }) == [
-        Tag('kumo.report_uri', f'{root}/reports/r'),
-        Tag('kumo.snapshot_uri', f'{root}/snapshots/g/d'),
         Tag('kumo.bundle_uri', f'{root}/models/m'),
-        Tag('kumo.dummy_uri', dependency.location),
-        Tag('kumo.artifact_root', root),
-        Dataset('r', {'connector': 'LOCAL_FILE',
-                      'location': f'{root}/reports/r', 'version': 'r',
-                      'version_kind': 'exact'}, {}, {}, 'training'),
+        Table('locations', ('kind', 'id', 'location'), (
+            ('report', 'r', f'{root}/reports/r'),
+            ('snapshot', 'g@d', f'{root}/snapshots/g/d'),
+            ('source_table', 'orders', 's3://data/orders'),
+            ('model', 'm', f'{root}/models/m'),
+            ('asset', dependency.sha256, dependency.location)), brief=True),
         Dataset('g@d', {'connector': 'LOCAL_FILE',
                         'location': f'{root}/snapshots/g/d',
                         'version': 'g@d', 'version_kind': 'exact'}, {}, {},
@@ -127,4 +132,56 @@ def test_a_new_kind_and_asset_reach_tags_and_datasets(tmp_path):
                            'version': '7', 'version_kind': 'exact'},
                 {'ID': {'stype': 'ID', 'dtype': 'int64'}}, {'rows': 3},
                 'training'),
+        Dataset('r', {'connector': 'LOCAL_FILE',
+                      'location': f'{root}/reports/r', 'version': 'r',
+                      'version_kind': 'exact'}, {}, {}, 'training'),
+    ]
+
+
+def test_a_prediction_run_reads_its_snapshot_and_writes_its_outputs():
+    orders = SourceTableEntry(connector='S3', location='s3://data/orders',
+                              version='7', version_kind='exact')
+    run = PredictionManifest(
+        id='p', location='s3://root/predictions/p',
+        parents=PredictionParents(
+            model=ModelManifest(id='m', location='s3://root/models/m'),
+            snapshot=SnapshotManifest(
+                id='g@d', parents=SnapshotParents(
+                    source_tables={'orders': orders}))),
+        prediction_table=PredictionTableRecord(
+            query_sha256='q', source='pql', anchors=[], rows=2),
+        scoring=RunScoring(
+            binary_classification_threshold=None, threshold_source='none',
+            num_classes_to_return=None, count_source='none',
+            num_workers=None),
+        outputs=[
+            PredictionOutput(artifact='predictions',
+                             destination=OutputDestination(
+                                 connector='S3', location='s3://out/p')),
+            PredictionOutput(artifact='embeddings',
+                             destination=OutputDestination(
+                                 connector='SNOWFLAKE',
+                                 location='"DB"."S"."EMB"')),
+        ], status='succeeded', timings=None, stats=None)
+
+    assert artifact_summaries(run, 'scoring') == [
+        Tag('kumo.bundle_uri', 's3://root/models/m'),
+        Tag('kumo.output_uri', 's3://out/p'),
+        Tag('kumo.output_table', '"DB"."S"."EMB"'),
+        Table('locations', ('kind', 'id', 'location'), (
+            ('prediction', 'p', 's3://root/predictions/p'),
+            ('model', 'm', 's3://root/models/m'),
+            ('source_table', 'orders', 's3://data/orders'),
+            ('prediction_output', 'predictions', 's3://out/p'),
+            ('prediction_output', 'embeddings', '"DB"."S"."EMB"')),
+              brief=True),
+        Dataset('orders', {'connector': 'S3', 'location': 's3://data/orders',
+                           'version': '7', 'version_kind': 'exact'}, {}, {},
+                'scoring'),
+        Dataset('predictions', {'connector': 'S3', 'location': 's3://out/p',
+                                'version': None, 'version_kind': None},
+                {}, {}, 'output'),
+        Dataset('embeddings', {'connector': 'SNOWFLAKE',
+                               'location': '"DB"."S"."EMB"', 'version': None,
+                               'version_kind': None}, {}, {}, 'output'),
     ]

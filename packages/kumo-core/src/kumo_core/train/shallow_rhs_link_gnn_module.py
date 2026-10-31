@@ -676,7 +676,7 @@ class ShallowRHSLinkGNNLightningModule(BaseLinkLightningModule):
             return dict(pkey=lhs_pkey, id=lhs_index, time=time, target=index,
                         score=score, label=label)
 
-        return {}
+        return self.holdout_top_scores(stage, score)
 
     def evaluation_epoch_end(self, *args, **kwargs):
         super().evaluation_epoch_end(*args, **kwargs)

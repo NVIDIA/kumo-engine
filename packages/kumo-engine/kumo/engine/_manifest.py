@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared JSON manifest format for engine artifacts."""
 
+import html
 import json
+import re
 import types
 import warnings
 from collections.abc import Mapping as AbcMapping
@@ -28,7 +30,7 @@ from typing import (
 )
 
 from kumo_core.io.filesystem import atomic_write_bytes
-from kumo_core.summaries import Dataset, Summary, Tag
+from kumo_core.summaries import Dataset, Summary, Table, Tag
 
 SCHEMA_VERSION = 1
 _OMIT_NONE = 'omit_none'
@@ -44,9 +46,7 @@ def omit_none() -> Any:
 
 @dataclass(frozen=True)
 class Artifact:
-    r"""An artifact a manifest names, stored at ``location``, which tracked
-    runs tag as ``tag``. A dataset is data a run reads, or writes when its
-    ``context`` is ``output``."""
+    r"""An artifact a manifest names, and how tracked runs tag it."""
 
     kind: str
     id: str
@@ -57,6 +57,7 @@ class Artifact:
     version: Optional[str] = None
     version_kind: Optional[str] = None
     context: Optional[str] = None
+    label: Optional[str] = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -156,7 +157,7 @@ class SourceTableEntry(Record):
 
 
 #: The artifact kinds, as manifests and the artifact root name them.
-KINDS = ('snapshot', 'training_table', 'model')
+KINDS = ('snapshot', 'training_table', 'model', 'prediction')
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -175,13 +176,14 @@ class Manifest(Record):
     EMBED_OMITS = ()
     #: Whether this kind is data a run reads or writes.
     IS_DATASET: ClassVar[bool] = False
-    #: The tag of its location in tracked runs.
     URI_TAG: ClassVar[Optional[str]] = None
 
     def as_artifact(self, key: str) -> Artifact:
         return Artifact(self.kind, self.id, self.location, self.IS_DATASET,
-                        self.URI_TAG or f'kumo.{self.kind}_uri',
-                        version=self.id, version_kind='exact')
+                        self.URI_TAG, version=self.id, version_kind='exact',
+                        label=self.created_at and
+                        f"{self.kind.replace('_', '-')}-{self.created_at[:10]}-"
+                        f"{re.split('[@-]', self.id)[-1][:6]}")
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
@@ -217,22 +219,21 @@ Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
 
 
 def artifact_summaries(manifest: Manifest, context: str,
-                       settings: Any = None,
                        details: Optional[Details] = None) -> List[Summary]:
-    r"""Where ``manifest``'s artifacts are, for its tracked run: each
-    artifact's tag (the nearest of each), ``kumo.artifact_root`` under MLOps
-    ``settings``, and a `Dataset` per stored dataset, read in ``context``
-    or written, with the schema and profile ``details`` gives its id."""
+    r"""Location tags, the locations table and datasets of a manifest."""
     located = [item for item in artifacts(manifest) if item.location]
     tags: Dict[str, str] = {}
     for item in located:
         if item.tag:
             tags.setdefault(item.tag, str(item.location))
-    if settings is not None:
-        tags['kumo.artifact_root'] = settings.root.uri('').rstrip('/')
-    summaries: List[Summary] = [Tag(name, value)
-                                for name, value in tags.items()]
-    for item in located:
+    summaries: List[Summary] = [
+        *(Tag(name, value) for name, value in tags.items()),
+        *([Table('locations', ('kind', 'id', 'location'), tuple(
+            (item.kind, item.id, str(item.location)) for item in located),
+                 brief=True)] if located else []),
+    ]
+    for item in sorted(located, key=lambda item: _DATASET_ORDER.get(
+            item.kind, len(_DATASET_ORDER))):
         if not item.is_dataset:
             continue
         location = str(item.location)
@@ -240,9 +241,12 @@ def artifact_summaries(manifest: Manifest, context: str,
                   'location': location, 'version': item.version,
                   'version_kind': item.version_kind}
         schema, profile = (details or {}).get(item.id, ({}, {}))
-        summaries.append(Dataset(item.id, source, schema, profile,
-                                 item.context or context))
+        summaries.append(Dataset(item.label or item.id, source, schema,
+                                 profile, item.context or context))
     return summaries
+
+
+_DATASET_ORDER = {'snapshot': 0, 'training_table': 1, 'source_table': 2}
 
 
 def _connector(location: str) -> Optional[str]:
@@ -301,6 +305,16 @@ def _parent(hint: Type[M], value: Any) -> M:
 
 
 @dataclass(frozen=True, kw_only=True)
+class BuildCost(Record):
+    r"""When building an artifact ran, how long, and its bytes on disk."""
+
+    started_at: str
+    finished_at: str
+    seconds: float
+    disk_bytes: int
+
+
+@dataclass(frozen=True, kw_only=True)
 class SnapshotParents(Record):
     source_tables: Dict[str, SourceTableEntry]
 
@@ -313,6 +327,7 @@ class SnapshotManifest(Manifest):
     IS_DATASET: ClassVar[bool] = True
     parents: Optional[SnapshotParents] = None
     record_sources: Optional[bool] = omit_none()
+    build: Optional[BuildCost] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -332,6 +347,7 @@ class TrainingTableManifest(Manifest):
     generation_plan: Optional[Dict[str, Any]] = None
     task_type: Optional[str] = None
     split_seed: Optional[int] = None
+    build: Optional[BuildCost] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -350,13 +366,22 @@ class FitTiming(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class TrackingRef(Record):
-    r"""A run in an experiment tracker: its ``platform`` (``mlflow``,
-    ``databricks``, ``sagemaker``, ``snowflake``), the platform's own
-    ``run_id`` and, where the platform has one, the run's ``url``."""
+    r"""A run in an experiment tracker."""
 
     platform: str
     run_id: str
     url: Optional[str] = omit_none()
+    experiment: Optional[str] = omit_none()
+    run_name: Optional[str] = omit_none()
+
+    def _repr_html_(self) -> str:
+        name = html.escape(self.run_name or self.run_id)
+        where = (f' in {html.escape(self.experiment)}'
+                 if self.experiment else '')
+        if self.url is None:
+            return f'{html.escape(self.platform)} run <code>{name}</code>{where}'
+        return (f'<a href="{html.escape(self.url)}" target="_blank" '
+                f'rel="noopener">{name}</a>{where}')
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -379,8 +404,17 @@ class Dependency(Record):
         kind = _kinds().get(self.kind)
         return None if kind is None else Artifact(
             self.kind, str(self.sha256), self.location, kind.IS_DATASET,
-            f'kumo.{self.asset_kind}_uri', version=self.sha256,
-            version_kind='exact')
+            version=self.sha256, version_kind='exact')
+
+
+@dataclass(frozen=True, kw_only=True)
+class HoldoutStats(Record):
+    truncated: Optional[bool]
+    rows: int
+    columns: Dict[str, Dict[str, Any]]
+    label_positive_rate: Optional[float] = omit_none()
+    counts: Optional[Dict[str, Any]] = omit_none()
+    window: Optional[List[Any]] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -398,8 +432,88 @@ class ModelManifest(Manifest):
     fit_mode: Optional[str] = None
     tracking: Optional[TrackingRef] = omit_none()
     dependencies: Optional[List[Dependency]] = omit_none()
+    holdout: Optional[HoldoutStats] = omit_none()
 
-    EMBED_OMITS = ('tracking', )
+    EMBED_OMITS = ('tracking', 'holdout')
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionParents(Record):
+    model: ModelManifest
+    snapshot: SnapshotManifest
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionTableRecord(Record):
+    query_sha256: str
+    source: Optional[str]
+    anchors: List[str]
+    rows: Optional[int]
+    requested_rows: Optional[int] = None
+    scored_rows: Optional[int] = None
+    skipped_rows: Optional[int] = None
+    skipped_sample: Optional[List[Any]] = None
+    skip_reason: Optional[str] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunScoring(Record):
+    binary_classification_threshold: Optional[float]
+    threshold_source: str
+    num_classes_to_return: Optional[int]
+    count_source: str
+    num_workers: Optional[int]
+
+
+@dataclass(frozen=True, kw_only=True)
+class OutputDestination(Record):
+    connector: str
+    location: Optional[str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionOutput(Record):
+    artifact: str
+    destination: OutputDestination
+
+    def as_artifact(self, key: str) -> Artifact:
+        connector, location = (self.destination.connector,
+                               self.destination.location)
+        file = connector in ('LOCAL_FILE', 'S3', 'GCS') or (
+            location or '').startswith(('/', '@'))
+        return Artifact('prediction_output', self.artifact, location, True,
+                        'kumo.output_uri' if file else 'kumo.output_table',
+                        connector=connector, context='output')
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunTimings(Record):
+    started_at: str
+    finished_at: Optional[str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ArtifactStats(Record):
+    rows: Optional[int]
+    columns: Optional[Dict[str, Dict[str, Any]]] = omit_none()
+    predicted_positive_rate: Optional[float] = omit_none()
+    counts: Optional[Dict[str, Any]] = omit_none()
+
+
+@dataclass(frozen=True, kw_only=True)
+class PredictionManifest(Manifest):
+    """A prediction run's record."""
+
+    kind: str = 'prediction'
+    parents: PredictionParents
+    prediction_table: PredictionTableRecord
+    scoring: RunScoring
+    outputs: Optional[List[PredictionOutput]]
+    status: Optional[str]
+    timings: Optional[RunTimings]
+    stats: Optional[Dict[str, ArtifactStats]]
+
+    EMBED_OMITS = ('outputs', 'stats', 'status', 'timings')
 
 
 @dataclass(frozen=True, kw_only=True)

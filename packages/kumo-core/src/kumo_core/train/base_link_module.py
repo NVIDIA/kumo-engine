@@ -261,6 +261,14 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
             torch.cuda.empty_cache()
         gc.collect()
 
+    @staticmethod
+    def holdout_top_scores(stage: TrainingStage,
+                           score: Tensor | None) -> dict[str, Tensor]:
+        r"""Each test entity's top score, for the holdout's counts."""
+        if stage != TrainingStage.TEST or score is None:
+            return {}
+        return {'top_score': score.max(dim=-1).values}
+
     def get_rhs_pred_index_mat(
         self,
         logits: Tensor | None,

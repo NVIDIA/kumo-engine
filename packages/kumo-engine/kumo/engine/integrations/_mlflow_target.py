@@ -16,6 +16,7 @@ from kumo.engine.connector._extras import import_provider
 SAGEMAKER_ARN = re.compile(r'arn:aws[a-z-]*:sagemaker:([^:]*):[^:]*:'
                            r'(mlflow-tracking-server|mlflow-app)/(.+)')
 _LOCK = threading.RLock()
+_NO_LINKS = 'MLFLOW_SUPPRESS_PRINTING_URL_TO_STDOUT'
 _HEADERS = logging.getLogger('mlflow.tracking.request_header.registry')
 _quiet = 0
 _QUIET_LOCK = threading.Lock()
@@ -106,7 +107,8 @@ class Target:
     @contextmanager
     def scope(self) -> Iterator[None]:
         r"""Runs the block with this target's credentials."""
-        with _without_header_warnings():
+        links = {_NO_LINKS: 'true'} if self.platform == 'sagemaker' else {}
+        with _without_header_warnings(), environ(links):
             if self._swap is None:
                 yield
             else:

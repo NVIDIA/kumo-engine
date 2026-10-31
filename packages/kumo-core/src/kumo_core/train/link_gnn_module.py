@@ -438,8 +438,9 @@ class LinkGNNLightningModule(BaseLinkLightningModule):
                 assert exclude_lhs_batch is not None
                 exclude_lhs_batch = exclude_lhs_batch[ex_keep]
 
+        score = None
         if not self.disable_eval_metrics:
-            _, rhs_pred_index_mat = self.get_rhs_pred_index_mat(
+            score, rhs_pred_index_mat = self.get_rhs_pred_index_mat(
                 None, lhs_emb, exclude_rhs_index, exclude_lhs_batch)
             self.update_metrics(
                 stage, valid_rhs[rhs_pred_index_mat]
@@ -465,7 +466,7 @@ class LinkGNNLightningModule(BaseLinkLightningModule):
             return dict(pkey=lhs_pkey, id=lhs_index, time=time, target=target,
                         score=score, label=label)
 
-        return {}
+        return self.holdout_top_scores(stage, score)
 
     def evaluation_epoch_end(
         self,

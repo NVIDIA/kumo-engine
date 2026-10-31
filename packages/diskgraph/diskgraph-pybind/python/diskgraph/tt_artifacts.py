@@ -348,7 +348,8 @@ def build_prediction_table_artifacts_for_existing_table(
         task_type=task_type,
         ingest_on_error=ingest_on_error,
     )
-    _warn_skipped_rows(result)
+    # The caller reports skipped prediction rows: it knows they are entities
+    # to score, not training rows.
     return result
 
 

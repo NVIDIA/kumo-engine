@@ -2,7 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """A recording stand-in for `snowflake.ml.experiment.ExperimentTracking` that
-keeps its observable rules (singleton, one active run, LIKE-matched resume)."""
+keeps its observable rules (singleton, one active run, LIKE-matched resume,
+no artifacts for a run whose name needs quoting)."""
 
 import os
 import re
@@ -158,9 +159,15 @@ class FakeExperimentTracking:
     def log_artifact(self, local_path: str,
                      artifact_path: Optional[str] = None) -> None:
         self._record('log_artifact', local_path, artifact_path)
+        # The artifact URI quotes no identifier, so a run whose name needs
+        # quoting is not found there.
+        if not re.fullmatch(r'[A-Z_][A-Z0-9_$]*', self._run.name):
+            raise RuntimeError(f'Run "{self._run.name}" does not exist in '
+                               f'Experiment {self.experiment}.')
         with open(local_path, encoding='utf-8') as file:
-            self._active()['artifacts'][os.path.basename(local_path)] = (
-                file.read())
+            self._active()['artifacts'][os.path.join(
+                artifact_path or '', os.path.basename(local_path))] = (
+                    file.read())
 
 
 class FakeSession:

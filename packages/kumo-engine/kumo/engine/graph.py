@@ -85,6 +85,7 @@ from kumoapi.graph import Edge
 from kumo.engine._events import Event, EventEmitter
 from kumo.engine._manifest import (
     RECONSTRUCTED,
+    BuildCost,
     SnapshotManifest,
     SnapshotParents,
     SourceTableEntry,
@@ -92,6 +93,7 @@ from kumo.engine._manifest import (
     stamp,
     write_manifest,
 )
+from kumo.engine._prep_cost import build_cost, start
 from kumo.engine._provenance import source_table
 from kumo.engine._scratch import (
     fingerprint,
@@ -254,7 +256,8 @@ def schema_changes(before: Mapping[str, Any],
     ]
     for name in sorted(old.keys() & new.keys()):
         parts = sorted(
-            _SCHEMA_PARTS.get(key, key)
+            _SCHEMA_PARTS.get(key, key) + (_changed_columns(
+                old[name][key], new[name][key]) if key == 'cols' else '')
             for key in old[name].keys() | new[name].keys()
             if old[name].get(key) != new[name].get(key))
         if parts:
@@ -262,8 +265,20 @@ def schema_changes(before: Mapping[str, Any],
     return changes
 
 
+def _changed_columns(before: List[str], after: List[str]) -> str:
+    old, new = ({
+        column['name']: column
+        for column in map(json.loads, side or [])
+    } for side in (before, after))
+    names = sorted(name for name in old.keys() | new.keys()
+                   if old.get(name) != new.get(name))
+    return f" ({', '.join(names)})" if names else ''
+
+
 def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
-                       after: Mapping[str, Any], stacklevel: int) -> None:
+                       after: Mapping[str, Any], stacklevel: int,
+                       strict: bool = False) -> None:
+    r"""Warn of a snapshot of another graph; strict raises on schema change."""
     if before is None:
         warnings.warn(
             f"{message} The model does not record its training graph, so "
@@ -272,6 +287,12 @@ def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
             stacklevel=stacklevel + 1)
         return
     changes = schema_changes(before, after)
+    if changes and strict:
+        raise ValueError(
+            f"{message} Schema changes: {'; '.join(changes)}. With "
+            f"on_error='raise' a model scores only the graph it was trained "
+            f"on: declare the same tables, column types (Table.with_column("
+            f"name, stype=...)) and edges.")
     if changes:
         warnings.warn(f"{message} Schema changes: {'; '.join(changes)}.",
                       UserWarning, stacklevel=stacklevel + 1)
@@ -543,7 +564,8 @@ class GraphSnapshot:
 
 def _write_snapshot_manifest(result: Any, snapshot_id: str,
                              source_tables: Dict[str, SourceTableEntry],
-                             record_sources: bool, *, fresh: bool) -> None:
+                             record_sources: bool, *, fresh: bool,
+                             build: Optional[BuildCost] = None) -> None:
     path = Path(result.index_path) / SNAPSHOT_MANIFEST_FILE
     try:
         if not fresh and path.exists():
@@ -560,7 +582,7 @@ def _write_snapshot_manifest(result: Any, snapshot_id: str,
             manifest = SnapshotManifest(
                 id=snapshot_id,
                 parents=SnapshotParents(source_tables=source_tables),
-                record_sources=record_sources,
+                record_sources=record_sources, build=build,
                 **(stamp() if fresh else RECONSTRUCTED))
         write_manifest(path, manifest)
     except Exception as error:
@@ -759,7 +781,8 @@ class Graph:
             'graph': graph_key, 'tables': list(self._named_tables)})
         with _lock(graph_key):
             snapshot = self._snapshot_no_lock(graph_key, persist_dir,
-                                              record_sources, events)
+                                              record_sources, events,
+                                              timed=settings is not None)
         if settings is not None and settings.wants('snapshot'):
             from kumo.engine._mlops import raise_on_error
             from kumo.engine._snapshot_io import store
@@ -772,8 +795,8 @@ class Graph:
 
     def _snapshot_no_lock(self, graph_key: str, persist_dir: Path,
                           record_sources: bool = True,
-                          events: Optional['_SnapshotEvents'] = None
-                          ) -> GraphSnapshot:
+                          events: Optional['_SnapshotEvents'] = None,
+                          *, timed: bool = False) -> GraphSnapshot:
         r"""`snapshot()`'s body, run under its `FileLock`. Not meant to be
         called on its own -- `persist_dir`, unlike everything else here,
         isn't a pure function of `self` alone (it's `snapshot()`'s lock key,
@@ -790,6 +813,7 @@ class Graph:
             DiskgraphSnapshotHandle,
             check_diskgraph_output,
         )
+        from kumo_core.diskgraph.stores import diskgraph_index_size_bytes
         from kumo_core.sources.layout import staging_dir
         from kumo_core.sources.transfer import discard_destination
         from kumoapi.source_table import CustomSQLSourceTable
@@ -803,6 +827,7 @@ class Graph:
         source_paths: Dict[str, str] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
 
+        started = start() if timed else None
         try:
             for alias, table in self._named_tables.items():
                 assert table.definition is not None  # portable_graph_config
@@ -889,8 +914,12 @@ class Graph:
                 )
 
             snapshot_id = _snapshot_id(graph_key, data_version)
+            build = None if started is None or existing is not None else (
+                build_cost(snapshot_id, started,
+                           diskgraph_index_size_bytes(result.index_path)))
             _write_snapshot_manifest(result, snapshot_id, source_tables,
-                                     record_sources, fresh=existing is None)
+                                     record_sources, fresh=existing is None,
+                                     build=build)
 
             _warn_ingest_data_loss(result, graph_config)
             if events is not None:

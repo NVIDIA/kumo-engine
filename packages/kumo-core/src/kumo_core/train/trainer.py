@@ -16,7 +16,7 @@ from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from functools import wraps
-from typing import IO, Any, Literal, Optional
+from typing import IO, Any, Literal, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -1909,6 +1909,8 @@ class Trainer(PortableConfigMixin):
         self,
         stage: TrainingStage,
         return_embeddings: bool = False,
+        binary_classification_threshold: float | None = None,
+        target_edges: Sequence[float] = (),
     ) -> EvalOutput | None:
         assert stage in {TrainingStage.VAL, TrainingStage.TEST}
 
@@ -2104,7 +2106,33 @@ class Trainer(PortableConfigMixin):
             embedding = list(embeddings.values())[0].numpy()
             embedding = format_embeddings(embedding, meta_df)
 
-        return EvalOutput(metrics, df, embedding)
+        counts = None
+        if stage == TrainingStage.TEST and df is not None:
+            counts = self._test_counts(outputs, df,
+                                       binary_classification_threshold,
+                                       target_edges)
+        return EvalOutput(metrics, df, embedding, counts)
+
+    def _test_counts(self, outputs: dict[str, Any], df: pd.DataFrame,
+                     threshold: float | None,
+                     edges: Sequence[float]) -> Any:
+        from kumo_core.evaluation_counts import evaluation_counts
+
+        task_type = self.task.task_type
+        if task_type not in (TaskType.REGRESSION, TaskType.FORECASTING):
+            return evaluation_counts(task_type, prob=outputs.get('prob'),
+                                     pred=outputs.get('pred'),
+                                     target=outputs['target'],
+                                     threshold=threshold)
+        column = self.encoders.target.col_name
+        target = df[column].to_numpy(dtype=float)
+        if len(edges) < 2:
+            edges = sorted(set(np.quantile(target, np.linspace(0, 1, 51))))
+        horizon = (df.groupby(level=0).cumcount()
+                   if task_type == TaskType.FORECASTING else None)
+        return evaluation_counts(task_type, pred=df[f'{column}_PRED'],
+                                 target=target, target_edges=edges,
+                                 horizon=horizon)
 
     @trace()
     def validate(
@@ -2150,9 +2178,11 @@ class Trainer(PortableConfigMixin):
         fit_mode_to_use: FitMode = FitMode.fit,
         *,
         return_embeddings: bool = False,
+        binary_classification_threshold: float | None = None,
+        target_edges: Sequence[float] = (),
     ) -> EvalOutput | None:
         r"""Get test model performance based on checkpoint trained with the
-        given `fit_mode_to_use`"""
+        given `fit_mode_to_use`, and the exact counts of its scores."""
         if fit_mode_to_use == FitMode.refit_full:
             raise ValueError(
                 f"test(fit_mode={fit_mode_to_use}) is invalid since the model "
@@ -2165,6 +2195,8 @@ class Trainer(PortableConfigMixin):
         return self._eval(
             stage=TrainingStage.TEST,
             return_embeddings=return_embeddings,
+            binary_classification_threshold=binary_classification_threshold,
+            target_edges=target_edges,
         )
 
     @trace()

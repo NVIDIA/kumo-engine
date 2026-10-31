@@ -6,11 +6,16 @@
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from kumo_core.score_counts import PROBABILITY_EDGES, Counts
+from kumo_core.score_drift import drift_column
+from kumo_core.types import TaskType
 
 from kumo.engine._manifest import (
     Dependency,
     FitTiming,
+    HoldoutStats,
     ModelManifest,
     ModelParents,
     TrackingRef,
@@ -31,14 +36,23 @@ def write_provenance(
     train_table: TrainingTable,
     warm_start: Optional[ModelManifest],
     started_at: datetime,
+    holdout_truncated: Optional[bool],
     fit_mode: Optional[str],
     tracking: Optional[TrackingRef] = None,
     dependencies: Optional[List[Dependency]] = None,
+    holdout_counts: Optional[Dict[str, Any]] = None,
+    holdout_window: Optional[Tuple[int, int, int, str]] = None,
 ) -> None:
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
 
     finished_at = datetime.now(timezone.utc)
     table = train_table.manifest
+    holdout = None if holdout_counts is None or fit_mode == 'refit_full' else (
+        HoldoutStats(truncated=holdout_truncated,
+                     rows=holdout_rows(holdout_counts), columns={},
+                     counts=holdout_counts,
+                     window=None if holdout_window is None else list(
+                         holdout_window)))
     write_manifest(
         bundle_dir / PROVENANCE_FILE,
         ModelManifest(
@@ -56,6 +70,7 @@ def write_provenance(
             fit_mode=fit_mode,
             tracking=tracking,
             dependencies=dependencies,
+            holdout=holdout,
             **stamp(),
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
@@ -110,6 +125,41 @@ def record_derivation(bundle_dir: Path, parent_dir: Path,
                 derived_from=None if parent is None else embedded_model(
                     parent)),
             dependencies=None if parent is None else parent.dependencies,
+            holdout=None if parent is None else parent.holdout,
             **stamp(),
         ))
     add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
+
+
+def holdout_rows(counts: Dict[str, Any]) -> int:
+    r"""The rows a holdout's score ``counts`` counted."""
+    holdout = Counts.from_dict(counts)
+    return int(holdout.arrays[drift_column(holdout)].sum())
+
+
+def holdout_counts(model: Optional[ModelManifest]) -> Optional[Counts]:
+    r"""The exact score counts of ``model``'s holdout, if it records them."""
+    holdout = None if model is None else model.holdout
+    if holdout is None or holdout.counts is None:
+        return None
+    return Counts.from_dict(holdout.counts)
+
+
+def count_edges(model: Optional[ModelManifest], task_type: TaskType
+                ) -> Optional[Dict[str, Tuple[float, ...]]]:
+    r"""The bins a prediction run of model counts its scores in."""
+    if task_type in (TaskType.BINARY_CLASSIFICATION,
+                     TaskType.MULTICLASS_CLASSIFICATION):
+        return {'score': PROBABILITY_EDGES}
+    if task_type is TaskType.MULTILABEL_CLASSIFICATION:
+        return {'score': PROBABILITY_EDGES, 'top_score': PROBABILITY_EDGES}
+    holdout = holdout_counts(model)
+    if task_type in (TaskType.MULTILABEL_RANKING,
+                     TaskType.STATIC_LINK_PREDICTION,
+                     TaskType.TEMPORAL_LINK_PREDICTION):
+        return {} if holdout is None or 'top_score' not in holdout.edges else {
+            'top_score': holdout.edges['top_score']}
+    if (task_type.has_numerical_target and holdout is not None
+            and 'target' in holdout.edges):
+        return {'target': holdout.edges['target']}
+    return None

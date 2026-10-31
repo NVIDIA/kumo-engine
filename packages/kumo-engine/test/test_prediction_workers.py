@@ -82,7 +82,7 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
                                           monkeypatch):
     trainer = Trainer(ModelPlan(), accelerator='cpu')
     trainer._training_result = SimpleNamespace(
-        artifact_paths={}, scoring_defaults=ScoringDefaults())
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     trainer._training_query = 'trained query'
     monkeypatch.setattr(Trainer, 'scratch_dir', property(lambda self: tmp_path))
     monkeypatch.setattr(

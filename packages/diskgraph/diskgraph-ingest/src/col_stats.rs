@@ -539,6 +539,86 @@ impl ReservoirSamplerL {
 pub use diskgraph_core::accumulators::TDigestEstimator;
 pub use diskgraph_core::accumulators::WelfordAccumulator;
 
+/// Counts of finite values on fixed bins, the same in every snapshot: eight
+/// per power of two, by the sign, exponent and top three mantissa bits. An
+/// open-addressing table keyed by bin, so a count is a hash and a probe.
+#[derive(Clone, Default)]
+pub struct ValueBins {
+    bins: Vec<i32>,
+    counts: Vec<u64>,
+    len: usize,
+}
+
+impl ValueBins {
+    const EMPTY: i32 = i32::MIN;
+
+    #[inline]
+    fn add(&mut self, value: f64) {
+        let bin = (value.abs().to_bits() >> 49) as i32;
+        self.add_count(if value < 0.0 { -bin - 1 } else { bin }, 1);
+    }
+
+    #[inline]
+    fn add_count(&mut self, bin: i32, count: u64) {
+        if 2 * (self.len + 1) > self.bins.len() {
+            self.grow();
+        }
+        let mask = self.bins.len() - 1;
+        let mut slot = (bin as u32).wrapping_mul(0x9E37_79B1) as usize & mask;
+        while self.bins[slot] != bin {
+            if self.bins[slot] == Self::EMPTY {
+                self.bins[slot] = bin;
+                self.len += 1;
+                break;
+            }
+            slot = (slot + 1) & mask;
+        }
+        self.counts[slot] += count;
+    }
+
+    fn grow(&mut self) {
+        let old = std::mem::take(self);
+        let size = (old.bins.len() * 2).max(64);
+        self.bins = vec![Self::EMPTY; size];
+        self.counts = vec![0; size];
+        for (bin, count) in old.iter() {
+            self.add_count(bin, count);
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (i32, u64)> + '_ {
+        self.bins
+            .iter()
+            .zip(&self.counts)
+            .filter(|(bin, _)| **bin != Self::EMPTY)
+            .map(|(bin, count)| (*bin, *count))
+    }
+
+    fn merge(&mut self, other: &ValueBins) {
+        for (bin, count) in other.iter() {
+            self.add_count(bin, count);
+        }
+    }
+
+    /// `[start, count]` pairs in value order, where a bin's start is its
+    /// lowest value, or for a negative bin the bound just below its values.
+    fn to_json(&self) -> JsonValue {
+        let mut bins: Vec<_> = self.iter().collect();
+        bins.sort_unstable();
+        let start = |bin: i32| {
+            let magnitude = |bits: i32| f64::from_bits((bits as u64) << 49);
+            if bin < 0 {
+                -magnitude(-bin)
+            } else {
+                magnitude(bin)
+            }
+        };
+        bins.into_iter()
+            .map(|(bin, count)| json!([start(bin), count]))
+            .collect()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FileColStats — per-file observer
 // ---------------------------------------------------------------------------
@@ -573,6 +653,7 @@ pub enum ColumnStatsCollector {
         welford: WelfordAccumulator,
         hll: HyperLogLog,
         tdigest: TDigestEstimator,
+        bins: ValueBins,
     },
     Categorical {
         count: u64,
@@ -788,6 +869,17 @@ impl FileColStats {
                     "{count} invalid values found in {table_name}.{name}. Invalid values are parsed as null. Please correct and retrain if needed."
                 );
             }
+        }
+    }
+
+    /// Values of numerical column `col_idx` at quantiles `qs`, from its
+    /// t-digest; `None` for other columns or without values.
+    pub fn numerical_quantiles(&mut self, col_idx: usize, qs: &[f64]) -> Option<Vec<f64>> {
+        match self.cols.get_mut(col_idx)? {
+            ColumnStatsCollector::Numerical {
+                tdigest, welford, ..
+            } if welford.count > 0 => Some(qs.iter().map(|&q| tdigest.quantile_at(q)).collect()),
+            _ => None,
         }
     }
 
@@ -1079,6 +1171,7 @@ impl ColumnStatsCollector {
                 welford: WelfordAccumulator::new(),
                 hll: HyperLogLog::new(),
                 tdigest: TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA),
+                bins: ValueBins::default(),
             },
             Some(SemanticType::Categorical) => ColumnStatsCollector::Categorical {
                 count: 0,
@@ -1180,6 +1273,7 @@ impl ColumnStatsCollector {
                     welford,
                     hll,
                     tdigest,
+                    bins,
                 },
                 ColumnStatsCollector::Numerical {
                     null_count: nc2,
@@ -1188,6 +1282,7 @@ impl ColumnStatsCollector {
                     welford: w2,
                     hll: h2,
                     tdigest: td2,
+                    bins: b2,
                 },
             ) => {
                 *null_count += *nc2;
@@ -1196,6 +1291,7 @@ impl ColumnStatsCollector {
                 welford.merge(w2);
                 hll.merge(h2);
                 tdigest.merge(td2);
+                bins.merge(b2);
             }
             (
                 ColumnStatsCollector::Categorical {
@@ -1414,6 +1510,7 @@ impl ColumnStatsCollector {
                 welford,
                 hll,
                 tdigest,
+                bins,
             } => {
                 let total = welford.count + *null_count + *invalid_count;
                 let (q25, q50, q75) = tdigest.quantiles().unwrap_or((0.0, 0.0, 0.0));
@@ -1433,6 +1530,7 @@ impl ColumnStatsCollector {
                     "q50": q50,
                     "q75": q75,
                     "num_unique": hll.estimate() as u64,
+                    "value_bins": bins.to_json(),
                 }))
             }
             ColumnStatsCollector::Categorical {
@@ -1780,6 +1878,7 @@ impl FileColStats {
                     welford,
                     hll,
                     tdigest,
+                    ..
                 } => {
                     let count = welford.count + *null_count + *invalid_count;
                     // Base stats
@@ -2499,12 +2598,14 @@ impl ColumnValueObserver for FileColStats {
                 welford,
                 hll,
                 tdigest,
+                bins,
                 ..
             } => {
                 let fval = value as f64;
                 welford.observe(fval);
                 hll.observe_i64(value);
                 tdigest.observe(fval);
+                bins.add(fval);
             }
             ColumnStatsCollector::Categorical { count, hll, .. } => {
                 *count += 1;
@@ -2563,12 +2664,14 @@ impl ColumnValueObserver for FileColStats {
                 welford,
                 hll,
                 tdigest,
+                bins,
                 ..
             } => {
                 if value.is_finite() {
                     welford.observe(value);
                     hll.observe_f64(value);
                     tdigest.observe(value);
+                    bins.add(value);
                 } else {
                     *invalid_count += 1;
                 }
@@ -3866,6 +3969,35 @@ mod tests {
     fn test_format_kumo_timestamp_sentinels() {
         assert_eq!(format_kumo_timestamp(i64::MAX), "kumo_timestamp_NaT");
         assert_eq!(format_kumo_timestamp(i64::MIN), "kumo_timestamp_NaT");
+    }
+
+    #[test]
+    fn numerical_values_are_counted_exactly_on_fixed_bins() {
+        let stypes = vec![Some(SemanticType::Numerical)];
+        let mut first = FileColStats::new(&make_test_cols(&stypes));
+        let mut second = FileColStats::new(&make_test_cols(&stypes));
+        for value in [-3.0, 0.0, -0.0, 1.0, 1.1, 1.2] {
+            first.observe_f64(0, value);
+        }
+        second.observe_i64(0, 1);
+        second.observe_f64(0, f64::NAN);
+        second.observe_null(0);
+        first.merge(&mut second);
+
+        let raw = first.to_json(&["x".into()], &[IngestedType::Float64], None, None);
+        assert_eq!(
+            raw["x"]["value_bins"],
+            json!([[-3.25, 1], [0.0, 2], [1.0, 3], [1.125, 1]])
+        );
+
+        let mut wide = ValueBins::default();
+        for exponent in -100..100 {
+            wide.add(2f64.powi(exponent));
+            wide.add(2f64.powi(exponent));
+        }
+        let bins = wide.to_json();
+        assert_eq!(bins.as_array().unwrap().len(), 200);
+        assert_eq!(bins[0], json!([2f64.powi(-100), 2]));
     }
 
     #[test]

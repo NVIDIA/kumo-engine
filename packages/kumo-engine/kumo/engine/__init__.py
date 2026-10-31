@@ -30,10 +30,12 @@ from kumoapi.table import Column
 from kumo.engine import _quiet  # noqa: F401
 from kumo.engine._manifest import (
     ModelManifest,
+    PredictionManifest,
     SnapshotManifest,
     TrainingTableManifest,
 )
 from kumo.engine._mlops import MLOps, mlops
+from kumo.engine._monitoring import DriftReport, EvaluationResult
 from kumo.engine._version import __version__
 from kumo.engine.config import configure
 from kumo.engine.connector import (
@@ -74,6 +76,8 @@ __all__ = [
     "ADLSIdentity",
     "__version__",
     "configure",
+    "EvaluationResult",
+    "DriftReport",
     "EmbeddingModelStore",
     "GloVeVectors",
     "TextEmbedding",
@@ -105,6 +109,7 @@ __all__ = [
     "SnapshotManifest",
     "TrainingTableManifest",
     "ModelManifest",
+    "PredictionManifest",
     "PredictiveQuery",
     "TrainingTable",
     "PredictionTable",
