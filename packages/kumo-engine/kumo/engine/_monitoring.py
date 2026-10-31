@@ -32,31 +32,6 @@ from kumo.engine._tracking import logged_names, metric_name
 _EVALUATION_FILE = '_evaluation.json'
 
 
-def _for_model_monitor(files: Any, directory: Path) -> list:
-    r"""The files with TARGET as 0/1 and UTC times without a zone."""
-    import pyarrow as pa
-    import pyarrow.parquet as parquet
-
-    def monitored(field: Any) -> Any:
-        if field.name == 'TARGET' and pa.types.is_boolean(field.type):
-            return field.with_type(pa.int8())
-        if pa.types.is_timestamp(field.type) and field.type.tz is not None:
-            return field.with_type(pa.timestamp(field.type.unit))
-        return field
-
-    typed = []
-    for path in files:
-        source = parquet.ParquetFile(path)
-        schema = pa.schema([monitored(field) for field in source.schema_arrow])
-        target = str(directory / Path(path).name)
-        with parquet.ParquetWriter(target, schema) as writer:
-            for batch in source.iter_batches():
-                writer.write_table(
-                    pa.Table.from_batches([batch]).cast(schema))
-        typed.append(target)
-    return typed
-
-
 @dataclass(frozen=True)
 class EvaluationResult:
     """Metrics of a prediction run against labels from a newer snapshot."""
@@ -90,10 +65,6 @@ class EvaluationResult:
         import tempfile
 
         from kumo.engine._scratch import get_scratch_dir
-        from kumo.engine.connector import (
-            SnowflakeConnector,
-            is_file_destination,
-        )
         from kumo.engine.trainer.trainer import _holds_parquet
 
         if self.actuals is None:
@@ -115,10 +86,8 @@ class EvaluationResult:
             }
         get_scratch_dir().mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=get_scratch_dir()) as typed:
-            if isinstance(output_config.connector, SnowflakeConnector
-                          ) and not is_file_destination(
-                              output_config.connector, destination):
-                files = _for_model_monitor(files, Path(typed))
+            files = output_config.connector._monitored_files(
+                destination, files, Path(typed))
             output_config._write(destination, files,
                                  export_id=f'{self.prediction_id}-evaluation-'
                                  f'{Path(self.actuals).name}-{written}',

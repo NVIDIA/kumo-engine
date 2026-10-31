@@ -294,7 +294,8 @@ def test_evaluation_exports_its_rows(snapshots, classifier, tmp_path):
     assert (tmp_path / 'evaluated' / '_SUCCESS').stat().st_mtime_ns == written
 
 
-def test_evaluation_appends_to_a_table_with_its_ids(snapshots, classifier):
+def test_evaluation_appends_to_a_table_with_its_ids(snapshots, classifier,
+                                                    monkeypatch):
     from unittest.mock import Mock
 
     from kumoapi.jobs import PredictionArtifactType, WriteMode
@@ -304,11 +305,14 @@ def test_evaluation_appends_to_a_table_with_its_ids(snapshots, classifier):
     trainer, run = classifier
     result = trainer.evaluate(run, labels_snapshot=snapshots.after)
     sink = SimpleNamespace(write_files=Mock())
+    monkeypatch.setattr(kumo.SnowflakeConnector, 'sink_backend', sink)
+    connector = kumo.SnowflakeConnector(warehouse='WH', database='ML',
+                                        schema_name='S')
 
     def export(**options):
         result.export(PredictionOutputConfig(
-            SimpleNamespace(sink_backend=sink),
-            PredictionArtifactType.PREDICTIONS, 'EVALUATED', **options))
+            connector, PredictionArtifactType.PREDICTIONS, 'EVALUATED',
+            **options))
         return sink.write_files.call_args
 
     (_, table, _, mode), kwargs = export()
