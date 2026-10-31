@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 
 _MAX_METRICS = 200
 _MAX_PARAMS = 1000
-# Metric name budgets: per-epoch metrics give way first, then trial summaries.
 _EPOCH_METRICS = _MAX_METRICS - 60
 _SUMMARY_METRICS = _MAX_METRICS - 30
 _FINISH_PARAMS = 20

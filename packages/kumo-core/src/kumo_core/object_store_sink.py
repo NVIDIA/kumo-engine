@@ -7,7 +7,6 @@ import os
 import posixpath
 import shutil
 from abc import ABC, abstractmethod
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
 
@@ -34,8 +33,7 @@ def _chunked(filesystem: FileSystem) -> bool:
 
 
 def open_sized(filesystem: FileSystem, path: str, size: int) -> Any:
-    """``open_output_stream(path)``, telling a chunked filesystem the size
-    the file will have."""
+    """``open_output_stream`` that tells a chunked filesystem the size."""
     if _chunked(filesystem):
         from kumo_core.chunked_fs import SIZE_KEY
 
@@ -46,8 +44,7 @@ def open_sized(filesystem: FileSystem, path: str, size: int) -> Any:
 
 def upload_bundle(filesystem: FileSystem, destination: str,
                   bundle_dir: str) -> None:
-    """Copy every file of ``bundle_dir`` under ``destination``, the
-    provenance file last."""
+    """Copy ``bundle_dir`` under ``destination``, provenance last."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
     root = Path(bundle_dir)
@@ -63,22 +60,15 @@ def upload_bundle(filesystem: FileSystem, destination: str,
 
 def holds_bundle(filesystem: FileSystem, destination: str,
                  bundle_dir: str) -> bool:
-    """Whether ``destination`` holds a complete copy of ``bundle_dir``: the
-    same files and sizes, and the same provenance file, written last."""
+    """Whether ``destination`` holds the same files, sizes and provenance."""
     from kumo_core.artifacts import PROVENANCE_FILE
-    from pyarrow.fs import FileSelector, FileType
 
     root = Path(bundle_dir)
     local = {
         path.relative_to(root).as_posix(): path.stat().st_size
         for path in root.rglob('*') if path.is_file()
     }
-    remote = {
-        info.path[len(destination) + 1:]: info.size
-        for info in filesystem.get_file_info(
-            FileSelector(destination, recursive=True, allow_not_found=True))
-        if info.type is FileType.File
-    }
+    remote = file_sizes(filesystem, destination)
     if remote != local or PROVENANCE_FILE not in local:
         return False
     with filesystem.open_input_stream(
@@ -86,10 +76,21 @@ def holds_bundle(filesystem: FileSystem, destination: str,
         return reader.readall() == (root / PROVENANCE_FILE).read_bytes()
 
 
+def file_sizes(filesystem: FileSystem, directory: str) -> dict[str, int]:
+    """The size of each file under ``directory``, by relative path."""
+    from pyarrow.fs import FileSelector, FileType
+
+    return {
+        info.path[len(directory) + 1:]: info.size
+        for info in filesystem.get_file_info(
+            FileSelector(directory, recursive=True, allow_not_found=True))
+        if info.type is FileType.File
+    }
+
+
 def download_bundle(filesystem: FileSystem, source: str,
                     local_dir: str) -> bool:
-    """Replace ``local_dir`` with the files under ``source``; False if there
-    are none."""
+    """Replace ``local_dir`` with ``source``; False if it is empty."""
     from kumo_core.sources.layout import confined
     from pyarrow.fs import FileSelector, FileType
 
@@ -103,8 +104,7 @@ def download_bundle(filesystem: FileSystem, source: str,
         if info.type is not FileType.File:
             continue
         found = True
-        # Remote keys are untrusted; each relative path must stay inside
-        # the local bundle, even when it contains parent components.
+        # Remote keys are untrusted.
         target = destination / confined(info.path[len(source) + 1:])
         target.parent.mkdir(parents=True, exist_ok=True)
         with filesystem.open_input_stream(info.path) as reader, \
@@ -124,12 +124,10 @@ class ObjectStoreSinkBackend(ABC):
         raise NotImplementedError
 
     def holds_files(self, connector: SourceConnector, path: str) -> bool:
-        """Every path of an object store is a file location."""
         return True
 
     def filesystem(self, connector: SourceConnector,
                    path: str) -> Tuple[FileSystem, str]:
-        """The authenticated filesystem and resolved ``path``."""
         filesystem, resolved = self._destination(connector, path)
         return filesystem, resolved.rstrip('/')
 
@@ -174,7 +172,7 @@ class ObjectStoreSinkBackend(ABC):
         if export_id and holds_export(filesystem, path, export_id):
             _LOG.info('%s already holds a complete copy of export %s; reused '
                       'it', path, export_id)
-            return f'{self.scheme}://{path.rstrip("/")}/'
+            return self._uri(f'{path.rstrip("/")}/')
         storage = _ArrowExportFiles(filesystem, extra_columns)
         try:
             _, output = export_selected_files(
@@ -183,7 +181,7 @@ class ObjectStoreSinkBackend(ABC):
                 sidecars=sidecars)
         except ArtifactDestinationConflict:
             raise self._conflict(path, '') from None
-        return f'{self.scheme}://{output}'
+        return self._uri(output)
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
         """Refuse an occupied directory unless ``write_mode`` overwrites."""
@@ -234,8 +232,7 @@ class ObjectStoreSinkBackend(ABC):
                 f"Publishing a model to {self.provider} needs a destination "
                 f"path. Set output_path on the ModelExportConfig.")
 
-        filesystem, destination = self._destination(connector, path)
-        destination = destination.rstrip('/')
+        filesystem, destination = self.filesystem(connector, path)
         if holds_bundle(filesystem, destination, bundle_dir):
             _LOG.info('%s already holds this model bundle; reused it',
                       destination)
@@ -244,7 +241,7 @@ class ObjectStoreSinkBackend(ABC):
         return PublishedModel(
             name=posixpath.basename(destination),
             version=destination,
-            uri=f'{self.scheme}://{destination}',
+            uri=self._uri(destination),
             metadata=dict(metadata),
         )
 
@@ -271,14 +268,13 @@ class ObjectStoreSinkBackend(ABC):
                 f"was published to. Reuse the output_path from the export "
                 f"config.")
 
-        filesystem, source = self._destination(connector, path)
-        source = source.rstrip('/')
+        filesystem, source = self.filesystem(connector, path)
         if not download_bundle(filesystem, source, local_dir):
             raise ValueError(
-                f"Nothing is published at {self.scheme}://{source}. Check the "
+                f"Nothing is published at {self._uri(source)}. Check the "
                 f"path the model was exported to.")
         return PublishedModel(name=posixpath.basename(source), version=source,
-                              uri=f'{self.scheme}://{source}')
+                              uri=self._uri(source))
 
     def _write(self, filesystem: FileSystem, frame: pd.DataFrame, path: str,
                export_id: Optional[str] = None) -> str:
@@ -300,12 +296,12 @@ class ObjectStoreSinkBackend(ABC):
                        kind)
             with filesystem.open_output_stream(f'{directory}/_SUCCESS'):
                 pass
-            return f'{self.scheme}://{directory}/'
+            return self._uri(f'{directory}/')
         if not path.casefold().endswith(f'.{kind}'):
             path += f'.{kind}'
         _prepared(filesystem, posixpath.dirname(path))
         _write_one(filesystem, frame, path, kind)
-        return f'{self.scheme}://{path}'
+        return self._uri(path)
 
     def _occupied(self, filesystem: FileSystem, directory: str,
                   marker: Optional[str]) -> bool:
@@ -326,7 +322,7 @@ class ObjectStoreSinkBackend(ABC):
                 if reader.readall().decode('utf-8') == marker:
                     return True
         raise ValueError(
-            f"Output directory '{self.scheme}://{directory}/' already "
+            f"Output directory '{self._uri(directory)}/' already "
             f"contains data from another export. Choose an empty destination "
             f"path.")
 
@@ -353,7 +349,7 @@ def _write_one(filesystem: FileSystem, frame: pd.DataFrame, path: str,
     import tempfile
 
     from kumo_core.chunked_fs import spool_root
-    # Spool so the size is known and a file up to one part stays plain.
+    # Spool to learn the size.
     with tempfile.TemporaryDirectory(
             dir=spool_root(filesystem.handler)) as spool:
         local = os.path.join(spool, 'frame.parquet')
@@ -479,11 +475,7 @@ class _ArrowExportFiles:
 
 
 class FilesystemSink(ObjectStoreSinkBackend):
-    """The object-store file writers over any sink's ``filesystem()``, for
-    the file paths of a sink that also writes tables: paths in, bare
-    resolved paths out."""
-    scheme = 'filesystem'
-
+    """The object-store file writers over any sink's ``filesystem()``."""
     def __init__(self, sink: Any) -> None:
         self._sink = sink
         self.provider = type(sink).__name__
@@ -492,22 +484,5 @@ class FilesystemSink(ObjectStoreSinkBackend):
         filesystem, path = self._sink.filesystem(connector, coordinate)
         return filesystem, path + ('/' if coordinate.endswith('/') else '')
 
-    def _bare(self, uri: str) -> str:
-        return uri.removeprefix(f'{self.scheme}://')
-
     def _uri(self, path: str) -> str:
         return path
-
-    def write_table(self, *args, **kwargs):
-        return self._bare(super().write_table(*args, **kwargs))
-
-    def write_files(self, *args, **kwargs):
-        return self._bare(super().write_files(*args, **kwargs))
-
-    def publish_model(self, *args, **kwargs):
-        published = super().publish_model(*args, **kwargs)
-        return replace(published, uri=self._bare(published.uri))
-
-    def fetch_model(self, *args, **kwargs):
-        fetched = super().fetch_model(*args, **kwargs)
-        return replace(fetched, uri=self._bare(fetched.uri))

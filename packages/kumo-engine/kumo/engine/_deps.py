@@ -1,9 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""What a model needs to predict besides its bundle and a snapshot: its
-dependencies, recorded at fit, and the assets among them, resolved at
-predict time."""
+r"""A model's dependencies, recorded at fit and resolved at predict."""
 
 import hashlib
 import importlib
@@ -33,15 +31,11 @@ from kumo.engine._manifest import (
     stamp,
 )
 
-#: A place assets are stored: a URI or path, or a ``(connector, path)``.
 Location = Union[str, Tuple[Any, str]]
 
 
 class Asset(Protocol):
-    r"""A file or directory a model needs at predict time, addressed by its
-    content. ``files`` maps names to local files; the class's
-    ``load(directory, dependency)`` restores one from a directory holding
-    them, and must give the same ``fingerprint()``."""
+    r"""A content-addressed file or directory a model predicts with."""
 
     asset_kind: str
     name: str
@@ -117,10 +111,7 @@ def imported(entry: str) -> Any:
 
 
 class Dependencies:
-    r"""Records a fit's dependencies (``require``) and resolves a fitted
-    model's assets (``resolve``). With MLOps ``settings`` whose export
-    includes models, each required asset is stored once under the
-    artifact root; ``locations`` are asset roots looked in first."""
+    r"""Records a fit's dependencies and resolves a model's assets."""
     def __init__(self, records: Sequence[Dependency] = (),
                  settings: Any = None,
                  locations: Sequence[Location] = ()) -> None:
@@ -161,9 +152,7 @@ class Dependencies:
         ]
 
     def resolve(self, asset_kind: str, name: str) -> Path:
-        r"""A local directory holding the asset, checked against its
-        sha256: from the given locations, then where it was stored, then
-        the current artifact root."""
+        r"""A local directory holding the asset, checked by sha256."""
         record = next((record for record in self.assets(asset_kind)
                        if record.name == name), None)
         if record is None:
@@ -216,8 +205,7 @@ def asset_cache() -> Path:
 
 
 def _store(asset: Asset, sha256: str, settings: Any) -> Optional[str]:
-    r"""Writes ``asset`` once to ``<root>/assets/<asset_kind>/<sha256>/``,
-    its ``_provenance.json`` last; returns where."""
+    r"""Writes ``asset`` once under the root; returns where."""
     from kumo_core.object_store_sink import _prepared
 
     from kumo.engine.connector import file_store

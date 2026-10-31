@@ -52,8 +52,6 @@ logger = logging.getLogger(__name__)
 
 DROPPED_PARAMS = 'kumo.dropped_params'
 DROPPED_METRICS = 'kumo.dropped_metrics'
-# Tracker calls run on one background thread so a slow tracking server
-# never stalls training; these bound how long the fit waits for it.
 QUEUE_SIZE = 1000
 FINISH_SECONDS = 30.0
 MODEL_SECONDS = 3600.0
@@ -61,18 +59,7 @@ MODEL_SECONDS = 3600.0
 
 @dataclass(frozen=True)
 class RunRecord:
-    r"""One tracked run; ``steps`` are per-epoch ``(epoch, value)``
-    histories, ``artifacts`` map file names to text, ``inputs`` map
-    source table names to their ``connector``, ``location``, ``version`` and
-    ``version_kind``, ``summaries`` are `kumo_core.summaries` results,
-    which each tracker logs in its own way, and ``description`` is the
-    Markdown line under line 1 of the run's card (a fit's query). Trackers
-    compose run names from ``model_label``, `model_label` of the model,
-    and ``name_suffix``, what follows the model in ``name`` (a prediction's
-    ``-<as-of date>``); ``started`` and ``finished`` are when the run's work
-    started and ended (UTC), known for a prediction run logged after its
-    work. A monitoring call's record names, in ``prediction_run``, the
-    tracker's run of the prediction it checks, when known."""
+    r"""One tracked run; ``steps`` are ``(step, value)`` histories."""
 
     name: Optional[str] = None
     params: Mapping[str, str] = field(default_factory=dict)
@@ -94,9 +81,7 @@ class RunRecord:
 
 @dataclass(frozen=True)
 class RunSpec:
-    r"""What a run records, whatever trained or scored it: ``params`` are
-    flat, ``parents`` become ``kumo.<name>`` pointer tags and ``tags`` are
-    the user's own."""
+    r"""What a run records; ``parents`` become ``kumo.<name>`` tags."""
 
     kind: str
     name: Optional[str] = None
@@ -123,9 +108,7 @@ INPUT_FIELDS = ('connector', 'location', 'version', 'version_kind')
 
 
 def fit_inputs(manifest: Any) -> Dict[str, Dict[str, Optional[str]]]:
-    r"""Source tables of a training table or model manifest, or a prediction
-    run's scoring snapshot, read from its embedded parents; stub parents add
-    none."""
+    r"""Source tables of a training table or model manifest."""
     try:
         table, kind = manifest, getattr(manifest, 'kind', None)
         if kind == 'model':
@@ -174,9 +157,8 @@ def metric_name(metric: str) -> str:
 
 
 def logged_name(name: str) -> str:
-    r"""A metric's name in a tracker: ``val_auroc`` is ``val/auroc`` and a
-    trial's ``best_val_auroc`` is ``val/best_auroc``, so charts group by
-    split."""
+    r"""``val_auroc`` as ``val/auroc``, ``best_val_auroc`` as
+    ``val/best_auroc``."""
     best = name.startswith('best_')
     split, _, metric = name.removeprefix('best_').partition('_')
     if split not in ('train', 'val') or not metric:
@@ -213,8 +195,7 @@ def model_label(registered: Optional[str], query: Optional[str],
 
 def by_step(steps: Mapping[str, Sequence[Tuple[int, float]]]
             ) -> List[Tuple[int, Dict[str, float]]]:
-    r"""Per-step histories regrouped as each step's metrics, in step
-    order."""
+    r"""Each step's metrics, in step order."""
     grouped: Dict[int, Dict[str, float]] = {}
     for name, history in steps.items():
         for step, value in history:
@@ -583,7 +564,7 @@ class Tracking(Protocol):
 
 @dataclass
 class _Search:
-    r"""The fit run's series: one trial's epochs, or a search's best trial."""
+    r"""The fit run's series: one trial's epochs, or a search's best."""
 
     single: bool
     metric: str
@@ -732,7 +713,7 @@ class TrackingSession:
         snapshot: Any,
         registry: Optional['ModelRegistryLocation'] = None,
     ) -> Tuple[Optional['PublishedModel'], Optional[BaseException]]:
-        r"""Runs the tracker's log_model on the tracking thread and waits."""
+        r"""The tracker's ``log_model``, run on the tracking thread."""
         if self._worker is None or (self._tracker is not None and not callable(
                 getattr(self._tracker, 'log_model', None))):
             return None, None
@@ -932,7 +913,6 @@ def log_run(tracking: Any, hook: str,
 
 
 def _debug() -> bool:
-    r"""Tracebacks of tracking failures only at DEBUG."""
     return logger.isEnabledFor(logging.DEBUG)
 
 

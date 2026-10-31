@@ -95,8 +95,7 @@ def predict(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
 
 
 def _in_input_order(rows: pd.DataFrame, scored: pd.DataFrame) -> pd.DataFrame:
-    r"""``scored`` in the order of ``rows``, which scoring does not keep;
-    rows scoring skipped stay out, and repeated rows pair up in order."""
+    r"""``scored`` in the order of ``rows``."""
     keys = ['ENTITY']
     left = pd.DataFrame({'ENTITY': rows['ENTITY1'].to_numpy()})
     right = scored[['ENTITY']].copy()
@@ -140,15 +139,9 @@ def _seconds(values: pd.Series) -> pd.Series:
 
 def _require_inputs(trainer: Any, snapshot: GraphSnapshot, rows: pd.DataFrame,
                     time: Optional[pd.Timestamp]) -> None:
-    from kumo_core.pquery import query_is_temporal
-
-    from kumo.engine.pquery import PredictiveQuery
-
     if len(rows) == 0 or time is not None or 'TIMESTAMP' in rows:
         return
-    parsed = PredictiveQuery._from_snapshot(snapshot,
-                                            trainer._training_query)._parsed
-    if query_is_temporal(parsed, snapshot._native_graph):
+    if _temporal(trainer, snapshot):
         raise ValueError("temporal query: pass params={'prediction_time': "
                          "...} or a TIMESTAMP column")
 

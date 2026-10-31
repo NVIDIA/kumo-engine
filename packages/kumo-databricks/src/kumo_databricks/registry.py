@@ -386,7 +386,7 @@ class DatabricksModelRegistryMixin(_DatabricksSessions):
         _version_number(location)
         return fetch_bundle(self._client(connector), name,
                             Path(local_dir).resolve(), version=location.version,
-                            alias=getattr(location, 'alias', None))
+                            alias=location.alias)
 
     def set_model_alias(self, connector: SourceConnector,
                         location: ModelRegistryLocation, alias: str) -> None:

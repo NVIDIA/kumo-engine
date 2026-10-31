@@ -173,17 +173,17 @@ def _snapshot_manifest(snapshot: Any) -> bytes:
         RECONSTRUCTED,
         SnapshotManifest,
         SnapshotParents,
+        manifest_bytes,
     )
     from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
 
     try:
         return (Path(snapshot.index_path) / SNAPSHOT_MANIFEST_FILE).read_bytes()
     except OSError:
-        manifest = SnapshotManifest(
-            id=snapshot.id, parents=SnapshotParents(source_tables={}),
-            **RECONSTRUCTED)
-        return (json.dumps(manifest.to_dict(), indent=2, sort_keys=True) +
-                '\n').encode()
+        return manifest_bytes(
+            SnapshotManifest(id=snapshot.id,
+                             parents=SnapshotParents(source_tables={}),
+                             **RECONSTRUCTED))
 
 
 def export_location(snapshot: Any, path: str) -> str:
@@ -238,8 +238,7 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
         entry['rel_path']: int(entry['size_bytes'])
         for entry in json.loads(index_manifest)['files']
     }
-    # Each export writes its own generation; the marker, written last,
-    # names the one that loads. Concurrent exports never share a file.
+    # One generation per export; the marker, written last, names it.
     generation = uuid.uuid4().hex
     filesystem, root = _location(connector, location)
     base = f'{root}/{generation}'
@@ -287,10 +286,8 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
 
 def _holds_copy(connector: Any, location: str, snapshot_id: str,
                 index: Path, snapshot_manifest: bytes) -> bool:
-    r"""Whether ``location`` holds a complete export of this snapshot: the
-    local index's bytes, every index file at its size, and the same
-    ``_provenance.json``."""
-    from pyarrow.fs import FileSelector, FileType
+    r"""Whether ``location`` holds this index's bytes and manifest."""
+    from kumo_core.object_store_sink import file_sizes
 
     from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
 
@@ -300,12 +297,7 @@ def _holds_copy(connector: Any, location: str, snapshot_id: str,
                 or not holds_export(index, manifest)):
             return False
         filesystem, _ = _location(connector, location)
-        remote = {
-            info.path[len(root) + 1:]: info.size
-            for info in filesystem.get_file_info(
-                FileSelector(root, recursive=True, allow_not_found=True))
-            if info.type is FileType.File
-        }
+        remote = file_sizes(filesystem, root)
         listed = json.loads((index / _INDEX_MANIFEST).read_bytes())['files']
         if (_DONE not in remote
                 or f'index/{_INDEX_MANIFEST}' not in remote) or any(
@@ -321,8 +313,7 @@ def _holds_copy(connector: Any, location: str, snapshot_id: str,
 
 def _commit(filesystem: FileSystem, root: str, generation: str,
             marker: bytes) -> None:
-    r"""Writes the marker in one step: a rename on a local filesystem (an
-    in-place write there truncates first), a single object put elsewhere."""
+    r"""Writes the marker atomically: a local rename, else one object put."""
     if filesystem.type_name == 'local':
         staged = f'{root}/{generation}/{_MANIFEST}'
         _write(filesystem, staged, marker)
@@ -334,9 +325,7 @@ def _commit(filesystem: FileSystem, root: str, generation: str,
 
 
 def _clean(filesystem: FileSystem, root: str) -> None:
-    r"""Best effort: remove generations that a later commit superseded, and
-    abandoned ones. A generation is marked done only after its commit, so
-    one listed done before the marker is re-read lost to a later one."""
+    r"""Removes superseded and abandoned generations, best effort."""
     from pyarrow.fs import FileSelector, FileType
 
     try:
@@ -400,17 +389,14 @@ def read(connector: Any, path: str) -> Tuple[str, dict]:
 
 
 def export_identity(manifest: dict) -> str:
-    r"""What makes one export's bytes differ from another's of the same
-    snapshot: its range checksums and index manifest."""
+    r"""A hash of an export's range checksums and index manifest."""
     return hashlib.sha256(json.dumps(
         [manifest['range_bytes'], manifest['crc32'],
          manifest['index_manifest']], sort_keys=True).encode()).hexdigest()
 
 
 def holds_export(index: Path, manifest: dict) -> bool:
-    r"""Whether the local index at ``index`` has the export's bytes. An
-    index without a recorded export identity (built here, or loaded by an
-    older engine) is checksummed once."""
+    r"""Whether the local ``index`` has the export's bytes."""
     from diskgraph import snapshot_range_checksums
 
     identity = export_identity(manifest)
@@ -428,7 +414,6 @@ def holds_export(index: Path, manifest: dict) -> bool:
 def _download(root: str, staging: Path, client: FileSystem,
               item: Tuple[str, int, int], stop: threading.Event) -> None:
     name, offset, length = item
-    # Each open is a HEAD: pyarrow cannot open a file from a known size.
     with client.open_input_file(f'{root}/index/{name}') as reader:
         fd = os.open(staging / name, os.O_WRONLY)
         try:
