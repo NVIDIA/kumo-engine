@@ -76,6 +76,7 @@ def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
             explain_disabled=training_input.model_plan.training_job.
             disable_explain,
             best_trainer=best_trainer,
+            published_counts=None,
         )
 
     core_plan = CoreModelPlan()

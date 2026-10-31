@@ -416,6 +416,7 @@ def test_fit_consumes_generated_rows_with_fresh_task_metadata(
             artifact_paths={},
             explain_disabled=True,
             best_trainer=_best_trainer(tmp_path),
+            published_counts=None,
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -546,6 +547,7 @@ def test_fit_materializes_existing_rows_against_explicit_snapshot(
             artifact_paths={},
             explain_disabled=True,
             best_trainer=_best_trainer(tmp_path),
+            published_counts=None,
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -622,6 +624,7 @@ def test_fit_uses_selected_graph_task_semantics_without_regenerating_rows(
             artifact_paths={},
             explain_disabled=True,
             best_trainer=_best_trainer(tmp_path),
+            published_counts=None,
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -804,6 +807,7 @@ def test_repeated_fit_calls_get_distinct_ingest_targets(snapshot, tmp_path,
             artifact_paths={},
             explain_disabled=True,
             best_trainer=_best_trainer(tmp_path),
+            published_counts=None,
         ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
@@ -883,7 +887,8 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
         run_name = Path(training_input.home_dir).name
         return SimpleNamespace(metrics={'run_name': run_name},
                                artifact_paths={}, explain_disabled=True,
-                               best_trainer=_best_trainer(tmp_path))
+                               best_trainer=_best_trainer(tmp_path),
+                               published_counts=None)
 
     monkeypatch.setattr(
         'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
