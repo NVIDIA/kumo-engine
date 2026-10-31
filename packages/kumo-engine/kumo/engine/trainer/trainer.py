@@ -591,6 +591,15 @@ def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
 _F = TypeVar('_F', bound=Callable[..., Any])
 
 
+_UNACTIONABLE = (
+    (r"The usage of `scatter\(reduce='\w+'\)` can be accelerated via the "
+     r"'torch-scatter' package", UserWarning),
+    (r'Your `IterableDataset` has `__len__`', UserWarning),
+    (r'This process .* is multi-threaded, use of fork\(\) may lead to '
+     r'deadlocks', DeprecationWarning),
+)
+
+
 def _without_unactionable_warnings(method: _F) -> _F:
     r"""Runs ``method`` without third-party notes users cannot act on:
     PyG's torch-scatter hint, Lightning's tips and ``__len__`` note, and
@@ -601,19 +610,8 @@ def _without_unactionable_warnings(method: _F) -> _F:
         tips.addFilter(_no_lightning_tip)
         try:
             with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    'ignore',
-                    message=r"The usage of `scatter\(reduce='\w+'\)` can be "
-                    r"accelerated via the 'torch-scatter' package",
-                    category=UserWarning,
-                )
-                warnings.filterwarnings(
-                    'ignore', message=r'Your `IterableDataset` has `__len__`',
-                    category=UserWarning)
-                warnings.filterwarnings(
-                    'ignore', message=r'This process .* is multi-threaded, '
-                    r'use of fork\(\) may lead to deadlocks',
-                    category=DeprecationWarning)
+                for message, category in _UNACTIONABLE:
+                    warnings.filterwarnings('ignore', message, category)
                 return method(*args, **kwargs)
         finally:
             tips.removeFilter(_no_lightning_tip)
