@@ -11,7 +11,6 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from kumo_core.artifacts import add_bundle_file
-from kumo_core.types import TaskType
 from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
 
 import kumo.engine as kumo
@@ -98,8 +97,7 @@ def test_each_fit_returns_a_new_result(fitted):
     assert second is not first and trainer.result is second
 
 
-def _finish_stub_fit(bundle, trainer, warm_start=None, settings=None,
-                     holdout_path=None):
+def _finish_stub_fit(bundle, trainer, warm_start=None, settings=None):
     (bundle / 'model').mkdir(parents=True)
     (bundle / 'model' / 'config.json').write_text('{}')
     (bundle / MANIFEST_FILE).write_text(json.dumps({'artifacts': []}))
@@ -111,8 +109,7 @@ def _finish_stub_fit(bundle, trainer, warm_start=None, settings=None,
         training_table_generation=TrainingTableGenerationPlan(),
         provenance=dict(train_table=table, warm_start=warm_start,
                         started_at=datetime.now(timezone.utc), fit_mode=None,
-                        task_type=TaskType.BINARY_CLASSIFICATION,
-                        holdout_path=holdout_path, holdout_truncated=False))
+                        holdout_truncated=False))
     _store_and_register(result.bundle_dir, result.manifest, settings)
     return result
 
