@@ -795,17 +795,19 @@ def _connector_registry(
         settings: Any,
         snapshot_id: Optional[str] = None) -> Optional[ModelOutputConfig]:
     r"""The registry a connector tracker registers in."""
+    from kumo.engine._deps import reads
     from kumo.engine._mlops import snapshot_path
 
     if (settings is None or settings.registry is None
             or logs_models(settings.tracking)):
         return None
+    connector = settings.tracking.connector
     serving = None
     if (snapshot_id and settings.wants('snapshot')
-            and settings.root.path.startswith('@')):
+            and reads(connector, settings.root.path)):
         serving = settings.root.uri(snapshot_path(snapshot_id))
     return ModelOutputConfig(
-        settings.tracking.connector, location=settings.registry,
+        connector, location=settings.registry,
         serving_snapshot=serving,
         serving_options=getattr(settings.tracking, 'serving_options', None))
 
@@ -822,13 +824,12 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
             for name in ('spec_version', 'predictive_query', 'snapshot_id')
         }
     metadata.update(registry_pointers(bundle_id))
-    if getattr(export_config, 'serving_snapshot', None):
+    if export_config.serving_snapshot:
         from kumo.engine._mlops import snapshot_uri
 
         metadata[SERVING_SNAPSHOT_KEY] = str(
             snapshot_uri(export_config.serving_snapshot))
-    for name, value in (getattr(export_config, 'serving_options', None)
-                        or {}).items():
+    for name, value in (export_config.serving_options or {}).items():
         metadata[SERVING_OPTION_PREFIX + name] = str(value)
     location = export_config.location
     alias = location.alias if location else None
