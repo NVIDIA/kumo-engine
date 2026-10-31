@@ -349,6 +349,10 @@ def prediction_parents(manifest: Optional['PredictionManifest']
             'task_type': getattr(training_table, 'task_type', None)}
 
 
+def logs_models(tracker: Any) -> bool:
+    return callable(getattr(tracker, 'log_model', None))
+
+
 def run_name(kind: str, core: str, suffix: Optional[str] = None) -> str:
     r"""<kind>-<core><suffix>, the kind not repeated."""
     word = _KIND_WORDS.get(kind, kind)
@@ -714,8 +718,8 @@ class TrackingSession:
         registry: Optional['ModelRegistryLocation'] = None,
     ) -> Tuple[Optional['PublishedModel'], Optional[BaseException]]:
         r"""The tracker's ``log_model``, run on the tracking thread."""
-        if self._worker is None or (self._tracker is not None and not callable(
-                getattr(self._tracker, 'log_model', None))):
+        if self._worker is None or (self._tracker is not None
+                                    and not logs_models(self._tracker)):
             return None, None
         done = threading.Event()
         failed: List[BaseException] = []

@@ -101,6 +101,7 @@ from kumo.engine._tracking import (
     TrackingSession,
     fit_inputs,
     logged_names,
+    logs_models,
     system_metrics,
 )
 from kumo.engine.connector import model_sink
@@ -780,21 +781,17 @@ def _with_metrics(model: Optional[PublishedModel],
 
 
 def _mlflow_registry(settings: Any) -> Optional[ModelRegistryLocation]:
-    if settings is None or not _logs_models(settings.tracking):
+    if settings is None or not logs_models(settings.tracking):
         return None
     return settings.registry
 
 
 def _connector_registry(settings: Any) -> Optional[ModelOutputConfig]:
     if (settings is None or settings.registry is None
-            or _logs_models(settings.tracking)):
+            or logs_models(settings.tracking)):
         return None
     return ModelOutputConfig(settings.tracking.connector,
                              location=settings.registry)
-
-
-def _logs_models(tracking: Any) -> bool:
-    return callable(getattr(tracking, 'log_model', None))
 
 
 def _publish(bundle_dir: Path, bundle_id: Optional[str],
