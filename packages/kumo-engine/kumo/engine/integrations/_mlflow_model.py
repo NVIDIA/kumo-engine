@@ -31,10 +31,8 @@ class KumoModel(_pyfunc.PythonModel):
         self._reader = context.model_config.get('assets_from')
         bundle = context.artifacts['bundle']
         with assets_through(
-                self._reader, bundle, lambda reader, _: (
-                    f"pass model_config={{'assets_from': {reader}(...)}} to "
-                    f"mlflow.pyfunc.load_model(model_uri, ...), with an "
-                    f"identity that reads it")):
+                self._reader, bundle, lambda reader, _:
+                f'{_assets_from(reader)}, with an identity that reads it'):
             self._predictor = load_predictor(bundle)
         self._columns = list(context.model_config['columns'])
         self._snapshots: Dict[str, GraphSnapshot] = {}
@@ -70,10 +68,14 @@ class KumoModel(_pyfunc.PythonModel):
                 if reader is None or connector is self._reader:
                     raise
                 raise FileNotFoundError(
-                    f"{error} To read {uri} from here, pass "
-                    f"model_config={{'assets_from': {reader}(...)}} to "
-                    f"mlflow.pyfunc.load_model(model_uri, ...).") from error
+                    f'{error} To read {uri} from here, '
+                    f'{_assets_from(reader)}.') from error
         return self._snapshots[uri]
+
+
+def _assets_from(reader: str) -> str:
+    return (f"pass model_config={{'assets_from': {reader}(...)}} to "
+            f"mlflow.pyfunc.load_model(model_uri, ...)")
 
 
 def _remote_reader(uri: str) -> Optional[str]:
