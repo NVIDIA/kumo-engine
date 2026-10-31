@@ -194,7 +194,7 @@ def export_location(snapshot: Any, path: str) -> str:
 def store(snapshot: Any, settings: Any) -> None:
     r"""Export ``snapshot`` under ``<root>/snapshots/`` unless a complete
     export of it is there; failures warn."""
-    import warnings
+    from kumo.engine._mlops import warn_not_stored
 
     try:
         connector = settings.root.connector
@@ -209,9 +209,7 @@ def store(snapshot: Any, settings: Any) -> None:
                 and marker.get('snapshot_id') == snapshot.id):
             export(snapshot, connector, path)
     except Exception as error:
-        warnings.warn(
-            f"Could not store snapshot {snapshot.id} under the artifact "
-            f"root: {error}", UserWarning, stacklevel=3)
+        warn_not_stored(f'snapshot {snapshot.id}', error, stacklevel=3)
 
 
 def export(snapshot: Any, connector: Any, path: str) -> str:

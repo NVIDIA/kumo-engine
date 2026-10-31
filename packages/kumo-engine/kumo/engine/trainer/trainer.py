@@ -283,6 +283,7 @@ def _store_model(result: TrainingResult, settings: Any) -> None:
     from kumo_core.object_store_sink import holds_bundle, upload_bundle
     from pyarrow.fs import FileSelector
 
+    from kumo.engine._mlops import warn_not_stored
     from kumo.engine.connector import file_store
 
     if result.bundle_id is None:
@@ -298,9 +299,7 @@ def _store_model(result: TrainingResult, settings: Any) -> None:
             filesystem.delete_dir_contents(root, missing_dir_ok=True)
         upload_bundle(filesystem, root, str(result.bundle_dir))
     except Exception as error:
-        warnings.warn(
-            f"Could not store model {result.bundle_id} under the artifact "
-            f"root: {error}", UserWarning, stacklevel=4)
+        warn_not_stored(f'model {result.bundle_id}', error, stacklevel=4)
 
 
 def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:

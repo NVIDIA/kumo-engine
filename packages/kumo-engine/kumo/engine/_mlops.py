@@ -7,6 +7,7 @@ import contextlib
 import contextvars
 import os
 import posixpath
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, FrozenSet, Iterable, Iterator, Optional, Tuple, Union
 
@@ -170,6 +171,11 @@ def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
     r"""The settings a call runs with: its ``mlops=`` argument, else the
     enclosing block's, else None (off)."""
     return settings if settings is not None else _CURRENT.get()
+
+
+def warn_not_stored(what: str, error: Exception, stacklevel: int) -> None:
+    warnings.warn(f'Could not store {what} under the artifact root: {error}',
+                  UserWarning, stacklevel=stacklevel + 1)
 
 
 def on_root(source: Any, path: str) -> Tuple[Any, str]:

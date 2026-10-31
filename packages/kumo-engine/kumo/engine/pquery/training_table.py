@@ -135,6 +135,7 @@ class TrainingTable:
     def _store(self, settings: Any) -> None:
         from pyarrow.fs import FileType
 
+        from kumo.engine._mlops import warn_not_stored
         from kumo.engine.connector import file_store
         from kumo.engine.trainer.output_config import TrainingTableOutputConfig
 
@@ -146,9 +147,7 @@ class TrainingTable:
                 self.export(
                     TrainingTableOutputConfig(settings.root.connector, path))
         except Exception as error:
-            warnings.warn(
-                f"Could not store training table {self.id} under the "
-                f"artifact root: {error}", UserWarning, stacklevel=3)
+            warn_not_stored(f'training table {self.id}', error, stacklevel=3)
 
     @classmethod
     def from_source_table(
