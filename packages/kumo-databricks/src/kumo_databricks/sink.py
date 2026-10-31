@@ -241,7 +241,8 @@ class DatabricksSinkBackend(DatabricksModelRegistryMixin):
                               write_mode: Optional[WriteMode] = None) -> None:
         """Refuse an occupied volume directory; tables are not checked."""
         if self.holds_files(connector, table_name):
-            FilesystemSink(self).preflight_write_files(connector, table_name)
+            FilesystemSink(self).preflight_write_files(
+                connector, table_name, write_mode)
 
     def holds_files(self, connector: SourceConnector, path: str) -> bool:
         """Volume paths hold files; anything else is a table."""
