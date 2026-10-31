@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Build: docker build --platform linux/amd64 -f docker/Dockerfile.temporal_admin_tools -t kumo-temporal-admin:1.31.4-go1.26.10 .
+FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm@sha256:632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af AS build
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local
+
+RUN git clone --depth 1 --branch v1.31.4 https://github.com/temporalio/temporal.git /src/server \
+ && test "$(git -C /src/server rev-parse HEAD)" = 9a9a1f0fa8a5a4edf29a90c4069352da094920fc \
+ && git clone --depth 1 --branch v1.9.1 https://github.com/temporalio/cli.git /src/cli \
+ && test "$(git -C /src/cli rev-parse HEAD)" = 1de87a9f26991bf4f5c0a5ff96f2cea8d7a3cbde
+
+RUN go -C /src/server get golang.org/x/net@v0.60.0 \
+ && go -C /src/server mod tidy \
+ && go -C /src/cli get golang.org/x/net@v0.60.0 github.com/gomarkdown/markdown@v0.0.0-20260724235538-61af6e1e6971 \
+ && go -C /src/cli mod tidy \
+ && go -C /src/cli test github.com/gomarkdown/markdown/...
+
+ARG TARGETOS
+ARG TARGETARCH
+RUN set -eu; export GOOS="$TARGETOS" GOARCH="$TARGETARCH"; \
+    mkdir -p /out; \
+    for tool in sql cassandra elasticsearch tdbg; do \
+        output="temporal-$tool-tool"; \
+        if [ "$tool" = tdbg ]; then output=tdbg; fi; \
+        go -C /src/server build -trimpath -ldflags='-s -w' -o "/out/$output" "./cmd/tools/$tool"; \
+    done; \
+    go -C /src/cli build -trimpath \
+        -ldflags='-s -w -X github.com/temporalio/cli/internal/temporalcli.Version=1.9.1-kumo.1' \
+        -o /out/temporal ./cmd/temporal
+
+FROM temporalio/admin-tools:1.31.4@sha256:c286fe515148587228d692806bc6f7652be5febc384a73dfd16379aed69f7d87
+COPY --from=build /out/ /usr/local/bin/
+LABEL org.opencontainers.image.source="https://github.com/NVIDIA/kumo-engine" \
+      org.opencontainers.image.version="1.31.4-kumo.1" \
+      com.kumo.go.version="1.26.10" \
+      com.kumo.x-net.version="0.60.0" \
+      com.kumo.markdown.revision="61af6e1e69710c5ca13cfbaaaa1bc11bc763a8a9" \
+      com.temporal.cli.version="1.9.1-kumo.1"
