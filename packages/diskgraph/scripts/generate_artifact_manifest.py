@@ -22,13 +22,6 @@ TARGETS = (
 )
 ARTIFACTS = (
     {
-        "id": "diskgraph-gateway",
-        "label": "bin/diskgraph-gateway",
-        "package": "diskgraph-gateway",
-        "manifest": "diskgraph-gateway/Cargo.toml",
-        "features": [],
-    },
-    {
         "id": "diskgraph-extension",
         "label": "diskgraph._c.abi3.so",
         "package": "diskgraph-pybind",

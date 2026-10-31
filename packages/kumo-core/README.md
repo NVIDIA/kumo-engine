@@ -86,27 +86,29 @@ Kumo is not yet a uv workspace. These commands operate on `packages/kumo-core` e
 
 ## Remote batch sampling over Arrow Flight
 
-The Rust `diskgraph-gateway` executable serves complete native DiskGraph batches
-from a prepared graph index. It calls `diskgraph-runtime` directly, encodes native
-Arrow data, validates immutable task uploads, and owns flow control and
-cancellation. Each worker produces a disjoint epoch shard. Python's
-`RemoteRuntimeIndex` consumes the resulting streams and passes Arrow-backed
-batches to the training adapter.
+`diskgraph.SamplingServer` embeds the Rust Flight gateway inside its owning
+Python process. Rust calls `diskgraph-runtime` directly and owns task uploads,
+sampling, Arrow encoding, flow control, and cancellation. Python manages the
+server handle and consumes Arrow batches through `RemoteRuntimeIndex`.
 
-Run the bundled executable on a worker with the same graph index files as the
-trainer:
+A sampling actor starts the listener over its completed local graph replica:
 
-```bash
-sampling_gateway=$(python -c \
-  'import diskgraph; from pathlib import Path; print(Path(diskgraph.__file__).parent / "bin/diskgraph-gateway")')
-"$sampling_gateway" --data /local/graph --host 0.0.0.0 --port 8815 --max-threads 2
+```python
+from pathlib import Path
+from kumo_core.diskgraph.sampling_service import SamplingService, SamplingServiceConfig
+
+service = SamplingService(
+    SamplingServiceConfig(Path("/local/graph"), host="0.0.0.0", max_threads=2)
+)
+endpoint = service.endpoint("10.0.0.5")
+# Retain service for the actor's lifetime; call service.close() during teardown.
 ```
 
-The binary is installed at `diskgraph/bin/diskgraph-gateway` within the Python
-package. `SamplingService(SamplingServiceConfig(...))` launches that executable,
-waits for readiness, and owns its shutdown. `DISKGRAPH_TASK_GATEWAY` can select an
-explicit binary for development. This Python helper implements process ownership
-and health calls; native code handles all server RPCs and batch generation.
+The wrapper starts the native listener during construction. Its `health()`
+returns native readiness and request/batch counters; its process ID matches the
+actor. `close()` cancels waiting streams and joins Rust serving threads without
+holding the GIL. Native lifecycle/progress messages use the existing Python
+logging bridge and appear in the actor's configured logs.
 
 The client registers each immutable training-table extension once per worker,
 using bounded file chunks and a content checksum. Epoch requests carry sampling,
@@ -116,8 +118,6 @@ propagate without replaying an incomplete epoch. Closing an iterator cancels its
 outstanding streams, and data-module teardown closes shared connections. Ordered
 RHS catalog scans use one replica to preserve MIPS embedding order.
 
-The native gateway reports readiness, process identity, active streams, and
-batch counters through its health action. The Python process owner retains the
-native log and readiness record beside the graph directory, including after
-startup failure or shutdown. Graph preparation belongs to the caller. Use the
-transport between trusted peers on a restricted network.
+The standalone `diskgraph-gateway` CLI uses the same Rust server implementation.
+Graph preparation belongs to the caller. Use the transport between trusted peers
+on a restricted network.

@@ -126,7 +126,7 @@ Use `--customer-prefix` if the storage directory differs from the customer name.
 The repository's CI builds the native Python wheel for every relevant push and
 pull request (`.github/workflows/_diskgraph-wheel.yml`), and the kumo-engine
 wheel bundles it. The wheel contains the extension and the standalone `ingest`
-and `diskgraph-gateway` binaries.
+binary. The extension embeds the native Flight server.
 
 Kumo builds and distributes that artifact from its in-tree
 `packages/diskgraph` source. This repository is the sole source of truth for
@@ -136,21 +136,22 @@ versioned or development wheels.
 See `diskgraph-pybind/README.md` for local and portable Linux build commands.
 
 The Python package build is self-contained from a source checkout. The PEP 517
-backend builds and stages both standalone binaries before delegating to
+backend builds and stages the standalone `ingest` binary before delegating to
 maturin:
 
 ```bash
 uv pip install .
 ```
 
-The base package installs the native extension and both standalone binaries.
+The base package installs the native extension and standalone `ingest` binary.
 Use the `kumo` extra only when calling Kumo compiler APIs outside an
 environment that already installs `kumo-api`.
 
 ## Native Flight gateway
 
 [`diskgraph-gateway`](diskgraph-gateway/README.md) serves worker-owned epoch shards
-from the shared native runtime. It is bundled with the Python wheel.
+from the shared native runtime. Python exposes the same Rust server through
+`diskgraph.SamplingServer`; the standalone CLI can be built with Cargo.
 
 ## Native batch runtime
 

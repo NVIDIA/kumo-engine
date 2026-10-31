@@ -32,10 +32,12 @@ use tonic::{Request, Response, Status};
 mod encoding;
 mod protocol;
 mod runtime;
+mod server;
 mod storage;
 use encoding::BatchEncoder;
 use protocol::{decode, envelope, MAX_BATCH_BYTES, VERSION, WINDOW};
 use runtime::{runtime_error, TaskRequest};
+pub use server::{SamplingServer, ServerConfig};
 use storage::{hash_task, task_path, Upload};
 
 type RpcStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;

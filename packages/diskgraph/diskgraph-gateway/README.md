@@ -28,13 +28,16 @@ credits or output capacity; native sampling stops at batch boundaries.
 graph/feature ticket API is replaced by complete task epochs. This service is
 intended for trusted peers on a restricted network.
 
-The wheel bundles this executable alongside `ingest`. Python's `SamplingService`
-launches it and retains its stdout/stderr log and atomic readiness record beside
-the graph. `--port 0 --ready-file PATH` publishes the assigned port and process id
-for owners that launch it directly. SIGTERM and Ctrl-C stop waiting producers and
-shut down the listener.
-The Python launcher also supplies `--parent-pid` so an abrupt worker exit stops
-its native listener.
+The Python extension exposes `diskgraph.SamplingServer`, a lifecycle handle for
+this same Rust implementation. It runs inside the Python/Ray actor process on
+Rust-owned threads. Constructor and close release the GIL; sampled batches never
+pass through a Python server handler. The core `SamplingService` wrapper owns
+this handle and advertises the worker's routable IP.
+
+Explicit close cancels producers and joins native serving threads. Context-manager
+exit closes the handle; dropping it signals asynchronous shutdown without
+blocking Python garbage collection. Native events use the extension's existing
+Python logging bridge. The CLI uses stderr tracing and handles SIGTERM/Ctrl-C.
 
 From `packages/diskgraph`, validate with:
 
@@ -43,6 +46,6 @@ cargo test -p diskgraph-gateway
 cargo clippy -p diskgraph-gateway --all-targets -- -D warnings
 ```
 
-Python transport integration tests launch the binary and compare its complete
-batches with the local iterator. For a development build, set
-`DISKGRAPH_TASK_GATEWAY` to the built executable before running those suites.
+Python integration tests exercise the embedded listener and compare complete
+batches with the local iterator. The standalone executable remains available
+through Cargo; Python workers use the extension directly.

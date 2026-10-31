@@ -5,20 +5,18 @@
 """PEP 517 backend for DiskGraph's Python wheel.
 
 The Python package is built by maturin, but the wheel also carries the
-standalone Rust ingestion and Flight gateway binaries used by Kumo workers. Keeping this
+standalone Rust `ingest` binary used by Kumo's subprocess runner. Keeping this
 step inside the build backend makes VCS installs work from a plain Git URL.
 """
 
 from __future__ import annotations
 
-import io
 import os
 import platform
 import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,55 +26,8 @@ import maturin
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PROJECT_ROOT.parent
-NATIVE_BINARIES = ("ingest", "diskgraph-gateway")
-
-
-def build_sdist(
-    sdist_directory: str,
-    config_settings: Optional[Mapping[str, Any]] = None,
-) -> str:
-    """Build source archives with the standalone gateway as a workspace member.
-
-    Args:
-        sdist_directory: Destination for the completed archive.
-        config_settings: Options forwarded to maturin.
-
-    Returns:
-        The generated source archive's filename.
-
-    Raises:
-        RuntimeError: If maturin omitted the gateway source or workspace manifest.
-        OSError: If the archive cannot be read or written.
-    """
-    name = maturin.build_sdist(sdist_directory, config_settings)
-    archive = Path(sdist_directory) / name
-    temporary = archive.with_suffix(".tmp")
-    workspace_found = False
-    gateway_found = False
-    with (
-        tarfile.open(archive, "r:gz") as source,
-        tarfile.open(temporary, "w:gz") as destination,
-    ):
-        for member in source:
-            path = Path(member.name)
-            gateway_found |= path.parts[1:] == ("diskgraph-gateway", "Cargo.toml")
-            content = source.extractfile(member) if member.isfile() else None
-            if path.parts[1:] == ("Cargo.toml",):
-                assert content is not None
-                # Maturin prunes crates outside the extension's dependency tree.
-                manifest = content.read()
-                if b'"diskgraph-gateway"' not in manifest:
-                    manifest = manifest.replace(
-                        b"members = [", b'members = ["diskgraph-gateway", ', 1
-                    )
-                workspace_found = b'"diskgraph-gateway"' in manifest
-                member.size = len(manifest)
-                content = io.BytesIO(manifest)
-            destination.addfile(member, content)
-    if not workspace_found or not gateway_found:
-        raise RuntimeError("Source archive is missing the gateway workspace or source")
-    temporary.replace(archive)
-    return name
+INGEST_NAME = "ingest.exe" if os.name == "nt" else "ingest"
+STAGED_INGEST = PROJECT_ROOT / "python" / "diskgraph" / "bin" / INGEST_NAME
 
 
 def get_requires_for_build_wheel(
@@ -114,7 +65,8 @@ def prepare_metadata_for_build_editable(
     use_zig = _use_zig()
     settings = _maturin_config_settings(config_settings, use_zig=use_zig)
     with _patched_environ(_maturin_env()):
-        return maturin.prepare_metadata_for_build_editable(metadata_directory, settings)
+        return maturin.prepare_metadata_for_build_editable(
+            metadata_directory, settings)
 
 
 def build_editable(
@@ -141,7 +93,7 @@ def _build_wheel(
     wheel_dir.mkdir(parents=True, exist_ok=True)
     use_zig = _use_zig()
 
-    _stage_native_binaries(use_zig=use_zig)
+    _stage_ingest_binary(use_zig=use_zig)
     wheel_name = _maturin_build_wheel(
         wheel_dir,
         config_settings=config_settings,
@@ -152,26 +104,16 @@ def _build_wheel(
 
     if editable:
         # Editable wheels are a `.pth` redirect to this source tree, not an
-        # archive of its files -- `_stage_native_binaries` above already placed
+        # archive of its files -- `_stage_ingest_binary` above already placed
         # the binary where the redirect points, so there's nothing to verify
         # inside the (data-file-free) wheel zip.
-        _verify_staged_binaries_present()
+        _verify_staged_ingest_present()
     else:
-        _verify_wheel_contains_binaries(wheel_dir / wheel_name)
+        _verify_wheel_contains_ingest(wheel_dir / wheel_name)
     return wheel_name
 
 
-def _stage_native_binaries(*, use_zig: bool) -> None:
-    """Build both standalone worker executables through the selected toolchain."""
-    for binary in NATIVE_BINARIES:
-        _stage_native_binary(binary, use_zig=use_zig)
-
-
-def _stage_native_binary(binary: str, *, use_zig: bool) -> None:
-    """Build and stage one executable, preserving portable target settings."""
-    name = binary + (".exe" if os.name == "nt" else "")
-    staged = PROJECT_ROOT / "python" / "diskgraph" / "bin" / name
-    package = "diskgraph-ingest" if binary == "ingest" else "diskgraph-gateway"
+def _stage_ingest_binary(*, use_zig: bool) -> None:
     if shutil.which("cargo") is None:
         raise RuntimeError("cargo is required to build diskgraph")
 
@@ -182,9 +124,9 @@ def _stage_native_binary(binary: str, *, use_zig: bool) -> None:
         "build",
         "--release",
         "--manifest-path",
-        str(REPO_ROOT / package / "Cargo.toml"),
+        str(REPO_ROOT / "diskgraph-ingest" / "Cargo.toml"),
         "--bin",
-        binary,
+        "ingest",
     ]
 
     if use_zig:
@@ -197,17 +139,22 @@ def _stage_native_binary(binary: str, *, use_zig: bool) -> None:
         cmd[1] = "zigbuild"
         env.update(_zig_env())
         cmd.extend(["--target", target])
-        built_binary = target_dir / target / "release" / name
+        built_ingest = target_dir / target / "release" / INGEST_NAME
     else:
-        built_binary = target_dir / "release" / name
+        built_ingest = target_dir / "release" / INGEST_NAME
 
     _run(cmd, env=env)
-    if not built_binary.is_file():
-        raise RuntimeError(f"cargo did not produce {built_binary}")
+    if not built_ingest.is_file():
+        raise RuntimeError(f"cargo did not produce {built_ingest}")
 
-    staged.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(built_binary, staged)
-    staged.chmod(staged.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    STAGED_INGEST.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(built_ingest, STAGED_INGEST)
+    STAGED_INGEST.chmod(
+        STAGED_INGEST.stat().st_mode
+        | stat.S_IXUSR
+        | stat.S_IXGRP
+        | stat.S_IXOTH
+    )
 
 
 def _maturin_build_wheel(
@@ -229,24 +176,19 @@ def _maturin_build_wheel(
         return build_fn(str(wheel_dir), settings, metadata_directory)
 
 
-def _verify_wheel_contains_binaries(wheel: Path) -> None:
-    """Reject wheels missing either standalone worker executable."""
-    suffix = ".exe" if os.name == "nt" else ""
+def _verify_wheel_contains_ingest(wheel: Path) -> None:
+    expected = f"diskgraph/bin/{INGEST_NAME}"
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
-    for binary in NATIVE_BINARIES:
-        expected = f"diskgraph/bin/{binary}{suffix}"
-        if expected not in names:
-            raise RuntimeError(f"{wheel} does not contain {expected}")
+    if expected not in names:
+        raise RuntimeError(f"{wheel} does not contain {expected}")
 
 
-def _verify_staged_binaries_present() -> None:
-    """Validate executable staging for editable installations."""
-    suffix = ".exe" if os.name == "nt" else ""
-    for binary in NATIVE_BINARIES:
-        staged = PROJECT_ROOT / "python" / "diskgraph" / "bin" / f"{binary}{suffix}"
-        if not staged.is_file() or not os.access(staged, os.X_OK):
-            raise RuntimeError(f"diskgraph binary missing or not executable: {staged}")
+def _verify_staged_ingest_present() -> None:
+    if not STAGED_INGEST.is_file() or not os.access(STAGED_INGEST, os.X_OK):
+        raise RuntimeError(
+            f"diskgraph ingest binary missing or not executable: {STAGED_INGEST}"
+        )
 
 
 def _cargo_env() -> Dict[str, str]:
@@ -335,9 +277,7 @@ def _default_rustflags() -> str:
         flags.extend(["-C", "target-feature=+aes,+neon"])
 
     if sys.platform == "linux" and shutil.which("ld.lld") is not None:
-        flags.extend(
-            ["-C", "link-arg=-fuse-ld=lld", "-C", "debuginfo=line-tables-only"]
-        )
+        flags.extend(["-C", "link-arg=-fuse-ld=lld", "-C", "debuginfo=line-tables-only"])
 
     return " ".join(flags)
 
