@@ -31,6 +31,27 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def dependency_profile(inputs, manifest_sha256, reference_only):
+    manifest_path = inputs / 'manifest.json'
+    if digest(manifest_path) != manifest_sha256:
+        raise ValueError('Retained input manifest checksum differs')
+    manifest = json.loads(manifest_path.read_text())
+    relative = manifest['reference_dependencies' if reference_only else
+                        'candidate_dependencies']
+    profile_path = (inputs / relative).resolve()
+    if (not profile_path.is_relative_to(inputs.resolve())
+            or digest(profile_path) != manifest['files'][relative]):
+        raise ValueError('Frozen dependency profile differs')
+    versions = json.loads(profile_path.read_text())
+    if (not versions or not isinstance(versions, dict)
+            or 'kumo-engine' in versions
+            or any(not re.fullmatch(r'[a-z0-9][a-z0-9._-]*', name)
+                   or not re.fullmatch(r'[0-9][0-9A-Za-z.!+_-]*', version)
+                   for name, version in versions.items())):
+        raise ValueError('Invalid frozen package-version profile')
+    return versions
+
+
 @contextmanager
 def host_lock(path):
     with Path(path).open('a') as stream:
@@ -274,33 +295,14 @@ def main(request_path):
                 str(job / 'cache'), '--default-index',
                 'https://pypi.org/simple'
             ]
-            if request['reference_only']:
-                manifest_path = inputs / 'manifest.json'
-                if digest(
-                        manifest_path) != inputs_spec['input_manifest_sha256']:
-                    raise ValueError(
-                        'Retained input manifest checksum differs')
-                manifest = json.loads(manifest_path.read_text())
-                relative = manifest['reference_dependencies']
-                profile_path = (inputs / relative).resolve()
-                if not profile_path.is_relative_to(inputs.resolve()) or digest(
-                        profile_path) != manifest['files'][relative]:
-                    raise ValueError('Frozen dependency profile differs')
-                versions = json.loads(profile_path.read_text())
-                if (not versions or not isinstance(versions, dict)
-                        or 'kumo-engine' in versions
-                        or any(not re.fullmatch(r'[a-z0-9][a-z0-9._-]*', name)
-                               or not re.fullmatch(r'[0-9][0-9A-Za-z.!+_-]*',
-                                                   version)
-                               for name, version in versions.items())):
-                    raise ValueError('Invalid frozen package-version profile')
-                requirements = job / 'requirements.txt'
-                requirements.write_text(''.join(
-                    f'{name}=={version}\n'
-                    for name, version in sorted(versions.items())))
-                execute([*install, '-r', str(requirements)])
-            else:
-                execute([*install, str(wheel), 'boto3>=1.34,<2'])
+            versions = dependency_profile(
+                inputs, inputs_spec['input_manifest_sha256'],
+                request['reference_only'])
+            requirements = job / 'requirements.txt'
+            requirements.write_text(''.join(
+                f'{name}=={version}\n'
+                for name, version in sorted(versions.items())))
+            execute([*install, '-r', str(requirements)])
             result = job / 'result'
             setup = result / 'setup'
             setup.mkdir(parents=True)

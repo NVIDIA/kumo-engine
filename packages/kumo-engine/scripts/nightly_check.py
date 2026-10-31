@@ -485,8 +485,7 @@ def verify_runtime(version, profile, *, reference_only=False):
         for d in importlib.metadata.distributions()
         if normalize(d.metadata['Name']) != 'kumo-engine'
     }
-    if reference_only:
-        check_dependencies(packages, profile)
+    check_dependencies(packages, profile)
     if (sys.platform != 'linux' or platform.machine() != 'x86_64'
             or sys.version_info[:2] != (3, 12)
             or importlib.metadata.version('kumo-engine') != version
@@ -1736,8 +1735,7 @@ def compare(args):
                      reference_only else 'candidate_dependencies'],
             manifest['files']))
     admitted = {(v['task'], v['arm']): v for v in manifest['cases']}
-    if args.reference_only:
-        check_dependencies(report['runtime']['dependencies'], expected)
+    check_dependencies(report['runtime']['dependencies'], expected)
     check_reference_runtime(reference, report['runtime'], args.reference_only)
     check_install(path.parent, report['runtime'],
                   reference_only=args.reference_only)

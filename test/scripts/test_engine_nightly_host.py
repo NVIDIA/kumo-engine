@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise local process cleanup and retained-result packaging without models."""
 import importlib.util
+import json
 import sys
 import tarfile
 import time
@@ -20,6 +21,37 @@ def host():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize('reference_only', [True, False])
+@pytest.mark.parametrize('tamper', [False, True])
+def test_both_install_modes_use_their_frozen_dependency_profile(
+        tmp_path, reference_only, tamper):
+    module = host()
+    profiles = {
+        'reference_dependencies': 'reference.json',
+        'candidate_dependencies': 'candidate.json',
+        'files': {},
+    }
+    for name, version in [('reference.json', '2.6.5'),
+                          ('candidate.json', '2.6.6')]:
+        path = tmp_path / name
+        path.write_text(json.dumps({'torch': '2.14.1',
+                                   'pytorch-lightning': version}))
+        profiles['files'][name] = module.digest(path)
+    manifest = tmp_path / 'manifest.json'
+    manifest.write_text(json.dumps(profiles))
+    checksum = module.digest(manifest)
+    if tamper:
+        (tmp_path / ('reference.json' if reference_only else
+                     'candidate.json')).write_text('{}')
+        with pytest.raises(ValueError, match='profile'):
+            module.dependency_profile(tmp_path, checksum, reference_only)
+    else:
+        assert module.dependency_profile(tmp_path, checksum, reference_only) == {
+            'torch': '2.14.1',
+            'pytorch-lightning': '2.6.5' if reference_only else '2.6.6',
+        }
 
 
 def test_deadline_stops_the_process_and_its_child(tmp_path):

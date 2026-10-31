@@ -129,8 +129,11 @@ unchanged archive, manifest, and predecessor reference by SHA-256.
 Its historical `T4` label does not select hardware.
 The approved wheel is `kumo-engine==1.0.0` at its recorded hash.
 Reference installation uses frozen dependencies, including Lightning 2.6.5.
-Candidate installation resolves the selected wheel's actual requirements,
-including its Lightning requirement. Run `pip check` and check installed files.
+Both modes install their frozen dependency profile, then the exact wheel without
+resolving dependencies again. Candidate pins include its Lightning requirement.
+Do not add optional test packages to the model environment. Run `pip check`
+and check installed files before any fit. A new incompatible wheel requirement
+needs a reviewed dependency profile rather than an unrecorded version change.
 Record all resolved versions. Two historical loader workers do not qualify
 performance comparisons with twelve current workers.
 The reference can declare a required dependency pair, such as Lightning 2.6.5
