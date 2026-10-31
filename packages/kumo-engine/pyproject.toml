@@ -70,6 +70,9 @@ s3=[
 text=[
     "kumo-glove-6b-50d>=1.0.0,<2",
 ]
+adls=[
+    "kumo-adls>=0.1.0.dev1",
+]
 gcs=[
     "kumo-gcs>=0.1.0.dev1",
 ]
@@ -104,6 +107,7 @@ kumo-databricks = { workspace = true }
 kumo-bigquery = { workspace = true }
 kumo-s3 = { workspace = true }
 kumo-gcs = { workspace = true }
+kumo-adls = { workspace = true }
 kumo-glove-6b-50d = { workspace = true }
 
 [build-system]
