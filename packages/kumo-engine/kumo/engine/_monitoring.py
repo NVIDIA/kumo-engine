@@ -27,7 +27,7 @@ from kumo_core.summaries import Dataset, Note, Scalar, Summary, Table, Tag
 
 from kumo.engine._manifest import PredictionManifest, TrackingRef
 from kumo.engine._text import number
-from kumo.engine._tracking import metric_name
+from kumo.engine._tracking import logged_names, metric_name
 
 _EVALUATION_FILE = '_evaluation.json'
 
@@ -716,16 +716,12 @@ def _tune_metric(model: Any) -> Optional[str]:
 
 
 def _holdout(model: Any) -> Dict[str, float]:
-    r"""The shipped ``model``'s holdout metrics: its refit's when it was
-    refit on train and validation data, none when refit on all data."""
-    metrics = getattr(model, 'metrics', None) or {}
-    if getattr(getattr(model, 'manifest', None), 'fit_mode',
-               None) == 'refit_full':
-        return {}
-    prefix = ('test_refit_' if any(name.startswith('test_refit_')
-                                   for name in metrics) else 'test_')
-    return {metric_name(name.removeprefix(prefix)): value
-            for name, value in metrics.items() if name.startswith(prefix)}
+    r"""The shipped ``model``'s holdout metrics."""
+    refit_full = getattr(getattr(model, 'manifest', None), 'fit_mode',
+                         None) == 'refit_full'
+    named = logged_names(getattr(model, 'metrics', None) or {}, refit_full)
+    return {name.removeprefix('test/'): value
+            for name, value in named.items() if name.startswith('test/')}
 
 
 _REASONS = {'holdout': 'Score drift vs holdout', 'previous':
