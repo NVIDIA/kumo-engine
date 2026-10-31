@@ -46,6 +46,7 @@ def heading(kind: str, metrics: Mapping[str, float],
             tags: Mapping[str, str]) -> List[str]:
     r"""The card's heading: the run's status and watch numbers, plain text
     of at most `HEADLINE_CHARS` characters, zero counts left out."""
+    metrics = {_key(name): value for name, value in metrics.items()}
     parts = [f"failed: {tags['kumo.error']}"] if 'kumo.error' in tags else []
     if kind == 'fit':
         tune = _key(tags.get('kumo.tune_metric') or '')
@@ -140,10 +141,11 @@ def version_headline(metrics: Mapping[str, float],
                      tune: Optional[str]) -> str:
     r"""A registered version's metrics line: the tuned metric, logloss,
     then the next holdout metrics, four in all."""
+    metrics = {_key(name): value for name, value in metrics.items()}
     tuned = f"test/{_key(tune or '')}"
     names = [name for name in metrics if name.startswith('test/')]
     names.sort(key=lambda name: (name != tuned, name != 'test/logloss'))
-    return ' · '.join(f'{_key(name)} {number(metrics[name])}'
+    return ' · '.join(f'{name} {number(metrics[name])}'
                       for name in names[:4])
 
 

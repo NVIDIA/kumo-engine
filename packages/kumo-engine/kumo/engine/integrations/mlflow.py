@@ -724,7 +724,7 @@ class MlflowTracking:
             line = _card.heading(kind, run.data.metrics, tags)
             intro = _card.intro(kind, tags, run.data.params,
                                 record.description, *self._fit_link())
-            items = [*_card.holdout(kind, _model_metrics(record), tags),
+            items = [*_card.holdout(kind, model_metrics(record), tags),
                      *self._card, *_card.charts(run.data.metrics)]
             blocks = ([_part(name, '') for name in _BLOCKS]
                       if kind == 'prediction' else [])
@@ -819,7 +819,7 @@ class MlflowTracking:
                 run = self._client.get_run(self._parent)
             _describe_version(self.target, self._client, published,
                               _version_text(
-                                  _model_metrics(record),
+                                  model_metrics(record),
                                   record.tags.get('kumo.tune_metric'),
                                   run.info.run_name,
                                   run.data.tags.get('kumo.bundle_uri'),
@@ -1606,11 +1606,6 @@ def _register(target: Any, client: Any, info: Any,
     return PublishedModel(name=name, version=version,
                           uri=f'models:/{name}/{version}',
                           metadata=dict(metadata))
-
-
-def _model_metrics(record: RunRecord) -> Dict[str, float]:
-    return {metric_key(name): value
-            for name, value in model_metrics(record).items()}
 
 
 def _version_text(metrics: Mapping[str, float], tune: Optional[str],

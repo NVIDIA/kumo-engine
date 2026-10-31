@@ -20,6 +20,8 @@ def test_a_fit_heading_leads_with_the_tuned_holdout_metric():
         'kumo.tune_metric': 'loss', 'kumo.data_warnings': '0',
         'kumo.error': 'ValueError:\n  stop'})[0] == (
             'failed: ValueError: stop, holdout loss 0.25')
+    assert _card.heading('fit', {'test/map@12': 0.25}, {
+        'kumo.tune_metric': 'map@12'})[0] == 'holdout map_at_12 0.25'
 
 
 def test_a_prediction_heading_leads_with_its_watch_numbers():
