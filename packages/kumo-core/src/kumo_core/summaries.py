@@ -20,49 +20,10 @@ class Tag:
 
 
 @dataclass(frozen=True)
-class Series:
-    r"""``(step, value)`` points; ``x_label`` says what a step counts."""
-
-    name: str
-    points: Tuple[Tuple[int, float], ...]
-    x_label: str = 'step'
-
-
-@dataclass(frozen=True)
-class Curve:
-    r"""``y`` against ``x``, two series over the same steps, such as ROC's
-    true-positive against false-positive rate over thresholds."""
-
-    name: str
-    x: Series
-    y: Series
-
-
-@dataclass(frozen=True)
-class Histogram:
-    r"""``counts[i]`` values in ``[edges[i - 1], edges[i])``: ``counts[0]``
-    below ``edges[0]`` and ``counts[-1]`` at or above ``edges[-1]``."""
-
-    name: str
-    edges: Tuple[float, ...]
-    counts: Tuple[float, ...]
-
-
-@dataclass(frozen=True)
 class Table:
     name: str
     columns: Tuple[str, ...]
     rows: Tuple[Tuple[Any, ...], ...]
-
-
-@dataclass(frozen=True)
-class Confusion:
-    r"""``counts[i][j]`` rows of actual ``labels[i]`` predicted
-    ``labels[j]``."""
-
-    name: str
-    labels: Tuple[str, ...]
-    counts: Tuple[Tuple[int, ...], ...]
 
 
 @dataclass(frozen=True)
@@ -79,5 +40,4 @@ class Dataset:
     context: str
 
 
-Summary = Union[Scalar, Tag, Series, Curve, Histogram, Table, Confusion,
-                Dataset]
+Summary = Union[Scalar, Tag, Table, Dataset]

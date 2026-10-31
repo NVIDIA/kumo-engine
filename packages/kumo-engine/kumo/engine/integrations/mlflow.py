@@ -448,12 +448,6 @@ class MlflowTracking(TrackingBase):
                 entities.DatasetInput(dataset, tags=[entities.InputTag(
                     'mlflow.data.context', summary.context)])])
 
-    def _log_points(self, series: Mapping[str, Sequence[Tuple[int, float]]]
-                    ) -> None:
-        self._log_batch(self._parent, [(name, value, step)
-                                       for name, points in series.items()
-                                       for step, value in points])
-
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         for name, text in artifacts.items():
             if name in self._artifacts:

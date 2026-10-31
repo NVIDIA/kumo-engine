@@ -11,7 +11,7 @@ import tempfile
 import uuid
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from kumo_core.instrumentation import format_error
 from kumo_core.sources.sql import resolve_snowflake_identifier
@@ -263,11 +263,6 @@ class SnowflakeTracking(TrackingBase):
 
     def _log_table(self, summary: Table) -> None:
         self._log_artifacts({f'{summary.name}.json': table_json(summary)})
-
-    def _log_points(self, series: Mapping[str, Sequence[Tuple[int, float]]]
-                    ) -> None:
-        for step, metrics in by_step(series):
-            self._log_metrics(metrics, _SUMMARY_METRICS, step=step)
 
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         with tempfile.TemporaryDirectory() as directory:
