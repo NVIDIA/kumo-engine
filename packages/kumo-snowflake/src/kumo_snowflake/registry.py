@@ -93,7 +93,6 @@ _LOG = logging.getLogger(__name__)
 #: a reader can look at.
 _EXPORT_DIR = '_registry-export'
 
-#: How a version comment's line of holdout metrics begins.
 _METRICS_LINE = 'Holdout: '
 
 

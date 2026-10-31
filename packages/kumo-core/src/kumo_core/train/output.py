@@ -183,7 +183,6 @@ class EvalOutput:
     # outputs. See formatting.py/format_embeddings for more details:
     embedding: pd.DataFrame | None = None
 
-    # Exact counts of the test split's scores (`kumo_core.evaluation_counts`):
     counts: Any = None
 
     def save_all(

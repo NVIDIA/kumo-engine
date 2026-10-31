@@ -638,9 +638,8 @@ def score_prediction(
     Rows stay in producer Parquet files. Workers return only small immutable
     manifest references; selection publishes after every scorer succeeds.
     ``encoders`` are the model's, if the caller already loaded them; only an
-    in-process scorer reuses them. With ``count_edges``, the bins of a
-    `Counts`, every scorer counts its scores and their sum is written to
-    ``COUNTS_FILE`` in the output directory.
+    in-process scorer reuses them. With ``count_edges``, scores are counted
+    into ``COUNTS_FILE``.
     """
     from .prediction_options import validate_prediction_workers
     validate_prediction_workers(num_workers)

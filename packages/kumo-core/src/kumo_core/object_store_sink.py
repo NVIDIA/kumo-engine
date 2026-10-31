@@ -186,8 +186,7 @@ class ObjectStoreSinkBackend(ABC):
         return f'{self.scheme}://{output}'
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
-        """Refuse an occupied directory unless ``write_mode`` is
-        ``OVERWRITE``, before any rows are produced."""
+        """Refuse an occupied directory unless ``write_mode`` overwrites."""
         from pyarrow.fs import FileSelector
 
         if write_mode is WriteMode.OVERWRITE or not table_name.endswith('/'):
