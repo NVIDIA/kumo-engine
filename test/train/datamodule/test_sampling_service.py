@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Real native iterator parity and in-process Flight lifecycle checks."""
+"""Real native iterator parity and native gateway lifecycle checks."""
 
 from __future__ import annotations
 
@@ -15,8 +15,7 @@ from test.train.datamodule import test_remote_sampling_integration as parity
 import orjson
 import pyarrow as pa
 import pytest
-from kumo_core.diskgraph.remote_sampling import RemoteTaskIterator, _decode
-from kumo_core.diskgraph.sampling_protocol import encode_batch
+from kumo_core.diskgraph.remote_sampling import RemoteTaskIterator
 from kumo_core.diskgraph.sampling_service import (
     SamplingService,
     SamplingServiceConfig,
@@ -38,7 +37,7 @@ def auto_setup_kumo_backend() -> bool:
 
 @pytest.fixture(scope="module")
 def remote_task(prepared_task: str) -> Iterator[tuple[str, str]]:
-    """Serve real task iterators inside this pytest process."""
+    """Serve real task iterators in an independent native gateway process."""
     source = Path(prepared_task).parent / "graph"
     root = source.parent / "sampler_graph"
     shutil.copytree(
@@ -47,7 +46,8 @@ def remote_task(prepared_task: str) -> Iterator[tuple[str, str]]:
     assert not (root / "train_tables").exists()
     service = SamplingService(SamplingServiceConfig(root))
     try:
-        assert service.health()["pid"] == os.getpid()
+        assert service.health()["pid"] == service._process.pid
+        assert service.health()["pid"] != os.getpid()
         yield prepared_task, service.endpoint()
         deadline = time.monotonic() + 5
         while service.health()["active_streams"] and time.monotonic() < deadline:
@@ -57,20 +57,6 @@ def remote_task(prepared_task: str) -> Iterator[tuple[str, str]]:
     finally:
         service.close()
     assert service.health()["ready"] is False
-
-
-def test_protocol_roundtrip() -> None:
-    """Preserve nullable Arrow arrays and complete feature record batches."""
-    original = {
-        "task": pa.array([1, None]),
-        "raw_features": [pa.record_batch({"x": [2.0]})],
-    }
-    frame = encode_batch(original, 7)
-    metadata = orjson.loads(frame.column("metadata")[0].as_py())
-    actual = _decode(metadata["value"], frame.column("components")[0].as_py())
-    assert metadata["batch_id"] == 7
-    assert actual["task"].equals(original["task"])
-    assert actual["raw_features"][0].equals(original["raw_features"][0])
 
 
 @pytest.mark.parametrize("relative", ["../escape", "/tmp", "train_tables/../.."])
@@ -95,14 +81,7 @@ def test_health_action(remote_task: tuple[str, str]) -> None:
         results = list(client.do_action(flight.Action("health", b"")))
     health = orjson.loads(results[0].body.to_pybytes())
     assert health["ready"] is True
-    assert health["pid"] == os.getpid()
-
-
-def test_protocol_enforces_batch_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reject oversized complete batches before emitting a partial envelope."""
-    monkeypatch.setattr("kumo_core.diskgraph.sampling_protocol.MAX_BATCH_BYTES", 64)
-    with pytest.raises(ValueError, match="exceeds"):
-        encode_batch({"features": pa.array(range(64))}, 0)
+    assert health["pid"] != os.getpid()
 
 
 @pytest.mark.parametrize("replica_count", [1, 3])
@@ -172,32 +151,6 @@ def test_epoch_shards_use_all_replicas(
         assert not remote._clients
 
 
-def test_worker_progress_logs_are_periodic(
-    prepared_task: str,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Log the first batch and every hundredth, plus listener lifecycle totals."""
-    with caplog.at_level("INFO", logger="kumo.sampling"):
-        service = SamplingService(
-            SamplingServiceConfig(Path(prepared_task).parent / "graph")
-        )
-        try:
-            for _ in range(201):
-                service._record_batch()
-        finally:
-            service.close()
-    progress = [
-        r.getMessage() for r in caplog.records if "SAMPLING_PROGRESS" in r.message
-    ]
-    assert len(progress) == 3
-    assert "batches=1 " in progress[0]
-    assert "batches=100 " in progress[1]
-    assert "batches=200 " in progress[2]
-    assert "SAMPLING_LISTENER_READY" in caplog.text
-    assert "SAMPLING_LISTENER_STOPPED" in caplog.text
-    assert "batches=201" in caplog.text
-
-
 @pytest.mark.parametrize("seed", [-1, 2**64, True])
 def test_service_rejects_invalid_engine_seeds(prepared_task: str, seed: int) -> None:
     """Reject seeds that the wire format or native unsigned API cannot represent."""
@@ -214,9 +167,45 @@ def test_service_rejects_invalid_engine_seeds(prepared_task: str, seed: int) -> 
         expected = (
             TypeError if seed == 2**64 else (flight.FlightServerError, pa.ArrowInvalid)
         )
-        message = "64-bit range" if seed == 2**64 else "unsigned 64-bit"
+        message = "64-bit range" if seed == 2**64 else "u64|unsigned 64-bit"
         with pytest.raises(expected, match=message):
             RemoteTaskIterator(service.endpoint(), request)
         assert service.health()["active_streams"] == 0
     finally:
         service.close()
+
+
+def test_native_progress_logs_are_retained(prepared_task: str) -> None:
+    """The native producer emits lifecycle and batch progress into a durable log."""
+    from kumo_core.diskgraph.remote_sampling import RemoteRuntimeIndex
+
+    service = SamplingService(
+        SamplingServiceConfig(Path(prepared_task).parent / "graph")
+    )
+    runtime = RemoteRuntimeIndex(prepared_task, service.endpoint(), 42, 1)
+    try:
+        iterator, _ = runtime.iter(
+            stage="train",
+            sampling_plan={"layers": []},
+            num_workers=1,
+            worker_id=0,
+            shuffle=False,
+            epoch=0,
+            batch_size=2,
+            entity_node_type="users",
+            fused=False,
+        )
+        assert len(list(iterator)) == 3
+        assert service.health()["batches"] == 3
+    finally:
+        runtime.close()
+        service.close()
+    log = service.log_path.read_text()
+    for message in (
+        "SAMPLING_LISTENER_READY",
+        "SAMPLING_PROGRESS",
+        "SAMPLING_STREAM_CLOSED",
+        "SAMPLING_LISTENER_STOPPED",
+    ):
+        assert message in log
+    assert "batches=1" in log

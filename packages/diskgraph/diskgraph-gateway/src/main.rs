@@ -2,66 +2,96 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use anyhow::Result;
 use clap::Parser;
-use diskgraph_engine::engine::DiskGraphEngine;
-use diskgraph_engine::state::StatePool;
 use diskgraph_gateway::SamplerGateway;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{net::IpAddr, path::PathBuf};
+use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(about = "Serve native DiskGraph epoch shards over Arrow Flight")]
 struct Args {
-    /// Path to the 'diskgraph_output' directory containing index_metadata.json
     #[arg(short, long)]
     data: PathBuf,
-
-    /// Port to listen on (TCP)
+    #[arg(long, default_value = "127.0.0.1")]
+    host: IpAddr,
     #[arg(short, long, default_value_t = 50051)]
     port: u16,
-
-    /// Path to Unix Domain Socket (UDS) to listen on. If provided, port is ignored.
-    #[arg(short, long)]
-    uds_path: Option<PathBuf>,
-
-    /// Optional global random seed for deterministic sampling
+    #[arg(long, default_value_t = 1)]
+    max_streams: usize,
+    #[arg(long, default_value_t = 2)]
+    max_threads: usize,
+    /// Atomically publish the bound port and process id after binding.
     #[arg(long)]
-    seed: Option<u64>,
+    ready_file: Option<PathBuf>,
+    /// Exit when this owning process disappears (used by the Python launcher).
+    #[arg(long)]
+    parent_pid: Option<u32>,
+}
+async fn parent_exited(parent: Option<u32>) {
+    if let Some(expected) = parent {
+        #[cfg(unix)]
+        loop {
+            // getppid reads process state and does not dereference caller memory.
+            if unsafe { libc::getppid() } as u32 != expected {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        #[cfg(not(unix))]
+        let _ = expected;
+    }
+    std::future::pending::<()>().await;
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+#[tokio::main(worker_threads = 2)]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(std::io::stderr)
+        .init();
     let args = Args::parse();
-
-    if let Some(seed) = args.seed {
-        println!("Using deterministic random seed: {}", seed);
+    let listener = tokio::net::TcpListener::bind((args.host, args.port)).await?;
+    let address = listener.local_addr()?;
+    let gateway = SamplerGateway::new(
+        args.data,
+        args.max_streams,
+        args.max_threads,
+        address.port(),
+    )?;
+    let shutdown = gateway.clone();
+    let service = arrow_flight::flight_service_server::FlightServiceServer::new(gateway)
+        .max_decoding_message_size(128 * 1024 * 1024)
+        .max_encoding_message_size(128 * 1024 * 1024);
+    if let Some(path) = args.ready_file {
+        let temporary = path.with_extension("tmp");
+        std::fs::write(
+            &temporary,
+            serde_json::to_vec(
+                &serde_json::json!({"port":address.port(),"pid":std::process::id()}),
+            )?,
+        )?;
+        std::fs::rename(temporary, path)?;
     }
-    let engine = Arc::new(DiskGraphEngine::load(&args.data, args.seed, None)?);
-    let pool = StatePool::new();
-
-    let service = SamplerGateway::new(engine, pool);
-    let server = Server::builder()
-        .add_service(arrow_flight::flight_service_server::FlightServiceServer::new(service));
-
-    if let Some(path) = args.uds_path {
-        // Clean up existing socket file if any
-        if path.exists() {
-            std::fs::remove_file(&path)?;
-        }
-
-        let listener = tokio::net::UnixListener::bind(&path)?;
-        let stream = tokio_stream::wrappers::UnixListenerStream::new(listener);
-
-        println!("Listening on UDS: {:?}", path);
-        server.serve_with_incoming(stream).await?;
-    } else {
-        let addr = format!("0.0.0.0:{}", args.port).parse()?;
-        println!("Listening on TCP: {}", addr);
-        server.serve(addr).await?;
-    }
-
+    tracing::info!(%address,pid=std::process::id(),"SAMPLING_LISTENER_READY");
+    Server::builder()
+        .add_service(service)
+        .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async move {
+            #[cfg(unix)]
+            {
+                let mut terminate =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("SIGTERM handler");
+                tokio::select! {_=terminate.recv()=>{},_=tokio::signal::ctrl_c()=>{},_=parent_exited(args.parent_pid)=>{}}
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+            shutdown.shutdown();
+            tracing::info!("SAMPLING_LISTENER_STOPPING");
+        })
+        .await?;
+    tracing::info!("SAMPLING_LISTENER_STOPPED");
     Ok(())
 }

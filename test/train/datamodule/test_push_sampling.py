@@ -154,6 +154,31 @@ def test_credits_bound_production_and_cancel_early(
         service.close()
 
 
+def test_gateway_shutdown_cancels_a_producer_waiting_for_credits(
+    prepared_task: str,
+) -> None:
+    """SIGTERM wakes a paused native epoch without waiting for client cleanup."""
+    service = SamplingService(
+        SamplingServiceConfig(Path(prepared_task).parent / "graph")
+    )
+    runtime = RemoteRuntimeIndex(prepared_task, service.endpoint(), 42, 1)
+    try:
+        runtime.iter(**{**_options(), "batch_size": 1})
+        deadline = time.monotonic() + 5
+        while service.health()["batches"] != 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert service.health()["batches"] == 2
+
+        started = time.monotonic()
+        service.close()
+
+        assert service._process.returncode == 0
+        assert time.monotonic() - started < 5
+    finally:
+        runtime.close()
+        service.close()
+
+
 def test_task_transfer_is_reused_across_epochs(
     prepared_task: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -277,55 +302,6 @@ def test_upload_rejects_unacknowledged_checksum(tmp_path: Path) -> None:
         upload_task(client, root, "train_tables/task", task_files(root))
 
 
-def test_replicas_produce_concurrently(
-    prepared_task: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A blocked first feeder does not prevent another feeder producing its shard."""
-    second_finished = threading.Event()
-    with ExitStack() as cleanup:
-        services = []
-        for replica in range(2):
-            service = SamplingService(
-                SamplingServiceConfig(Path(prepared_task).parent / "graph")
-            )
-            cleanup.callback(service.close)
-            services.append(service)
-            original = service._open
-
-            def open_shard(
-                request: dict[str, Any],
-                original: Any = original,
-                replica: int = replica,
-            ) -> MagicMock:
-                native = original(request)
-                wrapped = MagicMock(wraps=native)
-
-                def sample() -> dict[str, Any]:
-                    if replica == 0:
-                        assert second_finished.wait(5), (
-                            "Feeder production was serialized"
-                        )
-                    batch = next(native)
-                    if replica == 1:
-                        second_finished.set()
-                    return batch
-
-                wrapped.__next__.side_effect = sample
-                return wrapped
-
-            monkeypatch.setattr(service, "_open", open_shard)
-        runtime = RemoteRuntimeIndex(
-            prepared_task, [s.endpoint() for s in services], 42, 1
-        )
-        cleanup.callback(runtime.close)
-        actual, _ = runtime.iter(**{**_options(), "batch_size": 1})
-        expected, _ = diskgraph.RuntimeIndex(prepared_task, 42, 1).iter(
-            **{**_options(), "batch_size": 1}
-        )
-        parity._assert_equal(list(expected), list(actual))
-        assert second_finished.is_set()
-
-
 def test_close_interrupts_a_blocked_push_reader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -361,48 +337,6 @@ def test_close_interrupts_a_blocked_push_reader(
     with pytest.raises(flight.FlightCancelledError):
         pending.result()
     assert not owner._streams
-
-
-@pytest.mark.parametrize("failure", ["path", "truncated", "checksum", "completion"])
-def test_invalid_task_transfer_is_not_published(
-    prepared_task: str, failure: str
-) -> None:
-    """Bad paths, missing data and corrupt identities never create a usable task."""
-    service = SamplingService(
-        SamplingServiceConfig(Path(prepared_task).parent / "graph")
-    )
-    frames = [
-        encode_frame({"kind": "file", "path": "data", "size": 3}, []),
-        encode_frame({"kind": "data"}, [b"abc"]),
-        encode_frame({"kind": "end"}, []),
-    ]
-    if failure == "path":
-        frames[0] = encode_frame({"kind": "file", "path": "../escape", "size": 3}, [])
-    elif failure == "truncated":
-        frames[1] = encode_frame({"kind": "data"}, [b"a"])
-    elif failure == "completion":
-        frames.pop()
-    reader = MagicMock()
-    reader.__iter__.return_value = iter([MagicMock(data=frame) for frame in frames])
-    context = MagicMock()
-    context.is_cancelled.return_value = False
-    descriptor = flight.FlightDescriptor.for_command(
-        orjson.dumps(
-            {
-                "kind": "prepare_task",
-                "version": 4,
-                "extension_ref": "train_tables/invalid-task",
-                "sha256": "bad",
-            }
-        )
-    )
-    try:
-        with pytest.raises(ValueError):
-            service.do_put(context, descriptor, reader, MagicMock())
-        assert not (service._root / "train_tables/invalid-task").exists()
-        assert "train_tables/invalid-task" not in service._tasks
-    finally:
-        service.close()
 
 
 @pytest.mark.parametrize("replicas", [1, 2, 3, 8])
@@ -467,3 +401,109 @@ def test_ordered_rhs_catalog_scan_uses_one_replica(prepared_task: str) -> None:
         assert count == remote_count == 8
         parity._assert_equal(list(expected), list(actual))
         assert [s.health()["task_requests"] for s in services] == [1, 0, 0]
+
+
+def test_replicas_produce_concurrently(prepared_task: str) -> None:
+    """A worker awaiting credits does not prevent an independent native producer."""
+    graph = Path(prepared_task).parent / "graph"
+    with ExitStack() as cleanup:
+        first = SamplingService(SamplingServiceConfig(graph))
+        second = SamplingService(SamplingServiceConfig(graph))
+        cleanup.callback(first.close)
+        cleanup.callback(second.close)
+        client = flight.connect(first.endpoint())
+        cleanup.callback(client.close)
+        request = {
+            "kind": "push_iter",
+            "version": 4,
+            "extension_ref": "train_tables/remote_test",
+            "engine_seed": 42,
+            "num_threads": 1,
+            "options": {
+                "stage_table": "train_seeds",
+                "sampling_plan_json": '{"layers":[]}',
+                "num_workers": 1,
+                "worker_id": 0,
+                "shuffle": False,
+                "epoch": 0,
+                "batch_size": 2,
+                "entity_node_type": "users",
+                "fused": False,
+            },
+        }
+        writer, reader = client.do_exchange(
+            flight.FlightDescriptor.for_command(orjson.dumps(request))
+        )
+        writer.begin(ENVELOPE_SCHEMA)
+        assert decode_frame(reader.read_chunk().data)[0]["num_batches"] == 3
+        runtime = RemoteRuntimeIndex(prepared_task, second.endpoint(), 42, 1)
+        cleanup.callback(runtime.close)
+        try:
+            iterator, _ = runtime.iter(**_options())
+            assert len(list(iterator)) == 3
+            assert first.health()["batches"] == 0
+            assert first.health()["active_streams"] == 1
+            assert second.health()["batches"] == 3
+        finally:
+            reader.cancel()
+            try:
+                writer.close()
+            except (pa.ArrowException, flight.FlightError):
+                pass
+
+
+@pytest.mark.parametrize("failure", ["path", "truncated", "checksum", "completion"])
+def test_invalid_task_transfer_is_not_published(
+    prepared_task: str, failure: str
+) -> None:
+    """Native upload validation never publishes incomplete or corrupt task files."""
+    service = SamplingService(
+        SamplingServiceConfig(Path(prepared_task).parent / "graph")
+    )
+    frames = [
+        encode_frame({"kind": "file", "path": "data", "size": 3}, []),
+        encode_frame({"kind": "data"}, [b"abc"]),
+        encode_frame({"kind": "end"}, []),
+    ]
+    if failure == "path":
+        frames[0] = encode_frame({"kind": "file", "path": "../escape", "size": 3}, [])
+    elif failure == "truncated":
+        frames[1] = encode_frame({"kind": "data"}, [b"a"])
+    elif failure == "completion":
+        frames.pop()
+    descriptor = flight.FlightDescriptor.for_command(
+        orjson.dumps(
+            {
+                "kind": "prepare_task",
+                "version": 4,
+                "extension_ref": "train_tables/invalid-task",
+                "sha256": "bad",
+            }
+        )
+    )
+    try:
+        with flight.connect(service.endpoint()) as client:
+            with pytest.raises((pa.ArrowException, flight.FlightError)):
+                writer, metadata = client.do_put(descriptor, ENVELOPE_SCHEMA)
+                with writer:
+                    for frame in frames:
+                        writer.write_batch(frame)
+                    writer.done_writing()
+                    metadata.read()
+            assert not (service._root / "train_tables/invalid-task").exists()
+            status = list(
+                client.do_action(
+                    flight.Action(
+                        "task_status",
+                        orjson.dumps(
+                            {
+                                "extension_ref": "train_tables/invalid-task",
+                                "sha256": "bad",
+                            }
+                        ),
+                    )
+                )
+            )
+            assert status[0].body.to_pybytes() == b""
+    finally:
+        service.close()
