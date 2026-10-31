@@ -19,12 +19,14 @@ minus the server-registry-only fields (`name`, `description`, `project_id`,
 
 from typing import Any, Optional, Tuple
 
+from kumo.engine.connector.adls import ADLSConnector
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.bigquery import BigQueryConnector
 from kumo.engine.connector.databricks import DatabricksConnector
 from kumo.engine.connector.file import FileConnector
 from kumo.engine.connector.gcs import GCSConnector
 from kumo.engine.connector.identity import (
+    ADLSIdentity,
     BigQueryIdentity,
     DatabricksIdentity,
     GCSIdentity,
@@ -92,6 +94,8 @@ def model_sink(connector: Any, path: Optional[str]) -> Any:
 
 
 __all__ = [
+    "ADLSConnector",
+    "ADLSIdentity",
     "Connector",
     "FileConnector",
     "SnowflakeConnector",

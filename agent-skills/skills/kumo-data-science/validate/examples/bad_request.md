@@ -16,7 +16,7 @@ Response to user:
 
 > "To proceed I need three things:
 >
-> 1. **Where the data lives** — a Snowflake database and schema, or a connector name.
+> 1. **Where the data lives** — for example a database and schema, or a folder of files.
 > 2. **What 'risky' means** — an observable outcome, e.g. 'a chargeback is filed' or 'no purchase'.
 > 3. **The prediction window** — e.g. 'in the next 30 days'."
 
