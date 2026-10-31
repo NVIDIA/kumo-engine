@@ -715,7 +715,8 @@ class _RegistryTracker:
 
 @pytest.mark.parametrize('sink,registered', [
     (_AliasingSink(), 'V1'),
-    (SimpleNamespace(publish_model=lambda *a, **k: 1 / 0), None),
+    (SimpleNamespace(write_table=lambda *a: None,
+                     publish_model=lambda *a, **k: 1 / 0), None),
 ])
 def test_mlops_registry_registers_after_the_fit(tmp_path: Path, monkeypatch,
                                                 sink, registered) -> None:

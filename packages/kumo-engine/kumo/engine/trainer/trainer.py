@@ -42,6 +42,7 @@ from kumo_core.pquery import (
 )
 from kumo_core.summaries import Summary
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
+from kumo_core.training.config import FitMode
 from kumo_core.training.explain_aggregation import aggregate_subgraph_features
 from kumo_core.training.workflow import TrainingWorkflowRequest
 from kumo_core.types import ExplainMethod, PredictionArtifactType
@@ -50,6 +51,7 @@ from kumoapi.plugin import (
     BUNDLE_ID_KEY,
     ModelAliasingSink,
     ModelFetchingSink,
+    ModelPublishingSink,
     ModelRegistryLocation,
     PublishedModel,
     SourceConnector,
@@ -88,12 +90,17 @@ from kumo.engine._tracking import (
     as_tracking,
     fit_inputs,
 )
-from kumo.engine.connector import model_sink
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot, report_other_graph
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
+from kumo.engine.trainer._provenance import (
+    FitRecord,
+    parent_model,
+    read_provenance,
+    record_derivation,
+)
 from kumo.engine.trainer._run_spec import FitContext, fit_spec, fitted_spec
 from kumo.engine.trainer._scoring import (
     ScoringDefaults,
@@ -156,8 +163,6 @@ class TrainingResult:
     @property
     def manifest(self) -> Optional[ModelManifest]:
         """The bundle's ``_provenance.json``; None for older bundles."""
-        from kumo.engine.trainer._provenance import read_provenance
-
         return read_provenance(self.bundle_dir)
 
     @property
@@ -204,8 +209,6 @@ class TrainingResult:
         ``parents.derived_from``. To register a model with its defaults,
         pass ``fit(scoring_defaults=...)`` instead."""
         from kumo_core.artifacts import bundle_task_type
-
-        from kumo.engine.trainer._provenance import record_derivation
 
         if self._trainer is None:
             raise RuntimeError('This result has no model; use Trainer.load on '
@@ -304,17 +307,14 @@ class PredictionResult:
         self._export(output_config)
 
     def _export(self, output_config: PredictionOutputConfig) -> None:
-        writers = {
-            destination: output_config.writer(destination)
-            for destination in output_config.destinations().values()
-        }
+        writer = output_config.writer()
         outputs = []
         for name, destination in output_config.destinations().items():
             kind = PredictionArtifactType(name.upper())
             files = PredictionResult(self.selection, kind).files
             outputs.append((kind, destination, files))
         for kind, destination, files in outputs:
-            writers[destination].write_files(
+            writer.write_files(
                 output_config.connector, destination, list(files),
                 output_config.write_mode,
                 export_id=f'{self.selection.job_id}-{kind.value}')
@@ -471,8 +471,6 @@ def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
 
 
 def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
-    from kumo_core.training.config import FitMode
-
     published = trainer.published_fit_mode()
     if published is FitMode.refit_full:
         logger.info('The published model is refit on the full data, including '
@@ -506,9 +504,8 @@ def _link_or_copy(source: str, destination: str) -> None:
 
 
 def _require_publisher(export_config: ModelOutputConfig) -> None:
-    if not callable(
-            getattr(model_sink(export_config.connector, export_config.path),
-                    'publish_model', None)):
+    if not isinstance(export_config.connector.sink_backend,
+                      ModelPublishingSink):
         raise NotImplementedError(
             f'{type(export_config.connector).__name__} cannot publish '
             f'models')
@@ -553,8 +550,7 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
     alias = location.alias if location else None
     if location and alias:
         location = replace(location, alias=None)
-    sink = model_sink(export_config.connector, export_config.path)
-    published = sink.publish_model(
+    published = export_config.connector.sink_backend.publish_model(
         export_config.connector,
         str(bundle_dir),
         path=export_config.path,
@@ -833,7 +829,6 @@ class Trainer:
         )
         from kumo_core.types import TaskType
 
-        from kumo.engine.trainer._provenance import parent_model
         from kumo.engine.trainer._runtime import local_training_bindings
 
         started_at = datetime.now(timezone.utc)
@@ -1021,7 +1016,7 @@ class Trainer:
             export_config=export_config,
             scoring_defaults=scoring_defaults,
             model_plan=effective_plan,
-            provenance=dict(
+            provenance=FitRecord(
                 train_table=train_table,
                 warm_start=None if warm_start is None else parent_model(
                     warm_start._training_result.bundle_dir,
@@ -1041,14 +1036,12 @@ class Trainer:
         export_config: Optional[ModelOutputConfig],
         graph_config: Optional[Dict[str, Any]] = None,
         model_plan: Optional[ModelPlan] = None,
-        provenance: Optional[Mapping[str, Any]] = None,
+        provenance: Optional[FitRecord] = None,
         deps: Optional[Dependencies] = None,
         scoring_defaults: Optional[ScoringDefaults] = None,
     ) -> TrainingResult:
         """Commit durable fit outputs before making this trainer usable."""
         from kumo_core.artifacts import bundle_id_from_manifest
-
-        from kumo.engine.trainer._provenance import write_provenance
 
         effective_plan = model_plan if model_plan is not None else self._model_plan
         write_training_spec(
@@ -1074,12 +1067,9 @@ class Trainer:
                           UserWarning, stacklevel=3)
         if provenance is not None and training_result.bundle_id is not None:
             try:
-                write_provenance(
-                    training_result.bundle_dir,
-                    bundle_id=training_result.bundle_id,
-                    dependencies=self._dependencies(training_result, deps
-                                                    or Dependencies()),
-                    **provenance)
+                replace(provenance, dependencies=self._dependencies(
+                    training_result, deps or Dependencies())).write(
+                        training_result.bundle_dir, training_result.bundle_id)
             except Exception as error:
                 warnings.warn(
                     f"Publishing the model bundle without _provenance.json: "
@@ -1272,10 +1262,10 @@ class Trainer:
         )
 
         if output_config is not None:
-            for destination in destinations.values():
-                preflight = getattr(output_config.writer(destination),
-                                    'preflight_write_files', None)
-                if callable(preflight):
+            preflight = getattr(output_config.writer(),
+                                'preflight_write_files', None)
+            if callable(preflight):
+                for destination in destinations.values():
                     preflight(output_config.connector, destination,
                               write_mode=output_config.write_mode)
 
@@ -1452,7 +1442,7 @@ class Trainer:
         address = ModelOutputConfig(model_registry, path=path,
                                     location=location)
         bundle_dir = trainer_scratch_dir(new_run_id()) / 'fetched-model'
-        sink = model_sink(model_registry, address.path)
+        sink = getattr(model_registry, 'sink_backend')
         if not isinstance(sink, ModelFetchingSink):
             raise TypeError(
                 'model_registry.sink_backend must implement ModelFetchingSink')
@@ -1492,7 +1482,6 @@ class Trainer:
         trainer._training_table_generation_plan = from_json_dict(
             spec.training_table_generation, TrainingTableGenerationPlan)
         from kumo.engine._mlops import resolve
-        from kumo.engine.trainer._provenance import read_provenance
 
         trainer._embedding_models = with_text_encoders(
             trainer._embedding_models, _encoders(bundle_dir),

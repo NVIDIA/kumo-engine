@@ -94,7 +94,7 @@ from kumo.engine.pquery.prediction_table import (
     PredictionTable,
     _compile_prediction_table,
 )
-from kumo.engine.pquery.training_table import TrainingTable, _finish
+from kumo.engine.pquery.training_table import TrainingTable, finish_generated
 
 logger = logging.getLogger(__name__)
 
@@ -340,7 +340,8 @@ class PredictiveQuery:
             required_stages=task_plan.task_dataset.required_stages,
             generation_plan=generation_plan,
         )
-        return _finish(table, snapshot, task_plan.train_table, mlops)
+        return finish_generated(table, snapshot, task_plan.train_table,
+                                mlops)
 
     def generate_prediction_table(
         self,
