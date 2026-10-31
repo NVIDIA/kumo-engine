@@ -21,6 +21,16 @@ def rows(task='binary', normal=.8, control=.5, baseline=.5):
     ]
 
 
+def test_frozen_recipe_has_a_twenty_batch_shortfall():
+    assert hasattr(nightly, 'training_budget'), 'Training budget preflight is missing'
+    budget = nightly.training_budget(nightly.smoke.make_plan('binary').as_json())
+    assert budget == dict(max_completed_batches=200, required_batches=220,
+                          shortfall_batches=20, eligible=False)
+    assert nightly.training_budget(dict(optimization=dict(
+        max_epochs=11, max_steps_per_epoch=20)))['eligible']
+    assert not nightly.training_budget(dict(optimization={}))['eligible']
+
+
 def test_baseline_diagnostics_keep_gain_and_control_values_without_a_gate():
     result = nightly.check_learning(rows())
     assert result['policy'] == 'report_only'
@@ -144,7 +154,7 @@ def test_nightly_keeps_product_oom_recovery(monkeypatch, tmp_path, method):
     None, 'no_learning', 'leaked_control', 'missing_score',
     'missing_measurement'
 ])
-def test_final_comparison_reports_learning_without_blocking_valid_results(
+def test_final_comparison_keeps_quality_but_rejects_missing_training_window(
         tmp_path, damage):
     """Exercise the full comparison reader and writer, with no GPU execution claim."""
     from types import SimpleNamespace
@@ -325,9 +335,11 @@ def test_final_comparison_reports_learning_without_blocking_valid_results(
         with pytest.raises(ValueError, match='measurement'):
             nightly.compare(args)
         return
-    nightly.compare(args)
+    with pytest.raises(ValueError, match='Training window'):
+        nightly.compare(args)
     report = nightly.read(args.output_dir / 'comparison.json')
-    assert report['status'] == 'PASS'
+    assert report['status'] == 'INVALID'
+    assert report['functional_status'] == 'PASS'
     assert report['quality_policy'] == 'report_only'
     assert report['learning']['policy'] == 'report_only'
     assert report['steady_state_training_status'] == 'INVALID'

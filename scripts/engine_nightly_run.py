@@ -191,6 +191,9 @@ def validate_nightly_result(request, receipt, report):
                         or ledger[0].get('cuda_batches', 0) <= 0):
                     raise ValueError(
                         'Physical fit completion proof is missing')
+        for row in report['runs']:
+            nightly.validate_training_window(
+                row['work'].get('training_window', {}))
     except (KeyError, TypeError) as error:
         raise ValueError(
             'Required nightly measurements are missing') from error

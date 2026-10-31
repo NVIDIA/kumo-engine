@@ -281,6 +281,17 @@ def validate_training_window(values):
         raise ValueError('Training window CPU memory or scope is missing')
 
 
+def training_budget(plan):
+    optimization = plan.get('optimization', {})
+    factors = [optimization.get(key)
+               for key in ('max_epochs', 'max_steps_per_epoch')]
+    maximum = math.prod(factors) if all(
+        type(value) is int and value > 0 for value in factors) else None
+    return dict(max_completed_batches=maximum, required_batches=220,
+                shortfall_batches=None if maximum is None else max(0, 220 - maximum),
+                eligible=maximum is not None and maximum >= 220)
+
+
 def validate_case_measurements(row):
     values = row.get('measurements', {})
     validate_measurement(values)
@@ -1595,6 +1606,15 @@ def run(args):
                   helper_sha256=digest(HELPER), runner_sha256=digest(__file__))
     graphs = {}
     try:
+        report['training_budgets'] = {
+            task: training_budget(smoke.make_plan(task).as_json())
+            for task in sorted({case['task'] for case in manifest['cases']})
+        }
+        if not all(value['eligible']
+                   for value in report['training_budgets'].values()):
+            raise ValueError(
+                'Training window needs 220 batches. Frozen recipe budgets are '
+                'insufficient or unknown. No fit started.')
         for case in manifest['cases']:
             key = case['graph']
             if key not in graphs:
@@ -1771,20 +1791,26 @@ def compare(args):
                     compatible=context['compatible'])
                 if row['arm'] == 'normal' else None))
     learning = check_learning(comparisons)
+    measured = all(row['work'].get('training_window', {}).get('status') == 'MEASURED'
+                   for row in rows)
+    comparable = all(row['training_window_changes']['eligible']
+                     for row in comparisons)
+    qualified = measured and (args.reference_only or comparable)
     save(
         args.output_dir / 'comparison.json',
-        dict(status='PASS', quality_policy='report_only',
+        dict(status='PASS' if qualified else 'INVALID',
+             functional_status='PASS', quality_policy='report_only',
              learning=learning, numerical_difference_policy='report_only',
              performance_policy='report_only',
-             steady_state_training_status='MEASURED' if all(
-                 row['training_window_changes']['eligible']
-                 for row in comparisons) else 'INVALID',
+             steady_state_training_status='MEASURED' if measured else 'INVALID',
+             steady_state_comparison_status='NOT_REQUIRED' if args.reference_only
+             else 'MEASURED' if comparable else 'INVALID',
              reference_only=args.reference_only,
              input_manifest_sha256=args.input_sha256,
              reference_sha256=args.reference_sha256, primary_physical_fits=16,
              seconds=report['seconds'], runtime=report['runtime'],
              cases=comparisons))
-    if args.reference_only:
+    if args.reference_only and measured:
         cases = [
             dict(references[(row['task'], row['arm'])], score=row['score'],
                  fit_id=row['fit_id'],
@@ -1814,6 +1840,9 @@ def compare(args):
                     reference_dependencies_signature=signature(
                         report['runtime']['dependencies']),
                     observed=report['runtime'])))
+    if not qualified:
+        raise ValueError(
+            'Training window measurements or matching reference are incomplete')
 
 
 def main(argv=None):

@@ -171,27 +171,29 @@ def test_current_result_needs_bound_mode_version_reference_and_restored_state(
     import copy
     run = controller()
     request, receipt, report = measured_fixture()
-    run.validate_nightly_result(request, receipt, report)
+    # Functional completion alone cannot qualify the missing 20/200 window.
+    with pytest.raises(ValueError, match='Training window'):
+        run.validate_nightly_result(request, receipt, report)
     damaged = []
     for key, value in [('reference_only', True),
                        ('reference_sha256', '0' * 64)]:
         value_report = copy.deepcopy(report)
         value_report[key] = value
-        damaged.append(value_report)
+        damaged.append((value_report, 'mode, reference or installed version'))
     value_report = copy.deepcopy(report)
     value_report['runtime']['version'] = 'other'
-    damaged.append(value_report)
+    damaged.append((value_report, 'mode, reference or installed version'))
     value_report = copy.deepcopy(report)
     value_report['runs'][0]['work']['restored_tensors'] = 0
-    damaged.append(value_report)
+    damaged.append((value_report, 'restored-state'))
     value_report = copy.deepcopy(report)
     value_report['runs'][0]['work']['fit_ledger'] = []
-    damaged.append(value_report)
+    damaged.append((value_report, 'Physical fit'))
     value_report = copy.deepcopy(report)
     del value_report['runs'][0]['measurements']
-    damaged.append(value_report)
-    for candidate in damaged:
-        with pytest.raises(ValueError):
+    damaged.append((value_report, 'Resource measurement'))
+    for candidate, reason in damaged:
+        with pytest.raises(ValueError, match=reason):
             run.validate_nightly_result(request, receipt, candidate)
 
 

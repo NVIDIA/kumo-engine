@@ -83,12 +83,22 @@ including the existing per-batch CUDA proof. Later quality work cannot extend it
 
 The callback does not change epochs, early stopping, batch size, or sampler settings.
 The frozen nightly recipe permits at most 200 batches and can stop earlier.
-Such a fit records `INCOMPLETE` and no window throughput. A reduced batch,
+Before graph creation or fitting, the runner records each plan's maximum batch
+budget. Unknown budgets or fewer than 220 possible batches stop the run.
+The current recipe is short by at least twenty batches. It cannot start another
+nightly fit until a compatible workload receives review.
+Retained short fits record `INCOMPLETE` and no window throughput. A reduced batch,
 retry, skipped optimizer update, or missing resource measurement invalidates
 the window. These checks also inspect work after batch 220.
-The comparison reports `steady_state_training_status: INVALID` when matching
-valid windows are unavailable. Its existing `status: PASS` concerns functional
-and full-fit checks and cannot qualify this separate performance requirement.
+The comparison reports `steady_state_training_status: INVALID` when current
+valid measurements are unavailable. It keeps `functional_status: PASS` for
+completed functional checks. Missing measurements or incompatible candidate
+references produce overall `status: INVALID` and a failing command after the
+diagnostic report is saved. The CPU controller also requires valid windows in
+all sixteen case records before it can print `Nightly PASS`.
+Reference-only work can prepare a proposed reference from valid current
+measurements without a matching older performance reference. Invalid current
+measurements cannot produce a proposed reference.
 A compatible 220-batch workload and actual GPU qualification remain open.
 
 ## Reporting and references
