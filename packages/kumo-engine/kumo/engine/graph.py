@@ -75,6 +75,7 @@ from kumo.engine._scratch import (
     snapshot_scratch_dir,
 )
 from kumo.engine._storage import network_storage
+from kumo.engine._visualization import SVG
 from kumo.engine.table import Table
 
 _warned_scratch: set[Path] = set()
@@ -344,6 +345,63 @@ class Graph:
         source type has no Kumo dtype and that no declared dtype resolved.
         """
         self.native_graph
+
+    def visualize(self, path: str | Path | None = None, *,
+                  show_cols: bool = False, show_samples: bool = False,
+                  layout: str = 'auto') -> SVG:
+        """Display pannable table relationships in notebooks and return SVG.
+
+        Args:
+            path: Optional local file, overwritten if it exists. A .pdf suffix
+                writes a vector graph and full schema/connection index.
+                A .md or .markdown suffix writes a Mermaid relationship
+                diagram and complete Markdown schema tables;
+                other paths receive UTF-8 SVG. Paths refer to the filesystem
+                where Kumo Engine runs.
+            show_cols: Add columns up to 10 rows per table (5 above 10 tables).
+                Primary keys, foreign keys, and declared time (TS) and end-time
+                (TE) columns are always included, even above this limit.
+                False shows only these columns.
+            show_samples: Show up to six non-null examples per column in notebook
+                tooltips, in two columns and up to three rows, selected from
+                up to 30 preview rows per table. False (default) reads no
+                source data. Previews may
+                run warehouse queries and incur costs; returned row limits
+                do not bound bytes scanned. Unavailable previews are labeled.
+                Samples become part of saved notebook output, never file exports.
+            layout: Initial arrangement: auto, standard, or compact.
+                Auto chooses from graph structure, independently of viewport
+                size. Standard preserves the layered relationship view;
+                compact balances crowded groups.
+                Notebook views offer a selector to compare arrangements.
+
+        Uses declared schemas. More than 30 tables, self-relations,
+        and missing schema/key definitions raise ValueError.
+        Display automatically uses environment-provided widget packages in
+        detected Snowflake Workspace notebooks and HTML in other hosts.
+        The optional as_widget() helper explicitly selects the widget view.
+        Full screen is available when the notebook host permits it.
+        Dragging, full screen, Fit, and zoom preserve the selected arrangement.
+        SVG exports use the initial layout and contain no interactive controls.
+        The export control shows Python commands to save PDF and Markdown
+        files in the notebook filesystem. PDF exports include all declared
+        columns in the index, even when the diagram omits them.
+        Markdown diagrams use the Markdown viewer's Mermaid layout rather than
+        the notebook arrangement; schema tables remain readable without Mermaid.
+        """
+        from kumo.engine._visualization import render
+
+        svg = render(self._named_tables, self.edges, show_cols=show_cols,
+                     show_samples=show_samples, layout=layout)
+        if path is not None:
+            destination = Path(path)
+            if destination.suffix.lower() == '.pdf':
+                destination.write_bytes(svg._pdf(svg._initial_layout))
+            elif destination.suffix.lower() in ('.md', '.markdown'):
+                destination.write_text(svg._markdown(), encoding='utf-8')
+            else:
+                destination.write_text(svg, encoding='utf-8')
+        return svg
 
     def snapshot(self) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
