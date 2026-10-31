@@ -118,15 +118,19 @@ class SnowflakeTracking(TrackingBase):
         return Trainer.load_from_connector(self.connector, location=location,
                                            **kwargs)
 
-    def check(self, registry: Any = None) -> None:
-        r"""Raises before any work unless the session can see the
-        experiment's schema (one metadata query, no warehouse)."""
+    def _location(self) -> Tuple[Optional[str], str]:
         database = self.database or self.session.get_current_database()
         schema = self.schema or (None if self.database else
                                  self.session.get_current_schema())
+        return database, schema or 'PUBLIC'
+
+    def check(self, registry: Any = None) -> None:
+        r"""Raises before any work unless the session can see the
+        experiment's schema (one metadata query, no warehouse)."""
+        database, schema = self._location()
         if database is None:
             return
-        name = resolve_snowflake_identifier(schema or 'PUBLIC')
+        name = resolve_snowflake_identifier(schema)
         try:
             rows = self.session.sql(
                 f"SHOW SCHEMAS LIKE '{name.replace(chr(39), chr(39) * 2)}' "
@@ -138,7 +142,7 @@ class SnowflakeTracking(TrackingBase):
         if not rows:
             raise ValueError(
                 f'Snowflake Experiment Tracking needs schema {database}.'
-                f'{schema or "PUBLIC"}, which does not exist or this role '
+                f'{schema}, which does not exist or this role '
                 f'cannot see.')
 
     def start(self, record: RunRecord) -> None:
@@ -157,12 +161,10 @@ class SnowflakeTracking(TrackingBase):
                 f'Snowflake; end that run, or pass SnowflakeTracking the '
                 f'session it uses')
         self._tracking = tracking
-        database = self.database or self.session.get_current_database()
-        schema = self.schema or (None if self.database else
-                                 self.session.get_current_schema())
+        database, schema = self._location()
         experiment = tracking.set_experiment(self.experiment_name,
                                              database_name=database,
-                                             schema_name=schema or 'PUBLIC')
+                                             schema_name=schema)
         self._run = tracking.start_run(
             self._new_run_name(
                 tracking, experiment.name,
@@ -175,8 +177,6 @@ class SnowflakeTracking(TrackingBase):
         self._log_artifacts(record.artifacts)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
-        if self._run is None:
-            return
         prefix = f'{record.name}/'
         key = (event.trial or 0, int(event.params['attempt']))
         if event.name == 'trial_started':
@@ -210,7 +210,11 @@ class SnowflakeTracking(TrackingBase):
                                   if k not in self._start_tags}, _MAX_PARAMS)
                 self._log_artifacts(record.artifacts)
                 self.log_summaries(record.summaries)
-                self._log_dropped()
+                dropped = {DROPPED_METRICS: len(self._dropped_metrics),
+                           DROPPED_PARAMS: self._dropped_params}
+                if any(dropped.values()):
+                    self._tracking.log_params(
+                        {name: n for name, n in dropped.items() if n})
                 if error is None:
                     status = 'FINISHED'
         finally:
@@ -225,8 +229,7 @@ class SnowflakeTracking(TrackingBase):
                 self._reset()
 
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
-        if self._run is not None:
-            self._log_metrics(metrics, _EPOCH_METRICS, step=step)
+        self._log_metrics(metrics, _EPOCH_METRICS, step=step)
 
     def _new_run_name(self, tracking: Any, experiment: Any,
                       run_name: Optional[str]) -> Optional[str]:
@@ -276,15 +279,6 @@ class SnowflakeTracking(TrackingBase):
                 self._tracking.log_artifact(
                     str(path), posixpath.dirname(name) or None)
                 self._artifacts.add(name)
-
-    def _log_dropped(self) -> None:
-        dropped = {
-            DROPPED_METRICS: len(self._dropped_metrics),
-            DROPPED_PARAMS: self._dropped_params,
-        }
-        dropped = {name: count for name, count in dropped.items() if count}
-        if dropped:
-            self._tracking.log_params(dropped)
 
     def _log_params(self, params: Mapping[str, str],
                     limit: int = _MAX_PARAMS - _FINISH_PARAMS) -> None:
