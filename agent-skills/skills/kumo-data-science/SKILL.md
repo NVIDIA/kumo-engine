@@ -1,6 +1,6 @@
 ---
 name: kumo-data-science
-description: "Use for any work with KumoAI predictive models on relational data in a warehouse, an object store or local files: train a model, score data with a trained one, or answer questions about an existing model or run — explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction; feature attribution and column cohorts; metrics, trials and learning curves; registry publishing and artifact retention; caller-supplied labels, weights and splits; encoders, run mode and experiments. For a new model it checks that the request names the data (a schema, dataset, folder of files, connector, or semantic view), the outcome and the time window, confirms the inferred tables and the task, then generates one notebook or script; it runs the job only when asked, in the notebook or, on Snowflake, as an ML Job on a compute pool. Triggers: kumo, predict, churn, recommend, forecast, fraud, train a model, run inference, explain a prediction, feature importance, model metrics, publish or load a model, tune a model, semantic view, ML Job, compute pool."
+description: "Use for any work with KumoAI predictive models on relational data in a warehouse, an object store or local files: train a model, score data with a trained one, or answer questions about an existing model or run — explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction. For a new model it checks that the request names the data (a schema, dataset, folder of files, connector, semantic view or metric view), the outcome and the time window, confirms the inferred tables and the task, then generates one notebook or script; it runs it only when asked, in the notebook or as a host job (a Snowflake ML Job, a Databricks job)."
 ---
 
 # Data Science Agent — Router Skill
@@ -14,6 +14,14 @@ it from this file, you have not loaded the skill — say so rather than guessing
 
 Targets Kumo bundle `20261007+2e1eb12` (import `kumo.engine`; kumo-ai/kumo#31382).
 One SDK, no variants.
+
+## When to use
+
+Requests that mention any of: kumo, predict, churn, recommend, forecast, fraud, train a model, run
+inference, explain a prediction, feature importance, feature attribution, column cohorts, model
+metrics, trials, learning curves, publish or load a model, registry publishing, artifact retention,
+caller-supplied labels, weights or splits, encoders, run mode, experiments, tune a model, semantic
+view, metric view, ML Job, compute pool, Databricks job.
 
 ## Routing
 
@@ -34,8 +42,8 @@ for what the selected workflow is missing. If the host has not provided the refe
 report that limitation rather than inventing its workflow. **New training requests still follow
 the gates below**, unchanged.
 
-A request to run the artifact as a **job** — a Snowflake ML Job on a compute pool, unattended, or
-on a schedule — or a question about a job already submitted (status, logs, cost) also reads the
+A request to run the artifact as a **job** — a Snowflake ML Job on a compute pool, a Databricks
+job on a cluster, unattended, or on a schedule — or a question about a job already submitted (status, logs, cost) also reads the
 host's job file, when the host adapter names one. It adds settings to the gates below and changes
 where Step 3 runs; it never replaces the gates. If the adapter names no job file, say that this
 host does not run jobs and offer the notebook. A request that does not mention a job stays in the
