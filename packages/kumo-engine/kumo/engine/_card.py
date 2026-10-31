@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""A run's card: a short Markdown summary of a fit or prediction run,
-from its metrics, tags, params, notes and brief tables, for any tracker."""
+r"""A run's Markdown card, for any tracker."""
 
 import re
 from typing import Any, List, Mapping, Optional, Sequence
@@ -38,8 +37,7 @@ _CONSOLES = {'s3': 'https://s3.console.aws.amazon.com/s3/buckets/{}?prefix={}/',
 
 def heading(kind: str, metrics: Mapping[str, float],
             tags: Mapping[str, str]) -> List[str]:
-    r"""The card's heading: the run's status and watch numbers, plain text
-    of at most `HEADLINE_CHARS` characters, zero counts left out."""
+    r"""Status line, at most HEADLINE_CHARS."""
     metrics = {metric_key(name): value for name, value in metrics.items()}
     parts = [f"failed: {tags['kumo.error']}"] if 'kumo.error' in tags else []
     if kind == 'fit':
@@ -90,8 +88,6 @@ def intro(kind: str, tags: Mapping[str, str], params: Mapping[str, str],
 
 
 def fit_line(tags: Mapping[str, str], params: Mapping[str, str]) -> str:
-    r"""A fit's sentence: the model it registered, its task, and the trial
-    and epoch its curves and holdout metrics come from."""
     task = tags.get('kumo.task_type', '').replace('_', ' ')
     of = tags.get('kumo.entity')
     line = 'Fit' + (f' of {_model(tags)}' if _model(tags) else '') + (
@@ -110,10 +106,7 @@ def fit_line(tags: Mapping[str, str], params: Mapping[str, str]) -> str:
 
 def holdout(kind: str, metrics: Mapping[str, float],
             tags: Mapping[str, str]) -> List[Summary]:
-    r"""A fit's brief table ``holdout/metrics``: its holdout metrics, the
-    tuned one first, each with what it means where its name is unclear;
-    of the metrics at k, only those at the tuned metric's k, and a note
-    pointing to the others."""
+    r"""Brief holdout table, tuned metric first."""
     if kind != 'fit':
         return []
     tuned = f"test/{metric_key(tags.get('kumo.tune_metric') or '')}"
@@ -133,8 +126,6 @@ def holdout(kind: str, metrics: Mapping[str, float],
 
 def version_headline(metrics: Mapping[str, float],
                      tune: Optional[str]) -> str:
-    r"""A registered version's metrics line: the tuned metric, logloss,
-    then the next holdout metrics, four in all."""
     metrics = {metric_key(name): value for name, value in metrics.items()}
     tuned = f"test/{metric_key(tune or '')}"
     names = [name for name in metrics if name.startswith('test/')]
@@ -145,8 +136,6 @@ def version_headline(metrics: Mapping[str, float],
 
 def model_line(tags: Mapping[str, str], fit_run: Optional[str] = None,
                link: Optional[str] = None) -> str:
-    r"""A prediction's or monitoring run's sentence: the model that scored
-    and the fit run that trained it, linked when ``link`` is given."""
     lead = _LEADS.get(tags.get('kumo.monitor') or tags.get('kumo.kind', ''),
                       _LEADS['prediction'])
     model = _model(tags) or f"bundle `{tags.get('kumo.bundle_id', '')[:8]}`"
@@ -158,9 +147,6 @@ def model_line(tags: Mapping[str, str], fit_run: Optional[str] = None,
 
 def body(intro: Optional[str], summaries: Sequence[Summary],
          files: Sequence[str], blocks: Sequence[str] = ()) -> List[str]:
-    r"""The card after its heading: ``intro``, problems, the scores, the
-    ``blocks`` later steps fill and the notes on drift, the other brief
-    tables, notes, where things are, and the run's files."""
     lines = [] if intro is None else ['', intro]
     problems = _notes(summaries, 'problems')
     if problems:
@@ -188,8 +174,6 @@ def body(intro: Optional[str], summaries: Sequence[Summary],
 
 
 def block(summaries: Sequence[Summary], moved: Sequence[Table] = ()) -> str:
-    r"""A part of the card a later step adds, such as drift: its brief
-    tables, then its notes, naming the files of the ``moved`` tables."""
     notes = _notes(summaries, 'notes')
     if moved:
         names = ', '.join(f'`{table.name}.json`' for table in moved)
@@ -251,8 +235,6 @@ def _prep(table: Table) -> Table:
 
 
 def _where(table: Table) -> str:
-    r"""The ``locations`` table as "Where things are": each artifact by its
-    kind and short id, and its full location, linked to its console."""
     return '\n'.join([
         '**Where things are**', '', '| Artifact | Location |', '| --- | --- |',
         *(_row([_artifact(kind, str(id)), _location(str(location))])

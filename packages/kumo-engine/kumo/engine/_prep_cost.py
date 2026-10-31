@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""How long building a snapshot or a training table took and what it
-wrote, shown on the runs that use it."""
+r"""What building a snapshot or training table cost."""
 
 import time
 from datetime import datetime, timezone
@@ -17,7 +16,6 @@ PREP_TABLE = 'data_preparation'
 
 Start = Tuple[datetime, float]
 
-#: Ids of the artifacts this process built.
 _built_here: Set[str] = set()
 
 
@@ -26,8 +24,6 @@ def start() -> Start:
 
 
 def build_cost(id: str, started: Start, disk_bytes: int) -> BuildCost:
-    r"""The cost of building artifact ``id``, ``started`` at `start`, which
-    wrote ``disk_bytes``."""
     at, clock = started
     _built_here.add(id)
     return BuildCost(

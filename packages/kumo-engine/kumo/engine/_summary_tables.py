@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Series and histograms as the tables every tracker logs: the parent path
-of a summary's name names its table, the last segment its column."""
+r"""Series and histograms as tables, and summaries routed for trackers."""
 
 import json
 import math
@@ -22,7 +21,6 @@ from kumo_core.summaries import (
     Tag,
 )
 
-#: Columns that define bins or thresholds rather than measure anything.
 _DEFINITIONS = frozenset({'from', 'to', 'threshold'})
 
 
@@ -108,8 +106,6 @@ def confusion_table(summary: Confusion) -> Table:
 
 def _series_table(name: str, x_label: str,
                   columns: Mapping[str, Mapping[int, float]]) -> Table:
-    r"""Series ``<name>/<column>`` as one table: the step, then a column
-    per series, a row per step."""
     steps = sorted({step for points in columns.values() for step in points})
     return Table(name, (x_label, *columns), tuple(
         (step, *(points.get(step) for points in columns.values()))
@@ -117,10 +113,7 @@ def _series_table(name: str, x_label: str,
 
 
 def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
-    r"""Histograms ``<name>/<column>`` over the same edges as one table: a
-    bin per row from ``from`` to ``to``, the end bins closed at the values'
-    recorded minimum and maximum (open without one), a count and a
-    cumulative share per histogram; bins no histogram counts are left out."""
+    r"""Same-edge histograms as one table, empty bins dropped."""
     edges = histograms[0].edges
     extents = [h.extent for h in histograms if h.extent is not None]
     first = min((extent[0] for extent in extents), default=None)
@@ -145,9 +138,7 @@ def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
 
 
 def table_json(table: Table) -> str:
-    r"""``table`` as the JSON the trackers' table views read: bin edges and
-    thresholds to 10 significant digits, other floats to 6, integers and
-    text as they are."""
+    r"""Table JSON for tracker table views."""
     digits = [10 if column in _DEFINITIONS else 6 for column in table.columns]
     return json.dumps({'columns': list(table.columns), 'data': [
         [_rounded(value, places) for value, places in zip(row, digits)]

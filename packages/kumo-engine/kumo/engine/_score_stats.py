@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Exact score counts of prediction Parquet files a model wrote without
-kumo's predict loop, counted by DiskGraph in one read."""
+r"""Score counts of a prediction run's output files."""
 
 import json
 from pathlib import Path
@@ -12,9 +11,6 @@ import numpy as np
 from kumo_core.score_counts import Counts
 from kumo_core.types import TaskType
 
-#: The column each task's scores are counted from, the name and axis they
-#: are counted under (as `kumo_core.prediction_counts` does), and whether a
-#: prediction's score is the top of its rows' scores.
 _SCORES = {
     TaskType.BINARY_CLASSIFICATION: ('True_PROB', 'True_PROB', 'score', False),
     TaskType.REGRESSION: ('TARGET_PRED', 'TARGET_PRED', 'target', False),
@@ -35,10 +31,7 @@ Paths = Sequence[Union[str, Path]]
 def output_counts(paths: Paths, task_type: TaskType,
                   edges: Optional[Mapping[str, Tuple[float, ...]]]
                   ) -> Optional[Counts]:
-    r"""The `Counts` of ``task_type``'s score in prediction files ``paths``
-    on ``edges`` (`count_edges`): the score's counts per bin, its sum and
-    its extent, and a binary run's positive predictions; None without the
-    score's bins."""
+    r"""Score counts of prediction files; None without bins."""
     import diskgraph
     import pyarrow as pa
     from pyarrow import parquet
