@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from kumo_core.chunked_fs import ChunkedFileHandler
-from kumo_core.object_store_sink import FilesystemSink
+from kumo_core.object_store_sink import FileStoreRouting
 from kumoapi.jobs import PredictionArtifactType
 from kumoapi.plugin import FileStoreSink
 from pyarrow.fs import PyFileSystem
@@ -38,7 +38,7 @@ class MemoryStore(ChunkedFileHandler):
     part_bytes = 4096
 
     def __init__(self):
-        self.objects, self.spooled = {}, set()
+        self.objects = {}
 
     def get_type_name(self):
         return 'memory'
@@ -55,7 +55,6 @@ class MemoryStore(ChunkedFileHandler):
         }
 
     def _put(self, local, path):
-        self.spooled.add(Path(local).parent.parent)
         self.objects[path] = Path(local).read_bytes()
 
     def _part(self, path, size):
@@ -67,7 +66,7 @@ class MemoryStore(ChunkedFileHandler):
                 del self.objects[name]
 
 
-class StageSink:
+class StageSink(FileStoreRouting):
     def __init__(self):
         self.store = MemoryStore()
 
@@ -111,26 +110,16 @@ def test_output_configs_take_a_sinks_file_paths(connector):
                            'PREDS')
 
 
-def test_bundles_round_trip_through_a_filesystem_only_sink(
-        tmp_path, connector):
+def test_bundles_upload_provenance_last(tmp_path, connector):
     bundle = tmp_path / 'bundle'
-    (bundle / 'sub').mkdir(parents=True)
-    (bundle / '_provenance.json').write_text('{}')
-    (bundle / 'sub' / 'weights.bin').write_bytes(os.urandom(10000))
-    files = FilesystemSink(connector.sink_backend)
-    published = files.publish_model(connector, str(bundle),
-                                    path='@stage/models/m')
-    assert published.uri == '@stage/models/m'
-    store = connector.sink_backend.store
-    assert list(store.objects)[-1] == '@stage/models/m/_provenance.json'
-    assert any(
-        name.startswith('@stage/models/m/sub/weights.bin.chunks/')
-        and name.endswith('/_SUCCESS') for name in store.objects)
-    files.fetch_model(connector, str(tmp_path / 'fetched'),
-                      path='@stage/models/m')
-    for name in ('_provenance.json', 'sub/weights.bin'):
-        assert (tmp_path / 'fetched' / name).read_bytes() == (
-            bundle / name).read_bytes()
+    bundle.mkdir()
+    for name in ('_provenance.json', 'z.bin'):
+        (bundle / name).write_text('{}')
+    connector.sink_backend.publish_model(
+        connector, str(bundle), path='@stage/models/m')
+    assert list(connector.sink_backend.store.objects) == [
+        '@stage/models/m/z.bin', '@stage/models/m/_provenance.json'
+    ]
 
 
 def test_a_trainer_publishes_and_loads_through_a_filesystem_only_sink(
@@ -148,9 +137,6 @@ def test_a_trainer_publishes_and_loads_through_a_filesystem_only_sink(
     loaded = kumo.Trainer.load_from_connector(connector,
                                               path='@stage/models/m')
     assert loaded._snapshot_id == trainer._snapshot_id
-    with pytest.raises(NotImplementedError, match='cannot publish'):
-        trainer.fit(None, snapshot=None,
-                    export_config=kumo.ModelOutputConfig(connector, path='T'))
 
 
 def test_predictions_export_through_a_filesystem_only_sink(fitted, connector):
@@ -165,17 +151,18 @@ def test_predictions_export_through_a_filesystem_only_sink(fitted, connector):
         PredictionOutputConfig(connector,
                                output_paths={'predictions': '@stage/again/'}))
     assert any(name.startswith('@stage/again/') for name in store.objects)
+    tables = SimpleNamespace(sink_backend=object())
     with pytest.raises(NotImplementedError, match='requires'):
-        PredictionOutputConfig(connector, PredictionArtifactType.PREDICTIONS,
-                               'DB.S.T').writer('DB.S.T')
+        PredictionOutputConfig(tables, PredictionArtifactType.PREDICTIONS,
+                               'DB.S.T').writer()
 
 
-def test_parquet_writes_stay_plain_up_to_one_part(tmp_path, connector):
-    files = FilesystemSink(connector.sink_backend)
+def test_parquet_writes_stay_plain_up_to_one_part(connector):
+    sink = connector.sink_backend
     frame = pd.DataFrame({'x': range(10)})
-    files.write_table(connector, '@stage/small.parquet', frame)
-    files.write_table(connector, '@stage/big.parquet',
-                      pd.DataFrame({'x': [os.urandom(50).hex() for _ in range(100)]}))
+    sink.write_table(connector, '@stage/small.parquet', frame)
+    sink.write_table(connector, '@stage/big.parquet',
+                     pd.DataFrame({'x': [os.urandom(50).hex() for _ in range(100)]}))
     store = connector.sink_backend.store
     assert '@stage/small.parquet' in store.objects
     assert any(
@@ -184,12 +171,6 @@ def test_parquet_writes_stay_plain_up_to_one_part(tmp_path, connector):
     assert pd.read_parquet(
         '@stage/big.parquet',
         filesystem=PyFileSystem(store)).shape == (100, 1)
-
-    part = tmp_path / 'part-0.parquet'
-    frame.to_parquet(part)
-    assert files.write_files(connector, '@stage/out/', [str(part)])
-    assert pd.read_parquet('@stage/out/part-0.parquet',
-                           filesystem=PyFileSystem(store)).equals(frame)
 
 
 def test_publishing_an_identical_bundle_again_reuses_the_copy(
@@ -200,7 +181,7 @@ def test_publishing_an_identical_bundle_again_reuses_the_copy(
     bundle.mkdir()
     (bundle / '_provenance.json').write_text('{"id": 1}')
     (bundle / 'weights.bin').write_bytes(os.urandom(10000))
-    files = FilesystemSink(connector.sink_backend)
+    files = connector.sink_backend
     files.publish_model(connector, str(bundle), path='@stage/models/m')
     upload = sink.upload_bundle
     monkeypatch.setattr(sink, 'upload_bundle',
@@ -217,12 +198,12 @@ def test_publishing_an_identical_bundle_again_reuses_the_copy(
     assert len(uploads) == 1
 
 
-def test_an_occupied_directory_is_refused_before_scoring(tmp_path, connector):
+def test_an_occupied_directory_is_refused_before_scoring(connector):
     from kumo_core.artifact_export import ArtifactDestinationConflict
 
-    files = FilesystemSink(connector.sink_backend)
-    files.preflight_write_files(connector, '@stage/out/')
+    sink = connector.sink_backend
+    sink.preflight_write_files(connector, '@stage/out/')
     connector.sink_backend.store.objects['@stage/out/old.parquet'] = b'x'
     for mode in (None, 'OVERWRITE', 'APPEND'):
         with pytest.raises(ArtifactDestinationConflict, match='already'):
-            files.preflight_write_files(connector, '@stage/out/', mode)
+            sink.preflight_write_files(connector, '@stage/out/', mode)

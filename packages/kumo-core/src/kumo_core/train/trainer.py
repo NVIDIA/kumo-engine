@@ -1521,26 +1521,19 @@ class Trainer(PortableConfigMixin):
         fit_mode = self.fit_mode if fit_mode is None else fit_mode
         path = self.root_dir if not local else self.local_root_dir
 
+        refit = not original and fit_mode.is_refit
         # In case the `root_dir` contains a trainer config, it is a log dir
         # for a previous model version.
         if fsutil.exists(osp.join(path, 'config.json')):
-            if not original and fit_mode.is_refit:
-                if path[-1] == '/':
-                    path = path[:-1]
-                path = f"{path}_{fit_mode.value}"
-                fsutil.makedirs(path, exist_ok=True)
+            if not refit:
                 return path
-            else:
-                return path
-
-        if self.name is not None:
-            path = osp.join(path, self.name)
-        if self.track_version:
-            path = osp.join(path, self.version_dir_name)
-        if not original and fit_mode.is_refit:
-            if path[-1] == '/':
-                path = path[:-1]
-            path = f"{path}_{fit_mode.value}"
+        else:
+            if self.name is not None:
+                path = osp.join(path, self.name)
+            if self.track_version:
+                path = osp.join(path, self.version_dir_name)
+        if refit:
+            path = f"{path.removesuffix('/')}_{fit_mode.value}"
         fsutil.makedirs(path, exist_ok=True)
         return path
 
