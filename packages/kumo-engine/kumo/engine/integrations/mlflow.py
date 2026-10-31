@@ -100,21 +100,14 @@ class MlflowTracking(SingleRunHooks):
     tables (Unity Catalog then links them to a model registered from the
     run), file and object-store sources by URI. Params MLflow rejects are
     counted in ``kumo.dropped_params``. Concurrent fits in one process are
-    not supported. As ``kumo.MLOps(tracking=...)``, it also records each
-    prediction run as one run named after it, placed like a fit run, and
-    writes each monitoring call into the prediction run it checks;
-    ``tags`` apply to fit runs only.
+    not supported. Prediction runs are runs of their own; monitoring calls
+    are written into the prediction run they check.
 
     Args:
         experiment_name: experiment for the fit run, created if missing.
             `None` uses MLflow's current experiment; required to record
             runs at a ``target``.
-        run_name: replaces ``<model>-v<version>`` in each run's name:
-            ``fit-<run_name>``, ``predict-<run_name>-<as-of date>``. `None`
-            names a fit ``fit-<model>-<YYYYMMDD-HHMMSS>`` (its UTC start),
-            then ``fit-<model>-v<version>`` once it registers a version, and
-            a prediction ``predict-<model>-v<version>-<as-of date>``
-            (``<model>-<bundle id[:8]>`` for a model not registered).
+        run_name: replaces ``<model>-v<version>`` in each run's name.
         log_system_metrics: sample CPU, memory, disk, network and (with
             ``nvidia-ml-py``) GPU usage on the fit run.
         tags: extra tags for the fit run.
@@ -180,7 +173,6 @@ class MlflowTracking(SingleRunHooks):
         self._children: Dict[Tuple[int, int], str] = {}
         self._trials: Dict[Tuple[int, int], str] = {}
         self._artifacts: Set[str] = set()
-        # The run's notes and brief tables, for its description.
         self._card: List[Summary] = []
         self._model_id: Optional[str] = None
         self._holdout: Any = None
@@ -201,10 +193,7 @@ class MlflowTracking(SingleRunHooks):
 
     @contextmanager
     def client(self) -> Iterator[Any]:
-        r"""An ``MlflowClient`` for this tracker's server, with its
-        credentials and tracking URI set for the block, so your own MLflow
-        calls (the client's, or ``mlflow.search_runs``) reach the server
-        kumo-engine records to, as the same identity."""
+        r"""An MlflowClient with this tracker's credentials for the block."""
         with self.target.scope(), global_tracking_uri(
                 self.target.tracking_uri):
             yield self.target.client()
@@ -368,9 +357,7 @@ class MlflowTracking(SingleRunHooks):
         return models[0] if models else None
 
     def _registry_experiment(self, model_name: str) -> str:
-        r"""The experiment of a model logged in no run: this tracker's,
-        else one named after the model (``/Shared/kumo/<model>`` on
-        Databricks), never MLflow's Default."""
+        r"""The experiment for a model logged in no run, never Default."""
         name = self.experiment_name or model_label(model_name, None, None)
         if self.experiment_name is None and self.platform == 'databricks':
             name = f'/Shared/kumo/{name}'
@@ -380,9 +367,7 @@ class MlflowTracking(SingleRunHooks):
                     self._client.create_experiment(name))
 
     def _rename_fit(self, fit: Any, published: PublishedModel) -> None:
-        r"""On its first registration, names the fit run, still named by
-        its start time, ``fit-<model>-v<version>`` with its trials, tags the
-        version on it and regenerates its card's first line."""
+        r"""Names the fit run after its first registered version."""
         if not re.search(r'-\d{8}-\d{6}$', fit.run_name):
             return
         name = run_name('fit', versioned(
@@ -462,8 +447,7 @@ class MlflowTracking(SingleRunHooks):
 
     @contextmanager
     def sample_system_metrics(self) -> Iterator[None]:
-        r"""Samples system metrics during the block, for the next prediction
-        run this tracker logs, in the block or after it."""
+        r"""Samples system metrics for the next prediction run."""
         self._samples, self._sampled_run = [], None
         if not self._samples_system():
             yield
@@ -479,11 +463,7 @@ class MlflowTracking(SingleRunHooks):
                 'false', '0')
 
     def log_monitoring(self, record: RunRecord) -> None:
-        r"""Folds a monitoring call into the prediction run it checks: the
-        record's ``prediction_run``, else the run tagged with its
-        ``kumo.prediction_id`` in this tracker's experiment. Notes name the
-        previous run of a drift check by its run name. MLflow retries each
-        request twice."""
+        r"""Folds a monitoring call into the prediction run it checks."""
         self.run_id = None
         prediction_id = record.tags.get('kumo.prediction_id')
         with _limited_http(frozenset(name for name in _HTTP_LIMITS
@@ -530,11 +510,7 @@ class MlflowTracking(SingleRunHooks):
             for summary in record.summaries))
 
     def fold(self, run_id: str, record: RunRecord) -> None:
-        r"""Adds a monitoring call's ``record`` to the finished run
-        ``run_id``: its metrics, tags, tables and datasets, and its notes and
-        brief tables as the card's ``drift`` or ``realized`` part, with line
-        1 regenerated. The run's status, end time and params are
-        unchanged."""
+        r"""Adds a monitoring record to a finished run and its card."""
         routed = route(record.summaries, charts=True)
         self._log_routed(routed, run_id)
         self.update_card(
@@ -655,11 +631,7 @@ class MlflowTracking(SingleRunHooks):
 
     def update_card(self, run_id: str, block: Optional[str] = None,
                     summaries: Sequence[Summary] = ()) -> None:
-        r"""Regenerates the heading of run ``run_id``'s card from the run's
-        metrics and tags, and a fit's sentence, and, given ``block``
-        (``drift``, ``realized``),
-        replaces that part of the card with the notes and brief tables in
-        ``summaries``. A card the user edited is left as it is."""
+        r"""Regenerates the card's heading and, given block, that part."""
         self._client = self._client or self.target.client()
         with self.target.scope():
             run = self._client.get_run(run_id)
@@ -719,16 +691,14 @@ class MlflowTracking(SingleRunHooks):
 
             user = split[1]
             self._set_card(run, render, minimal, items, user,
-                           _budget(user) - (_BLOCK_BYTES if blocks else 0))
+                           _budget(user)
+                           - (_MONITORING_BYTES if blocks else 0))
         except Exception as error:
             logger.warning('Could not write the description of MLflow run '
                            '%s: %s', self._parent, format_error(error))
 
     def _editable(self, run: Any, first: bool) -> Optional[Tuple[str, str]]:
-        r"""The run's card and the user's text after it, or `None` once the
-        user edited the card: then the run is tagged ``kumo.card_frozen``
-        and, the first time, a warning names it. Before kumo's first card,
-        any description is the user's."""
+        r"""The card and the user's text after it; None once edited."""
         tags = run.data.tags
         if tags.get('kumo.card_frozen') == 'true':
             return None
@@ -751,9 +721,7 @@ class MlflowTracking(SingleRunHooks):
                   render: Callable[[Sequence[Summary], Sequence[str]], str],
                   minimal: Callable[[Sequence[str]], str],
                   items: Sequence[Summary], user: str, budget: int) -> None:
-        r"""Writes the card ``render`` gives within ``budget`` bytes: moves
-        the largest brief table to a file until it fits, else writes the
-        ``minimal`` card."""
+        r"""Writes the card within budget, moving big tables to files."""
         run_id = run.info.run_id
         files = [entry['path'] for entry in json.loads(
             run.data.tags.get('mlflow.loggedArtifacts', '[]'))]
@@ -774,8 +742,7 @@ class MlflowTracking(SingleRunHooks):
                                  _sealed(card) + user)
 
     def _rename(self, record: RunRecord) -> None:
-        r"""Names a fit that registered a version ``fit-<model>-v<version>``,
-        and its trials after it."""
+        r"""Names a registered fit and its trials after the version."""
         version = record.tags.get('kumo.model_version')
         if version is None:
             return
@@ -788,10 +755,7 @@ class MlflowTracking(SingleRunHooks):
                 self._client.update_run(run_id, name=_trial_name(*key, name))
 
     def _describe_version(self, record: RunRecord) -> None:
-        r"""Adds the fit's headline metrics (unless the version's logged
-        model shows them, as on Unity Catalog), its run and its bundle to
-        the description of the version it registered, after the user's
-        comment."""
+        r"""Adds the fit's headline metrics, run and bundle to its version."""
         published = cast(PublishedModel, self._published)
         try:
             with self.target.scope():
@@ -809,8 +773,7 @@ class MlflowTracking(SingleRunHooks):
                            format_error(error))
 
     def _fit_of(self, fit_id: Optional[str]) -> Tuple[Any, Any]:
-        r"""The run info of fit run ``fit_id`` on this server and the
-        model it logged, each `None` if missing."""
+        r"""The fit run's info and its logged model, each None if missing."""
         if not fit_id:
             return None, None
         try:
@@ -915,9 +878,7 @@ class MlflowTracking(SingleRunHooks):
                                              summary.context)])
 
     def _write_tables(self, run_id: str, tables: Sequence[Table]) -> None:
-        r"""Writes each table as ``<name>.json``, replacing an earlier
-        file, and lists it in ``mlflow.loggedArtifacts`` for the UI's table
-        view (``mlflow.log_table`` would append to an earlier file)."""
+        r"""Writes tables as JSON listed for the UI's table view."""
         if not tables:
             return
         for table in tables:
@@ -995,16 +956,14 @@ class MlflowTracking(SingleRunHooks):
 
 
 def _holdout_dataset(inputs: Sequence[Any]) -> Any:
-    r"""The training table among a fit's dataset ``inputs``: the holdout
-    is its test split."""
+    r"""The training table among a fit's inputs."""
     return next((item.dataset for item in inputs
                  if item.dataset.name.startswith('training-table')), None)
 
 
 def _digest(name: str, source: Mapping[str, Optional[str]],
             schema: Mapping[str, Any]) -> str:
-    r"""A dataset's digest, over its name, source and schema: MLflow keeps
-    one dataset per name and digest, so a moved source is a new one."""
+    r"""A dataset digest over name, source and schema."""
     return hashlib.sha256(json.dumps(
         [name, dict(source), dict(schema)], sort_keys=True,
         default=str).encode()).hexdigest()[:8]
@@ -1026,13 +985,11 @@ _EXPERIMENT_NOTE = '\n'.join([
     "card's last line."])
 _CARD_END = re.compile(r'<!-- /kumo:card sha256=([0-9a-f]{16}) -->')
 _BLOCKS = ('drift', 'realized')
-_BLOCK_BYTES = 800  # kept free at predict time for the monitoring parts
+_MONITORING_BYTES = 800
 
 
 def _card_hash(card: str) -> str:
-    r"""The first 16 hex digits of the SHA-256 of ``card``, with LF line
-    endings and each line's trailing whitespace stripped, so the editor
-    saving it unchanged keeps it."""
+    r"""SHA-256 prefix of the card, stable under an unchanged editor save."""
     lines = card.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     text = '\n'.join(line.rstrip() for line in lines).strip('\n')
     return hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -1052,8 +1009,7 @@ def _budget(user: str) -> int:
 
 
 def _free_name(client: Any, experiment_id: str, name: str) -> str:
-    r"""``name``, else the first of ``name-2``, ``name-3``, … no run in the
-    experiment has (unchecked if it holds both kinds of quote)."""
+    r"""name, else the first free name-2, name-3, ..."""
     candidate, suffix = name, 1
     while True:
         quote = "'" if "'" not in candidate else '"'
@@ -1080,8 +1036,7 @@ def _part(name: str, text: str) -> str:
 
 
 def _with_block(card: str, name: str, text: str) -> str:
-    r"""``card`` with its ``kumo:<name>`` part holding ``text``, added
-    before the notes line if missing."""
+    r"""The card with its kumo:<name> part set to text."""
     part = _part(name, text)
     existing = re.compile(f'<!-- kumo:{name} -->.*?<!-- /kumo:{name} -->',
                           re.DOTALL)
@@ -1356,8 +1311,7 @@ def _download(mlflow: Any, target: Any, model_uri: str,
 
 
 def logged_model_name(registered: Optional[str], manifest: Any) -> str:
-    r"""A logged model's name: `model_label` without the characters MLflow
-    rejects."""
+    r"""model_label without the characters MLflow rejects."""
     table = getattr(getattr(manifest, 'parents', None), 'training_table',
                     None)
     return re.sub(r'[/:.%"\']', '-', model_label(
@@ -1537,9 +1491,7 @@ def _version_text(metrics: Mapping[str, float], tune: Optional[str],
 
 def _describe_version(target: Any, client: Any, published: PublishedModel,
                       text: str) -> None:
-    r"""Starts the version's description with ``text``, sealed as a run's
-    card is, within MLflow's 5000 characters; the user's text after it is
-    kept, and a user's edit of ``text`` stops kumo's updates."""
+    r"""Puts text, sealed, at the start of the version's description."""
     name, version = published.name, published.version
     with target.scope():
         current = client.get_model_version(name, version).description or ''
