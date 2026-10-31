@@ -280,9 +280,7 @@ class MlflowTracking(TrackingBase):
                         tags={'kumo.bundle_id': str(result.id)}).info.run_id
                 info = _log_model(self.target, client, result.bundle_dir,
                                   result.manifest or stub('model', result.id),
-                                  snapshot, name='model', run_id=run_id,
-                                  experiment_id=experiment_id,
-                                  serving_snapshot=None)
+                                  snapshot, run_id, experiment_id)
                 with self.target.scope():
                     client.set_terminated(run_id, 'FINISHED')
             return _register(self.target, client, info, location, pointers)
@@ -366,9 +364,7 @@ class MlflowTracking(TrackingBase):
         os.environ.update(upload)
         try:
             info = _log_model(self.target, self._client, bundle_dir, manifest,
-                              snapshot, name='model', run_id=run_id,
-                              experiment_id=self._experiment_id,
-                              serving_snapshot=None)
+                              snapshot, run_id, self._experiment_id)
         finally:
             if self._parent == run_id:
                 os.environ.update({name: _HTTP_LIMITS[name] for name in upload})
@@ -691,9 +687,8 @@ def log_model(
         _log_inputs(mlflow, client, run_id, fit_inputs(result.manifest))
     info = _log_model(target, client, result.bundle_dir, result.manifest or
                       (None if result.id is None else stub('model', result.id)),
-                      snapshot, name=name, run_id=run_id,
-                      experiment_id=experiment_id,
-                      serving_snapshot=snapshot_uri(serving_snapshot))
+                      snapshot, run_id, experiment_id, name,
+                      snapshot_uri(serving_snapshot))
     with target.scope():
         if result.metrics:
             client.log_batch(run_id, metrics=[
@@ -758,9 +753,9 @@ def _download(mlflow: Any, target: Any, model_uri: str,
 
 def _log_model(target: Any, client: Any, bundle_dir: Path,
                manifest: Optional['ModelManifest'],
-               snapshot: Optional['GraphSnapshot'], *, name: str, run_id: str,
-               experiment_id: Optional[str],
-               serving_snapshot: Optional[str]) -> Any:
+               snapshot: Optional['GraphSnapshot'], run_id: str,
+               experiment_id: str, name: str = 'model',
+               serving_snapshot: Optional[str] = None) -> Any:
     r"""``mlflow.pyfunc.log_model`` through ``client``."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
@@ -781,7 +776,7 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
     provenance = bundle_dir / PROVENANCE_FILE
     with target.scope():
         model = client.create_logged_model(
-            experiment_id or client.get_run(run_id).info.experiment_id,
+            experiment_id,
             name=name, source_run_id=run_id,
             params=dict(client.get_run(run_id).data.params))
     mlflow_model = mlflow.models.Model(

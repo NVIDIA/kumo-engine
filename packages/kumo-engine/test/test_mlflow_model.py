@@ -363,7 +363,7 @@ def test_model_upload_gets_a_longer_http_timeout_and_a_late_one_is_dropped(
     location = kumo.ModelRegistryLocation('m')
     seen = []
 
-    def log_model(target, client, bundle_dir, manifest, snapshot, **kwargs):
+    def log_model(*args):
         seen.append(os.environ.get('MLFLOW_HTTP_REQUEST_TIMEOUT'))
         if len(seen) == 2:
             tracker.finish(None, None)
