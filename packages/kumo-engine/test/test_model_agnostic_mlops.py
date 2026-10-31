@@ -537,8 +537,19 @@ def test_a_stage_root_registers_versions_that_serve_its_snapshot(tmp_path):
         snapshot_id).serving_snapshot is None
 
     bundle, manifest = _toy_bundle(tmp_path / 'bundle')
+    location = ModelRegistryLocation('TOY')
     with kumo.mlops(cfg):
-        _publish(bundle, manifest.id, {}, kumo.ModelOutputConfig(
-            stage, location=ModelRegistryLocation('TOY'),
-            serving_snapshot=snapshot_id))
-    assert published[0]['kumo.serving_snapshot'] == registry.serving_snapshot
+        for config in (kumo.ModelOutputConfig(stage, location=location),
+                       kumo.ModelOutputConfig(
+                           stage, location=location,
+                           serving_snapshot=snapshot_id,
+                           serving_options={'pip_repository': 'DB.S.REPO'})):
+            _publish(bundle, manifest.id, {}, config)
+    plain, served = published
+    assert {k: v for k, v in served.items() if k not in plain} == {
+        'kumo.serving_snapshot': registry.serving_snapshot,
+        'kumo.serving.pip_repository': 'DB.S.REPO',
+    }
+    with pytest.raises(ValueError, match=r"Unknown serving_options \['cuda'\]"):
+        kumo.ModelOutputConfig(stage, location=location,
+                               serving_options={'cuda': '12.6'})

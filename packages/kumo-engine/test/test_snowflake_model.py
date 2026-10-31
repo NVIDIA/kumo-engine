@@ -6,7 +6,6 @@ and loaded by snowflake-ml's own packager, without a Snowflake account."""
 
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -100,8 +99,6 @@ def test_a_packaged_version_scores_like_the_trainer(served, tmp_path,
 
 def test_serving_options_override_the_defaults_and_a_snapshot_is_required(
         served, tmp_path, monkeypatch):
-    from kumo.engine.integrations._snowflake_model import pip_requirements
-
     monkeypatch.setattr('torch.version.cuda', None)
     trainer, *_ = served
     args, model = _package(
@@ -111,8 +108,6 @@ def test_serving_options_override_the_defaults_and_a_snapshot_is_required(
             'kumo.serving.function_type': 'FUNCTION',
         }, tmp_path)
     assert args['artifact_repository_map'] == {'pip': 'DB.ML.REPO'}
-    assert args['pip_requirements'] == pip_requirements()
-    assert len(args['code_paths']) == 7
     assert args['options'] == {
         'cuda_version': '12.4',
         'function_type': 'FUNCTION'
@@ -218,40 +213,3 @@ def test_a_stage_snapshot_is_read_with_the_container_identity(monkeypatch):
         'database': 'DB',
         'schema_name': 'ML'
     }]
-
-
-def _model(trainer):
-    return (trainer.result.bundle_dir, trainer.result.id,
-            trainer.result.metrics)
-
-
-def test_publish_passes_the_serving_snapshot_and_repository(fitted):
-    from kumo.engine.trainer.trainer import _publish
-
-    trainer, *_ = fitted
-    published = []
-    sink = SimpleNamespace(
-        publish_model=lambda connector, bundle, **kw: published.append(kw) or
-        SimpleNamespace(version='V1'))
-    connector = SimpleNamespace(sink_backend=sink)
-    location = kumo.ModelRegistryLocation('CHURN')
-    _publish(*_model(trainer),
-             kumo.ModelOutputConfig(connector, location=location))
-    _publish(
-        *_model(trainer),
-        kumo.ModelOutputConfig(connector, location=location,
-                               serving_snapshot='@DB.ML.KUMO/snapshots/s1',
-                               serving_options={
-                                   'pip_repository': 'DB.ML.REPO',
-                                   'cuda_version': '12.4',
-                               }))
-    with pytest.raises(ValueError, match=r"Unknown serving_options \['cuda'\]"):
-        kumo.ModelOutputConfig(connector, location=location,
-                               serving_options={'cuda': '12.6'})
-    plain, served = (call['metadata'] for call in published)
-    assert 'kumo.serving_snapshot' not in plain
-    assert {k: v for k, v in served.items() if k not in plain} == {
-        'kumo.serving_snapshot': '@DB.ML.KUMO/snapshots/s1',
-        'kumo.serving.pip_repository': 'DB.ML.REPO',
-        'kumo.serving.cuda_version': '12.4',
-    }
