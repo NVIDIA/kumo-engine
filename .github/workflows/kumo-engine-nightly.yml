@@ -1,0 +1,206 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo Engine Nightly
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      product_ref:
+        description: Product revision to build and test
+        type: string
+        default: main
+      reference_only:
+        description: Run the approved published wheel to prepare the RTX reference
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: engine-nightly-fixed-aws-vm
+  cancel-in-progress: false
+env:
+  PIP_CONFIG_FILE: /dev/null
+  REFERENCE_ONLY: ${{ inputs.reference_only && 'true' || 'false' }}
+  REFERENCE_WHEEL_SHA256: 1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e
+jobs:
+  build:
+    name: Build the selected wheel on CPU
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        if: env.REFERENCE_ONLY != 'true'
+        with:
+          ref: ${{ inputs.product_ref || github.sha }}
+          path: product
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        if: env.REFERENCE_ONLY != 'true'
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        if: env.REFERENCE_ONLY != 'true'
+        with:
+          workspaces: product/packages/diskgraph
+          prefix-key: engine-pr-zig-workspace-v2
+          key: py312-glibc234-${{ hashFiles('product/packages/diskgraph/**', 'product/packages/kumo-engine/scripts/build_wheel.sh') }}
+          cache-workspace-crates: true
+          cache-on-failure: true
+      - name: Build the exact product tree with the existing builder
+        if: env.REFERENCE_ONLY != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nightly-wheel"
+          test -z "$(git -C product status --porcelain)"
+          git -C product rev-parse HEAD 'HEAD^{tree}' > "$RUNNER_TEMP/nightly-wheel/source.txt"
+          python -I -m pip --isolated install --index-url https://pypi.org/simple ziglang
+          (cd product && packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/nightly-wheel") 2>&1 | tee "$RUNNER_TEMP/nightly-wheel/build.log"
+          cmp "$RUNNER_TEMP/nightly-wheel/source.txt" <(git -C product rev-parse HEAD 'HEAD^{tree}')
+          test -z "$(git -C product status --porcelain)"
+          python - <<'PY'
+          import email, hashlib, json, os, subprocess, zipfile
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'nightly-wheel'
+          revision, tree = (root / 'source.txt').read_text().splitlines()
+          [wheel] = root.glob('*.whl')
+          short = subprocess.check_output(['git', '-C', 'product', 'rev-parse', '--short', 'HEAD'], text=True).strip()
+          expected = Path('product/VERSION').read_text().strip() + '+' + short
+          with zipfile.ZipFile(wheel) as archive:
+              [name] = [n for n in archive.namelist() if n.endswith('.dist-info/METADATA')]
+              metadata = email.message_from_bytes(archive.read(name))
+          if metadata['Name'].replace('_', '-') != 'kumo-engine' or metadata['Version'] != expected:
+              raise SystemExit('Wheel does not identify the selected product revision')
+          (root / 'build.json').write_text(json.dumps(dict(revision=revision, tree=tree,
+              version=expected, wheel_sha256=hashlib.sha256(wheel.read_bytes()).hexdigest(),
+              harness=os.environ['GITHUB_SHA']), indent=2))
+          PY
+      - name: Download the approved reference wheel
+        if: env.REFERENCE_ONLY == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/nightly-wheel"
+          python -I -m pip --isolated download --index-url https://pypi.org/simple --only-binary=:all: --no-deps --dest "$RUNNER_TEMP/nightly-wheel" kumo-engine==1.0.0
+          python - <<'PY'
+          import email, hashlib, json, os, zipfile
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'nightly-wheel'
+          [wheel] = root.glob('*.whl')
+          digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+          if digest != os.environ['REFERENCE_WHEEL_SHA256']:
+              raise SystemExit('Published reference wheel checksum differs')
+          with zipfile.ZipFile(wheel) as archive:
+              [name] = [n for n in archive.namelist() if n.endswith('.dist-info/METADATA')]
+              metadata = email.message_from_bytes(archive.read(name))
+          if metadata['Name'].replace('_', '-') != 'kumo-engine' or metadata['Version'] != '1.0.0':
+              raise SystemExit('Expected the approved published Engine 1.0.0 wheel')
+          (root / 'build.json').write_text(json.dumps(dict(format='kumo-engine-published-reference-v1',
+              version='1.0.0', wheel_sha256=digest, harness=os.environ['GITHUB_SHA']), indent=2))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: always()
+        with:
+          name: engine-nightly-wheel
+          path: ${{ runner.temp }}/nightly-wheel
+          if-no-files-found: error
+          compression-level: 0
+  nightly:
+    name: Control the fixed AWS GPU VM
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 195
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: engine-nightly-wheel
+          path: ${{ runner.temp }}/nightly-wheel
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        id: nightly-credentials
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-east-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Run and validate the fixed-VM nightly
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.nightly-credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.nightly-credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.nightly-credentials.outputs.aws-session-token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mapfile -t wheels < <(find "$RUNNER_TEMP/nightly-wheel" -maxdepth 1 -name '*.whl' -type f)
+          test "${#wheels[@]}" = 1
+          flags=()
+          if [[ "$REFERENCE_ONLY" == true ]]; then flags+=(--reference-only); fi
+          python -I scripts/engine_nightly_run.py --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --source-sha "$GITHUB_SHA" --wheel "${wheels[0]}" --build-receipt "$RUNNER_TEMP/nightly-wheel/build.json" --input-spec packages/kumo-engine/test/nightly/inputs.json --output-dir "$RUNNER_TEMP/engine-nightly" "${flags[@]}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: always()
+        with:
+          name: engine-nightly-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/engine-nightly
+          if-no-files-found: error
+          compression-level: 0
+  cleanup:
+    name: Confirm failed or cancelled VM work stops
+    needs: nightly
+    if: ${{ always() && needs.nightly.result != 'success' && needs.nightly.result != 'skipped' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        id: cleanup-credentials
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-east-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Cancel and confirm the fixed-VM workload
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.cleanup-credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.cleanup-credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.cleanup-credentials.outputs.aws-session-token }}
+        run: |
+          python -I scripts/engine_nightly_run.py --cancel-only --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --source-sha "$GITHUB_SHA" --output-dir "$RUNNER_TEMP/engine-nightly-cancel"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: always()
+        with:
+          name: engine-nightly-cancel-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/engine-nightly-cancel
+          if-no-files-found: error

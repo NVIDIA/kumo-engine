@@ -49,7 +49,10 @@ jobs:
             test/scripts/test_check_oss_readiness.py \
             test/scripts/test_check_secrets.py \
             test/scripts/test_engine_gpu_smoke.py \
-            test/scripts/test_engine_pr_workflow.py
+            test/scripts/test_engine_pr_workflow.py \
+            test/scripts/test_engine_nightly_host.py \
+            test/scripts/test_engine_nightly_run.py \
+            test/scripts/test_engine_nightly_ssm.py
 
       # Pull requests check only the files they change. Pushes to main check
       # the whole tree, so a recorded public-reference count that is no longer

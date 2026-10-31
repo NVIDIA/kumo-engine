@@ -1,0 +1,10 @@
+{
+  "version": "nightly-t4-v1",
+  "bucket": "kumo-test-dataplane-bucket",
+  "region": "us-west-2",
+  "key": "engine-testing/anle/20261029/nightly-t4/559020b1ba1fd0d94cfabc6ad9594f9c391f4c0674bf55db1f96975a4f2082d3/inputs.tar",
+  "sha256": "559020b1ba1fd0d94cfabc6ad9594f9c391f4c0674bf55db1f96975a4f2082d3",
+  "input_manifest_sha256": "caba00478af611669d79b9998a6c2139cd689254fc5d642043c1fdde6d1a7cae",
+  "reference_key": "engine-testing/anle/20261029/nightly-t4/predecessors/5beae83c091359e588a8dcdf830b525554f04958f937dc1d8252906244a3f66f/reference.json",
+  "reference_sha256": "5beae83c091359e588a8dcdf830b525554f04958f937dc1d8252906244a3f66f"
+}
