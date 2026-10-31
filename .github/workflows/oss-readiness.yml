@@ -41,12 +41,15 @@ jobs:
       - name: Test repository readiness checks
         run: |
           uvx --python 3.14 --from pytest==9.0.3 --with vulture==2.14 \
+            --with 'numpy>=2,<3' --with 'pandas>=3,<4' --with 'PyYAML>=6,<7' \
             python -m pytest -c /dev/null --confcutdir=test/scripts \
             -p no:cacheprovider -q \
             test/scripts/test_check_public_references.py \
             test/scripts/test_check_dead_code.py \
             test/scripts/test_check_oss_readiness.py \
-            test/scripts/test_check_secrets.py
+            test/scripts/test_check_secrets.py \
+            test/scripts/test_engine_gpu_smoke.py \
+            test/scripts/test_engine_pr_workflow.py
 
       # Pull requests check only the files they change. Pushes to main check
       # the whole tree, so a recorded public-reference count that is no longer

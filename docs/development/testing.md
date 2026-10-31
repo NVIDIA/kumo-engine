@@ -27,6 +27,13 @@ For connector changes, start with the [public test command](public-tests.md).
 It builds its prerequisites and runs without cloud credentials. The
 [test matrix](../connector-test-matrix.md) lists coverage and CI limits.
 
+The [Engine PR check](engine-pr-ci.md) builds the candidate wheel on CPU and
+runs eight small task checks on CUDA through one shared smoke action. Repeated
+and reloaded predictions must match within `0.0001` absolute tolerance and
+zero relative tolerance for every task. Labels, ranks, valid outputs, and
+completed CUDA work remain strict. Training metrics report separately and set
+no learning-quality requirement. Source and package workflows remain separate.
+
 ## Report evidence
 
 Record the command, environment, result, and any untested dependency. Keep
@@ -34,3 +41,10 @@ credentials, customer data, and private logs out of committed test reports.
 For a behavior change, add a regression test at the relevant boundary; pure
 prose edits need reference checks and a factual review rather than tests that
 repeat the prose.
+
+## Local PR feedback
+
+The [Engine PR guide](engine-pr-ci.md#local-feedback) gives one pytest command
+for the small pure output and workflow checks. The existing OSS Readiness job
+runs the same tests. They need no GPU or cloud access. The GPU job runs the
+eight actual training and save/load cases.
