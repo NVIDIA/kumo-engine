@@ -203,21 +203,6 @@ class SnowflakeSinkBackend(SnowflakeModelRegistryMixin, _SnowflakeSessions):
             export(retry=True)
         return self._qualified(connector, table_name)
 
-    def preflight_write_files(self, connector, table_name, write_mode=None):
-        """Refuse an occupied stage directory; tables are not checked."""
-        del write_mode
-        from kumo_core.artifact_export import ArtifactDestinationConflict
-        from pyarrow.fs import FileSelector
-
-        if (not table_name.endswith('/')
-                or not self.holds_files(connector, table_name)):
-            return
-        filesystem, path = self.filesystem(connector, table_name)
-        if filesystem.get_file_info(FileSelector(path, allow_not_found=True)):
-            raise ArtifactDestinationConflict(
-                f"Output directory '{path}/' already contains data from "
-                f"another export. Choose an empty destination path.")
-
     def holds_files(self, connector, path):
         """Whether ``path`` names a named internal stage location."""
         try:

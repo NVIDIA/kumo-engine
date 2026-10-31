@@ -253,21 +253,32 @@ def test_a_registry_path_is_not_sent_to_the_stage(sink):
         sink.publish_model(object(), '/tmp/none', path='models/m1')
 
 
-def test_an_occupied_stage_directory_is_refused_before_scoring(
+def test_an_occupied_stage_directory_is_refused_unless_overwritten(
         sink, stage, tmp_path):
     import pandas as pd
     from kumo_core.artifact_export import ArtifactDestinationConflict
     from kumoapi.jobs import WriteMode
 
-    target = f'{ROOT}/predictions/r1/'
-    sink.preflight_write_files(object(), target)
-    part = tmp_path / 'part-0.parquet'
-    pd.DataFrame({'ID': [1]}).to_parquet(part)
-    sink.write_files(object(), target, [str(part)], export_id='r1')
+    from kumo.engine.trainer.output_config import PredictionOutputConfig
 
-    for mode in (None, WriteMode.OVERWRITE):
-        with pytest.raises(ArtifactDestinationConflict,
-                           match='/predictions/r1/'):
-            sink.preflight_write_files(object(), target, write_mode=mode)
-    sink.preflight_write_files(object(), f'{ROOT}/predictions/r2/')
-    sink.preflight_write_files(object(), 'SCORES')
+    connector = SimpleNamespace(source_type='SNOWFLAKE', sink_backend=sink)
+    target = f'{ROOT}/predictions/r1/'
+
+    def export(run, write_mode=None):
+        output = PredictionOutputConfig(
+            connector, output_paths={'predictions': target},
+            write_mode=write_mode)
+        output.writer(target).preflight_write_files(connector, target,
+                                                    write_mode=write_mode)
+        part = tmp_path / f'{run}.parquet'
+        pd.DataFrame({'ID': [1]}).to_parquet(part)
+        output._write(target, [str(part)], export_id=run)
+
+    export('r1')
+    with pytest.raises(ArtifactDestinationConflict, match='/predictions/r1/'):
+        export('r2')
+    export('r2', WriteMode.OVERWRITE)
+    fs, root = sink.filesystem(connector, target)
+    assert [i.base_name for i in fs.get_file_info(FileSelector(root))] == [
+        '_KUMO_EXPORT', '_SUCCESS', 'r2.parquet'
+    ]
