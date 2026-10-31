@@ -1468,7 +1468,7 @@ class Trainer:
                                      location=address.location)
         trainer = cls._load_bundle(bundle_dir, embedding_models,
                                    accelerator=accelerator)
-        warn_if_other_bundle(getattr(published, 'metadata', None), trainer)
+        warn_if_other_bundle(published.metadata, trainer)
         return trainer
 
     @classmethod
