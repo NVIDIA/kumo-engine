@@ -390,7 +390,7 @@ def _store_and_register(
         warn_failure(f'{stored}; the model is not registered', stored, 3)
     registered, error = (None, None) if session is None else session.log_model(
         bundle_dir, manifest, snapshot,
-        None if stored else _mlflow_registry(settings))
+        None if stored or not _logs_models(settings) else settings.registry)
     registered = _with_metrics(registered, metrics)
     error = stored or error
     registry = None if stored else _connector_registry(settings)
@@ -530,22 +530,16 @@ def _with_metrics(model: Optional[PublishedModel],
     return replace(model, metrics=dict(metrics))
 
 
-def _mlflow_registry(settings: Any) -> Optional[ModelRegistryLocation]:
-    if settings is None or not _logs_models(settings.tracking):
-        return None
-    return settings.registry
-
-
 def _connector_registry(settings: Any) -> Optional[ModelOutputConfig]:
     if (settings is None or settings.registry is None
-            or _logs_models(settings.tracking)):
+            or _logs_models(settings)):
         return None
     return ModelOutputConfig(as_tracking(settings.tracking).connector,
                              location=settings.registry)
 
 
-def _logs_models(tracking: Any) -> bool:
-    tracker = as_tracking(tracking)
+def _logs_models(settings: Any) -> bool:
+    tracker = None if settings is None else as_tracking(settings.tracking)
     return tracker is not None and tracker.log_model is not None
 
 
