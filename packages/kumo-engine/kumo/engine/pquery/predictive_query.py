@@ -94,10 +94,7 @@ from kumo.engine.pquery.prediction_table import (
     PredictionTable,
     _compile_prediction_table,
 )
-from kumo.engine.pquery.training_table import (
-    TrainingTable,
-    finish_generated,
-)
+from kumo.engine.pquery.training_table import TrainingTable, finish_generated
 
 logger = logging.getLogger(__name__)
 
