@@ -39,7 +39,6 @@ import json
 import logging
 import os
 import re
-import resource
 import shutil
 import signal
 import stat
@@ -48,10 +47,13 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, BinaryIO, Callable, Mapping, Optional, Sequence
 from urllib.parse import urlparse
 
 from ._progress import log_progress
+
+if sys.platform != "win32":
+    import resource
 
 logger = logging.getLogger(__name__)
 
@@ -615,6 +617,8 @@ _LOW_NOFILE_THRESHOLD = 4096
 def _soft_nofile_limit() -> Optional[int]:
     """Soft RLIMIT_NOFILE inherited by the ingest subprocess (``None`` if
     unreadable)."""
+    if sys.platform == "win32":
+        return None
     try:
         soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
     except (OSError, ValueError):
@@ -710,10 +714,11 @@ def _resolve_ingest_bin() -> str:
     override = os.environ.get("DISKGRAPH_INGEST_BIN")
     if override:
         return override
-    # Bundled-with-wheel layout: ``<diskgraph_pkg>/bin/ingest``.
+    binary_name = "ingest.exe" if sys.platform == "win32" else "ingest"
+    # Bundled-with-wheel layout: ``<diskgraph_pkg>/bin/<binary_name>``.
     try:
         import diskgraph
-        candidate = Path(diskgraph.__file__).parent / "bin" / "ingest"
+        candidate = Path(diskgraph.__file__).parent / "bin" / binary_name
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     except Exception as e:
@@ -723,7 +728,7 @@ def _resolve_ingest_bin() -> str:
             e,
         )
     # Fall back to PATH lookup.
-    return "ingest"
+    return binary_name
 
 
 def _has_phase_markers(output_dir: Path) -> bool:
@@ -778,6 +783,8 @@ def _classify_exit(rc: int) -> str:
 
 def _set_rlimit(mem_limit_bytes: int) -> None:
     """preexec_fn: cap virtual address space of the child."""
+    if sys.platform == "win32":
+        raise NotImplementedError("Address-space limits require POSIX resource")
     resource.setrlimit(resource.RLIMIT_AS, (mem_limit_bytes, mem_limit_bytes))
 
 
@@ -806,14 +813,14 @@ _PROGRESS_READ_CAP = 1 << 20  # Bound bytes read/held per poll.
 
 
 def _forward_progress(
-    output: Any,
+    output: BinaryIO,
     offset: int,
     skipping: bool = False,
 ) -> tuple[int, bool]:
     """Forward new progress lines since `offset`.
 
-    Reads at most `_PROGRESS_READ_CAP` bytes per call via `pread` (child's
-    file offset is untouched), so one unbounded line can't make a poll read
+    Reads at most `_PROGRESS_READ_CAP` bytes per call from a separate reader
+    (child's file offset is untouched), so one unbounded line can't make a poll read
     or re-read ever-growing data. A line that exceeds the cap before a
     newline is dropped; `skipping` stays True until the next newline is
     seen. Progress lines are short, so only non-progress output is at risk.
@@ -823,7 +830,11 @@ def _forward_progress(
     if remaining <= 0:
         return offset, skipping
     to_read = min(remaining, _PROGRESS_READ_CAP)
-    data = os.pread(fd, to_read, offset)
+    if sys.platform == "win32":
+        output.seek(offset)
+        data = output.read(to_read)
+    else:
+        data = os.pread(fd, to_read, offset)
     end = data.rfind(b"\n") + 1
     if end == 0:
         if to_read == _PROGRESS_READ_CAP:
@@ -849,6 +860,8 @@ def _run_with_heartbeat(
     subprocess_environment: Optional[Mapping[str, Optional[str]]] = None,
 ) -> tuple[int, str]:
     """Spawn the binary and return its code plus a bounded output tail."""
+    if sys.platform == "win32" and mem_limit_bytes is not None:
+        raise NotImplementedError("Address-space limits require POSIX resource")
     preexec = None
     if sys.platform == "linux":
         expected_parent_pid = os.getpid()
@@ -870,7 +883,12 @@ def _run_with_heartbeat(
             else:
                 child_env[name] = value
 
-    with tempfile.TemporaryFile(mode="w+b") as output:
+    # Native subprocess descriptors require local files. Separate opens keep
+    # Windows progress reads from moving the child's write offset (no pread).
+    with (tempfile.TemporaryDirectory(prefix="diskgraph-output-") as output_dir,
+          open(os.path.join(output_dir, "output.log"), "w+b") as output,
+          open(os.path.join(output_dir, "output.log"), "rb", buffering=0)
+          as progress):
         proc = subprocess.Popen(
             cmd,
             stdout=output,
@@ -887,7 +905,7 @@ def _run_with_heartbeat(
             nonlocal forwarded, skipping, healthy
             while healthy:
                 try:
-                    end, skipping = _forward_progress(output, forwarded,
+                    end, skipping = _forward_progress(progress, forwarded,
                                                       skipping)
                 except OSError as e:
                     healthy = False

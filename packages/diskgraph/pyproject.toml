@@ -43,4 +43,5 @@ python-source = "diskgraph-pybind/python"
 features = ["extension-module", "pyo3/abi3-py311"]
 include = [
     { path = "diskgraph-pybind/python/diskgraph/bin/ingest", format = "wheel" },
+    { path = "diskgraph-pybind/python/diskgraph/bin/ingest.exe", format = "wheel" },
 ]
