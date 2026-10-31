@@ -1,51 +1,70 @@
-# Engine nightly check
+# Engine nightly learning check
 
-One job uses the existing `linux-amd64-gpu-t4-latest-1` runner and GPU0.
-It builds and installs the selected wheel, runs sixteen cases in order,
-runs required behavior checks, compares results, and uploads artifacts.
-Each of eight tasks uses seed zero with normal and scrambled answers.
-Keep the frozen PR172 `100M` data and complete training recipes.
+The workflow runs manually on one authorized RTX PRO 6000 runner and GPU0.
+It has no schedule or push trigger. Each run has a three-hour timeout.
+Concurrency is separate for each workflow ref.
+Keep scheduling disabled until a complete reference and candidate run passes.
 
-Require actual CUDA work, complete finite predictions, exact saved state,
-reload checks, native input rules, and valid filtered rankings.
-Missing or failed checks fail the job. Quality and unqualified numerical
-differences report only. Count extra behavior fits separately.
+The workload has sixteen sequential fits. Eight tasks each use normal labels
+and independently scrambled labels with seed zero. It uses the existing full
+PR172 approximately 100M-row inputs and the shared model recipe.
+This change does not reduce the data or create a machine.
+
+## Required results
+
+Require actual CUDA training and prediction, complete finite outputs, exact
+restored checkpoint state, and unchanged labels and ranks after repeat,
+partial-input prediction, and reload. Keep the product's prediction and
+evaluation recovery when GPU memory runs out.
+Record partial training batches and actual early stopping without requiring
+an exact batch size or patience value.
+
+Each normal model must beat its frozen baseline. Each scrambled model must
+remain near its own frozen baseline. The baseline is the existing simple
+predictor recorded in the reference, not the reference model's learned score.
+AUROC, accuracy, average precision, and recall range from zero to one.
+For these metrics, use 10% of the smaller of the baseline and its remaining
+distance to one. Require at least that normal gain and at most that control
+difference. This keeps a reachable margin for high baselines and small recall.
+For mean absolute error, require at least 10% lower normal error and control
+error within 10% of its baseline. Mean absolute error measures prediction error.
+These initial thresholds still need validation on a complete GPU run.
+A failed learning condition writes a failed comparison and fails the job.
+
+Numeric score drift and elapsed times remain reports without regression limits.
+Driver, Torch/CUDA, GPU memory, and resolved model configuration are recorded.
+They do not need exact equality with the reference. GPU class remains required.
+Package profiles have no fixed package count. The candidate installer resolves
+the selected wheel's actual requirements. It runs `pip check` after installation.
+Candidate dependency changes from the historical profile are recorded, not rejected.
 
 ## Inputs and reference
 
-The [input descriptor](../../packages/kumo-engine/test/nightly/inputs.json)
-pins the private S3 archive, input manifest, and reference checksums.
-The job downloads data into temporary storage through existing AWS access.
-AWS download tools stay outside the measured Engine environment.
-The approved wheel requires Lightning 2.6.5; the candidate requires 2.6.6.
-Pin each complete 98-package runtime and report this dependency difference.
+The [descriptor](../../packages/kumo-engine/test/nightly/inputs.json) pins the
+existing S3 archive, manifest, and predecessor reference by SHA-256.
+The historical `T4` label in input metadata does not select the runtime GPU.
+Input bytes stay unchanged. No new data archive is needed for driver updates.
+The approved reference wheel is `kumo-engine==1.0.0` with its recorded hash.
+Use each wheel's supported default device selection and require observed CUDA.
+The reference profile uses Lightning 2.6.5. The historical candidate profile
+uses 2.6.6. Reference preparation keeps its profile pins.
 
-The initial descriptor uses the RTX recipe predecessor for setup only.
-It cannot pass an ordinary T4 comparison.
-Collect the initial T4 reference with manual input `reference_only: true`.
-This installs the exact approved `kumo-engine==1.0.0` wheel and runs the same
-sixteen cases and behavior checks. It exports a verified reference index.
-Admit that index in immutable storage and update the descriptor checksum
-before running ordinary candidate comparisons. Keep RTX results historical.
-They cannot qualify the T4 reference. Ordinary runs reuse the saved T4
-reference and train only sixteen fresh primary candidate models.
+Use manual input `reference_only: true` to prepare a reference on the selected
+runner. After all sixteen cases and learning conditions pass, retain
+`nightly-summary/reference.json` from the uploaded artifact.
+Store that file at an immutable S3 key through the normal approved publishing
+process. Update `reference_key` and `reference_sha256` in the descriptor.
+The workflow itself does not publish or replace the reference.
+An ordinary candidate run requires that reviewed reference and matching inputs.
 
-Reference and candidate hardware profiles must match, including driver,
-Torch/CUDA, GPU model and memory, architecture, and thread settings.
-Record each runner's GPU UUID without requiring the same physical device.
+## Scope and current evidence
 
-Record operation times, sampled process-tree RAM, device GPU memory,
-and Torch allocations. PSS counts each process's share of shared RAM.
-Summed RSS can count shared RAM more than once.
-Record graph preparation, training, predictions, and model loading separately.
-The engine total excludes build, installation, and separate behavior checks.
-Report comparable changes against the T4 reference. Missing measurements stay
-unavailable. These measurements set no performance limits.
+Reuse the existing wheel builder, installer, CUDA observer, and output checks.
+Keep the weighted-table and isolated model-reuse tests in a separate local
+change. The CUDA reuse test skips on CPU in that separate change.
+The nightly does not rerun those package tests or add their model fits.
+It uploads results directly and excludes graph work directories.
 
-## Schedule and capacity
-
-Run daily at 10:00 UTC, manually with `product_ref`, or through approved
-copied PR branches. Normal NVIDIA workflow vetting still applies.
-The T4 catalog lists 6 CPUs, 24G RAM, and 150G SSD. Full-workload capacity
-and complete runtime remain unverified. Keep inputs and work unchanged if
-capacity fails. This workflow creates no machines and publishes no packages.
+The complete managed-runner workload, available capacity, and elapsed time
+remain unverified. Local CPU tests do not qualify the GPU workflow.
+Keep this change local and keep scheduling disabled until that evidence exists.

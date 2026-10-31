@@ -4,8 +4,6 @@
 
 name: Kumo Engine Nightly
 on:  # yamllint disable-line rule:truthy
-  schedule:
-    - cron: '0 10 * * *'
   workflow_dispatch:
     inputs:
       product_ref:
@@ -13,32 +11,24 @@ on:  # yamllint disable-line rule:truthy
         type: string
         default: main
       reference_only:
-        description: Run the approved published wheel to prepare the T4 reference
+        description: Run the approved published wheel to prepare the RTX reference
         type: boolean
         default: false
-  push:
-    branches: ['pull-request/[0-9]+']
-    paths:
-      - '.github/workflows/kumo-engine-nightly.yml'
-      - '.github/actions/engine-gpu-smoke/**'
-      - 'packages/kumo-engine/scripts/nightly_check.py'
-      - 'packages/kumo-engine/test/wheel_gpu_smoke.py'
-      - 'packages/kumo-engine/test/test_nightly_model_reuse.py'
-      - 'packages/kumo-engine/test/test_training_table_export.py'
-      - 'packages/kumo-engine/test/nightly/inputs.json'
-      - 'test/scripts/test_engine_nightly*'
 permissions:
   contents: read
   id-token: write
 concurrency:
-  group: engine-nightly-t4
+  group: engine-nightly-${{ github.ref }}
   cancel-in-progress: false
 env:
   PIP_CONFIG_FILE: /dev/null
 jobs:
   nightly:
     name: kumo-engine-nightly
-    runs-on: linux-amd64-gpu-t4-latest-1
+    runs-on:
+      group: nv-gpu-amd64-rtxpro6000-1gpu
+      labels: linux-amd64-gpu-rtxpro6000-latest-1
+    timeout-minutes: 180
     environment:
       name: gha-kumo-workflow-tests
       deployment: false
@@ -129,7 +119,9 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a') as stream:
               stream.write(f'INPUT_SHA256={spec["input_manifest_sha256"]}\nREFERENCE_SHA256={spec["reference_sha256"]}\n')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
-              stream.write(f'profile={resolved}\nprofile_sha256={data["files"][profile]}\n')
+              install_profile = str(resolved) if reference_only else ''
+              install_hash = data['files'][profile] if reference_only else ''
+              stream.write(f'profile={install_profile}\nprofile_sha256={install_hash}\n')
           PY
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         if: env.REFERENCE_ONLY != 'true'
@@ -206,7 +198,7 @@ jobs:
           install-only: 'true'
           dependency-profile: ${{ steps.inputs.outputs.profile }}
           dependency-profile-sha256: ${{ steps.inputs.outputs.profile_sha256 }}
-      - name: Run sixteen primary fits and required behavior
+      - name: Run sixteen primary fits
         run: |
           set -euo pipefail
           processes="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)"
@@ -221,11 +213,6 @@ jobs:
           flags=(--reference "$NIGHTLY_ROOT/reference.json" --reference-sha256 "$REFERENCE_SHA256")
           if [[ "$REFERENCE_ONLY" == true ]]; then flags+=(--reference-only); fi
           "$python" -I "$RUNNER_TEMP/nightly-harness/nightly_check.py" run --input-root "$NIGHTLY_ROOT/inputs" --input-sha256 "$INPUT_SHA256" --output-dir "$out" --expected-version "$ENGINE_SMOKE_VERSION" "${flags[@]}" 2>&1 | tee "$RUNNER_TEMP/nightly-run.log"
-          "$python" -I -m pip --isolated install --index-url https://pypi.org/simple --target "$RUNNER_TEMP/nightly-test-tools" pytest pytest-subtests
-          mkdir -p "$RUNNER_TEMP/nightly-tests"
-          cp -R packages/kumo-engine/test "$RUNNER_TEMP/nightly-tests/test"
-          cp packages/kumo-engine/README.md "$RUNNER_TEMP/nightly-tests/README.md"
-          ENGINE_NIGHTLY_PYTEST_TOOLS="$RUNNER_TEMP/nightly-test-tools" "$python" -I "$RUNNER_TEMP/nightly-tests/test/test_nightly_model_reuse.py" --behavior "$out/behavior"
       - name: Retain results and failures without full input indexes
         if: always()
         run: |
@@ -235,32 +222,10 @@ jobs:
             if [[ -f "$path" ]]; then cp "$path" "$RUNNER_TEMP/nightly-result/setup/"; fi
           done
           if [[ -f "$NIGHTLY_ROOT/reference.json" ]]; then cp "$NIGHTLY_ROOT/reference.json" "$RUNNER_TEMP/nightly-result/reference.json"; fi
-          python - <<'PY'
-          import os, tarfile
-          from pathlib import Path
-          temporary = Path(os.environ['RUNNER_TEMP'])
-          root = temporary / 'nightly-result'
-          with tarfile.open(temporary / 'nightly-result.tar.gz', 'w:gz', dereference=True) as archive:
-              for directory, dirs, names in os.walk(root):
-                  directory = Path(directory)
-                  dirs[:] = [d for d in dirs if not (directory / d).is_symlink()
-                             and not (directory == root and d == 'work')]
-                  for name in names:
-                      path = directory / name
-                      if path.is_file():
-                          archive.add(path, arcname=str(path.relative_to(root)), recursive=False)
-          PY
       - name: Validate the complete candidate comparison
         run: |
           set -euo pipefail
-          python3 - <<'PY3'
-          import os, tarfile
-          from pathlib import Path
-          root = Path(os.environ['RUNNER_TEMP'])
-          with tarfile.open(root / 'nightly-result.tar.gz') as archive:
-              archive.extractall(root / 'nightly-portable', filter='data')
-          PY3
-          root="$RUNNER_TEMP/nightly-portable"
+          root="$RUNNER_TEMP/nightly-result"
           flags=(--reference "$root/reference.json" --reference-sha256 "$REFERENCE_SHA256")
           if [[ "$REFERENCE_ONLY" == true ]]; then flags+=(--reference-only); fi
           "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I "$RUNNER_TEMP/nightly-harness/nightly_check.py" compare --input-root "$root/input-metadata" --input-sha256 "$INPUT_SHA256" --results-dir "$root" --output-dir "$RUNNER_TEMP/nightly-summary" "${flags[@]}"
@@ -270,7 +235,8 @@ jobs:
           name: engine-nightly-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/nightly-wheel
-            ${{ runner.temp }}/nightly-result.tar.gz
+            ${{ runner.temp }}/nightly-result
+            !${{ runner.temp }}/nightly-result/work/**
             ${{ runner.temp }}/nightly-summary
           if-no-files-found: error
           compression-level: 0

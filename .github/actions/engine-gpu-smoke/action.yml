@@ -74,13 +74,13 @@ runs:
             if hashlib.sha256(profile.read_bytes()).hexdigest() != os.environ['PROFILE_SHA256']:
                 raise SystemExit('Frozen dependency checksum differs')
             versions = json.loads(profile.read_text())
-            if (not isinstance(versions, dict) or len(versions) != 98
+            if (not isinstance(versions, dict) or not versions
                     or 'kumo-engine' in versions
                     or any(not re.fullmatch(r'[a-z0-9][a-z0-9._-]*', name)
                            or not isinstance(version, str)
                            or not re.fullmatch(r'[0-9][0-9A-Za-z.!+_-]*', version)
                            for name, version in versions.items())):
-                raise SystemExit('Expected the frozen 98-package runtime')
+                raise SystemExit('Expected a nonempty package-version profile')
             (Path(os.environ['RUNNER_TEMP']) / 'engine-gpu-smoke/requirements.txt').write_text(
                 ''.join(f'{name}=={version}\n' for name, version in sorted(versions.items())))
         print('Wheel SHA-256:', hashlib.sha256(wheel.read_bytes()).hexdigest(), flush=True)

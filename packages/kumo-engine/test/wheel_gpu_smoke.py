@@ -87,8 +87,8 @@ def verify_installed_files(wheel, distribution):
             destination = Path(distribution.locate_file(name)).resolve()
             if (not destination.is_relative_to(location)
                     or not destination.is_file()
-                    or hashlib.sha256(destination.read_bytes()).digest() !=
-                    hashlib.sha256(archive.read(name)).digest()):
+                    or hashlib.sha256(destination.read_bytes()).digest()
+                    != hashlib.sha256(archive.read(name)).digest()):
                 raise ValueError(f'Installed wheel member differs: {name}')
             checked += 1
     if not checked:
@@ -119,8 +119,8 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
             values = ordered[['False_PROB', 'True_PROB']].to_numpy(dtype=float)
             if (not ((values >= 0) & (values <= 1)).all() or
                     not np.allclose(values.sum(axis=1), 1, atol=1e-6, rtol=1e-7)
-                    or not np.array_equal(ordered['TARGET_PRED'],
-                                          values[:, 1] > .5)):
+                    or not np.array_equal(ordered['TARGET_PRED'], values[:, 1]
+                                          > .5)):
                 raise ValueError(
                     'Binary probabilities or chosen labels are invalid')
         else:
@@ -138,10 +138,10 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
         if (not coordinates or len(set(coordinates)) != len(coordinates)
                 or frame[key].isna().any()
                 or frame.duplicated(['ENTITY', key]).any()
-                or set(zip(frame['ENTITY'], frame[key])) != {
-                    (entity, coordinate)
-                    for entity in ids for coordinate in coordinates
-                }):
+                or set(zip(frame['ENTITY'],
+                           frame[key])) != {(entity, coordinate)
+                                            for entity in ids
+                                            for coordinate in coordinates}):
             raise ValueError(
                 'Prediction output coordinates are incomplete or repeated')
         values = frame.pivot(
@@ -406,13 +406,15 @@ def prepare_task(task, root, metadata, directory, graphs):
     inputs = directory / 'inputs.parquet'
     import pyarrow as pa
     pq.write_table(
-        pa.Table.from_pylist([{key: row[key]
-                               for key in columns} for row in test]), inputs)
+        pa.Table.from_pylist([{
+            key: row[key]
+            for key in columns
+        } for row in test]), inputs)
     return dict(query=query, snapshot=snapshot, training_table=table,
                 input_file=inputs, ids=ids, classes=classes, anchor=anchor)
 
 
-def verify_checkpoint(model, path, expected_digest, *, exclude=()):
+def verify_checkpoint(model, path, expected_digest):
     """Compare the weights that Lightning actually restored, with no tolerance."""
     import numpy as np
     import pandas as pd
@@ -457,12 +459,7 @@ def verify_checkpoint(model, path, expected_digest, *, exclude=()):
         elif left != right:
             raise ValueError('Restored model state values differ')
 
-    if set(expected) != set(actual) or not set(exclude) <= set(expected):
-        raise ValueError('Restored model state keys differ')
-    equal({key: value
-           for key, value in expected.items() if key not in exclude},
-          {key: value
-           for key, value in actual.items() if key not in exclude})
+    equal(expected, actual)
     if not tensors:
         raise ValueError('Reload checked no model tensors')
     return tensors
@@ -488,8 +485,8 @@ def observe_cuda(state):
 
         def check(self, trainer, values):
             if (str(trainer.strategy.root_device) != 'cuda:0' or not values
-                    or any(not isinstance(value, torch.Tensor) or
-                           str(value.device) != 'cuda:0' or not value.numel()
+                    or any(not isinstance(value, torch.Tensor) or str(
+                        value.device) != 'cuda:0' or not value.numel()
                            for value in values)):
                 raise ValueError('Completed work did not use CUDA tensors')
             torch.cuda.synchronize()
@@ -681,7 +678,8 @@ def run_task(task, prepared, directory, args):
                 dict(
                     cycle=cycle, repeat=repeat_delta, reload=reload_delta,
                     prediction_batches={
-                        stage: state['prediction_batches'][stage] -
+                        stage:
+                        state['prediction_batches'][stage] -
                         previous_batches[stage]
                         for stage in ('repeat', 'reload')
                     }, restored_tensors=state['restored_tensors']))

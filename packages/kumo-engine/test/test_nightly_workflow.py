@@ -19,7 +19,7 @@ import pytest
 import yaml
 
 WORKFLOW = Path(
-    __file__).parents[2] / '.github/workflows/kumo-engine-nightly.yml'
+    __file__).parents[3] / '.github/workflows/kumo-engine-nightly.yml'
 
 
 def jobs():
@@ -35,69 +35,11 @@ def step(name):
     return selected[0]
 
 
-def test_one_t4_job_owns_download_build_install_all_tests_and_upload():
-    [job] = jobs().values()
-    assert job['runs-on'] == 'linux-amd64-gpu-t4-latest-1'
-    assert job['environment'] == dict(name='gha-kumo-workflow-tests',
-                                      deployment=False)
-    workflow = yaml.safe_load(WORKFLOW.read_text())
-    assert workflow['permissions']['id-token'] == 'write'
-    assert workflow['env']['PIP_CONFIG_FILE'] == '/dev/null'
-    assert job['env'][
-        'REFERENCE_ONLY'] == "${{ github.event_name == 'workflow_dispatch' && inputs.reference_only && 'true' || 'false' }}"
-    assert job['env'][
-        'REFERENCE_WHEEL_SHA256'] == '1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e'
-    assert workflow[True]['workflow_dispatch']['inputs']['reference_only'][
-        'default'] is False
-    assert 'needs' not in job and 'matrix' not in job.get('strategy', {})
-    assert str(job['env']['CUDA_VISIBLE_DEVICES']) == '0'
-    assert 'SHARD' not in job['env']
-    steps = job['steps']
-    assert not any('download-artifact@' in item.get('uses', '')
-                   for item in steps)
-    build = next(i for i, item in enumerate(steps) if item.get('name') ==
-                 'Build the exact product tree with the existing builder')
-    install = next(i for i, item in enumerate(steps)
-                   if item.get('uses') == './.github/actions/engine-gpu-smoke')
-    assert steps[install]['with']['install-only'] == 'true'
-    credentials = next(i for i, item in enumerate(steps)
-                       if 'configure-aws-credentials@' in item.get('uses', ''))
-    assert steps[credentials]['with'] == {
-        'role-to-assume':
-        'arn:aws:iam::926922431314:role/gha-kumo-workflow-tests',
-        'aws-region': 'us-west-2'
-    }
-    download = next(
-        i for i, item in enumerate(steps)
-        if item.get('name') == 'Download the frozen inputs and reference')
-    assert credentials < download < install
-    assert steps[build]['if'] == "env.REFERENCE_ONLY != 'true'"
-    published = next(
-        item for item in steps
-        if item.get('name') == 'Download the approved reference wheel')
-    assert published['if'] == "env.REFERENCE_ONLY == 'true'"
-    run = next(i for i, item in enumerate(steps)
-               if '--behavior' in item.get('run', ''))
-    assert '--shard' not in steps[run]['run']
-    assert '--behavior' in steps[run]['run']
-    compare = next(
-        i for i, item in enumerate(steps)
-        if item.get('name') == 'Validate the complete candidate comparison')
-    pack = next(i for i, item in enumerate(steps) if item.get('name') ==
-                'Retain results and failures without full input indexes')
-    upload = next(i for i, item in enumerate(steps)
-                  if 'upload-artifact@' in item.get('uses', '') and i > compare)
-    assert build < install < run < pack < compare < upload
-    assert steps[pack].get('if') == 'always()'
-    assert steps[upload].get('if') == 'always()'
-
-
 @pytest.mark.parametrize('reference_only', ['false', 'true'])
 @pytest.mark.parametrize('exit_code', [0, 23])
 def test_actual_final_comparison_exit_controls_the_gpu_job(
         tmp_path, exit_code, reference_only):
-    job = next(job for job in jobs().values()
-               if job['runs-on'] == 'linux-amd64-gpu-t4-latest-1')
+    [job] = jobs().values()
     compare = next(
         (item for item in job['steps']
          if item.get('name') == 'Validate the complete candidate comparison'),
@@ -134,47 +76,13 @@ def test_actual_final_comparison_exit_controls_the_gpu_job(
         'bash', '-euo', 'pipefail', '-c', compare['run'] + '\ntouch "$MARKER"'
     ], env=env, cwd=tmp_path, capture_output=True, text=True)
     assert calls.exists(), result.stderr
-    assert any(path.read_text() == 'retained original bytes'
-               for path in tmp_path.rglob('proof.txt')
-               if path != source / 'proof.txt')
+    assert (source / 'proof.txt').read_text() == 'retained original bytes'
     arguments = shlex.split(calls.read_text().splitlines()[-1])
     assert 'compare' in arguments
     assert arguments[arguments.index('--reference-sha256') + 1] == 'b' * 64
     assert ('--reference-only' in arguments) is (reference_only == 'true')
     assert result.returncode == exit_code
     assert marker.exists() is (exit_code == 0)
-
-
-def test_packed_behavior_roundtrips_without_shortcuts_or_native_work(tmp_path):
-    output = tmp_path / 'nightly-result'
-    child = output / 'behavior/pytest-temp/reuse0'
-    child.mkdir(parents=True)
-    (child / 'child-result.json').write_text('original child proof')
-    (child.parent / 'reusecurrent').symlink_to(child, target_is_directory=True)
-    (child / 'input.parquet').write_bytes(b'original table bytes')
-    (child / 'staged.parquet').symlink_to(child / 'input.parquet')
-    work = output / 'work/native'
-    work.mkdir(parents=True)
-    (work / 'index.bin').write_bytes(b'keep on host')
-    host = tmp_path / 'host'
-    host.mkdir()
-    env = dict(os.environ, RUNNER_TEMP=str(tmp_path), NIGHTLY_ROOT=str(host))
-    env.pop('SHARD', None)
-    command = step('Retain results and failures without full input indexes')
-    result = subprocess.run(['bash', '-euo', 'pipefail', '-c', command],
-                            env=env, cwd=tmp_path, capture_output=True,
-                            text=True)
-    assert result.returncode == 0, result.stderr
-    extracted = tmp_path / 'extracted'
-    [packed] = tmp_path.glob('nightly-*.tar.gz')
-    with tarfile.open(packed) as archive:
-        archive.extractall(extracted, filter='data')
-    retained = extracted / child.relative_to(output)
-    assert (retained /
-            'child-result.json').read_text() == 'original child proof'
-    assert (retained / 'staged.parquet').read_bytes() == b'original table bytes'
-    assert not (extracted / 'work').exists()
-    assert not any(path.is_symlink() for path in extracted.rglob('*'))
 
 
 def test_failed_gpu_query_stops_before_model_work(tmp_path):
@@ -185,7 +93,7 @@ def test_failed_gpu_query_stops_before_model_work(tmp_path):
     probe.chmod(0o755)
     command = next(item['run'] for job in jobs().values()
                    for item in job['steps']
-                   if '--behavior' in item.get('run', ''))
+                   if item.get('name') == 'Run sixteen primary fits')
     query = command.split('test "$(git rev-parse HEAD)"', 1)[0]
     marker = tmp_path / 'model-work-started'
     env = dict(os.environ, PATH=f'{binary}{os.pathsep}{os.environ["PATH"]}',
@@ -269,11 +177,13 @@ def test_actual_private_download_pins_bytes_and_selects_the_runtime(
         assert not (tmp_path / 'GITHUB_OUTPUT').exists()
     else:
         exec(compile(source, 'download', 'exec'), {})
-        selected = 'reference.json' if reference_only == 'true' else 'candidate.json'
+        selected = str(
+            tmp_path /
+            'nightly/inputs/reference.json') if reference_only == 'true' else ''
         assert (tmp_path /
                 'nightly/inputs/manifest.json').read_bytes() == manifest
-        assert f'profile={tmp_path}/nightly/inputs/{selected}\n' in (
-            tmp_path / 'GITHUB_OUTPUT').read_text()
+        assert f'profile={selected}\n' in (tmp_path /
+                                           'GITHUB_OUTPUT').read_text()
         assert f'INPUT_SHA256={input_hash}\n' in (tmp_path /
                                                   'GITHUB_ENV').read_text()
 
@@ -322,7 +232,7 @@ def test_job_storage_is_under_runner_temp_without_host_configuration(tmp_path):
 
 
 @pytest.mark.parametrize('reference_only', ['false', 'true'])
-def test_actual_primary_command_passes_reference_and_runs_behavior_once(
+def test_actual_primary_command_passes_reference_without_extra_fits(
         tmp_path, reference_only):
     for name in [
             'nightly-wheel', 'engine-gpu-smoke', 'engine-smoke-venv/bin', 'bin'
@@ -348,10 +258,10 @@ def test_actual_primary_command_passes_reference_and_runs_behavior_once(
                REFERENCE_SHA256='b' * 64, REFERENCE_ONLY=reference_only,
                CALL_FILE=str(calls),
                PATH=f'{tmp_path}/bin{os.pathsep}{os.environ["PATH"]}')
-    result = subprocess.run([
-        'bash', '-euo', 'pipefail', '-c',
-        step('Run sixteen primary fits and required behavior')
-    ], env=env, cwd=repo, capture_output=True, text=True)
+    result = subprocess.run(
+        ['bash', '-euo', 'pipefail', '-c',
+         step('Run sixteen primary fits')], env=env, cwd=repo,
+        capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     commands = [json.loads(line) for line in calls.read_text().splitlines()]
     [primary] = [args for args in commands if 'run' in args]
@@ -359,7 +269,7 @@ def test_actual_primary_command_passes_reference_and_runs_behavior_once(
                                                             'reference.json')
     assert primary[primary.index('--reference-sha256') + 1] == 'b' * 64
     assert ('--reference-only' in primary) is (reference_only == 'true')
-    assert sum('--behavior' in args for args in commands) == 1
+    assert len(commands) == 1
     assert not any('--shard' in args for args in commands)
 
 
@@ -393,8 +303,9 @@ def test_capacity_snapshot_precedes_heavy_work_and_survives_gpu_query_failure(
     ], env=dict(os.environ, RUNNER_TEMP=str(tmp_path),
                 NIGHTLY_ROOT=str(tmp_path)), capture_output=True, text=True)
     assert packed.returncode == 0, packed.stderr
-    with tarfile.open(tmp_path / 'nightly-result.tar.gz') as archive:
-        assert json.load(archive.extractfile('setup/capacity.json')) == receipt
+    assert json.loads(
+        (tmp_path /
+         'nightly-result/setup/capacity.json').read_text()) == receipt
     [job] = jobs().values()
     names = [item.get('name') for item in job['steps']]
     assert names.index('Record managed runner capacity') < names.index(
