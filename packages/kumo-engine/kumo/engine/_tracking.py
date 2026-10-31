@@ -271,60 +271,20 @@ class _Foreign(TrackingBase):
     def __init__(self, tracker: Any) -> None:
         self._tracker = tracker
 
-    def start(self, record: RunRecord) -> None:
-        self._tracker.start(record)
-
-    def on_trial(self, record: RunRecord, event: Event) -> None:
-        self._tracker.on_trial(record, event)
-
-    def finish(self, record: Optional[RunRecord],
-               error: Optional[BaseException]) -> None:
-        self._tracker.finish(record, error)
-
-    def prepare(self) -> None:
-        getattr(self._tracker, 'prepare', _none)()
-
-    def check(self, registry: Optional['ModelRegistryLocation'] = None
-              ) -> None:
-        check = getattr(self._tracker, 'check', None)
-        if callable(check):
-            check(registry)
-
-    def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
-        getattr(self._tracker, 'log_metrics', _none)(metrics, step)
+    def __getattribute__(self, name: str) -> Any:
+        if name.startswith('_'):
+            return object.__getattribute__(self, name)
+        if name in ('start', 'on_trial', 'finish'):
+            return getattr(self._tracker, name)
+        value = getattr(self._tracker, name, _MISSING)
+        called = name in ('check', 'log_model', 'register')
+        if value is _MISSING or called and not callable(value):
+            return object.__getattribute__(self, name)
+        return value
 
     @property
     def platform(self) -> str:
-        return getattr(self._tracker, 'platform',
-                       type(self._tracker).__name__)
-
-    @property
-    def run_id(self) -> Optional[str]:
-        return getattr(self._tracker, 'run_id', None)
-
-    @property
-    def run_url(self) -> Optional[str]:
-        return getattr(self._tracker, 'run_url', None)
-
-    @property
-    def tags(self) -> Optional[Mapping[str, str]]:
-        return getattr(self._tracker, 'tags', None)
-
-    @property
-    def connector(self) -> Any:
-        return getattr(self._tracker, 'connector', None)
-
-    @property
-    def log_model(self) -> Optional[Callable[..., Any]]:
-        return _callable(getattr(self._tracker, 'log_model', None))
-
-    @property
-    def register(self) -> Optional[Callable[..., Any]]:
-        return _callable(getattr(self._tracker, 'register', None))
-
-    @property
-    def load_model(self) -> Optional[Callable[..., Any]]:
-        return getattr(self._tracker, 'load_model', None)
+        return type(self._tracker).__name__
 
     def __repr__(self) -> str:
         return repr(self._tracker)
@@ -335,10 +295,6 @@ def as_tracking(tracking: Any) -> Optional[TrackingBase]:
     if tracking is None or isinstance(tracking, TrackingBase):
         return tracking
     return _Foreign(tracking)
-
-
-def _callable(value: Any) -> Any:
-    return value if callable(value) else None
 
 
 @dataclass
@@ -608,8 +564,7 @@ def _debug() -> bool:
     return logger.isEnabledFor(logging.DEBUG)
 
 
-def _none(*args: Any) -> None:
-    return None
+_MISSING = object()
 
 
 def _abandon(tracker: Tracking) -> None:
