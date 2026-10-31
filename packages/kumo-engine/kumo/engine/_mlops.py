@@ -125,6 +125,7 @@ class MLOps:
         object.__setattr__(self, 'kinds', kinds)
 
     def _check_registry(self) -> None:
+        from kumo.engine._tracking import logs_models
         from kumo.engine.trainer.output_config import (
             ModelOutputConfig,
             check_model_location,
@@ -137,10 +138,10 @@ class MLOps:
                 f'{type(registry).__name__}; the tracker registers it.')
         if registry.alias is not None:
             check_model_alias(registry.alias)
-        if callable(getattr(self.tracking, 'log_model', None)):
+        if logs_models(self.tracking):
             if registry.version is not None:
-                raise ValueError('MLflow assigns registered model versions; '
-                                 'leave ModelRegistryLocation.version unset.')
+                raise ValueError('the tracker assigns registered model '
+                                 'versions; leave ModelRegistryLocation.version unset.')
             return
         connector = getattr(self.tracking, 'connector', None)
         if connector is None:
