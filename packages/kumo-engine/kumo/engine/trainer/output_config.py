@@ -153,8 +153,6 @@ class SnapshotOutputConfig:
     path: str
 
 
-#: Publication metadata a registry may act on: the serving snapshot, and
-#: each serving option under ``kumo.serving.<option>``.
 SERVING_SNAPSHOT_KEY = 'kumo.serving_snapshot'
 SERVING_OPTION_PREFIX = 'kumo.serving.'
 SERVING_OPTIONS = ('cuda_version', 'python_version', 'function_type',
@@ -165,16 +163,8 @@ SERVING_OPTIONS = ('cuda_version', 'python_version', 'function_type',
 class ModelOutputConfig:
     """Publish a model to exactly one ``path`` or registry ``location``.
 
-    For a Snowflake Model Registry ``location``, ``serving_snapshot`` is the
-    snapshot the version scores against in Snowflake: an exported
-    ``@DB.SCHEMA.STAGE/...`` path, or a `GraphSnapshot` or snapshot id
-    stored under the stage artifact root of the enclosing `kumo.mlops`
-    block. ``serving_options`` overrides how it runs:
-    ``cuda_version`` (the installed torch's, which it must equal),
-    ``python_version`` (the registering
-    Python, which it must equal), ``function_type`` (``TABLE_FUNCTION``), and
-    ``pip_repository``, a Snowflake pip artifact repository the version's
-    third-party requirements install from instead of PyPI.
+    ``serving_snapshot`` and ``serving_options`` configure a Snowflake
+    version that scores in Snowflake.
     """
 
     connector: Connector

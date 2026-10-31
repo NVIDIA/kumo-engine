@@ -88,10 +88,8 @@ class SnowflakeTracking:
         tags: extra tags for the fit run.
         native_model_lineage: keep the run open as a context for the whole
             fit, so models registered meanwhile are linked to it.
-        serving_options: how a version ``kumo.MLOps(registry=...)``
-            registers runs in Snowflake (``cuda_version``,
-            ``python_version``, ``function_type``, ``pip_repository``; see
-            ``ModelOutputConfig``).
+        serving_options: ``ModelOutputConfig.serving_options`` for
+            versions ``kumo.MLOps(registry=...)`` registers.
 
     ``run_id`` is the most recent tracked run's name (Snowflake runs are
     identified by name), once it has started. An experiment holds at most

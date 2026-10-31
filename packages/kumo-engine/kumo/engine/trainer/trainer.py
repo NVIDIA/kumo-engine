@@ -820,8 +820,7 @@ def _mlflow_registry(settings: Any) -> Optional[ModelRegistryLocation]:
 def _connector_registry(
         settings: Any,
         snapshot_id: Optional[str] = None) -> Optional[ModelOutputConfig]:
-    r"""The registry a connector tracker registers in; on a stage root, its
-    versions serve against the training snapshot stored there."""
+    r"""The registry a connector tracker registers in."""
     from kumo.engine._mlops import snapshot_path
 
     if (settings is None or settings.registry is None

@@ -92,8 +92,6 @@ sagemaker=[
 [project.entry-points."kumo_core.version_providers"]
 kumo-engine = "kumo_engine_version:installed_version"
 
-# Registers a Kumo model in the Snowflake Model Registry as a version that
-# scores in Snowpark Container Services (`ModelVersion.run_batch`).
 [project.entry-points."kumo_snowflake.registry_models"]
 kumo-engine = "kumo.engine.integrations._snowflake_model:log_model_args"
 

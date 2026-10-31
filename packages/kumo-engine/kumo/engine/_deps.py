@@ -41,8 +41,6 @@ from kumo.engine._manifest import (
 Location = Union[str, Tuple[Any, str]]
 
 
-#: How to name the connector that reads an asset where it is stored, by
-#: location prefix; and, per loading call, which argument passes it.
 Hint = Callable[[str, str], str]
 READERS = (('@', 'SnowflakeConnector'), ('/Volumes/', 'DatabricksConnector'),
            ('s3://', 'S3Connector'), ('gs://', 'GCSConnector'))
@@ -56,9 +54,7 @@ _HINT: ContextVar[Optional[Hint]] = ContextVar('kumo_asset_hint',
 @contextmanager
 def asset_locations(locations: Sequence[Location],
                     hint: Optional[Hint] = None) -> Iterator[None]:
-    r"""Asset roots that dependencies resolved in the block look in
-    first; ``hint(reader, location)`` says which argument passes a
-    connector that reads an asset none of them holds."""
+    r"""Asset roots to look in first, and how to hint at a missing reader."""
     token = _LOCATIONS.set((*locations, *_LOCATIONS.get()))
     hinted = _HINT.set(hint or _HINT.get())
     try:
@@ -254,8 +250,7 @@ class Dependencies:
 
 
 def reads(connector: Any, location: str) -> bool:
-    r"""Whether ``connector`` reads the stored ``location`` with its own
-    identity: a stage, a volume, or its object store's URI."""
+    r"""Whether ``connector`` reads the stored ``location`` itself."""
     from kumo.engine.connector import (
         FileConnector,
         GCSConnector,
