@@ -10,7 +10,7 @@ import posixpath
 import queue
 import threading
 from contextlib import contextmanager
-from typing import BinaryIO, Dict, Iterator, Optional
+from typing import Any, BinaryIO, Dict, Iterator, Optional
 from urllib.parse import quote
 
 from databricks.sdk import WorkspaceClient
@@ -153,9 +153,12 @@ class _Part:
             self._stream = None
 
 
+_CANCEL = object()
+
+
 class _Feed(io.RawIOBase):
     def __init__(self) -> None:
-        self.pieces: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=4)
+        self.pieces: queue.Queue[Any] = queue.Queue(maxsize=4)
         self._pending = b''
         self._done = False
 
@@ -165,6 +168,8 @@ class _Feed(io.RawIOBase):
     def readinto(self, buffer) -> int:
         while not self._pending and not self._done:
             piece = self.pieces.get()
+            if piece is _CANCEL:
+                raise OSError('upload cancelled')
             if piece is None:
                 self._done = True
             else:
@@ -213,6 +218,18 @@ class _Upload(io.RawIOBase):
             raise self._error
         if piece is not None:
             raise OSError(f'{self._path}: the upload stopped reading')
+
+    def abort(self) -> None:
+        if self.closed:
+            return
+        while self._thread.is_alive():
+            try:
+                self._feed.pieces.put(_CANCEL, timeout=1)
+                break
+            except queue.Full:
+                continue
+        self._thread.join()
+        super().close()
 
     def close(self) -> None:
         if self.closed:
