@@ -6,9 +6,8 @@ import os
 import posixpath
 import shutil
 from abc import ABC, abstractmethod
-from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 import pandas as pd
 from kumoapi.jobs import WriteMode
@@ -55,44 +54,18 @@ def download_file(filesystem: FileSystem, source: str,
         shutil.copyfileobj(reader, writer, _CHUNK)
 
 
-def upload_bundle(filesystem: FileSystem, destination: str, bundle_dir: str,
-                  upload: Optional[Callable[[str, str], None]] = None) -> None:
+def upload_bundle(filesystem: FileSystem, destination: str,
+                  bundle_dir: str) -> None:
     """Copy ``bundle_dir`` under ``destination``, provenance last."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
-    upload = upload or partial(upload_file, filesystem)
     root = Path(bundle_dir)
     for source in sorted((item for item in root.rglob('*') if item.is_file()),
                          key=lambda item:
                          (item.name == PROVENANCE_FILE, item)):
         target = f'{destination}/{source.relative_to(root).as_posix()}'
         _prepared(filesystem, posixpath.dirname(target))
-        upload(str(source), target)
-
-
-def download_bundle(
-        filesystem: FileSystem, source: str, local_dir: str,
-        download: Optional[Callable[[str, str], None]] = None) -> bool:
-    """Replace ``local_dir`` with ``source``; False if it is empty."""
-    from kumo_core.sources.layout import confined
-    from pyarrow.fs import FileSelector, FileType
-
-    download = download or partial(download_file, filesystem)
-    destination = Path(local_dir)
-    if destination.exists():
-        shutil.rmtree(destination)
-    destination.mkdir(parents=True)
-    found = False
-    selector = FileSelector(source, recursive=True, allow_not_found=True)
-    for info in filesystem.get_file_info(selector):
-        if info.type is not FileType.File:
-            continue
-        found = True
-        # Remote keys are untrusted.
-        target = destination / confined(info.path[len(source) + 1:])
-        target.parent.mkdir(parents=True, exist_ok=True)
-        download(info.path, str(target))
-    return found
+        upload_file(filesystem, str(source), target)
 
 
 class ObjectStoreSinkBackend(ABC):
@@ -159,9 +132,7 @@ class ObjectStoreSinkBackend(ABC):
         from kumo_core.sources import layout
         filesystem, path = self._destination(connector, table_name)
         kind = layout.file_type(path.rstrip('/')) or layout.PARQUET
-        storage = _ArrowExportFiles(
-            filesystem, extra_columns, upload=partial(self._upload_file,
-                                                      filesystem))
+        storage = _ArrowExportFiles(filesystem, extra_columns)
         _, output = export_selected_files(files, path, fs=storage,
                                           identity=export_id or str(files),
                                           file_type=kind,
@@ -193,18 +164,13 @@ class ObjectStoreSinkBackend(ABC):
                 f"path. Set output_path on the ModelExportConfig.")
 
         filesystem, destination = self.filesystem(connector, path)
-        upload_bundle(filesystem, destination, bundle_dir,
-                      partial(self._upload_file, filesystem))
+        upload_bundle(filesystem, destination, bundle_dir)
         return PublishedModel(
             name=posixpath.basename(destination),
             version=destination,
             uri=self._uri(destination),
             metadata=dict(metadata),
         )
-
-    def _upload_file(self, filesystem, source, destination):
-        """Providers may transfer an already prepared local file directly."""
-        upload_file(filesystem, source, destination)
 
     def _download_file(self, filesystem, source, destination):
         """Providers may transfer a model file without the streaming fallback."""
@@ -221,6 +187,9 @@ class ObjectStoreSinkBackend(ABC):
     ) -> PublishedModel:
         """Replace the local directory with the published bundle."""
         del project_id
+        from kumo_core.sources.layout import confined
+        from pyarrow.fs import FileSelector, FileType
+
         if location is not None:
             raise NotImplementedError(
                 f"The local backend does not import a model by name from "
@@ -234,8 +203,21 @@ class ObjectStoreSinkBackend(ABC):
                 f"config.")
 
         filesystem, source = self.filesystem(connector, path)
-        if not download_bundle(filesystem, source, local_dir,
-                               partial(self._download_file, filesystem)):
+        destination = Path(local_dir)
+        if destination.exists():
+            shutil.rmtree(destination)
+        destination.mkdir(parents=True)
+        found = False
+        selector = FileSelector(source, recursive=True, allow_not_found=True)
+        for info in filesystem.get_file_info(selector):
+            if info.type is not FileType.File:
+                continue
+            found = True
+            # Remote keys are untrusted.
+            target = destination / confined(info.path[len(source) + 1:])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._download_file(filesystem, info.path, str(target))
+        if not found:
             raise ValueError(
                 f"Nothing is published at {self._uri(source)}. Check the "
                 f"path the model was exported to.")
@@ -346,10 +328,9 @@ def _marker(export_id: Optional[str]) -> Optional[str]:
 
 class _ArrowExportFiles:
     """Adapt authenticated Arrow output to the shared hosted export operation."""
-    def __init__(self, filesystem, extra_columns, upload=None):
+    def __init__(self, filesystem, extra_columns):
         self.filesystem = filesystem
         self.extra_columns = extra_columns
-        self.upload = upload
 
     def exists(self, path):
         from pyarrow.fs import FileType
@@ -397,9 +378,6 @@ class _ArrowExportFiles:
         # CSV conversion already applied this destination's metadata.
         columns = self.extra_columns if source.endswith('.parquet') else None
         with prepared_artifact_file(source, columns) as prepared:
-            if self.upload is not None:
-                self.upload(prepared, destination)
-                return
             upload_file(self.filesystem, prepared, destination)
 
     def copy_files_threaded(self, pairs, overwrite, max_workers):
@@ -445,3 +423,47 @@ class FilesystemSink(ObjectStoreSinkBackend):
             raise ArtifactDestinationConflict(
                 f"Output directory '{path}/' already contains data from "
                 f"another export. Choose an empty destination path.")
+
+
+class FileStoreRouting:
+    """Sends ``holds_files`` paths to :class:`FilesystemSink`, the rest on."""
+    def write_table(self, connector, table_name, frame,
+                    write_mode=WriteMode.OVERWRITE, project_id=None, *,
+                    export_id=None):
+        sink = FilesystemSink(self) if self.holds_files(
+            connector, table_name) else super()
+        return sink.write_table(connector, table_name, frame, write_mode,
+                                project_id, export_id=export_id)
+
+    def write_files(self, connector, table_name, files,
+                    write_mode=WriteMode.OVERWRITE, project_id=None, *,
+                    export_id=None, extra_columns=None):
+        sink = FilesystemSink(self) if self.holds_files(
+            connector, table_name) else super()
+        return sink.write_files(connector, table_name, files, write_mode,
+                                project_id, export_id=export_id,
+                                extra_columns=extra_columns)
+
+    def publish_model(self, connector, bundle_dir, *, path=None, location=None,
+                      metadata={}, metrics={}, project_id=None):
+        if location is None and path is not None and self.holds_files(
+                connector, path):
+            return FilesystemSink(self).publish_model(
+                connector, bundle_dir, path=path, metadata=metadata)
+        return super().publish_model(connector, bundle_dir, path=path,
+                                     location=location, metadata=metadata,
+                                     metrics=metrics, project_id=project_id)
+
+    def fetch_model(self, connector, local_dir, *, path=None, location=None,
+                    project_id=None):
+        if location is None and path is not None and self.holds_files(
+                connector, path):
+            return FilesystemSink(self).fetch_model(connector, local_dir,
+                                                    path=path)
+        return super().fetch_model(connector, local_dir, path=path,
+                                   location=location, project_id=project_id)
+
+    def preflight_write_files(self, connector, table_name, write_mode=None):
+        if self.holds_files(connector, table_name):
+            FilesystemSink(self).preflight_write_files(
+                connector, table_name, write_mode)

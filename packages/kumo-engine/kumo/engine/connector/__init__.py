@@ -61,20 +61,6 @@ def file_store(connector: Any, path: str) -> Optional[Tuple[Any, str]]:
     return None if sink is None else sink.filesystem(connector, path)
 
 
-def model_sink(connector: Any, path: Optional[str]) -> Any:
-    r"""The sink that writes files at ``path``."""
-    from kumo_core.object_store_sink import (
-        FilesystemSink,
-        ObjectStoreSinkBackend,
-    )
-
-    sink = connector.sink_backend
-    if (path is None or isinstance(sink, ObjectStoreSinkBackend)
-            or _file_sink(connector, path) is None):
-        return sink
-    return FilesystemSink(sink)
-
-
 __all__ = [
     "ADLSConnector",
     "ADLSIdentity",

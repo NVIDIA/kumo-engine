@@ -8,10 +8,14 @@ from typing import List, Mapping, Optional, cast
 
 from kumo_core.sources.object_store_sessions import ObjectStoreSessions
 from kumoapi.jobs import MetadataField, PredictionArtifactType, WriteMode
-from kumoapi.plugin import ModelRegistryLocation, SourceConnector
+from kumoapi.plugin import (
+    FileArtifactSink,
+    ModelRegistryLocation,
+    SourceConnector,
+)
 from kumoapi.prediction_outputs import resolve_prediction_output_paths
 
-from kumo.engine.connector import is_file_destination, model_sink
+from kumo.engine.connector import is_file_destination
 from kumo.engine.connector.base import Connector
 
 
@@ -64,9 +68,9 @@ class PredictionOutputConfig:
         assert self.artifact_type is not None and self.table_name is not None
         return {self.artifact_type.value.lower(): self.table_name}
 
-    def writer(self, destination: str):
-        sink = model_sink(self.connector, destination)
-        if not callable(getattr(sink, 'write_files', None)):
+    def writer(self) -> FileArtifactSink:
+        sink = self.connector.sink_backend
+        if not isinstance(sink, FileArtifactSink):
             raise NotImplementedError(
                 'Prediction export requires FileArtifactSink.write_files; '
                 'this sink only supports in-memory table output')
