@@ -345,7 +345,7 @@ RANK TOP 25
 FOR EACH customers.customer_id
 ```
 
-Output is K rows per entity by default; `num_classes_to_return` at prediction time can return a different count (1–500). Ranking tasks have a limit of 10 million target items. `RANK` on a foreign key is the only case where new targets may be added at batch-prediction time (by adding rows to the item table).
+Output is K rows per entity by default; `num_classes_to_return` at prediction time can return a different count (1–500 for link prediction; `kumoai-reference/references/kumo_finetuning_sdk.md` §9). Ranking tasks have a limit of 10 million target items. `RANK` on a foreign key is the only case where new targets may be added at batch-prediction time (by adding rows to the item table).
 
 ### Static link prediction — item-to-item similarity
 

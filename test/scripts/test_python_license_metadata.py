@@ -52,7 +52,7 @@ def synthetic_spec(
 
 
 def test_repository_manifest_inventory_passes() -> None:
-    assert len(check_python_license_metadata.DISTRIBUTIONS) == 12
+    assert len(check_python_license_metadata.DISTRIBUTIONS) == 13
     assert check_python_license_metadata.validate_repository(
         REPOSITORY_ROOT) == []
 

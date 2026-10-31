@@ -103,7 +103,7 @@ scores as if they established all horizons. Column analysis is not supported for
 
 ## Finish each journey
 
-Use [outputs](outputs.md) for requested Snowflake write-back and a separate embedding call.
+Use [outputs](outputs.md) for requested write-back and a separate embedding call.
 Inspect selected Parquet schemas before interpreting columns; do not hardcode optional fields.
 Use [diagnostics](../../kumo-training-diagnostics/SKILL.md) for actual metrics and trial histories,
 and [explanations](../../kumo-model-explanations/SKILL.md) for available attribution/cohorts.

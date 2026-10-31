@@ -6,8 +6,9 @@ import os
 import posixpath
 import shutil
 from abc import ABC, abstractmethod
+from functools import partial
 from pathlib import Path
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Callable, Mapping, Optional, Tuple
 
 import pandas as pd
 from kumoapi.jobs import WriteMode
@@ -40,28 +41,43 @@ def open_sized(filesystem: FileSystem, path: str, size: int) -> Any:
     return filesystem.open_output_stream(path)
 
 
-def upload_bundle(filesystem: FileSystem, destination: str,
-                  bundle_dir: str) -> None:
+def upload_file(filesystem: FileSystem, source: str,
+                destination: str) -> None:
+    with open(source, 'rb') as reader, open_sized(
+            filesystem, destination, os.path.getsize(source)) as writer:
+        shutil.copyfileobj(reader, writer, _CHUNK)
+
+
+def download_file(filesystem: FileSystem, source: str,
+                  destination: str) -> None:
+    with filesystem.open_input_stream(source) as reader, \
+            open(destination, 'wb') as writer:
+        shutil.copyfileobj(reader, writer, _CHUNK)
+
+
+def upload_bundle(filesystem: FileSystem, destination: str, bundle_dir: str,
+                  upload: Optional[Callable[[str, str], None]] = None) -> None:
     """Copy ``bundle_dir`` under ``destination``, provenance last."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
+    upload = upload or partial(upload_file, filesystem)
     root = Path(bundle_dir)
     for source in sorted((item for item in root.rglob('*') if item.is_file()),
                          key=lambda item:
                          (item.name == PROVENANCE_FILE, item)):
         target = f'{destination}/{source.relative_to(root).as_posix()}'
         _prepared(filesystem, posixpath.dirname(target))
-        with open(source, 'rb') as reader, open_sized(
-                filesystem, target, source.stat().st_size) as writer:
-            shutil.copyfileobj(reader, writer, _CHUNK)
+        upload(str(source), target)
 
 
-def download_bundle(filesystem: FileSystem, source: str,
-                    local_dir: str) -> bool:
+def download_bundle(
+        filesystem: FileSystem, source: str, local_dir: str,
+        download: Optional[Callable[[str, str], None]] = None) -> bool:
     """Replace ``local_dir`` with ``source``; False if it is empty."""
     from kumo_core.sources.layout import confined
     from pyarrow.fs import FileSelector, FileType
 
+    download = download or partial(download_file, filesystem)
     destination = Path(local_dir)
     if destination.exists():
         shutil.rmtree(destination)
@@ -75,9 +91,7 @@ def download_bundle(filesystem: FileSystem, source: str,
         # Remote keys are untrusted.
         target = destination / confined(info.path[len(source) + 1:])
         target.parent.mkdir(parents=True, exist_ok=True)
-        with filesystem.open_input_stream(info.path) as reader, \
-                open(target, 'wb') as writer:
-            shutil.copyfileobj(reader, writer, _CHUNK)
+        download(info.path, str(target))
     return found
 
 
@@ -96,8 +110,16 @@ class ObjectStoreSinkBackend(ABC):
 
     def filesystem(self, connector: SourceConnector,
                    path: str) -> Tuple[FileSystem, str]:
-        filesystem, resolved = self._destination(connector, path)
+        filesystem, resolved = self._model_destination(connector, path)
         return filesystem, resolved.rstrip('/')
+
+    def _model_destination(self, connector: SourceConnector,
+                           coordinate: str) -> Tuple[FileSystem, str]:
+        """Resolve a model directory, which may have provider-specific roots."""
+        return self._destination(connector, coordinate)
+
+    def _uri(self, path: str) -> str:
+        return f'{self.scheme}://{path}'
 
     def write_table(
         self,
@@ -109,7 +131,11 @@ class ObjectStoreSinkBackend(ABC):
         *,
         export_id: Optional[str] = None,
     ) -> str:
-        """Write a frame as one object, or parts when the path ends in a slash."""
+        """Write a frame as one object, or parts when the path ends in a slash.
+
+        Streaming output is not transactional: Arrow closes its output stream
+        after serialization errors, which can publish partial data.
+        """
         del project_id
         if write_mode is not WriteMode.OVERWRITE:
             raise NotImplementedError(
@@ -133,7 +159,9 @@ class ObjectStoreSinkBackend(ABC):
         from kumo_core.sources import layout
         filesystem, path = self._destination(connector, table_name)
         kind = layout.file_type(path.rstrip('/')) or layout.PARQUET
-        storage = _ArrowExportFiles(filesystem, extra_columns)
+        storage = _ArrowExportFiles(
+            filesystem, extra_columns, upload=partial(self._upload_file,
+                                                      filesystem))
         _, output = export_selected_files(files, path, fs=storage,
                                           identity=export_id or str(files),
                                           file_type=kind,
@@ -165,13 +193,22 @@ class ObjectStoreSinkBackend(ABC):
                 f"path. Set output_path on the ModelExportConfig.")
 
         filesystem, destination = self.filesystem(connector, path)
-        upload_bundle(filesystem, destination, bundle_dir)
+        upload_bundle(filesystem, destination, bundle_dir,
+                      partial(self._upload_file, filesystem))
         return PublishedModel(
             name=posixpath.basename(destination),
             version=destination,
             uri=self._uri(destination),
             metadata=dict(metadata),
         )
+
+    def _upload_file(self, filesystem, source, destination):
+        """Providers may transfer an already prepared local file directly."""
+        upload_file(filesystem, source, destination)
+
+    def _download_file(self, filesystem, source, destination):
+        """Providers may transfer a model file without the streaming fallback."""
+        download_file(filesystem, source, destination)
 
     def fetch_model(
         self,
@@ -197,15 +234,13 @@ class ObjectStoreSinkBackend(ABC):
                 f"config.")
 
         filesystem, source = self.filesystem(connector, path)
-        if not download_bundle(filesystem, source, local_dir):
+        if not download_bundle(filesystem, source, local_dir,
+                               partial(self._download_file, filesystem)):
             raise ValueError(
                 f"Nothing is published at {self._uri(source)}. Check the "
                 f"path the model was exported to.")
         return PublishedModel(name=posixpath.basename(source), version=source,
                               uri=self._uri(source))
-
-    def _uri(self, path: str) -> str:
-        return f'{self.scheme}://{path}'
 
     def _write(self, filesystem: FileSystem, frame: pd.DataFrame, path: str,
                export_id: Optional[str] = None) -> str:
@@ -285,9 +320,7 @@ def _write_one(filesystem: FileSystem, frame: pd.DataFrame, path: str,
             dir=spool_root(filesystem.handler)) as spool:
         local = os.path.join(spool, 'frame.parquet')
         pq.write_table(table, local)
-        with open(local, 'rb') as reader, open_sized(
-                filesystem, path, os.path.getsize(local)) as writer:
-            shutil.copyfileobj(reader, writer, _CHUNK)
+        upload_file(filesystem, local, path)
 
 
 def _prepared(filesystem: FileSystem, directory: str) -> None:
@@ -313,9 +346,10 @@ def _marker(export_id: Optional[str]) -> Optional[str]:
 
 class _ArrowExportFiles:
     """Adapt authenticated Arrow output to the shared hosted export operation."""
-    def __init__(self, filesystem, extra_columns):
+    def __init__(self, filesystem, extra_columns, upload=None):
         self.filesystem = filesystem
         self.extra_columns = extra_columns
+        self.upload = upload
 
     def exists(self, path):
         from pyarrow.fs import FileType
@@ -363,10 +397,10 @@ class _ArrowExportFiles:
         # CSV conversion already applied this destination's metadata.
         columns = self.extra_columns if source.endswith('.parquet') else None
         with prepared_artifact_file(source, columns) as prepared:
-            with open(prepared, 'rb') as reader, open_sized(
-                    self.filesystem, destination,
-                    os.path.getsize(prepared)) as writer:
-                shutil.copyfileobj(reader, writer, _CHUNK)
+            if self.upload is not None:
+                self.upload(prepared, destination)
+                return
+            upload_file(self.filesystem, prepared, destination)
 
     def copy_files_threaded(self, pairs, overwrite, max_workers):
         from concurrent.futures import ThreadPoolExecutor
