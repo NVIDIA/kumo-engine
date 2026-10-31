@@ -40,6 +40,7 @@ from kumo_core.types import ExplainMethod, PredictionArtifactType
 from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
 from kumoapi.plugin import (
     ModelFetchingSink,
+    ModelPublishingSink,
     ModelRegistryLocation,
     PublishedModel,
     SourceConnector,
@@ -358,10 +359,9 @@ class Trainer:
 
         from kumo.engine.trainer._runtime import local_training_bindings
 
-        if export_config is not None and not callable(
-                getattr(model_sink(export_config.connector,
-                                   export_config.path), 'publish_model',
-                        None)):
+        if export_config is not None and not isinstance(
+                model_sink(export_config.connector, export_config.path),
+                ModelPublishingSink):
             raise NotImplementedError(
                 f'{type(export_config.connector).__name__} cannot publish '
                 f'models')
