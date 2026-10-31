@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.model_plan import TrainingTableGenerationPlan
+from kumo_core.training.table import TrainTableRequest
 from kumoapi.model_plan import \
     TrainingTableGenerationPlan as PublicGenerationPlan
 from kumoapi.train import TrainingTableSpec
@@ -279,7 +280,7 @@ class TrainingTable:
             required_stages=task_plan.task_dataset.required_stages,
             generation_plan=generation_plan,
         )
-        return _finish(
+        return finish_generated(
             table, snapshot, task_plan.train_table, mlops,
             source_table=provenance.source_table(
                 source_table.connector, source_table.table_name,
@@ -295,14 +296,14 @@ def _record_sources(snapshot: GraphSnapshot) -> bool:
     return manifest is not None and manifest.record_sources is True
 
 
-def _finish(table: TrainingTable, snapshot: GraphSnapshot, request: Any,
-            mlops: Optional[Any], *,
-            source_table: Optional[SourceTableEntry] = None,
-            source_version: Any = None) -> TrainingTable:
+def finish_generated(table: TrainingTable, snapshot: GraphSnapshot,
+                     request: TrainTableRequest, mlops: Optional[Any], *,
+                     source_table: Optional[SourceTableEntry] = None,
+                     source_version: Any = None) -> TrainingTable:
     from kumo.engine._mlops import resolve
 
     seed = None
-    if getattr(request, 'split_family', None) in _RANDOM_SPLITS:
+    if request.split_family in _RANDOM_SPLITS:
         seed = (request.split_config or {}).get('rnd_seed') or 0
     table = replace(table, id=_table_id(table, snapshot, seed, source_version,
                                         custom=source_table is not None))
@@ -333,7 +334,7 @@ def _table_id(table: TrainingTable, snapshot: GraphSnapshot,
 
 
 def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
-                     request: Any, seed: Optional[int], *,
+                     request: TrainTableRequest, seed: Optional[int], *,
                      source_table: Optional[SourceTableEntry] = None) -> None:
     from kumo.engine._manifest import embedded, stub
 
