@@ -7,6 +7,8 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace as NS
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -15,6 +17,210 @@ SPEC = importlib.util.spec_from_file_location('nightly_check', SOURCE)
 nightly = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(nightly)
 APPROVED = '1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e'
+
+
+class TrainingWindowTest(unittest.TestCase):
+    """Adapt the existing Group 5 timing checks without running a model."""
+
+    def setUp(self):
+        self.assertTrue(hasattr(nightly, 'TrainingWindow'),
+                        'Completed-batch timing is missing')
+        self.now = 0.
+        self.device = NS(type='cuda')
+        self.syncs = 0
+
+        def synchronize(device):
+            self.assertIs(device, self.device)
+            self.syncs += 1
+            self.now += 5.
+
+        self.cuda = NS(synchronize=synchronize,
+                       reset_peak_memory_stats=lambda device: None,
+                       max_memory_allocated=lambda device: 1024,
+                       max_memory_reserved=lambda device: 2048)
+        resources = dict(format='kumo-nightly-resources-v1',
+                         scope='training_window',
+                         samples=2,
+                         sample_interval_seconds=.2,
+                         cpu_read_errors=0,
+                         cuda_read_errors=0)
+        resources.update({key: 100 for key in nightly.RESOURCE_FIELDS})
+        sampler = patch.object(nightly,
+                               'start_measurement',
+                               return_value=(resources, lambda: None))
+        sampler.start()
+        self.addCleanup(sampler.stop)
+        self.trainer = NS(strategy=NS(root_device=self.device),
+                          global_step=0,
+                          accumulate_grad_batches=1,
+                          optimizers=[object()])
+        self.module = NS(device=self.device, entity_table_name='accounts')
+        self.window = nightly.TrainingWindow(64, self.cuda, lambda: self.now,
+                                             lambda: self.now)
+        self.window.on_train_start(self.trainer, self.module)
+
+    def complete(self, count, size=64, loss_device=None):
+        for _ in range(count):
+            self.trainer.global_step += len(self.trainer.optimizers)
+            self.now += .5
+            self.window.on_train_batch_end(
+                self.trainer, self.module,
+                {'loss': NS(device=loss_device or self.device)},
+                {'accounts': NS(batch_size=size)},
+                (self.window.completed % 20))
+
+    def test_measures_batches_21_to_220_across_epoch_boundaries(self):
+        self.complete(19)
+        self.assertEqual(self.syncs, 0)
+        self.complete(1)
+        self.assertEqual(self.syncs, 1)
+        self.complete(200)
+        result = self.window.summary()
+        self.assertEqual(result['completed_batches'], 220)
+        self.assertEqual(result['measured_batches'], 200)
+        self.assertEqual(result['measured_examples'], 12800)
+        self.assertEqual(result['seconds'], 105.)
+        self.assertAlmostEqual(result['examples_per_second'], 12800 / 105)
+        self.assertEqual(result['gpu_allocated_peak_bytes'], 1024)
+        self.assertEqual(result['gpu_reserved_peak_bytes'], 2048)
+        self.assertEqual(self.syncs, 2)
+
+    def test_short_fit_retains_incomplete_status_without_a_rate(self):
+        self.complete(200)
+        self.window.finish()
+        self.assertEqual(self.window.result['status'], 'INCOMPLETE')
+        self.assertIsNone(self.window.result['examples_per_second'])
+        with self.assertRaises(ValueError):
+            self.window.summary()
+
+    def test_two_optimizers_do_not_halve_the_completed_batch_count(self):
+        self.trainer.optimizers.append(object())
+        self.window = nightly.TrainingWindow(64, self.cuda, lambda: self.now,
+                                             lambda: self.now)
+        self.window.on_train_start(self.trainer, self.module)
+        self.complete(220)
+        result = self.window.summary()
+        self.assertEqual(result['completed_batches'], 220)
+        self.assertEqual(result['measured_optimizer_updates'], 400)
+
+    def test_later_quality_work_does_not_extend_the_timed_window(self):
+        self.complete(220)
+        self.complete(20)
+        self.assertEqual(self.window.summary()['seconds'], 105.)
+        self.assertEqual(self.syncs, 2)
+        self.complete(1, size=32)
+        with self.assertRaises(ValueError):
+            self.window.summary()
+
+    def test_partial_batch_invalidates_the_window(self):
+        self.complete(20)
+        self.complete(1, size=32)
+        self.assertEqual(self.window.result['status'], 'INVALID')
+        with self.assertRaises(ValueError):
+            self.window.summary()
+
+    def test_skipped_optimizer_update_invalidates_the_window(self):
+        self.trainer.global_step += 1
+        self.complete(1)
+        self.assertEqual(self.window.result['status'], 'INVALID')
+
+    def test_cpu_loss_invalidates_gpu_timing(self):
+        with self.assertRaises(ValueError):
+            self.complete(1, loss_device=NS(type='cpu'))
+
+    def test_missing_peak_cannot_qualify(self):
+        self.cuda.max_memory_allocated = lambda device: 0
+        self.complete(220)
+        with self.assertRaises(ValueError):
+            self.window.summary()
+
+    def test_missing_cpu_memory_cannot_qualify(self):
+        self.complete(220)
+        self.window.result['resources'][
+            'cpu_tree_pss_sampled_peak_bytes'] = None
+        with self.assertRaises(ValueError):
+            self.window.summary()
+
+    def test_retry_cannot_restart_the_timing_window(self):
+        with self.assertRaises(ValueError):
+            self.window.on_train_start(self.trainer, self.module)
+
+    def test_public_observer_retains_short_window_and_closes_its_sampler(self):
+        import pytorch_lightning as pl
+        import torch
+
+        finished = []
+        state = dict(stage='fit', requested_batch_size=64)
+        with nightly.observe_cuda(state):
+            trainer = pl.Trainer(accelerator='cpu',
+                                 devices=1,
+                                 logger=False,
+                                 enable_checkpointing=False,
+                                 enable_model_summary=False)
+            [proof] = [
+                cb for cb in trainer.callbacks
+                if type(cb).__module__ == nightly.__name__
+            ]
+            with patch.object(torch.cuda, 'synchronize', self.cuda.synchronize), \
+                    patch.object(torch.cuda, 'reset_peak_memory_stats',
+                                 self.cuda.reset_peak_memory_stats):
+                proof.on_train_start(self.trainer, self.module)
+                self.assertIn('training_window', state)
+                self.window = proof.window
+                self.complete(20)
+                self.window.stop_sampling = lambda: finished.append(True)
+        self.assertEqual(finished, [True])
+        self.assertEqual(state['training_window']['completed_batches'], 20)
+        self.assertEqual(state['training_window']['status'], 'INCOMPLETE')
+
+    def test_short_window_cannot_produce_a_performance_percentage(self):
+        self.complete(200)
+        self.window.finish()
+        self.assertTrue(hasattr(nightly, 'training_window_changes'))
+        changes = nightly.training_window_changes(self.window.result, {})
+        self.assertFalse(changes['eligible'])
+        self.assertIsNone(changes['time']['percentage_change'])
+
+    def test_complete_window_comparison_checks_counts_rate_and_resources(self):
+        import copy
+
+        self.complete(220)
+        values = self.window.summary()
+        self.assertTrue(hasattr(nightly, 'training_window_changes'))
+        changes = nightly.training_window_changes(values,
+                                                  copy.deepcopy(values))
+        self.assertTrue(changes['eligible'])
+        self.assertEqual(changes['time']['percentage_change'], 0.)
+        for key, value in [('warmup_batches', 19), ('measured_batches', 199),
+                           ('examples_per_second', 500),
+                           ('measured_optimizer_updates', 1)]:
+            bad = dict(values, **{key: value})
+            with self.subTest(key=key):
+                result = nightly.training_window_changes(bad, values)
+                self.assertFalse(result['eligible'])
+                self.assertIsNone(result['time']['percentage_change'])
+
+    def test_window_cannot_claim_more_batches_than_the_completed_fit(self):
+        self.complete(220)
+        measurement = dict(self.window.result['resources'],
+                           scope='complete_case')
+        operations = {
+            name: dict(measurement, scope=name)
+            for name in ('training', 'predict', 'repeat', 'partial',
+                         'reloaded_prediction')
+        }
+        row = dict(measurements=measurement,
+                   operation_measurements=operations,
+                   timings={
+                       name: value['elapsed_seconds']
+                       for name, value in operations.items()
+                   },
+                   work=dict(training_batches=200,
+                             optimizer_steps=200,
+                             requested_batch_size=64,
+                             training_window=self.window.result))
+        with self.assertRaises(ValueError):
+            nightly.validate_case_measurements(row)
 
 
 class NightlyRuntimeTest(unittest.TestCase):

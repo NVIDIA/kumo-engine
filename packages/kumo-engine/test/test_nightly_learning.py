@@ -330,6 +330,11 @@ def test_final_comparison_reports_learning_without_blocking_valid_results(
     assert report['status'] == 'PASS'
     assert report['quality_policy'] == 'report_only'
     assert report['learning']['policy'] == 'report_only'
+    assert report['steady_state_training_status'] == 'INVALID'
+    assert all(
+        not row['training_window_changes']['eligible']
+        and row['training_window_changes']['time']['percentage_change'] is None
+        for row in report['cases'])
     binary = report['learning']['tasks']['binary']
     assert binary['normal_score'] == (.5 if damage == 'no_learning' else .8)
     assert binary['control_score'] == (.8
@@ -455,6 +460,14 @@ def test_timing_comparison_rejects_batch_reduction_and_unknown_training_work(
     reduced = copy.deepcopy(row)
     reduced['work']['training_epochs'][0]['batch_sizes'][3] = 32
     nightly.save(tmp_path / 'result.json', reduced)
+    assert not nightly.comparison_context(reference, dict(runtime=runtime),
+                                          previous, tmp_path)['compatible']
+    nightly.save(tmp_path / 'result.json', row)
+    with_window = copy.deepcopy(row)
+    with_window['work']['training_window'] = dict(
+        format='kumo-training-window-v1', scope='training_batches_21_220',
+        warmup_batches=20, status='INCOMPLETE')
+    nightly.save(tmp_path / 'result.json', with_window)
     assert not nightly.comparison_context(reference, dict(runtime=runtime),
                                           previous, tmp_path)['compatible']
     nightly.save(tmp_path / 'result.json', row)

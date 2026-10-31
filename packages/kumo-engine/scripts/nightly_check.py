@@ -139,6 +139,148 @@ def validate_measurement(values):
         raise ValueError('Resource measurement is missing or invalid')
 
 
+class TrainingWindow:
+    """Reuse Group 5's completed-batch clock without changing the fit recipe."""
+
+    def __init__(self,
+                 batch_size,
+                 cuda,
+                 clock=time.perf_counter,
+                 cpu_clock=time.process_time):
+        self.batch_size, self.cuda = batch_size, cuda
+        self.clock, self.cpu_clock = clock, cpu_clock
+        self.completed, self.started, self.stop_sampling = 0, False, None
+        self.result = dict(format='kumo-training-window-v1',
+                           status='INCOMPLETE',
+                           scope='training_batches_21_220',
+                           reason='Training needs 220 completed batches',
+                           warmup_batches=20,
+                           measured_batches=0,
+                           completed_batches=0,
+                           batch_size=batch_size,
+                           measured_examples=0,
+                           measured_optimizer_updates=0,
+                           seconds=None,
+                           examples_per_second=None)
+
+    def invalidate(self, reason):
+        self.result.update(status='INVALID',
+                           reason=reason,
+                           examples_per_second=None)
+        self.finish()
+
+    def on_train_start(self, trainer, module):
+        if self.started:
+            self.invalidate('Training retry invalidates the window')
+            raise ValueError(self.result['reason'])
+        self.started = True
+        self.device = trainer.strategy.root_device
+        self.optimizer_count = len(trainer.optimizers)
+        self.result['optimizer_count'] = self.optimizer_count
+        if (self.device.type != 'cuda' or module.device.type != 'cuda'
+                or type(self.batch_size) is not int or self.batch_size < 1
+                or not self.optimizer_count or trainer.global_step != 0
+                or trainer.accumulate_grad_batches != 1):
+            self.invalidate('Timing requires fresh, unaccumulated CUDA work')
+            raise ValueError(self.result['reason'])
+
+    def on_train_batch_end(self, trainer, module, outputs, batch, batch_idx):
+        from numbers import Integral
+
+        loss = outputs.get('loss') if isinstance(outputs, dict) else outputs
+        if getattr(getattr(loss, 'device', None), 'type', None) != 'cuda':
+            self.invalidate('Completed training loss is not on CUDA')
+            raise ValueError(self.result['reason'])
+        self.completed += 1
+        measured = min(200, max(0, self.completed - 20))
+        self.result.update(completed_batches=self.completed,
+                           measured_batches=measured)
+        seed = (getattr(module, 'lhs_name', None)
+                or getattr(module, 'entity_table_name', None)
+                or getattr(batch, 'input_type', None))
+        size = batch[seed].batch_size
+        if (isinstance(size, bool) or not isinstance(size, Integral)
+                or size != self.batch_size or trainer.global_step
+                != self.completed * self.optimizer_count):
+            self.invalidate('Batch size or completed optimizer work changed')
+        if self.result['status'] == 'INVALID':
+            return
+        if self.completed == 20:
+            self.cuda.synchronize(self.device)
+            self.cuda.reset_peak_memory_stats(self.device)
+            resources, self.stop_sampling = start_measurement(
+                'training_window')
+            self.result['resources'] = resources
+            self.cpu_start, self.start = self.cpu_clock(), self.clock()
+        elif self.completed == 220:
+            self.cuda.synchronize(self.device)
+            seconds = self.clock() - self.start
+            self.result.update(
+                status='MEASURED',
+                reason=None,
+                seconds=seconds,
+                measured_examples=200 * self.batch_size,
+                measured_optimizer_updates=200 * self.optimizer_count,
+                main_cpu_seconds=self.cpu_clock() - self.cpu_start,
+                gpu_allocated_peak_bytes=self.cuda.max_memory_allocated(
+                    self.device),
+                gpu_reserved_peak_bytes=self.cuda.max_memory_reserved(
+                    self.device))
+            self.result['examples_per_second'] = (200 * self.batch_size /
+                                                  seconds
+                                                  if seconds > 0 else None)
+            self.finish()
+            try:
+                self.summary()
+            except ValueError as error:
+                self.invalidate(str(error))
+
+    def finish(self):
+        if self.stop_sampling is not None:
+            stop, self.stop_sampling = self.stop_sampling, None
+            stop()
+
+    def summary(self):
+        validate_training_window(self.result)
+        return self.result
+
+
+def validate_training_window(values):
+    integer = lambda key: type(values.get(key)) is int
+    if (values.get('format') != 'kumo-training-window-v1'
+            or values.get('scope') != 'training_batches_21_220'
+            or values.get('status') != 'MEASURED' or not all(
+                integer(key)
+                for key in ('warmup_batches', 'measured_batches',
+                            'completed_batches', 'batch_size',
+                            'measured_examples', 'optimizer_count',
+                            'measured_optimizer_updates'))
+            or values['warmup_batches'] != 20
+            or values['measured_batches'] != 200
+            or values['completed_batches'] < 220 or values['batch_size'] < 1
+            or values['optimizer_count'] < 1
+            or values['measured_examples'] != 200 * values['batch_size']
+            or values['measured_optimizer_updates']
+            != 200 * values['optimizer_count'] or any(
+                type(values.get(key)) not in (int, float)
+                or not math.isfinite(values[key]) or values[key] <= 0
+                for key in ('seconds', 'examples_per_second',
+                            'gpu_allocated_peak_bytes',
+                            'gpu_reserved_peak_bytes')) or
+            not math.isclose(values['examples_per_second'],
+                             values['measured_examples'] / values['seconds'],
+                             rel_tol=1e-9)):
+        raise ValueError(
+            'Training window work, timing or GPU peaks are incomplete')
+    resources = values.get('resources', {})
+    validate_measurement(resources)
+    if (resources['scope'] != 'training_window'
+            or any(resources[key] <= 0
+                   for key in ('cpu_tree_pss_sampled_peak_bytes',
+                               'cpu_tree_rss_sampled_peak_bytes'))):
+        raise ValueError('Training window CPU memory or scope is missing')
+
+
 def validate_case_measurements(row):
     values = row.get('measurements', {})
     validate_measurement(values)
@@ -151,6 +293,15 @@ def validate_case_measurements(row):
         if (operation['scope'] != name or row.get('timings', {}).get(name)
                 != operation['elapsed_seconds']):
             raise ValueError('Operation measurement scope or elapsed time differs')
+    work = row.get('work', {})
+    window = work.get('training_window', {})
+    if window.get('status') == 'MEASURED':
+        validate_training_window(window)
+        if (window['completed_batches'] != work.get('training_batches')
+                or window['batch_size'] != work.get('requested_batch_size')
+                or work.get('optimizer_steps')
+                != window['completed_batches'] * window['optimizer_count']):
+            raise ValueError('Training window differs from completed fit work')
 
 
 @contextmanager
@@ -746,9 +897,22 @@ def observe_cuda(state):
     from numbers import Integral
 
     import pytorch_lightning as pl
+    import torch
     from pytorch_lightning.callbacks import EarlyStopping
 
+    windows = []
+
     class Proof(pl.Callback):
+
+        def on_train_start(self, trainer, module):
+            if 'requested_batch_size' in state:
+                if not hasattr(self, 'window'):
+                    self.window = TrainingWindow(state['requested_batch_size'],
+                                                 torch.cuda)
+                    windows.append(self.window)
+                    state['training_window'] = self.window.result
+                self.window.on_train_start(trainer, module)
+
         def on_fit_start(self, trainer, module):
             if 'fit_ledger' in state:
                 state['fit_ledger'].append(
@@ -759,7 +923,8 @@ def observe_cuda(state):
                 state['training_epochs'].append(dict(
                     epoch=int(trainer.current_epoch), batches=0, batch_sizes=[]))
 
-        def on_train_batch_end(self, trainer, module, values, batch, batch_idx):
+        def on_train_batch_end(self, trainer, module, values, batch,
+                               batch_idx):
             if 'fit_ledger' in state:
                 state['fit_ledger'][-1]['cuda_batches'] += 1
             if 'training_epochs' in state:
@@ -771,8 +936,13 @@ def observe_cuda(state):
                     raise ValueError('Training batch has no valid seed-row count')
                 state['training_epochs'][-1]['batch_sizes'].append(int(size))
                 state['training_epochs'][-1]['batches'] += 1
+            if hasattr(self, 'window'):
+                self.window.on_train_batch_end(trainer, module, values, batch,
+                                               batch_idx)
 
         def on_fit_end(self, trainer, module):
+            if hasattr(self, 'window'):
+                self.window.finish()
             if 'fit_ledger' in state:
                 state['fit_ledger'][-1].update(status='PASS',
                                                steps=int(trainer.global_step))
@@ -798,7 +968,11 @@ def observe_cuda(state):
                 super().__init__(*args, **kwargs)
 
         with patch.object(pl, 'Trainer', ObservedTrainer):
-            yield
+            try:
+                yield
+            finally:
+                for window in windows:
+                    window.finish()
 
 
 def quality(task, truth, values, classes):
@@ -904,8 +1078,9 @@ def measurement_changes(current, baseline, *, compatible=True):
                   and current.get('scope') == baseline.get('scope')
                   and current.get('sample_interval_seconds') ==
                   baseline.get('sample_interval_seconds'))
-    operation = current.get('scope') in (
-        'training', 'predict', 'repeat', 'partial', 'reloaded_prediction')
+    operation = current.get('scope') in ('training', 'training_window',
+                                         'predict', 'repeat', 'partial',
+                                         'reloaded_prediction')
     return {
         key: reporting_change(
             baseline.get(key), current.get(key),
@@ -916,6 +1091,34 @@ def measurement_changes(current, baseline, *, compatible=True):
     }
 
 
+def training_window_changes(current, baseline, *, compatible=True):
+    reason = None if compatible else 'Inputs, configuration or runtime differ'
+    try:
+        validate_training_window(current)
+        validate_training_window(baseline)
+    except ValueError as error:
+        compatible, reason = False, str(error)
+    if any(
+            current.get(key) != baseline.get(key)
+            for key in ('batch_size', 'optimizer_count', 'scope')):
+        compatible, reason = False, 'Training window profiles differ'
+    return dict(eligible=compatible,
+                unavailable_reason=reason if not compatible else None,
+                time=reporting_change(baseline.get('seconds'),
+                                      current.get('seconds'),
+                                      20,
+                                      compatible=compatible),
+                throughput=reporting_change(
+                    baseline.get('examples_per_second'),
+                    current.get('examples_per_second'),
+                    None,
+                    lower_is_better=False,
+                    compatible=compatible),
+                resources=measurement_changes(current.get('resources', {}),
+                                              baseline.get('resources', {}),
+                                              compatible=compatible))
+
+
 def training_work(row, trainer):
     work = row.get('work', {})
     batch = trainer.get('loader_kwargs', {}).get('batch_size')
@@ -924,10 +1127,16 @@ def training_work(row, trainer):
             or any(size != batch for epoch in epochs
                    for size in epoch.get('batch_sizes', []))):
         return None
-    return dict(requested_batch_size=batch, training_epochs=epochs,
-                optimizer_steps=work.get('optimizer_steps'),
-                selected_checkpoint_steps=row.get('selected_checkpoint_steps'),
-                early_stopping=work.get('early_stopping', {}))
+    result = dict(requested_batch_size=batch, training_epochs=epochs,
+                  optimizer_steps=work.get('optimizer_steps'),
+                  selected_checkpoint_steps=row.get('selected_checkpoint_steps'),
+                  early_stopping=work.get('early_stopping', {}))
+    if 'training_window' in work:
+        result['training_window_protocol'] = {
+            key: work['training_window'].get(key)
+            for key in ('format', 'scope', 'warmup_batches')
+        }
+    return result
 
 
 def comparison_context(reference, report, previous, directory):
@@ -1089,6 +1298,8 @@ def run_case(root, manifest, case, graph, snapshot, output):
             query.validate()
             plan = smoke.make_plan(task)
             save(output / 'requested-plan.json', plan.as_json())
+            [state['requested_batch_size']
+             ] = plan.as_json()['optimization']['batch_size']
             save(output / 'generation-plan.json', descriptor['generation_plan'])
             report['input_signature'] = input_signature(manifest, case)
             classes = case.get('classes', [])
@@ -1539,6 +1750,11 @@ def compare(args):
                 fit_id=row['fit_id'],
                 checkpoint_sha256=row['checkpoint_sha256'],
                 comparison_context=context,
+                training_window=row['work'].get('training_window', {}),
+                training_window_changes=training_window_changes(
+                    row['work'].get('training_window', {}),
+                    previous.get('training_window', {}),
+                    compatible=context['compatible']),
                 resource_changes=measurement_changes(
                     row['measurements'], previous.get('measurements', {}),
                     compatible=context['compatible']),
@@ -1560,6 +1776,9 @@ def compare(args):
         dict(status='PASS', quality_policy='report_only',
              learning=learning, numerical_difference_policy='report_only',
              performance_policy='report_only',
+             steady_state_training_status='MEASURED' if all(
+                 row['training_window_changes']['eligible']
+                 for row in comparisons) else 'INVALID',
              reference_only=args.reference_only,
              input_manifest_sha256=args.input_sha256,
              reference_sha256=args.reference_sha256, primary_physical_fits=16,
@@ -1573,6 +1792,7 @@ def compare(args):
                  seconds=row['seconds'], timings=row['timings'],
                  measurements=row['measurements'],
                  operation_measurements=row['operation_measurements'],
+                 training_window=row['work'].get('training_window', {}),
                  training_work=training_work(row, read(
                      path.parent / (row['task'] + '-' + row['arm']) /
                      'trainer_config.json')),

@@ -65,13 +65,31 @@ prediction, repeat, partial, reload, and complete-case scope separately.
 Record controller CLI time in `controller-job-time.json`, including staging,
 waiting, collection, and validation. Host elapsed time covers setup through
 process cleanup and excludes final packaging and upload. GitHub records the
-whole workflow and separate build duration. These fit times do not represent a separate
-steady-state 200-step benchmark.
+whole workflow and separate build duration. Full-fit time stays separate from
+the completed-batch training window.
 Resource records contain sampled process-tree PSS/RSS, device memory used,
 Torch allocated/reserved memory, and sampling interval and errors.
 PSS apportions shared pages. RSS counts shared pages in each process.
 These sampled values do not guarantee instantaneous peaks.
 Missing CPU or GPU measurements invalidate a primary measurement.
+
+The nightly callback reuses Group 5's clock for twenty completed warmup batches
+followed by two hundred measured batches. It synchronizes CUDA at both boundaries
+and records examples per second, optimizer updates, process-tree memory, and
+Torch allocation peaks. Batch counts continue across epoch boundaries.
+Two optimizers still count as one completed training batch.
+The interval includes validation and callback work between those boundaries,
+including the existing per-batch CUDA proof. Later quality work cannot extend it.
+
+The callback does not change epochs, early stopping, batch size, or sampler settings.
+The frozen nightly recipe permits at most 200 batches and can stop earlier.
+Such a fit records `INCOMPLETE` and no window throughput. A reduced batch,
+retry, skipped optimizer update, or missing resource measurement invalidates
+the window. These checks also inspect work after batch 220.
+The comparison reports `steady_state_training_status: INVALID` when matching
+valid windows are unavailable. Its existing `status: PASS` concerns functional
+and full-fit checks and cannot qualify this separate performance requirement.
+A compatible 220-batch workload and actual GPU qualification remain open.
 
 ## Reporting and references
 
@@ -85,7 +103,10 @@ prediction tolerance.
 Percentages require matching inputs, model configuration, dependencies,
 hardware, driver, cache conditions, scope, and actual training work.
 Batch reduction, missing work records, or different epoch counts cannot qualify
-a timing comparison. Missing, zero, invalid, or incompatible references retain
+a timing comparison. The recorded work also identifies the completed-batch
+clock protocol. Earlier full-fit measurements without that callback cannot
+qualify percentages against runs with its additional sampling work.
+Missing, zero, invalid, or incompatible references retain
 raw values and absolute differences. Their percentages remain unavailable.
 
 The [descriptor](../../packages/kumo-engine/test/nightly/inputs.json) pins the
