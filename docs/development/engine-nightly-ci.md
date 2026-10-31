@@ -72,6 +72,11 @@ Torch allocated/reserved memory, and sampling interval and errors.
 PSS apportions shared pages. RSS counts shared pages in each process.
 These sampled values do not guarantee instantaneous peaks.
 Missing CPU or GPU measurements invalidate a primary measurement.
+The nightly observer also retains Core's batch-reduction recovery warnings.
+Prediction keeps the product's OOM recovery, but any observed reduction
+invalidates the timed case even when prediction succeeds and restores its
+original batch setting. Measured windows require the observation record.
+References from before this observer cannot qualify performance percentages.
 
 The nightly callback reuses Group 5's clock for twenty completed warmup batches
 followed by two hundred measured batches. It synchronizes CUDA at both boundaries

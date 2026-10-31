@@ -218,6 +218,8 @@ class TrainingWindowTest(unittest.TestCase):
                    work=dict(training_batches=200,
                              optimizer_steps=200,
                              requested_batch_size=64,
+                             oom_observation_protocol='core-oom-warning-v1',
+                             oom_recoveries=[],
                              training_window=self.window.result))
         with self.assertRaises(ValueError):
             nightly.validate_case_measurements(row)

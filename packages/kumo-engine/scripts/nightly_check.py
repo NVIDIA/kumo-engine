@@ -10,6 +10,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import logging
 import math
 import os
 import platform
@@ -293,6 +294,9 @@ def training_budget(plan):
 
 
 def validate_case_measurements(row):
+    work = row.get('work', {})
+    if work.get('oom_recoveries'):
+        raise ValueError('OOM recovery invalidates the timed workload')
     values = row.get('measurements', {})
     validate_measurement(values)
     if values['scope'] != 'complete_case':
@@ -304,9 +308,11 @@ def validate_case_measurements(row):
         if (operation['scope'] != name or row.get('timings', {}).get(name)
                 != operation['elapsed_seconds']):
             raise ValueError('Operation measurement scope or elapsed time differs')
-    work = row.get('work', {})
     window = work.get('training_window', {})
     if window.get('status') == 'MEASURED':
+        if (work.get('oom_observation_protocol') != 'core-oom-warning-v1'
+                or work.get('oom_recoveries') != []):
+            raise ValueError('OOM recovery observation is missing')
         validate_training_window(window)
         if (window['completed_batches'] != work.get('training_batches')
                 or window['batch_size'] != work.get('requested_batch_size')
@@ -1147,6 +1153,8 @@ def training_work(row, trainer):
             key: work['training_window'].get(key)
             for key in ('format', 'scope', 'warmup_batches')
         }
+    if 'oom_observation_protocol' in work:
+        result['oom_observation_protocol'] = work['oom_observation_protocol']
     return result
 
 
@@ -1181,6 +1189,18 @@ def native_calls(state):
     import diskgraph
     from kumo_core.train.trainer import Trainer
     original, ingest = Trainer.fit, diskgraph.execute_tt_ingest
+    state['oom_observation_protocol'] = 'core-oom-warning-v1'
+    state['oom_recoveries'] = []
+    logger = logging.getLogger('kumo_core.train.trainer')
+    if not logger.isEnabledFor(logging.WARNING):
+        raise ValueError('Core OOM recovery warnings cannot be observed')
+
+    class Recovery(logging.Handler):
+        def emit(self, record):
+            message = record.getMessage()
+            if 'Temporarily decreasing the batch size' in message:
+                state['oom_recoveries'].append(
+                    dict(stage=state.get('stage'), message=message))
 
     def fit(*args, **kwargs):
         state['core_fit_attempts'] += 1
@@ -1217,7 +1237,13 @@ def native_calls(state):
     with patch.object(Trainer, 'fit',
                       fit), patch.object(diskgraph, 'execute_tt_ingest',
                                          consume):
-        yield
+        recovery = Recovery()
+        logger.addHandler(recovery)
+        try:
+            yield
+        finally:
+            logger.removeHandler(recovery)
+            recovery.close()
 
 
 def check_snapshot(snapshot, graph_spec):

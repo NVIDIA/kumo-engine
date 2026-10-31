@@ -120,7 +120,9 @@ def test_completed_training_allows_partial_batches_and_actual_early_stopping():
 
 
 @pytest.mark.parametrize('method', ['predict_v2', 'test'])
-def test_nightly_keeps_product_oom_recovery(monkeypatch, tmp_path, method):
+@pytest.mark.parametrize('recover', [False, True])
+def test_nightly_keeps_product_oom_recovery(monkeypatch, tmp_path, method,
+                                            recover):
     from types import SimpleNamespace
 
     import torch
@@ -132,7 +134,7 @@ def test_nightly_keeps_product_oom_recovery(monkeypatch, tmp_path, method):
     def predict(self):
         size = self.datamodule.eval_loader_kwargs['batch_size']
         batches.append(size)
-        if size > 32:
+        if recover and size > 32:
             raise torch.cuda.OutOfMemoryError('injected allocation failure')
         return 'complete prediction'
 
@@ -141,13 +143,20 @@ def test_nightly_keeps_product_oom_recovery(monkeypatch, tmp_path, method):
         datamodule=SimpleNamespace(eval_loader_kwargs={'batch_size': 64}),
         pl_model=SimpleNamespace(reset_embedding_hook=lambda: None))
     state = dict(core_fit_attempts=0,
+                 stage='predict',
                  native_ingests=[],
                  pseudo_options={},
                  ledger_path=str(tmp_path / 'ledger.json'))
     with nightly.native_calls(state):
         assert getattr(Trainer, method)(trainer) == 'complete prediction'
-    assert batches == [64, 32]
+    assert batches == ([64, 32] if recover else [64])
     assert trainer.datamodule.eval_loader_kwargs['batch_size'] == 64
+    assert state['oom_observation_protocol'] == 'core-oom-warning-v1'
+    assert len(state['oom_recoveries']) == int(recover)
+    if recover:
+        assert state['oom_recoveries'][0]['stage'] == 'predict'
+        with pytest.raises(ValueError, match='OOM recovery'):
+            nightly.validate_case_measurements({'work': state})
 
 
 @pytest.mark.parametrize('damage', [
