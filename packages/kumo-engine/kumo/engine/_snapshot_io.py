@@ -15,6 +15,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from kumo_core.artifacts import PROVENANCE_FILE
 from pyarrow.fs import FileSystem
 
 _FORMAT = 1
@@ -175,10 +176,8 @@ def _snapshot_manifest(snapshot: Any) -> bytes:
         SnapshotParents,
         manifest_bytes,
     )
-    from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
-
     try:
-        return (Path(snapshot.index_path) / SNAPSHOT_MANIFEST_FILE).read_bytes()
+        return (Path(snapshot.index_path) / PROVENANCE_FILE).read_bytes()
     except OSError:
         return manifest_bytes(
             SnapshotManifest(id=snapshot.id,
@@ -219,8 +218,6 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
     from diskgraph import snapshot_range_checksums
 
     from kumo.engine._provenance import environment
-    from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
-
     source = Path(snapshot.index_path)
     graph_key, data_version = snapshot._graph_key, snapshot._data_version
     location = export_location(snapshot, path)
@@ -260,7 +257,7 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
                   [sizes[name] for name in names], upload, 'export')
         crc32 = checksums.result()
     _write(filesystem, f'{base}/index/{_INDEX_MANIFEST}', index_manifest)
-    _write(filesystem, f'{base}/{SNAPSHOT_MANIFEST_FILE}', snapshot_manifest)
+    _write(filesystem, f'{base}/{PROVENANCE_FILE}', snapshot_manifest)
     marker = {
         'format': _FORMAT,
         'snapshot_id': snapshot.id,
@@ -286,8 +283,6 @@ def _holds_copy(connector: Any, location: str, snapshot_id: str,
     r"""Whether ``location`` holds this index's bytes and manifest."""
     from kumo_core.object_store_sink import file_sizes
 
-    from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
-
     try:
         root, manifest = read(connector, location)
         if (manifest.get('snapshot_id') != snapshot_id
@@ -302,7 +297,7 @@ def _holds_copy(connector: Any, location: str, snapshot_id: str,
                     entry['size_bytes']) for entry in listed):
             return False
         with filesystem.open_input_stream(
-                f'{root}/{SNAPSHOT_MANIFEST_FILE}') as reader:
+                f'{root}/{PROVENANCE_FILE}') as reader:
             return reader.readall() == snapshot_manifest
     except Exception:
         return False
@@ -431,8 +426,6 @@ def _index_files(
 ) -> Tuple[bytes, List[Tuple[str, int]], Optional[bytes]]:
     from kumo_core.sources.layout import confined
 
-    from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
-
     filesystem, _ = _location(connector, path)
     with filesystem.open_input_stream(
             f'{root}/index/{_INDEX_MANIFEST}') as reader:
@@ -448,7 +441,7 @@ def _index_files(
         raise _corrupt(path, f'{_INDEX_MANIFEST} lists a file twice')
     try:
         with filesystem.open_input_stream(
-                f'{root}/{SNAPSHOT_MANIFEST_FILE}') as reader:
+                f'{root}/{PROVENANCE_FILE}') as reader:
             snapshot_manifest = reader.readall()
     except FileNotFoundError:
         snapshot_manifest = None
@@ -468,8 +461,6 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
     )
     from kumo_core.io.filesystem import fsync_directory
     from kumo_core.sources.transfer import discard_destination
-
-    from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE
 
     span = manifest['range_bytes']
     index_manifest, files, snapshot_manifest = _index_files(
@@ -520,7 +511,7 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
         _check_readable(staging, manifest)
         (staging / _EXPORT_IDENTITY).write_text(export_identity(manifest))
         if snapshot_manifest is not None:
-            (staging / SNAPSHOT_MANIFEST_FILE).write_bytes(snapshot_manifest)
+            (staging / PROVENANCE_FILE).write_bytes(snapshot_manifest)
         for directory in sorted({(staging / name).parent
                                  for name, _ in files} | {staging}):
             fsync_directory(directory)

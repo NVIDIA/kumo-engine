@@ -30,8 +30,6 @@ from kumo.engine.graph import GraphSnapshot
 if TYPE_CHECKING:
     from kumo.engine.trainer.output_config import TrainingTableOutputConfig
 
-STAGING_MANIFEST_FILE = PROVENANCE_FILE
-EXPORT_MANIFEST_FILE = PROVENANCE_FILE
 _RANDOM_SPLITS = ('RandomSplit', 'RandomLinkSplit')
 
 
@@ -68,7 +66,7 @@ class TrainingTable:
     @property
     def manifest(self) -> Optional[TrainingTableManifest]:
         """Lineage recorded at generation; None for older tables."""
-        return read_manifest(self.staging_dir / STAGING_MANIFEST_FILE,
+        return read_manifest(self.staging_dir / PROVENANCE_FILE,
                              TrainingTableManifest)
 
     def export(self, output_config: "TrainingTableOutputConfig") -> str:
@@ -105,17 +103,17 @@ class TrainingTable:
 
         from kumo.engine.connector import is_file_destination
 
-        manifest = self.staging_dir / STAGING_MANIFEST_FILE
+        manifest = self.staging_dir / PROVENANCE_FILE
         name = output_config.table_name.rstrip('/')
         try:
             if (not is_file_destination(connector, output_config.table_name)
                     or layout.file_type(name) == layout.CSV
                     or not manifest.is_file()):
                 return {}
-            return {'sidecars': {EXPORT_MANIFEST_FILE: manifest.read_bytes()}}
+            return {'sidecars': {PROVENANCE_FILE: manifest.read_bytes()}}
         except Exception as error:
             warnings.warn(
-                f"Exporting without {EXPORT_MANIFEST_FILE}: {error}",
+                f"Exporting without {PROVENANCE_FILE}: {error}",
                 UserWarning, stacklevel=3)
             return {}
 
@@ -340,7 +338,7 @@ def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
                      source_table: Optional[SourceTableEntry] = None) -> None:
     from kumo.engine._manifest import embedded, stub
 
-    path = table.staging_dir / STAGING_MANIFEST_FILE
+    path = table.staging_dir / PROVENANCE_FILE
     try:
         from kumo_core.io.json import to_json_dict
 

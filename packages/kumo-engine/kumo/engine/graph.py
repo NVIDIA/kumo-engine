@@ -93,8 +93,6 @@ if TYPE_CHECKING:
     from kumo.engine.trainer.output_config import SnapshotOutputConfig
 from kumo.engine.table import Table
 
-SNAPSHOT_MANIFEST_FILE = PROVENANCE_FILE
-
 _warned_scratch: set[Path] = set()
 _warned_backfill: set[Path] = set()
 
@@ -509,14 +507,14 @@ class GraphSnapshot:
     @property
     def manifest(self) -> SnapshotManifest | None:
         """The snapshot manifest stored next to the index, if any."""
-        return read_manifest(Path(self.index_path) / SNAPSHOT_MANIFEST_FILE,
+        return read_manifest(Path(self.index_path) / PROVENANCE_FILE,
                              SnapshotManifest)
 
 
 def _write_snapshot_manifest(result: Any, snapshot_id: str,
                              source_tables: Dict[str, SourceTableEntry],
                              record_sources: bool, *, fresh: bool) -> None:
-    path = Path(result.index_path) / SNAPSHOT_MANIFEST_FILE
+    path = Path(result.index_path) / PROVENANCE_FILE
     try:
         if not fresh and path.exists():
             existing = read_manifest(path, SnapshotManifest)
