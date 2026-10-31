@@ -25,7 +25,7 @@
 # (abi3) extension, so one wheel serves every CPython at or above its floor,
 # currently 3.11. The merger intersects every component Requires-Python
 # constraint for the resulting wheel. Linux uses manylinux_<MAX_GLIBC>,
-# backed by check_glibc_floor. macOS inherits DiskGraph's native platform tag.
+# backed by check_glibc_floor. macOS and Windows inherit DiskGraph's native tag.
 #
 # Bundled first-party and native components:
 #
@@ -62,13 +62,20 @@ RELEASE=0
 # link against a manylinux2014 glibc rather than this host's. A native build
 # links against the build host's glibc and will not load on the runtime.
 HOST_OS="$(uname -s)"
+case "${HOST_OS}" in
+    MINGW*|MSYS*) HOST_OS=Windows ;;
+    Linux|Darwin) ;;
+    *) echo "Unsupported build host: ${HOST_OS}" >&2; exit 1 ;;
+esac
 if [ "${HOST_OS}" = "Darwin" ]; then
     USE_ZIG="${USE_ZIG:-0}"
     # Matches the minimum of the macOS ARM64 Faiss dependency. Both the
     # extension and standalone ingest must use the same deployment target.
     export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
-else
+elif [ "${HOST_OS}" = "Linux" ]; then
     USE_ZIG="${USE_ZIG:-1}"
+else
+    USE_ZIG="${USE_ZIG:-0}"
 fi
 # Highest glibc the DiskGraph binaries may require, and the manylinux tag the
 # wheel claims. Container Runtime is Ubuntu-based and provides 2.35, so 2.34
@@ -76,8 +83,8 @@ fi
 # modern build host. See check_glibc_floor.
 MAX_GLIBC="${MAX_GLIBC:-2.34}"
 PLATFORM_TAG="${PLATFORM_TAG:-}"
-if [ "${HOST_OS}" != "Darwin" ]; then
-    : "${PLATFORM_TAG:=manylinux_${MAX_GLIBC//./_}_x86_64}"
+if [ "${HOST_OS}" = "Linux" ]; then
+    : "${PLATFORM_TAG:=manylinux_${MAX_GLIBC//./_}_$(uname -m)}"
 fi
 VERIFY_IMAGE="${VERIFY_IMAGE:-}"
 THIRD_PARTY_NOTICE="${THIRD_PARTY_NOTICE:-}"
@@ -97,11 +104,11 @@ Options:
   --release             Stamp exactly the VERSION file's version, for publishing.
                         Without it: <version>+<short commit>.
   --version VERSION     Override the version entirely (PEP 440).
-  --platform-tag TAG    Wheel platform tag. [manylinux_2_34_x86_64 on Linux;
-                        native DiskGraph tag on macOS]
+  --platform-tag TAG    Wheel platform tag. [manylinux_2_34_<arch> on Linux;
+                        native DiskGraph tag on macOS and Windows]
   --kumo-repo PATH      kumo monorepo checkout.           [this repo]
   --no-zig              Build DiskGraph natively instead of through
-                        cargo-zigbuild. Default on macOS. On Linux, the host's
+                        cargo-zigbuild. Default on macOS/Windows. On Linux, the host's
                         glibc must be no newer than the runtime's.
   --verify-image IMAGE  After building, install the wheel into IMAGE with
                         Docker and import the closure as a smoke test.
@@ -148,8 +155,11 @@ if [ "${HOST_OS}" = "Darwin" ]; then
     fi
 fi
 
-if [ "${HOST_OS}" = "Darwin" ] && [ "${USE_ZIG}" != "0" ]; then
-    die "macOS wheels require a native DiskGraph build (USE_ZIG=0)"
+if [ "${HOST_OS}" != "Linux" ] && [ "${USE_ZIG}" != "0" ]; then
+    die "${HOST_OS} wheels require a native DiskGraph build (USE_ZIG=0)"
+fi
+if [ "${HOST_OS}" = "Windows" ] && [ -n "${VERIFY_IMAGE}" ]; then
+    die "--verify-image requires a Linux Docker runtime; qualify Windows wheels natively"
 fi
 
 # The build host's interpreter only drives pip and the merge. Every pure-Python
@@ -277,13 +287,13 @@ env "${ZIG_ENV[@]}" "${PYTHON}" -m pip wheel --no-deps -q \
     -w "${WHEELS}" "${DISKGRAPH_SOURCE}" >&2
 record 'diskgraph-*.whl' diskgraph-native "in-tree source ${DISKGRAPH_SOURCE}"
 
-if [ "${HOST_OS}" = "Darwin" ]; then
+if [ "${HOST_OS}" = "Darwin" ] || [ "${HOST_OS}" = "Windows" ]; then
     DG_WHEEL="$(ls -1 "${WHEELS}"/diskgraph-*.whl | sort | tail -1)"
     DG_PLATFORM="$(basename "${DG_WHEEL}" .whl)"
     DG_PLATFORM="${DG_PLATFORM##*-}"
-    case "${DG_PLATFORM}" in
-        macosx_*_"$(uname -m)") ;;
-        *) die "expected a native macOS DiskGraph wheel, got ${DG_WHEEL}" ;;
+    case "${HOST_OS}:${DG_PLATFORM}" in
+        Darwin:macosx_*_"$(uname -m)"|Windows:win_amd64) ;;
+        *) die "expected a native ${HOST_OS} DiskGraph wheel, got ${DG_WHEEL}" ;;
     esac
     if [ -n "${PLATFORM_TAG}" ] && [ "${PLATFORM_TAG}" != "${DG_PLATFORM}" ]; then
         die "platform tag ${PLATFORM_TAG} does not match DiskGraph's ${DG_PLATFORM}"
@@ -342,7 +352,7 @@ check_glibc_floor() {
     fi
     log "DiskGraph glibc floor: ${worst} (ceiling ${MAX_GLIBC})"
 }
-if [ "${HOST_OS}" != "Darwin" ]; then
+if [ "${HOST_OS}" = "Linux" ]; then
     check_glibc_floor
 fi
 
@@ -356,6 +366,13 @@ NOTICE_ARTIFACT_ARGS=(
     --artifact diskgraph-ingest
     --artifact kumo-core-bundled-source
 )
+if [ "${HOST_OS}" = "Windows" ]; then
+    NOTICE_ARTIFACT_ARGS=(
+        --artifact diskgraph-extension-windows
+        --artifact diskgraph-ingest-windows
+        --artifact kumo-core-bundled-source
+    )
+fi
 
 if [ "${GENERATE_THIRD_PARTY_NOTICE}" = "1" ]; then
     "${PYTHON}" "${NOTICE_GENERATOR}" --check "${THIRD_PARTY_NOTICE}" \
@@ -375,6 +392,7 @@ LICENSE_EXPRESSION="$(
         --base-license Apache-2.0 \
         --license-expression
 )" || die "could not derive the wheel license expression"
+LICENSE_EXPRESSION="${LICENSE_EXPRESSION%$'\r'}"
 
 # --------------------------------------------------------------------------
 # 4) Merge everything into one wheel.
@@ -388,8 +406,15 @@ if [ "${OFFLINE_REPORT}" = "1" ]; then
 fi
 WHEEL_PATH="$("${PYTHON}" "${SCRIPT_DIR}/merge_wheels.py" "${WHEELS}" \
     "${COMPONENTS}" "${OUTPUT_DIR}" "${merge_args[@]}")"
+if [ "${HOST_OS}" = "Windows" ]; then
+    # Native Python prints a Windows path; subsequent shell operations need
+    # Git Bash's path spelling. Arguments passed back to Python are converted
+    # by MSYS automatically.
+    WHEEL_PATH="$(cygpath -u "${WHEEL_PATH%$'\r'}")"
+fi
 
 SIZE_MIB="$("${PYTHON}" -c 'import os, sys; print(os.path.getsize(sys.argv[1]) // 1024**2)' "${WHEEL_PATH}")"
+SIZE_MIB="${SIZE_MIB%$'\r'}"
 log "wrote ${WHEEL_PATH} (${SIZE_MIB} MiB)"
 
 # --------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Builds Linux x86_64 and macOS ARM64 `kumo-engine` wheels with
+# Builds Linux x86_64/ARM64, Windows x86_64 and macOS ARM64 wheels with
 # packages/kumo-engine/scripts/build_wheel.sh.
 #
 # Release flow:
@@ -52,19 +52,36 @@ jobs:
       matrix:
         include:
           - arch: x86_64
+            machine: x86_64
             runner: ubuntu-22.04
             platform: manylinux_2_34_x86_64
           - arch: arm64
+            machine: arm64
             runner: macos-15
             platform: macosx_14_0_arm64
-          # - arch: aarch64
-          #   runner: ubuntu-24.04-arm
-          #   platform: manylinux_2_34_aarch64
+          - arch: aarch64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+            platform: manylinux_2_34_aarch64
+          - arch: windows-x86_64
+            machine: x86_64
+            runner: windows-2022
+            platform: win_amd64
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+        env:
+          # Notice hashes describe the committed bytes, including on Windows.
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -90,6 +107,27 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Activate installed MSVC build tools
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $installation) {
+            throw 'Runner image needs Visual Studio x64 C++ tools and the Windows SDK.'
+          }
+          & "$installation\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          foreach ($name in @('cl', 'link', 'cmake')) {
+            Get-Command $name -ErrorAction Stop | Select-Object Name, Source
+          }
+          foreach ($name in @('PATH', 'INCLUDE', 'LIB', 'LIBPATH')) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          # Git Bash also has link.exe; Rust must use Microsoft's linker.
+          $linker = (Get-Command link.exe -ErrorAction Stop).Source
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       # cargo-zigbuild shells out to `zig`; without it on PATH it falls back
       # to `python -m ziglang`, which needs the ziglang package installed.
       - name: Install zig
@@ -106,9 +144,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
           IS_RELEASE: ${{ github.event_name == 'release' }}
-          WHEEL_ARCH: ${{ matrix.arch }}
+          WHEEL_ARCH: ${{ matrix.machine }}
           WHEEL_PLATFORM: ${{ matrix.platform }}
           MACOSX_DEPLOYMENT_TARGET: '14.0'
+          PYTHON: python
         run: |
           test "$(uname -m)" = "${WHEEL_ARCH}"
           args=()
@@ -120,7 +159,28 @@ jobs:
           fi
           ./packages/kumo-engine/scripts/build_wheel.sh "${args[@]}"
 
+      - name: Verify wheel payload
+        env:
+          WHEEL_PLATFORM: ${{ matrix.platform }}
+        run: >-
+          python packages/kumo-engine/scripts/verify_platform_wheel.py
+          packages/kumo-engine/dist/kumo_engine-*.whl
+          --platform-tag "${WHEEL_PLATFORM}"
+
+      - name: Test Windows path validation
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          cargo --config packages/diskgraph/.cargo/config.toml \
+            test --manifest-path packages/diskgraph/Cargo.toml \
+            --release --locked -p diskgraph-ingest --lib \
+            disk_manager::path_safety::tests
+          cargo --config packages/diskgraph/.cargo/config.toml \
+            test --manifest-path packages/diskgraph/Cargo.toml \
+            --release --locked -p diskgraph-ingest --lib \
+            rejects_windows_profiling_before_output_changes
+
       # GitHub-hosted artifact storage, not S3: no AWS role to provision.
+      # Native Windows wheels are experimental internal CI artifacts only.
       - name: Upload wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -139,6 +199,10 @@ jobs:
             platform: x86_64-manylinux_2_34
           - arch: arm64
             platform: aarch64-apple-darwin
+          - arch: aarch64
+            platform: aarch64-manylinux_2_34
+          - arch: windows-x86_64
+            platform: x86_64-pc-windows-msvc
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
@@ -168,6 +232,16 @@ jobs:
   attach-to-release:
     needs: [build, check-requirements]
     if: ${{ github.event_name == 'release' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+          - arch: arm64
+          # Enabled by dependent qualification PR #92 with its runtime gate.
+          # - arch: aarch64
+          # Native Windows remains experimental; Windows releases use WSL.
+          # - arch: windows-x86_64
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -175,8 +249,7 @@ jobs:
       - name: Download wheel
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: kumo-engine-wheel-*-${{ github.sha }}
-          merge-multiple: true
+          name: kumo-engine-wheel-${{ matrix.arch }}-${{ github.sha }}
           path: dist
 
       - name: Attach wheel to the GitHub release
@@ -193,6 +266,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Native Windows remains experimental; Windows releases use WSL.
+          # - arch: windows-x86_64
+          #   platform: win_amd64
+          # Enabled by dependent qualification PR #92 with its runtime gate.
+          # - arch: aarch64
+          #   platform: manylinux_2_34_aarch64
           - arch: x86_64
             platform: manylinux_2_34_x86_64
           - arch: arm64
