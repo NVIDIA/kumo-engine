@@ -22,26 +22,22 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from typing import Mapping, Optional, Sequence
+from typing import Optional, Sequence
 
 import pandas as pd
 from databricks.sql.client import Connection
-from kumo_core.object_store_sink import FilesystemSink
+from kumo_core.object_store_sink import FileStoreRouting, FilesystemSink
 from kumo_databricks.registry import DatabricksModelRegistryMixin
 from kumo_databricks.session import _target_config
 from kumo_databricks.volume import is_volume_path, volume_filesystem
 from kumo_databricks.write import RunVolume
 from kumoapi.data_source import DataSourceType
 from kumoapi.jobs import WriteMode
-from kumoapi.plugin import (
-    ModelRegistryLocation,
-    PublishedModel,
-    SourceConnector,
-)
+from kumoapi.plugin import SourceConnector
 from pyarrow.fs import FileSystem
 
 
-class DatabricksSinkBackend(DatabricksModelRegistryMixin):
+class DatabricksSinkBackend(FileStoreRouting, DatabricksModelRegistryMixin):
     r"""Writes a produced artifact to a Databricks Delta table.
 
     Registered by default beside
@@ -200,49 +196,6 @@ class DatabricksSinkBackend(DatabricksModelRegistryMixin):
                     replace=write_mode == WriteMode.OVERWRITE,
                     prepare_file=prepare)
         return sql.qualified_name(config.catalog, schema, table)
-
-    def publish_model(
-        self,
-        connector: SourceConnector,
-        bundle_dir: str,
-        *,
-        path: Optional[str] = None,
-        location: Optional[ModelRegistryLocation] = None,
-        metadata: Mapping[str, str] = {},
-        metrics: Mapping[str, float] = {},
-        project_id: Optional[str] = None,
-    ) -> PublishedModel:
-        """Register in Unity Catalog, or copy to a volume ``path``."""
-        if location is None and path and self.holds_files(connector, path):
-            return FilesystemSink(self).publish_model(
-                connector, bundle_dir, path=path, metadata=metadata)
-        return super().publish_model(connector, bundle_dir, path=path,
-                                     location=location, metadata=metadata,
-                                     metrics=metrics, project_id=project_id)
-
-    def fetch_model(
-        self,
-        connector: SourceConnector,
-        local_dir: str,
-        *,
-        path: Optional[str] = None,
-        location: Optional[ModelRegistryLocation] = None,
-        project_id: Optional[str] = None,
-    ) -> PublishedModel:
-        """Download from Unity Catalog, or from a volume ``path``."""
-        if location is None and path and self.holds_files(connector, path):
-            return FilesystemSink(self).fetch_model(connector, local_dir,
-                                                    path=path)
-        return super().fetch_model(connector, local_dir, path=path,
-                                   location=location, project_id=project_id)
-
-    def preflight_write_files(self, connector: SourceConnector,
-                              table_name: str,
-                              write_mode: Optional[WriteMode] = None) -> None:
-        """Refuse an occupied volume directory; tables are not checked."""
-        if self.holds_files(connector, table_name):
-            FilesystemSink(self).preflight_write_files(
-                connector, table_name, write_mode)
 
     def holds_files(self, connector: SourceConnector, path: str) -> bool:
         """Volume paths hold files; anything else is a table."""
