@@ -108,8 +108,8 @@ def fit_inputs(manifest: Any) -> Dict[str, Dict[str, Optional[str]]]:
         if source is not None:
             tables['training_table'] = source
         return {
-            str(name): {key: _text(getattr(entry, key))
-                        for key in INPUT_FIELDS}
+            str(name): {key: None if getattr(entry, key) is None else str(
+                getattr(entry, key)) for key in INPUT_FIELDS}
             for name, entry in tables.items()
         }
     except Exception as error:
@@ -122,10 +122,6 @@ def _parents(manifest: Any) -> Any:
     if manifest is None or getattr(manifest, 'reconstructed', False):
         return None
     return getattr(manifest, 'parents', None)
-
-
-def _text(value: Any) -> Optional[str]:
-    return None if value is None else str(value)
 
 
 def logged_name(name: str) -> str:
@@ -174,18 +170,16 @@ def run_record(spec: RunSpec) -> RunRecord:
     )
 
 
-def _user_tags(tags: Optional[Mapping[str, Any]],
+def _user_tags(tags: Mapping[str, Any],
                params: Mapping[str, str]) -> Dict[str, str]:
-    dropped = sorted(key for key in tags or {}
+    dropped = sorted(key for key in tags
                      if key.startswith('kumo.') or key in params)
     if dropped:
         warnings.warn(
             f'Tracking tags {dropped} are reserved and not recorded.',
             UserWarning, stacklevel=3)
-    return {
-        key: str(value)
-        for key, value in (tags or {}).items() if key not in dropped
-    }
+    return {key: str(value) for key, value in tags.items()
+            if key not in dropped}
 
 
 def trial_spec(events: Sequence[Event]) -> RunSpec:
@@ -447,11 +441,10 @@ class TrackingSession:
         if self.spec is None or not self._started.wait(FINISH_SECONDS):
             return None
         tracker = self._tracker
-        run_id = None if tracker is None else tracker.run_id
-        if tracker is None or not run_id:
+        if tracker is None or not tracker.run_id:
             return None
-        return TrackingRef(platform=str(tracker.platform), run_id=str(run_id),
-                           url=tracker.run_url)
+        return TrackingRef(platform=str(tracker.platform),
+                           run_id=str(tracker.run_id), url=tracker.run_url)
 
     def on_event(self, event: Event) -> None:
         if self.spec is None or event.trial is None:
