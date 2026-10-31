@@ -293,7 +293,8 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
     assert not run_dir.exists()
 
     native_plan = SimpleNamespace(
-        train_table=SimpleNamespace(lag_timesteps=None, compiler_options=None),
+        train_table=SimpleNamespace(lag_timesteps=None, compiler_options=None,
+                                    split_family=None),
         task_dataset=SimpleNamespace(required_stages=('train', 'val')),
     )
     generated = SimpleNamespace(
@@ -370,6 +371,7 @@ def test_forecast_generation_retains_effective_plan(graph_snapshot, tmp_path,
     )
     native_plan = SimpleNamespace(
         train_table=SimpleNamespace(
+            split_family=None,
             lag_timesteps=3,
             compiler_options={
                 'lag_offsets_secs': (-1, -2, -3),
@@ -460,6 +462,7 @@ def test_custom_training_table_materializes_weight_and_manual_split(
         train_table=SimpleNamespace(
             lag_timesteps=None,
             compiler_options=None,
+            split_family=None,
         ),
         task_dataset=SimpleNamespace(required_stages=('train', 'val', 'test')),
     )
@@ -521,7 +524,8 @@ def test_custom_training_table_uses_the_normal_inferred_split(
         captured.update(kwargs)
         return SimpleNamespace(
             train_table=SimpleNamespace(lag_timesteps=None,
-                                        compiler_options=None),
+                                        compiler_options=None,
+                                        split_family=None),
             task_dataset=SimpleNamespace(required_stages=('train', 'val')),
         )
 
