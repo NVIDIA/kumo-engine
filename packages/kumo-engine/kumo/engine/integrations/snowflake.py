@@ -11,26 +11,15 @@ import tempfile
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set
 
 from kumo_core.instrumentation import format_error
 from kumo_core.sources.sql import resolve_snowflake_identifier
-from kumo_core.summaries import (
-    Confusion,
-    Curve,
-    Dataset,
-    Histogram,
-    Note,
-    Scalar,
-    Series,
-    Summary,
-    Table,
-    Tag,
-)
+from kumo_core.summaries import Summary
 
 from kumo.engine import _card
 from kumo.engine._events import Event
-from kumo.engine._summary_tables import SummaryTables, table_json
+from kumo.engine._summary_tables import route, table_json
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
@@ -139,7 +128,6 @@ class SnowflakeTracking:
         self._artifacts: Set[str] = set()
         # The run's notes and brief tables, for its description.
         self._card: List[Summary] = []
-        self._grouped = SummaryTables()
         self._dropped_metrics: Set[str] = set()
         self._dropped_params = 0
 
@@ -305,17 +293,17 @@ class SnowflakeTracking:
         return name
 
     def log_summaries(self, summaries: Sequence[Summary]) -> None:
-        r"""Logs each summary on the run through its type's call in
-        `_SINKS`: values as metrics within the name budget; series,
-        histograms and tables as JSON artifacts, one per name prefix; brief
-        tables and notes for the run's card. Snowflake has no datasets."""
+        r"""Logs ``summaries``; charts become tables, and notes and brief
+        tables go on the card."""
         if self._run is None:
             return
-        self._grouped = SummaryTables()
-        for summary in summaries:
-            _SINKS[type(summary)](self, summary)
-        for table in self._grouped.tables():
-            self._log_table(table)
+        routed = route(summaries, charts=False)
+        self._card += routed.card
+        self._log_metrics({s.name: s.value for s in routed.scalars},
+                          _MAX_METRICS)
+        self._log_params(routed.tags)
+        self._log_artifacts({f'{table.name}.json': table_json(table)
+                             for table in routed.tables})
 
     def _log_card(self, record: RunRecord) -> None:
         r"""Writes ``run_card.md``: the run's heading and sentence, the
@@ -335,37 +323,6 @@ class SnowflakeTracking:
         except Exception as error:
             logger.warning('Could not write the card of Snowflake run %s: %s',
                            self.run_id, format_error(error))
-
-    def _log_scalar(self, summary: Scalar) -> None:
-        self._log_metrics({summary.name: summary.value}, _MAX_METRICS)
-
-    def _log_tag(self, summary: Tag) -> None:
-        self._log_params({summary.name: summary.value})
-
-    def _log_series(self, summary: Series) -> None:
-        if not summary.chart:
-            self._grouped.add_series(summary)
-
-    def _log_curve(self, summary: Curve) -> None:
-        self._grouped.add_curve(summary)
-
-    def _log_histogram(self, summary: Histogram) -> None:
-        self._grouped.add_histogram(summary)
-
-    def _log_table(self, summary: Table) -> None:
-        if summary.brief:
-            self._card.append(summary)
-            return
-        self._log_artifacts({f'{summary.name}.json': table_json(summary)})
-
-    def _log_note(self, summary: Note) -> None:
-        self._card.append(summary)
-
-    def _log_confusion(self, summary: Confusion) -> None:
-        self._log_table(Table(
-            summary.name, ('actual', *summary.labels),
-            tuple((label, *row)
-                  for label, row in zip(summary.labels, summary.counts))))
 
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -415,19 +372,6 @@ class SnowflakeTracking:
         if kept:
             self._tracking.log_metrics(kept, step=step)
             self._values.update(kept)
-
-
-_SINKS: Dict[type, Callable[[SnowflakeTracking, Any], None]] = {
-    Scalar: SnowflakeTracking._log_scalar,
-    Tag: SnowflakeTracking._log_tag,
-    Series: SnowflakeTracking._log_series,
-    Curve: SnowflakeTracking._log_curve,
-    Histogram: SnowflakeTracking._log_histogram,
-    Table: SnowflakeTracking._log_table,
-    Confusion: SnowflakeTracking._log_confusion,
-    Note: SnowflakeTracking._log_note,
-    Dataset: lambda tracker, summary: None,
-}
 
 
 def _now() -> datetime:

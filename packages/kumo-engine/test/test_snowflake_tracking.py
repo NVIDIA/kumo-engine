@@ -351,7 +351,8 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
         '**Where things are**', '', '| Artifact | Location |', '| --- | --- |',
         '| model bundle `bbbbbbbb` | [`s3://b/models/b`](https://s3.console.'
         'aws.amazon.com/s3/buckets/b?prefix=models/b/) |', '',
-        'Full lineage: `_provenance.json`. Tables: `holdout/by_k.json`.'])
+        'Full lineage: `_provenance.json`. Tables: `holdout/by_k.json`, '
+        '`pred.json`.'])
     assert ('duration_seconds', 90.0, 0) in run['metrics']
     assert run['params']['prep.training_table.seconds'] == '12.5'
     assert run['params']['prep.training_table.bytes'] == '4300'

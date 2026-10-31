@@ -15,7 +15,7 @@ import threading
 import time
 import warnings
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,24 +38,13 @@ from typing import (
 from urllib.parse import quote
 
 from kumo_core.instrumentation import format_error
-from kumo_core.summaries import (
-    Confusion,
-    Curve,
-    Dataset,
-    Histogram,
-    Note,
-    Scalar,
-    Series,
-    Summary,
-    Table,
-    Tag,
-)
+from kumo_core.summaries import Dataset, Note, Summary, Table, Tag
 from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
 from kumo.engine import _card
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
-from kumo.engine._summary_tables import SummaryTables, table_json
+from kumo.engine._summary_tables import Routed, route, table_json
 from kumo.engine._tracking import (
     DROPPED_PARAMS,
     RegistrationError,
@@ -193,7 +182,6 @@ class MlflowTracking:
         self._artifacts: Set[str] = set()
         # The run's notes and brief tables, for its description.
         self._card: List[Summary] = []
-        self._pending = _Pending()
         self._model_id: Optional[str] = None
         self._holdout: Any = None
         self._published: Optional[PublishedModel] = None
@@ -551,16 +539,11 @@ class MlflowTracking:
         brief tables as the card's ``drift`` or ``realized`` part, with line
         1 regenerated. The run's status, end time and params are
         unchanged."""
-        def on_card(summary: Summary) -> bool:
-            return isinstance(summary, Note) or (isinstance(summary, Table)
-                                                 and summary.brief)
-
-        self.log_summaries([summary for summary in record.summaries
-                            if not on_card(summary)], run_id)
+        routed = route(record.summaries, charts=True)
+        self._log_routed(routed, run_id)
         self.update_card(
             run_id, 'realized' if record.tags.get('kumo.monitor')
-            == 'evaluate' else 'drift',
-            [summary for summary in record.summaries if on_card(summary)])
+            == 'evaluate' else 'drift', routed.card)
         with self.target.scope():
             self._experiment_id = self._client.get_run(
                 run_id).info.experiment_id
@@ -886,74 +869,37 @@ class MlflowTracking:
 
     def log_summaries(self, summaries: Sequence[Summary],
                       run_id: Optional[str] = None) -> None:
-        r"""Logs each summary on run ``run_id`` (default: the current run)
-        through its type's call in `_SINKS`: values as metrics, a
-        ``role='model'`` scalar also on the logged model, against the
-        training table; charted series as metrics over their steps; other
-        series and histograms as one table per name prefix; brief tables and
-        notes for the run's card."""
-        self._pending = _Pending()
-        for summary in summaries:
-            _SINKS[type(summary)](self, summary)
-        pending, self._pending = self._pending, _Pending()
-        run_id = run_id or self._parent
-        scalars = pending.scalars
-        if pending.datasets:
+        r"""Logs ``summaries`` on run ``run_id`` (default: the current run);
+        notes and brief tables go on its card."""
+        routed = route(summaries, charts=True)
+        self._card += routed.card
+        self._log_routed(routed, run_id or self._parent)
+
+    def _log_routed(self, routed: Routed, run_id: str) -> None:
+        datasets = [d for d in map(self._dataset_input, routed.datasets) if d]
+        if datasets:
             with self.target.scope():
-                self._client.log_inputs(run_id, datasets=pending.datasets)
-        self._holdout = _holdout_dataset(pending.datasets)
+                self._client.log_inputs(run_id, datasets=datasets)
+        self._holdout = _holdout_dataset(datasets)
+        scalars = routed.scalars
         self._log_metrics(run_id, {s.name: s.value for s in scalars
                                    if s.role == 'model'},
                           model_id=self._model_id, dataset=self._holdout)
         self._log_metrics(run_id, {s.name: s.value for s in scalars
                                    if s.role != 'model'})
-        if pending.charts:
+        if routed.charts:
             timestamp = int(time.time() * 1000)
             self._log_readings(self._client, run_id, [
                 (values, step, timestamp)
-                for step, values in by_step(pending.charts)])
-        if pending.tags:
-            self._log_tags(run_id, pending.tags)
-        self._write_tables(run_id, [*pending.grouped.tables(),
-                                    *pending.tables])
+                for step, values in by_step(routed.charts)])
+        if routed.tags:
+            self._log_tags(run_id, routed.tags)
+        self._write_tables(run_id, routed.tables)
 
-    def _log_scalar(self, summary: Scalar) -> None:
-        self._pending.scalars.append(summary)
-
-    def _log_tag(self, summary: Tag) -> None:
-        self._pending.tags[summary.name] = summary.value
-
-    def _log_series(self, summary: Series) -> None:
-        if summary.chart:
-            self._pending.charts[summary.name] = summary.points
-        else:
-            self._pending.grouped.add_series(summary)
-
-    def _log_curve(self, summary: Curve) -> None:
-        self._pending.grouped.add_curve(summary)
-
-    def _log_histogram(self, summary: Histogram) -> None:
-        self._pending.grouped.add_histogram(summary)
-
-    def _log_table(self, summary: Table) -> None:
-        if summary.brief:
-            self._card.append(summary)
-        else:
-            self._pending.tables.append(summary)
-
-    def _log_note(self, summary: Note) -> None:
-        self._card.append(summary)
-
-    def _log_confusion(self, summary: Confusion) -> None:
-        self._log_table(Table(
-            summary.name, ('actual', *summary.labels),
-            tuple((label, *row)
-                  for label, row in zip(summary.labels, summary.counts))))
-
-    def _log_dataset(self, summary: Dataset) -> None:
+    def _dataset_input(self, summary: Dataset) -> Any:
         source = _dataset_source(summary.source)
         if source is None or summary.context == 'output':
-            return
+            return None
         entities = self._mlflow.entities
         dataset = entities.Dataset(
             name=summary.name,
@@ -968,9 +914,9 @@ class MlflowTracking:
                 key: value for key, value in summary.profile.items()
                 if not isinstance(value, (Mapping, list, tuple))
             }, default=str))
-        self._pending.datasets.append(entities.DatasetInput(
+        return entities.DatasetInput(
             dataset, tags=[entities.InputTag('mlflow.data.context',
-                                             summary.context)]))
+                                             summary.context)])
 
     def _write_tables(self, run_id: str, tables: Sequence[Table]) -> None:
         r"""Writes each table as ``<name>.json``, replacing an earlier
@@ -1068,20 +1014,6 @@ def _digest(name: str, source: Mapping[str, Optional[str]],
         default=str).encode()).hexdigest()[:8]
 
 
-@dataclass
-class _Pending:
-    r"""What one `MlflowTracking.log_summaries` call logs, gathered by
-    `_SINKS` and written in batches."""
-
-    scalars: List[Scalar] = field(default_factory=list)
-    charts: Dict[str, Tuple[Tuple[int, float], ...]] = field(
-        default_factory=dict)
-    tags: Dict[str, str] = field(default_factory=dict)
-    grouped: SummaryTables = field(default_factory=SummaryTables)
-    tables: List[Table] = field(default_factory=list)
-    datasets: List[Any] = field(default_factory=list)
-
-
 _NOTE = 'mlflow.note.content'
 _EXPERIMENT_NOTE = '\n'.join([
     'kumo-engine: fit-<model>-v<N> = a fit · predict-<model>-v<N>-<date> = '
@@ -1163,17 +1095,6 @@ def _with_block(card: str, name: str, text: str) -> str:
     return f'{head}{part}\n\n{notes}{rest}' if notes else f'{card}\n{part}'
 
 
-_SINKS: Dict[type, Callable[[MlflowTracking, Any], None]] = {
-    Scalar: MlflowTracking._log_scalar,
-    Tag: MlflowTracking._log_tag,
-    Series: MlflowTracking._log_series,
-    Curve: MlflowTracking._log_curve,
-    Histogram: MlflowTracking._log_histogram,
-    Table: MlflowTracking._log_table,
-    Confusion: MlflowTracking._log_confusion,
-    Note: MlflowTracking._log_note,
-    Dataset: MlflowTracking._log_dataset,
-}
 _BATCH_METRICS = 1000  # MLflow's per-request limit
 _SYSTEM_METRICS_FAILURES = 6
 _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',

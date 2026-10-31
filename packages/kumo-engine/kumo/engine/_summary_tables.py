@@ -9,7 +9,18 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
-from kumo_core.summaries import Curve, Histogram, Series, Table
+from kumo_core.summaries import (
+    Confusion,
+    Curve,
+    Dataset,
+    Histogram,
+    Note,
+    Scalar,
+    Series,
+    Summary,
+    Table,
+    Tag,
+)
 
 #: Columns that define bins or thresholds rather than measure anything.
 _DEFINITIONS = frozenset({'from', 'to', 'threshold'})
@@ -43,6 +54,56 @@ class SummaryTables:
                   for name, (x_label, columns) in self.series.items()),
                 *(_histogram_table(name, histograms)
                   for name, histograms in self.histograms.items())]
+
+
+@dataclass
+class Routed:
+    r"""Summaries sorted by how a tracker writes them."""
+
+    scalars: List[Scalar] = field(default_factory=list)
+    tags: Dict[str, str] = field(default_factory=dict)
+    charts: Dict[str, Tuple[Tuple[int, float], ...]] = field(
+        default_factory=dict)
+    tables: List[Table] = field(default_factory=list)
+    card: List[Summary] = field(default_factory=list)
+    datasets: List[Dataset] = field(default_factory=list)
+
+
+def route(summaries: Sequence[Summary], charts: bool) -> Routed:
+    r"""Brief tables and notes go on the card; series, curves and histograms
+    become tables; chart series stay charts only when ``charts``."""
+    routed, grouped, tables = Routed(), SummaryTables(), []
+    for summary in summaries:
+        if isinstance(summary, Scalar):
+            routed.scalars.append(summary)
+        elif isinstance(summary, Tag):
+            routed.tags[summary.name] = summary.value
+        elif isinstance(summary, Series) and summary.chart and charts:
+            routed.charts[summary.name] = summary.points
+        elif isinstance(summary, Series):
+            grouped.add_series(summary)
+        elif isinstance(summary, Curve):
+            grouped.add_curve(summary)
+        elif isinstance(summary, Histogram):
+            grouped.add_histogram(summary)
+        elif isinstance(summary, Dataset):
+            routed.datasets.append(summary)
+        elif isinstance(summary, Note) or (isinstance(summary, Table)
+                                           and summary.brief):
+            routed.card.append(summary)
+        elif isinstance(summary, Confusion):
+            tables.append(confusion_table(summary))
+        elif isinstance(summary, Table):
+            tables.append(summary)
+        else:
+            raise TypeError(f'No route for {type(summary).__name__}')
+    routed.tables = [*grouped.tables(), *tables]
+    return routed
+
+
+def confusion_table(summary: Confusion) -> Table:
+    return Table(summary.name, ('actual', *summary.labels), tuple(
+        (label, *row) for label, row in zip(summary.labels, summary.counts)))
 
 
 def _series_table(name: str, x_label: str,
