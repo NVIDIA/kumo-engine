@@ -135,9 +135,9 @@ def to_json_dict(pydantic_obj: Any, insecure: bool = False) -> Dict[str, Any]:
     return json.loads(to_json(pydantic_obj, insecure=insecure))
 
 
-def from_json(obj: Any, cls: Union[Type[T], object]) -> T:
+def from_json(obj: Any, cls: Union[Type[T], Any]) -> T:
     if isinstance(obj, str):
         obj = json.loads(obj)
     from pydantic import TypeAdapter
-    adapter = TypeAdapter(cast(Any, cls))
+    adapter: TypeAdapter[T] = TypeAdapter(cast(Any, cls))
     return adapter.validate_python(obj)

@@ -92,6 +92,7 @@ def test_pre_minio_assume_role_identity_remains_unchanged() -> None:
         credentials=S3AssumeRoleCredentials(
             external_id=SecretStr('legacy-external')),
     )
+    assert isinstance(payload.config, S3IdentityConfig)
     assert payload.config.connection is None
     assert to_json_dict(payload)['config']['connection'] is None
 
@@ -103,6 +104,7 @@ def test_pre_minio_ambient_identity_remains_unchanged() -> None:
         display_name='Legacy ambient',
         config=S3IdentityConfig(authentication=S3AmbientAuthentication()),
     )
+    assert isinstance(payload.config, S3IdentityConfig)
     assert payload.config.connection is None
     assert to_json_dict(payload)['config']['connection'] is None
 
