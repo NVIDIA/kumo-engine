@@ -186,7 +186,8 @@ class TrainingResult:
         if isinstance(config, MLOps):
             return _register_result(self, config)
         _require_publisher(config)
-        return _publish(self.bundle_dir, self.bundle_id, self.metrics, config)
+        return _publish(self.bundle_dir, self.bundle_id, self.metrics,
+                        config)[0]
 
     def with_scoring_defaults(self,
                               defaults: ScoringDefaults) -> 'TrainingResult':
@@ -394,17 +395,17 @@ def _store_and_register(
     registry = None if stored else _connector_registry(settings)
     if registry is None:
         return registered, error
-    errors: List[BaseException] = []
     try:
-        registered = _publish(bundle_dir, None if manifest is None else
-                              manifest.id, metrics, registry, errors, warn)
+        registered, alias_error = _publish(
+            bundle_dir, None if manifest is None else manifest.id, metrics,
+            registry, warn)
     except Exception as failure:
         if warn:
             warn_failure(
                 f"Could not register the model: {full_error(failure)}",
                 failure, 3)
         return registered, error or failure
-    return registered, error or (errors or [None])[0]
+    return registered, error or alias_error
 
 
 def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
@@ -494,7 +495,7 @@ def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
     registry = cast(ModelOutputConfig, _connector_registry(settings))
     _require_publisher(registry)
     return _publish(result.bundle_dir, result.bundle_id, result.metrics,
-                    registry)
+                    registry)[0]
 
 
 def _with_metrics(model: Optional[PublishedModel],
@@ -526,8 +527,9 @@ def _logs_models(tracking: Any) -> bool:
 
 def _publish(bundle_dir: Path, bundle_id: Optional[str],
              metrics: Mapping[str, float], export_config: ModelOutputConfig,
-             errors: Optional[List[BaseException]] = None,
-             warn: bool = True) -> PublishedModel:
+             warn: bool = True
+             ) -> Tuple[PublishedModel, Optional[BaseException]]:
+    r"""The published model, and the error setting its alias, if any."""
     metadata = {}
     if (bundle_dir / SPEC_FILE).is_file():
         spec = read_training_spec(bundle_dir)
@@ -559,9 +561,8 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
                     f"Published {published.name} version "
                     f"{published.version} without alias {alias}: "
                     f"{full_error(error)}", error, 4)
-            if errors is not None:
-                errors.append(error)
-    return published
+            return published, error
+    return published, None
 
 
 def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
@@ -1090,7 +1091,7 @@ class Trainer:
             training_result = replace(
                 training_result, published_model=_publish(
                     training_result.bundle_dir, training_result.bundle_id,
-                    training_result.metrics, export_config))
+                    training_result.metrics, export_config)[0])
 
         training_result = replace(training_result, _trainer=self)
         self._training_result = training_result
