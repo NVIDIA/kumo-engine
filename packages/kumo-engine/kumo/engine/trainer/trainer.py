@@ -8,9 +8,10 @@ import gc
 import hashlib
 import json
 import logging
+import shutil
 import time
 import warnings
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -21,6 +22,7 @@ from typing import (
     Mapping,
     Optional,
     TypeVar,
+    Union,
     cast,
 )
 
@@ -52,13 +54,19 @@ from kumo.engine._embeddings import (
     require_embedding_models,
     require_trained_embedding_models,
 )
+from kumo.engine._manifest import ModelManifest
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
 from kumo.engine.connector import model_sink
 from kumo.engine.connector.base import Connector
-from kumo.engine.graph import GraphSnapshot
+from kumo.engine.connector.source_table import SourceTable
+from kumo.engine.graph import GraphSnapshot, report_other_graph
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer._spec import (
+    HOLDOUT_META_ROLE,
+    HOLDOUT_ROLE,
+    SPEC_FILE,
+    listed_file,
     read_bundle_artifact_paths,
     read_training_spec,
     write_training_spec,
@@ -79,11 +87,12 @@ class TrainingResult:
     when `fit()` exports the bundle. It is `None` without an export.
 
     `holdout_path` is the published model's holdout Parquet file written by
-    `fit()`, or `None` when it has none (no holdout task, a model refit on the
-    full data, or results of `Trainer.load`). It is not part of the published
-    model bundle. The file is capped at 1 GiB in memory; `holdout_truncated` is
-    true when rows were dropped to fit, and `None` when the size record could
-    not be read.
+    `fit()`, or `None` when it has none (no holdout task, or a model refit on
+    the full data). The bundle carries a copy (`holdout.parquet`), so a model
+    loaded with `Trainer.load` or `Trainer.load_from_connector` has it too;
+    bundles from before this copy was added have none. The file is capped at
+    1 GiB in memory; `holdout_truncated` is true when rows were dropped to fit,
+    and `None` when the size record could not be read.
     """
 
     metrics: Dict[str, float]
@@ -92,6 +101,45 @@ class TrainingResult:
     published_model: Optional[PublishedModel] = None
     holdout_path: Optional[Path] = None
     holdout_truncated: Optional[bool] = False
+    bundle_id: Optional[str] = None
+    _trainer: Optional['Trainer'] = field(default=None, repr=False,
+                                          compare=False)
+
+    @property
+    def id(self) -> Optional[str]:
+        """The model's id: its bundle id."""
+        return self.bundle_id
+
+    @property
+    def manifest(self) -> Optional[ModelManifest]:
+        """The bundle's ``_provenance.json``; None for older bundles."""
+        from kumo.engine.trainer._provenance import read_provenance
+
+        return read_provenance(self.bundle_dir)
+
+    @property
+    def snapshot_id(self) -> Optional[str]:
+        """The id of the snapshot the model was trained on."""
+        if not (self.bundle_dir / SPEC_FILE).is_file():
+            return None
+        return read_training_spec(self.bundle_dir).snapshot_id
+
+    def predict(self, *args: Any, **kwargs: Any) -> 'PredictionResult':
+        """Score with this model, as :meth:`Trainer.predict`."""
+        return self._model('predict').predict(*args, **kwargs)
+
+    def _model(self, call: str) -> 'Trainer':
+        trainer = self._trainer
+        if trainer is None:
+            raise RuntimeError(f'This result has no model to {call} with; '
+                               'use Trainer.load on its bundle_dir.')
+        current = trainer._training_result
+        if current is None or current.bundle_dir != self.bundle_dir:
+            trainer = Trainer._load_bundle(self.bundle_dir,
+                                           trainer._embedding_models,
+                                           accelerator=trainer._accelerator)
+            self._trainer = trainer
+        return trainer
 
     def holdout_df(self) -> pd.DataFrame:
         r"""Read the holdout predictions as a pandas DataFrame.
@@ -189,6 +237,72 @@ def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
     return path, truncated
 
 
+HOLDOUT_FILE = 'holdout.parquet'
+HOLDOUT_META_FILE = 'holdout-meta.json'
+
+
+def _bundle_holdout(result: TrainingResult) -> TrainingResult:
+    r"""Copy the holdout and its size record into the bundle, so a model
+    loaded from a registry or path still has them."""
+    from kumo_core.artifacts import add_bundle_file
+
+    if result.holdout_path is None:
+        return result
+    try:
+        shutil.copyfile(result.holdout_path, result.bundle_dir / HOLDOUT_FILE)
+        add_bundle_file(result.bundle_dir, HOLDOUT_ROLE, HOLDOUT_FILE)
+        if result.holdout_truncated is not None:
+            (result.bundle_dir / HOLDOUT_META_FILE).write_text(
+                json.dumps({'truncated': result.holdout_truncated}))
+            add_bundle_file(result.bundle_dir, HOLDOUT_META_ROLE,
+                            HOLDOUT_META_FILE)
+    except Exception as error:
+        warnings.warn(
+            f"Could not add the holdout to the model bundle: {error}; a "
+            f"loaded copy of this model has no holdout_df().", UserWarning,
+            stacklevel=4)
+    return result
+
+
+def _listed_holdout(bundle_dir: Path) -> tuple[Optional[Path], Optional[bool]]:
+    path = listed_file(bundle_dir, HOLDOUT_ROLE)
+    if path is None or not path.is_file():
+        return None, False
+    meta = listed_file(bundle_dir, HOLDOUT_META_ROLE)
+    try:
+        truncated = (None if meta is None else bool(
+            json.loads(meta.read_text())['truncated']))
+    except (OSError, ValueError, KeyError, TypeError):
+        truncated = None
+    return path, truncated
+
+
+def _store_model(result: TrainingResult, settings: Any) -> None:
+    r"""Copy the bundle to ``<root>/models/<bundle id>/`` unless a complete
+    copy is there; failures warn."""
+    from kumo_core.object_store_sink import holds_bundle, upload_bundle
+    from pyarrow.fs import FileSelector
+
+    from kumo.engine.connector import file_store
+
+    if result.bundle_id is None:
+        return
+    try:
+        filesystem, root = file_store(
+            settings.root.connector,
+            settings.root.location(f'models/{result.bundle_id}'))
+        if holds_bundle(filesystem, root, str(result.bundle_dir)):
+            return
+        if filesystem.get_file_info(
+                FileSelector(root, allow_not_found=True)):
+            filesystem.delete_dir_contents(root, missing_dir_ok=True)
+        upload_bundle(filesystem, root, str(result.bundle_dir))
+    except Exception as error:
+        warnings.warn(
+            f"Could not store model {result.bundle_id} under the artifact "
+            f"root: {error}", UserWarning, stacklevel=4)
+
+
 def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
     from kumo_core.training.config import FitMode
 
@@ -277,6 +391,7 @@ class Trainer:
         self._id = new_run_id()
         self._training_result: Optional[TrainingResult] = None
         self._snapshot_id: Optional[str] = None
+        self._graph_config: Optional[Dict[str, Any]] = None
         self._training_query: Optional[str] = None
         self._training_table_generation_plan: Optional[
             TrainingTableGenerationPlan] = None
@@ -300,6 +415,11 @@ class Trainer:
     def scratch_dir(self) -> Path:
         return trainer_scratch_dir(self._id)
 
+    @property
+    def result(self) -> Optional[TrainingResult]:
+        """The last fit's result, or the loaded bundle's."""
+        return self._training_result
+
     @_without_torch_scatter_hint
     def fit(
         self,
@@ -308,6 +428,7 @@ class Trainer:
         snapshot: GraphSnapshot,
         export_config: Optional[ModelOutputConfig] = None,
         warm_start: Optional[Self] = None,
+        mlops: Optional[Any] = None,
     ) -> TrainingResult:
         r"""Train a model against `train_table`.
 
@@ -336,6 +457,11 @@ class Trainer:
                 may contain an AutoML search space instead of the fitted
                 architecture; they support prediction but are unreliable
                 warm-start sources.
+            mlops: a `kumo.MLOps`; with MLOps on (this or a `kumo.mlops`
+                block), the bundle is also stored under the artifact root.
+
+        Each call returns a new `TrainingResult`; `Trainer.result` holds the
+        latest.
         """
         from kumo_core.automl.runtime import (
             inherit_warm_start_model_plan,
@@ -365,18 +491,25 @@ class Trainer:
             raise NotImplementedError(
                 f'{type(export_config.connector).__name__} cannot publish '
                 f'models')
+        from kumo.engine._mlops import resolve
+        from kumo.engine.trainer._provenance import parent_model
+
+        settings = resolve(mlops)
+        started_at = datetime.now(timezone.utc)
         run_id = f'{self._id}-fit-{new_run_id()}'
         run_dir = self.scratch_dir / 'runs' / run_id
 
         model_plan = _to_core_model_plan(self._model_plan)
         warm_start_artifacts = None
+        warm_start_bundle_id = None
         effective_plan = self._model_plan
         if warm_start is not None:
             if warm_start._training_result is None:
                 raise ValueError(
                     "warm_start requires a fitted or loaded Trainer")
-            warm_start_artifacts = read_bundle_artifact_paths(
-                warm_start._training_result.bundle_dir)
+            warm_start_artifacts, warm_start_bundle_id = (
+                read_bundle_artifact_paths(
+                    warm_start._training_result.bundle_dir))
             inherit_warm_start_model_plan(
                 model_plan,
                 load_json(warm_start_artifacts['resolved_model_plan'],
@@ -470,6 +603,10 @@ class Trainer:
             tt_id=ingest_tt_id,
         )
         del task_dataset
+        if (materialized.task.split.stage_counts.get('test') == 0
+                and not materialized.task.task_type.is_link_pred):
+            raise ValueError('The test split is empty: shorten the query '
+                             'window or add data.')
         training_input = ResolvedTrainingInput(
             task=materialized.task,
             model_plan=materialized.model_plan,
@@ -510,6 +647,8 @@ class Trainer:
 
         holdout_path, holdout_truncated = _published_holdout(
             result.best_trainer)
+        fit_mode = result.best_trainer.published_fit_mode()
+        fit_mode = None if fit_mode is None else fit_mode.value
         training_result = TrainingResult(
             metrics=dict(result.metrics),
             artifact_paths=dict(result.artifact_paths),
@@ -523,9 +662,17 @@ class Trainer:
             training_result,
             predictive_query=train_table.query,
             snapshot_id=snapshot.id,
+            graph_config=snapshot.graph_config,
             training_table_generation=train_table.generation_plan,
             export_config=export_config,
             model_plan=effective_plan,
+            provenance=dict(
+                train_table=train_table,
+                warm_start=None if warm_start is None else parent_model(
+                    warm_start._training_result.bundle_dir,
+                    warm_start_bundle_id),
+                started_at=started_at, fit_mode=fit_mode),
+            settings=settings,
         )
 
     def _finish_fit(
@@ -536,9 +683,16 @@ class Trainer:
         snapshot_id: str,
         training_table_generation: TrainingTableGenerationPlan,
         export_config: Optional[ModelOutputConfig],
+        graph_config: Optional[Dict[str, Any]] = None,
         model_plan: Optional[ModelPlan] = None,
+        provenance: Optional[Mapping[str, Any]] = None,
+        settings: Optional[Any] = None,
     ) -> TrainingResult:
         """Commit durable fit outputs before making this trainer usable."""
+        from kumo_core.artifacts import bundle_id_from_manifest
+
+        from kumo.engine.trainer._provenance import write_provenance
+
         effective_plan = model_plan if model_plan is not None else self._model_plan
         write_training_spec(
             training_result.bundle_dir,
@@ -546,7 +700,25 @@ class Trainer:
             model_plan=effective_plan,
             snapshot_id=snapshot_id,
             training_table_generation=training_table_generation,
+            graph_config=graph_config,
         )
+        training_result = _bundle_holdout(training_result)
+        try:
+            training_result = replace(
+                training_result,
+                bundle_id=bundle_id_from_manifest(training_result.bundle_dir))
+        except Exception as error:
+            warnings.warn(f"Could not compute the bundle id: {error}",
+                          UserWarning, stacklevel=3)
+        if provenance is not None and training_result.bundle_id is not None:
+            try:
+                write_provenance(training_result.bundle_dir,
+                                 bundle_id=training_result.bundle_id,
+                                 **provenance)
+            except Exception as error:
+                warnings.warn(
+                    f"Publishing the model bundle without _provenance.json: "
+                    f"{error}", UserWarning, stacklevel=3)
         if export_config is not None:
             spec = read_training_spec(training_result.bundle_dir)
             sink = model_sink(export_config.connector, export_config.path)
@@ -564,9 +736,13 @@ class Trainer:
             )
             training_result = replace(training_result,
                                       published_model=published)
+        if settings is not None and settings.wants('model'):
+            _store_model(training_result, settings)
 
+        training_result = replace(training_result, _trainer=self)
         self._training_result = training_result
         self._snapshot_id = snapshot_id
+        self._graph_config = graph_config
         self._training_query = predictive_query
         self._training_table_generation_plan = training_table_generation
 
@@ -575,20 +751,31 @@ class Trainer:
     @_without_torch_scatter_hint
     def predict(
         self,
-        prediction_table: PredictionTable,
+        source: Union[GraphSnapshot, PredictionTable, None] = None,
+        /,
         *,
-        snapshot: GraphSnapshot,
+        snapshot: Optional[GraphSnapshot] = None,
+        entities: Optional[SourceTable] = None,
+        prediction_time: Optional[datetime] = None,
         output_config: Optional[PredictionOutputConfig] = None,
         num_classes_to_return: Optional[int] = None,
         num_workers: int = 1,
         binary_classification_threshold: Optional[float] = None,
+        prediction_table: Optional[PredictionTable] = None,
     ) -> PredictionResult:
-        r"""Run batch prediction and return durable file-backed results.
+        r"""Score a snapshot and return durable file-backed results.
+
+        ``predict(snapshot)`` scores the trained query's population at
+        ``prediction_time`` (as :meth:`PredictiveQuery.generate_prediction_table`);
+        ``entities`` is a source table of ``ENTITY1`` (and ``TIMESTAMP``
+        where the task needs one) rows to score instead. It warns when the
+        snapshot was taken of another graph than the one the model was
+        trained on. ``predict(prediction_table, snapshot=...)`` scores a
+        prediction table generated beforehand, as before.
 
         The trainer must contain fitted state from :meth:`fit`, :meth:`load`,
-        or :meth:`load_from_connector`. ``snapshot`` selects graph data and
-        features independently of the table's retained population and anchor
-        times. Without ``output_config``, predictions remain on local disk.
+        or :meth:`load_from_connector`. Without ``output_config``,
+        predictions remain on local disk.
 
         ``num_workers`` controls scorer processes, not DataLoader workers.
         The default stays in-process; values above one spawn independent
@@ -610,6 +797,65 @@ class Trainer:
 
         validate_prediction_workers(num_workers)
         validate_num_classes_to_return(num_classes_to_return)
+        if source is not None and not isinstance(source, GraphSnapshot):
+            if prediction_table is not None:
+                raise TypeError('predict() got two prediction tables')
+            source, prediction_table = None, source
+        if source is not None and snapshot is not None:
+            raise TypeError('predict() got two snapshots')
+        snapshot = snapshot if snapshot is not None else source
+        if snapshot is None:
+            raise TypeError('predict() needs a snapshot')
+        if prediction_table is not None and (entities is not None
+                                             or prediction_time is not None):
+            raise ValueError('A prediction table already holds its entities '
+                             'and times; pass it or entities=/'
+                             'prediction_time=, not both.')
+        table = (prediction_table if prediction_table is not None else
+                 self._prediction_table(snapshot, entities, prediction_time))
+        return self._predict(
+            table, snapshot=snapshot, output_config=output_config,
+            num_classes_to_return=num_classes_to_return,
+            num_workers=num_workers,
+            binary_classification_threshold=binary_classification_threshold)
+
+    def _prediction_table(self, snapshot: GraphSnapshot,
+                          entities: Optional[SourceTable],
+                          prediction_time: Optional[datetime]
+                          ) -> PredictionTable:
+        from kumo.engine.pquery.predictive_query import PredictiveQuery
+
+        if self._training_query is None:
+            raise RuntimeError(
+                "Trainer.predict() requires a prior Trainer.fit() or "
+                "Trainer.load() call on this same Trainer instance.")
+        if entities is not None and prediction_time is not None:
+            raise ValueError("Pass prediction_time or entities, not both; "
+                             "put anchor times in the entities' TIMESTAMP.")
+        trained = (self._snapshot_id or '').partition('@')[0]
+        if trained and snapshot._graph_key != trained:
+            report_other_graph(
+                f"Snapshot {snapshot.id} was taken of graph "
+                f"{snapshot._graph_key}, but this model was trained on a "
+                f"snapshot of graph {trained}.", self._graph_config,
+                snapshot.graph_config, stacklevel=3)
+        query = PredictiveQuery._from_snapshot(snapshot, self._training_query)
+        plan = self._training_table_generation_plan
+        return (query.generate_prediction_table(
+            snapshot, prediction_time=prediction_time, plan=plan)
+                if entities is None else PredictionTable.from_source_table(
+                    entities, pq=query, snapshot=snapshot, plan=plan))
+
+    def _predict(
+        self,
+        prediction_table: PredictionTable,
+        *,
+        snapshot: GraphSnapshot,
+        output_config: Optional[PredictionOutputConfig] = None,
+        num_classes_to_return: Optional[int] = None,
+        num_workers: int = 1,
+        binary_classification_threshold: Optional[float] = None,
+    ) -> PredictionResult:
         if self._training_result is None:
             raise RuntimeError(
                 "Trainer.predict() requires a prior Trainer.fit() call on "
@@ -811,7 +1057,15 @@ class Trainer:
         Hashes detect corruption, not publisher authentication. Load only models
         from trusted publishers; checkpoint deserialization happens at predict.
         ``accelerator`` selects the device for this instance (default: ``auto``).
+        A `kumo.MLOps` ``model_registry`` reads ``path`` under its artifact
+        root (``models/<id>``).
         """
+        from kumo.engine._mlops import MLOps, on_root
+
+        if isinstance(model_registry, MLOps) and path is None:
+            raise TypeError('Loading from a kumo.MLOps takes path=.')
+        if path is not None:
+            model_registry, path = on_root(model_registry, path)
         address = ModelOutputConfig(model_registry, path=path,
                                     location=location)
         bundle_dir = trainer_scratch_dir(new_run_id()) / 'fetched-model'
@@ -833,7 +1087,7 @@ class Trainer:
         accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
     ) -> Self:
         bundle_dir = bundle_dir.resolve()
-        paths = read_bundle_artifact_paths(bundle_dir)
+        paths, bundle_id = read_bundle_artifact_paths(bundle_dir)
         spec = read_training_spec(bundle_dir)
         from kumo_core.io.json import from_json_dict
         plan = from_json_dict(spec.model_plan, ModelPlan)
@@ -842,8 +1096,13 @@ class Trainer:
             encoding='utf-8')) if metrics_path.is_file() else {})
         trainer = cls(plan, embedding_models, accelerator=accelerator)
         trainer._snapshot_id = spec.snapshot_id
+        trainer._graph_config = spec.graph_config
         trainer._training_query = spec.predictive_query
         trainer._training_table_generation_plan = from_json_dict(
             spec.training_table_generation, TrainingTableGenerationPlan)
-        trainer._training_result = TrainingResult(metrics, paths, bundle_dir)
+        holdout_path, holdout_truncated = _listed_holdout(bundle_dir)
+        trainer._training_result = TrainingResult(
+            metrics, paths, bundle_dir, holdout_path=holdout_path,
+            holdout_truncated=holdout_truncated, bundle_id=bundle_id,
+            _trainer=trainer)
         return trainer

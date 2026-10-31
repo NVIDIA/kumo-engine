@@ -91,6 +91,15 @@ class TrainingTableOutputConfig:
 
 
 @dataclass(frozen=True)
+class SnapshotOutputConfig:
+    """Export a graph snapshot under ``path`` via ``connector``, a file
+    destination (`GraphSnapshot.export`)."""
+
+    connector: Connector
+    path: str
+
+
+@dataclass(frozen=True)
 class ModelOutputConfig:
     """Publish a model to exactly one ``path`` or registry ``location``."""
 

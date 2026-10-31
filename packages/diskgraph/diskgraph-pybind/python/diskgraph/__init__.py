@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from ._c import (
+    __version__,
+    BUILD_COMMIT,
     export_tt_artifacts,
     convert_kumo_config,
     ingest,
@@ -38,6 +40,7 @@ from ._c import (
     write_success_marker,
     touch_success_marker,
     verify_snapshot_integrity,
+    snapshot_range_checksums,
     has_resumable_ingest,
     validated_index_resume_progress,
     compute_col_stats_for_parquet,
@@ -139,6 +142,7 @@ __all__ = [
     "write_success_marker",
     "touch_success_marker",
     "verify_snapshot_integrity",
+    "snapshot_range_checksums",
     "has_resumable_ingest",
     "validated_index_resume_progress",
     "compute_col_stats_for_parquet",

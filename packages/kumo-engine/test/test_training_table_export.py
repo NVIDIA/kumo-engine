@@ -4,7 +4,9 @@
 
 import json
 from collections import Counter
+from dataclasses import replace
 from functools import partial
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -17,6 +19,13 @@ from kumoapi.train import TrainingTableSpec
 from kumoapi.typing import Stype
 
 import kumo.engine as kumo
+from kumo.engine._manifest import (
+    SourceTableEntry,
+    TrainingTableManifest,
+    TrainingTableParents,
+    read_manifest,
+    write_manifest,
+)
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.trainer.output_config import TrainingTableOutputConfig
 
@@ -188,7 +197,9 @@ def test_forecasting_export_roundtrip(graph):
     assert _seeds(reimported)[1] == counts
 
 
-def test_reexport_and_trailing_slash(graph):
+def test_reexport_and_trailing_slash(graph, monkeypatch, caplog):
+    import kumo_core.artifact_export
+
     _, _, connector, out = graph
     query = 'PREDICT ents.LABEL FOR EACH ents.ID'
     _, table, first = _export(graph, query, 'retry')
@@ -200,8 +211,12 @@ def test_reexport_and_trailing_slash(graph):
 
     before = listing()
     config = TrainingTableOutputConfig(connector, 'retry')
-    table.export(config)
-    table.export(config)
+    monkeypatch.setattr(kumo_core.artifact_export, 'export_selected_files',
+                        lambda *a, **k: pytest.fail('uploaded again'))
+    with caplog.at_level('INFO', logger='kumo_core.object_store_sink'):
+        table.export(config)
+        table.export(config)
+    assert 'reused it' in caplog.text
     assert config.table_name == 'retry/'
     assert listing() == before
     assert before[1] == first.num_rows == sum(_seeds(table)[1].values())
@@ -225,9 +240,9 @@ def test_custom_link_table_ingests_multiple_weighted_parts(
     stage_source_table = _custom_source.stage_source_table
 
     def stage_multipart_source(*args, **kwargs):
-        path = stage_source_table(*args, **kwargs)
+        path, version = stage_source_table(*args, **kwargs)
         assert len(list(path.glob('*.parquet'))) > 1
-        return path
+        return path, version
 
     monkeypatch.setattr(_custom_source, 'stage_source_table',
                         stage_multipart_source)
@@ -292,3 +307,159 @@ def test_custom_training_table_declares_integer_timestamp_unit(graph, unit,
     for stage in seeds:
         columns = ['ENTITY1', 'TIMESTAMP', 'TARGET1']
         assert _rows(seeds[stage], columns) == _rows(original_seeds[stage], columns)
+
+
+def test_manifest_and_export_sidecar(graph, tmp_path):
+    from kumo_core.training.export import export_train_table
+
+    _, snapshot, connector, out = graph
+    query = 'PREDICT ents.LABEL FOR EACH ents.ID'
+    pquery, table, _ = _export(graph, query, 'lineage')
+    manifest = table.manifest
+    assert manifest.id == table.id and table.id.startswith('tt-')
+    assert table.id != _spec(table)['tt_id']
+    assert manifest.parents == TrainingTableParents(
+        snapshot=snapshot.manifest)
+    assert manifest.query == query
+    assert manifest.extra == {}
+    assert manifest.split_seed == 0
+    again = pquery.generate_training_table(snapshot)
+    assert again.id == table.id
+    assert again.tt_id != table.tt_id
+
+    directory = out / 'lineage'
+    baseline = tmp_path / 'baseline'
+    export_train_table(str(table.staging_dir), str(baseline))
+    for part in baseline.glob('*.parquet'):
+        assert (directory / part.name).read_bytes() == part.read_bytes()
+    assert json.loads(
+        (directory / '_provenance.json').read_bytes()) == manifest.to_dict()
+
+    reloaded = kumo.TrainingTable.load_from_connector(
+        connector, path='lineage', pquery=pquery, snapshot=snapshot)
+    manifest = reloaded.manifest
+    assert reloaded.id != table.id
+    assert manifest.parents.source_table == SourceTableEntry(
+        connector='LOCAL_FILE',
+        location=str(directory.resolve()),
+        version=connector.source_backend.get_data_version(
+            connector, 'lineage'),
+        version_kind='listing',
+    )
+    assert _seeds(reloaded)[1] == _seeds(table)[1]
+
+
+def test_training_table_manifest_round_trips_unchanged(graph, tmp_path):
+    _, table, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
+                          'round_trip')
+    newer = json.loads(
+        (table.staging_dir / '_provenance.json').read_text())
+    newer['future'] = 1
+    newer['parents']['label_source'] = 'x'
+    source = tmp_path / 'newer.json'
+    source.write_text(json.dumps(newer, indent=2, sort_keys=True) + '\n')
+
+    manifest = read_manifest(source, TrainingTableManifest)
+    write_manifest(tmp_path / 'out.json', manifest)
+
+    assert (tmp_path / 'out.json').read_bytes() == source.read_bytes()
+    assert manifest.extra == {'future': 1}
+    assert manifest.parents.extra == {'label_source': 'x'}
+
+
+def test_custom_table_follows_the_snapshots_record_sources(
+        graph, monkeypatch):
+    graph_, snapshot, connector, _ = graph
+    pquery, _, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
+                           'unlocated')
+
+    def location(snapshot):
+        table = kumo.TrainingTable.from_source_table(
+            connector['unlocated'], TrainingTableSpec(split_col='SPLIT'),
+            pq=pquery, snapshot=snapshot)
+        return table.manifest.parents.source_table.location
+
+    try:
+        assert location(graph_.snapshot(record_sources=False)) == 'unlocated'
+    finally:
+        graph_.snapshot()
+    assert location(snapshot) != 'unlocated'
+    monkeypatch.setattr(kumo.GraphSnapshot, 'manifest', property(lambda _: None))
+    assert location(replace(snapshot, record_sources=None)) == 'unlocated'
+
+
+def test_manifest_write_failure_keeps_generation_and_export(
+        graph, monkeypatch):
+    from kumo.engine.pquery import training_table
+
+    _, _, connector, out = graph
+
+    def fail(*args, **kwargs):
+        raise OSError('read-only scratch')
+
+    monkeypatch.setattr(training_table, 'write_manifest', fail)
+    with pytest.warns(UserWarning, match='read-only scratch'):
+        _, table, exported = _export(
+            graph, 'PREDICT ents.LABEL FOR EACH ents.ID', 'no_manifest')
+    assert table.manifest is None
+    assert not (out / 'no_manifest' / '_provenance.json').exists()
+    assert exported.num_rows == sum(_seeds(table)[1].values())
+
+
+def test_unreadable_manifest_still_exports(graph):
+    graph_, snapshot, connector, out = graph
+    table = kumo.PredictiveQuery(
+        graph=graph_, query='PREDICT ents.LABEL FOR EACH ents.ID'
+    ).generate_training_table(snapshot)
+    manifest = table.staging_dir / '_provenance.json'
+    manifest.chmod(0)
+    try:
+        with pytest.warns(UserWarning, match='_provenance.json'):
+            table.export(TrainingTableOutputConfig(connector, 'unreadable'))
+    finally:
+        manifest.chmod(0o644)
+    assert list((out / 'unreadable').glob('*.parquet'))
+    assert not (out / 'unreadable' / '_provenance.json').exists()
+
+
+def test_no_sidecar_for_warehouse_or_csv_exports(graph):
+    graph_, snapshot, connector, out = graph
+    table = kumo.PredictiveQuery(
+        graph=graph_, query='PREDICT ents.LABEL FOR EACH ents.ID'
+    ).generate_training_table(snapshot)
+    calls = []
+
+    def write_files(connector, table_name, files, write_mode, **kwargs):
+        calls.append(kwargs)
+
+    warehouse = SimpleNamespace(
+        source_type='SNOWFLAKE',
+        sink_backend=SimpleNamespace(write_files=write_files))
+    table.export(TrainingTableOutputConfig(warehouse, 'DB.SCHEMA.TT'))
+    assert calls == [{'export_id': f'{table.tt_id}:tt-export-v1'}]
+    table.export(TrainingTableOutputConfig(connector, 'rows.csv/'))
+    assert not (out / 'rows.csv' / '_provenance.json').exists()
+
+
+def test_a_mlops_block_stores_each_table_once_under_the_root(graph, tmp_path):
+    graph_, snapshot, _, _ = graph
+    pquery = kumo.PredictiveQuery(graph=graph_,
+                                  query='PREDICT ents.LABEL FOR EACH ents.ID')
+    root = tmp_path / 'artifacts'
+    cfg = kumo.MLOps(artifact_root=str(root))
+    with kumo.mlops(cfg):
+        table = pquery.generate_training_table(snapshot)
+        stored = root / 'training_tables' / table.id
+        parts = {p.name: p.stat().st_mtime_ns for p in stored.iterdir()}
+        pquery.generate_training_table(snapshot)
+    assert '_provenance.json' in parts and '_SUCCESS' in parts
+    assert {p.name: p.stat().st_mtime_ns for p in stored.iterdir()} == parts
+    assert json.loads((stored / '_provenance.json').read_text())['id'] == (
+        table.id)
+    reloaded = kumo.TrainingTable.load_from_connector(
+        cfg, path=f'training_tables/{table.id}', pquery=pquery, snapshot=snapshot)
+    assert _seeds(reloaded)[1] == _seeds(table)[1]
+    off = pquery.generate_training_table(
+        snapshot, mlops=kumo.MLOps(artifact_root=str(tmp_path / 'other'),
+                                   store={'model'}))
+    assert off.id == table.id and not (tmp_path / 'other').exists()

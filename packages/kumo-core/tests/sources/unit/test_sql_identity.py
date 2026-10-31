@@ -36,6 +36,12 @@ def test_a_referenced_table_that_moved_gives_a_new_version():
     assert stamped(version="v1") != stamped(version="v2")
 
 
+def test_the_version_keeps_the_dependency_versions_it_folds():
+    version = stamped(version="v1")
+    assert version.kind == "hour_bucket"
+    assert set(version.dependencies.values()) == {"v1"}
+
+
 def test_a_formatting_only_edit_does_not_move_the_version():
     assert stamped(
         sql="select  ID,\n AMOUNT from ORDERS where AMOUNT > 0") == (stamped())
