@@ -206,13 +206,18 @@ class _Upload(io.RawIOBase):
         self._put(piece)
         return len(piece)
 
-    def _put(self, piece: Optional[bytes]) -> None:
+    def _offer(self, piece: Any) -> bool:
         while self._thread.is_alive():
             try:
                 self._feed.pieces.put(piece, timeout=1)
-                return
+                return True
             except queue.Full:
                 continue
+        return False
+
+    def _put(self, piece: Optional[bytes]) -> None:
+        if self._offer(piece):
+            return
         self._thread.join()
         if self._error is not None:
             raise self._error
@@ -222,12 +227,7 @@ class _Upload(io.RawIOBase):
     def abort(self) -> None:
         if self.closed:
             return
-        while self._thread.is_alive():
-            try:
-                self._feed.pieces.put(_CANCEL, timeout=1)
-                break
-            except queue.Full:
-                continue
+        self._offer(_CANCEL)
         self._thread.join()
         super().close()
 
