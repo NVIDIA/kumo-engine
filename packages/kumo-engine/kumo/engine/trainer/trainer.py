@@ -573,15 +573,10 @@ def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
 _F = TypeVar('_F', bound=Callable[..., Any])
 
 
-def _without_torch_scatter_hint(method: _F) -> _F:
-    r"""Runs ``method`` without PyTorch Geometric's GPU hint that min/max
-    aggregation "can be accelerated via the 'torch-scatter' package",
-    Lightning's tips and ``__len__`` note, and Python's fork warning.
-
-    kumo-engine uses PyTorch's own scatter instead of that optional extension
-    (see ``test_wheel_uses_torch_fallbacks_without_native_extensions``), so
-    the hint, which PyG raises for every such aggregation, is not actionable.
-    """
+def _without_unactionable_warnings(method: _F) -> _F:
+    r"""Runs ``method`` without third-party notes users cannot act on:
+    PyG's torch-scatter hint, Lightning's tips and ``__len__`` note, and
+    Python's fork warning."""
     @functools.wraps(method)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         tips = logging.getLogger('pytorch_lightning.utilities.rank_zero')
@@ -683,7 +678,7 @@ class Trainer:
         :meth:`TrainingResult.export`."""
         return self._fitted('export').export(config)
 
-    @_without_torch_scatter_hint
+    @_without_unactionable_warnings
     def fit(
         self,
         train_table: TrainingTable,
@@ -1114,7 +1109,7 @@ class Trainer:
                                ['text'] if text else []))
         return deps.records
 
-    @_without_torch_scatter_hint
+    @_without_unactionable_warnings
     def predict(
         self,
         source: Union[GraphSnapshot, PredictionTable, None] = None,
