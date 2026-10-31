@@ -387,17 +387,14 @@ def test_model_upload_gets_a_longer_http_timeout_and_a_late_one_is_dropped(
     assert 'the model is not registered' in caplog.text
 
 
-def test_a_model_with_text_columns_requires_the_text_extra(tmp_path):
+def test_a_model_with_text_columns_requires_the_text_extra():
     from kumo_core.encoders.config import EncodersConfig
-    from kumo_core.io.json import save_json
     from kumoapi.encoder import Numerical, TextEmbedding
 
     from kumo.engine.integrations.mlflow import _requirement
 
     def requirement(encoders):
-        path = tmp_path / 'encoders.json'
-        save_json(EncodersConfig(encoders={'users': encoders}), str(path))
-        return _requirement(path)
+        return _requirement(EncodersConfig(encoders={'users': encoders}))
 
     assert requirement({'age': Numerical()}) == (
         f'kumo-engine[s3,gcs]=={kumo.__version__}')

@@ -812,12 +812,8 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
     from kumo_core.artifacts import PROVENANCE_FILE
 
     from kumo.engine.integrations import _mlflow_model, _mlflow_model_code
-    from kumo.engine.trainer._spec import (
-        SPEC_FILE,
-        listed_file,
-        read_training_spec,
-    )
-    from kumo.engine.trainer.trainer import registry_pointers
+    from kumo.engine.trainer._spec import SPEC_FILE, read_training_spec
+    from kumo.engine.trainer.trainer import _encoders, registry_pointers
 
     mlflow = import_provider('mlflow', 'mlflow')
     if snapshot is None:
@@ -860,7 +856,7 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
                 input_example=example,
                 metadata=pointers,
                 pip_requirements=[
-                    _requirement(listed_file(bundle_dir, 'encoders'))
+                    _requirement(_encoders(bundle_dir))
                 ],
             )
             with target.scope():
@@ -888,15 +884,10 @@ def _id(manifest: Optional['ModelManifest']) -> Optional[str]:
     return None if manifest is None else manifest.id
 
 
-def _requirement(encoders: Optional[Path]) -> str:
-    from kumo_core.encoders.config import EncodersConfig
-    from kumo_core.io.json import load_json
+def _requirement(config: Any) -> str:
     from kumoapi.encoder import TextEmbedding
 
     extras = ['s3', 'gcs']
-    path = None if encoders is None else str(encoders)
-    config = (load_json(path, EncodersConfig)
-              if path and Path(path).is_file() else None)
     if config is not None and any(
             isinstance(encoder, TextEmbedding)
             for table in config.encoders.values()
