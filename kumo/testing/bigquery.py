@@ -9,6 +9,8 @@ import os
 from collections.abc import Callable
 from typing import Optional
 
+import pytest
+
 from io_utils import logging
 from io_utils.secrets import get_secrets
 from kumo.connector.bigquery_connector import (
@@ -18,6 +20,10 @@ from kumo.connector.bigquery_connector import (
 )
 
 logger = logging.getLogger(__name__)
+
+onlyGCPTests = pytest.mark.skipif(
+    os.getenv('KUMO_RUN_GCP_TESTS') != '1',
+    reason="GCP test identities are not configured")
 
 DEFAULT_BIGQUERY_KEY = "kumo-test-bigquery-service-account-key"
 
@@ -110,8 +116,6 @@ def setup_bigquery_credentials(service_account_key: Optional[str] = None):
 
 def withBigQueryCredentials(func: Optional[Callable] = None,
                             service_account_key: Optional[str] = None):
-    import pytest
-
     def decorator(inner_func: Callable):
         def _setup():
             setup_bigquery_credentials(service_account_key)

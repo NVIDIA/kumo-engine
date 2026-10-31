@@ -38,6 +38,7 @@ from fastapi.testclient import TestClient
 
 from io_utils.json import load_json
 from kumo.testing import withBigQueryCredentials
+from kumo.testing.bigquery import onlyGCPTests
 from kumo.testing.rest import (
     bigquery_test_identity,
     create_identity_backed_connector,
@@ -67,6 +68,7 @@ PQL_TEST_CASE = "bigquery_regression_base"
 # storage_backend is pinned to s3: BigQuery exports to GCS then downloads to
 # the dataplane, so local storage is not a meaningful test target here.
 pytestmark = [
+    onlyGCPTests,
     pytest.mark.usefixtures("_pool_subprocesses"),
     pytest.mark.parametrize("storage_backend", ["s3"], indirect=True),
 ]

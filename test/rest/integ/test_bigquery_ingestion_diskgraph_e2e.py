@@ -85,6 +85,7 @@ from pydantic import SecretStr
 from io_utils import fsutil
 from io_utils.json import to_json
 from kumo.testing import withBigQueryCredentials
+from kumo.testing.bigquery import onlyGCPTests
 from kumo.testing.rest import (
     bigquery_test_identity,
     create_identity_backed_connector,
@@ -138,6 +139,7 @@ _TABLE_DOES_NOT_EXIST = "does_not_exist"
 # assertions are scoped to local storage; pinning avoids a second skipped S3
 # parametrization and keeps the CI job from spawning an unused pool.
 pytestmark = [
+    onlyGCPTests,
     pytest.mark.usefixtures("_pool_subprocesses"),
     pytest.mark.parametrize("storage_backend", ["local"], indirect=True),
 ]
