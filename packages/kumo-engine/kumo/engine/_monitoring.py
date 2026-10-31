@@ -13,7 +13,16 @@ import warnings
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Tuple,
+)
 from uuid import uuid4
 
 import numpy as np
@@ -397,11 +406,11 @@ def score_drift(trainer: Any, run: Any, *, previous: Any, snapshot: Any,
     counts = _score_counts(run)
     model = getattr(getattr(trainer, 'result', None), 'manifest', None)
     holdout = getattr(model, 'holdout', None)
-    against = _drift(counts, holdout_counts(model), "the model's holdout",
-                     'holdout', reasons)
-    earlier = {} if previous is None else _drift(
-        counts, _score_counts(previous), 'the previous run', 'previous',
-        reasons)
+    references = {'holdout': holdout_counts(model)}
+    if previous is not None:
+        references['previous'] = _score_counts(previous)
+    drifts = {side: _drift(counts, reference, side, reasons)
+              for side, reference in references.items()}
 
     sides = _snapshot_stats(trainer, run, snapshot, training_snapshot, root)
     totals = [side['counts'] for side in sides.values()]
@@ -417,15 +426,10 @@ def score_drift(trainer: Any, run: Any, *, previous: Any, snapshot: Any,
         prediction_id=getattr(run, 'id', None),
         bundle_id=run_bundle,
         score=None if counts is None else drift_column(counts),
-        psi=against.get('psi'),
-        ks=against.get('ks'),
-        wasserstein=against.get('wasserstein'),
         holdout_truncated=None if holdout is None else holdout.truncated,
         bundle_matches=_same(run_bundle, _bundle_id(trainer)),
         previous_prediction_id=getattr(previous, 'id', None),
-        previous_psi=earlier.get('psi'),
-        previous_ks=earlier.get('ks'),
-        previous_wasserstein=earlier.get('wasserstein'),
+        **_drift_fields(drifts),
         input_changes=input_changes,
         reasons=reasons,
         features=_features(trainer, sides, reasons),
@@ -439,9 +443,24 @@ def _score_counts(run: Any) -> Optional[Counts]:
     return None if counts is None else Counts.from_dict(counts)
 
 
-def _drift(counts: Optional[Counts], reference: Optional[Counts], name: str,
-           side: str, reasons: Dict[str, str]) -> Dict[str, float]:
+class _Reference(NamedTuple):
+    prefix: str
+    name: str
+    label: str
+
+
+_REFERENCES = {
+    'holdout': _Reference('', "the model's holdout",
+                          'holdout scores at training'),
+    'previous': _Reference('previous_', 'the previous run', 'previous run'),
+}
+_STATISTICS = ('psi', 'ks', 'wasserstein')
+
+
+def _drift(counts: Optional[Counts], reference: Optional[Counts], side: str,
+           reasons: Dict[str, str]) -> Dict[str, float]:
     r"""Drift of counts from reference; empty, with why in reasons[side]."""
+    name = _REFERENCES[side].name
     if counts is None:
         reasons[side] = 'the run records no score counts'
     elif reference is None:
@@ -453,6 +472,21 @@ def _drift(counts: Optional[Counts], reference: Optional[Counts], name: str,
         reasons[side] = (f'the run and {name} did not count the same score '
                          f'on the same bins')
     return {}
+
+
+def _drift_fields(drifts: Mapping[str, Mapping[str, float]]
+                  ) -> Dict[str, Optional[float]]:
+    return {reference.prefix + statistic: drifts.get(side, {}).get(statistic)
+            for side, reference in _REFERENCES.items()
+            for statistic in _STATISTICS}
+
+
+def _comparisons(report: 'DriftReport'
+                 ) -> Dict[str, Dict[str, Optional[float]]]:
+    r"""The report's score drift per reference, as _drift_fields stored it."""
+    return {side: {statistic: getattr(report, reference.prefix + statistic)
+                   for statistic in _STATISTICS}
+            for side, reference in _REFERENCES.items()}
 
 
 def track(report: Any, run: Any, settings: Any, trainer: Any,
@@ -534,29 +568,27 @@ def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
     r"""Score drift, input changes and column drift."""
     summaries: List[Summary] = []
     reasons = report.reasons
-    holdout = {'psi': report.psi, 'ks': report.ks,
-               'wasserstein': report.wasserstein}
-    previous = {'psi': report.previous_psi, 'ks': report.previous_ks,
-                'wasserstein': report.previous_wasserstein}
+    comparisons = _comparisons(report)
+    holdout, previous = comparisons['holdout'], comparisons['previous']
     if report.previous_prediction_id:
         summaries.append(Tag('kumo.drift_previous',
                              report.previous_prediction_id))
-    if report.previous_psi is not None:
+    if previous['psi'] is not None:
         summaries += [Scalar(f'drift/{name}_vs_prev', value)
                       for name, value in previous.items()]
-    sides = [] if report.bundle_matches is False else [
-        ('holdout scores at training', holdout)]
-    sides.append(('previous run', previous))
-    rows = tuple((side, values['psi'],
-                  '' if values is holdout and not shift
-                  else _shift(values['psi']), values['ks'],
-                  values['wasserstein'])
-                 for side, values in sides if values['psi'] is not None)
+    if report.bundle_matches is False:
+        comparisons.pop('holdout')
+    rows = tuple((_REFERENCES[side].label, values['psi'],
+                  '' if side == 'holdout' and not shift
+                  else _shift(values['psi']),
+                  *(values[name] for name in _STATISTICS[1:]))
+                 for side, values in comparisons.items()
+                 if values['psi'] is not None)
     if rows:
         summaries.append(Table('drift/score', ('compared with', 'psi',
-                                               'shift', 'ks', 'wasserstein'),
+                                               'shift', *_STATISTICS[1:]),
                                rows, brief=True))
-    if report.previous_psi is not None:
+    if previous['psi'] is not None:
         name = previous_name or report.previous_prediction_id
         summaries.append(Note('notes', f'Previous run: {name}.'))
     if report.bundle_matches is False:
@@ -564,7 +596,7 @@ def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
             "This trainer's model did not score this run, so its drift vs "
             'holdout scores is not logged'
             + (f"; against this trainer's holdout scores: {_values(holdout)}"
-               if report.psi is not None else '') + '.')))
+               if holdout['psi'] is not None else '') + '.')))
         reasons = {name: reason for name, reason in reasons.items()
                    if name == 'previous'}
     else:
