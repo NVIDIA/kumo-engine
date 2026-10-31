@@ -244,21 +244,18 @@ def schema_changes(before: Mapping[str, Any],
 
 def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
                        after: Mapping[str, Any], stacklevel: int) -> None:
-    if before is None:
-        warnings.warn(
-            f"{message} The model does not record its training graph, so "
-            "what differs is unknown; a different connector or table "
-            "location alone also changes the graph id.", UserWarning,
-            stacklevel=stacklevel + 1)
-        return
-    changes = schema_changes(before, after)
-    if changes:
-        warnings.warn(f"{message} Schema changes: {'; '.join(changes)}.",
-                      UserWarning, stacklevel=stacklevel + 1)
+    changes = None if before is None else schema_changes(before, after)
+    if changes is None:
+        detail = ("The model does not record its training graph, so what "
+                  "differs is unknown; a different connector or table "
+                  "location alone also changes the graph id.")
+    elif changes:
+        detail = f"Schema changes: {'; '.join(changes)}."
     else:
-        warnings.warn(f"{message} The schema is the same; only table "
-                      "connectors or locations differ.", UserWarning,
-                      stacklevel=stacklevel + 1)
+        detail = ("The schema is the same; only table connectors or "
+                  "locations differ.")
+    warnings.warn(f"{message} {detail}", UserWarning,
+                  stacklevel=stacklevel + 1)
 
 
 def _store() -> Any:
