@@ -71,8 +71,10 @@ class Target:
 
     def __init__(self, tracking_uri: str, registry_uri: Optional[str],
                  swap: Optional[Callable[[], ContextManager[Any]]] = None,
-                 aws_session: Any = None, host: Optional[str] = None) -> None:
+                 aws_session: Any = None, host: Optional[str] = None,
+                 assets: Any = None) -> None:
         self.tracking_uri = tracking_uri
+        self.assets = assets
         self.registry_uri = registry_uri
         self._swap = swap
         self._aws_session = aws_session
@@ -187,12 +189,13 @@ def _databricks(connector: Any) -> Target:
     if (principal is None or principal.config.authentication
             is DatabricksAuthenticationKind.AMBIENT):
         return Target('databricks', 'databricks-uc',
-                      swap=lambda: global_tracking_uri('databricks'))
+                      swap=lambda: global_tracking_uri('databricks'),
+                      assets=connector)
     client = import_provider('kumo_databricks.session',
                              'databricks')._client_for(principal)
     return Target('databricks', 'databricks-uc',
                   swap=lambda: _databricks_token(client),
-                  host=client.config.host)
+                  host=client.config.host, assets=connector)
 
 
 @contextmanager
@@ -217,15 +220,19 @@ def _databricks_token(client: Any) -> Iterator[None]:
 def _sagemaker(target: SageMakerMLflow) -> Target:
     from kumoapi.data_source import S3AmbientAuthentication
 
+    from kumo.engine.connector import S3Connector
+
     arn = target.tracking_server_arn
+    assets = S3Connector(identity=target.identity)
     principal = _principal(target.identity)
     if principal is None or isinstance(principal.config.authentication,
                                        S3AmbientAuthentication):
-        return Target(arn, arn, swap=lambda: global_tracking_uri(arn))
+        return Target(arn, arn, swap=lambda: global_tracking_uri(arn),
+                      assets=assets)
     session = import_provider('kumo_s3.backend',
                               's3')._session_for(principal)
     return Target(arn, arn, swap=lambda: _sagemaker_session(arn, session),
-                  aws_session=session)
+                  aws_session=session, assets=assets)
 
 
 @contextmanager

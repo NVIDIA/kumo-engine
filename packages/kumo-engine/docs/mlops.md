@@ -71,14 +71,14 @@ graph = kumo.Graph(tables={"users": users, "orders": orders.with_column("USER_ID
 
 ### Snowflake
 
-Tracking and the Snowflake Model Registry through one connector (`kumo-engine[snowflake,s3]`):
+With a named internal stage as the artifact root (`kumo-engine[snowflake]`):
 
 ```python
 import kumo.engine as kumo
 from kumo.engine.integrations.snowflake import SnowflakeTracking
 
 sf = kumo.SnowflakeConnector(warehouse="WH", database="ML", schema_name="MODELS")
-cfg = kumo.MLOps("s3://<bucket>/kumo", tracking=SnowflakeTracking(sf, experiment_name="CHURN"),
+cfg = kumo.MLOps((sf, "@ML.MODELS.KUMO"), tracking=SnowflakeTracking(sf, experiment_name="CHURN"),
                  registry=kumo.ModelRegistryLocation("CHURN_GNN", alias="candidate"))
 with kumo.mlops(cfg):
     snapshot = graph.snapshot()
@@ -87,7 +87,7 @@ with kumo.mlops(cfg):
     run = result.predict(snapshot, output_config=kumo.PredictionOutputConfig(sf, path="CHURN_SCORES"))
 ```
 
-To serve only a better model, move its alias yourself: [Promote a model](#promote-a-model).
+The registered version also scores inside Snowflake: see [Batch inference in Snowflake](#batch-inference-in-snowflake). It serves with the torch and CUDA build installed where it registers, so install one the GPU pool runs first, e.g. `pip install --index-url https://download.pytorch.org/whl/cu126 "torch==2.12.*"`. To serve only a better model, move its alias yourself: [Promote a model](#promote-a-model).
 
 ## How it fits together
 
@@ -116,7 +116,7 @@ with kumo.mlops(cfg):
 trainer.fit(table, snapshot=snapshot, mlops=cfg)
 ```
 
-- **`artifact_root`** (required): a URI (`s3://`, `gs://`, `file://`, or a local path, including `/Volumes/...` on a Databricks cluster) or a `(connector, path)` pair for a store a URI cannot reach: a volume through a `DatabricksConnector` (`"/Volumes/<catalog>/<schema>/<volume>/kumo"`) or a named stage through a `SnowflakeConnector` (`"@DB.SCHEMA.STAGE/kumo"`) once the installed sink holds files there.
+- **`artifact_root`** (required): a URI (`s3://`, `gs://`, `file://`, or a local path, including `/Volumes/...` on a Databricks cluster) or a `(connector, path)` pair for a store a URI cannot reach: a volume through a `DatabricksConnector` (`"/Volumes/<catalog>/<schema>/<volume>/kumo"`) or a named stage through a `SnowflakeConnector` (`"@DB.SCHEMA.STAGE/kumo"`). The connector's `root_dir` must contain the path; `kumo.MLOps` raises otherwise, so a data connector rooted at `s3://<bucket>/data` cannot hold `s3://<bucket>/artifacts`.
 - **`tracking`**: `MlflowTracking` or `SnowflakeTracking` (below), or your own [`Tracking`](#custom-trackers).
 - **`registry`**: a `ModelRegistryLocation(name, alias=...)`; every fit registers its model there, in the tracker's registry.
 - **`store`**: the artifact kinds stored when produced: `snapshot`, `training_table`, `model` and `prediction` (default: all).
@@ -145,9 +145,9 @@ table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{tabl
 
 - `result.registered_model` is the version `MLOps(registry=)` registered; `result.published_model` the one `fit(export_config=...)` published.
 - `result.tracking` is the tracker's run: `TrackingRef(platform="databricks", run_id="...", url="https://.../ml/experiments/.../runs/...")`. The model's `_provenance.json` records the same.
-- `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict`, the MLflow pyfunc and the scoring jobs apply them when a call omits them; explicit arguments and a query's `TOP k` win. A binary model always returns `True_PROB`; with no threshold passed or stored, its `TARGET_PRED` is null. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
-- `result.export(cfg)` (or `trainer.export(cfg)` for a loaded model) registers a model at `cfg.registry` through its tracker. On MLflow and Unity Catalog, registering a bundle the registry already holds under that name returns its version instead of adding one (found by its bundle id tag); the Snowflake Model Registry adds a new version each time.
-- If registration fails, `fit` warns with the full error and returns with `registered_model=None` (with `on_error="raise"`, it raises), and the fit run ends failed with `kumo.error`. On MLflow and Unity Catalog, a bundle the registry already holds under the name returns that version (logged at info) and the alias moves to it.
+- `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict`, the MLflow pyfunc, Snowflake `run_batch` and the scoring jobs apply them when a call omits them; explicit arguments and a query's `TOP k` win. A binary model always returns `True_PROB`; with no threshold passed or stored, its `TARGET_PRED` is null. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
+- `result.export(cfg)` (or `trainer.export(cfg)` for a loaded model) registers a model at `cfg.registry` through its tracker. On every platform, registering a bundle the registry already holds under that name returns its version instead of adding one.
+- If registration fails, `fit` warns with the full error and returns with `registered_model=None` (with `on_error="raise"`, it raises), and the fit run ends failed with `kumo.error`. Registering a bundle the registry already holds under the name returns that version (logged at info) and moves the alias to it.
 
 **Model names** follow the registry's rules, checked when `kumo.MLOps` is built:
 
@@ -187,11 +187,12 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 `MlflowTracking(experiment_name=None, run_name=None, log_system_metrics=True, tags=None, log_model=False, *, target=None)`:
 - With no `target`, it records where MLflow's own configuration points (`MLFLOW_TRACKING_URI`, `mlflow.set_tracking_uri`; automatic on Databricks). `target` names another server with its credentials: a `DatabricksConnector`, a `SageMakerMLflow(arn)`, or a tracking URI. With a `target`, `experiment_name` is required to record runs.
 - `log_model=True` logs the model on the fit run without registering it; `MLOps(registry=)` implies it.
+- Building `kumo.MLOps` creates a missing experiment; if MLflow refuses (on Databricks, the experiment's folder must exist), it raises and says so.
 
-`SnowflakeTracking(source, *, experiment_name, database=None, schema_name=None, run_name=None, tags=None, native_model_lineage=False)`:
+`SnowflakeTracking(source, *, experiment_name, database=None, schema_name=None, run_name=None, tags=None, native_model_lineage=False, serving_options=None)`:
 - `source` is a `SnowflakeConnector`, whose identity opens the session and whose Snowflake Model Registry `MLOps(registry=)` registers in, or a Snowpark session, which tracks only.
 - `database` and `schema_name` default to the session's (`PUBLIC` when only `database` is given). The fit is in Snowsight under AI & ML » Experiments.
-- The registered version carries the bundle; load it with `Trainer.load_from_connector`.
+- `serving_options` sets how a registered version runs in Snowflake (see [Batch inference in Snowflake](#batch-inference-in-snowflake)).
 
 ### What you'll see in MLflow and Snowsight
 
@@ -291,15 +292,39 @@ run.id, run.bundle_id, run.snapshot_id, run.scored_rows, run.skipped_rows
 A model registered through `MlflowTracking` is an MLflow pyfunc: it serves with `mlflow.pyfunc.load_model(uri)`, `spark_udf` and Model Serving.
 
 ```python
-model = mlflow.pyfunc.load_model("models:/main.ml.users_churn@champion")
+with cfg.tracking.client():        # MLflow's own calls reach the tracker's server, as its identity
+    model = mlflow.pyfunc.load_model("models:/main.ml.users_churn@champion")
 scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
     "snapshot": cfg.snapshot_uri(snapshot),        # "/Volumes/main/ml/kumo/snapshots/<graph id>/<data version>"
-    "prediction_time": "2024-06-01"})              # temporal queries
+    "prediction_time": "2024-06-01"})              # temporal queries need it, or a TIMESTAMP column
 ```
 
-- Input rows have an `ENTITY` column and optionally a `TIMESTAMP`; scores come back in input order, one per scored row. Binary classification returns `True_PROB`; `TARGET_PRED` needs `params={"binary_classification_threshold": ...}` or a stored threshold, and is null without one.
+- Input rows have an `ENTITY` column and optionally a `TIMESTAMP`; a temporal query needs one of `TIMESTAMP` or `prediction_time` (the anchor of a batch run is `run.manifest.prediction_table.anchors[0]`). Scores come back in input order, one per scored row. Binary classification returns `True_PROB`; `TARGET_PRED` needs `params={"binary_classification_threshold": ...}` or a stored threshold, and is null without one.
 - Each replica loads a snapshot on its first `predict` with that URI and keeps it. `log_model(trainer, snapshot=..., serving_snapshot=...)` logs a model whose replicas load that snapshot at startup and use it when no `snapshot` param is given; `serving_snapshot` takes a URI, or a `GraphSnapshot` or snapshot id stored under the block's artifact root.
+- Snapshot URIs: `s3://`, `gs://`, `file://` or a local path, read with the ambient credentials. A `/Volumes/...` path off a Databricks cluster, or a stage path, is read through `model_config={"assets_from": connector}` (below), e.g. the connector of a `(connector, "/Volumes/...")` root.
+- A model with stored assets (word vectors for text columns) on a volume, stage or bucket reads them, and snapshots there, with the identity it is given: `mlflow.pyfunc.load_model(uri, model_config={"assets_from": connector})`, a connector for that store with its credentials; an asset it cannot find raises, naming this option.
 - Serving needs an image with kumo-engine installed: `mlflow models serve -m <model dir> --env-manager local`. Its pip requirement is `kumo-engine[s3,gcs]` of the same version (plus `[text]` for text columns).
+
+### Batch inference in Snowflake
+
+A version registered in the Snowflake Model Registry with kumo-engine installed is runnable: Snowflake ML [batch inference jobs](https://docs.snowflake.com/en/developer-guide/snowflake-ml/inference/batch-inference-jobs) (`ModelVersion.run_batch`) score entity ids with it on a GPU compute pool. With a stage as the artifact root, the version scores against the fit's snapshot stored there, and carries the model's scoring defaults:
+
+```python
+from snowflake.ml.model.batch_inference import InferenceSpec, InputSpec, OutputSpec, ResourcesSpec
+from snowflake.ml.registry import Registry
+
+mv = Registry(session, database_name="ML", schema_name="MODELS").get_model("CHURN_GNN").version("champion")
+job = mv.run_batch(session.sql("SELECT ID::STRING AS ENTITY FROM ML.MODELS.USERS"), compute_pool="KUMO_GPU_POOL",
+                   output_spec=OutputSpec(stage_location="@ML.MODELS.KUMO_OUT/churn/"),
+                   input_spec=InputSpec(params={"prediction_time": "2026-10-01"}),
+                   resources_spec=ResourcesSpec(gpu_requests="1"), inference_spec=InferenceSpec(num_workers=1))
+job.wait()
+```
+
+- **Input:** one `ENTITY` column of ids as strings. Params: `prediction_time` (temporal queries; `predict(snapshot)` defaults to the snapshot's latest time, so pass `run.manifest.prediction_table.anchors[0]` to reproduce a local run), `binary_classification_threshold` and `num_classes_to_return` (override the model's defaults), and `snapshot`, another stage snapshot to score against.
+- **Output:** Parquet under `<stage_location>/<job name>/` with the columns `predict` returns. Create the table first; for a binary model, `CREATE TABLE <table> (ENTITY VARCHAR, TARGET_PRED BOOLEAN, "False_PROB" FLOAT, "True_PROB" FLOAT)` (quote the mixed-case probability columns). Then load it with `COPY INTO <table> FROM @... FILE_FORMAT = (TYPE = PARQUET) MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE`.
+- Pool, grants, environment and serving options: [Snowflake serving](#snowflake-serving).
+- **Not a Kumo prediction run:** `run_batch` returns scores only. It stores no `<artifact root>/predictions/<id>/` run, so its output cannot be loaded with `PredictionResult.load_from_connector` or passed to `evaluate` and `score_drift`. Snowflake's job records and Model Monitor still work on it. To monitor with kumo-engine, score with `Trainer.predict` (or the scoring job, `score_job.py`) under `kumo.MLOps`, as in [Score](#score).
 
 ## Monitor
 
@@ -456,7 +481,7 @@ Every artifact has one way out and one way back. A `kumo.MLOps` stands in for th
 | Prediction run | `run.export(PredictionOutputConfig(connector, path=...))`, or `predict(output_config=...)` | `PredictionResult.load_from_connector(connector, path=...)` |
 | Evaluation | `evaluation.export(PredictionOutputConfig(connector, path=...))` | `EvaluationResult.load_from_connector(connector, path=...)` |
 
-Loading needs a file destination; a table export is for consumers outside kumo-engine. Exporting again to a destination that holds a complete copy of the same artifact reuses it (logged at info). `ModelOutputConfig(connector, location=...)` publishes to a connector's registry outside a block.
+Loading needs a file destination; a table export is for consumers outside kumo-engine. Exporting again to a destination that holds a complete copy of the same artifact reuses it (logged at info). `ModelOutputConfig(sf, location=..., serving_snapshot=..., serving_options=...)` publishes to the Snowflake Model Registry outside a block; `serving_snapshot` takes a stage path, or a `GraphSnapshot` or snapshot id stored under the block's stage root.
 
 ### Lineage and manifests
 
@@ -470,7 +495,7 @@ Every artifact carries `_provenance.json`, metadata only (the underscore keeps S
 ### Artifacts, bundles and dependencies
 
 - A model's **bundle** holds only its own state: weights, encoders, the training spec and the holdout. Its manifest's **`parents`** are lineage; its **`dependencies`** are what `predict` needs besides the bundle and a snapshot: the `predictor` entry point, the `kumo-engine` `package` (with `[text]` when a text column is encoded) and content-addressed `asset`s.
-- **Assets** are stored once under `<root>/assets/<asset_kind>/<sha256>/` and shared by every model that uses them. `Trainer.load`, the pyfunc and the jobs look for each at the location recorded, then under the enclosing block's root, then in the embedding-model store, check its sha256 and cache non-local copies under `~/.cache/kumo/assets/`. A stored asset that cannot be found raises `MissingDependencyError`.
+- **Assets** are stored once under `<root>/assets/<asset_kind>/<sha256>/` and shared by every model that uses them. `Trainer.load`, the pyfunc, `run_batch` and the jobs look for each at the location recorded, then under the enclosing block's root, then in the embedding-model store, check its sha256 and cache non-local copies under `~/.cache/kumo/assets/`. An asset on a stage, a volume or a bucket is read with the identity the loading call was given: `Trainer.load_from_connector(connector, ...)`, `load_model(uri, target=DatabricksConnector(...) or SageMakerMLflow(arn, identity=...))`, the block root's connector, or `mlflow.pyfunc.load_model(uri, model_config={"assets_from": connector})`. A stored asset that cannot be found raises `MissingDependencyError` naming the argument that passes such a connector.
 - **Text encoders** are the first assets: word-vector models (`GloVeVectors`) are stored; other `TokenEmbeddingModel`s are recorded by fingerprint and must be registered wherever the model loads:
 
 ```python
@@ -549,6 +574,32 @@ table is diluted.
 
 - Databricks keys the monitor on `EVALUATED_AT` (anchors are older than its lookback by the label window). For regression use `INFERENCE_PROBLEM_TYPE_REGRESSION`. `True_PROB` is profiled as an ordinary column.
 - Snowflake: binary classification uses `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; regression `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`. Prediction, timestamp and ID columns must have no nulls, NaN or infinities and be used once; a null `TARGET` is accepted (performance stays null until labels arrive). Columns are string literals in their stored case, `('True_PROB')`. Without `BASELINE` there is no drift.
+
+### Snowflake serving
+
+- **Snapshot:** a version `MLOps(registry=)` registers with a stage root scores against the fit's snapshot stored under `<root>/snapshots/`; pass `InputSpec(params={"snapshot": ...})` to score a newer one. The container reads it with its own Snowflake identity, in the registering connector's warehouse, over presigned URLs: create the stage with `ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')` (a `SNOWFLAKE_FULL` stage cannot be read back in ranges).
+- **Environment:** Snowflake builds the inference image on the first job (about 5 minutes). The version embeds kumo's own packages (kumo-engine, kumo-core, kumo-api, kumo-pql, kumo-snowflake, DiskGraph; about 100 MB) as code; its pip requirements are their third-party dependencies, with torch at this installation's minor version for its CUDA, and `faiss-cpu`. Registering the same bundle again returns its version only if it was registered for the same environment (Python, torch, CUDA, requirements); otherwise it adds a version. snowflake-ml pickles the model by value, so the container runs the registering Python; another `python_version` raises at registration. Assets are read from `<root>/assets/` on the stage. A version without kumo-engine (from the hosted service) carries the bundle but refuses to score; `Trainer.load_from_connector` loads either.
+- **`SnowflakeTracking(serving_options={...})`** (or `ModelOutputConfig(serving_options=)` outside a block):
+
+  | Option | Default | |
+  |---|---|---|
+  | `cuda_version` | this installation's torch CUDA (`torch.version.cuda`; `12.6` for a CPU torch) | another value than the installed torch's raises at registration |
+  | `python_version` | the registering Python | must equal it |
+  | `function_type` | `TABLE_FUNCTION` | `FUNCTION` suits only one output row per input row |
+  | `pip_repository` | PyPI | a Snowflake pip artifact repository, e.g. `SNOWFLAKE.SNOWPARK.PYPI_SHARED_REPOSITORY` |
+
+- **Compute pool:** a GPU pool (`INSTANCE_FAMILY = GPU_NV_S`, `GPU_NV_M`, `GPU_NV_SM` on Azure). Each worker loads the bundle and snapshot once: use one worker per GPU and large batches. The first job, including the image build, takes about 12 minutes.
+- **Grants:**
+
+  | For | Grants |
+  |---|---|
+  | Artifact root and output stages | `USAGE` on the database and schema; `READ` and `WRITE` on the stages |
+  | Registering | `CREATE MODEL` on the schema |
+  | `SnowflakeTracking` | `CREATE EXPERIMENT` on the schema |
+  | `run_batch` | `USAGE` on the compute pool and warehouse; `CREATE SERVICE` on the schema; ownership or `USAGE` on the model |
+  | Model Monitor | `CREATE MODEL MONITOR` and `CREATE TABLE` on the schema |
+
+- Snowflake COPY and external tables read `_provenance.json` too: use `PATTERN='.*[.]parquet'`. [`examples/mlops/snowflake/run_batch_smoke.py`](../../../examples/mlops/snowflake/run_batch_smoke.py) scripts registration and a `run_batch` job.
 
 ### Custom trackers
 

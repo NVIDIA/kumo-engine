@@ -133,6 +133,8 @@ from kumo.engine.trainer._spec import (
     write_training_spec,
 )
 from kumo.engine.trainer.output_config import (
+    SERVING_OPTION_PREFIX,
+    SERVING_SNAPSHOT_KEY,
     ModelOutputConfig,
     PredictionOutputConfig,
     check_model_location,
@@ -212,9 +214,8 @@ class TrainingResult:
 
     def export(self, config: Any) -> PublishedModel:
         """Publish this model's bundle to a ``ModelOutputConfig``, or
-        register it at a `kumo.MLOps` ``registry`` through its tracker; an
-        MLflow or Unity Catalog registry that already holds the bundle
-        returns that version, while Snowflake adds a new one."""
+        register it at a `kumo.MLOps` ``registry`` through its tracker; a
+        registry that already holds the bundle returns that version."""
         from kumo.engine._mlops import MLOps
 
         if isinstance(config, MLOps):
@@ -627,7 +628,8 @@ def _store_and_register(
         None if stored else _mlflow_registry(settings))
     registered = _with_metrics(registered, metrics)
     error = stored or error
-    registry = None if stored else _connector_registry(settings)
+    registry = None if stored else _connector_registry(
+        settings, getattr(snapshot, 'id', None))
     if registry is None:
         return registered, error
     errors: List[BaseException] = []
@@ -736,7 +738,8 @@ def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
     if callable(register):
         return cast(PublishedModel, _with_metrics(
             register(result, settings.registry), model_metrics(result)))
-    registry = cast(ModelOutputConfig, _connector_registry(settings))
+    registry = cast(ModelOutputConfig,
+                    _connector_registry(settings, result.snapshot_id))
     _require_publisher(registry)
     return _publish(result.bundle_dir, result.bundle_id,
                     model_metrics(result), registry)
@@ -788,12 +791,23 @@ def _mlflow_registry(settings: Any) -> Optional[ModelRegistryLocation]:
     return settings.registry
 
 
-def _connector_registry(settings: Any) -> Optional[ModelOutputConfig]:
+def _connector_registry(
+        settings: Any,
+        snapshot_id: Optional[str] = None) -> Optional[ModelOutputConfig]:
+    r"""The registry a connector tracker registers in."""
+    from kumo.engine._mlops import snapshot_path
+
     if (settings is None or settings.registry is None
             or logs_models(settings.tracking)):
         return None
-    return ModelOutputConfig(settings.tracking.connector,
-                             location=settings.registry)
+    serving = None
+    if (snapshot_id and settings.wants('snapshot')
+            and settings.root.path.startswith('@')):
+        serving = settings.root.uri(snapshot_path(snapshot_id))
+    return ModelOutputConfig(
+        settings.tracking.connector, location=settings.registry,
+        serving_snapshot=serving,
+        serving_options=getattr(settings.tracking, 'serving_options', None))
 
 
 def _publish(bundle_dir: Path, bundle_id: Optional[str],
@@ -808,6 +822,14 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
             for name in ('spec_version', 'predictive_query', 'snapshot_id')
         }
     metadata.update(registry_pointers(bundle_id))
+    if getattr(export_config, 'serving_snapshot', None):
+        from kumo.engine._mlops import snapshot_uri
+
+        metadata[SERVING_SNAPSHOT_KEY] = str(
+            snapshot_uri(export_config.serving_snapshot))
+    for name, value in (getattr(export_config, 'serving_options', None)
+                        or {}).items():
+        metadata[SERVING_OPTION_PREFIX + name] = str(value)
     location = export_config.location
     alias = location.alias if location else None
     if location and alias:
@@ -1842,8 +1864,14 @@ class Trainer:
         published = sink.fetch_model(cast(SourceConnector, model_registry),
                                      str(bundle_dir), path=address.path,
                                      location=address.location)
-        trainer = cls._load_bundle(bundle_dir, embedding_models,
-                                   accelerator=accelerator)
+        from kumo.engine._deps import assets_through
+
+        with assets_through(
+                model_registry, bundle_dir, lambda reader, _: (
+                    f'pass a {reader}(...) with an identity that reads it '
+                    f'as Trainer.load_from_connector(model_registry, ...)')):
+            trainer = cls._load_bundle(bundle_dir, embedding_models,
+                                       accelerator=accelerator)
         warn_if_other_bundle(getattr(published, 'metadata', None), trainer)
         if location is not None:
             trainer._from_registry(published, alias)

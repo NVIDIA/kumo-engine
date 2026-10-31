@@ -8,9 +8,13 @@ import importlib
 import os
 import shutil
 import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import (
     Any,
+    Callable,
+    Iterator,
     List,
     Mapping,
     Optional,
@@ -32,6 +36,29 @@ from kumo.engine._manifest import (
 )
 
 Location = Union[str, Tuple[Any, str]]
+
+
+Hint = Callable[[str, str], str]
+READERS = (('@', 'SnowflakeConnector'), ('/Volumes/', 'DatabricksConnector'),
+           ('s3://', 'S3Connector'), ('gs://', 'GCSConnector'))
+
+_LOCATIONS: ContextVar[Tuple[Location, ...]] = ContextVar(
+    'kumo_asset_locations', default=())
+_HINT: ContextVar[Optional[Hint]] = ContextVar('kumo_asset_hint',
+                                               default=None)
+
+
+@contextmanager
+def asset_locations(locations: Sequence[Location],
+                    hint: Optional[Hint] = None) -> Iterator[None]:
+    r"""Asset roots to look in first, and how to hint at a missing reader."""
+    token = _LOCATIONS.set((*locations, *_LOCATIONS.get()))
+    hinted = _HINT.set(hint or _HINT.get())
+    try:
+        yield
+    finally:
+        _HINT.reset(hinted)
+        _LOCATIONS.reset(token)
 
 
 class Asset(Protocol):
@@ -118,7 +145,8 @@ class Dependencies:
         self.records: List[Dependency] = list(records)
         self.errors: List[BaseException] = []
         self._settings = settings
-        self._locations = list(locations)
+        self._locations = [*locations, *_LOCATIONS.get()]
+        self._hint = _HINT.get()
 
     @classmethod
     def of(cls, manifest: Optional[ModelManifest], settings: Any = None,
@@ -167,6 +195,14 @@ class Dependencies:
                 continue
             if directory is not None and _verified(directory, record):
                 return directory
+        location = record.location or ''
+        reader = next((name for prefix, name in READERS
+                       if location.startswith(prefix)), None)
+        if reader is not None and self._hint is not None:
+            raise MissingDependencyError(
+                f"The model needs {asset_kind} {name!r} (sha256 "
+                f"{record.sha256}), stored at {location}, which this "
+                f"process cannot read: {self._hint(reader, location)}.")
         raise MissingDependencyError(
             f"The model needs {asset_kind} {name!r} (sha256 "
             f"{record.sha256}), which is in none of "
@@ -186,7 +222,7 @@ class Dependencies:
             else:
                 connector, path = location
                 found.append((connector, f"{path.rstrip('/')}/{relative}"))
-        if record.location:
+        if record.location and not record.location.startswith('@'):
             parent, _, leaf = record.location.rstrip('/').rpartition('/')
             try:
                 found.append((connector_for_root(parent or '/'), leaf))
@@ -196,7 +232,50 @@ class Dependencies:
         if settings is not None:
             found.append((settings.root.connector,
                           settings.root.location(f'assets/{relative}')))
+            if record.location and reads(settings.root.connector,
+                                         record.location):
+                found.append((settings.root.connector, record.location))
         return found
+
+
+def reads(connector: Any, location: str) -> bool:
+    r"""Whether ``connector`` reads the stored ``location`` itself."""
+    from kumo.engine.connector import (
+        FileConnector,
+        GCSConnector,
+        S3Connector,
+        is_file_destination,
+    )
+
+    for kind, prefix in ((S3Connector, 's3://'), (GCSConnector, 'gs://'),
+                         (FileConnector, None)):
+        if isinstance(connector, kind):
+            return prefix is not None and location.startswith(prefix)
+    return (location.startswith(('@', '/Volumes/'))
+            and is_file_destination(connector, location))
+
+
+def connector_roots(manifest: Optional[ModelManifest],
+                    connector: Any) -> List[Tuple[Any, str]]:
+    r"""The asset roots of ``manifest`` that ``connector`` reads."""
+    if connector is None:
+        return []
+    return [(connector, root) for root in sorted({
+        record.location.rsplit('/', 2)[0]
+        for record in Dependencies.of(manifest).records
+        if record.location and reads(connector, record.location)
+    })]
+
+
+@contextmanager
+def assets_through(connector: Any, bundle: Union[str, Path],
+                   hint: Hint) -> Iterator[None]:
+    r"""Resolves ``bundle``'s stored assets through ``connector`` too."""
+    from kumo.engine.trainer._provenance import read_provenance
+
+    with asset_locations(
+            connector_roots(read_provenance(Path(bundle)), connector), hint):
+        yield
 
 
 def asset_cache() -> Path:

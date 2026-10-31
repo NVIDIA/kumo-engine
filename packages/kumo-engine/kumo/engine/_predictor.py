@@ -52,7 +52,7 @@ class TrainerPredictor:
     def predict(self, rows: Any, snapshot: Any,
                 params: Mapping[str, Any]) -> Union[pd.DataFrame,
                                                     Tuple[str, ...]]:
-        from kumo.engine.integrations._mlflow_model import predict
+        from kumo.engine.integrations._serving import predict
         from kumo.engine.pquery.prediction_table import PredictionTable
 
         if isinstance(rows, PredictionTable):

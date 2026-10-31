@@ -13,6 +13,8 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+from kumo_core.object_store_sink import FilesystemSink
+from kumo_snowflake.artifacts import _split_stage_location
 from kumo_snowflake.errors import is_lapsed_credential
 from kumo_snowflake.registry import SnowflakeModelRegistryMixin
 from kumo_snowflake.session import (
@@ -133,6 +135,10 @@ class SnowflakeSinkBackend(SnowflakeModelRegistryMixin, _SnowflakeSessions):
             TypeError: If the registered factory returned something that is
                 not a Snowpark session.
         """
+        if self.holds_files(connector, table_name):
+            return FilesystemSink(self).write_table(connector, table_name,
+                                                    frame, write_mode,
+                                                    export_id=export_id)
         # `export_id` identifies a partial result for a destination that can
         # hold one. A warehouse write is a single statement, so there is
         # nothing here for a rerun to recognise.
@@ -162,7 +168,12 @@ class SnowflakeSinkBackend(SnowflakeModelRegistryMixin, _SnowflakeSessions):
     def write_files(self, connector, table_name, files,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
                     export_id=None, extra_columns=None):
-        """Load selected Parquet through the same upload/COPY owner as hosted."""
+        """Copy Parquet to a stage path, or COPY it into a table."""
+        if self.holds_files(connector, table_name):
+            return FilesystemSink(self).write_files(connector, table_name,
+                                                    files, write_mode,
+                                                    export_id=export_id,
+                                                    extra_columns=extra_columns)
         del project_id, export_id
         from kumo_core.artifact_staging import selected_local_parquet_files
         from kumo_snowflake.write import export_table_files
@@ -191,6 +202,43 @@ class SnowflakeSinkBackend(SnowflakeModelRegistryMixin, _SnowflakeSessions):
             # overwrite export; never repeat training or prediction.
             export(retry=True)
         return self._qualified(connector, table_name)
+
+    def holds_files(self, connector, path):
+        """Whether ``path`` names a named internal stage location."""
+        try:
+            _split_stage_location(path)
+        except (TypeError, ValueError):
+            return False
+        return True
+
+    def filesystem(self, connector, path):
+        """A pyarrow filesystem for an ``@DB.SCHEMA.STAGE/prefix`` path."""
+        from kumo_snowflake.stage_fs import stage_filesystem
+        with self._session(connector) as session:
+            _require_snowpark(session)
+            return stage_filesystem(session, path)
+
+    def publish_model(self, connector, bundle_dir, *, path=None, location=None,
+                      metadata={}, metrics={}, project_id=None):
+        """Registers a model version, or uploads to a stage ``path``."""
+        if location is None and path is not None and self.holds_files(
+                connector, path):
+            return FilesystemSink(self).publish_model(connector, bundle_dir,
+                                                      path=path,
+                                                      metadata=metadata)
+        return super().publish_model(connector, bundle_dir, path=path,
+                                     location=location, metadata=metadata,
+                                     metrics=metrics, project_id=project_id)
+
+    def fetch_model(self, connector, local_dir, *, path=None, location=None,
+                    project_id=None):
+        """Downloads a registry version, or the bundle at a stage ``path``."""
+        if location is None and path is not None and self.holds_files(
+                connector, path):
+            return FilesystemSink(self).fetch_model(connector, local_dir,
+                                                    path=path)
+        return super().fetch_model(connector, local_dir, path=path,
+                                   location=location, project_id=project_id)
 
     def __repr__(self) -> str:
         return f'SnowflakeSinkBackend(identity={self._identity!r})'

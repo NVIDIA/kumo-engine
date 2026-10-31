@@ -369,3 +369,176 @@ def test_a_model_that_was_not_stored_is_not_registered(
     registered, error = _store_and_register(bundle, manifest, settings,
                                             warn=False, stored=asset_failure)
     assert registered is None and error is asset_failure
+
+
+def test_the_snowflake_model_scores_with_the_bundles_predictor(
+        tmp_path, monkeypatch):
+    from kumo.engine.connector.snowflake import SnowflakeConnector
+    from kumo.engine.integrations import _serving
+
+    monkeypatch.setattr(_serving, '_predictors', {})
+    monkeypatch.setattr(_serving, '_snapshots', {})
+    monkeypatch.setattr(_serving, 'load_snapshot', lambda uri, record: uri)
+    bundle, manifest = _toy_bundle(tmp_path / 'toy')
+    serving = tmp_path / 'serving.json'
+    serving.write_text(json.dumps({'snapshot': 's', 'columns': ['ENTITY',
+                                                                'SCORE']}))
+    frame = _serving.score_registered(str(bundle), str(serving),
+                                      pd.DataFrame({'ENTITY': [1, 2]}), {})
+    assert frame.to_dict('list') == {'ENTITY': ['1', '2'], 'SCORE': [2.0, 4.0]}
+
+    staged = replace(manifest, dependencies=[
+        *manifest.dependencies,
+        _deps.Dependency(kind='asset', name='v', asset_kind='toy',
+                         sha256='a' * 64,
+                         location=f"@DB.ML.KUMO/assets/toy/{'a' * 64}")
+    ])
+    write_manifest(bundle / PROVENANCE_FILE, staged)
+    monkeypatch.setattr(SnowflakeConnector, 'from_spcs_env',
+                        classmethod(lambda cls, **kw: 'sf'))
+    assert _serving._staged(str(bundle), {}, lambda b: [
+        location for location in Dependencies().candidates(staged.
+                                                           dependencies[-1])
+        if location[0] == 'sf'
+    ]) == [('sf', f"@DB.ML.KUMO/assets/toy/{'a' * 64}")]
+
+
+def _stage(tmp_path):
+    from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
+
+    (tmp_path / 'stage').mkdir(exist_ok=True)
+    files = SubTreeFileSystem(str(tmp_path / 'stage'), LocalFileSystem())
+    return SimpleNamespace(sink_backend=SimpleNamespace(
+        holds_files=lambda connector, path: path.startswith('@'),
+        filesystem=lambda connector, path: (files, path.lstrip('@'))))
+
+
+def test_staged_assets_load_through_the_loading_connector(tmp_path):
+    stage = _stage(tmp_path)
+    sha = 'a' * 64
+    record = _deps.Dependency(kind='asset', name='v', asset_kind='toy',
+                              sha256=sha,
+                              location=f'@DB.S.ART/root/assets/toy/{sha}')
+    manifest = ModelManifest(id='m', dependencies=[record])
+    roots = _deps.connector_roots(manifest, stage)
+    assert roots == [(stage, '@DB.S.ART/root/assets')]
+    assert Dependencies().candidates(record) == []
+    with _deps.asset_locations(roots):
+        assert Dependencies().candidates(record) == [
+            (stage, f'@DB.S.ART/root/assets/toy/{sha}')]
+
+
+def test_volume_assets_load_through_the_connector_the_loader_was_given(
+        tmp_path, monkeypatch):
+    from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
+
+    from kumo.engine.integrations import _mlflow_model
+    from kumo.engine.integrations.mlflow import _target_hint
+
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    (tmp_path / 'volume').mkdir()
+    files = SubTreeFileSystem(str(tmp_path / 'volume'), LocalFileSystem())
+    volume = SimpleNamespace(sink_backend=SimpleNamespace(
+        holds_files=lambda connector, path: path.startswith('/Volumes/'),
+        filesystem=lambda connector, path: (files, path.lstrip('/'))))
+    (tmp_path / 'vocab').mkdir()
+    (tmp_path / 'vocab' / 'words.txt').write_text('a b c')
+    recorded = Dependencies(settings=kumo.MLOps((volume, '/Volumes/c/s/v/a')))
+    record = recorded.require(FileAsset('toy', 'vocab', tmp_path / 'vocab'))
+    assert record.location.startswith('/Volumes/c/s/v/a/assets/toy/')
+    manifest = ModelManifest(id='m', dependencies=[record])
+
+    with _deps.asset_locations([], _target_hint):
+        with pytest.raises(MissingDependencyError,
+                           match=r'pass target=DatabricksConnector\('
+                           r'identity=\.\.\.\) to load_model\(model_uri, '
+                           r'\.\.\.\), with an identity that reads '
+                           r'/Volumes/c/s/v/a/assets\.$'):
+            Dependencies.of(manifest).resolve('toy', 'vocab')
+    with _deps.asset_locations(_deps.connector_roots(manifest, volume)):
+        assert (Dependencies.of(manifest).resolve('toy', 'vocab') /
+                'words.txt').read_text() == 'a b c'
+    other_root = kumo.MLOps((volume, '/Volumes/c/s/v/b'))
+    assert Dependencies.of(manifest, other_root).resolve('toy', 'vocab')
+
+    seen = []
+    monkeypatch.setattr(
+        'kumo.engine._predictor.load_predictor', lambda bundle: seen.append(
+            Dependencies.of(manifest).candidates(record)[0]))
+    monkeypatch.setattr('kumo.engine.trainer._provenance.read_provenance',
+                        lambda bundle: manifest)
+    _mlflow_model.KumoModel().load_context(SimpleNamespace(
+        artifacts={'bundle': str(tmp_path)},
+        model_config={'columns': [], 'assets_from': volume}))
+    assert seen == [(volume, record.location)]
+
+
+def test_the_pyfunc_reads_a_volume_snapshot_through_assets_from(
+        monkeypatch):
+    from kumo.engine.graph import GraphSnapshot
+    from kumo.engine.integrations import _mlflow_model
+
+    volume = SimpleNamespace(sink_backend=SimpleNamespace(
+        holds_files=lambda connector, path: path.startswith('/Volumes/'),
+        filesystem=lambda connector, path: None))
+    loads = []
+    monkeypatch.setattr(GraphSnapshot, 'load_from_connector',
+                        lambda connector, *, path: loads.append(
+                            (connector, path)))
+    model = _mlflow_model.KumoModel()
+    model._snapshots, model._reader = {}, volume
+    model._snapshot('/Volumes/c/s/v/a/snapshots/g/version')
+    model._reader = None
+    model._snapshot('/Volumes/c/s/v/b/snapshots/g/version')
+    assert loads[0] == (volume, '/Volumes/c/s/v/a/snapshots/g/version')
+    assert loads[1][0] is not volume and loads[1][1] == 'version'
+
+
+def test_a_volume_snapshot_without_assets_from_names_the_argument(
+        monkeypatch):
+    from kumo.engine.graph import GraphSnapshot
+    from kumo.engine.integrations import _mlflow_model
+
+    def missing(connector, *, path):
+        raise FileNotFoundError(f'No complete snapshot export at {path}.')
+
+    monkeypatch.setattr(GraphSnapshot, 'load_from_connector', missing)
+    monkeypatch.setattr(_mlflow_model.os.path, 'isdir', lambda path: False)
+    model = _mlflow_model.KumoModel()
+    model._snapshots, model._reader = {}, None
+    with pytest.raises(FileNotFoundError,
+                       match=r"'assets_from': DatabricksConnector\(\.\.\.\)"):
+        model._snapshot('/Volumes/c/s/v/a/snapshots/g/version')
+    with pytest.raises(FileNotFoundError) as error:
+        model._snapshot('/tmp/a/snapshots/g/version')
+    assert 'assets_from' not in str(error.value)
+
+
+def test_a_stage_root_registers_versions_that_serve_its_snapshot(tmp_path):
+    from kumo.engine.trainer.trainer import _connector_registry, _publish
+
+    stage = _stage(tmp_path)
+    published = []
+    stage.sink_backend.publish_model = (
+        lambda connector, bundle_dir, **kw: published.append(kw['metadata'])
+        or PublishedModel(name='TOY', version='1', uri='fake://TOY/1'))
+    tracker = _RegistryTracker(stage)
+    tracker.serving_options = {'cuda_version': '12.4'}
+    cfg = kumo.MLOps((stage, '@DB.S.ART/root'), tracking=tracker,
+                     registry=ModelRegistryLocation('TOY'))
+    snapshot_id = f"{'b' * 64}@{'c' * 16}"
+    registry = _connector_registry(cfg, snapshot_id)
+    assert registry.serving_snapshot == (
+        f"@DB.S.ART/root/snapshots/{'b' * 64}/{'c' * 16}")
+    assert registry.serving_options == {'cuda_version': '12.4'}
+    assert _connector_registry(
+        kumo.MLOps(str(tmp_path / 'root'), tracking=tracker,
+                   registry=ModelRegistryLocation('TOY')),
+        snapshot_id).serving_snapshot is None
+
+    bundle, manifest = _toy_bundle(tmp_path / 'bundle')
+    with kumo.mlops(cfg):
+        _publish(bundle, manifest.id, {}, kumo.ModelOutputConfig(
+            stage, location=ModelRegistryLocation('TOY'),
+            serving_snapshot=snapshot_id))
+    assert published[0]['kumo.serving_snapshot'] == registry.serving_snapshot

@@ -61,6 +61,8 @@ class SnowflakeTracking(SingleRunHooks):
         tags: extra tags for the fit run.
         native_model_lineage: keep the run open as a context for the whole
             fit, so models registered meanwhile are linked to it.
+        serving_options: ``ModelOutputConfig.serving_options`` for
+            versions ``kumo.MLOps(registry=...)`` registers.
 
     ``run_id`` is the latest run's name. An experiment holds 500 runs.
     """
@@ -78,6 +80,7 @@ class SnowflakeTracking(SingleRunHooks):
         run_name: Optional[str] = None,
         tags: Optional[Mapping[str, str]] = None,
         native_model_lineage: bool = False,
+        serving_options: Optional[Mapping[str, str]] = None,
     ) -> None:
         from kumo.engine.connector.base import Connector
 
@@ -94,6 +97,7 @@ class SnowflakeTracking(SingleRunHooks):
         self.run_name = run_name
         self.tags = dict(tags or {})
         self.native_model_lineage = native_model_lineage
+        self.serving_options = dict(serving_options or {}) or None
         self.run_id: Optional[str] = None
         self.logged_run_name: Optional[str] = None
         self._reset()

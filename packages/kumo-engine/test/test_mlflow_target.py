@@ -70,8 +70,10 @@ def test_ambient_identities_set_no_credentials(monkeypatch, tracking_uri):
     assert mlflow.get_tracking_uri() == tracking_uri
     assert dict(os.environ) == before
 
+    assert resolve(_connector(DatabricksIdentity())).assets.catalog == 'main'
     for target in (resolve(SageMakerMLflow(ARN, S3Identity())),
                    resolve(SageMakerMLflow(ARN))):
+        assert type(target.assets).__name__ == 'S3Connector'
         with target.scope():
             assert mlflow.get_tracking_uri() == ARN
             assert target.artifact_repository('s3://b/run') is None
