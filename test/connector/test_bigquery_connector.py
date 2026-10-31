@@ -30,6 +30,7 @@ from kumo.stats.compute_stats_python import compute_col_stats_python
 from kumo.testing.bigquery import (
     FAIL_PROJECT_PERMISSION_BIGQUERY_KEY,
     FAIL_TABLE_PERMISSION_BIGQUERY_KEY,
+    onlyGCPTests,
     withBigQueryCredentials,
 )
 
@@ -367,6 +368,7 @@ def test_set_credentials_and_open():
     connector.open()
 
 
+@onlyGCPTests
 @withBigQueryCredentials(service_account_key=FAIL_TABLE_PERMISSION_BIGQUERY_KEY)
 def test_bigquery_table_permission_fail_read_table():
     connector = BigQueryConnector(
@@ -385,6 +387,7 @@ def test_bigquery_table_permission_fail_read_table():
     assert 'LOAN' not in message
 
 
+@onlyGCPTests
 @withBigQueryCredentials(
     service_account_key=FAIL_PROJECT_PERMISSION_BIGQUERY_KEY)
 def test_bigquery_project_permission_fail_read_table():
