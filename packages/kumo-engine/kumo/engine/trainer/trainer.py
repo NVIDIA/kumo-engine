@@ -176,10 +176,8 @@ class TrainingResult:
     scoring_defaults: ScoringDefaults = field(default_factory=ScoringDefaults)
     _trainer: Optional['Trainer'] = field(default=None, repr=False,
                                           compare=False)
-    # The fit's `kumo_core.summaries` of its test split, for trackers.
     _summaries: Tuple[Summary, ...] = field(default=(), repr=False,
                                             compare=False)
-    # The fit's run once it ended, as named then.
     _tracking: Optional[TrackingRef] = field(default=None, repr=False,
                                              compare=False)
 
@@ -204,9 +202,7 @@ class TrainingResult:
 
     @property
     def tracking(self) -> Optional[TrackingRef]:
-        """The experiment tracker's run of the fit: its ``platform``,
-        ``run_id``, ``experiment``, ``run_name`` and ``url``; None when the
-        fit was not tracked."""
+        """The tracker's run of the fit; None when not tracked."""
         manifest = self.manifest
         return self._tracking or (None if manifest is None else
                                   manifest.tracking)
@@ -281,10 +277,7 @@ class TrainingResult:
     def holdout_evaluation(
         self, binary_classification_threshold: Optional[float] = None
     ) -> 'EvaluationResult':
-        r"""The holdout as evaluated rows, with the columns and types
-        `Trainer.evaluate` writes: export it as a warehouse monitor's
-        baseline. ``TARGET_PRED`` uses the threshold passed, else the stored
-        default, else is null, as ``predict`` does."""
+        r"""The holdout as evaluated rows, a warehouse monitor's baseline."""
         from kumo.engine._monitoring import holdout_evaluation
 
         if binary_classification_threshold is None:
@@ -317,9 +310,6 @@ class PredictionResult:
     ``num_rows`` reads bounded producer metadata; ``files`` resolves selected
     Parquet files. Accessing ``frame`` explicitly collects the whole result
     into memory and is intended only for outputs that fit in memory.
-    ``id`` names the run; ``manifest`` is its record (None if it could not
-    be written), from which ``bundle_id`` and ``snapshot_id`` are read;
-    ``tracking`` is its experiment tracker's run, None when not tracked.
     """
 
     selection: Optional[PredictionSelectionRef]
@@ -336,16 +326,7 @@ class PredictionResult:
     @classmethod
     def load_from_connector(cls, connector: Connector, *,
                             path: str) -> 'PredictionResult':
-        r"""Load a Parquet directory written by :meth:`export` for monitoring.
-
-        A `kumo.MLOps` ``connector`` reads ``path`` under its artifact root,
-        such as ``predictions/<prediction id>``; a run directory loads its
-        ``predictions/``. The export must be complete (its ``_SUCCESS``
-        marker present). Only
-        its ``_provenance.json`` is fetched here; the Parquet parts are
-        downloaded, in parallel, when ``files`` is first read, into a local
-        directory removed when the result is garbage-collected.
-        """
+        r"""Load a complete Parquet export, downloaded when first read."""
         import tempfile
         import weakref
 
@@ -436,8 +417,7 @@ class PredictionResult:
 
     @property
     def skipped_rows(self) -> Optional[int]:
-        r"""Requested entities that were not scored (see the manifest's
-        ``prediction_table.skip_reason``), from the run's manifest."""
+        r"""Requested entities that were not scored."""
         return self._table_count('skipped_rows')
 
     def _table_count(self, name: str) -> Optional[int]:
@@ -510,8 +490,9 @@ class PredictionResult:
                                                 bundle_id)
             if columns:
                 extra['extra_columns'] = columns
-            output_config._write(destination, list(files),
-                                 export_id=f'{self.id}-{kind.value}', **extra)
+            output_config._write(
+                destination, list(files), export_id=None
+                if self.id is None else f'{self.id}-{kind.value}', **extra)
             if records is not None and written is not None:
                 written.append(records[index])
 
@@ -633,11 +614,7 @@ def _store_and_register(
     warn: bool = True,
     stored: Optional[BaseException] = None,
 ) -> Tuple[Optional[PublishedModel], Optional[BaseException]]:
-    r"""Store a fitted bundle under the artifact root, log it in the
-    session's run and register it, as MLOps ``settings`` say; returns the
-    registered version and the first failure. A model whose bundle or
-    assets (``stored``, the asset failure) could not be stored is not
-    registered."""
+    r"""Stores, logs and registers a bundle; returns it and any error."""
     if stored is None and settings is not None and settings.wants('model'):
         try:
             _store_model(bundle_dir, manifest, settings)
@@ -768,8 +745,7 @@ def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
 
 
 def _target_window(workflow: Any) -> Optional[Tuple[int, int, int, str]]:
-    r"""A temporal query's target window, the step between a forecast's
-    horizons and their unit; None for a static query."""
+    r"""A temporal query's target window, step and unit; None if static."""
     if not workflow.query.query.get_all_target_aggregations():
         return None
     offset = workflow.query.query.get_combined_date_offset_range()
@@ -782,11 +758,7 @@ def _target_window(workflow: Any) -> Optional[Tuple[int, int, int, str]]:
 
 def _unlogged(summaries: Sequence[Summary], metrics: Mapping[str, float],
               refit_full: bool = False) -> Tuple[Summary, ...]:
-    r"""``summaries`` with the model's scalars named as `logged_names`
-    names the holdout's, ``test/<name>``, less those ``metrics`` already
-    logs, which stay the trainer's own. After a refit on all data no
-    holdout describes the shipped model, so its scalars are
-    ``before_refit/<name>``."""
+    r"""Model scalars under their logged names, less those metrics logs."""
     logged = set(logged_names(metrics, refit_full))
     split = 'before_refit' if refit_full else 'test'
     summaries = (*(replace(summary, name=f'{split}/{summary.name}')
@@ -804,8 +776,7 @@ _REFIT_FULL = ('The model was refit on all the data, the test split included, '
 
 def _with_metrics(model: Optional[PublishedModel],
                   metrics: Mapping[str, float]) -> Optional[PublishedModel]:
-    r"""``model`` with the fit's metrics, where its registry returned none
-    (an MLflow version, unlike a Snowflake one, carries none)."""
+    r"""``model`` with ``metrics``, where its registry returned none."""
     if model is None or model.metrics:
         return model
     return replace(model, metrics=dict(metrics))
@@ -899,10 +870,7 @@ _F = TypeVar('_F', bound=Callable[..., Any])
 def _without_torch_scatter_hint(method: _F) -> _F:
     r"""Runs ``method`` without PyTorch Geometric's GPU hint that min/max
     aggregation "can be accelerated via the 'torch-scatter' package",
-    Lightning's "Tip" log lines advertising its cloud products, Lightning's
-    note that the loader's IterableDataset defines ``__len__``, and Python's
-    note that forking a multi-threaded process may deadlock (the loader
-    workers fork before any thread that matters holds a lock).
+    Lightning's tips and ``__len__`` note, and Python's fork warning.
 
     kumo-engine uses PyTorch's own scatter instead of that optional extension
     (see ``test_wheel_uses_torch_fallbacks_without_native_extensions``), so
@@ -1381,8 +1349,6 @@ class Trainer:
                     warm_start_bundle_id),
                 started_at=started_at, fit_mode=fit_mode,
                 tracking=tracking.pointer(),
-                task_type=task_type,
-                holdout_path=holdout_path,
                 holdout_truncated=holdout_truncated,
                 holdout_counts=holdout_counts,
                 holdout_window=_target_window(workflow)),
@@ -1515,10 +1481,7 @@ class Trainer:
 
         Omitted arguments fall back to the bundle's :attr:`scoring_defaults`.
 
-        ``result.manifest`` records the run (``outputs`` lists where each
-        output was written). With MLOps on (``mlops`` or a
-        `kumo.mlops` block), the outputs and manifest are also stored under
-        ``<artifact root>/predictions/<id>/``.
+        With MLOps on, the run is stored under ``predictions/<id>/``.
         """
         from kumo_core.prediction_options import (
             validate_num_classes_to_return,
@@ -1788,13 +1751,7 @@ class Trainer:
     def evaluate(self, run: PredictionResult, *,
                  labels_snapshot: GraphSnapshot,
                  mlops: Optional[Any] = None) -> 'EvaluationResult':
-        r"""Score a run against labels regenerated on ``labels_snapshot``, a
-        snapshot newer than the one the run scored, holding its outcomes.
-
-        With MLOps tracking on (``mlops`` or a `kumo.mlops` block), the
-        result is written into ``run``'s prediction run (on Snowflake, a run
-        named after it), which its ``tracking`` names.
-        """
+        r"""Score a run against labels from a newer snapshot."""
         from kumo.engine._mlops import resolve
         from kumo.engine._monitoring import evaluate, track
 

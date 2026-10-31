@@ -1,20 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Exact counts of a prediction run's scores, and the summaries a tracker
-logs from them.
-
-Each probability column (``True_PROB``; each class's, for at most
-`MAX_CLASS_HISTOGRAMS` classes; and ``confidence``, the top class's
-probability) is counted on the ``score`` axis, ``TARGET_PRED`` on the
-``target`` axis, the training target's bins, and each entity's top score,
-when the holdout counted it, on its ``top_score`` axis: a column ``c`` has
-the counts ``c``, the sum ``c/sum`` and the extent ``c``. ``classes``
-tallies each row's top class, ``predicted_positive`` the rows
-``TARGET_PRED`` labels positive, ``label_positive`` the rows predicting each
-label, ``predicted_labels`` the rows per number of predicted labels and
-``items`` each catalogue item's recommendations.
-"""
+r"""Exact counts of a prediction run's scores, and their summaries."""
 
 import json
 import math
@@ -39,11 +26,7 @@ _SCORES = ('confidence', 'top_score', 'TARGET_PRED')
 def count_predictions(counts: Counts, task_type: TaskType, *, prob: Any,
                       pred: Any, target_pred: Any, columns: Sequence[str],
                       horizon: Any = None) -> None:
-    r"""Adds one batch: ``prob`` and ``pred`` as the model decoded them,
-    ``target_pred`` the written ``TARGET_PRED``, ``columns`` the
-    probability columns' names, in class order, and ``horizon`` each
-    forecast row's step ahead, from 0, whose `_horizons` are also counted
-    alone as ``TARGET_PRED_h<step>``."""
+    r"""Adds one batch of decoded scores."""
     if task_type.has_numerical_target:
         _column(counts, 'TARGET_PRED', 'target', target_pred)
         if horizon is not None:
@@ -73,30 +56,19 @@ def count_predictions(counts: Counts, task_type: TaskType, *, prob: Any,
 
 
 def count_top_scores(counts: Counts, scores: Any) -> None:
-    r"""Adds each entity's top score of one batch, if ``counts`` has the
-    holdout's ``top_score`` bins."""
+    r"""Adds each entity's top score, on the holdout's top_score bins."""
     if 'top_score' in counts.edges:
         _column(counts, 'top_score', 'top_score', scores)
 
 
 def count_recommendations(counts: Counts, items: Any, catalogue: int) -> None:
-    r"""Adds one batch of recommended ``items``, indices into a catalogue of
-    ``catalogue`` items, to the ``items`` tally; out-of-range indices are
-    padding."""
+    r"""Adds recommended item indices; out-of-range ones are padding."""
     items = np.asarray(items, dtype=np.int64).reshape(-1)
     counts.tally(ITEMS, items[(items >= 0) & (items < catalogue)], catalogue)
 
 
 def item_counts(counts: Counts) -> Counts:
-    r"""``counts`` with its ``items`` tally replaced by what is logged of
-    it, which is as small for any catalogue: ``item_frequency``, items per
-    number of recommendations on powers of two, and ``item_frequency/sum``,
-    their recommendations; ``items_by_rank``, the recommendations of the
-    `RANKED_ITEMS` most recommended items, most first; and the totals
-    ``catalogue``, ``items_recommended``, ``recommendations``,
-    ``most_recommendations``,
-    those of the most recommended item, and ``top1pct_recommendations``,
-    those of the most recommended 1% of items."""
+    r"""The items tally as small frequency and rank counts."""
     arrays = dict(counts.arrays)
     tally = arrays.pop(ITEMS)
     top = max(1, math.ceil(tally.size / 100))
@@ -123,8 +95,7 @@ def item_counts(counts: Counts) -> Counts:
 
 
 def save_counts(counts: Counts, path: Path) -> None:
-    r"""Writes ``counts`` as JSON at ``path``, and its ``items`` tally, as
-    large as the catalogue, as NumPy beside it."""
+    r"""Writes counts as JSON, and the items tally as NumPy beside it."""
     arrays = dict(counts.arrays)
     items = arrays.pop(ITEMS, None)
     if items is not None:
@@ -151,18 +122,7 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
                          baseline: Optional[Counts],
                          timeframe: Optional[Timeframe] = None
                          ) -> List[Summary]:
-    r"""``pred/histogram`` of each score column, of only the `TOP_CLASSES`
-    most predicted classes, and of each forecast horizon, with a
-    ``pred/<column>_count_by_score_pct`` chart of each probability among
-    them; ``pred/summary``, the mean, minimum and maximum of the score that
-    drift is measured on; ``pred/positive_rate`` at a binary ``threshold``;
-    ``pred/by_class`` and, for labels, ``pred/by_label_count``; for
-    recommendations, ``pred/item_frequency``, ``pred/item_coverage``,
-    ``pred/top_1pct_items_share`` and a ``pred/recommendations_by_item_rank``
-    chart; and ``drift/psi``, ``drift/ks`` and ``drift/wasserstein`` against
-    ``baseline``, the training holdout's counts, when it counted the same
-    score on the same bins. A forecast's horizons are named by their window
-    in ``timeframe``, as the holdout's are."""
+    r"""Score histograms, shares and drift vs the holdout."""
     summaries: List[Summary] = []
     scores = [name for name in counts.extents if name in _SCORES]
     columns = [name for name in counts.extents if name not in _SCORES]
@@ -215,9 +175,7 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
 
 def _by_class(counts: Counts, ranked: str, order: Sequence[int],
               columns: Sequence[str], baseline: Optional[Counts]) -> Table:
-    r"""Each class's or label's share of the rows predicting it, here and
-    at the ``baseline`` holdout when it tallied the same classes, and the
-    mean, minimum and maximum of its probability, if counted."""
+    r"""Each class's share here and in the holdout."""
     tally = counts.arrays[ranked]
     rows = (tally.sum() if ranked == 'classes' else
             counts.arrays['predicted_labels'].sum())
@@ -268,8 +226,7 @@ def _item_summaries(counts: Counts) -> List[Summary]:
 
 
 def _by_score_pct(column: str, counts: np.ndarray) -> Series:
-    r"""``counts`` on `PROBABILITY_EDGES` per hundredth of score, with any
-    below 0 in the first and any from 1 in the last."""
+    r"""Counts per hundredth of score, clipped to [0, 1]."""
     per_pct = counts[1:-1].astype(np.float64)
     per_pct[0] += counts[0]
     per_pct[-1] += counts[-1]

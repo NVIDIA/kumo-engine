@@ -203,6 +203,23 @@ def test_publish_names_the_next_version_and_retries_a_taken_one(
                            location=ModelRegistryLocation('CHURN',
                                                           version='V4'))
 
+    def fail_after_creating(*args, version_name, **kwargs):
+        tried.append(version_name)
+        names.append(version_name)
+        raise RuntimeError('upload failed')
+
+    @contextmanager
+    def failing(_):
+        yield SimpleNamespace(log_model=fail_after_creating,
+                              get_model=lambda _: model)
+
+    tried.clear()
+    monkeypatch.setattr(sink, '_registry', failing)
+    with pytest.raises(RuntimeError, match='upload failed'):
+        sink.publish_model(SimpleNamespace(), str(bundle),
+                           location=ModelRegistryLocation('CHURN'))
+    assert len(tried) == 3
+
 
 def test_listing_filters_engine_marker_and_returns_lineage(monkeypatch):
     versions = []

@@ -36,8 +36,6 @@ def write_provenance(
     train_table: TrainingTable,
     warm_start: Optional[ModelManifest],
     started_at: datetime,
-    task_type: TaskType,
-    holdout_path: Optional[Path],
     holdout_truncated: Optional[bool],
     fit_mode: Optional[str],
     tracking: Optional[TrackingRef] = None,
@@ -79,8 +77,7 @@ def write_provenance(
 
 
 def embedded_model(manifest: ModelManifest) -> ModelManifest:
-    r"""``manifest`` as a child model embeds it: its own model parents cut
-    to stubs, so a chain of retrains does not grow each manifest."""
+    r"""``manifest`` for embedding, its own model parents cut to stubs."""
     copy = embedded(manifest)
     parents = copy.parents
     if parents is None:
@@ -101,8 +98,7 @@ def parent_model(bundle_dir: Path, bundle_id: Optional[str]
     manifest = read_provenance(bundle_dir)
     if manifest is not None:
         return manifest
-    return None if bundle_id is None else ModelManifest(id=bundle_id,
-                                                        reconstructed=True)
+    return None if bundle_id is None else stub('model', bundle_id)
 
 
 def read_provenance(bundle_dir: Path) -> Optional[ModelManifest]:
@@ -151,11 +147,7 @@ def holdout_counts(model: Optional[ModelManifest]) -> Optional[Counts]:
 
 def count_edges(model: Optional[ModelManifest], task_type: TaskType
                 ) -> Optional[Dict[str, Tuple[float, ...]]]:
-    r"""The bins a prediction run of ``model`` counts its scores in:
-    probabilities in hundredths, with a multilabel entity's top score; a
-    recommendation's top score on its holdout's bins, if it has them; or
-    the training target's bins its holdout counts; None without a
-    holdout's bins."""
+    r"""The bins a prediction run of model counts its scores in."""
     if task_type in (TaskType.BINARY_CLASSIFICATION,
                      TaskType.MULTICLASS_CLASSIFICATION):
         return {'score': PROBABILITY_EDGES}

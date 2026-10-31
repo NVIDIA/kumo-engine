@@ -1,23 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Exact drift between two runs' score counts over the same bins.
-
-``psi`` compares the shares of up to 10 groups of bins, cut where the
-reference side's cumulative share reaches each decile; ``ks`` is the largest
-gap between the two cumulative shares at the bin edges; ``wasserstein`` puts
-each bin's count at its midpoint, the end bins closed at each side's recorded
-minimum and maximum.
-"""
+r"""Exact psi, ks and wasserstein between score counts on the same bins."""
 
 from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 from kumo_core.score_counts import Counts, bin_bounds
 
-#: The score column a run's drift is measured on, the first it counted.
 DRIFT_COLUMNS = ('True_PROB', 'confidence', 'top_score', 'TARGET_PRED')
-#: The PSI rule of thumb: each shift and its range.
 PSI_SHIFTS = {'small': '< 0.1', 'moderate': '0.1–0.25', 'large': '> 0.25'}
 _FLOOR = 1e-6
 
@@ -34,9 +25,7 @@ def drift_column(counts: Counts) -> Optional[str]:
 
 
 def score_drift(counts: Counts, reference: Counts) -> Optional[Dict[str, float]]:
-    r"""``psi``, ``ks`` and ``wasserstein`` of ``counts`` against
-    ``reference``; ``None`` unless both counted the same column on the same
-    bins."""
+    r"""None unless both sides counted the same column on the same bins."""
     column = drift_column(counts)
     if column is None or column not in reference.arrays:
         return None
@@ -53,6 +42,11 @@ def score_drift(counts: Counts, reference: Counts) -> Optional[Dict[str, float]]
             actual, _midpoints(edges, counts.extents.get(column)),
             expected, _midpoints(edges, reference.extents.get(column))),
     }
+
+
+def holdout_shift(task_type: Optional[str]) -> bool:
+    r"""Whether psi vs the holdout reads as a shift; a link holdout is partial."""
+    return not str(task_type).endswith('link_prediction')
 
 
 def psi_shift(value: float) -> str:
@@ -74,8 +68,7 @@ def ks(actual: np.ndarray, expected: np.ndarray) -> float:
 
 def wasserstein(actual: np.ndarray, actual_points: np.ndarray,
                 expected: np.ndarray, expected_points: np.ndarray) -> float:
-    r"""The 1-Wasserstein distance between the counts ``actual`` at
-    ``actual_points`` and ``expected`` at ``expected_points``."""
+    r"""1-Wasserstein distance between two weighted point sets."""
     points = np.concatenate([actual_points, expected_points])
     mass = np.concatenate([actual / actual.sum(), -expected / expected.sum()])
     order = np.argsort(points, kind='stable')

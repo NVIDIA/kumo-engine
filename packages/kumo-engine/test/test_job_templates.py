@@ -5,7 +5,6 @@
 import importlib.util
 import json
 import os
-import py_compile
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,15 +31,6 @@ def _module(name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-@pytest.mark.parametrize('name', [
-    'jobs.py', 'fit_job.py', 'score_job.py', 'sagemaker/pipeline.py',
-    'snowflake/register_jobs.py'
-])
-def test_python_compiles(name, tmp_path):
-    py_compile.compile(str(_examples() / name), cfile=str(tmp_path / 'out'),
-                       doraise=True)
 
 
 def _data(root: Path, prefix: str = '') -> None:

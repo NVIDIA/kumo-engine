@@ -908,10 +908,11 @@ def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
         registered_model=None, registered_alias=None, manifest=SimpleNamespace(
             holdout=None, tracking=TrackingRef(platform='mlflow',
                                                run_id=fit)))
-    track_prediction(PREDICTION_MANIFEST, tracking, model=trained, summaries=[
-        Dataset(name, INPUTS['ents'], {}, {}, context)
-        for name, context in (('snapshot', 'scoring'),
-                              ('predictions', 'output'))])
+    track_prediction(PREDICTION_MANIFEST, tracking, model=trained,
+                     summaries=lambda: [
+                         Dataset(name, INPUTS['ents'], {}, {}, context)
+                         for name, context in (('snapshot', 'scoring'),
+                                               ('predictions', 'output'))])
 
     run = client.get_run(tracking.run_id)
     assert tracking_ref(tracking) == TrackingRef(

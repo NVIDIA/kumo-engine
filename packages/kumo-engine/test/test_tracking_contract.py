@@ -771,15 +771,53 @@ def test_prediction_run_without_a_manifest_or_hook_is_skipped(caplog):
     assert 'not tracked' in caplog.text
 
 
-def test_every_summary_type_has_a_sink_in_each_tracker():
-    from typing import get_args
+def test_a_failing_summary_is_a_tracking_failure_not_a_predict_one():
+    recorder = _Recorder()
+    recorder.log_prediction_run = recorder.calls.append
 
-    from kumo_core.summaries import Summary
+    def broken():
+        raise OSError('stats unreadable')
 
-    from kumo.engine.integrations import mlflow, snowflake
+    failure = track_prediction(PREDICTION_MANIFEST, recorder,
+                               summaries=broken)
+    assert isinstance(failure, OSError) and recorder.calls == []
 
-    for sinks in (mlflow._SINKS, snowflake._SINKS):
-        assert set(sinks) == set(get_args(Summary))
+
+def test_every_summary_type_is_routed():
+    from kumo_core.summaries import (
+        Confusion,
+        Curve,
+        Dataset,
+        Histogram,
+        Note,
+        Scalar,
+        Series,
+        Table,
+        Tag,
+    )
+
+    from kumo.engine._summary_tables import route
+
+    chart = Series('pred/x_count_by_score_pct', ((0, 1.0), ), chart=True)
+    summaries = [
+        Scalar('a', 1.0), Tag('t', 'v'), chart,
+        Curve('test/roc', Series('test/roc/fpr', ((0, 0.0), )),
+              Series('test/roc/tpr', ((0, 1.0), ))),
+        Histogram('pred/h', (0.5, ), (1, 2)), Table('brief', ('c', ), (),
+                                                    brief=True),
+        Table('big', ('c', ), ()), Note('notes', 'n'),
+        Confusion('test/confusion', ('a', 'b'), ((1, 0), (0, 1))),
+        Dataset('d', {}, {}, {}, 'training')]
+
+    charted, tabled = route(summaries, True), route(summaries, False)
+    assert charted.charts == {chart.name: chart.points}
+    assert [t.name for t in charted.tables] == [
+        'test/roc', 'pred', 'big', 'test/confusion']
+    assert 'pred/x_count_by_score_pct' not in tabled.charts
+    assert len(tabled.tables) == 5
+    assert [type(s) for s in charted.card] == [Table, Note]
+    assert (len(charted.scalars), charted.tags,
+            len(charted.datasets)) == (1, {'t': 'v'}, 1)
 
 
 @pytest.mark.parametrize('metrics,refit_full,expected', [

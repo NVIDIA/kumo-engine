@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Train the users-churn model: ``python fit_job.py --artifact-root ROOT
---source SOURCE [...]``; see README.md."""
+"""Train the users-churn model; see README.md."""
 
 import os
 import sys

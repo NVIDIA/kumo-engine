@@ -264,8 +264,7 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
     @staticmethod
     def holdout_top_scores(stage: TrainingStage,
                            score: Tensor | None) -> dict[str, Tensor]:
-        r"""Each test entity's top score of its ranked ``score``, kept for
-        the holdout's score counts."""
+        r"""Each test entity's top score, for the holdout's counts."""
         if stage != TrainingStage.TEST or score is None:
             return {}
         return {'top_score': score.max(dim=-1).values}

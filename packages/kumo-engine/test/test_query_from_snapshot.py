@@ -157,3 +157,16 @@ def test_entities_missing_from_the_snapshot_are_recorded_as_skipped(
     assert full.skipped_rows == 0
     assert full.requested_rows == full.scored_rows == 50
     assert full.manifest.prediction_table.skipped_sample == []
+
+
+def test_skipped_samples_count_rows_from_the_chunks_first_row_group(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from kumo.engine.pquery.prediction_table import _sample_ids
+
+    pq.write_table(pa.table({'ENTITY1': [10, 11, 12, 13, 14]}),
+                   tmp_path / 'rows.parquet', row_group_size=2)
+    conditions = [{'column': 'ENTITY1',
+                   'samples': ['rows.parquet row group 1 row 2']}]
+    assert _sample_ids(conditions, tmp_path / 'rows.parquet') == (14, )

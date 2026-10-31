@@ -2128,7 +2128,6 @@ class Trainer(PortableConfigMixin):
         target = df[column].to_numpy(dtype=float)
         if len(edges) < 2:
             edges = sorted(set(np.quantile(target, np.linspace(0, 1, 51))))
-        # A forecast's rows are exploded in horizon order under its index.
         horizon = (df.groupby(level=0).cumcount()
                    if task_type == TaskType.FORECASTING else None)
         return evaluation_counts(task_type, pred=df[f'{column}_PRED'],
@@ -2183,9 +2182,7 @@ class Trainer(PortableConfigMixin):
         target_edges: Sequence[float] = (),
     ) -> EvalOutput | None:
         r"""Get test model performance based on checkpoint trained with the
-        given `fit_mode_to_use`, and the exact counts of its scores: binary
-        confusion counts at ``binary_classification_threshold``, a numerical
-        target in ``target_edges`` (default: the test targets' percentiles)."""
+        given `fit_mode_to_use`, and the exact counts of its scores."""
         if fit_mode_to_use == FitMode.refit_full:
             raise ValueError(
                 f"test(fit_mode={fit_mode_to_use}) is invalid since the model "

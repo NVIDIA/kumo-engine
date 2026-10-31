@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""What scores a model bundle: the ``predictor`` dependency its manifest
-names."""
+r"""The predictor a model bundle's manifest names."""
 
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Tuple, Union
@@ -11,13 +10,11 @@ import pandas as pd
 
 from kumo.engine._deps import imported
 
-#: The predictor of bundles whose manifest names none.
 TRAINER_PREDICTOR = 'kumo.engine._predictor:TrainerPredictor'
 
 
 class Predictor(Protocol):
-    r"""A loaded bundle: scores ``rows`` (an ``ENTITY`` frame, or a
-    `PredictionTable` for files) against ``snapshot``."""
+    r"""Scores ``rows`` (a frame or `PredictionTable`) on ``snapshot``."""
     def predict(self, rows: Any, snapshot: Any,
                 params: Mapping[str, Any]) -> Union[pd.DataFrame,
                                                     Tuple[str, ...]]:
@@ -25,8 +22,7 @@ class Predictor(Protocol):
 
 
 def load_predictor(bundle_dir: Union[str, Path]) -> Predictor:
-    r"""The predictor the bundle at ``bundle_dir`` names, loaded with
-    ``<entry point>.load(bundle_dir)``."""
+    r"""The predictor the bundle at ``bundle_dir`` names, loaded."""
     from kumo.engine.trainer._provenance import read_provenance
 
     manifest = read_provenance(Path(bundle_dir))

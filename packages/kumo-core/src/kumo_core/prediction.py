@@ -75,8 +75,6 @@ class GeneratedPredictionTable:
     table_path: str
     row_count: int
     tt_id: str
-    #: DiskGraph's ``row_failures`` report for caller-supplied rows: rows
-    #: read, rows skipped, and per-condition counts with source locations.
     row_failures: Mapping[str, Any] | None = None
 
 
@@ -640,9 +638,8 @@ def score_prediction(
     Rows stay in producer Parquet files. Workers return only small immutable
     manifest references; selection publishes after every scorer succeeds.
     ``encoders`` are the model's, if the caller already loaded them; only an
-    in-process scorer reuses them. With ``count_edges``, the bins of a
-    `Counts`, every scorer counts its scores and their sum is written to
-    ``COUNTS_FILE`` in the output directory.
+    in-process scorer reuses them. With ``count_edges``, scores are counted
+    into ``COUNTS_FILE``.
     """
     from .prediction_options import validate_prediction_workers
     validate_prediction_workers(num_workers)

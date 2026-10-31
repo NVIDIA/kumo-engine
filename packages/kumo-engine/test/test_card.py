@@ -20,6 +20,8 @@ def test_a_fit_heading_leads_with_the_tuned_holdout_metric():
         'kumo.tune_metric': 'loss', 'kumo.data_warnings': '0',
         'kumo.error': 'ValueError:\n  stop'})[0] == (
             'failed: ValueError: stop, holdout loss 0.25')
+    assert _card.heading('fit', {'test/map@12': 0.25}, {
+        'kumo.tune_metric': 'map@12'})[0] == 'holdout map_at_12 0.25'
 
 
 def test_a_prediction_heading_leads_with_its_watch_numbers():
@@ -190,7 +192,7 @@ def test_data_preparation_marks_a_snapshot_built_by_another_process(
                      finished_at='2026-10-29T06:01:30+00:00', seconds=90.0,
                      disk_bytes=3 * 1024**3)
     monkeypatch.setattr(_prep_cost, '_built_here', {'tt'})
-    table, = _prep_cost.prep_summaries(
+    table, *tags = _prep_cost.prep_summaries(
         SnapshotManifest(id='snap', build=cost),
         TrainingTableManifest(id='tt', build=BuildCost(
             started_at='', finished_at='', seconds=12.5,
@@ -201,8 +203,13 @@ def test_data_preparation_marks_a_snapshot_built_by_another_process(
         '| --- | ---: | --- |',
         '| Graph snapshot (built earlier, reused) | 90 | 3 GiB |',
         '| Training table | 12.5 | 512 MiB |'])
-    assert _prep_cost.prep_params(table) == {
+    assert {tag.name: tag.value for tag in tags} == {
         'prep.snapshot.seconds': '90.0', 'prep.snapshot.bytes': '3221225472',
         'prep.training_table.seconds': '12.5',
         'prep.training_table.bytes': '536870912'}
     assert _prep_cost.prep_summaries(SnapshotManifest(id='old')) == []
+
+
+def test_a_cell_with_a_newline_stays_on_its_row():
+    table = Table('data/columns', ('column', 'top values'), (('BIO', 'a\nb|c'),))
+    assert _card.table_text(table).splitlines()[-1] == '| BIO | a b\\|c |'

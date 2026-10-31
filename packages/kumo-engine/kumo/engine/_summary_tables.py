@@ -1,17 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Series and histograms as the tables every tracker logs: the parent path
-of a summary's name names its table, the last segment its column."""
+r"""Series and histograms as tables, and summaries routed for trackers."""
 
 import json
 import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
-from kumo_core.summaries import Curve, Histogram, Series, Table
+from kumo_core.summaries import (
+    Confusion,
+    Curve,
+    Dataset,
+    Histogram,
+    Note,
+    Scalar,
+    Series,
+    Summary,
+    Table,
+    Tag,
+)
 
-#: Columns that define bins or thresholds rather than measure anything.
 _DEFINITIONS = frozenset({'from', 'to', 'threshold'})
 
 
@@ -45,10 +54,58 @@ class SummaryTables:
                   for name, histograms in self.histograms.items())]
 
 
+@dataclass
+class Routed:
+    r"""Summaries sorted by how a tracker writes them."""
+
+    scalars: List[Scalar] = field(default_factory=list)
+    tags: Dict[str, str] = field(default_factory=dict)
+    charts: Dict[str, Tuple[Tuple[int, float], ...]] = field(
+        default_factory=dict)
+    tables: List[Table] = field(default_factory=list)
+    card: List[Summary] = field(default_factory=list)
+    datasets: List[Dataset] = field(default_factory=list)
+
+
+def route(summaries: Sequence[Summary], charts: bool) -> Routed:
+    r"""Brief tables and notes go on the card; series, curves and histograms
+    become tables; chart series stay charts only when ``charts``."""
+    routed, grouped, tables = Routed(), SummaryTables(), []
+    for summary in summaries:
+        if isinstance(summary, Scalar):
+            routed.scalars.append(summary)
+        elif isinstance(summary, Tag):
+            routed.tags[summary.name] = summary.value
+        elif isinstance(summary, Series) and summary.chart and charts:
+            routed.charts[summary.name] = summary.points
+        elif isinstance(summary, Series):
+            grouped.add_series(summary)
+        elif isinstance(summary, Curve):
+            grouped.add_curve(summary)
+        elif isinstance(summary, Histogram):
+            grouped.add_histogram(summary)
+        elif isinstance(summary, Dataset):
+            routed.datasets.append(summary)
+        elif isinstance(summary, Note) or (isinstance(summary, Table)
+                                           and summary.brief):
+            routed.card.append(summary)
+        elif isinstance(summary, Confusion):
+            tables.append(confusion_table(summary))
+        elif isinstance(summary, Table):
+            tables.append(summary)
+        else:
+            raise TypeError(f'No route for {type(summary).__name__}')
+    routed.tables = [*grouped.tables(), *tables]
+    return routed
+
+
+def confusion_table(summary: Confusion) -> Table:
+    return Table(summary.name, ('actual', *summary.labels), tuple(
+        (label, *row) for label, row in zip(summary.labels, summary.counts)))
+
+
 def _series_table(name: str, x_label: str,
                   columns: Mapping[str, Mapping[int, float]]) -> Table:
-    r"""Series ``<name>/<column>`` as one table: the step, then a column
-    per series, a row per step."""
     steps = sorted({step for points in columns.values() for step in points})
     return Table(name, (x_label, *columns), tuple(
         (step, *(points.get(step) for points in columns.values()))
@@ -56,10 +113,7 @@ def _series_table(name: str, x_label: str,
 
 
 def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
-    r"""Histograms ``<name>/<column>`` over the same edges as one table: a
-    bin per row from ``from`` to ``to``, the end bins closed at the values'
-    recorded minimum and maximum (open without one), a count and a
-    cumulative share per histogram; bins no histogram counts are left out."""
+    r"""Same-edge histograms as one table, empty bins dropped."""
     edges = histograms[0].edges
     extents = [h.extent for h in histograms if h.extent is not None]
     first = min((extent[0] for extent in extents), default=None)
@@ -84,9 +138,7 @@ def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
 
 
 def table_json(table: Table) -> str:
-    r"""``table`` as the JSON the trackers' table views read: bin edges and
-    thresholds to 10 significant digits, other floats to 6, integers and
-    text as they are."""
+    r"""Table JSON for tracker table views."""
     digits = [10 if column in _DEFINITIONS else 6 for column in table.columns]
     return json.dumps({'columns': list(table.columns), 'data': [
         [_rounded(value, places) for value, places in zip(row, digits)]

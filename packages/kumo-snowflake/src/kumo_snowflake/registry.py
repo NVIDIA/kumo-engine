@@ -90,7 +90,6 @@ MODEL_BUILDER_GROUP = 'kumo_snowflake.registry_models'
 _EXPORT_DIR = '_registry-export'
 _EXPORT_WORKERS = 8
 
-#: How a version comment's line of holdout metrics begins.
 _METRICS_LINE = 'Holdout: '
 
 
@@ -380,10 +379,7 @@ def _comment(user: Optional[str],
 
 def _backfill(version: "ModelVersion", metrics: Mapping[str, float],
               comment: Optional[str]) -> None:
-    r"""Records ``metrics`` on a reused ``version``, in its metadata and as
-    its comment line after ``comment`` (`None`: the version's own comment),
-    leaving what it already holds; a refused change warns, since it needs
-    OWNERSHIP of the model."""
+    r"""Records ``metrics`` on a reused ``version`` it lacks them on."""
     try:
         recorded = dict(version.show_metrics() or {})
         for name, value in _finite(metrics).items():
@@ -553,21 +549,22 @@ class SnowflakeModelRegistryMixin:
             else:
                 name = location.version or _next_version(
                     registry, location.model_name)
-            while version is None:
-                try:
-                    version = registry.log_model(
-                        model_name=location.model_name,
-                        version_name=name,
-                        comment=_comment(location.comment, metrics),
-                        metrics=record,
-                        **args,
-                        **_task(bundle),
-                    )
-                except Exception:
-                    taken, name = name, location.version or _next_version(
-                        registry, location.model_name)
-                    if name == taken:
-                        raise
+                for attempt in range(3):
+                    try:
+                        version = registry.log_model(
+                            model_name=location.model_name,
+                            version_name=name,
+                            comment=_comment(location.comment, metrics),
+                            metrics=record,
+                            **args,
+                            **_task(bundle),
+                        )
+                        break
+                    except Exception:
+                        taken, name = name, location.version or _next_version(
+                            registry, location.model_name)
+                        if name == taken or attempt == 2:
+                            raise
         return _published(connector, version, metadata=metadata,
                           metrics=metrics)
 

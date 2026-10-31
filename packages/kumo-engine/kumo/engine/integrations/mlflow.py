@@ -15,7 +15,7 @@ import threading
 import time
 import warnings
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,32 +38,21 @@ from typing import (
 from urllib.parse import quote
 
 from kumo_core.instrumentation import format_error
-from kumo_core.summaries import (
-    Confusion,
-    Curve,
-    Dataset,
-    Histogram,
-    Note,
-    Scalar,
-    Series,
-    Summary,
-    Table,
-    Tag,
-)
+from kumo_core.summaries import Dataset, Note, Summary, Table, Tag
 from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
 from kumo.engine import _card
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
-from kumo.engine._summary_tables import SummaryTables, table_json
+from kumo.engine._summary_tables import Routed, route, table_json
 from kumo.engine._tracking import (
     DROPPED_PARAMS,
     RegistrationError,
     RunRecord,
+    SingleRunHooks,
     by_step,
     model_label,
     model_metrics,
-    record_failure,
     run_name,
     versioned,
 )
@@ -89,14 +78,12 @@ logger = logging.getLogger(__name__)
 
 _MAX_PARAM_KEY = 250
 _MAX_PARAM_VALUE = 6000
-# MLflow's portable name charset (its Windows rule, which omits ':').
+# MLflow's Windows-safe charset.
 _PARAM_KEY = re.compile(r'[/\w.\- ]+')
-# MLflow's defaults (7 retries, 120 s timeout) can hold a call for minutes.
 _HTTP_LIMITS = {
     'MLFLOW_HTTP_REQUEST_MAX_RETRIES': '2',
     'MLFLOW_HTTP_REQUEST_TIMEOUT': '30',
 }
-# Model upload only, and only where the limits above apply.
 _UPLOAD_HTTP = {'MLFLOW_HTTP_REQUEST_TIMEOUT': '600'}
 _PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS')
 _SAGEMAKER_MODEL = re.compile(r'[a-zA-Z0-9](-*[a-zA-Z0-9]){0,56}')
@@ -104,28 +91,21 @@ _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
 _HINTED: set = set()
 
 
-class MlflowTracking:
+class MlflowTracking(SingleRunHooks):
     r"""Records `Trainer.fit` in MLflow: one run per fit (under the active
     run, if any, on the same server) with a child run per trial attempt.
     Source tables are logged as run inputs: Databricks tables as Delta
     tables (Unity Catalog then links them to a model registered from the
     run), file and object-store sources by URI. Params MLflow rejects are
     counted in ``kumo.dropped_params``. Concurrent fits in one process are
-    not supported. As ``kumo.MLOps(tracking=...)``, it also records each
-    prediction run as one run named after it, placed like a fit run, and
-    writes each monitoring call into the prediction run it checks;
-    ``tags`` apply to fit runs only.
+    not supported. Prediction runs are runs of their own; monitoring calls
+    are written into the prediction run they check.
 
     Args:
         experiment_name: experiment for the fit run, created if missing.
             `None` uses MLflow's current experiment; required to record
             runs at a ``target``.
-        run_name: replaces ``<model>-v<version>`` in each run's name:
-            ``fit-<run_name>``, ``predict-<run_name>-<as-of date>``. `None`
-            names a fit ``fit-<model>-<YYYYMMDD-HHMMSS>`` (its UTC start),
-            then ``fit-<model>-v<version>`` once it registers a version, and
-            a prediction ``predict-<model>-v<version>-<as-of date>``
-            (``<model>-<bundle id[:8]>`` for a model not registered).
+        run_name: replaces ``<model>-v<version>`` in each run's name.
         log_system_metrics: sample CPU, memory, disk, network and (with
             ``nvidia-ml-py``) GPU usage on the fit run.
         tags: extra tags for the fit run.
@@ -191,9 +171,7 @@ class MlflowTracking:
         self._children: Dict[Tuple[int, int], str] = {}
         self._trials: Dict[Tuple[int, int], str] = {}
         self._artifacts: Set[str] = set()
-        # The run's notes and brief tables, for its description.
         self._card: List[Summary] = []
-        self._pending = _Pending()
         self._model_id: Optional[str] = None
         self._holdout: Any = None
         self._published: Optional[PublishedModel] = None
@@ -213,30 +191,22 @@ class MlflowTracking:
 
     @contextmanager
     def client(self) -> Iterator[Any]:
-        r"""An ``MlflowClient`` for this tracker's server, with its
-        credentials and tracking URI set for the block, so your own MLflow
-        calls (the client's, or ``mlflow.search_runs``) reach the server
-        kumo-engine records to, as the same identity."""
+        r"""An MlflowClient with this tracker's credentials for the block."""
         with self.target.scope(), global_tracking_uri(
                 self.target.tracking_uri):
             yield self.target.client()
 
     def check_model_name(self, name: str) -> None:
-        r"""Raises :class:`ValueError` unless this tracker's registry
-        accepts ``name``."""
+        r"""Raises :class:`ValueError` unless the registry accepts ``name``."""
         check_model_name(name, self.target.registry_uri or '')
 
     def check(self, registry: Optional[ModelRegistryLocation] = None) -> None:
-        r"""Raises before any work unless the server is reachable with these
-        credentials and, given ``registry``, can register its model: one
-        experiment lookup, one registry listing and, on Unity Catalog, the
-        model's schema."""
+        r"""Raises unless the server (and ``registry``) is usable."""
         self._require_experiment()
         if registry is not None:
             self.check_model_name(registry.model_name)
         uri = self.target.tracking_uri
-        owned = frozenset(name for name in _HTTP_LIMITS
-                          if name not in os.environ)
+        owned = _unset_limits()
         missing = False
         try:
             with _limited_http(owned), self.target.scope():
@@ -278,6 +248,15 @@ class MlflowTracking:
         self._outer = (active.info.run_id
                        if active is not None and same else None)
 
+    def _experiment_for(self, client: Any,
+                        name: Optional[str] = None) -> str:
+        name = name or self.experiment_name
+        if name is None:
+            return self._default_experiment or '0'
+        experiment = client.get_experiment_by_name(name)
+        return (experiment.experiment_id
+                if experiment else client.create_experiment(name))
+
     def _require_experiment(self) -> None:
         if self._named and self.experiment_name is None:
             raise ValueError('MlflowTracking(target=...) records runs in an '
@@ -285,8 +264,7 @@ class MlflowTracking:
 
     def load_model(self, location: ModelRegistryLocation,
                    **kwargs: Any) -> 'Trainer':
-        r"""The `Trainer` of the version of ``location`` its alias or
-        version names, from this tracker's registry."""
+        r"""The `Trainer` of ``location``'s alias or version."""
         if (location.alias is None) == (location.version is None):
             raise ValueError('Loading from an MLflow registry takes a '
                              'ModelRegistryLocation with an alias or a '
@@ -304,12 +282,8 @@ class MlflowTracking:
 
     def register(self, result: Any,
                  location: ModelRegistryLocation) -> PublishedModel:
-        r"""Registers a fitted or loaded model (a `TrainingResult`) at
-        ``location``: the version that already holds its bundle, else a new
-        version of the model its fit run logged, else of one logged now in
-        that run, with its metrics, else of one logged in no run, in this
-        experiment (default: one named after the model). The fit run is
-        renamed after its first version."""
+        r"""Registers a `TrainingResult` at ``location``, reusing a version
+        that holds its bundle."""
         from kumo.engine._manifest import stub
         from kumo.engine.graph import GraphSnapshot
         from kumo.engine.trainer._run_spec import model_metrics
@@ -319,8 +293,7 @@ class MlflowTracking:
         self._require_experiment()
         self._client = client = self.target.client()
         pointers = registry_pointers(result.id)
-        with _limited_http(frozenset(name for name in _HTTP_LIMITS
-                                     if name not in os.environ)):
+        with _limited_http(_unset_limits()):
             with self.target.scope():
                 held = _registered_version(client, location.model_name,
                                            pointers)
@@ -380,21 +353,15 @@ class MlflowTracking:
         return models[0] if models else None
 
     def _registry_experiment(self, model_name: str) -> str:
-        r"""The experiment of a model logged in no run: this tracker's,
-        else one named after the model (``/Shared/kumo/<model>`` on
-        Databricks), never MLflow's Default."""
+        r"""The experiment for a model logged in no run, never Default."""
         name = self.experiment_name or model_label(model_name, None, None)
         if self.experiment_name is None and self.platform == 'databricks':
             name = f'/Shared/kumo/{name}'
         with self.target.scope():
-            experiment = self._client.get_experiment_by_name(name)
-            return (experiment.experiment_id if experiment else
-                    self._client.create_experiment(name))
+            return self._experiment_for(self._client, name)
 
     def _rename_fit(self, fit: Any, published: PublishedModel) -> None:
-        r"""On its first registration, names the fit run, still named by
-        its start time, ``fit-<model>-v<version>`` with its trials, tags the
-        version on it and regenerates its card's first line."""
+        r"""Names the fit run after its first registered version."""
         if not re.search(r'-\d{8}-\d{6}$', fit.run_name):
             return
         name = run_name('fit', versioned(
@@ -415,13 +382,11 @@ class MlflowTracking:
         self._require_experiment()
         self._reset()
         self.run_id = None
-        self._http_owned = frozenset(name for name in _HTTP_LIMITS
-                                     if name not in os.environ)
+        self._http_owned = _unset_limits()
         self._guard.enter_context(_limited_http(self._http_owned))
         try:
             autologging = import_provider('mlflow.utils.autologging_utils',
                                           'mlflow')
-            # Not reentrant: leaving it clears the flag.
             if not getattr(autologging, '_AUTOLOGGING_GLOBALLY_DISABLED',
                            False):
                 self._guard.enter_context(autologging.disable_autologging())
@@ -474,8 +439,7 @@ class MlflowTracking:
 
     @contextmanager
     def sample_system_metrics(self) -> Iterator[None]:
-        r"""Samples system metrics during the block, for the next prediction
-        run this tracker logs, in the block or after it."""
+        r"""Samples system metrics for the next prediction run."""
         self._samples, self._sampled_run = [], None
         if not self._samples_system():
             yield
@@ -490,20 +454,11 @@ class MlflowTracking:
             'MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING', '').strip().lower() not in (
                 'false', '0')
 
-    def log_prediction_run(self, record: RunRecord) -> None:
-        self.start(record)
-        self.finish(record, record_failure(record))
-
     def log_monitoring(self, record: RunRecord) -> None:
-        r"""Folds a monitoring call into the prediction run it checks: the
-        record's ``prediction_run``, else the run tagged with its
-        ``kumo.prediction_id`` in this tracker's experiment. Notes name the
-        previous run of a drift check by its run name. MLflow retries each
-        request twice."""
+        r"""Folds a monitoring call into the prediction run it checks."""
         self.run_id = None
         prediction_id = record.tags.get('kumo.prediction_id')
-        with _limited_http(frozenset(name for name in _HTTP_LIMITS
-                                     if name not in os.environ)):
+        with _limited_http(_unset_limits()):
             self._client = self.target.client()
             run_id = record.prediction_run
             if run_id is None:
@@ -546,21 +501,12 @@ class MlflowTracking:
             for summary in record.summaries))
 
     def fold(self, run_id: str, record: RunRecord) -> None:
-        r"""Adds a monitoring call's ``record`` to the finished run
-        ``run_id``: its metrics, tags, tables and datasets, and its notes and
-        brief tables as the card's ``drift`` or ``realized`` part, with line
-        1 regenerated. The run's status, end time and params are
-        unchanged."""
-        def on_card(summary: Summary) -> bool:
-            return isinstance(summary, Note) or (isinstance(summary, Table)
-                                                 and summary.brief)
-
-        self.log_summaries([summary for summary in record.summaries
-                            if not on_card(summary)], run_id)
+        r"""Adds a monitoring record to a finished run and its card."""
+        routed = route(record.summaries, charts=True)
+        self._log_routed(routed, run_id)
         self.update_card(
             run_id, 'realized' if record.tags.get('kumo.monitor')
-            == 'evaluate' else 'drift',
-            [summary for summary in record.summaries if on_card(summary)])
+            == 'evaluate' else 'drift', routed.card)
         with self.target.scope():
             self._experiment_id = self._client.get_run(
                 run_id).info.experiment_id
@@ -676,11 +622,7 @@ class MlflowTracking:
 
     def update_card(self, run_id: str, block: Optional[str] = None,
                     summaries: Sequence[Summary] = ()) -> None:
-        r"""Regenerates the heading of run ``run_id``'s card from the run's
-        metrics and tags, and a fit's sentence, and, given ``block``
-        (``drift``, ``realized``),
-        replaces that part of the card with the notes and brief tables in
-        ``summaries``. A card the user edited is left as it is."""
+        r"""Regenerates the card's heading and, given block, that part."""
         self._client = self._client or self.target.client()
         with self.target.scope():
             run = self._client.get_run(run_id)
@@ -724,7 +666,7 @@ class MlflowTracking:
             line = _card.heading(kind, run.data.metrics, tags)
             intro = _card.intro(kind, tags, run.data.params,
                                 record.description, *self._fit_link())
-            items = [*_card.holdout(kind, _model_metrics(record), tags),
+            items = [*_card.holdout(kind, model_metrics(record), tags),
                      *self._card, *_card.charts(run.data.metrics)]
             blocks = ([_part(name, '') for name in _BLOCKS]
                       if kind == 'prediction' else [])
@@ -740,16 +682,14 @@ class MlflowTracking:
 
             user = split[1]
             self._set_card(run, render, minimal, items, user,
-                           _budget(user) - (_BLOCK_BYTES if blocks else 0))
+                           _budget(user)
+                           - (_MONITORING_BYTES if blocks else 0))
         except Exception as error:
             logger.warning('Could not write the description of MLflow run '
                            '%s: %s', self._parent, format_error(error))
 
     def _editable(self, run: Any, first: bool) -> Optional[Tuple[str, str]]:
-        r"""The run's card and the user's text after it, or `None` once the
-        user edited the card: then the run is tagged ``kumo.card_frozen``
-        and, the first time, a warning names it. Before kumo's first card,
-        any description is the user's."""
+        r"""The card and the user's text after it; None once edited."""
         tags = run.data.tags
         if tags.get('kumo.card_frozen') == 'true':
             return None
@@ -772,9 +712,7 @@ class MlflowTracking:
                   render: Callable[[Sequence[Summary], Sequence[str]], str],
                   minimal: Callable[[Sequence[str]], str],
                   items: Sequence[Summary], user: str, budget: int) -> None:
-        r"""Writes the card ``render`` gives within ``budget`` bytes: moves
-        the largest brief table to a file until it fits, else writes the
-        ``minimal`` card."""
+        r"""Writes the card within budget, moving big tables to files."""
         run_id = run.info.run_id
         files = [entry['path'] for entry in json.loads(
             run.data.tags.get('mlflow.loggedArtifacts', '[]'))]
@@ -795,8 +733,7 @@ class MlflowTracking:
                                  _sealed(card) + user)
 
     def _rename(self, record: RunRecord) -> None:
-        r"""Names a fit that registered a version ``fit-<model>-v<version>``,
-        and its trials after it."""
+        r"""Names a registered fit and its trials after the version."""
         version = record.tags.get('kumo.model_version')
         if version is None:
             return
@@ -809,17 +746,14 @@ class MlflowTracking:
                 self._client.update_run(run_id, name=_trial_name(*key, name))
 
     def _describe_version(self, record: RunRecord) -> None:
-        r"""Adds the fit's headline metrics (unless the version's logged
-        model shows them, as on Unity Catalog), its run and its bundle to
-        the description of the version it registered, after the user's
-        comment."""
+        r"""Adds the fit's headline metrics, run and bundle to its version."""
         published = cast(PublishedModel, self._published)
         try:
             with self.target.scope():
                 run = self._client.get_run(self._parent)
             _describe_version(self.target, self._client, published,
                               _version_text(
-                                  _model_metrics(record),
+                                  model_metrics(record),
                                   record.tags.get('kumo.tune_metric'),
                                   run.info.run_name,
                                   run.data.tags.get('kumo.bundle_uri'),
@@ -830,8 +764,7 @@ class MlflowTracking:
                            format_error(error))
 
     def _fit_of(self, fit_id: Optional[str]) -> Tuple[Any, Any]:
-        r"""The run info of fit run ``fit_id`` on this server and the
-        model it logged, each `None` if missing."""
+        r"""The fit run's info and its logged model, each None if missing."""
         if not fit_id:
             return None, None
         try:
@@ -886,74 +819,37 @@ class MlflowTracking:
 
     def log_summaries(self, summaries: Sequence[Summary],
                       run_id: Optional[str] = None) -> None:
-        r"""Logs each summary on run ``run_id`` (default: the current run)
-        through its type's call in `_SINKS`: values as metrics, a
-        ``role='model'`` scalar also on the logged model, against the
-        training table; charted series as metrics over their steps; other
-        series and histograms as one table per name prefix; brief tables and
-        notes for the run's card."""
-        self._pending = _Pending()
-        for summary in summaries:
-            _SINKS[type(summary)](self, summary)
-        pending, self._pending = self._pending, _Pending()
-        run_id = run_id or self._parent
-        scalars = pending.scalars
-        if pending.datasets:
+        r"""Logs ``summaries`` on run ``run_id`` (default: the current run);
+        notes and brief tables go on its card."""
+        routed = route(summaries, charts=True)
+        self._card += routed.card
+        self._log_routed(routed, run_id or self._parent)
+
+    def _log_routed(self, routed: Routed, run_id: str) -> None:
+        datasets = [d for d in map(self._dataset_input, routed.datasets) if d]
+        if datasets:
             with self.target.scope():
-                self._client.log_inputs(run_id, datasets=pending.datasets)
-        self._holdout = _holdout_dataset(pending.datasets)
+                self._client.log_inputs(run_id, datasets=datasets)
+        self._holdout = _holdout_dataset(datasets)
+        scalars = routed.scalars
         self._log_metrics(run_id, {s.name: s.value for s in scalars
                                    if s.role == 'model'},
                           model_id=self._model_id, dataset=self._holdout)
         self._log_metrics(run_id, {s.name: s.value for s in scalars
                                    if s.role != 'model'})
-        if pending.charts:
+        if routed.charts:
             timestamp = int(time.time() * 1000)
             self._log_readings(self._client, run_id, [
                 (values, step, timestamp)
-                for step, values in by_step(pending.charts)])
-        if pending.tags:
-            self._log_tags(run_id, pending.tags)
-        self._write_tables(run_id, [*pending.grouped.tables(),
-                                    *pending.tables])
+                for step, values in by_step(routed.charts)])
+        if routed.tags:
+            self._log_tags(run_id, routed.tags)
+        self._write_tables(run_id, routed.tables)
 
-    def _log_scalar(self, summary: Scalar) -> None:
-        self._pending.scalars.append(summary)
-
-    def _log_tag(self, summary: Tag) -> None:
-        self._pending.tags[summary.name] = summary.value
-
-    def _log_series(self, summary: Series) -> None:
-        if summary.chart:
-            self._pending.charts[summary.name] = summary.points
-        else:
-            self._pending.grouped.add_series(summary)
-
-    def _log_curve(self, summary: Curve) -> None:
-        self._pending.grouped.add_curve(summary)
-
-    def _log_histogram(self, summary: Histogram) -> None:
-        self._pending.grouped.add_histogram(summary)
-
-    def _log_table(self, summary: Table) -> None:
-        if summary.brief:
-            self._card.append(summary)
-        else:
-            self._pending.tables.append(summary)
-
-    def _log_note(self, summary: Note) -> None:
-        self._card.append(summary)
-
-    def _log_confusion(self, summary: Confusion) -> None:
-        self._log_table(Table(
-            summary.name, ('actual', *summary.labels),
-            tuple((label, *row)
-                  for label, row in zip(summary.labels, summary.counts))))
-
-    def _log_dataset(self, summary: Dataset) -> None:
+    def _dataset_input(self, summary: Dataset) -> Any:
         source = _dataset_source(summary.source)
         if source is None or summary.context == 'output':
-            return
+            return None
         entities = self._mlflow.entities
         dataset = entities.Dataset(
             name=summary.name,
@@ -968,14 +864,12 @@ class MlflowTracking:
                 key: value for key, value in summary.profile.items()
                 if not isinstance(value, (Mapping, list, tuple))
             }, default=str))
-        self._pending.datasets.append(entities.DatasetInput(
+        return entities.DatasetInput(
             dataset, tags=[entities.InputTag('mlflow.data.context',
-                                             summary.context)]))
+                                             summary.context)])
 
     def _write_tables(self, run_id: str, tables: Sequence[Table]) -> None:
-        r"""Writes each table as ``<name>.json``, replacing an earlier
-        file, and lists it in ``mlflow.loggedArtifacts`` for the UI's table
-        view (``mlflow.log_table`` would append to an earlier file)."""
+        r"""Writes tables as JSON listed for the UI's table view."""
         if not tables:
             return
         for table in tables:
@@ -1053,33 +947,17 @@ class MlflowTracking:
 
 
 def _holdout_dataset(inputs: Sequence[Any]) -> Any:
-    r"""The training table among a fit's dataset ``inputs``: the holdout
-    is its test split."""
+    r"""The training table among a fit's inputs."""
     return next((item.dataset for item in inputs
                  if item.dataset.name.startswith('training-table')), None)
 
 
 def _digest(name: str, source: Mapping[str, Optional[str]],
             schema: Mapping[str, Any]) -> str:
-    r"""A dataset's digest, over its name, source and schema: MLflow keeps
-    one dataset per name and digest, so a moved source is a new one."""
+    r"""A dataset digest over name, source and schema."""
     return hashlib.sha256(json.dumps(
         [name, dict(source), dict(schema)], sort_keys=True,
         default=str).encode()).hexdigest()[:8]
-
-
-@dataclass
-class _Pending:
-    r"""What one `MlflowTracking.log_summaries` call logs, gathered by
-    `_SINKS` and written in batches."""
-
-    scalars: List[Scalar] = field(default_factory=list)
-    charts: Dict[str, Tuple[Tuple[int, float], ...]] = field(
-        default_factory=dict)
-    tags: Dict[str, str] = field(default_factory=dict)
-    grouped: SummaryTables = field(default_factory=SummaryTables)
-    tables: List[Table] = field(default_factory=list)
-    datasets: List[Any] = field(default_factory=list)
 
 
 _NOTE = 'mlflow.note.content'
@@ -1098,13 +976,11 @@ _EXPERIMENT_NOTE = '\n'.join([
     "card's last line."])
 _CARD_END = re.compile(r'<!-- /kumo:card sha256=([0-9a-f]{16}) -->')
 _BLOCKS = ('drift', 'realized')
-_BLOCK_BYTES = 800  # kept free at predict time for the monitoring parts
+_MONITORING_BYTES = 800
 
 
 def _card_hash(card: str) -> str:
-    r"""The first 16 hex digits of the SHA-256 of ``card``, with LF line
-    endings and each line's trailing whitespace stripped, so the editor
-    saving it unchanged keeps it."""
+    r"""SHA-256 prefix of the card, stable under an unchanged editor save."""
     lines = card.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     text = '\n'.join(line.rstrip() for line in lines).strip('\n')
     return hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -1124,8 +1000,7 @@ def _budget(user: str) -> int:
 
 
 def _free_name(client: Any, experiment_id: str, name: str) -> str:
-    r"""``name``, else the first of ``name-2``, ``name-3``, … no run in the
-    experiment has (unchecked if it holds both kinds of quote)."""
+    r"""name, else the first free name-2, name-3, ..."""
     candidate, suffix = name, 1
     while True:
         quote = "'" if "'" not in candidate else '"'
@@ -1152,8 +1027,7 @@ def _part(name: str, text: str) -> str:
 
 
 def _with_block(card: str, name: str, text: str) -> str:
-    r"""``card`` with its ``kumo:<name>`` part holding ``text``, added
-    before the notes line if missing."""
+    r"""The card with its kumo:<name> part set to text."""
     part = _part(name, text)
     existing = re.compile(f'<!-- kumo:{name} -->.*?<!-- /kumo:{name} -->',
                           re.DOTALL)
@@ -1163,17 +1037,6 @@ def _with_block(card: str, name: str, text: str) -> str:
     return f'{head}{part}\n\n{notes}{rest}' if notes else f'{card}\n{part}'
 
 
-_SINKS: Dict[type, Callable[[MlflowTracking, Any], None]] = {
-    Scalar: MlflowTracking._log_scalar,
-    Tag: MlflowTracking._log_tag,
-    Series: MlflowTracking._log_series,
-    Curve: MlflowTracking._log_curve,
-    Histogram: MlflowTracking._log_histogram,
-    Table: MlflowTracking._log_table,
-    Confusion: MlflowTracking._log_confusion,
-    Note: MlflowTracking._log_note,
-    Dataset: MlflowTracking._log_dataset,
-}
 _BATCH_METRICS = 1000  # MLflow's per-request limit
 _SYSTEM_METRICS_FAILURES = 6
 _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
@@ -1187,13 +1050,7 @@ _MIN_READINGS = 2
 
 
 class _SystemMetrics:
-    r"""Samples MLflow's CPU, disk, network and GPU monitors on its own
-    thread every second (``MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL`` sets
-    the interval) and hands ``log`` the readings, each with its elapsed
-    second as step (one more than the last reading's, if not past it) and
-    its time, every 10 seconds and once more when the run ends, so a run
-    with fewer than 2 readings logs none and no metric draws as a bar. (MLflow's own ``SystemMetricsMonitor`` logs with
-    process-wide credentials.)"""
+    r"""MLflow's system monitors, logged with the tracker's credentials."""
 
     def __init__(self, log: Callable[[List[_Reading]], None],
                  interval: Optional[float] = None) -> None:
@@ -1222,7 +1079,7 @@ class _SystemMetrics:
         taken = failures = 0
         step = -1
         stopped = False
-        while not stopped:  # and a last reading when the run ends
+        while not stopped:
             stopped = self._stop.wait(self._interval)
             metrics: Dict[str, float] = {}
             for monitor in self._monitors:
@@ -1269,11 +1126,7 @@ def _metric_monitors() -> List[Any]:
 
 
 def check_model_name(name: str, registry_uri: str) -> None:
-    r"""Raises :class:`ValueError` unless the MLflow registry at
-    ``registry_uri`` accepts ``name``: SageMaker managed MLflow takes letters,
-    digits and hyphens; Unity Catalog takes ``catalog.schema.model``, each
-    part at most 255 characters without spaces, ``/``, ``.`` or control
-    characters."""
+    r"""Raises :class:`ValueError` unless ``registry_uri`` accepts ``name``."""
     is_databricks_unity_catalog_uri = import_provider(
         'mlflow.utils.uri', 'mlflow').is_databricks_unity_catalog_uri
 
@@ -1313,8 +1166,7 @@ def _sagemaker_ui_hint(tracking_uri: str) -> Optional[str]:
 
 
 def metric_key(name: str) -> str:
-    r"""The MLflow name of a Kumo metric: MLflow rejects ``@``, so
-    ``map@10`` is logged as ``map_at_10``."""
+    r"""``map@10`` as ``map_at_10``: MLflow rejects ``@``."""
     return name.replace('@', '_at_')
 
 
@@ -1350,7 +1202,7 @@ def log_model(
         raise ValueError('log_model requires a fitted or loaded Trainer')
     tracking = MlflowTracking(experiment_name, target=target)
     target = tracking.target
-    if run_id is None and tracking._named and experiment_name is None:
+    if run_id is None:
         tracking._require_experiment()
     client = target.client()
     active = mlflow.active_run()
@@ -1360,12 +1212,8 @@ def log_model(
     created = run_id is None
     with target.scope():
         if created:
-            experiment = (client.get_experiment_by_name(
-                tracking.experiment_name) if tracking.experiment_name else
-                          None)
             run_id = client.create_run(
-                experiment.experiment_id if experiment else
-                tracking._default_experiment or '0').info.run_id
+                tracking._experiment_for(client)).info.run_id
         experiment_id = client.get_run(run_id).info.experiment_id
         _log_inputs(mlflow, client, run_id, fit_inputs(result.manifest))
     registered = getattr(result.registered_model, 'name', None)
@@ -1450,8 +1298,7 @@ def _download(mlflow: Any, target: Any, model_uri: str,
 
 
 def logged_model_name(registered: Optional[str], manifest: Any) -> str:
-    r"""A logged model's name: `model_label` without the characters MLflow
-    rejects."""
+    r"""model_label without the characters MLflow rejects."""
     table = getattr(getattr(manifest, 'parents', None), 'training_table',
                     None)
     return re.sub(r'[/:.%"\']', '-', model_label(
@@ -1464,10 +1311,7 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
                snapshot: Optional['GraphSnapshot'], *, name: str,
                run_id: Optional[str], experiment_id: Optional[str],
                serving_snapshot: Optional[str]) -> Any:
-    r"""What ``mlflow.pyfunc.log_model`` does, through ``client``: it only
-    logs to the process-wide tracking URI. A bundle without a training spec
-    is logged without a signature; a model of no run (``run_id`` `None`)
-    in ``experiment_id``, without params."""
+    r"""``mlflow.pyfunc.log_model`` through ``client``."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
     from kumo.engine.integrations import _mlflow_model, _mlflow_model_code
@@ -1620,11 +1464,6 @@ def _register(target: Any, client: Any, info: Any,
                           metadata=dict(metadata))
 
 
-def _model_metrics(record: RunRecord) -> Dict[str, float]:
-    return {metric_key(name): value
-            for name, value in model_metrics(record).items()}
-
-
 def _version_text(metrics: Mapping[str, float], tune: Optional[str],
                   fit: Optional[str], bundle: Optional[str],
                   with_metrics: bool) -> str:
@@ -1637,9 +1476,7 @@ def _version_text(metrics: Mapping[str, float], tune: Optional[str],
 
 def _describe_version(target: Any, client: Any, published: PublishedModel,
                       text: str) -> None:
-    r"""Starts the version's description with ``text``, sealed as a run's
-    card is, within MLflow's 5000 characters; the user's text after it is
-    kept, and a user's edit of ``text`` stops kumo's updates."""
+    r"""Puts text, sealed, at the start of the version's description."""
     name, version = published.name, published.version
     with target.scope():
         current = client.get_model_version(name, version).description or ''
@@ -1688,9 +1525,7 @@ def _code(error: BaseException) -> str:
 
 
 def check_registry_schema(name: str, registry_uri: str) -> None:
-    r"""On Unity Catalog, raises :class:`ValueError` unless the catalog and
-    schema of a ``catalog.schema.model`` name exist and these credentials
-    can use them (one metadata call, no warehouse)."""
+    r"""On Unity Catalog, raises unless the model's schema is usable."""
     uri = import_provider('mlflow.utils.uri', 'mlflow')
     parts = name.split('.')
     if not uri.is_databricks_unity_catalog_uri(registry_uri) or len(
@@ -1718,7 +1553,6 @@ def check_registry_schema(name: str, registry_uri: str) -> None:
 
 
 def _no_serving_check(record: logging.LogRecord) -> bool:
-    # MLflow's input-example check predicts without a snapshot; no switch.
     return not record.getMessage().startswith(
         'Failed to validate serving input example')
 
@@ -1770,6 +1604,10 @@ def _quietly(function: Callable[..., Any], *args: Any) -> None:
         function(*args)
     except Exception:
         logger.debug('MLflow cleanup call failed', exc_info=True)
+
+
+def _unset_limits() -> FrozenSet[str]:
+    return frozenset(name for name in _HTTP_LIMITS if name not in os.environ)
 
 
 @contextmanager

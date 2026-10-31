@@ -11,28 +11,19 @@ generates is undocumented) and has not been run end to end; see
 - **`KUMO_TRAIN`** (`KUMO_TRAIN_TASK`, Sundays 02:00 UTC) runs `fit_job.py`
   on `USERS`, `ITEMS` and `ORDERS` in `<database>.<schema>`, publishes a new
   version of model `USERS_CHURN` in that schema's Model Registry and moves the
-  `champion` alias to it (`--registry snowflake`, which builds
-  `kumo.MLOps(tracking=SnowflakeTracking(connector, ...),
-  registry=ModelRegistryLocation(...))`). The snapshot, training table and
-  model are stored under `--artifact-root`. The fit is recorded in
-  Snowflake Experiment Tracking through the connector's own Snowpark session
-  (`SnowflakeConnector.session()`, the container's OAuth token).
+  `champion` alias to it. The fit is recorded in Snowflake Experiment
+  Tracking through the connector's Snowpark session.
 - **`KUMO_SCORE`** (`KUMO_SCORE_TASK`, daily 03:00 UTC) runs `score_job.py`,
   loading the version `champion` points at and writing
   `USERS_CHURN_PREDICTIONS`.
 
-To review a model before it is scored, drop the alias from the registry
-location in `jobs.mlops` and move `champion` yourself with
-`ALTER MODEL <database>.<schema>.USERS_CHURN VERSION <version> SET ALIAS = champion`
-(see [Promote a model](../../../packages/kumo-engine/docs/mlops.md#promote-a-model)
-for the statements that free both aliases first).
-If moving the alias fails, the fit still publishes, warns, and scoring keeps
-the previous `champion`.
-
-Each Task runs its job synchronously with the statement
-`MLJobDefinition.to_sql(job_args=<flags>, use_async=False)` generates. `USER_TASK_TIMEOUT_MS` is 24 h for train and 6 h for score
-(default 1 h); a job that outlives it, or the warehouse's
-`STATEMENT_TIMEOUT_IN_SECONDS`, is cancelled.
+To review a model before scoring, drop the alias from the registry location
+in `jobs.mlops` and move `champion` yourself
+([Promote a model](../../../packages/kumo-engine/docs/mlops.md#promote-a-model)).
+If moving the alias fails, the fit still publishes and scoring keeps the
+previous `champion`. Each Task runs its job synchronously
+(`to_sql(job_args=..., use_async=False)`); `USER_TASK_TIMEOUT_MS` is 24 h for
+train and 6 h for score.
 
 ## Before running
 
@@ -59,11 +50,8 @@ Each Task runs its job synchronously with the statement
      --requirement './wheels/<kumo_engine wheel>[snowflake]' \
      --external-access-integration <eai>
    ```
-   `--model-name` (default `USERS_CHURN`), `--predictions-table` (default
-   `USERS_CHURN_PREDICTIONS`) and `--table-prefix` (prefix of `USERS`,
-   `ITEMS` and `ORDERS`) are passed to the jobs, as is `--on-error`
-   (default `raise`: a failed registration or tracking call fails the job and
-   its Task run).
+   `--model-name`, `--predictions-table`, `--table-prefix` and `--on-error`
+   are passed to the jobs.
 4. New tasks are created suspended: `ALTER TASK <name> RESUME`, or
    `EXECUTE TASK <name>` to run one now. Running `register_jobs.py` again
    replaces both tasks and resumes each one that was started.
@@ -90,10 +78,9 @@ Each Task runs its job synchronously with the statement
 
 ## Unverified
 
-Nothing has been registered or run. `SYSTEM$EXECUTE_ML_JOB` (what `to_sql`
-generates) is not a documented SQL API and `MLJobDefinition` is in preview.
-Unverified: reaching the reader's presigned URLs without an external access
-integration, a failed job failing the Task, and creating experiments from a job's OAuth session.
+Nothing has been registered or run. Open: reaching the reader's presigned
+URLs without an external access integration, a failed job failing the Task,
+and creating experiments from a job's OAuth session.
 
 ## References
 

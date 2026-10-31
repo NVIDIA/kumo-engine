@@ -276,6 +276,8 @@ class IDLinkGNNLightningModule(BaseLinkLightningModule):
             return dict(pkey=lhs_pkey, id=lhs_index, time=time, target=target,
                         score=score, label=label)
 
+        if stage != TrainingStage.TEST:
+            return {}
         size = batch[self.lhs_name].batch_size
         return self.holdout_top_scores(stage, torch.full(
             (size, 1), float('nan'), device=logits.device).scatter_reduce(

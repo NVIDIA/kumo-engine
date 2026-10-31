@@ -33,9 +33,9 @@ from typing import (
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.instrumentation import format_error
 
-from kumo.engine._card import entity, number
 from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
+from kumo.engine._text import entity, number
 from kumo.engine._version import __version__
 
 if TYPE_CHECKING:
@@ -52,8 +52,6 @@ logger = logging.getLogger(__name__)
 
 DROPPED_PARAMS = 'kumo.dropped_params'
 DROPPED_METRICS = 'kumo.dropped_metrics'
-# Tracker calls run on one background thread so a slow tracking server
-# never stalls training; these bound how long the fit waits for it.
 QUEUE_SIZE = 1000
 FINISH_SECONDS = 30.0
 MODEL_SECONDS = 3600.0
@@ -61,18 +59,7 @@ MODEL_SECONDS = 3600.0
 
 @dataclass(frozen=True)
 class RunRecord:
-    r"""One tracked run; ``steps`` are per-epoch ``(epoch, value)``
-    histories, ``artifacts`` map file names to text, ``inputs`` map
-    source table names to their ``connector``, ``location``, ``version`` and
-    ``version_kind``, ``summaries`` are `kumo_core.summaries` results,
-    which each tracker logs in its own way, and ``description`` is the
-    Markdown line under line 1 of the run's card (a fit's query). Trackers
-    compose run names from ``model_label``, `model_label` of the model,
-    and ``name_suffix``, what follows the model in ``name`` (a prediction's
-    ``-<as-of date>``); ``started`` and ``finished`` are when the run's work
-    started and ended (UTC), known for a prediction run logged after its
-    work. A monitoring call's record names, in ``prediction_run``, the
-    tracker's run of the prediction it checks, when known."""
+    r"""One tracked run; ``steps`` are ``(step, value)`` histories."""
 
     name: Optional[str] = None
     params: Mapping[str, str] = field(default_factory=dict)
@@ -94,9 +81,7 @@ class RunRecord:
 
 @dataclass(frozen=True)
 class RunSpec:
-    r"""What a run records, whatever trained or scored it: ``params`` are
-    flat, ``parents`` become ``kumo.<name>`` pointer tags and ``tags`` are
-    the user's own."""
+    r"""What a run records; ``parents`` become ``kumo.<name>`` tags."""
 
     kind: str
     name: Optional[str] = None
@@ -123,9 +108,7 @@ INPUT_FIELDS = ('connector', 'location', 'version', 'version_kind')
 
 
 def fit_inputs(manifest: Any) -> Dict[str, Dict[str, Optional[str]]]:
-    r"""Source tables of a training table or model manifest, or a prediction
-    run's scoring snapshot, read from its embedded parents; stub parents add
-    none."""
+    r"""Source tables of a training table or model manifest."""
     try:
         table, kind = manifest, getattr(manifest, 'kind', None)
         if kind == 'model':
@@ -169,15 +152,13 @@ def model_metrics(record: RunRecord) -> Dict[str, float]:
 
 
 def metric_name(metric: str) -> str:
-    r"""``metric`` as every task logs it: the plan's ``acc`` is
-    ``accuracy``."""
+    r"""The plan's acc is logged as accuracy."""
     return 'accuracy' if metric == 'acc' else metric
 
 
 def logged_name(name: str) -> str:
-    r"""A metric's name in a tracker: ``val_auroc`` is ``val/auroc`` and a
-    trial's ``best_val_auroc`` is ``val/best_auroc``, so charts group by
-    split."""
+    r"""``val_auroc`` as ``val/auroc``, ``best_val_auroc`` as
+    ``val/best_auroc``."""
     best = name.startswith('best_')
     split, _, metric = name.removeprefix('best_').partition('_')
     if split not in ('train', 'val') or not metric:
@@ -187,11 +168,7 @@ def logged_name(name: str) -> str:
 
 def logged_names(metrics: Mapping[str, Any],
                  refit_full: bool = False) -> Dict[str, Any]:
-    r"""`logged_name` of each metric, and the holdout's ``test_<m>`` as the
-    shipped model's ``test/<m>``. After a train-and-validation refit, its
-    ``test_refit_<m>`` are, and the model before it is ``before_refit/<m>``.
-    After a refit on all data (``refit_full``) no holdout describes the
-    shipped model: the last model tested is ``before_refit/<m>``."""
+    r"""Tracker names of metrics; test/<m> is the shipped model's holdout."""
     refit = any(name.startswith('test_refit_') for name in metrics)
     named = {}
     for name, value in metrics.items():
@@ -210,9 +187,7 @@ def logged_names(metrics: Mapping[str, Any],
 
 def model_label(registered: Optional[str], query: Optional[str],
                 task_type: Optional[str]) -> str:
-    r"""``<model>`` in run and logged-model names: the ``registered`` name
-    (a Unity Catalog name's last part), else ``<entity table>-<task type>``
-    of the predictive ``query``."""
+    r"""The registered name's last part, else <entity>-<task type>."""
     if registered:
         return registered.rsplit('.', 1)[-1]
     return '-'.join(filter(None, (entity(query), task_type))) or 'model'
@@ -220,8 +195,7 @@ def model_label(registered: Optional[str], query: Optional[str],
 
 def by_step(steps: Mapping[str, Sequence[Tuple[int, float]]]
             ) -> List[Tuple[int, Dict[str, float]]]:
-    r"""Per-step histories regrouped as each step's metrics, in step
-    order."""
+    r"""Each step's metrics, in step order."""
     grouped: Dict[int, Dict[str, float]] = {}
     for name, history in steps.items():
         for step, value in history:
@@ -229,7 +203,6 @@ def by_step(steps: Mapping[str, Sequence[Tuple[int, float]]]
     return sorted(grouped.items())
 
 
-#: The fit's pointer tags its trial runs share.
 _TRIAL_PARENTS = ('snapshot_id', 'task_type')
 
 
@@ -308,11 +281,7 @@ def prediction_record(manifest: 'PredictionManifest',
                       error: Optional[BaseException] = None,
                       model: Any = None,
                       summaries: Sequence['Summary'] = ()) -> RunRecord:
-    r"""A prediction run's record, from its manifest: scoring options as
-    params, row counts and score summaries (with drift against the holdout
-    of ``model``, the `TrainingResult` that scored), the scoring
-    snapshot's source tables as inputs, pointer tags (``kumo.error`` when
-    ``error`` ended the run), and the manifest as an artifact."""
+    r"""A prediction run's record, from its manifest."""
     from kumo.engine._prep_cost import prep_summaries
     from kumo.engine.trainer._provenance import holdout_counts
 
@@ -371,8 +340,7 @@ def prediction_record(manifest: 'PredictionManifest',
 
 def prediction_parents(manifest: Optional['PredictionManifest']
                        ) -> Mapping[str, Any]:
-    r"""Pointer tags to the scoring snapshot and the task type of the
-    prediction run ``manifest`` records."""
+    r"""Pointer tags to the scoring snapshot and task type."""
     if manifest is None:
         return {}
     training_table = getattr(_parents(manifest.parents.model),
@@ -382,8 +350,7 @@ def prediction_parents(manifest: Optional['PredictionManifest']
 
 
 def run_name(kind: str, core: str, suffix: Optional[str] = None) -> str:
-    r"""``<kind>-<core><suffix>``: the kind as ``fit``, ``predict``, ``drift``
-    or ``eval``, not repeated when ``core`` already starts with it."""
+    r"""<kind>-<core><suffix>, the kind not repeated."""
     word = _KIND_WORDS.get(kind, kind)
     named = re.match(rf'{word}([-_]|$)', core, re.IGNORECASE)
     return (core if named else f'{word}-{core}') + (suffix or '')
@@ -393,8 +360,7 @@ _KIND_WORDS = {'prediction': 'predict'}
 
 
 def versioned(model: str, version: str) -> str:
-    r"""``<model>-v<version>``, or ``<model>-<version>`` for a version
-    named rather than numbered, as Snowflake's ``V2``."""
+    r"""<model>-v<version>, or <model>-<version> for a named version."""
     return f'{model}-v{version}' if version.isdigit() else f'{model}-{version}'
 
 
@@ -405,9 +371,7 @@ def fit_run_id(manifest: Any) -> Optional[str]:
 
 
 def registered_parents(model: Any) -> Mapping[str, Any]:
-    r"""Pointer tags to the registered version of ``model``, a
-    `TrainingResult`: ``model_name`` and ``model_version`` (not its alias,
-    which the registry moves)."""
+    r"""The model's registered name and version, not its alias."""
     from kumo.engine.trainer._run_spec import _registered
 
     return {} if model is None else _registered(model.registered_model)
@@ -420,8 +384,7 @@ def _started(manifest: 'PredictionManifest') -> datetime:
 
 
 def _as_of(manifest: 'PredictionManifest') -> str:
-    r"""The date (UTC) a prediction is for: its anchor's (``<first>..<last>``
-    for several), else the creation date of the snapshot it scored."""
+    r"""The anchor date (UTC), or the scored snapshot's creation date."""
     dates = sorted({_utc(anchor).date().isoformat()
                     for anchor in manifest.prediction_table.anchors})
     if not dates:
@@ -441,8 +404,7 @@ def _tune_metric(model: Any) -> Optional[str]:
 
 def _one_epoch_note(spec: RunSpec,
                     held: Optional[Mapping[str, float]]) -> RunSpec:
-    r"""``spec`` with its single-point series, and a single-trial fit's
-    ``held`` first epoch that never got a second, in a note instead."""
+    r"""Single-point series moved into a note."""
     from kumo_core.summaries import Note
 
     single = {name: points[0][1] for name, points in spec.steps.items()
@@ -463,9 +425,7 @@ def _one_epoch_note(spec: RunSpec,
 
 def _labels_mature(manifest: 'PredictionManifest',
                    window: Optional[Sequence[Any]]) -> Optional[str]:
-    r"""The date (UTC) the latest anchor's labels are all known: the anchor
-    plus the target ``window``'s end and, for a forecast, its last
-    horizon's steps; None without anchors or a window."""
+    r"""When the latest anchor's labels are all known (UTC)."""
     import pandas as pd
 
     anchors = manifest.prediction_table.anchors
@@ -491,10 +451,7 @@ def _utc(text: str) -> datetime:
 def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
                           window: Optional[Sequence[Any]] = None
                           ) -> List['Summary']:
-    r"""``pred/rows``, ``pred/skipped_share`` and a note of the rows not
-    scored; the scores' summaries from their exact counts, with their drift
-    from ``baseline``, the holdout's, and a forecast's horizons named by
-    their target ``window``."""
+    r"""Row counts, skipped rows and score summaries with drift."""
     from kumo_core.prediction_counts import prediction_summaries
     from kumo_core.score_counts import Counts
     from kumo_core.summaries import Note, Scalar
@@ -524,9 +481,7 @@ def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
 
 @contextmanager
 def system_metrics(tracking: Any) -> Iterator[None]:
-    r"""Has ``tracking`` sample system metrics during the block, through its
-    optional ``sample_system_metrics()`` context, for the prediction run it
-    logs next."""
+    r"""Samples system metrics during the block, if the tracker can."""
     sample = getattr(tracking, 'sample_system_metrics', None)
     if sample is None or _rank() != 0:
         yield
@@ -545,21 +500,31 @@ def track_prediction(
         manifest: Optional['PredictionManifest'], tracking: Any,
         error: Optional[BaseException] = None,
         model: Any = None,
-        summaries: Sequence['Summary'] = ()) -> Optional[Exception]:
-    r"""Record a prediction run of ``model`` in ``tracking``, failed if
-    ``error`` ended it, with ``summaries`` besides its scores'; returns the
-    tracking failure instead of raising it."""
+        summaries: Callable[[], Sequence['Summary']] = tuple
+) -> Optional[Exception]:
+    r"""Tracks a prediction run; returns the failure instead of raising."""
     if getattr(tracking, 'log_prediction_run', None) is None:
         return None
     try:
         if manifest is None:
             raise ValueError('the run has no prediction manifest')
-        record = prediction_record(manifest, error, model, summaries)
+        record = prediction_record(manifest, error, model, summaries())
     except Exception as failure:
         logger.warning('Experiment tracking failed: %s; the prediction run '
                        'is not tracked', full_error(failure), exc_info=_debug())
         return failure
     return log_run(tracking, 'log_prediction_run', record)
+
+
+class SingleRunHooks:
+    r"""Each prediction run and monitoring call as one run of its own."""
+
+    def log_prediction_run(self, record: RunRecord) -> None:
+        self.start(record)  # type: ignore[attr-defined]
+        self.finish(record,  # type: ignore[attr-defined]
+                    record_failure(record))
+
+    log_monitoring = log_prediction_run
 
 
 class Tracking(Protocol):
@@ -599,9 +564,7 @@ class Tracking(Protocol):
 
 @dataclass
 class _Search:
-    r"""The fit run's own series: a single trial's epochs as they end; for
-    a search, `best`, the trial with the best validation ``metric``, whose
-    epochs the run records at the end."""
+    r"""The fit run's series: one trial's epochs, or a search's best."""
 
     single: bool
     metric: str
@@ -618,8 +581,7 @@ class _Search:
                    lower=MetricStore.tune_mode(metric) == 'min')
 
     def best_epoch(self, events: Sequence[Event]) -> Optional[int]:
-        r"""The epoch of ``events`` with the best validation ``metric``, the
-        first of ties, as the fit's checkpoint keeps it."""
+        r"""The first epoch with the best validation metric."""
         points = [(event.epoch, event.metrics[self.metric])
                   for event in events if event.name == 'epoch_ended'
                   and event.epoch and self.metric in event.metrics]
@@ -642,8 +604,7 @@ class _Search:
 
 
 class RegistrationError(Exception):
-    r"""Raised by a tracker's ``log_model`` from the error that registering
-    the logged model raised."""
+    r"""Registering the logged model failed."""
 
 
 class TrackingSession:
@@ -653,8 +614,7 @@ class TrackingSession:
         self._warn = warn
         self.spec: Optional[RunSpec] = None
         self._trials: Dict[int, List[Event]] = {}
-        # A series' first point waits for its second: a line, not a dot.
-        self._first_epoch: Dict[Optional[int], Any] = {}
+        self._first_epoch: Dict[Any, Any] = {}
         self._search: Optional[_Search] = None
         self._jobs: 'queue.Queue[Optional[Callable[[], Any]]]' = queue.Queue(
             QUEUE_SIZE)
@@ -662,7 +622,6 @@ class TrackingSession:
         self._behind = False
         self._started = threading.Event()
         self.error: Optional[BaseException] = None
-        # The tracker's run once it ended, renamed or not.
         self.final: Optional['TrackingRef'] = None
 
     @property
@@ -723,7 +682,9 @@ class TrackingSession:
                 }))
             logged = dataclasses.replace(event,
                                          metrics=logged_names(event.metrics))
-            for each in self._once_a_line(event.trial, event, logged):
+            for each in self._once_a_line(
+                    (event.trial, event.params.get('attempt')), event,
+                    logged):
                 self._submit(lambda each=each: self._call(
                     lambda tracker: tracker.on_trial(record, each)))
         series = None if self._search is None else self._search.on(event)
@@ -734,10 +695,9 @@ class TrackingSession:
                     lambda tracker: getattr(tracker, 'log_metrics', _none)(
                         metrics, step)))
 
-    def _once_a_line(self, key: Optional[int], event: Event,
+    def _once_a_line(self, key: Any, event: Event,
                      item: Any) -> List[Any]:
-        r"""What to log for ``event`` of the series ``key``: an epoch after
-        the series' second with its first, nothing for the first alone."""
+        r"""An epoch held until its series' second, then both."""
         if event.name != 'epoch_ended':
             return [item]
         if key not in self._first_epoch:
@@ -753,8 +713,7 @@ class TrackingSession:
         snapshot: Any,
         registry: Optional['ModelRegistryLocation'] = None,
     ) -> Tuple[Optional['PublishedModel'], Optional[BaseException]]:
-        r"""Runs the tracker's ``log_model`` on the tracking thread and waits
-        for it; returns the registered version and the error it raised."""
+        r"""The tracker's ``log_model``, run on the tracking thread."""
         if self._worker is None or (self._tracker is not None and not callable(
                 getattr(self._tracker, 'log_model', None))):
             return None, None
@@ -810,8 +769,7 @@ class TrackingSession:
 
     def finish(self, spec: Optional[Callable[[], RunSpec]],
                error: Optional[BaseException]) -> None:
-        r"""Ends the run with ``spec()``, its final spec (`None`: the started
-        one), failed if ``error``."""
+        r"""Ends the run, failed if error."""
         worker = self._worker
         if self.spec is None or worker is None:
             return
@@ -907,8 +865,7 @@ class TrackingSession:
 
 
 def tracking_ref(tracker: Any) -> Optional['TrackingRef']:
-    r"""The tracker's latest run: its ``platform``, ``run_id``, ``run_url``,
-    ``experiment`` and ``logged_run_name``."""
+    r"""The tracker's latest run."""
     from kumo.engine._manifest import TrackingRef
 
     run_id = getattr(tracker, 'run_id', None)
@@ -923,9 +880,7 @@ def tracking_ref(tracker: Any) -> Optional['TrackingRef']:
 
 def log_run(tracking: Any, hook: str,
             record: RunRecord) -> Optional[Exception]:
-    r"""Log a standalone run with ``tracking.<hook>(record)`` on a tracking
-    thread, waiting up to `FINISH_SECONDS`; returns the tracking failure
-    instead of raising it."""
+    r"""Runs tracking.<hook>(record) on a thread; returns the failure."""
     method = getattr(tracking, hook, None)
     if method is None or _rank() != 0:
         return None
@@ -958,8 +913,6 @@ def log_run(tracking: Any, hook: str,
 
 
 def _debug() -> bool:
-    r"""Tracebacks of tracking failures only at DEBUG: the failure itself is
-    reported once, by the call that tracked it."""
     return logger.isEnabledFor(logging.DEBUG)
 
 

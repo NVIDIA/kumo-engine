@@ -1182,8 +1182,7 @@ class DiskgraphNestedTrainer(Trainer):
         target_edges: Sequence[float] = (),
     ) -> Any:
         """Run PL validate/test, then build the formatted EvalOutput
-        (``_build_eval_df`` reconstructs the per-row df from ``pl_model.outputs``)
-        and, for the test split, its counts (`Trainer.test`).
+        (``_build_eval_df`` reconstructs the per-row df from ``pl_model.outputs``).
         """
         from kumo_core.train.output import EvalOutput
         from kumoapi.train import TrainingStage
@@ -1233,8 +1232,7 @@ class DiskgraphNestedTrainer(Trainer):
                 )
             metrics = {}
 
-        # A zero-row link-prediction loader may skip the hook that creates
-        # ``outputs``.
+        # a zero-row link-prediction loader may not set it
         outputs = getattr(self.pl_model, 'outputs', None)
         self.pl_model.outputs = None
 
@@ -1242,8 +1240,6 @@ class DiskgraphNestedTrainer(Trainer):
         save_csv(metrics, path, overwrite=True)
 
         if self.task.task_type.is_link_pred:
-            # Link prediction has no row-wise evaluation frame; its test
-            # outputs are each entity's top score.
             from kumo_core.evaluation_counts import top_score_counts
             top = (outputs or {}).get('top_score')
             return EvalOutput(metrics, None, None, None if top is None else
@@ -1385,8 +1381,7 @@ class DiskgraphNestedTrainer(Trainer):
         Serves the model over the ``predict`` stage via the wheel iterator and
         writes to ``output_dir``. Mirrors the node-pred branch of
         ``Trainer.predict_v2`` but sources metadata from the bundle / ``self.task``
-        and keys output on ``pkey`` (no ``arange``). Each written batch's scores
-        are added to ``prediction_counts``, if given.
+        and keys output on ``pkey`` (no ``arange``).
         """
         emit_embeddings = bool(return_embeddings)
         emit_predictions = bool(return_predictions)
@@ -1602,7 +1597,6 @@ class DiskgraphNestedTrainer(Trainer):
                 target_pred=(df['TARGET_PRED'].to_numpy(
                     dtype=np.float64, na_value=np.nan) if numerical else None),
                 columns=count_columns,
-                # A forecast row per step, each entity's steps in order.
                 horizon=(df.groupby(level=0, sort=False).cumcount().to_numpy()
                          if forecast else None))
 
@@ -1782,8 +1776,7 @@ class DiskgraphNestedTrainer(Trainer):
         legacy LP table (LHS fkey / ``CLASS`` / ``SCORE``, one row per anchor,k)
         when predictions are requested. With ``return_embeddings`` also emits
         the ``create_lp_embedding_output`` table (LHS per anchor + the filtered
-        RHS catalog for two-tower/shallow-RHS). Each written batch's
-        recommendations are added to ``prediction_counts``, if given.
+        RHS catalog for two-tower/shallow-RHS).
         """
         import math
 
