@@ -397,3 +397,17 @@ class FilesystemSink(ObjectStoreSinkBackend):
 
     def _uri(self, path: str) -> str:
         return path
+
+    def preflight_write_files(self, connector, table_name, write_mode=None):
+        """Refuse an occupied output directory before scoring."""
+        del write_mode
+        from kumo_core.artifact_export import ArtifactDestinationConflict
+        from pyarrow.fs import FileSelector
+
+        if not table_name.endswith('/'):
+            return
+        filesystem, path = self._sink.filesystem(connector, table_name)
+        if filesystem.get_file_info(FileSelector(path, allow_not_found=True)):
+            raise ArtifactDestinationConflict(
+                f"Output directory '{path}/' already contains data from "
+                f"another export. Choose an empty destination path.")

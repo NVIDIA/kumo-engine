@@ -190,3 +190,14 @@ def test_parquet_writes_stay_plain_up_to_one_part(tmp_path, connector):
     assert files.write_files(connector, '@stage/out/', [str(part)])
     assert pd.read_parquet('@stage/out/part-0.parquet',
                            filesystem=PyFileSystem(store)).equals(frame)
+
+
+def test_an_occupied_directory_is_refused_before_scoring(tmp_path, connector):
+    from kumo_core.artifact_export import ArtifactDestinationConflict
+
+    files = FilesystemSink(connector.sink_backend)
+    files.preflight_write_files(connector, '@stage/out/')
+    connector.sink_backend.store.objects['@stage/out/old.parquet'] = b'x'
+    for mode in (None, 'OVERWRITE', 'APPEND'):
+        with pytest.raises(ArtifactDestinationConflict, match='already'):
+            files.preflight_write_files(connector, '@stage/out/', mode)
