@@ -35,7 +35,7 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
 
     trainer = Trainer(ModelPlan())
     trainer._training_result = SimpleNamespace(
-        artifact_paths={}, scoring_defaults=ScoringDefaults())
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     trainer._snapshot_id = snapshot.id
     trainer._training_query = 'PREDICT users.label FOR EACH users.id'
     table = PredictionTable(trainer._training_query, tmp_path, tmp_path, 8,

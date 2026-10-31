@@ -165,7 +165,7 @@ def test_binary_predictions_preserve_probabilities_and_metadata_contract(
     monkeypatch.setattr(type(trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
     trainer._training_result = SimpleNamespace(
-        artifact_paths={}, scoring_defaults=ScoringDefaults())
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     trainer._snapshot_id = snapshot.id
     trainer._training_query = 'PREDICT users.label FOR EACH users.id'
     table = PredictionTable(trainer._training_query, tmp_path, tmp_path, 0,
@@ -275,7 +275,7 @@ def test_predict_reuses_generated_table_without_recompiling(
     monkeypatch.setattr(type(trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
     trainer._training_result = SimpleNamespace(
-        artifact_paths={}, scoring_defaults=ScoringDefaults())
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     trainer._snapshot_id = snapshot.id
     trainer._training_query = query
 
@@ -711,7 +711,8 @@ def test_repeated_predict_calls_get_distinct_ingest_targets(
         monkeypatch.setattr(type(trainer), 'scratch_dir',
                             property(lambda _: tmp_path))
         trainer._training_result = SimpleNamespace(
-            artifact_paths={}, scoring_defaults=ScoringDefaults())
+            artifact_paths={}, manifest=None,
+            scoring_defaults=ScoringDefaults())
         trainer._snapshot_id = snapshot.id
         trainer._training_query = query
         trainer.predict(table, snapshot=snapshot, output_config=output,
@@ -724,7 +725,7 @@ def test_repeated_predict_calls_get_distinct_ingest_targets(
     monkeypatch.setattr(type(same_trainer), 'scratch_dir',
                         property(lambda _: tmp_path))
     same_trainer._training_result = SimpleNamespace(
-        artifact_paths={}, scoring_defaults=ScoringDefaults())
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     same_trainer._snapshot_id = snapshot.id
     same_trainer._training_query = query
     same_trainer.predict(table, snapshot=snapshot, output_config=output,
