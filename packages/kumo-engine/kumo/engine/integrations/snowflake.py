@@ -43,6 +43,7 @@ from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
     RunRecord,
+    Tracking,
     by_step,
 )
 from kumo.engine.connector._extras import import_provider
@@ -56,7 +57,7 @@ _SUMMARY_METRICS = _MAX_METRICS - 30
 _FINISH_PARAMS = 20
 
 
-class SnowflakeTracking:
+class SnowflakeTracking(Tracking):
     r"""Records `Trainer.fit` in Snowflake Experiment Tracking as one run;
     trial attempts are logged in it under ``trial-<n>-attempt-<m>/`` names and
     tags are logged as params. Snowflake has no dataset inputs, so a fit's
@@ -85,7 +86,6 @@ class SnowflakeTracking:
     """
 
     platform = 'snowflake'
-    run_url = None
 
     def __init__(
         self,
@@ -113,7 +113,6 @@ class SnowflakeTracking:
         self.run_name = run_name
         self.tags = dict(tags or {})
         self.native_model_lineage = native_model_lineage
-        self.run_id: Optional[str] = None
         self._reset()
 
     def _reset(self) -> None:
