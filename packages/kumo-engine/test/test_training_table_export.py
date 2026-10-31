@@ -19,13 +19,7 @@ from kumoapi.train import TrainingTableSpec
 from kumoapi.typing import Stype
 
 import kumo.engine as kumo
-from kumo.engine._manifest import (
-    SourceTableEntry,
-    TrainingTableManifest,
-    TrainingTableParents,
-    read_manifest,
-    write_manifest,
-)
+from kumo.engine._manifest import SourceTableEntry, TrainingTableParents
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.trainer.output_config import TrainingTableOutputConfig
 
@@ -347,24 +341,6 @@ def test_manifest_and_export_sidecar(graph, tmp_path):
         version_kind='listing',
     )
     assert _seeds(reloaded)[1] == _seeds(table)[1]
-
-
-def test_training_table_manifest_round_trips_unchanged(graph, tmp_path):
-    _, table, _ = _export(graph, 'PREDICT ents.LABEL FOR EACH ents.ID',
-                          'round_trip')
-    newer = json.loads(
-        (table.staging_dir / '_provenance.json').read_text())
-    newer['future'] = 1
-    newer['parents']['label_source'] = 'x'
-    source = tmp_path / 'newer.json'
-    source.write_text(json.dumps(newer, indent=2, sort_keys=True) + '\n')
-
-    manifest = read_manifest(source, TrainingTableManifest)
-    write_manifest(tmp_path / 'out.json', manifest)
-
-    assert (tmp_path / 'out.json').read_bytes() == source.read_bytes()
-    assert manifest.extra == {'future': 1}
-    assert manifest.parents.extra == {'label_source': 'x'}
 
 
 def test_custom_table_follows_the_snapshots_record_sources(

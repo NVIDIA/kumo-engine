@@ -50,6 +50,9 @@ def test_manifest_round_trips_unchanged(fitted, tmp_path):
         (trainer.result.bundle_dir / '_provenance.json').read_text())
     newer['future'] = True
     newer['fit']['gpu_seconds'] = 1.5
+    table = newer['parents']['training_table']
+    table['parents']['label_source'] = 'x'
+    table['parents']['snapshot']['environment']['cuda'] = '13.0'
     source = tmp_path / 'newer.json'
     source.write_text(json.dumps(newer, indent=2, sort_keys=True) + '\n')
 
@@ -59,6 +62,9 @@ def test_manifest_round_trips_unchanged(fitted, tmp_path):
     assert (tmp_path / 'out.json').read_bytes() == source.read_bytes()
     assert manifest.extra == {'future': True}
     assert manifest.fit.extra == {'gpu_seconds': 1.5}
+    table = manifest.parents.training_table
+    assert table.parents.extra == {'label_source': 'x'}
+    assert table.parents.snapshot.environment.extra == {'cuda': '13.0'}
 
 
 def test_bundle_without_a_manifest_loads_and_predicts_identically(

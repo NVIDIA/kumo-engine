@@ -30,12 +30,7 @@ from kumo.engine import (
     SnowflakeConnector,
     Table,
 )
-from kumo.engine._manifest import (
-    SnapshotManifest,
-    SourceTableEntry,
-    read_manifest,
-    write_manifest,
-)
+from kumo.engine._manifest import SourceTableEntry
 from kumo.engine.connector.identity import (
     DatabricksIdentity,
     SnowflakeIdentity,
@@ -238,20 +233,3 @@ def test_toggling_record_sources_keeps_unknown_parent_fields(make_snapshot):
     redacted = make_snapshot(record_sources=False)
     assert redacted.manifest.record_sources is False
     assert redacted.manifest.parents.extra == {'future': {'kept': True}}
-
-
-def test_snapshot_manifest_round_trips_unchanged(make_snapshot, tmp_path):
-    written = make_snapshot(30).index_path / PROVENANCE_FILE
-    newer = json.loads(written.read_text())
-    newer['future'] = {'kept': [1, 2]}
-    newer['environment']['cuda'] = '13.0'
-    newer['parents']['source_tables']['ents']['row_count'] = 5
-    source = tmp_path / 'newer.json'
-    source.write_text(json.dumps(newer, indent=2, sort_keys=True) + '\n')
-
-    manifest = read_manifest(source, SnapshotManifest)
-    write_manifest(tmp_path / 'out.json', manifest)
-
-    assert (tmp_path / 'out.json').read_bytes() == source.read_bytes()
-    assert manifest.extra == {'future': {'kept': [1, 2]}}
-    assert manifest.environment.extra == {'cuda': '13.0'}
