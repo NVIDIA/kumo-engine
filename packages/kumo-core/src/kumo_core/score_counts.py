@@ -1,15 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Exact counts of scores, accumulated batch by batch, for evaluation and
-prediction summaries.
-
-Bins are fixed before counting: probabilities in hundredths, one bin per
-class, or a numerical target's training statistics. A value ``v`` falls in
-bin ``i`` when ``edges[i - 1] <= v < edges[i]``: bin 0 holds values below
-``edges[0]`` and the last bin values at or above ``edges[-1]``. Counts from
-batches, workers or runs add up exactly.
-"""
+r"""Exact score counts over fixed bins; they add up across batches."""
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
@@ -22,8 +14,7 @@ PROBABILITY_EDGES = tuple(i / 100 for i in range(101))
 
 @dataclass
 class Counts:
-    r"""Named arrays of exact counts and sums over named bin ``edges``, and
-    named ``extents``, the exact minimum and maximum of some values."""
+    r"""Named counts and sums over named bins, and extents."""
 
     edges: Dict[str, Tuple[float, ...]]
     arrays: Dict[str, np.ndarray] = field(default_factory=dict)
@@ -31,8 +22,7 @@ class Counts:
 
     def histogram(self, name: str, axis: str, values: Any,
                   weights: Any = None) -> None:
-        r"""Adds the finite ``values`` (or their ``weights``) per bin of
-        ``axis``."""
+        r"""Adds the finite values, or their weights, per bin of axis."""
         values = np.asarray(values, dtype=np.float64)
         finite = np.isfinite(values)
         edges = self.edges[axis]
@@ -71,8 +61,7 @@ class Counts:
 
     def summary(self, name: str, axis: str,
                 label: Optional[str] = None) -> Histogram:
-        r"""The ``name`` counts as a `Histogram` named ``label``, within
-        their extent if it was recorded."""
+        r"""The counts as a Histogram."""
         return Histogram(label or name, self.edges[axis],
                          tuple(self.arrays[name].tolist()),
                          self.extents.get(name))
@@ -109,9 +98,7 @@ class Counts:
 
 def bin_bounds(edges: Sequence[float],
                extent: Optional[Tuple[float, float]] = None) -> np.ndarray:
-    r"""Each bin's ends, ``edges`` with the open end bins closed at
-    ``extent``, the counted values' minimum and maximum, or else at the end
-    edges: bin ``i`` spans ``bounds[i]`` to ``bounds[i + 1]``."""
+    r"""Each bin's ends, the open end bins closed at the extent."""
     low, high = extent or (edges[0], edges[-1])
     return np.array([min(low, edges[0]), *edges, max(high, edges[-1])])
 

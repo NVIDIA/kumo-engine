@@ -1,16 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Exact test-split counts per task type (`evaluation_counts`), and the
-``holdout/`` summaries derived from them (`evaluation_summaries`).
-
-The counts take the test loop's calibrated scores of every evaluated row.
-Binary, multiclass and multilabel scores fall in probability hundredths; a
-regression or forecasting target in the training split's bins, a forecast
-also per horizon; a ranking's top scores in their own exact percentiles.
-`baseline` keeps the counts a prediction run's scores are compared with;
-`at_k_summaries` turns ranking metrics into ``@k`` series.
-"""
+r"""Exact test-split score counts and the holdout summaries."""
 
 import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -33,10 +24,7 @@ _TOP_CLASSES = 20
 _RESIDUAL_BINS = 40
 _HORIZONS = 12
 _TOP_SCORE_BINS = 100
-#: The arrays a prediction run's score distribution is compared with.
 BASELINE = ('True_PROB', 'confidence', 'top_score', 'classes', 'TARGET_PRED')
-#: A forecast's target window: its first horizon's ``(start, end)`` offsets,
-#: the ``step`` between horizons and their time ``unit``.
 Timeframe = Tuple[int, int, int, str]
 
 
@@ -45,10 +33,7 @@ def evaluation_counts(task_type: TaskType, *, target: Any,
                       threshold: Optional[float] = None,
                       target_edges: Sequence[float] = (),
                       horizon: Any = None) -> Optional[Counts]:
-    r"""The counts of one test split; ``None`` for task types without
-    them. ``threshold`` labels a binary prediction positive when its
-    ``True_PROB`` is above it, as ``TARGET_PRED`` does; ``horizon`` is each
-    forecast row's step ahead, from 0."""
+    r"""Counts of one test split; None for task types without them."""
     if task_type is TaskType.BINARY_CLASSIFICATION:
         prob = np.asarray(prob, dtype=np.float64)
         return _binary(prob[:, -1] if prob.ndim == 2 else prob,
@@ -72,8 +57,7 @@ def evaluation_counts(task_type: TaskType, *, target: Any,
 
 
 def top_score_counts(scores: Any) -> Counts:
-    r"""Counts of each entity's top ``scores``, which have no fixed range,
-    on the ``top_score`` axis cut at their own exact percentiles."""
+    r"""Top scores on bins cut at their own exact percentiles."""
     scores = np.asarray(scores, dtype=np.float64)
     scores = scores[np.isfinite(scores)]
     edges = () if not scores.size else tuple(np.unique(np.quantile(
@@ -97,8 +81,7 @@ def evaluation_summaries(task_type: TaskType, counts: Counts,
                          classes: Sequence[Any] = (),
                          timeframe: Optional[Timeframe] = None
                          ) -> List[Summary]:
-    r"""The holdout's summaries from its ``counts``; ``timeframe`` names a
-    forecast's horizons by their window (``(0, 7] days``), else by number."""
+    r"""The holdout's summaries from its counts."""
     if task_type is TaskType.BINARY_CLASSIFICATION:
         return _binary_summaries(counts, threshold)
     if task_type is TaskType.MULTICLASS_CLASSIFICATION:
@@ -114,10 +97,7 @@ def evaluation_summaries(task_type: TaskType, counts: Counts,
 
 
 def at_k_summaries(metrics: Mapping[str, float]) -> List[Summary]:
-    r"""``test_map@1``, ``test_map@10``... as the column ``map`` of the
-    table ``holdout/by_k``, from the refit model's ``test_refit_map@1``...
-    when there are any: the bundle ships that model. Without its loss, as
-    link prediction's, a note says so."""
+    r"""Ranking metrics at each k as the holdout/by_k table."""
     refit = any(re.fullmatch(r'test_refit_\w+@\d+', name) for name in metrics)
     prefix = 'test_refit_' if refit else 'test_'
     series: Dict[str, List[Tuple[int, float]]] = {}
@@ -185,8 +165,7 @@ def _binary_summaries(counts: Counts,
 
 
 def _threshold(value: float) -> str:
-    r"""``value`` exactly to two decimals when it is in hundredths, else
-    to 4 significant digits."""
+    r"""Two decimals for hundredths, else 4 significant digits."""
     return f'{value:.2f}' if round(value, 2) == value else f'{value:.4g}'
 
 
@@ -214,8 +193,7 @@ def _multiclass(prob: np.ndarray, target: np.ndarray) -> Counts:
 
 def _multiclass_summaries(counts: Counts,
                           classes: Sequence[Any]) -> List[Summary]:
-    r"""Without the accuracy, which equals ``f1_micro`` and the plan's
-    ``acc``."""
+    r"""Without accuracy, which equals f1_micro."""
     arrays = counts.arrays
     size = len(arrays['classes'])
     names = [str(name) for name in classes] or [str(i) for i in range(size)]
@@ -280,8 +258,7 @@ def _regression(pred: np.ndarray, target: np.ndarray,
 
 
 def _regression_summaries(counts: Counts) -> List[Summary]:
-    r"""With ``mae`` and ``rmse``, which the trainer's own metrics of the
-    same names replace."""
+    r"""With mae and rmse, replaced by the trainer's own."""
     arrays = counts.arrays
     rows = float(arrays['rows'])
     total = float(arrays['target'])
@@ -406,8 +383,7 @@ def _horizon_summaries(counts: Counts,
 
 
 def horizon_label(h: int, timeframe: Optional[Timeframe] = None) -> str:
-    r"""Horizon ``h``, from 0, as its target window (``(7, 14] days``), or
-    as ``horizon <h + 1>`` without a ``timeframe``."""
+    r"""A forecast horizon as its target window, or horizon <h + 1>."""
     if timeframe is None:
         return f'horizon {h + 1}'
     start, end, step, unit = timeframe
@@ -422,14 +398,12 @@ def _horizons(size: int) -> List[int]:
 
 
 def _above(counts: np.ndarray) -> np.ndarray:
-    r"""``counts`` at or above each edge: index ``k`` sums the bins from
-    ``k + 1`` on."""
+    r"""Counts at or above each edge."""
     return np.cumsum(counts[::-1])[::-1][1:].astype(np.float64)
 
 
 def _by_threshold(positive: np.ndarray, negative: np.ndarray) -> Table:
-    r"""The rows scored at or above each hundredth, and the confusion
-    counts and rates of calling them positive."""
+    r"""Rows and confusion rates at each hundredth threshold."""
     tp, fp = _above(positive), _above(negative)
     positives, negatives = float(positive.sum()), float(negative.sum())
     return Table(

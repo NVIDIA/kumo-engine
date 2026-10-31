@@ -75,8 +75,6 @@ class GeneratedPredictionTable:
     table_path: str
     row_count: int
     tt_id: str
-    #: DiskGraph's ``row_failures`` report for caller-supplied rows: rows
-    #: read, rows skipped, and per-condition counts with source locations.
     row_failures: Mapping[str, Any] | None = None
 
 
