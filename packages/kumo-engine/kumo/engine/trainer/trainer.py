@@ -34,6 +34,7 @@ from kumo_core.pquery import (
     resolve_query_forecast,
 )
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
+from kumo_core.training.config import FitMode
 from kumo_core.training.explain_aggregation import aggregate_subgraph_features
 from kumo_core.training.workflow import TrainingWorkflowRequest
 from kumo_core.types import ExplainMethod, PredictionArtifactType
@@ -187,8 +188,6 @@ def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
 
 
 def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
-    from kumo_core.training.config import FitMode
-
     published = trainer.published_fit_mode()
     if published is FitMode.refit_full:
         logger.info('The published model is refit on the full data, including '
