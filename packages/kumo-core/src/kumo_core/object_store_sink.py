@@ -159,9 +159,7 @@ class ObjectStoreSinkBackend(ABC):
         from kumo_core.sources import layout
         filesystem, path = self._destination(connector, table_name)
         kind = layout.file_type(path.rstrip('/')) or layout.PARQUET
-        storage = _ArrowExportFiles(
-            filesystem, extra_columns, upload=partial(self._upload_file,
-                                                      filesystem))
+        storage = _ArrowExportFiles(filesystem, extra_columns)
         _, output = export_selected_files(files, path, fs=storage,
                                           identity=export_id or str(files),
                                           file_type=kind,
@@ -193,18 +191,13 @@ class ObjectStoreSinkBackend(ABC):
                 f"path. Set output_path on the ModelExportConfig.")
 
         filesystem, destination = self.filesystem(connector, path)
-        upload_bundle(filesystem, destination, bundle_dir,
-                      partial(self._upload_file, filesystem))
+        upload_bundle(filesystem, destination, bundle_dir)
         return PublishedModel(
             name=posixpath.basename(destination),
             version=destination,
             uri=self._uri(destination),
             metadata=dict(metadata),
         )
-
-    def _upload_file(self, filesystem, source, destination):
-        """Providers may transfer an already prepared local file directly."""
-        upload_file(filesystem, source, destination)
 
     def _download_file(self, filesystem, source, destination):
         """Providers may transfer a model file without the streaming fallback."""
@@ -346,10 +339,9 @@ def _marker(export_id: Optional[str]) -> Optional[str]:
 
 class _ArrowExportFiles:
     """Adapt authenticated Arrow output to the shared hosted export operation."""
-    def __init__(self, filesystem, extra_columns, upload=None):
+    def __init__(self, filesystem, extra_columns):
         self.filesystem = filesystem
         self.extra_columns = extra_columns
-        self.upload = upload
 
     def exists(self, path):
         from pyarrow.fs import FileType
@@ -397,9 +389,6 @@ class _ArrowExportFiles:
         # CSV conversion already applied this destination's metadata.
         columns = self.extra_columns if source.endswith('.parquet') else None
         with prepared_artifact_file(source, columns) as prepared:
-            if self.upload is not None:
-                self.upload(prepared, destination)
-                return
             upload_file(self.filesystem, prepared, destination)
 
     def copy_files_threaded(self, pairs, overwrite, max_workers):
