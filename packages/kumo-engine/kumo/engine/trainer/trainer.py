@@ -62,6 +62,11 @@ from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot, report_other_graph
 from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
+from kumo.engine.trainer._provenance import (
+    FitRecord,
+    parent_model,
+    read_provenance,
+)
 from kumo.engine.trainer._spec import (
     HOLDOUT_META_ROLE,
     HOLDOUT_ROLE,
@@ -113,8 +118,6 @@ class TrainingResult:
     @property
     def manifest(self) -> Optional[ModelManifest]:
         """The bundle's ``_provenance.json``; None for older bundles."""
-        from kumo.engine.trainer._provenance import read_provenance
-
         return read_provenance(self.bundle_dir)
 
     @property
@@ -491,7 +494,6 @@ class Trainer:
                 f'{type(export_config.connector).__name__} cannot publish '
                 f'models')
         from kumo.engine._mlops import resolve
-        from kumo.engine.trainer._provenance import parent_model
 
         settings = resolve(mlops)
         started_at = datetime.now(timezone.utc)
@@ -665,7 +667,7 @@ class Trainer:
             training_table_generation=train_table.generation_plan,
             export_config=export_config,
             model_plan=effective_plan,
-            provenance=dict(
+            provenance=FitRecord(
                 train_table=train_table,
                 warm_start=None if warm_start is None else parent_model(
                     warm_start._training_result.bundle_dir,
@@ -684,13 +686,11 @@ class Trainer:
         export_config: Optional[ModelOutputConfig],
         graph_config: Optional[Dict[str, Any]] = None,
         model_plan: Optional[ModelPlan] = None,
-        provenance: Optional[Mapping[str, Any]] = None,
+        provenance: Optional[FitRecord] = None,
         settings: Optional[Any] = None,
     ) -> TrainingResult:
         """Commit durable fit outputs before making this trainer usable."""
         from kumo_core.artifacts import bundle_id_from_manifest
-
-        from kumo.engine.trainer._provenance import write_provenance
 
         effective_plan = model_plan if model_plan is not None else self._model_plan
         write_training_spec(
@@ -711,9 +711,8 @@ class Trainer:
                           UserWarning, stacklevel=3)
         if provenance is not None and training_result.bundle_id is not None:
             try:
-                write_provenance(training_result.bundle_dir,
-                                 bundle_id=training_result.bundle_id,
-                                 **provenance)
+                provenance.write(training_result.bundle_dir,
+                                 training_result.bundle_id)
             except Exception as error:
                 warnings.warn(
                     f"Publishing the model bundle without _provenance.json: "

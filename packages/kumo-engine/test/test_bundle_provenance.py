@@ -20,7 +20,7 @@ from kumo.engine._manifest import (
     read_manifest,
     write_manifest,
 )
-from kumo.engine.trainer._provenance import embedded_model
+from kumo.engine.trainer._provenance import FitRecord, embedded_model
 from kumo.engine.trainer._spec import MANIFEST_FILE
 from kumo.engine.trainer.trainer import TrainingResult
 
@@ -107,8 +107,8 @@ def _finish_stub_fit(bundle, trainer, warm_start=None, settings=None):
         TrainingResult({}, {}, bundle), predictive_query='PREDICT x',
         snapshot_id='snap', export_config=None,
         training_table_generation=TrainingTableGenerationPlan(),
-        provenance=dict(train_table=table, warm_start=warm_start,
-                        started_at=datetime.now(timezone.utc), fit_mode=None),
+        provenance=FitRecord(table, warm_start, datetime.now(timezone.utc),
+                             None),
         settings=settings)
 
 

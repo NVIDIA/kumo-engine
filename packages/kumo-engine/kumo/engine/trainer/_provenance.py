@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """A model bundle's ``_provenance.json``; excluded from the bundle id."""
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -22,37 +22,39 @@ from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer._spec import PROVENANCE_ROLE, listed_file
 
 
-def write_provenance(
-    bundle_dir: Path,
-    *,
-    bundle_id: str,
-    train_table: TrainingTable,
-    warm_start: Optional[ModelManifest],
-    started_at: datetime,
-    fit_mode: Optional[str],
-) -> None:
-    from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
+@dataclass(frozen=True)
+class FitRecord:
+    train_table: TrainingTable
+    warm_start: Optional[ModelManifest]
+    started_at: datetime
+    fit_mode: Optional[str]
 
-    finished_at = datetime.now(timezone.utc)
-    table = train_table.manifest
-    write_manifest(
-        bundle_dir / PROVENANCE_FILE,
-        ModelManifest(
-            id=bundle_id,
-            parents=ModelParents(
-                training_table=embedded(table) if table is not None else
-                stub('training_table', train_table.id or train_table.tt_id),
-                warm_start=None
-                if warm_start is None else embedded_model(warm_start)),
-            fit=FitTiming(
-                started_at=started_at.isoformat(timespec='seconds'),
-                finished_at=finished_at.isoformat(timespec='seconds'),
-                seconds=round((finished_at - started_at).total_seconds(), 3),
-            ),
-            fit_mode=fit_mode,
-            **stamp(),
-        ))
-    add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
+    def write(self, bundle_dir: Path, bundle_id: str) -> None:
+        from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
+
+        finished_at = datetime.now(timezone.utc)
+        started_at, train_table = self.started_at, self.train_table
+        table = train_table.manifest
+        write_manifest(
+            bundle_dir / PROVENANCE_FILE,
+            ModelManifest(
+                id=bundle_id,
+                parents=ModelParents(
+                    training_table=embedded(table) if table is not None else
+                    stub('training_table', train_table.id
+                         or train_table.tt_id),
+                    warm_start=None if self.warm_start is None else
+                    embedded_model(self.warm_start)),
+                fit=FitTiming(
+                    started_at=started_at.isoformat(timespec='seconds'),
+                    finished_at=finished_at.isoformat(timespec='seconds'),
+                    seconds=round(
+                        (finished_at - started_at).total_seconds(), 3),
+                ),
+                fit_mode=self.fit_mode,
+                **stamp(),
+            ))
+        add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
 
 
 def embedded_model(manifest: ModelManifest) -> ModelManifest:
