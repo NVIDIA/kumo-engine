@@ -227,9 +227,8 @@ def _record_predictions(
     counts: Optional[Dict[str, Any]] = None,
 ) -> PredictionManifest:
     r"""A prediction run's manifest for any model."""
-    stats: Dict[str, Dict[str, Any]] = {}
+    stats: Dict[str, ArtifactStats] = {}
     for name, (rows, files) in outputs.items():
-        stats[name] = {'rows': rows}
         if name == 'predictions' and counts is None:
             try:
                 counted = output_counts(files(), task_type,
@@ -239,8 +238,8 @@ def _record_predictions(
                 warnings.warn(
                     f"Recording the prediction manifest without score "
                     f"counts: {error}", UserWarning, stacklevel=5)
-        if name == 'predictions' and counts is not None:
-            stats[name]['counts'] = counts
+        stats[name] = ArtifactStats(
+            rows=rows, counts=counts if name == 'predictions' else None)
     return PredictionManifest(
         id=run_id,
         parents=PredictionParents(
@@ -253,10 +252,7 @@ def _record_predictions(
         outputs=[],
         status=None,
         timings=RunTimings(started_at=started_at, finished_at=None),
-        stats={
-            name: ArtifactStats.from_dict(record)
-            for name, record in stats.items()
-        },
+        stats=stats,
         **stamp(),
     )
 
