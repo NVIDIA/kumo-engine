@@ -185,7 +185,14 @@ class TrainingResult:
         from kumo.engine._mlops import MLOps
 
         if isinstance(config, MLOps):
-            return _register_result(self, config)
+            if config.registry is None:
+                raise ValueError('export(cfg) registers at cfg.registry, '
+                                 'which is not set.')
+            tracker = as_tracking(config.tracking)
+            if tracker is not None and tracker.register is not None:
+                return cast(PublishedModel, _with_metrics(
+                    tracker.register(self, config.registry), self.metrics))
+            config = _connector_registry(config)
         _require_publisher(config)
         return _publish(self.bundle_dir, self.bundle_id, self.metrics,
                         config)[0]
@@ -506,20 +513,6 @@ def _require_publisher(export_config: ModelOutputConfig) -> None:
             f'{type(export_config.connector).__name__} cannot publish '
             f'models')
     check_model_location(export_config)
-
-
-def _register_result(result: TrainingResult, settings: Any) -> PublishedModel:
-    if settings.registry is None:
-        raise ValueError('export(cfg) registers at cfg.registry, which is '
-                         'not set.')
-    tracker = as_tracking(settings.tracking)
-    if tracker is not None and tracker.register is not None:
-        return cast(PublishedModel, _with_metrics(
-            tracker.register(result, settings.registry), result.metrics))
-    registry = cast(ModelOutputConfig, _connector_registry(settings))
-    _require_publisher(registry)
-    return _publish(result.bundle_dir, result.bundle_id, result.metrics,
-                    registry)[0]
 
 
 def _with_metrics(model: Optional[PublishedModel],
