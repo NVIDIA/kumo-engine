@@ -185,26 +185,26 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
 
 def test_pyfunc_names_a_missing_prediction_time_and_needs_no_threshold(
         fitted):
-    from kumo.engine.integrations._mlflow_model import predict
+    from kumo.engine._predictor import predict_frame
 
     trainer, table, snapshot = fitted
     rows = pd.DataFrame({'ENTITY': range(5)})
     with pytest.raises(ValueError) as error:
-        predict(trainer, snapshot, rows,
-                {'binary_classification_threshold': .5})
+        predict_frame(trainer, snapshot, rows,
+                      {'binary_classification_threshold': .5})
     assert str(error.value) == ("temporal query: pass params={"
                                 "'prediction_time': ...} or a TIMESTAMP "
                                 "column")
 
     time = str(pd.Timestamp(table.timestamps[0]))
-    scores = predict(trainer, snapshot, rows, {'prediction_time': time})
+    scores = predict_frame(trainer, snapshot, rows, {'prediction_time': time})
     assert len(scores) == 5
     assert scores['TARGET_PRED'].isna().all()
     assert scores['True_PROB'].between(0, 1).all()
 
 
 def test_pyfunc_returns_rows_in_input_order(fitted):
-    from kumo.engine.integrations._mlflow_model import predict
+    from kumo.engine._predictor import predict_frame
 
     trainer, table, snapshot = fitted
     time = pd.Timestamp(table.timestamps[0])
@@ -214,14 +214,14 @@ def test_pyfunc_returns_rows_in_input_order(fitted):
         'TIMESTAMP': [time - pd.Timedelta(days=i % 3)
                       for i in range(len(entities))],
     })
-    scored = predict(trainer, snapshot, rows,
-                     {'binary_classification_threshold': .5})
+    scored = predict_frame(trainer, snapshot, rows,
+                           {'binary_classification_threshold': .5})
     assert scored['ENTITY'].tolist() == [e for e in entities if e != 999]
     assert 'ANCHOR_TIMESTAMP' not in scored
 
 
 def test_scores_pair_with_their_rows_when_scoring_reorders():
-    from kumo.engine.integrations._mlflow_model import _in_input_order
+    from kumo.engine._predictor import _in_input_order
 
     day = pd.Timestamp('2024-05-01 12:00:00.250')
     rows = pd.DataFrame({
