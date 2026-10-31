@@ -229,8 +229,12 @@ jobs:
           python3 packages/kumo-engine/scripts/check_pypi_requirements.py
           dist/kumo_engine-*.whl --platform "${WHEEL_PLATFORM}"
 
+  platform-qualification:
+    needs: [build]
+    uses: ./.github/workflows/kumo-engine-platform-smoke.yml
+
   attach-to-release:
-    needs: [build, check-requirements]
+    needs: [build, check-requirements, platform-qualification]
     if: ${{ github.event_name == 'release' }}
     strategy:
       fail-fast: false
@@ -238,8 +242,7 @@ jobs:
         include:
           - arch: x86_64
           - arch: arm64
-          # Enabled by dependent qualification PR #92 with its runtime gate.
-          # - arch: aarch64
+          - arch: aarch64
           # Native Windows remains experimental; Windows releases use WSL.
           # - arch: windows-x86_64
     runs-on: ubuntu-24.04
@@ -269,9 +272,8 @@ jobs:
           # Native Windows remains experimental; Windows releases use WSL.
           # - arch: windows-x86_64
           #   platform: win_amd64
-          # Enabled by dependent qualification PR #92 with its runtime gate.
-          # - arch: aarch64
-          #   platform: manylinux_2_34_aarch64
+          - arch: aarch64
+            platform: manylinux_2_34_aarch64
           - arch: x86_64
             platform: manylinux_2_34_x86_64
           - arch: arm64

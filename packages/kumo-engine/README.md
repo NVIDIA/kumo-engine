@@ -11,11 +11,20 @@ Kumo Engine (`kumo.engine`) trains graph neural networks on relational data, in-
 
 ## Requirements
 
-- Linux x86_64 with glibc 2.34 or newer, or macOS 14 or newer on Apple silicon
+- Linux x86_64 or ARM64 with glibc 2.34 or newer, or macOS 14 or newer on Apple silicon
+- On Windows, use WSL2 x86_64 with a Linux distribution meeting that glibc requirement
 - CPython 3.11 or newer
 - For production workloads, an NVIDIA GPU with a compatible driver; see [prerequisites](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/prerequisites) and [GPU sizing](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/gpu-sizing)
 
 Kumo Engine uses a GPU when one is available: an NVIDIA GPU through CUDA, or an Apple silicon GPU through PyTorch's MPS backend. Without one, training and prediction run on CPU, which is enough for small jobs such as the quickstart below. To choose the device, pass `accelerator=` (`"auto"`, `"cpu"`, `"gpu"`, or `"mps"`) to `Trainer`.
+
+The bundled native engine requires CPU AES instructions: AES and SSE2 on
+x86-64, or AES and NEON on ARM64. Check that your host or virtual machine
+exposes these features before installing a wheel.
+
+Windows support for this release is limited to WSL2 using the Linux x86_64
+wheel. Run installation and Python commands inside WSL. Native Windows is not
+supported, and native Windows wheels are not published in this release.
 
 ## Installation
 
@@ -25,8 +34,8 @@ pip install kumo-engine
 
 Linux x86_64 requires GPU Faiss, which also handles CPU retrieval. macOS keeps
 CPU Faiss and its existing Metal retrieval support. Faiss is optional on ARM64
-Linux and native Windows: without it, affected link-prediction retrieval raises
-an installation error while other tasks remain available. On those platforms,
+Linux: without it, affected link-prediction retrieval raises an installation
+error while other tasks remain available. On ARM64 Linux,
 use `pip install "kumo-engine[cpu]"` for CPU retrieval with a compatible backend
 wheel for your platform and Python version. For CUDA retrieval, install a
 compatible GPU Faiss build directly, building from source on ARM64 Linux if
