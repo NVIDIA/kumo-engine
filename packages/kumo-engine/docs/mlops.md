@@ -379,9 +379,9 @@ w.data_quality.create_refresh(object_type="table", object_id=table_id,
                               refresh=Refresh(object_type="table", object_id=table_id))                # after each export
 ```
 
-The baseline is the model's holdout as evaluated rows, exported with `APPEND` once per model. Each evaluation is exported with `APPEND`: the default export replaces the table without `PREDICTION_ID` and `BUNDLE_ID`, and the refresh then fails with `MISSING_REQUIRED_METADATA`. The monitor keys on `EVALUATED_AT` (anchors are older than its lookback by the label window). It writes `<table>_profile_metrics` and `<table>_drift_metrics`: one window per day, per `BUNDLE_ID` and over all models (`'*'`), with drift against the day before and against the baseline. The API has no probability column, so the profile has no ROC AUC or log loss; `evaluate` reports AUROC. Labels filled in later are picked up by the next refresh. Its inference profiles support classification and regression only; the recipe is verified for binary classification, and a regression profile uses `INFERENCE_PROBLEM_TYPE_REGRESSION`.
+Without `APPEND` the refresh fails with `MISSING_REQUIRED_METADATA`. The monitor writes `<table>_profile_metrics` and `<table>_drift_metrics`: one window per day, per `BUNDLE_ID` and over all models (`'*'`), with drift against the day before and the baseline. It has no probability column, so no ROC AUC or log loss (`evaluate` reports AUROC). Later labels are picked up by the next refresh. Verified for binary classification.
 
-**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` to a Snowflake table writes `TARGET` as a number and timestamps as `TIMESTAMP_NTZ`, as the monitor needs. A table path is used as a quoted identifier, so give it in upper case to refer to it unquoted in SQL. The baseline is the model's holdout as evaluated rows, `result.holdout_evaluation()`, exported once the same way, so its columns and types are the source's. Pass the threshold the monitored runs were scored with, so both sides' `TARGET_PRED` match (null for runs without one):
+**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` writes `TARGET` as a number and timestamps as `TIMESTAMP_NTZ`, as the monitor needs; give table paths in upper case to refer to them unquoted. Pass the monitored runs' threshold so both sides' `TARGET_PRED` match:
 
 ```python
 evaluation.export(kumo.PredictionOutputConfig(sf, path="CHURN_EVALUATED", write_mode=WriteMode.APPEND))
@@ -401,7 +401,7 @@ Snowflake allows one model monitor per model version: drop the old monitor (`DRO
 
 Details per task type: [Warehouse monitor columns](#warehouse-monitor-columns).
 
-Snowflake's metric functions take the score column quoted: `MODEL_MONITOR_DRIFT_METRIC('CHURN_MONITOR', 'JENSEN_SHANNON', '"True_PROB"', '1 DAY', <start>, <end>)`. A null `TARGET` is allowed: performance stays null until labels arrive, while drift computes. Export the baseline once per version, to a new table with `write_mode=WriteMode.APPEND`: the monitor needs the source's `PREDICTION_ID` and `BUNDLE_ID` in it too. `snowflake-ml-python`'s `Registry.add_monitor` cannot reference `True_PROB`, so use SQL; `TARGET_PRED` is boolean, so use `JENSEN_SHANNON` on it.
+Metric functions take the score column quoted: `MODEL_MONITOR_DRIFT_METRIC('CHURN_MONITOR', 'JENSEN_SHANNON', '"True_PROB"', '1 DAY', <start>, <end>)`. Use SQL, not `Registry.add_monitor`, which cannot reference `True_PROB`; `TARGET_PRED` is boolean, so use `JENSEN_SHANNON` on it.
 
 ## Credentials and running off-platform
 
@@ -548,7 +548,7 @@ table is diluted.
 ### Warehouse monitor columns
 
 - Databricks keys the monitor on `EVALUATED_AT` (anchors are older than its lookback by the label window). For regression use `INFERENCE_PROBLEM_TYPE_REGRESSION`. `True_PROB` is profiled as an ordinary column.
-- Snowflake: binary classification uses `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; regression `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`. The timestamp is `TIMESTAMP_NTZ`; prediction, timestamp and ID columns are free of nulls, NaN and infinities and each used once (a null `TARGET` is accepted: performance stays null); columns are listed as string literals in their stored case, `('True_PROB')` (`'"True_PROB"'` is not found). Without `BASELINE` there is no drift. Registration records the version's task type, which Model Monitor requires.
+- Snowflake: binary classification uses `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; regression `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`. Prediction, timestamp and ID columns must have no nulls, NaN or infinities and be used once; a null `TARGET` is accepted (performance stays null until labels arrive). Columns are string literals in their stored case, `('True_PROB')`. Without `BASELINE` there is no drift.
 
 ### Custom trackers
 
