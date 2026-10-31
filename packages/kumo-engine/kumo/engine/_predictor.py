@@ -31,7 +31,7 @@ def load_predictor(bundle_dir: Union[str, Path]) -> Predictor:
 
     manifest = read_provenance(Path(bundle_dir))
     entry = next((record.name
-                  for record in getattr(manifest, 'dependencies', None) or ()
+                  for record in (manifest and manifest.dependencies) or ()
                   if record.kind == 'predictor'), TRAINER_PREDICTOR)
     try:
         predictor = imported(entry)
