@@ -33,9 +33,7 @@ _EVALUATION_FILE = '_evaluation.json'
 
 
 def _for_model_monitor(files: Any, directory: Path) -> list:
-    r"""``files`` with the types Snowflake Model Monitor accepts: a boolean
-    ``TARGET`` as 0/1 and timestamps without a time zone (UTC), which load as
-    NUMBER and TIMESTAMP_NTZ."""
+    r"""The files with TARGET as 0/1 and UTC times without a zone."""
     import pyarrow as pa
     import pyarrow.parquet as parquet
 
@@ -61,15 +59,7 @@ def _for_model_monitor(files: Any, directory: Path) -> list:
 
 @dataclass(frozen=True)
 class EvaluationResult:
-    """Metrics of a prediction run against labels from a newer snapshot.
-
-    ``actuals`` is a Parquet directory of the evaluated rows: ``ENTITY``,
-    ``ANCHOR_TIMESTAMP`` (the prediction time for static queries), the
-    prediction (``True_PROB`` and ``TARGET_PRED``; ``TARGET_PRED``; or the
-    top ``CLASS`` and its ``SCORE``), the label ``TARGET`` and
-    ``EVALUATED_AT``, when `evaluate` ran. ``tracking`` is the tracked run
-    the result was written into.
-    """
+    """Metrics of a prediction run against labels from a newer snapshot."""
 
     prediction_id: str
     bundle_id: Optional[str]
@@ -90,18 +80,13 @@ class EvaluationResult:
 
     @property
     def frame(self) -> pd.DataFrame:
-        r"""The evaluated rows (``actuals``) as a DataFrame, read into
-        memory."""
+        r"""The evaluated rows as a DataFrame."""
         if self.actuals is None:
             raise ValueError(f'No evaluated rows: {dict(self.reasons)}')
         return pd.read_parquet(self.actuals)
 
     def export(self, output_config: Any) -> None:
-        r"""Copy the evaluated rows to ``output_config``'s predictions
-        destination (a `PredictionOutputConfig`), e.g. a table to monitor.
-        A Parquet directory also gets ``_evaluation.json``, the other fields,
-        for `load_from_connector`. A Snowflake table gets the types Model
-        Monitor needs: ``TARGET`` as a number and TIMESTAMP_NTZ times."""
+        r"""Copy the evaluated rows to a predictions destination."""
         import tempfile
 
         from kumo.engine._scratch import get_scratch_dir
@@ -142,8 +127,7 @@ class EvaluationResult:
     @classmethod
     def load_from_connector(cls, connector: Any, *,
                             path: str) -> 'EvaluationResult':
-        r"""Load an evaluation `export` wrote to a Parquet directory; its rows
-        are downloaded into ``actuals``, removed with the result."""
+        r"""Load an evaluation that export wrote to a Parquet directory."""
         import tempfile
         import weakref
 
@@ -196,19 +180,7 @@ class EvaluationResult:
 
 @dataclass(frozen=True)
 class DriftReport:
-    """Score and input drift of a prediction run; ``reasons`` explains Nones.
-
-    ``psi``, ``ks`` and ``wasserstein`` compare the run's scores with the
-    holdout's; ``previous_*`` with ``previous_prediction_id``'s run. All are
-    exact functions of both sides' score counts over the same bins
-    (`kumo_core.score_drift`; ``wasserstein`` is in score units), and None
-    when the bins differ. ``input_changes`` maps each table and link
-    (``orders.USER_ID → users``) whose size changed to its row or edge count
-    at training and now. ``features`` compares, per table and column the
-    model encodes, the column statistics DiskGraph wrote when each snapshot
-    was built (training snapshot, then scoring snapshot). ``tracking`` is
-    the tracked run the report was written into.
-    """
+    """Score and input drift of a prediction run; reasons explains Nones."""
 
     prediction_id: Optional[str]
     bundle_id: Optional[str]
@@ -261,8 +233,7 @@ def evaluate(trainer: Any, run: Any, snapshot: Any) -> EvaluationResult:
 
 def holdout_evaluation(result: Any,
                        threshold: Optional[float]) -> EvaluationResult:
-    r"""``result``'s holdout as evaluated rows with the columns and types
-    `evaluate` writes, so its export is a warehouse monitor's baseline."""
+    r"""The holdout as evaluated rows, a warehouse monitor's baseline."""
     from kumo_core.artifacts import bundle_task_type
 
     from kumo.engine._scratch import get_scratch_dir
@@ -501,9 +472,7 @@ def _score_counts(run: Any) -> Optional[Counts]:
 
 def _drift(counts: Optional[Counts], reference: Optional[Counts], name: str,
            side: str, reasons: Dict[str, str]) -> Dict[str, float]:
-    r"""The exact drift of ``counts`` from ``reference``, ``name``'s counts;
-    empty, with why in ``reasons[side]``, unless both counted the same score
-    on the same bins."""
+    r"""Drift of counts from reference; empty, with why in reasons[side]."""
     if counts is None:
         reasons[side] = 'the run records no score counts'
     elif reference is None:
@@ -519,11 +488,7 @@ def _drift(counts: Optional[Counts], reference: Optional[Counts], name: str,
 
 def track(report: Any, run: Any, settings: Any, trainer: Any,
           started: datetime, labels: Any = None, previous: Any = None) -> Any:
-    r"""``report``, a monitoring call of ``run`` that started at ``started``
-    (an evaluation against the ``labels`` snapshot, or drift since the
-    ``previous`` run), with the ``tracking``
-    of the run the tracker's ``log_monitoring`` wrote it into; a failure
-    warns, or raises under ``on_error='raise'``."""
+    r"""Tracks a monitoring call, following on_error on failure."""
     tracking = None if settings is None else settings.tracking
     if tracking is None:
         return report
@@ -552,15 +517,13 @@ def track(report: Any, run: Any, settings: Any, trainer: Any,
         run_id=str(run_id), url=getattr(tracking, 'run_url', None)))
 
 
-#: The prediction run's tags a monitoring record carries, which name it.
 _IDENTITY = ('kumo.prediction_id', 'kumo.bundle_id', 'kumo.as_of',
              'kumo.model_name', 'kumo.model_version')
 
 
 def _record(report: Any, run: Any, tracking: Any, trainer: Any,
             started: datetime, labels: Any, previous: Any) -> Any:
-    r"""``report`` as summaries, tagged like ``run``'s prediction run, which
-    the tracker writes them into or names a run after."""
+    r"""The report as a run record tagged like its prediction run."""
     from kumo.engine._tracking import RunSpec, prediction_record, run_record
 
     evaluating = isinstance(report, EvaluationResult)
@@ -600,13 +563,7 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
 
 def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
                      link: bool) -> List[Summary]:
-    r"""What a tracker logs of ``report``: score drift vs the holdout and
-    vs the previous run, named ``previous_name`` (else by its id), and, when
-    the run's model is the trainer's, the input changes and column drift
-    since training (its score drift metrics vs the holdout are the
-    prediction run's own); notes on what is missing and why. Link
-    prediction's holdout covers only entities with a future target, so its
-    psi against it gets no shift."""
+    r"""Score drift, input changes and column drift."""
     summaries: List[Summary] = []
     reasons = report.reasons
     holdout = {'psi': report.psi, 'ks': report.ks,
@@ -654,12 +611,7 @@ def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
 def _evaluation_summaries(result: EvaluationResult, labels: Any,
                           model: Any = None,
                           scored: Optional[int] = None) -> List[Summary]:
-    r"""What a tracker logs of ``result``: its metrics as ``realized/<m>``
-    and, beside ``model``'s holdout values, as ``realized/metrics``, its
-    tune metric first; the labelled share, the ``labels`` snapshot (as a
-    dataset when stored) and notes on the labels, maturity and what is
-    missing; for a task without realized metrics, a note with the run's
-    ``scored`` rows."""
+    r"""Realized metrics beside the holdout's, the labelled share and notes."""
     from kumo.engine._manifest import artifact_summaries
 
     manifest = getattr(labels, 'manifest', None)
@@ -747,8 +699,7 @@ def _values(values: Mapping[str, Optional[float]]) -> str:
 
 
 def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
-    r"""``drift/table_rows`` and ``drift/link_edges``: the tables and the
-    links whose size changed, each in the card up to 12 rows, else a file."""
+    r"""Tables and links whose size changed since training."""
     summaries: List[Summary] = []
     for name, unit, links in (('drift/table_rows', 'rows', False),
                               ('drift/link_edges', 'edges', True)):
@@ -773,10 +724,7 @@ def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
 
 def _input_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
                  ) -> List[Summary]:
-    r"""Per source table, ``drift/inputs/<table>``: each encoded column's
-    change since training, most shifted first, without the measures no row
-    has; the largest psi as ``drift/inputs_max_psi``, and a note naming the
-    three most shifted columns and the tables."""
+    r"""Per source table, each encoded column's change, most shifted first."""
     summaries: List[Summary] = []
     shifted = []
     for table, columns in sorted(features.items()):
@@ -812,8 +760,7 @@ _INPUT_HEADER = ('column', 'type', 'psi', 'shift', 'mean Δ sd', 'null Δ pp',
 
 
 def _input_row(column: str, change: Mapping[str, Any]) -> Tuple[Any, ...]:
-    r"""A ``drift/inputs`` row of ``column``, blank where a measure does not
-    apply to its type."""
+    r"""A drift/inputs row, blank where a measure does not apply."""
     if 'type_changed' in change:
         return (column, ' → '.join(map(str, change['type_changed'])),
                 *[''] * (len(_INPUT_HEADER) - 2))
@@ -847,8 +794,7 @@ def _count_changes(before: Mapping[str, Mapping[str, int]],
 
 
 def _links(config: Any) -> Dict[str, str]:
-    r"""``<table>.<fkey> → <target>`` by DiskGraph's
-    ``<table>_<fkey>_to_<target>_<pkey>`` edge name."""
+    r"""DiskGraph's edge names as table.fkey → target."""
     tables = (config.get('tables') if isinstance(config, dict) else None) or ()
     keys = {table.get('name'): table.get('primary_key') for table in tables}
     return {
@@ -889,9 +835,7 @@ _SMOOTHING = 1e-6
 
 def _features(trainer: Any, sides: Mapping[str, Mapping[str, Any]],
               reasons: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
-    r"""Per-column statistic changes between the build-time ``col_stats.json``
-    of the training and scoring snapshots, for the snapshot columns the model
-    encodes. Never raises; gaps go to ``reasons['features']``."""
+    r"""Column statistic changes since the training snapshot."""
     try:
         before, after = (side['col_stats'] for side in sides.values())
         if not (isinstance(before, dict) and isinstance(after, dict)):
@@ -958,9 +902,7 @@ _NAMED_BY = {'training': "the model's manifest", 'scoring': "the run's manifest"
 def _snapshot_stats(trainer: Any, run: Any, snapshot: Any,
                     training_snapshot: Any,
                     root: Any) -> Dict[str, Dict[str, Any]]:
-    r"""The build-time ``col_stats.json``, ingest counts and link names of
-    the training and scoring snapshots: those passed, else those the manifests name, from
-    the local snapshot store or the artifact ``root``. Never raises."""
+    r"""Column statistics, ingest counts and links of both snapshots."""
     model = getattr(getattr(trainer, 'result', None), 'manifest', None)
     sides = {}
     for side, passed, manifest in (
@@ -1088,8 +1030,7 @@ def _column_change(old: Mapping[str, Any],
 
 def _binned_psi(training: Optional[List[List[float]]],
                 scoring: Optional[List[List[float]]]) -> Optional[float]:
-    r"""The psi of the scoring snapshot's ``value_bins`` counts against the
-    training snapshot's, over groups of bins cut at the training deciles."""
+    r"""Psi of value_bins counts over groups cut at the training deciles."""
     if not training or not scoring:
         return None
     starts = {start: i for i, start in enumerate(
