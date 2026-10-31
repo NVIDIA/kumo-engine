@@ -22,7 +22,7 @@ use arrow::array::{
 };
 use arrow::pyarrow::ToPyArrow;
 use arrow_array::RecordBatch;
-use diskgraph_core::metadata::EdgeSortKeyMetadata;
+use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
@@ -130,6 +130,15 @@ struct NamedReduction {
 enum SumType {
     Int64,
     Uint64,
+}
+
+impl SumType {
+    fn zero(self) -> ScalarValue {
+        match self {
+            Self::Int64 => ScalarValue::I64(0),
+            Self::Uint64 => ScalarValue::U64(0),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -277,20 +286,16 @@ impl ScalarValue {
     }
 }
 
+/// `fallback` fixes the output type when no value is non-null.
 fn scalar_values_to_array(
     values: &[ScalarValue],
-    sum_type: Option<SumType>,
+    fallback: Option<ScalarValue>,
 ) -> Result<ArrayRef, String> {
     let first = values
         .iter()
         .find(|value| !matches!(value, ScalarValue::Null))
         .cloned()
-        .or_else(|| {
-            sum_type.map(|kind| match kind {
-                SumType::Int64 => ScalarValue::I64(0),
-                SumType::Uint64 => ScalarValue::U64(0),
-            })
-        });
+        .or(fallback);
     match first.as_ref() {
         None => Ok(Arc::new(NullArray::new(values.len()))),
         Some(ScalarValue::Bool(_)) => Ok(Arc::new(BooleanArray::from(
@@ -369,7 +374,7 @@ struct SequenceResult {
 struct AggregateResult {
     name: String,
     values: Vec<ScalarValue>,
-    sum_type: Option<SumType>,
+    kind: Option<ScalarValue>,
 }
 
 #[derive(Default)]
@@ -711,6 +716,52 @@ fn validate_frame_plan(plan: &FramePlan, root_type: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// Each hop's relation and source table, resolved independently of the anchors.
+fn frame_path<'a>(
+    reader: &'a GraphIndexReader,
+    plan: &FramePlan,
+    root_type: &str,
+) -> Result<(Vec<(&'a EdgeRelationMetadata, Arc<TableReader>)>, String), String> {
+    let mut destination = root_type.to_string();
+    let mut hops = Vec::with_capacity(plan.path.len());
+    for step in &plan.path {
+        let relation = reader
+            .merged_edge_relations()
+            .iter()
+            .find(|relation| relation.name == step.relation)
+            .ok_or_else(|| format!("unknown temporal relation {:?}", step.relation))?;
+        if relation.src_type != destination || relation.dst_type != step.destination_type {
+            return Err(format!(
+                "relation {:?} is {:?} -> {:?}, not {:?} -> {:?}",
+                step.relation,
+                relation.src_type,
+                relation.dst_type,
+                destination,
+                step.destination_type
+            ));
+        }
+        let table = reader
+            .table(&destination)
+            .ok_or_else(|| format!("unknown source table {destination:?}"))?;
+        hops.push((relation, table));
+        destination = step.destination_type.clone();
+    }
+    Ok((hops, destination))
+}
+
+fn validate_sequence_plan(plan: &SequencePlan) -> Result<(), String> {
+    if plan.name.is_empty() {
+        return Err("sequence names must be non-empty".into());
+    }
+    if plan.limit == Some(0) {
+        return Err(format!("sequence {:?} limit must be positive", plan.name));
+    }
+    if plan.columns.is_empty() {
+        return Err(format!("sequence {:?} must project at least one column", plan.name));
+    }
+    Ok(())
+}
+
 fn take_batch(batch: &RecordBatch, rows: &[u64], columns: &[usize]) -> Result<RecordBatch, String> {
     let indices = UInt64Array::from(rows.to_vec());
     let arrays = columns
@@ -754,32 +805,13 @@ fn materialize_frame(
     stats: &mut QueryStats,
 ) -> Result<MaterializedFrame, String> {
     validate_frame_plan(plan, root_type)?;
+    let (hops, destination) = frame_path(reader, plan, root_type)?;
 
     let traversal_started = Instant::now();
     let mut rows_by_anchor = Vec::with_capacity(roots.len());
-    let mut destination = root_type.to_string();
     for (anchor, &root) in roots.iter().enumerate() {
         let mut frontier = vec![root];
-        destination = root_type.to_string();
-        for (hop, step) in plan.path.iter().enumerate() {
-            let relation = reader
-                .merged_edge_relations()
-                .iter()
-                .find(|relation| relation.name == step.relation)
-                .ok_or_else(|| format!("unknown temporal relation {:?}", step.relation))?;
-            if relation.src_type != destination || relation.dst_type != step.destination_type {
-                return Err(format!(
-                    "relation {:?} is {:?} -> {:?}, not {:?} -> {:?}",
-                    step.relation,
-                    relation.src_type,
-                    relation.dst_type,
-                    destination,
-                    step.destination_type
-                ));
-            }
-            let table = reader
-                .table(&destination)
-                .ok_or_else(|| format!("unknown source table {destination:?}"))?;
+        for (hop, (step, (relation, table))) in plan.path.iter().zip(&hops).enumerate() {
             let decoder = if hop + 1 == plan.path.len()
                 && (plan.start_seconds.is_some() || plan.stop_seconds.is_some())
             {
@@ -816,7 +848,6 @@ fn materialize_frame(
                 )?);
             }
             frontier = next;
-            destination = step.destination_type.clone();
         }
         if plan.distinct {
             let mut seen = HashSet::new();
@@ -959,12 +990,6 @@ fn sequence_result(
     plan: &SequencePlan,
     stats: &mut QueryStats,
 ) -> Result<SequenceResult, String> {
-    if plan.name.is_empty() {
-        return Err("sequence names must be non-empty".into());
-    }
-    if plan.limit == Some(0) {
-        return Err(format!("sequence {:?} limit must be positive", plan.name));
-    }
     let mut selected = Vec::<u64>::new();
     let mut node_ids = Vec::new();
     let mut timestamps = Vec::new();
@@ -1357,8 +1382,39 @@ fn aggregate_result(
     Ok(AggregateResult {
         name: plan.name.clone(),
         values,
-        sum_type: plan.sum_type,
+        kind: aggregate_kind(frame, plan),
     })
+}
+
+/// The scalar kind an aggregate produces, independent of its values.
+fn aggregate_kind(frame: &MaterializedFrame, plan: &AggregatePlan) -> Option<ScalarValue> {
+    use arrow_schema::DataType;
+    match plan.operation.as_str() {
+        "count" | "count_distinct" => Some(ScalarValue::I64(0)),
+        "sum" => Some(plan.sum_type.map_or(ScalarValue::F64(0.0), SumType::zero)),
+        // Grouped inputs are reduction outputs, not frame columns.
+        "min" | "max" | "mode" if plan.groups.is_empty() => {
+            let column = frame.positions.get(plan.column.as_deref()?)?;
+            match frame.batch.schema().field(*column).data_type() {
+                DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::Timestamp(..)
+                | DataType::Date32
+                | DataType::Date64 => Some(ScalarValue::I64(0)),
+                DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
+                    Some(ScalarValue::U64(0))
+                }
+                DataType::Float32 | DataType::Float64 => Some(ScalarValue::F64(0.0)),
+                DataType::Boolean => Some(ScalarValue::Bool(false)),
+                DataType::Utf8 | DataType::LargeUtf8 => Some(ScalarValue::String(String::new())),
+                _ => None,
+            }
+        }
+        "min" | "max" | "mode" => None,
+        _ => Some(ScalarValue::F64(0.0)),
+    }
 }
 
 fn count_frame(
@@ -1371,33 +1427,16 @@ fn count_frame(
     stats: &mut LengthStats,
 ) -> Result<Vec<usize>, String> {
     validate_frame_plan(plan, root_type)?;
+    let (hops, destination) = frame_path(reader, plan, root_type)?;
+    let final_sort_key = hops
+        .last()
+        .and_then(|(relation, _)| relation.dest_sort_key.clone());
 
     let traversal_started = Instant::now();
     let mut rows_by_anchor = Vec::with_capacity(roots.len());
-    let mut destination = root_type.to_string();
-    let mut final_sort_key = None::<EdgeSortKeyMetadata>;
     for &root in roots {
         let mut frontier = vec![(root, 0)];
-        destination = root_type.to_string();
-        for step in &plan.path {
-            let relation = reader
-                .merged_edge_relations()
-                .iter()
-                .find(|relation| relation.name == step.relation)
-                .ok_or_else(|| format!("unknown temporal relation {:?}", step.relation))?;
-            if relation.src_type != destination || relation.dst_type != step.destination_type {
-                return Err(format!(
-                    "relation {:?} is {:?} -> {:?}, not {:?} -> {:?}",
-                    step.relation,
-                    relation.src_type,
-                    relation.dst_type,
-                    destination,
-                    step.destination_type
-                ));
-            }
-            let table = reader
-                .table(&destination)
-                .ok_or_else(|| format!("unknown source table {destination:?}"))?;
+        for (step, (_, table)) in plan.path.iter().zip(&hops) {
             let mut next = Vec::new();
             for (node_id, _) in frontier {
                 let (destinations, sort_keys) = relation_columns(
@@ -1411,8 +1450,6 @@ fn count_frame(
                 next.extend(destinations.into_iter().zip(sort_keys));
             }
             frontier = next;
-            destination = step.destination_type.clone();
-            final_sort_key = relation.dest_sort_key.clone();
         }
         if plan.distinct {
             let mut seen = HashSet::new();
@@ -1535,15 +1572,7 @@ pub(crate) fn execute_lengths(
     let mut stats = LengthStats::default();
     let mut counted_frames = HashMap::<&str, Vec<usize>>::new();
     for sequence in &plan.sequences {
-        if sequence.name.is_empty() {
-            return Err("sequence names must be non-empty".into());
-        }
-        if sequence.limit == Some(0) {
-            return Err(format!(
-                "sequence {:?} limit must be positive",
-                sequence.name
-            ));
-        }
+        validate_sequence_plan(sequence)?;
         if !counted_frames.contains_key(sequence.frame.as_str()) {
             let frame = frame_plans.get(sequence.frame.as_str()).ok_or_else(|| {
                 format!(
@@ -1599,6 +1628,9 @@ pub(crate) fn execute(
     }
     let plan: QueryPlan = serde_json::from_str(plan_json)
         .map_err(|error| format!("invalid temporal query JSON: {error}"))?;
+    for sequence in &plan.sequences {
+        validate_sequence_plan(sequence)?;
+    }
     let mut timings = QueryTimings::default();
     let mut stats = QueryStats::default();
     let mut frames = HashMap::new();
@@ -1742,7 +1774,7 @@ impl QueryResult {
             let item = PyDict::new(py);
             item.set_item("name", aggregate.name)?;
             if model_format {
-                let values = scalar_values_to_array(&aggregate.values, aggregate.sum_type)
+                let values = scalar_values_to_array(&aggregate.values, aggregate.kind)
                     .map_err(DiskgraphConfigError::new_err)?;
                 item.set_item("values", values.to_data().to_pyarrow(py)?)?;
             } else {
@@ -1977,7 +2009,7 @@ mod tests {
         ));
         let output = scalar_values_to_array(
             &[ScalarValue::I64(0), ScalarValue::I64((1 << 53) + 1)],
-            Some(SumType::Int64),
+            Some(SumType::Int64.zero()),
         )
         .unwrap();
         assert_eq!(output.data_type(), &arrow_schema::DataType::Int64);
@@ -1990,7 +2022,7 @@ mod tests {
             (1 << 53) + 1
         );
         for kind in [SumType::Int64, SumType::Uint64] {
-            let output = scalar_values_to_array(&[ScalarValue::Null], Some(kind)).unwrap();
+            let output = scalar_values_to_array(&[ScalarValue::Null], Some(kind.zero())).unwrap();
             assert_eq!(output.null_count(), 1);
             assert_eq!(
                 output.data_type(),
