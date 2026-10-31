@@ -11,6 +11,7 @@ import importlib.metadata
 import importlib.util
 import json
 import os
+import statistics
 import subprocess
 import sys
 import time
@@ -24,7 +25,9 @@ weekly = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(weekly)
 
 
-def check_operations(current, reference):
+def check_operations(current, reference, *, atol_seconds, rtol):
+    if not all(weekly.finite(v) and v >= 0 for v in (atol_seconds, rtol)):
+        raise ValueError('Approve finite nonnegative P1 timing tolerances')
     valid = len(current) == len(reference) == 5
     differences = []
     for index, (left, right) in enumerate(zip(current, reference)):
@@ -41,7 +44,22 @@ def check_operations(current, reference):
         valid = valid and passed
         differences.append(
             dict(operation=index, status='PASS' if passed else 'FAIL'))
-    return dict(status='PASS' if valid else 'FAIL', operations=differences)
+    durations = [[row.get('seconds') for row in rows]
+                 for rows in (reference, current)]
+    timing = dict(status='FAIL', atol_seconds=atol_seconds, rtol=rtol)
+    if all(
+            len(values) == 5 and all(
+                weekly.finite(v) and v > 0 for v in values)
+            for values in durations):
+        before, after = map(statistics.median, durations)
+        maximum = before * (1 + rtol) + atol_seconds
+        timing.update(status='PASS' if after <= maximum else 'FAIL',
+                      reference_median_seconds=before,
+                      candidate_median_seconds=after,
+                      maximum_median_seconds=maximum)
+    valid = valid and timing['status'] == 'PASS'
+    return dict(status='PASS' if valid else 'FAIL', operations=differences,
+                timing=timing)
 
 
 def join_workers(processes, timeout):
@@ -62,6 +80,12 @@ def inputs(root, checksum):
         raise ValueError('P1 input manifest checksum differs')
     value = weekly.read(root / 'p1.json')
     work = value['work']
+    tolerance = value.get('time_tolerance', {})
+    if (not isinstance(tolerance, dict)
+            or set(tolerance) != {'atol_seconds', 'rtol'} or not all(
+                weekly.finite(tolerance[k]) and tolerance[k] >= 0
+                for k in ('atol_seconds', 'rtol'))):
+        raise ValueError('Approve P1 timing tolerances before execution')
     if (value['format'] != 'kumo-engine-weekly-p1-v1'
             or value['dataset'] != 'commerce/100M' or work['n'] != 300000
             or type(work['offset']) is not int or work['offset'] < 0 or any(
@@ -197,6 +221,7 @@ def run_locked(args):
                 for d in importlib.metadata.distributions()
             })
         for operation in range(5):
+            operation_started = time.monotonic()
             directory = args.output / f'operation-{operation}'
             directory.mkdir()
             processes = []
@@ -230,10 +255,12 @@ def run_locked(args):
             ]
             row = dict(
                 status='PASS', seeds=sum(r['seeds'] for r in workers),
+                seconds=time.monotonic() - operation_started,
                 batches=sum(r['batches'] for r in workers),
                 nodes=sum(r['nodes'] for r in workers),
-                edges=sum(r['edges'] for r in workers),
-                fetched_rows=sum(r['fetched_rows'] for r in workers),
+                edges=sum(r['edges']
+                          for r in workers), fetched_rows=sum(r['fetched_rows']
+                                                              for r in workers),
                 membership_sha256=hashlib.sha256(''.join(
                     r['membership_sha256']
                     for r in workers).encode()).hexdigest(), workers=workers)
@@ -250,7 +277,8 @@ def run_locked(args):
                     'P1 reference uses a different workload or contains training'
                 )
             baseline = reference['operations']
-        report['comparison'] = check_operations(report['operations'], baseline)
+        report['comparison'] = check_operations(report['operations'], baseline,
+                                                **manifest['time_tolerance'])
         report['status'] = report['comparison']['status']
         inputs(args.input_root, args.manifest_sha256)
     except Exception as error:

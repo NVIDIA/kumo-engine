@@ -8,7 +8,7 @@ The sampler and feature reader come from
 `packages/diskgraph/scripts/benchmarks/commerce/dg_bench.py` in this repository.
 The input bundle contains data only. `p1.json` uses format
 `kumo-engine-weekly-p1-v1`. It declares `dataset`, `index`, `seedmap`, `population`,
-`row_counts`, `files`, and `work`. The `files` map binds every native index file,
+`row_counts`, `files`, `work`, and `time_tolerance`. The `files` map binds every native index file,
 seed map, and population file to its SHA-256 checksum.
 
 The seed map contains `customer_id`, `anchor_s`, and `gid`. The population contains
@@ -21,8 +21,16 @@ Each operation retains every worker's completion count, sampled-node and edge co
 feature-row count, elapsed time, and membership checksum. Membership includes the
 seed position, global node ID, node type, and hop for every sampled node. The
 candidate must complete five operations with the same counts and membership
-checksums as the approved reference. Time and memory remain reports. Cache state
-is uncontrolled and cannot establish a performance regression limit.
+checksums as the approved reference. Each operation records elapsed seconds,
+including child setup, sampling, feature fetch, and shutdown.
+
+`time_tolerance` declares finite nonnegative `atol_seconds` and `rtol` values.
+The candidate median must stay at or below
+`reference_median * (1 + rtol) + atol_seconds`. Missing or invalid timing fails
+the check. Reference review must approve the timing budget for its workload and
+CPU capacity. Cache state remains uncontrolled, so the budget must account for
+its variation. This code change does not establish a calibrated timing budget.
+Memory remains a report.
 
 Run the script with the selected wheel's isolated Python environment. Supply
 `--input-root`, `--manifest-sha256`, `--output`, `--host-lock`, `--wheel`, and
