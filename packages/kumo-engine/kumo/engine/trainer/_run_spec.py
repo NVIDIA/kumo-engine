@@ -4,7 +4,7 @@
 r"""A `Trainer.fit` as a tracked run's `RunSpec`."""
 
 import json
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional, Sequence, Tuple
@@ -22,8 +22,6 @@ class FitContext:
 
     query: str
     model_plan: Mapping[str, Any]
-    inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
-        default_factory=dict)
     started: Optional[datetime] = None
     snapshot_id: Optional[str] = None
     task_type: Optional[str] = None
@@ -42,7 +40,6 @@ def fit_spec(context: FitContext) -> RunSpec:
                  'tune_metric': (context.model_plan.get('training_job')
                                  or {}).get('tune_metric'),
                  'engine_version': __version__},
-        inputs=dict(context.inputs),
         artifacts={
             'query.pql': context.query,
             'model_plan.json': json.dumps(dict(context.model_plan), indent=2,

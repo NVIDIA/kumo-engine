@@ -57,8 +57,6 @@ class RunRecord:
                               ...]] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
-    inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
-        default_factory=dict)
     summaries: Tuple[Summary, ...] = ()
 
 
@@ -73,44 +71,11 @@ class RunSpec:
     steps: Mapping[str, Sequence[Tuple[int, float]]] = field(
         default_factory=dict)
     tags: Mapping[str, Any] = field(default_factory=dict)
-    inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
-        default_factory=dict)
     parents: Mapping[str, Optional[str]] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
     summaries: Sequence[Summary] = ()
     status: Optional[str] = None
     error: Optional[str] = None
-
-
-INPUT_FIELDS = ('connector', 'location', 'version', 'version_kind')
-
-
-def fit_inputs(manifest: Any) -> Dict[str, Dict[str, Optional[str]]]:
-    try:
-        table = manifest
-        if getattr(manifest, 'kind', None) == 'model':
-            table = getattr(_parents(manifest), 'training_table', None)
-        parents = _parents(table)
-        snapshot = _parents(getattr(parents, 'snapshot', None))
-        tables = dict(getattr(snapshot, 'source_tables', None) or {})
-        source = getattr(parents, 'source_table', None)
-        if source is not None:
-            tables['training_table'] = source
-        return {
-            str(name): {key: None if getattr(entry, key) is None else str(
-                getattr(entry, key)) for key in INPUT_FIELDS}
-            for name, entry in tables.items()
-        }
-    except Exception as error:
-        logger.warning('Could not read the fit\'s source tables: %s',
-                       format_error(error), exc_info=_debug())
-        return {}
-
-
-def _parents(manifest: Any) -> Any:
-    if manifest is None or getattr(manifest, 'reconstructed', False):
-        return None
-    return getattr(manifest, 'parents', None)
 
 
 def logged_name(name: str) -> str:
@@ -152,7 +117,6 @@ def run_record(spec: RunSpec) -> RunRecord:
             **({} if spec.error is None else {'kumo.error': spec.error}),
         },
         artifacts=dict(spec.artifacts),
-        inputs=dict(spec.inputs),
         summaries=tuple(spec.summaries),
     )
 

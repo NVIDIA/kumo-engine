@@ -40,7 +40,7 @@ INPUTS = {
 }
 SNAPSHOT = f"{'s' * 64}@{'v' * 16}"
 CONTEXT = FitContext(
-    query=QUERY, inputs=INPUTS, snapshot_id=SNAPSHOT, task_type='regression',
+    query=QUERY, snapshot_id=SNAPSHOT, task_type='regression',
     started=datetime(2026, 10, 29, 6, 18, tzinfo=timezone.utc),
     model_plan={
         'optimization': {'base_lr': [0.01, 0.001], 'max_epochs': 2},
@@ -361,7 +361,6 @@ def test_records_of_the_recorded_fit():
                             '3', 'kumo.model_alias': 'candidate'}.items()
     assert fit.artifacts['query.pql'] == QUERY
     assert json.loads(fit.artifacts['model_plan.json']) == CONTEXT.model_plan
-    assert fit.inputs == INPUTS
 
     oom = records['trial-2-attempt-1']
     assert oom == RunRecord(

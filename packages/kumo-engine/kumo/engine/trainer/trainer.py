@@ -83,12 +83,7 @@ from kumo.engine._manifest import (
 from kumo.engine._mlops import full_error, warn_failure
 from kumo.engine._predictor import TRAINER_PREDICTOR
 from kumo.engine._scratch import new_run_id, trainer_scratch_dir
-from kumo.engine._tracking import (
-    RunSpec,
-    TrackingSession,
-    as_tracking,
-    fit_inputs,
-)
+from kumo.engine._tracking import RunSpec, TrackingSession, as_tracking
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot, report_other_graph
@@ -931,7 +926,6 @@ class Trainer:
         tracking.start(lambda: fit_spec(FitContext(
             query=train_table.query,
             model_plan=to_json_dict(materialized.model_plan),
-            inputs=fit_inputs(train_table.manifest),
             started=started_at,
             snapshot_id=snapshot.id,
             task_type=materialized.task.task_type.value,
