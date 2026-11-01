@@ -152,3 +152,78 @@ def test_gpu_query_failure_preserves_measured_host_capacity(
     assert result['cpu_count'] > 0 and result['system_memory_bytes'] > 0
     assert result['nvme_available_bytes'] > 0 and result[
         'available_memory_bytes'] > 0
+
+
+def test_host_keeps_runner_output_fresh_and_copies_reference_before_compare(
+        tmp_path, monkeypatch):
+    """Stub cloud/install/CUDA work; exercise real runner output admission."""
+    from types import SimpleNamespace
+
+    module = host()
+    spec = importlib.util.spec_from_file_location(
+        'nightly_admission', SOURCE.with_name('nightly_check.py'))
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+    data = tmp_path / 'data'
+    data.mkdir()
+    profile = data / 'profile.json'
+    profile.write_text('{"torch":"2.14.1"}')
+    manifest = data / 'manifest.json'
+    manifest.write_text(json.dumps(dict(
+        reference_dependencies='profile.json',
+        candidate_dependencies='profile.json',
+        files={'profile.json': module.digest(profile)})))
+    archive = tmp_path / 'inputs.tar'
+    with tarfile.open(archive, 'w') as bundle:
+        for path in data.iterdir():
+            bundle.add(path, arcname=path.name)
+    reference = tmp_path / 'original-reference.json'
+    reference.write_text('{"reference":"preserve these exact bytes"}')
+    wheel = tmp_path / 'candidate.whl'
+    wheel.write_bytes(b'wheel installation is outside this test')
+    job = tmp_path / 'job'
+    job.mkdir()
+    request = job / 'request.json'
+    request.write_text(json.dumps(dict(
+        instance_id=module.INSTANCE, mode='nightly', run_id='123-1',
+        source_sha='a' * 40, reference_only=False, payload={'files': {}},
+        wheel=dict(filename=wheel.name, key='wheel', sha256=module.digest(wheel),
+                   version='test'), build={}, inputs=dict(
+                       bucket='fixture', key='inputs', sha256=module.digest(archive),
+                       input_manifest_sha256=module.digest(manifest),
+                       reference_key='reference',
+                       reference_sha256=module.digest(reference)))))
+    monkeypatch.setenv('NIGHTLY_REQUEST_SHA256', module.digest(request))
+    monkeypatch.setattr(module, 'BASE', tmp_path)
+    monkeypatch.setattr(module, 'capacity', lambda path: {'status': 'MEASURED'})
+
+    class ReachedInputs(Exception):
+        pass
+
+    def stop_before_cuda(*args):
+        raise ReachedInputs
+
+    monkeypatch.setattr(checker, 'load_inputs', stop_before_cuda)
+
+    def external(command, *args, **kwargs):
+        if command[0] == 'aws':
+            key = command[5].rsplit('/', 1)[-1]
+            Path(command[6]).write_bytes(
+                {'inputs': archive, 'reference': reference,
+                 'wheel': wheel}[key].read_bytes())
+        elif len(command) > 3 and command[2].endswith('nightly_check.py'):
+            if command[3] == 'run':
+                with pytest.raises(ReachedInputs):
+                    checker.run(SimpleNamespace(input_root=data,
+                                                input_sha256='',
+                                                output_dir=job / 'result'))
+            elif command[3] == 'compare':
+                assert (job / 'result/reference.json').read_bytes() == reference.read_bytes()
+
+    monkeypatch.setattr(module, 'run_process', external)
+    monkeypatch.setattr(module.subprocess, 'run',
+                        lambda *args, **kwargs: SimpleNamespace(
+                            returncode=0, stdout='', stderr=''))
+    module.main(request)
+    receipt = json.loads((job / 'receipt.json').read_text())
+    assert receipt['status'] == 'PASS' and receipt['processes_ended']

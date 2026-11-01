@@ -334,7 +334,6 @@ assert len(entries)==1 and entries[0]['download_info']['archive_info']['hashes']
                 str(setup),
                 str(job / 'nightly_check.py')
             ])
-            shutil.copyfile(reference, result / 'reference.json')
             (job / 'home').mkdir()
             temporary = tempfile.TemporaryDirectory(prefix='kn-', dir='/tmp')
             environment = dict(HOME=str(job / 'home'),
@@ -368,6 +367,7 @@ assert len(entries)==1 and entries[0]['download_info']['archive_info']['hashes']
                     log='run.log',
                     env=environment)
             receipt['run_exit'] = 0
+            shutil.copyfile(reference, result / 'reference.json')
             execute([
                 python, '-I',
                 str(job / 'nightly_check.py'), 'compare', '--input-root',
