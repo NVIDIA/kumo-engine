@@ -52,6 +52,7 @@ from kumo.engine.connector._extras import import_provider
 from kumo.engine.integrations._mlflow_target import (
     SAGEMAKER_ARN,
     SageMakerMLflow,
+    environ,
     global_tracking_uri,
 )
 from kumo.engine.integrations._mlflow_target import resolve as resolve_target
@@ -182,10 +183,9 @@ class MlflowTracking(TrackingBase):
         if registry is not None:
             self.check_model_name(registry.model_name)
         uri = self.target.tracking_uri
-        owned = _unset_limits()
         missing = False
         try:
-            with _limited_http(owned), self.target.scope():
+            with _limited_http(), self.target.scope():
                 client = self.target.client()
                 if self.experiment_name is not None:
                     missing = client.get_experiment_by_name(
@@ -203,7 +203,7 @@ class MlflowTracking(TrackingBase):
                                f'credentials: {full_error(error)}') from error
         if not missing:
             return
-        with _limited_http(owned), self.target.scope():
+        with _limited_http(), self.target.scope():
             try:
                 client.create_experiment(self.experiment_name)
             except Exception as error:
@@ -258,7 +258,7 @@ class MlflowTracking(TrackingBase):
         self._require_experiment()
         client = self.target.client()
         pointers = registry_pointers(result.id)
-        with _limited_http(_unset_limits()):
+        with _limited_http():
             with self.target.scope():
                 held = _registered_version(client, location.model_name,
                                            pointers)
@@ -283,8 +283,7 @@ class MlflowTracking(TrackingBase):
         self._require_experiment()
         self._reset()
         self.run_id = None
-        self._http_owned = _unset_limits()
-        self._guard.enter_context(_limited_http(self._http_owned))
+        self._http_owned = self._guard.enter_context(_limited_http())
         try:
             autologging = import_provider('mlflow.utils.autologging_utils',
                                           'mlflow')
@@ -989,15 +988,9 @@ def _quietly(function: Callable[..., Any], *args: Any) -> None:
         logger.debug('MLflow cleanup call failed', exc_info=True)
 
 
-def _unset_limits() -> FrozenSet[str]:
-    return frozenset(name for name in _HTTP_LIMITS if name not in os.environ)
-
-
 @contextmanager
-def _limited_http(names: FrozenSet[str]) -> Iterator[None]:
-    os.environ.update({name: _HTTP_LIMITS[name] for name in names})
-    try:
-        yield
-    finally:
-        for name in names:
-            os.environ.pop(name, None)
+def _limited_http() -> Iterator[FrozenSet[str]]:
+    r"""MLflow's HTTP limits where unset; yields the names it set."""
+    owned = frozenset(name for name in _HTTP_LIMITS if name not in os.environ)
+    with environ({name: _HTTP_LIMITS[name] for name in owned}):
+        yield owned
