@@ -59,6 +59,7 @@ from kumo.engine._tracking import (
     SingleRunHooks,
     TrackingBase,
     by_step,
+    fit_run_id,
     model_metrics,
 )
 from kumo.engine._version import __version__
@@ -246,19 +247,19 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
         r"""Registers a `TrainingResult` at ``location``."""
         from kumo.engine._manifest import stub
         from kumo.engine.graph import GraphSnapshot
-        from kumo.engine.trainer._run_spec import model_metrics
+        from kumo.engine.trainer._run_spec import registry_metrics
         from kumo.engine.trainer._spec import read_training_spec
         from kumo.engine.trainer.trainer import registry_pointers
 
         self._require_experiment()
         self._client = client = self.target.client()
         pointers = registry_pointers(result.id)
+        metrics = registry_metrics(result)
         with _limited_http():
             with self.target.scope():
                 held = _registered_version(client, location.model_name,
                                            pointers)
-            tracking = getattr(result.manifest, 'tracking', None)
-            fit, model = self._fit_of(getattr(tracking, 'run_id', None))
+            fit, model = self._fit_of(fit_run_id(result.manifest))
             info = None if model is None else SimpleNamespace(
                 model_uri=f'models:/{model.model_id}', run_id=fit.run_id,
                 model_id=model.model_id)
@@ -269,25 +270,25 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                 info = _log_model(
                     self.target, client, result.bundle_dir,
                     result.manifest or stub('model', result.id), snapshot,
-                    name=logged_model_name(location.model_name,
-                                           result.manifest),
+                    name=_logged_model_name(location.model_name,
+                                            result.manifest),
                     run_id=None if fit is None else fit.run_id,
                     experiment_id=(self._registry_experiment(
                         location.model_name) if fit is None else
                                    fit.experiment_id), serving_snapshot=None)
                 if fit is not None:
-                    self._log_metrics(fit.run_id, model_metrics(result),
+                    self._log_metrics(fit.run_id, metrics,
                                       model_id=info.model_id)
             published = _register(self.target, client, info, location,
                                   pointers, held)
             if fit is None:
                 _describe_version(self.target, client, published,
-                                  _version_text(model_metrics(result), None,
-                                                None, None, True))
+                                  _version_text(metrics, None, None, None,
+                                                True))
             else:
                 if held is None:
                     self._rename_fit(fit, published)
-                self._describe(published, fit.run_id, model_metrics(result))
+                self._describe(published, fit.run_id, metrics)
             return published
 
     def _logged_model(self, fit: Any) -> Any:
@@ -324,7 +325,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                     name=trial.info.run_name.replace(fit.run_name, name, 1))
         self._log_tags(fit.run_id, {'kumo.model_name': published.name,
                                     'kumo.model_version': published.version})
-        self.update_card(fit.run_id)
+        self._update_card(fit.run_id)
 
     def start(self, record: RunRecord) -> None:
         self._require_experiment()
@@ -414,7 +415,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                     raise LookupError(f'No MLflow prediction run has '
                                       f'kumo.prediction_id {prediction_id}')
                 run_id = found.info.run_id
-            self.fold(run_id, self._name_previous(record))
+            self._fold(run_id, self._name_previous(record))
 
     def _prediction_run(self, prediction_id: Optional[str]) -> Optional[Any]:
         with self.target.scope():
@@ -447,11 +448,11 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             if isinstance(summary, Note) else summary
             for summary in record.summaries))
 
-    def fold(self, run_id: str, record: RunRecord) -> None:
+    def _fold(self, run_id: str, record: RunRecord) -> None:
         r"""Adds a monitoring record to a finished run and its card."""
         routed = route(record.summaries, charts=True)
         self._log_routed(routed, run_id)
-        self.update_card(
+        self._update_card(
             run_id, 'realized' if record.tags.get('kumo.monitor')
             == 'evaluate' else 'drift', routed.card)
         with self.target.scope():
@@ -500,7 +501,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
         os.environ.update(upload)
         try:
             info = _log_model(self.target, self._client, bundle_dir, manifest,
-                              snapshot, name=logged_model_name(
+                              snapshot, name=_logged_model_name(
                                   registry and registry.model_name, manifest),
                               run_id=run_id,
                               experiment_id=self._experiment_id,
@@ -537,7 +538,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             if record is not None and self._parent is not None:
                 for epoch, metrics in by_step(record.steps):
                     self._log_metrics(self._parent, metrics, epoch)
-                self.log_summaries(record.summaries)
+                self._log_summaries(record.summaries)
                 self._log_metrics(self._parent, record.metrics,
                                   model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
@@ -569,8 +570,8 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                           f'{self.experiment!r}: {hint}', UserWarning,
                           stacklevel=2)
 
-    def update_card(self, run_id: str, block: Optional[str] = None,
-                    summaries: Sequence[Summary] = ()) -> None:
+    def _update_card(self, run_id: str, block: Optional[str] = None,
+                     summaries: Sequence[Summary] = ()) -> None:
         r"""Regenerates the card's heading and, given block, that part."""
         self._client = self._client or self.target.client()
         with self.target.scope():
@@ -581,8 +582,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
         card, user = split
         card = _card.refreshed(card, run.data.metrics, run.data.tags,
                                run.data.params)
-        items = [s for s in summaries if isinstance(s, Note)
-                 or isinstance(s, Table) and s.brief]
+        items = list(summaries)
 
         def render(kept: Sequence[Summary], files: Sequence[str]) -> str:
             return card if block is None else _with_block(
@@ -755,12 +755,10 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                 client.log_batch(
                     run_id, metrics=metrics[start:start + _BATCH_METRICS])
 
-    def log_summaries(self, summaries: Sequence[Summary],
-                      run_id: Optional[str] = None) -> None:
-        r"""Logs ``summaries`` on run ``run_id``, by default the current run."""
+    def _log_summaries(self, summaries: Sequence[Summary]) -> None:
         routed = route(summaries, charts=True)
         self._card += routed.card
-        self._log_routed(routed, run_id or self._parent)
+        self._log_routed(routed, self._parent)
 
     def _log_routed(self, routed: Routed, run_id: str) -> None:
         datasets = [d for d in map(self._dataset_input, routed.datasets) if d]
@@ -928,10 +926,11 @@ def _free_name(client: Any, experiment_id: str, name: str) -> str:
     r"""name, else the first free name-2, name-3, ..."""
     candidate, suffix = name, 1
     while True:
-        quote = "'" if "'" not in candidate else '"'
-        if quote in candidate or not client.search_runs(
+        quote_char = "'" if "'" not in candidate else '"'
+        if quote_char in candidate or not client.search_runs(
                 [experiment_id], max_results=1, filter_string=(
-                    f'attributes.run_name = {quote}{candidate}{quote}')):
+                    'attributes.run_name = '
+                    f'{quote_char}{candidate}{quote_char}')):
             return candidate
         suffix += 1
         candidate = f'{name}-{suffix}'
@@ -1099,7 +1098,7 @@ def log_model(
     from kumo.engine._manifest import stub
     from kumo.engine._mlops import snapshot_uri
     from kumo.engine._tracking import fit_inputs
-    from kumo.engine.trainer._run_spec import model_metrics
+    from kumo.engine.trainer._run_spec import registry_metrics
 
     mlflow = import_provider('mlflow', 'mlflow')
     result = trainer.result
@@ -1124,11 +1123,11 @@ def log_model(
     registered = getattr(result.registered_model, 'name', None)
     info = _log_model(target, client, result.bundle_dir, result.manifest or
                       (None if result.id is None else stub('model', result.id)),
-                      snapshot, name=name or logged_model_name(
+                      snapshot, name=name or _logged_model_name(
                           registered, result.manifest), run_id=run_id,
                       experiment_id=experiment_id,
                       serving_snapshot=snapshot_uri(serving_snapshot))
-    tracking._log_metrics(run_id, model_metrics(result),
+    tracking._log_metrics(run_id, registry_metrics(result),
                           model_id=info.model_id)
     if created:
         with target.scope():
@@ -1187,7 +1186,7 @@ def _download(mlflow: Any, target: Any, model_uri: str,
         tracking_uri=target.tracking_uri, registry_uri=target.registry_uri)
 
 
-def logged_model_name(registered: Optional[str], manifest: Any) -> str:
+def _logged_model_name(registered: Optional[str], manifest: Any) -> str:
     r"""model_label without the characters MLflow rejects."""
     table = getattr(getattr(manifest, 'parents', None), 'training_table',
                     None)

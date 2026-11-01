@@ -804,10 +804,10 @@ def test_an_edited_card_is_frozen_with_one_warning(tracking_uri):
     client.set_tag(run.info.run_id, 'mlflow.note.content', edited)
 
     with pytest.warns(UserWarning, match="run 'r' was edited above kumo's"):
-        tracker.update_card(run.info.run_id)
+        tracker._update_card(run.info.run_id)
     with warnings.catch_warnings():
         warnings.simplefilter('error')
-        tracker.update_card(run.info.run_id)
+        tracker._update_card(run.info.run_id)
     tags = client.get_run(run.info.run_id).data.tags
     assert (tags['mlflow.note.content'], tags['kumo.card_frozen']) == (
         edited, 'true')
@@ -830,7 +830,7 @@ def test_monitoring_fills_its_part_of_a_prediction_card(tracking_uri):
     client.set_tag(run_id, 'mlflow.note.content', card + '\n\nMine.')
     client.log_metric(run_id, 'drift/psi', 0.03)
 
-    tracker.update_card(run_id, 'drift', [Note('notes', 'psi 0.01 since')])
+    tracker._update_card(run_id, 'drift', [Note('notes', 'psi 0.01 since')])
 
     head = ['50 rows as of 2026-10-29', '', '',
             'Scores of bundle `bbbbbbbb`.', '']

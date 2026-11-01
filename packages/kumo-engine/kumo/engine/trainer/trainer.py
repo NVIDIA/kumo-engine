@@ -122,7 +122,7 @@ from kumo.engine.trainer._run_spec import (
     FitContext,
     fit_spec,
     fitted_spec,
-    model_metrics,
+    registry_metrics,
 )
 from kumo.engine.trainer._scoring import (
     ScoringDefaults,
@@ -226,11 +226,12 @@ class TrainingResult:
             tracker = as_tracking(config.tracking)
             if tracker is not None and tracker.register is not None:
                 return cast(PublishedModel, _with_metrics(
-                    tracker.register(self, config.registry), model_metrics(self)))
+                    tracker.register(self, config.registry),
+                    registry_metrics(self)))
             config = _connector_registry(config)
         _require_publisher(config)
-        return _publish(self.bundle_dir, self.bundle_id, model_metrics(self),
-                        config)[0]
+        return _publish(self.bundle_dir, self.bundle_id,
+                        registry_metrics(self), config)[0]
 
     def with_scoring_defaults(self,
                               defaults: ScoringDefaults) -> 'TrainingResult':
@@ -1197,7 +1198,7 @@ class Trainer:
             result.bundle_dir, result.manifest or (
                 None if result.bundle_id is None else stub(
                     'model', result.bundle_id)), settings, session=session,
-            snapshot=snapshot, metrics=model_metrics(result), warn=warn,
+            snapshot=snapshot, metrics=registry_metrics(result), warn=warn,
             stored=(deps.errors or [None])[0])
         if registered is not None:
             result = replace(result, registered_model=registered,
@@ -1469,7 +1470,7 @@ class Trainer:
             training_result = replace(
                 training_result, published_model=_publish(
                     training_result.bundle_dir, training_result.bundle_id,
-                    model_metrics(training_result), export_config)[0])
+                    registry_metrics(training_result), export_config)[0])
 
         training_result = replace(training_result, _trainer=self)
         self._training_result = training_result

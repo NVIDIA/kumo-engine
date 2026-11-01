@@ -77,7 +77,7 @@ def holdout_metrics(result: Any) -> Dict[str, float]:
     }, refit_full=_fit_mode(result) == 'refit_full')
 
 
-def model_metrics(result: Any) -> Dict[str, float]:
+def registry_metrics(result: Any) -> Dict[str, float]:
     r"""Holdout metrics and model scalars, as registries record them."""
     return {metric_key(name): value for name, value in {
         **holdout_metrics(result),
