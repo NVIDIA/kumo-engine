@@ -2,7 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Native task registration and credit-controlled Arrow Flight batch serving.
+//! Native task registration and bounded Arrow Flight batch serving.
 use arrow_array::RecordBatch;
 use arrow_flight::{
     decode::FlightRecordBatchStream, error::FlightError, flight_service_server::FlightService,
@@ -35,7 +35,7 @@ mod runtime;
 mod server;
 mod storage;
 use encoding::BatchEncoder;
-use protocol::{decode, envelope, MAX_BATCH_BYTES, VERSION, WINDOW};
+use protocol::{decode, envelope, MAX_BATCH_BYTES, VERSION};
 use runtime::{runtime_error, TaskRequest};
 pub use server::{SamplingServer, ServerConfig};
 use storage::{hash_task, task_path, Upload};
@@ -104,7 +104,7 @@ impl SamplerGateway {
         json!({"ready": !*self.state.stop.borrow(), "pid":std::process::id(), "port":self.state.port,
             "has_training_tables":self.state.root.join("train_tables").exists(),
             "active_streams":self.state.active.load(Ordering::Relaxed), "requests":requests,
-            "task_requests":requests, "exchange_streams":requests,
+            "task_requests":requests, "get_streams":requests,
             "batches":self.state.batches.load(Ordering::Relaxed)})
     }
 }
@@ -144,6 +144,29 @@ impl Output {
         })
     }
     fn batch(&mut self, batch: RecordBatch) -> Result<(), Status> {
+        let permit = self.reserve()?;
+        self.reserved_batch(permit, batch)
+    }
+    fn reserve(&mut self) -> Result<mpsc::OwnedPermit<Result<FlightData, Status>>, Status> {
+        let permit = tokio::runtime::Handle::current().block_on(async {
+            tokio::select! {
+                _ = self.stop.wait_for(|stop| *stop) => Err(Status::cancelled("Gateway is stopping")),
+                permit = self.tx.clone().reserve_owned() => permit.map_err(|_| Status::cancelled("Consumer closed")),
+            }
+        })?;
+        if self.tx.is_closed() || *self.stop.borrow() {
+            return Err(Status::cancelled("Sampling stream is stopping"));
+        }
+        Ok(permit)
+    }
+    fn reserved_batch(
+        &self,
+        permit: mpsc::OwnedPermit<Result<FlightData, Status>>,
+        batch: RecordBatch,
+    ) -> Result<(), Status> {
+        if self.tx.is_closed() || *self.stop.borrow() {
+            return Err(Status::cancelled("Consumer closed"));
+        }
         let (dictionaries, data) = IpcDataGenerator::default()
             .encode(
                 &batch,
@@ -152,22 +175,13 @@ impl Output {
                 &mut CompressionContext::default(),
             )
             .map_err(|error| Status::internal(error.to_string()))?;
-        for message in dictionaries.into_iter().chain(std::iter::once(data)) {
-            self.send(message.into())?;
+        if !dictionaries.is_empty() {
+            return Err(Status::internal(
+                "Task envelopes must not contain dictionaries",
+            ));
         }
+        permit.send(Ok(data.into()));
         Ok(())
-    }
-    fn receive(
-        &mut self,
-        reader: &mut FlightRecordBatchStream,
-    ) -> Result<Option<RecordBatch>, Status> {
-        tokio::runtime::Handle::current().block_on(async {
-            tokio::select! {
-                _ = self.stop.wait_for(|stop| *stop) => Err(Status::cancelled("Gateway is stopping")),
-                _ = self.tx.closed() => Err(Status::cancelled("Consumer closed")),
-                batch = reader.next() => batch.transpose().map_err(Status::from),
-            }
-        })
     }
 }
 
@@ -195,7 +209,6 @@ impl Drop for Lease {
 fn epoch(
     state: Arc<State>,
     request: TaskRequest,
-    mut reader: FlightRecordBatchStream,
     tx: mpsc::Sender<Result<FlightData, Status>>,
     permit: OwnedSemaphorePermit,
 ) {
@@ -219,10 +232,8 @@ fn epoch(
         "SAMPLING_STREAM_OPEN"
     );
     let result = (|| -> Result<(), Status> {
-        if request.kind != "push_iter" || request.version != VERSION {
-            return Err(Status::invalid_argument(
-                "Unsupported push sampling protocol",
-            ));
+        if request.kind != "epoch" || request.version != VERSION {
+            return Err(Status::invalid_argument("Unsupported sampling protocol"));
         }
         let threads = request.num_threads.unwrap_or(1);
         if threads == 0 || threads > state.max_threads {
@@ -260,47 +271,33 @@ fn epoch(
         output.send(SchemaAsIpc::new(&protocol::schema(), &IpcWriteOptions::default()).into())?;
         output.batch(envelope(json!({"kind":"iterator","version":VERSION,"num_samples":iterator.num_samples(),"num_batches":expected}), vec![])?)?;
         while lease.count < expected {
-            let frame = output.receive(&mut reader)?.ok_or_else(|| {
-                Status::invalid_argument("Push stream ended before its shard completed")
-            })?;
-            let (metadata, parts) = decode(&frame)?;
-            let credit = metadata.get("batches").and_then(Value::as_u64).unwrap_or(0);
-            if metadata.as_object().unwrap().len() != 2
-                || metadata["kind"] != "credit"
-                || credit == 0
-                || credit > WINDOW
-                || credit > expected - lease.count
-                || !parts.is_empty()
-            {
-                return Err(Status::invalid_argument("Invalid push stream credits"));
-            }
-            for _ in 0..credit {
-                if output.tx.is_closed() || *output.stop.borrow() {
-                    return Err(Status::cancelled("Consumer closed"));
-                }
-                let batch = iterator
-                    .next_batch()
-                    .map_err(runtime_error)?
-                    .ok_or_else(|| {
-                        Status::internal("Native shard ended before its declared batch count")
-                    })?;
-                let mut encoder = BatchEncoder::default();
-                let value = encoder
-                    .batch(batch)
-                    .map_err(|error| Status::resource_exhausted(error.to_string()))?;
-                output.batch(envelope(
+            // Reserve before sampling: a full queue must not create another native batch.
+            let permit = output.reserve()?;
+            let batch = iterator
+                .next_batch()
+                .map_err(runtime_error)?
+                .ok_or_else(|| {
+                    Status::internal("Native shard ended before its declared batch count")
+                })?;
+            let mut encoder = BatchEncoder::default();
+            let value = encoder
+                .batch(batch)
+                .map_err(|error| Status::resource_exhausted(error.to_string()))?;
+            output.reserved_batch(
+                permit,
+                envelope(
                     json!({"kind":"batch","batch_id":lease.count,"value":value}),
                     encoder.parts,
-                )?)?;
-                lease.count += 1;
-                let total = state.batches.fetch_add(1, Ordering::Relaxed) + 1;
-                if total == 1 || total.is_multiple_of(100) {
-                    tracing::info!(
-                        batches = total,
-                        task_requests = state.requests.load(Ordering::Relaxed),
-                        "SAMPLING_PROGRESS"
-                    );
-                }
+                )?,
+            )?;
+            lease.count += 1;
+            let total = state.batches.fetch_add(1, Ordering::Relaxed) + 1;
+            if total == 1 || total.is_multiple_of(100) {
+                tracing::info!(
+                    batches = total,
+                    task_requests = state.requests.load(Ordering::Relaxed),
+                    "SAMPLING_PROGRESS"
+                );
             }
         }
         if iterator.next_batch().map_err(runtime_error)?.is_some() {
@@ -312,11 +309,6 @@ fn epoch(
             json!({"kind":"end","batches":lease.count}),
             vec![],
         )?)?;
-        if output.receive(&mut reader)?.is_some() {
-            return Err(Status::invalid_argument(
-                "Unexpected credits after shard completion",
-            ));
-        }
         lease.complete = true;
         Ok(())
     })();
@@ -391,10 +383,31 @@ impl FlightService for SamplerGateway {
     ) -> Result<Response<SchemaResult>, Status> {
         Err(Status::unimplemented("GetSchema"))
     }
-    async fn do_get(&self, _: Request<Ticket>) -> Result<Response<Self::DoGetStream>, Status> {
-        Err(Status::unimplemented(
-            "Use DoExchange for worker epoch shards",
-        ))
+    async fn do_get(
+        &self,
+        request: Request<Ticket>,
+    ) -> Result<Response<Self::DoGetStream>, Status> {
+        if *self.state.stop.borrow() {
+            return Err(Status::unavailable("Gateway is stopping"));
+        }
+        let ticket = request.into_inner().ticket;
+        if ticket.len() > MAX_BATCH_BYTES {
+            return Err(Status::resource_exhausted(
+                "Epoch ticket exceeds the byte budget",
+            ));
+        }
+        let request: TaskRequest = serde_json::from_slice(&ticket)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let permit = self
+            .state
+            .permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Status::resource_exhausted("Sampling service is busy"))?;
+        let (tx, rx) = mpsc::channel(1);
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || epoch(state, request, tx, permit));
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
     async fn list_actions(
@@ -467,29 +480,9 @@ impl FlightService for SamplerGateway {
 
     async fn do_exchange(
         &self,
-        request: Request<tonic::Streaming<FlightData>>,
+        _: Request<tonic::Streaming<FlightData>>,
     ) -> Result<Response<Self::DoExchangeStream>, Status> {
-        if *self.state.stop.borrow() {
-            return Err(Status::unavailable("Gateway is stopping"));
-        }
-        let mut stream = request.into_inner();
-        let first = stream
-            .message()
-            .await?
-            .ok_or_else(|| Status::invalid_argument("Missing epoch request"))?;
-        let request: TaskRequest = command(first.flight_descriptor.as_ref())?;
-        let permit = self
-            .state
-            .permits
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Status::resource_exhausted("Sampling service is busy"))?;
-        let (tx, rx) = mpsc::channel(1);
-        let state = self.state.clone();
-        tokio::task::spawn_blocking(move || {
-            epoch(state, request, input(first, stream), tx, permit)
-        });
-        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+        Err(Status::unimplemented("Use DoGet for worker epoch shards"))
     }
 
     async fn do_put(
@@ -583,5 +576,79 @@ impl FlightService for SamplerGateway {
             }
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn full_output_queue_reserves_capacity_before_production() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(Ok(FlightData::default())).unwrap();
+        let (stop, receiver) = watch::channel(false);
+        let (produced, mut production) = tokio::sync::oneshot::channel();
+        let mut output = Output { tx, stop: receiver };
+        let producer = tokio::task::spawn_blocking(move || {
+            let permit = output.reserve().unwrap();
+            produced.send(()).unwrap();
+            output
+                .reserved_batch(permit, envelope(json!({"kind":"batch"}), vec![]).unwrap())
+                .unwrap();
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut production)
+                .await
+                .is_err()
+        );
+        rx.recv().await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), production)
+            .await
+            .unwrap()
+            .unwrap();
+        rx.recv().await.unwrap().unwrap();
+        producer.await.unwrap();
+        drop(stop);
+    }
+
+    #[tokio::test]
+    async fn blocked_producer_wakes_on_shutdown_or_reader_cancellation() {
+        for shutdown in [false, true] {
+            let (tx, rx) = mpsc::channel(1);
+            tx.try_send(Ok(FlightData::default())).unwrap();
+            let (stop, receiver) = watch::channel(false);
+            let mut output = Output { tx, stop: receiver };
+            let producer = tokio::task::spawn_blocking(move || output.reserve().err().unwrap());
+            if shutdown {
+                stop.send_replace(true);
+            } else {
+                drop(rx);
+            }
+            let error = tokio::time::timeout(Duration::from_secs(2), producer)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(error.code(), tonic::Code::Cancelled);
+        }
+    }
+
+    #[tokio::test]
+    async fn available_output_capacity_does_not_restart_a_cancelled_producer() {
+        for shutdown in [false, true] {
+            let (tx, rx) = mpsc::channel(1);
+            let (stop, receiver) = watch::channel(false);
+            if shutdown {
+                stop.send_replace(true);
+            } else {
+                drop(rx);
+            }
+            let mut output = Output { tx, stop: receiver };
+            let error = tokio::task::spawn_blocking(move || output.reserve().err().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(error.code(), tonic::Code::Cancelled);
+        }
     }
 }

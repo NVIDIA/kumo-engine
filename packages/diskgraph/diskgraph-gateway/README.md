@@ -16,13 +16,23 @@ extension with `DoPut`; file names, lengths, order, SHA-256 digest, and final
 completion are verified before an atomic rename publishes the task. Failed
 uploads remain in their hidden staging directory for diagnosis.
 
-Protocol version 4 uses a stable Arrow envelope containing JSON metadata and
-Arrow IPC components. `DoExchange` accepts one normalized epoch request. The
-server reports sample/batch counts and produces batches only with consumer
-credits (at most two per credit frame). It validates stream completion and
-propagates native errors through the final RPC status. The bounded output channel
-and stream semaphore limit queued work. Cancellation wakes a producer awaiting
-credits or output capacity; native sampling stops at batch boundaries.
+Protocol version 5 uses a stable Arrow envelope containing JSON metadata and
+Arrow IPC components. A `DoGet` ticket contains one normalized epoch/shard
+request. The server reports sample/batch counts, then streams complete batches
+and validates native shard completion. Errors propagate through final RPC status.
+
+A one-slot native output queue reserves capacity before sampling each batch.
+Batch envelopes retain the 64 MiB payload limit. Each client prefetches at most
+one decoded batch per server. When the trainer pauses, client prefetch and gRPC
+buffers fill, Flight stops draining the output queue, and the native producer
+waits for capacity. There are no application credit messages. These queue limits
+exclude additional transport buffers and native sampling/encoding working memory.
+
+Cancelling a reader wakes a producer blocked on output capacity and releases its
+stream permit. Native sampling already in progress stops at the next batch
+boundary. Listener shutdown cancels all producers; a transport that is not being
+read may consume the existing five-second graceful-drain period before the
+listener force-closes it.
 
 `health` and `task_status` are the supported actions. The earlier per-request
 graph/feature ticket API is replaced by complete task epochs. This service is

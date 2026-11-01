@@ -12,8 +12,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tonic::Status;
 
-pub(crate) const VERSION: u32 = 4;
-pub(crate) const WINDOW: u64 = 2;
+pub(crate) const VERSION: u32 = 5;
 pub(crate) const CHUNK_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 
@@ -110,5 +109,10 @@ mod tests {
         assert!(decode(&envelope(json!(3), vec![]).unwrap()).is_err());
         let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
         assert!(decode(&batch).is_err());
+    }
+    #[test]
+    fn rejects_payloads_that_exceed_the_frame_budget() {
+        let error = envelope(json!({"kind":"batch"}), vec![vec![0; MAX_BATCH_BYTES]]).unwrap_err();
+        assert_eq!(error.code(), tonic::Code::ResourceExhausted);
     }
 }

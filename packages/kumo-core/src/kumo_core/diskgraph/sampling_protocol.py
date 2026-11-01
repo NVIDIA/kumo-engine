@@ -10,8 +10,7 @@ from typing import Any
 import orjson
 import pyarrow as pa
 
-PUSH_VERSION = 4
-PUSH_WINDOW = 2
+SAMPLING_VERSION = 5
 TASK_CHUNK_BYTES = 1024**2
 MAX_BATCH_BYTES = 64 * 1024**2
 ENVELOPE_SCHEMA = pa.schema(
@@ -57,7 +56,7 @@ def encode_frame(metadata: dict[str, Any], components: list[bytes]) -> pa.Record
     Args:
         metadata: Versioned frame metadata, including component references.
         components: Binary payloads; batch frames use one Arrow IPC stream per
-            component and graph-filter registration uses a packed visibility mask.
+            component; task uploads carry bounded file chunks.
     Returns:
         A one-row envelope using the native gateway's schema.
     Raises:

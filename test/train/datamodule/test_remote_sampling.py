@@ -43,14 +43,14 @@ def _install_transport(
     reader = MagicMock()
     reader.read_chunk.side_effect = frames
     client = MagicMock()
-    client.do_exchange.return_value = (MagicMock(), reader)
+    client.do_get.return_value = reader
     monkeypatch.setattr(remote.flight, "FlightClient", MagicMock(return_value=client))
     return client, reader
 
 
 def _start(num_batches: int = 1) -> MagicMock:
     return _frame(
-        {"kind": "iterator", "version": 4, "num_samples": 3, "num_batches": num_batches}
+        {"kind": "iterator", "version": 5, "num_samples": 3, "num_batches": num_batches}
     )
 
 
@@ -210,8 +210,8 @@ def test_normalizes_options_for_remote_epoch(
     assert count == 3
     factory.assert_not_called()
     request = stream_factory.call_args.args[1]
-    assert request["kind"] == "push_iter"
-    assert request["version"] == 4
+    assert request["kind"] == "epoch"
+    assert request["version"] == 5
     options = request["options"]
     assert options["worker_id"] == 1
     assert options["epoch"] == 7
@@ -284,7 +284,7 @@ def test_sampler_knob_defaults_to_local() -> None:
 def test_request_failure_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """A failed RPC must release the connection even before the first frame."""
     client, _ = _install_transport(monkeypatch, [])
-    client.do_exchange.side_effect = OSError("unreachable")
+    client.do_get.side_effect = OSError("unreachable")
     with pytest.raises(OSError, match="unreachable"):
         remote.RemoteTaskIterator("grpc://sampler:50051", {})
     client.close.assert_called_once()
@@ -296,7 +296,7 @@ def test_midstream_failure_closes_client(monkeypatch: pytest.MonkeyPatch) -> Non
     iterator = remote.RemoteTaskIterator("grpc://sampler:50051", {})
     with pytest.raises(OSError, match="broken"):
         next(iterator)
-    client.do_exchange.assert_called_once()
+    client.do_get.assert_called_once()
     client.close.assert_called_once()
     reader.cancel.assert_called_once()
 

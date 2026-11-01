@@ -4,13 +4,12 @@
 
 """Consume complete DiskGraph task batches from a Flight gateway.
 
-Workers own epoch shards and push complete batches over credit-controlled Flight
-exchanges. Task extensions are transferred once before opening stage streams.
+Workers own epoch shards and stream complete batches through bounded Flight
+DoGet responses. Task extensions are transferred once before opening stage streams.
 """
 
 from __future__ import annotations
 
-import logging
 from collections import deque
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -23,18 +22,13 @@ from diskgraph.runtime_batch_iterator import RuntimeIndex
 from pyarrow import flight
 
 from kumo_core.diskgraph.sampling_protocol import (
-    ENVELOPE_SCHEMA,
-    PUSH_VERSION,
-    PUSH_WINDOW,
+    SAMPLING_VERSION,
     decode_frame,
-    encode_frame,
 )
 from kumo_core.diskgraph.sampling_task import (
     task_files,
     upload_task,
 )
-
-logger = logging.getLogger(__name__)
 
 _NATIVE_ARGUMENTS = (
     "stage_table",
@@ -117,39 +111,30 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
             generic_options=[("grpc.max_receive_message_length", 128 * 1024**2)],
         )
         self._reader: flight.FlightStreamReader | None = None
-        self._writer: flight.FlightStreamWriter | None = None
         self._expected_batches: int | None = None
         self._closed = False
         self._batches = 0
         self._owner: RemoteRuntimeIndex | None = None
         try:
             payload = orjson.dumps(request, option=orjson.OPT_SERIALIZE_NUMPY)
-            self._writer, self._reader = self._client.do_exchange(
-                flight.FlightDescriptor.for_command(payload),
+            self._reader = self._client.do_get(
+                flight.Ticket(payload),
                 options=flight.FlightCallOptions(timeout=3600),
             )
-            self._writer.begin(ENVELOPE_SCHEMA)
             metadata, components = self._read_frame()
             if (
                 metadata.get("kind") != "iterator"
-                or metadata.get("version") != PUSH_VERSION
+                or metadata.get("version") != SAMPLING_VERSION
                 or components
                 or type(metadata.get("num_samples")) is not int
                 or metadata["num_samples"] < 0
             ):
                 raise ValueError("Invalid task iterator metadata")
             self._num_samples: int = metadata["num_samples"]
-            if self._writer is not None:
-                count = metadata.get("num_batches")
-                if type(count) is not int or count < 0:
-                    raise ValueError("Invalid push iterator batch count")
-                self._expected_batches = count
-                if count:
-                    self._writer.write_batch(
-                        encode_frame(
-                            {"kind": "credit", "batches": min(PUSH_WINDOW, count)}, []
-                        )
-                    )
+            count = metadata.get("num_batches")
+            if type(count) is not int or count < 0:
+                raise ValueError("Invalid iterator batch count")
+            self._expected_batches = count
         except BaseException:
             self.close()
             raise
@@ -171,15 +156,6 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
         if self._closed:
             raise StopIteration
         try:
-            if self._writer is not None:
-                assert self._expected_batches is not None
-                if (
-                    self._batches
-                    and self._batches + PUSH_WINDOW <= self._expected_batches
-                ):
-                    self._writer.write_batch(
-                        encode_frame({"kind": "credit", "batches": 1}, [])
-                    )
             metadata, components = self._read_frame()
             if metadata.get("kind") == "end":
                 if (
@@ -192,8 +168,6 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
                     )
                 ):
                     raise ValueError("Invalid task stream completion count")
-                if self._writer is not None:
-                    self._writer.done_writing()
                 # Observe the final RPC status as well as the logical end frame.
                 assert self._reader is not None
                 try:
@@ -241,11 +215,6 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
             if self._reader is not None:
                 self._reader.cancel()
         finally:
-            if self._writer is not None:
-                try:
-                    self._writer.close()
-                except (pa.ArrowException, flight.FlightError, OSError) as error:
-                    logger.debug("Closed push sampling stream: %s", error)
             if self._owns_client:
                 self._client.close()
 
@@ -299,8 +268,8 @@ class RemotePushIterator(Iterator[dict[str, Any]]):
                     + options["num_workers"] * replica,
                 }
                 request = {
-                    "kind": "push_iter",
-                    "version": PUSH_VERSION,
+                    "kind": "epoch",
+                    "version": SAMPLING_VERSION,
                     "extension_ref": extension_ref,
                     "engine_seed": owner._rnd_seed,
                     "num_threads": owner._num_threads or 1,

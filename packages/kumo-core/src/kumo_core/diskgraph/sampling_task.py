@@ -13,7 +13,7 @@ from pyarrow import flight
 
 from kumo_core.diskgraph.sampling_protocol import (
     ENVELOPE_SCHEMA,
-    PUSH_VERSION,
+    SAMPLING_VERSION,
     TASK_CHUNK_BYTES,
     encode_frame,
 )
@@ -79,7 +79,7 @@ def upload_task(
     if results[0].body.to_pybytes() == key.encode():
         return
     descriptor = flight.FlightDescriptor.for_command(
-        orjson.dumps({"kind": "prepare_task", "version": PUSH_VERSION, **request})
+        orjson.dumps({"kind": "prepare_task", "version": SAMPLING_VERSION, **request})
     )
     writer, reader = client.do_put(descriptor, ENVELOPE_SCHEMA)
     with writer:

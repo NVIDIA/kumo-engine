@@ -112,8 +112,12 @@ logging bridge and appear in the actor's configured logs.
 
 The client registers each immutable training-table extension once per worker,
 using bounded file chunks and a content checksum. Epoch requests carry sampling,
-projection, seed, and shard settings. Flight exchanges use a two-batch credit
-window. Sequence/completion counts and final RPC status are checked; failures
+projection, seed, and shard settings in a `DoGet` ticket. The server reserves a
+slot in its bounded output queue before sampling a batch, and the client
+prefetches one decoded batch per server. gRPC flow control propagates a paused
+trainer back to the producer; additional transport buffers and native working
+memory are separate from these queue limits. No application credits are sent.
+Sequence/completion counts and final RPC status are checked; failures
 propagate without replaying an incomplete epoch. Closing an iterator cancels its
 outstanding streams, and data-module teardown closes shared connections. Ordered
 RHS catalog scans use one replica to preserve MIPS embedding order.
