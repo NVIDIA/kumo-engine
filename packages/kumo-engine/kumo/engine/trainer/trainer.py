@@ -40,7 +40,6 @@ from kumo_core.pquery import (
     build_generated_training_task_dataset,
     resolve_query_forecast,
 )
-from kumo_core.summaries import Summary
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
 from kumo_core.training.config import FitMode
 from kumo_core.training.explain_aggregation import aggregate_subgraph_features
@@ -64,6 +63,7 @@ from kumo.engine._data_summaries import (
     snapshot_summaries,
     split_summaries,
     table_details,
+    training_table_details,
 )
 from kumo.engine._deps import Dependencies
 from kumo.engine._embeddings import (
@@ -418,18 +418,6 @@ def _fit_identity(snapshot: GraphSnapshot,
         return {}
 
 
-def _fit_summaries(snapshot: GraphSnapshot, train_table: TrainingTable,
-                   result: TrainingResult,
-                   settings: Any) -> Tuple[Summary, ...]:
-    index = Path(snapshot.index_path)
-    return (
-        *snapshot_summaries(index, snapshot.graph_config),
-        *([] if result.manifest is None else artifact_summaries(
-            result.manifest, 'training', settings, table_details(index))),
-        *split_summaries(train_table.staging_dir),
-    )
-
-
 def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
                  settings: Any) -> None:
     r"""Copies the bundle under the root unless it is there."""
@@ -768,9 +756,15 @@ class Trainer:
             self._training_result = result
         session.finish(
             lambda: fitted_spec(
-                cast(RunSpec, session.spec), result,
-                _fit_summaries(snapshot, train_table, result, settings)),
-            error)
+                cast(RunSpec, session.spec), result, (
+                    *snapshot_summaries(Path(snapshot.index_path),
+                                        snapshot.graph_config),
+                    *([] if result.manifest is None else artifact_summaries(
+                        result.manifest, 'training',
+                        {**table_details(Path(snapshot.index_path),
+                                         snapshot.id),
+                         **training_table_details(train_table)})),
+                    *split_summaries(train_table.staging_dir))), error)
         raise_on_error(settings, session.error or error,
                        'Trainer.fit (its model is in trainer.result)')
         return result

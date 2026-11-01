@@ -4,6 +4,7 @@
 """Shared JSON manifest format for engine artifacts."""
 
 import json
+import re
 import types
 import warnings
 from collections.abc import Mapping as AbcMapping
@@ -28,7 +29,7 @@ from typing import (
 )
 
 from kumo_core.io.filesystem import atomic_write_bytes
-from kumo_core.summaries import Dataset, Summary, Tag
+from kumo_core.summaries import Dataset, Summary, Table, Tag
 
 SCHEMA_VERSION = 1
 _OMIT_NONE = 'omit_none'
@@ -55,6 +56,7 @@ class Artifact:
     version: Optional[str] = None
     version_kind: Optional[str] = None
     context: Optional[str] = None
+    label: Optional[str] = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -173,8 +175,10 @@ class Manifest(Record):
 
     def as_artifact(self, key: str) -> Artifact:
         return Artifact(self.kind, self.id, self.location, self.IS_DATASET,
-                        self.URI_TAG or f'kumo.{self.kind}_uri',
-                        version=self.id, version_kind='exact')
+                        self.URI_TAG, version=self.id, version_kind='exact',
+                        label=self.created_at and
+                        f"{self.kind.replace('_', '-')}-{self.created_at[:10]}-"
+                        f"{re.split('[@-]', self.id)[-1][:6]}")
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
@@ -209,19 +213,21 @@ Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
 
 
 def artifact_summaries(manifest: Manifest, context: str,
-                       settings: Any = None,
                        details: Optional[Details] = None) -> List[Summary]:
-    r"""Tags locating ``manifest``'s artifacts, and its `Dataset`s."""
+    r"""Location tags, the locations table and datasets of a manifest."""
     located = [item for item in artifacts(manifest) if item.location]
     tags: Dict[str, str] = {}
     for item in located:
         if item.tag:
             tags.setdefault(item.tag, str(item.location))
-    if settings is not None:
-        tags['kumo.artifact_root'] = settings.root.uri('').rstrip('/')
-    summaries: List[Summary] = [Tag(name, value)
-                                for name, value in tags.items()]
-    for item in located:
+    summaries: List[Summary] = [
+        *(Tag(name, value) for name, value in tags.items()),
+        *([Table('locations', ('kind', 'id', 'location'), tuple(
+            (item.kind, item.id, str(item.location)) for item in located),
+                 brief=True)] if located else []),
+    ]
+    for item in sorted(located, key=lambda item: _DATASET_ORDER.get(
+            item.kind, len(_DATASET_ORDER))):
         if not item.is_dataset:
             continue
         location = str(item.location)
@@ -229,9 +235,12 @@ def artifact_summaries(manifest: Manifest, context: str,
                   'location': location, 'version': item.version,
                   'version_kind': item.version_kind}
         schema, profile = (details or {}).get(item.id, ({}, {}))
-        summaries.append(Dataset(item.id, source, schema, profile,
-                                 item.context or context))
+        summaries.append(Dataset(item.label or item.id, source, schema,
+                                 profile, item.context or context))
     return summaries
+
+
+_DATASET_ORDER = {'snapshot': 0, 'training_table': 1, 'source_table': 2}
 
 
 def _connector(location: str) -> Optional[str]:
@@ -365,8 +374,7 @@ class Dependency(Record):
         kind = _kinds().get(self.kind)
         return None if kind is None else Artifact(
             self.kind, str(self.sha256), self.location, kind.IS_DATASET,
-            f'kumo.{self.asset_kind}_uri', version=self.sha256,
-            version_kind='exact')
+            version=self.sha256, version_kind='exact')
 
 
 @dataclass(frozen=True, kw_only=True)
