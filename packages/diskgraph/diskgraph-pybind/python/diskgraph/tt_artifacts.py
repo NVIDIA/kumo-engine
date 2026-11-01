@@ -335,7 +335,7 @@ def build_prediction_table_artifacts_for_existing_table(
     _ = producer_summary_json
     _ = train_table_edges_config
 
-    result = _native_build_predict(
+    return _native_build_predict(
         output_path=output_path,
         index_path=index_path,
         tt_id=tt_id,
@@ -348,8 +348,6 @@ def build_prediction_table_artifacts_for_existing_table(
         task_type=task_type,
         ingest_on_error=ingest_on_error,
     )
-    # The caller reports skipped entities to score.
-    return result
 
 
 __all__ = [

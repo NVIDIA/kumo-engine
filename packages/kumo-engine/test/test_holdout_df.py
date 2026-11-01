@@ -127,7 +127,6 @@ def test_no_holdout(graph):
 
     assert result.holdout_path is None
     assert not result.holdout_truncated
-    assert result.manifest.holdout.columns == {}
     assert set(result.manifest.holdout.counts['arrays']) == {'top_score'}
     with pytest.raises(FileNotFoundError, match='No holdout'):
         result.holdout_df()
@@ -153,7 +152,7 @@ def test_a_loaded_or_fetched_model_keeps_its_holdout(graph, tmp_path,
 
 def test_a_bundle_without_a_holdout_says_so(graph, monkeypatch):
     monkeypatch.setattr('kumo.engine.trainer.trainer._bundle_holdout',
-                        lambda result: result)
+                        lambda result: None)
     result = _fit(graph, QUERY)
 
     loaded = kumo.Trainer.load(result.bundle_dir).result

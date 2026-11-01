@@ -200,7 +200,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                                   for k, v in record.tags.items()
                                   if k not in self._start_tags}, _MAX_PARAMS)
                 self._log_artifacts(record.artifacts)
-                self.log_summaries(record.summaries)
+                self._log_summaries(record.summaries)
                 finished = record.finished or _now()
                 self._log_metrics({'duration_seconds': (
                     finished - self._started).total_seconds()}, _MAX_METRICS)
@@ -248,10 +248,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                 'this run as %s', run_name, self.experiment_name, name)
         return name
 
-    def log_summaries(self, summaries: Sequence[Summary]) -> None:
-        r"""Logs summaries; charts become tables."""
-        if self._run is None:
-            return
+    def _log_summaries(self, summaries: Sequence[Summary]) -> None:
         routed = route(summaries, charts=False)
         self._card += routed.card
         self._log_metrics({s.name: s.value for s in routed.scalars},

@@ -65,8 +65,6 @@ class EvaluationResult:
     actuals: Optional[str] = None
     tracking: Optional[TrackingRef] = None
 
-    _exported: Any = field(default=None, compare=False, repr=False)
-
     @property
     def frame(self) -> pd.DataFrame:
         r"""The evaluated rows as a DataFrame."""
@@ -86,7 +84,7 @@ class EvaluationResult:
         files = sorted(str(path) for path in Path(self.actuals).glob('*.parquet'))
         written = max(Path(path).stat().st_mtime_ns for path in files)
         fields = dataclasses.asdict(self)
-        for name in ('actuals', 'tracking', '_exported'):
+        for name in ('actuals', 'tracking'):
             fields.pop(name)
         get_scratch_dir().mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=get_scratch_dir()) as typed:
@@ -117,7 +115,7 @@ class EvaluationResult:
             with filesystem.open_input_stream(
                     f'{root}/{_EVALUATION_FILE}') as reader:
                 fields = json.loads(reader.read())
-        except (FileNotFoundError, OSError) as error:
+        except OSError as error:
             raise FileNotFoundError(
                 f'{path} has no {_EVALUATION_FILE}: not an evaluation export'
             ) from error
@@ -125,8 +123,7 @@ class EvaluationResult:
         local = _fetch_dir('fetched-evaluation-')
         fetch_parquet(filesystem, root, local / 'actuals')
         fields['anchors'] = tuple(fields['anchors'])
-        result = cls(**fields, actuals=str(local / 'actuals'),
-                     _exported=local)
+        result = cls(**fields, actuals=str(local / 'actuals'))
         weakref.finalize(result, shutil.rmtree, str(local), True)
         return result
 

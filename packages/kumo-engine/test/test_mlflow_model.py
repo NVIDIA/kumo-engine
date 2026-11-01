@@ -25,7 +25,7 @@ from kumo.engine._mlops import resolve
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._tracking import logged_names
 from kumo.engine.integrations.mlflow import _card_hash
-from kumo.engine.trainer._run_spec import model_metrics
+from kumo.engine.trainer._run_spec import registry_metrics
 
 mlflow = pytest.importorskip('mlflow')
 
@@ -88,10 +88,11 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     assert result.registered_model == PublishedModel(
         name='m', version=str(version.version),
         uri=f'models:/m/{version.version}',
-        metadata={'kumo_bundle_id': result.id}, metrics=model_metrics(result))
+        metadata={'kumo_bundle_id': result.id},
+        metrics=registry_metrics(result))
     assert version.tags == {'kumo_bundle_id': result.id}
     kumo_text = '\n'.join([
-        _card.version_headline(model_metrics(result), 'mae'),
+        _card.version_headline(registry_metrics(result), 'mae'),
         f'Trained by `{parent.info.run_name}`. Bundle '
         f"`{tmp_path / 'root' / 'models' / result.id}`."])
     assert version.description == (
@@ -174,7 +175,7 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
         requirements).read().splitlines()
     assert {metric.key: metric.value
             for metric in mlflow.get_logged_model(info.model_id).metrics
-            } == model_metrics(trainer.result)
+            } == registry_metrics(trainer.result)
     assert mlflow.get_logged_model(info.model_id).name == (
         'ents-binary_classification')
     assert [c['name'] for c in info.signature.outputs.to_dict()
@@ -585,16 +586,16 @@ def test_an_alias_names_one_version_to_load_and_record(
 
 
 def test_a_logged_model_is_named_after_its_model():
-    from kumo.engine.integrations.mlflow import logged_model_name
+    from kumo.engine.integrations.mlflow import _logged_model_name
 
     manifest = SimpleNamespace(parents=SimpleNamespace(
         training_table=SimpleNamespace(
             query='PREDICT users.CHURN FOR EACH users.ID',
             task_type='binary_classification')))
-    assert logged_model_name('main.ml.churn', manifest) == 'churn'
-    assert logged_model_name('a/b:c%d"e\'f', None) == 'a-b-c-d-e-f'
-    assert logged_model_name(None, manifest) == 'users-binary_classification'
-    assert logged_model_name(None, None) == 'model'
+    assert _logged_model_name('main.ml.churn', manifest) == 'churn'
+    assert _logged_model_name('a/b:c%d"e\'f', None) == 'a-b-c-d-e-f'
+    assert _logged_model_name(None, manifest) == 'users-binary_classification'
+    assert _logged_model_name(None, None) == 'model'
 
 
 def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
@@ -613,7 +614,7 @@ def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
     model, = mlflow.MlflowClient().search_logged_models(fits)
     assert (published.version, fit.info.run_name, model.source_run_id,
             model.name) == ('1', 'fit-m-v1', fit.info.run_id, 'm')
-    assert {m.key: m.value for m in model.metrics} == model_metrics(result)
+    assert {m.key: m.value for m in model.metrics} == registry_metrics(result)
     assert fit.data.tags['kumo.model_version'] == '1'
     assert fit.data.tags['mlflow.note.content'].split('\n')[3].startswith(
         'Fit of `m` v1 for ')
@@ -628,6 +629,6 @@ def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
     model, = client.search_logged_models([experiment])
     assert (model.source_run_id, client.search_runs([experiment])) == (
         None, [])
-    headline = _card.version_headline(model_metrics(result), None)
+    headline = _card.version_headline(registry_metrics(result), None)
     assert client.get_model_version('m', '1').description == (
         f'{headline}\n<!-- /kumo:version sha256={_card_hash(headline)} -->')

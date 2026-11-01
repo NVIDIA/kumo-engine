@@ -364,8 +364,7 @@ def _verified(directory: Path, record: Dependency) -> bool:
     stored = read_manifest(directory / PROVENANCE_FILE, AssetManifest)
     if stored is None or stored.id != record.sha256:
         return False
-    loader = imported(record.entry_point or entry_point(FileAsset))
-    return bool(loader.load(directory, record).fingerprint() == record.sha256)
+    return bool(loaded(directory, record).fingerprint() == record.sha256)
 
 
 def loaded(directory: Path, record: Dependency) -> Any:

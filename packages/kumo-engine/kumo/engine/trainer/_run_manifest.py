@@ -63,8 +63,8 @@ def start(*, result: Any, trainer: Any, snapshot: Any, prediction_table: Any,
 
 
 def finish(result: Any, manifest: Optional[PredictionManifest],
-           output_config: Any, settings: Any, model: Any = None,
-           snapshot: Any = None) -> Optional[TrackingRef]:
+           output_config: Any, settings: Any, model: Any,
+           snapshot: Any) -> Optional[TrackingRef]:
     r"""Export, record, store and track a prediction run."""
     from kumo.engine._mlops import raise_on_error
     from kumo.engine._tracking import (
@@ -122,12 +122,11 @@ def _scoring_summaries(manifest: Optional[PredictionManifest],
 
     if manifest is None:
         return []
-    index = getattr(snapshot, 'index_path', None)
+    index = Path(snapshot.index_path)
     return [
-        *([] if index is None else snapshot_summaries(
-            Path(index), snapshot.graph_config)),
-        *artifact_summaries(manifest, 'scoring', None if index is None else
-                            table_details(Path(index), snapshot.id)),
+        *snapshot_summaries(index, snapshot.graph_config),
+        *artifact_summaries(manifest, 'scoring',
+                            table_details(index, snapshot.id)),
     ]
 
 
@@ -189,7 +188,7 @@ def _manifest(result: Any, trainer: Any, snapshot: Any,
                                           validate_objects=False)
     counts = Path(result.selection.pointer_path).parent / COUNTS_FILE
     model: Optional[ModelManifest] = trainer.result.manifest
-    scoring_snapshot = getattr(snapshot, 'manifest', None)
+    scoring_snapshot = snapshot.manifest
     return _record_predictions(
         result.id, {
             item.artifact_type.value.lower():

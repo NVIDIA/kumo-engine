@@ -10,13 +10,17 @@ from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
 import numpy as np
-from kumo_core.evaluation_counts import Timeframe, _horizons, horizon_label
+from kumo_core.evaluation_counts import (
+    TOP_CLASSES,
+    Timeframe,
+    horizon_label,
+    kept_horizons,
+)
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.score_drift import PSI_SHIFTS, axis, drift_column, score_drift
 from kumo_core.summaries import Note, Scalar, Series, Summary, Table
 from kumo_core.types import TaskType
 
-TOP_CLASSES = 20
 ITEMS = 'items'
 RANKED_ITEMS = 100
 MAX_CLASS_HISTOGRAMS = 100
@@ -32,7 +36,7 @@ def count_predictions(counts: Counts, task_type: TaskType, *, prob: Any,
         if horizon is not None:
             values = np.asarray(target_pred, dtype=np.float64)
             horizon = np.asarray(horizon, dtype=np.int64)
-            for h in _horizons(int(horizon.max()) + 1 if horizon.size else 0):
+            for h in kept_horizons(int(horizon.max()) + 1 if horizon.size else 0):
                 counts.histogram(f'TARGET_PRED_h{h + 1}', 'target',
                                  values[horizon == h])
         return
@@ -111,9 +115,9 @@ def load_counts(path: Path) -> Counts:
     return counts
 
 
-def _column(counts: Counts, name: str, axis: str, values: Any) -> None:
+def _column(counts: Counts, name: str, edges: str, values: Any) -> None:
     values = np.asarray(values, dtype=np.float64)
-    counts.histogram(name, axis, values)
+    counts.histogram(name, edges, values)
     counts.total(f'{name}/sum', values[np.isfinite(values)].sum())
     counts.extent(name, values)
 

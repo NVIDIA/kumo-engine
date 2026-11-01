@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import multiprocessing as mp
 import os
@@ -733,7 +732,12 @@ def score_prediction(
 
 def _merge_counts(prediction_dir: Path, attempt_id: str,
                   worker_count: int) -> None:
-    from kumo_core.prediction_counts import ITEMS, item_counts, load_counts
+    from kumo_core.prediction_counts import (
+        ITEMS,
+        item_counts,
+        load_counts,
+        save_counts,
+    )
     from kumo_core.score_counts import Counts
 
     parts = [
@@ -743,7 +747,7 @@ def _merge_counts(prediction_dir: Path, attempt_id: str,
     total = reduce(Counts.merge, (load_counts(part) for part in parts))
     if ITEMS in total.arrays:
         total = item_counts(total)
-    (prediction_dir / COUNTS_FILE).write_text(json.dumps(total.to_dict()))
+    save_counts(total, prediction_dir / COUNTS_FILE)
 
 
 def _publish_scored_shard(

@@ -18,8 +18,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
-use arrow::array::TimestampNanosecondArray;
-use arrow::array::{Array, AsArray, BooleanArray, FixedSizeBinaryArray, UInt32Array};
+use arrow::array::{
+    Array, AsArray, BooleanArray, FixedSizeBinaryArray, TimestampNanosecondArray, UInt32Array,
+};
 use arrow::compute::{cast, filter, interleave, take_record_batch};
 use arrow::datatypes::Float64Type;
 use arrow::ipc::reader::FileReader;
@@ -42,6 +43,12 @@ pub enum EvaluateTask {
     Regression,
     Multiclass,
     Link,
+}
+
+impl EvaluateTask {
+    fn grouped(self) -> bool {
+        matches!(self, Self::Multiclass | Self::Link)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -294,7 +301,7 @@ fn join(
     (score, class): (&str, &DataType),
     actuals: Option<PathBuf>,
 ) -> Result<Accumulator> {
-    let grouped = matches!(spec.task, EvaluateTask::Multiclass | EvaluateTask::Link);
+    let grouped = spec.task.grouped();
     let mut first = HashMap::new();
     let mut groups: HashMap<u128, Vec<Ranked>> = HashMap::new();
     let mut kept: Vec<Vec<ArrayRef>> = Vec::new();
@@ -511,13 +518,8 @@ pub fn evaluate_prediction_parquet(
     };
     let mut prediction_columns = vec![score.to_string()];
     prediction_columns.extend(spec.prediction_columns.iter().map(|(name, _)| name.clone()));
-    let mut class = DataType::Null;
-    if matches!(spec.task, EvaluateTask::Multiclass | EvaluateTask::Link) {
+    let class = if spec.task.grouped() {
         prediction_columns.push("CLASS".to_string());
-    }
-    prediction_columns.sort();
-    prediction_columns.dedup();
-    if matches!(spec.task, EvaluateTask::Multiclass | EvaluateTask::Link) {
         let mut target = label_schema
             .field_with_name(&spec.label_target)?
             .data_type();
@@ -530,11 +532,15 @@ pub fn evaluate_prediction_parquet(
             };
             target = item.data_type();
         }
-        class = common_type(
+        common_type(
             prediction_schema.field_with_name("CLASS")?.data_type(),
             target,
-        );
-    }
+        )
+    } else {
+        DataType::Null
+    };
+    prediction_columns.sort();
+    prediction_columns.dedup();
     let mut label_columns = vec![spec.label_target.clone()];
     label_columns.extend(spec.actual_columns.iter().map(|(name, _)| name.clone()));
     label_columns.sort();
@@ -606,8 +612,7 @@ pub fn evaluate_prediction_parquet(
 mod tests {
     use super::*;
     use arrow::array::{
-        BooleanArray, Float64Array, Int64Array, Int64Builder, ListBuilder, StringArray,
-        TimestampMicrosecondArray, TimestampNanosecondArray,
+        Float64Array, Int64Array, Int64Builder, ListBuilder, StringArray, TimestampMicrosecondArray,
     };
     use parquet::file::properties::WriterProperties;
     use tempfile::tempdir;

@@ -46,7 +46,6 @@ from kumoapi.typing import Dtype
 __all__ = [
     'BUNDLE_ID_KEY',
     'ENGINE_MARKER',
-    'REGISTRY_KEY_PREFIX',
     'ArtifactLocation',
     'ArtifactSink',
     'FileStoreSink',
@@ -66,7 +65,7 @@ __all__ = [
     'registry_lineage',
 ]
 
-REGISTRY_KEY_PREFIX = 'kumo_'
+_REGISTRY_KEY_PREFIX = 'kumo_'
 ENGINE_MARKER = 'kumo_engine'
 BUNDLE_ID_KEY = 'kumo_bundle_id'
 _ALIAS = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,254}')
@@ -761,7 +760,7 @@ def registry_lineage(recorded: Mapping[str, Any]) -> Dict[str, str]:
     return {
         key: str(value)
         for key, value in recorded.items()
-        if key.startswith(REGISTRY_KEY_PREFIX) and key != ENGINE_MARKER
+        if key.startswith(_REGISTRY_KEY_PREFIX) and key != ENGINE_MARKER
     }
 
 

@@ -1424,6 +1424,8 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 ///         within each run of equal values of these columns, in path and row
 ///         order (for example each prediction's top score). Needs numerical
 ///         columns, ``histograms=False`` and ``summary_stats_by_class=False``.
+///     fixed_edges: column -> increasing bin edges; emits ``FIXED_HISTOGRAM``
+///         counts.
 ///     _category_count_limit_for_testing: keyword-only test hook that lowers
 ///         the retained category limit. ``None`` preserves the production
 ///         1,000,000-category limit; a supplied value must be greater than 0.

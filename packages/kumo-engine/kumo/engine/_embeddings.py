@@ -63,7 +63,7 @@ class TextEncoderAsset:
     def __init__(self, name: str, model: Any) -> None:
         self.name, self.model = name, model
         self.version = model.label
-        self.path = getattr(model, 'path', None)
+        self.path = model.path
 
     def fingerprint(self) -> str:
         return str(self.model.fingerprint())

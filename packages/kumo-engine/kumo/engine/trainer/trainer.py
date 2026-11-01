@@ -92,7 +92,6 @@ from kumo.engine._manifest import (
     RunScoring,
     TrackingRef,
     artifact_summaries,
-    stub,
 )
 from kumo.engine._mlops import full_error, warn_failure
 from kumo.engine._predictor import TRAINER_PREDICTOR
@@ -114,7 +113,7 @@ from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer import _run_manifest
 from kumo.engine.trainer._provenance import (
     FitRecord,
-    parent_model,
+    bundle_manifest,
     read_provenance,
     record_derivation,
 )
@@ -122,7 +121,7 @@ from kumo.engine.trainer._run_spec import (
     FitContext,
     fit_spec,
     fitted_spec,
-    model_metrics,
+    registry_metrics,
 )
 from kumo.engine.trainer._scoring import (
     ScoringDefaults,
@@ -228,11 +227,12 @@ class TrainingResult:
             tracker = as_tracking(config.tracking)
             if tracker is not None and tracker.register is not None:
                 return cast(PublishedModel, _with_metrics(
-                    tracker.register(self, config.registry), model_metrics(self)))
+                    tracker.register(self, config.registry),
+                    registry_metrics(self)))
             config = _connector_registry(config, self.snapshot_id)
         _require_publisher(config)
-        return _publish(self.bundle_dir, self.bundle_id, model_metrics(self),
-                        config)[0]
+        return _publish(self.bundle_dir, self.bundle_id,
+                        registry_metrics(self), config)[0]
 
     def with_scoring_defaults(self,
                               defaults: ScoringDefaults) -> 'TrainingResult':
@@ -352,7 +352,7 @@ class PredictionResult:
             with filesystem.open_input_stream(
                     f'{root}/{PROVENANCE_FILE}') as reader:
                 (local / PROVENANCE_FILE).write_bytes(reader.read())
-        except (FileNotFoundError, OSError):
+        except OSError:
             pass
         manifest = read_manifest(local / PROVENANCE_FILE, PredictionManifest)
         here = str(_run_manifest.destination_record(connector,
@@ -575,12 +575,12 @@ HOLDOUT_FILE = 'holdout.parquet'
 HOLDOUT_META_FILE = 'holdout-meta.json'
 
 
-def _bundle_holdout(result: TrainingResult) -> TrainingResult:
+def _bundle_holdout(result: TrainingResult) -> None:
     r"""Copy the holdout into the bundle."""
     from kumo_core.artifacts import add_bundle_file
 
     if result.holdout_path is None:
-        return result
+        return
     try:
         shutil.copyfile(result.holdout_path, result.bundle_dir / HOLDOUT_FILE)
         add_bundle_file(result.bundle_dir, HOLDOUT_ROLE, HOLDOUT_FILE)
@@ -594,7 +594,6 @@ def _bundle_holdout(result: TrainingResult) -> TrainingResult:
             f"Could not add the holdout to the model bundle: {error}; a "
             f"loaded copy of this model has no holdout_df().", UserWarning,
             stacklevel=4)
-    return result
 
 
 def _listed_holdout(bundle_dir: Path) -> tuple[Optional[Path], Optional[bool]]:
@@ -1217,10 +1216,9 @@ class Trainer:
         alias = None if settings is None or settings.registry is None else (
             settings.registry.alias)
         registered, error = _store_and_register(
-            result.bundle_dir, result.manifest or (
-                None if result.bundle_id is None else stub(
-                    'model', result.bundle_id)), settings, session=session,
-            snapshot=snapshot, metrics=model_metrics(result), warn=warn,
+            result.bundle_dir,
+            bundle_manifest(result.bundle_dir, result.bundle_id), settings,
+            session=session, snapshot=snapshot, metrics=registry_metrics(result), warn=warn,
             stored=(deps.errors or [None])[0])
         if registered is not None:
             result = replace(result, registered_model=registered,
@@ -1323,7 +1321,7 @@ class Trainer:
             model_plan=effective_plan,
             provenance=FitRecord(
                 train_table=train_table,
-                warm_start=None if warm_start is None else parent_model(
+                warm_start=None if warm_start is None else bundle_manifest(
                     warm_start._training_result.bundle_dir,
                     warm_start_bundle_id),
                 started_at=started_at, fit_mode=fit_mode,
@@ -1471,7 +1469,7 @@ class Trainer:
                                    scoring_defaults)
             training_result = replace(training_result,
                                       scoring_defaults=scoring_defaults)
-        training_result = _bundle_holdout(training_result)
+        _bundle_holdout(training_result)
         try:
             training_result = replace(
                 training_result,
@@ -1492,7 +1490,7 @@ class Trainer:
             training_result = replace(
                 training_result, published_model=_publish(
                     training_result.bundle_dir, training_result.bundle_id,
-                    model_metrics(training_result), export_config)[0])
+                    registry_metrics(training_result), export_config)[0])
 
         training_result = replace(training_result, _trainer=self)
         self._training_result = training_result

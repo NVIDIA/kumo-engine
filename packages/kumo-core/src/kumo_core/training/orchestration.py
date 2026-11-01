@@ -429,7 +429,7 @@ def run_callable_training(
         task=task,
         auto_trainer=auto_trainer,
         best_trainer=best_trainer,
-        published_counts=getattr(published, 'counts', None),
+        published_counts=published.counts,
     )
 
 
