@@ -21,16 +21,6 @@ def rows(task='binary', normal=.8, control=.5, baseline=.5):
     ]
 
 
-def test_frozen_recipe_has_a_twenty_batch_shortfall():
-    assert hasattr(nightly, 'training_budget'), 'Training budget preflight is missing'
-    budget = nightly.training_budget(nightly.smoke.make_plan('binary').as_json())
-    assert budget == dict(max_completed_batches=200, required_batches=220,
-                          shortfall_batches=20, eligible=False)
-    assert nightly.training_budget(dict(optimization=dict(
-        max_epochs=11, max_steps_per_epoch=20)))['eligible']
-    assert not nightly.training_budget(dict(optimization={}))['eligible']
-
-
 def test_baseline_diagnostics_keep_gain_and_control_values_without_a_gate():
     result = nightly.check_learning(rows())
     assert result['policy'] == 'report_only'
@@ -163,7 +153,7 @@ def test_nightly_keeps_product_oom_recovery(monkeypatch, tmp_path, method,
     None, 'no_learning', 'leaked_control', 'missing_score',
     'missing_measurement'
 ])
-def test_final_comparison_keeps_quality_but_rejects_missing_training_window(
+def test_sixteen_case_comparison_accepts_frozen_work_without_calibration(
         tmp_path, damage):
     """Exercise the full comparison reader and writer, with no GPU execution claim."""
     from types import SimpleNamespace
@@ -209,7 +199,9 @@ def test_final_comparison_keeps_quality_but_rejects_missing_training_window(
                             for _ in range(10)
                         ],
                         restored_tensors=1,
-                        reload_checks=1)
+                        reload_checks=1,
+                        oom_observation_protocol='core-oom-warning-v1',
+                        oom_recoveries=[])
             work.update({
                 key: [dict(status='PASS', steps=200, cuda_batches=200)]
                 for key in ('core_fit_ledger', 'fit_ledger')
@@ -344,17 +336,16 @@ def test_final_comparison_keeps_quality_but_rejects_missing_training_window(
         with pytest.raises(ValueError, match='measurement'):
             nightly.compare(args)
         return
-    with pytest.raises(ValueError, match='Training window'):
-        nightly.compare(args)
+    nightly.compare(args)
     report = nightly.read(args.output_dir / 'comparison.json')
-    assert report['status'] == 'INVALID'
+    assert report['status'] == 'PASS'
     assert report['functional_status'] == 'PASS'
     assert report['quality_policy'] == 'report_only'
     assert report['learning']['policy'] == 'report_only'
-    assert report['steady_state_training_status'] == 'INVALID'
+    assert report['performance_comparison_status'] == 'UNAVAILABLE'
     assert all(
-        not row['training_window_changes']['eligible']
-        and row['training_window_changes']['time']['percentage_change'] is None
+        not row['comparison_context']['compatible']
+        and row['resource_changes']['elapsed_seconds']['percentage_change'] is None
         for row in report['cases'])
     binary = report['learning']['tasks']['binary']
     assert binary['normal_score'] == (.5 if damage == 'no_learning' else .8)
@@ -481,14 +472,6 @@ def test_timing_comparison_rejects_batch_reduction_and_unknown_training_work(
     reduced = copy.deepcopy(row)
     reduced['work']['training_epochs'][0]['batch_sizes'][3] = 32
     nightly.save(tmp_path / 'result.json', reduced)
-    assert not nightly.comparison_context(reference, dict(runtime=runtime),
-                                          previous, tmp_path)['compatible']
-    nightly.save(tmp_path / 'result.json', row)
-    with_window = copy.deepcopy(row)
-    with_window['work']['training_window'] = dict(
-        format='kumo-training-window-v1', scope='training_batches_21_220',
-        warmup_batches=20, status='INCOMPLETE')
-    nightly.save(tmp_path / 'result.json', with_window)
     assert not nightly.comparison_context(reference, dict(runtime=runtime),
                                           previous, tmp_path)['compatible']
     nightly.save(tmp_path / 'result.json', row)

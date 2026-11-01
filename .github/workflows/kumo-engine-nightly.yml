@@ -17,7 +17,7 @@ on:  # yamllint disable-line rule:truthy
 permissions:
   contents: read
 concurrency:
-  group: engine-nightly-fixed-aws-vm
+  group: engine-nightly-${{ github.ref }}
   cancel-in-progress: false
 env:
   PIP_CONFIG_FILE: /dev/null

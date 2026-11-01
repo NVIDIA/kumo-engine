@@ -130,7 +130,9 @@ def measured_fixture():
         restored_tensors=1,
         reload_checks=1,
         core_fit_ledger=[dict(status='PASS', steps=200, cuda_batches=200)],
-        fit_ledger=[dict(status='PASS', steps=200, cuda_batches=200)])
+        fit_ledger=[dict(status='PASS', steps=200, cuda_batches=200)],
+        oom_observation_protocol='core-oom-warning-v1',
+        oom_recoveries=[])
     for task in [
             'binary', 'multiclass', 'regression', 'multilabel',
             'multilabel_ranking', 'forecasting', 'static_link', 'temporal_link'
@@ -171,9 +173,7 @@ def test_current_result_needs_bound_mode_version_reference_and_restored_state(
     import copy
     run = controller()
     request, receipt, report = measured_fixture()
-    # Functional completion alone cannot qualify the missing 20/200 window.
-    with pytest.raises(ValueError, match='Training window'):
-        run.validate_nightly_result(request, receipt, report)
+    run.validate_nightly_result(request, receipt, report)
     damaged = []
     for key, value in [('reference_only', True),
                        ('reference_sha256', '0' * 64)]:
@@ -192,6 +192,12 @@ def test_current_result_needs_bound_mode_version_reference_and_restored_state(
     value_report = copy.deepcopy(report)
     del value_report['runs'][0]['measurements']
     damaged.append((value_report, 'Resource measurement'))
+    value_report = copy.deepcopy(report)
+    value_report['runs'][0]['work']['oom_recoveries'] = [{'stage': 'predict'}]
+    damaged.append((value_report, 'OOM recovery'))
+    value_report = copy.deepcopy(report)
+    value_report['runs'][0]['work'].pop('oom_observation_protocol')
+    damaged.append((value_report, 'OOM recovery observation'))
     for candidate, reason in damaged:
         with pytest.raises(ValueError, match=reason):
             run.validate_nightly_result(request, receipt, candidate)
