@@ -108,8 +108,7 @@ def test_publish_records_pointers_and_holdout_metrics_in_catalog(
 
     sink = SnowflakeModelRegistryMixin()
     monkeypatch.setattr(sink, '_registry', registry)
-    monkeypatch.setattr(registry_module, '_bundle_model', lambda _: object())
-    monkeypatch.setattr(registry_module, '_carrier_signature', lambda: {})
+    monkeypatch.setattr(registry_module, '_model_args', lambda *_: {})
     metrics = {'auroc': 0.9213, 'holdout_loss': 0.5, 'brier': float('nan')}
     published = sink.publish_model(
         SimpleNamespace(), str(bundle),
@@ -349,8 +348,7 @@ def test_publish_records_the_task_type_monitors_need(tmp_path, monkeypatch,
 
     sink = SnowflakeModelRegistryMixin()
     monkeypatch.setattr(sink, '_registry', registry)
-    monkeypatch.setattr(registry_module, '_bundle_model', lambda _: object())
-    monkeypatch.setattr(registry_module, '_carrier_signature', lambda: {})
+    monkeypatch.setattr(registry_module, '_model_args', lambda *_: {})
     sink.publish_model(SimpleNamespace(), str(bundle),
                        location=ModelRegistryLocation('CHURN', version='V1'))
     assert calls[0].get('task') == expected

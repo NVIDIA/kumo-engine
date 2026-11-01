@@ -37,6 +37,7 @@ import logging
 import math
 import re
 import shutil
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import (
@@ -183,6 +184,15 @@ def _carrier_signature() -> Dict[str, "model_signature.ModelSignature"]:
                     name='score', dtype=model_signature.DataType.DOUBLE)
             ],
         )
+    }
+
+
+def _model_args(bundle: Path, metadata: Mapping[str, str],
+                connector: SourceConnector, workdir: str) -> Dict[str, Any]:
+    r"""``log_model`` arguments for the bundle's carrier model."""
+    return {
+        'model': _bundle_model(str(bundle)),
+        'signatures': _carrier_signature()
     }
 
 
@@ -387,18 +397,19 @@ class SnowflakeModelRegistryMixin:
                 f"has no {_SPEC_FILE}, which an export writes into every one.")
 
         record = {**_finite(metrics), **_version_record(metadata)}
-        with self._registry(connector) as registry:
+        with tempfile.TemporaryDirectory() as workdir, \
+                self._registry(connector) as registry:
+            args = _model_args(bundle, metadata, connector, workdir)
             name = location.version or _next_version(registry,
                                                      location.model_name)
             for attempt in range(3):
                 try:
                     version = registry.log_model(
-                        _bundle_model(str(bundle)),
                         model_name=location.model_name,
                         version_name=name,
                         comment=_comment(location.comment, metrics),
                         metrics=record,
-                        signatures=_carrier_signature(),
+                        **args,
                         **_task(bundle),
                     )
                     break
