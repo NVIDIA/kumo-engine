@@ -134,7 +134,9 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
     info = log_model(trainer, snapshot=snapshot,
                      serving_snapshot=str(tmp_path / 'exports' / location))
 
-    assert mlflow.get_run(info.run_id).info.status == 'FINISHED'
+    run = mlflow.get_run(info.run_id)
+    assert run.info.status == 'FINISHED'
+    assert 'ents' in {item.dataset.name for item in run.inputs.dataset_inputs}
     requirements = mlflow.pyfunc.get_model_dependencies(info.model_uri)
     assert f'kumo-engine[gcs,s3]=={kumo.__version__}' in open(
         requirements).read().splitlines()

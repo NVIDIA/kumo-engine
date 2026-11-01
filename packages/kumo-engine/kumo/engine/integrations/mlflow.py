@@ -26,6 +26,7 @@ from typing import (
     Literal,
     Mapping,
     Optional,
+    Sequence,
     Set,
     Tuple,
 )
@@ -275,9 +276,6 @@ class MlflowTracking(TrackingBase):
                 _SystemMetrics(self.log_metrics))
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
-        if record.tags.get('kumo.kind') != 'fit':
-            with self.target.scope():
-                _log_inputs(self._mlflow, client, self._parent, record.inputs)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
         key = (event.trial or 0, int(event.params['attempt']))
@@ -388,9 +386,18 @@ class MlflowTracking(TrackingBase):
                                      json.dumps([*logged, entry]))
 
     def _log_dataset(self, summary: Dataset) -> None:
+        self._log_inputs(self._parent, [summary])
+
+    def _log_inputs(self, run_id: str, summaries: Sequence[Dataset]) -> None:
+        datasets = [d for d in map(self._dataset_input, summaries) if d]
+        if datasets:
+            with self.target.scope():
+                self._client.log_inputs(run_id, datasets=datasets)
+
+    def _dataset_input(self, summary: Dataset) -> Any:
         source = _dataset_source(summary.source)
         if source is None:
-            return
+            return None
         entities = self._mlflow.entities
         version = summary.source.get('version') or ''
         dataset = entities.Dataset(
@@ -404,10 +411,8 @@ class MlflowTracking(TrackingBase):
                                                          'string')}
                 for name, column in summary.schema.items()]}),
             profile=json.dumps(summary.profile, default=str))
-        with self.target.scope():
-            self._client.log_inputs(self._parent, datasets=[
-                entities.DatasetInput(dataset, tags=[entities.InputTag(
-                    'mlflow.data.context', summary.context)])])
+        return entities.DatasetInput(dataset, tags=[entities.InputTag(
+            'mlflow.data.context', summary.context)])
 
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         for name, text in artifacts.items():
@@ -595,8 +600,8 @@ def log_model(
             none.
         target: as in `MlflowTracking`.
     """
+    from kumo.engine._manifest import artifact_summaries
     from kumo.engine._mlops import snapshot_uri
-    from kumo.engine._tracking import fit_inputs
     from kumo.engine.trainer._provenance import bundle_manifest
 
     mlflow = import_provider('mlflow', 'mlflow')
@@ -618,7 +623,11 @@ def log_model(
             run_id = client.create_run(
                 tracking._experiment_for(client)).info.run_id
         experiment_id = client.get_run(run_id).info.experiment_id
-        _log_inputs(mlflow, client, run_id, fit_inputs(result.manifest))
+    if result.manifest is not None:
+        tracking._log_inputs(run_id, [
+            summary for summary in artifact_summaries(result.manifest,
+                                                      'training')
+            if isinstance(summary, Dataset)])
     info = _log_model(target, client, result.bundle_dir,
                       bundle_manifest(result.bundle_dir, result.id),
                       snapshot, run_id, experiment_id, name,
@@ -771,30 +780,6 @@ def _requirement(config: Any) -> str:
             for encoder in table.values()):
         extras.append('text')
     return f"kumo-engine[{','.join(extras)}]=={__version__}"
-
-
-def _log_inputs(mlflow: Any, client: Any, run_id: str,
-                inputs: Mapping[str, Mapping[str, Optional[str]]]) -> None:
-    try:
-        meta = import_provider('mlflow.data.meta_dataset', 'mlflow')
-        entities = mlflow.entities
-        datasets = []
-        for name, entry in inputs.items():
-            source = _dataset_source(entry)
-            if source is None:
-                continue
-            digest = hashlib.sha256(
-                json.dumps(dict(entry), sort_keys=True).encode()).hexdigest()
-            dataset = meta.MetaDataset(source, name=name, digest=digest[:8])
-            datasets.append(
-                entities.DatasetInput(
-                    dataset._to_mlflow_entity(),
-                    tags=[entities.InputTag('mlflow.data.context', 'train')]))
-        if datasets:
-            client.log_inputs(run_id, datasets=datasets)
-    except Exception as error:
-        logger.warning('Could not log the fit\'s source tables to MLflow: %s',
-                       format_error(error), exc_info=True)
 
 
 def _register(target: Any, client: Any, info: Any,
