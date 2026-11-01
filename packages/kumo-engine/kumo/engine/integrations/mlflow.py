@@ -314,7 +314,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                     self._log_metrics(fit.run_id, model_metrics(result),
                                       model_id=info.model_id)
             published = _register(self.target, client, info, location,
-                                  pointers)
+                                  pointers, held)
             if fit is None:
                 _describe_version(self.target, client, published,
                                   _version_text(model_metrics(result), None,
@@ -553,10 +553,13 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
         self._model_id = info.model_id
         if registry is None:
             return None
+        pointers = registry_pointers(_id(manifest))
         try:
+            with self.target.scope():
+                held = _registered_version(self._client,
+                                           registry.model_name, pointers)
             self._published = _register(self.target, self._client, info,
-                                        registry,
-                                        registry_pointers(_id(manifest)))
+                                        registry, pointers, held)
         except Exception as error:
             raise RegistrationError(full_error(error)) from error
         return self._published
@@ -1370,10 +1373,11 @@ def _log_inputs(mlflow: Any, client: Any, run_id: str,
 
 def _register(target: Any, client: Any, info: Any,
               location: ModelRegistryLocation,
-              metadata: Mapping[str, str]) -> PublishedModel:
+              metadata: Mapping[str, str],
+              version: Optional[str]) -> PublishedModel:
+    r"""Registers ``info`` as a new version unless ``version`` holds it."""
     name = location.model_name
     with target.scope():
-        version = _registered_version(client, name, metadata)
         if version is None:
             try:
                 client.create_registered_model(name)
