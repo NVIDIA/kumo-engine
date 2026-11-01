@@ -37,8 +37,7 @@ class Routed:
 
 
 def route(summaries: Sequence[Summary], charts: bool) -> Routed:
-    r"""Brief tables and notes go on the card; series and histograms become
-    tables; chart series stay charts only when ``charts``."""
+    r"""Sorts summaries by how a tracker writes them."""
     routed, tables = Routed(), []
     series: Dict[str, Tuple[str, Dict[str, Dict[int, float]]]] = {}
     histograms: Dict[str, List[Histogram]] = {}

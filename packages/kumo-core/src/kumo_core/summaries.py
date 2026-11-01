@@ -9,8 +9,7 @@ from typing import Any, Literal, Mapping, Optional, Tuple, Union
 
 @dataclass(frozen=True)
 class Scalar:
-    r"""``role='model'`` marks the model's own quality, which also goes on
-    the logged model."""
+    r"""A metric; ``role='model'`` also logs it on the model."""
 
     name: str
     value: float
@@ -25,9 +24,7 @@ class Tag:
 
 @dataclass(frozen=True)
 class Series:
-    r"""``(step, value)`` points; ``x_label`` says what a step counts;
-    ``chart`` asks for a chart over the steps where a tracker draws one,
-    rather than a table."""
+    r"""``(step, value)`` points, drawn as a chart where ``chart`` is set."""
 
     name: str
     points: Tuple[Tuple[int, float], ...]
@@ -37,9 +34,7 @@ class Series:
 
 @dataclass(frozen=True)
 class Histogram:
-    r"""``counts[i]`` values in ``[edges[i - 1], edges[i])``: ``counts[0]``
-    below ``edges[0]`` and ``counts[-1]`` at or above ``edges[-1]``, all
-    within ``extent``, the values' minimum and maximum, when known."""
+    r"""Counts on ``edges``, with open end bins; ``extent`` is (min, max)."""
 
     name: str
     edges: Tuple[float, ...]
@@ -49,8 +44,7 @@ class Histogram:
 
 @dataclass(frozen=True)
 class Table:
-    r"""``brief`` marks a small table (at most 12 rows and 5 columns) shown
-    with the run's description rather than as a file."""
+    r"""A table; a ``brief`` one (at most 12 x 5) goes on the run card."""
 
     name: str
     columns: Tuple[str, ...]
@@ -60,8 +54,7 @@ class Table:
 
 @dataclass(frozen=True)
 class Note:
-    r"""A line of text for the run's description, under ``section``: a
-    warning, why a value is missing, or where something is."""
+    r"""A line of text for the run card, under ``section``."""
 
     section: str
     text: str
@@ -69,8 +62,7 @@ class Note:
 
 @dataclass(frozen=True)
 class Confusion:
-    r"""``counts[i][j]`` rows of actual ``labels[i]`` predicted
-    ``labels[j]``."""
+    r"""``counts[i][j]``: rows of actual ``labels[i]``, predicted ``labels[j]``."""
 
     name: str
     labels: Tuple[str, ...]

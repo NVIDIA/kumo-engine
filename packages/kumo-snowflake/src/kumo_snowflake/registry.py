@@ -374,14 +374,11 @@ class SnowflakeModelRegistryMixin:
             path: Refused. A registry addresses a model by name.
             location: The
                 :class:`~kumoapi.plugin.ModelRegistryLocation` naming
-                the model, and optionally the version. A version of ``None``
-                is the next ``V<n>`` after the model's highest, retried with
-                the one after if a concurrent registration takes it.
+                the model, and optionally the version; by default the next
+                ``V<n>``.
             metadata: Returned with the publication result; its
                 ``kumo_bundle_id`` is also recorded in the version's metrics.
-            metrics: The model's holdout metrics, recorded in the version's
-                metrics and as a line after ``location.comment``; also
-                returned with the publication result.
+            metrics: The model's holdout metrics, recorded on the version.
             project_id: Ignored; a local runtime has no projects.
 
         Returns:

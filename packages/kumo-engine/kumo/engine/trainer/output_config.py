@@ -22,18 +22,14 @@ from kumo.engine.connector.base import Connector
 
 @dataclass(frozen=True)
 class PredictionOutputConfig:
-    """Export via ``connector``.
+    """Where prediction outputs go, via ``connector``.
 
-    ``path`` names where predictions go: a directory or file on a file
-    destination (local, S3, GCS, a volume or stage), else a table. Use
-    ``output_paths`` for exact predictions/embeddings destinations, or
-    ``artifact_type`` and ``table_name`` for one legacy destination.
-    ``extra_fields`` applies to every selected artifact, only when passed to
-    ``Trainer.predict``; ``PredictionResult.export`` rejects it.
-    A table is replaced by default; ``WriteMode.APPEND`` adds rows with
-    ``PREDICTION_ID`` and ``BUNDLE_ID`` columns. A file destination is
-    written at exactly ``path``; ``WriteMode.OVERWRITE`` replaces what it
-    holds.
+    Args:
+        path: A directory or file on a file destination, else a table.
+        output_paths: Exact predictions and embeddings destinations.
+        extra_fields: Only for ``Trainer.predict``.
+        write_mode: ``APPEND`` adds ``PREDICTION_ID`` and ``BUNDLE_ID`` to a
+            table; ``OVERWRITE`` empties a file destination first.
     """
 
     connector: Connector

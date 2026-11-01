@@ -516,9 +516,8 @@ class Tracking(Protocol):
     ``platform``, ``run_id``, ``run_url``, ``experiment`` and
     ``logged_run_name``, the tracker's own run once `start` returned,
     recorded as the model manifest's ``tracking`` (`tracking_ref`); and
-    the best-effort hooks ``log_prediction_run(record)``, whose system
-    metrics a ``sample_system_metrics()`` context samples while the run
-    works, and ``log_monitoring(record)``.
+    the best-effort ``log_prediction_run(record)`` and
+    ``log_monitoring(record)``.
     """
     def start(self, record: RunRecord) -> None:
         ...

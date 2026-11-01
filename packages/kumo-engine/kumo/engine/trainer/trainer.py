@@ -216,10 +216,7 @@ class TrainingResult:
         return self._model('predict').predict(*args, **kwargs)
 
     def export(self, config: Any) -> PublishedModel:
-        """Publish this model's bundle to a ``ModelOutputConfig``, or
-        register it at a `kumo.MLOps` ``registry`` through its tracker; an
-        MLflow or Unity Catalog registry that already holds the bundle
-        returns that version, while Snowflake adds a new one."""
+        """Publish this model to a ``ModelOutputConfig`` or `kumo.MLOps` registry."""
         from kumo.engine._mlops import MLOps
 
         if isinstance(config, MLOps):
@@ -1781,13 +1778,10 @@ class Trainer:
 
         Args:
             previous: An earlier run, for run-over-run statistics.
-            snapshot: The snapshot the run scored. By default, the one the
-                run's manifest names, from the local snapshot store or,
-                with MLOps on, the artifact root.
-            training_snapshot: The snapshot this model trained on; found
-                like ``snapshot`` by default.
-            mlops: Writes the report into ``run``'s prediction run when
-                tracking is on, like `evaluate`.
+            snapshot: The snapshot the run scored; by default the one its
+                manifest names.
+            training_snapshot: The snapshot this model trained on.
+            mlops: Tracks the report in ``run``'s prediction run.
         """
         from kumo.engine._mlops import resolve
         from kumo.engine._monitoring import score_drift, track

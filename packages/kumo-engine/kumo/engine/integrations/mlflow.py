@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""MLflow tracking and models for `Trainer.fit`, `Trainer.predict` and
-monitoring (``pip install 'kumo-engine[mlflow]'``)."""
+r"""MLflow tracking and models (``pip install 'kumo-engine[mlflow]'``)."""
 
 import hashlib
 import json
@@ -104,8 +103,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
     tables (Unity Catalog then links them to a model registered from the
     run), file and object-store sources by URI. Params MLflow rejects are
     counted in ``kumo.dropped_params``. Concurrent fits in one process are
-    not supported. Prediction runs are runs of their own; monitoring calls
-    are written into the prediction run they check.
+    not supported.
 
     Args:
         experiment_name: experiment for the fit run, created if missing.
@@ -794,8 +792,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
 
     def log_summaries(self, summaries: Sequence[Summary],
                       run_id: Optional[str] = None) -> None:
-        r"""Logs ``summaries`` on run ``run_id`` (default: the current run);
-        notes and brief tables go on its card."""
+        r"""Logs ``summaries`` on run ``run_id``, by default the current run."""
         routed = route(summaries, charts=True)
         self._card += routed.card
         self._log_routed(routed, run_id or self._parent)
