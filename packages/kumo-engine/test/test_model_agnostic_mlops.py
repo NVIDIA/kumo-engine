@@ -366,3 +366,69 @@ def test_a_model_that_was_not_stored_is_not_registered(
     registered, error = _store_and_register(bundle, manifest, settings,
                                             warn=False, stored=asset_failure)
     assert registered is None and error is asset_failure
+
+
+def test_volume_assets_load_through_the_connector_the_loader_was_given(
+        tmp_path, monkeypatch):
+    from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
+
+    from kumo.engine.integrations import _mlflow_model
+    from kumo.engine.integrations.mlflow import _target_hint
+
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    (tmp_path / 'volume').mkdir()
+    files = SubTreeFileSystem(str(tmp_path / 'volume'), LocalFileSystem())
+    volume = SimpleNamespace(sink_backend=SimpleNamespace(
+        holds_files=lambda connector, path: path.startswith('/Volumes/'),
+        filesystem=lambda connector, path: (files, path.lstrip('/'))))
+    (tmp_path / 'vocab').mkdir()
+    (tmp_path / 'vocab' / 'words.txt').write_text('a b c')
+    recorded = Dependencies(settings=kumo.MLOps((volume, '/Volumes/c/s/v/a')))
+    record = recorded.require(FileAsset('toy', 'vocab', tmp_path / 'vocab'))
+    assert record.location.startswith('/Volumes/c/s/v/a/assets/toy/')
+    manifest = ModelManifest(id='m', dependencies=[record])
+
+    with _deps.asset_locations([], _target_hint):
+        with pytest.raises(MissingDependencyError,
+                           match=r'pass target=DatabricksConnector\('
+                           r'identity=\.\.\.\) to load_model\(model_uri, '
+                           r'\.\.\.\), with an identity that reads '
+                           r'/Volumes/c/s/v/a/assets\.$'):
+            Dependencies.of(manifest).resolve('toy', 'vocab')
+    with _deps.asset_locations(_deps.connector_roots(manifest, volume)):
+        assert (Dependencies.of(manifest).resolve('toy', 'vocab') /
+                'words.txt').read_text() == 'a b c'
+    other_root = kumo.MLOps((volume, '/Volumes/c/s/v/b'))
+    assert Dependencies.of(manifest, other_root).resolve('toy', 'vocab')
+
+    seen = []
+    monkeypatch.setattr(
+        'kumo.engine._predictor.load_predictor', lambda bundle: seen.append(
+            Dependencies.of(manifest).candidates(record)[0]))
+    monkeypatch.setattr('kumo.engine.trainer._provenance.read_provenance',
+                        lambda bundle: manifest)
+    _mlflow_model.KumoModel().load_context(SimpleNamespace(
+        artifacts={'bundle': str(tmp_path)},
+        model_config={'columns': [], 'assets_from': volume}))
+    assert seen == [(volume, record.location)]
+
+
+def test_the_pyfunc_reads_a_volume_snapshot_through_assets_from(
+        monkeypatch):
+    from kumo.engine.graph import GraphSnapshot
+    from kumo.engine.integrations import _mlflow_model
+
+    volume = SimpleNamespace(sink_backend=SimpleNamespace(
+        holds_files=lambda connector, path: path.startswith('/Volumes/'),
+        filesystem=lambda connector, path: None))
+    loads = []
+    monkeypatch.setattr(GraphSnapshot, 'load_from_connector',
+                        lambda connector, *, path: loads.append(
+                            (connector, path)))
+    model = _mlflow_model.KumoModel()
+    model._snapshots, model._reader = {}, volume
+    model._snapshot('/Volumes/c/s/v/a/snapshots/g/version')
+    model._reader = None
+    model._snapshot('/Volumes/c/s/v/b/snapshots/g/version')
+    assert loads[0] == (volume, '/Volumes/c/s/v/a/snapshots/g/version')
+    assert loads[1][0] is not volume and loads[1][1] == 'version'

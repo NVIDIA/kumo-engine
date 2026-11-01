@@ -1420,8 +1420,12 @@ class Trainer:
         published = sink.fetch_model(cast(SourceConnector, model_registry),
                                      str(bundle_dir), path=address.path,
                                      location=address.location)
-        trainer = cls._load_bundle(bundle_dir, embedding_models,
-                                   accelerator=accelerator)
+        with dependency.assets_through(
+                model_registry, bundle_dir, lambda reader, _: (
+                    f'pass a {reader}(...) with an identity that reads it '
+                    f'as Trainer.load_from_connector(model_registry, ...)')):
+            trainer = cls._load_bundle(bundle_dir, embedding_models,
+                                       accelerator=accelerator)
         warn_if_other_bundle(published.metadata, trainer)
         return trainer
 

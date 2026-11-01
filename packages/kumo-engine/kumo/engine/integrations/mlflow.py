@@ -788,6 +788,7 @@ def load_model(
     Args:
         target: as in `MlflowTracking`.
     """
+    from kumo.engine._deps import assets_through
     from kumo.engine._scratch import new_run_id, trainer_scratch_dir
     from kumo.engine.trainer.trainer import Trainer, warn_if_other_bundle
 
@@ -799,10 +800,20 @@ def load_model(
         local = Path(_download(mlflow, target, model_uri, destination))
     model = mlflow.models.Model.load(str(local))
     bundle = model.flavors['python_function']['artifacts']['bundle']['path']
-    trainer = Trainer.load(local / bundle, embedding_models,
-                           accelerator=accelerator)
+    with assets_through(target.assets, local / bundle, _target_hint):
+        trainer = Trainer.load(local / bundle, embedding_models,
+                               accelerator=accelerator)
     warn_if_other_bundle(model.metadata, trainer)
     return trainer
+
+
+def _target_hint(reader: str, location: str) -> str:
+    target = {
+        'DatabricksConnector': 'DatabricksConnector(identity=...)',
+        'S3Connector': 'SageMakerMLflow(arn, identity=S3Identity(...))',
+    }.get(reader, f'a {reader}')
+    return (f'pass target={target} to load_model(model_uri, ...), with an '
+            f'identity that reads {location.rsplit("/", 2)[0]}')
 
 
 def _download(mlflow: Any, target: Any, model_uri: str,
@@ -879,6 +890,7 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
                     'columns': [] if signature is None else
                     signature.outputs.input_names(),
                     'snapshot': serving_snapshot,
+                    'assets_from': None,
                 },
                 artifacts={
                     'bundle': str(bundle_dir),
