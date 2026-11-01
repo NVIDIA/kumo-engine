@@ -13,6 +13,7 @@ from typing import Any, Mapping, Optional, Tuple
 import pandas as pd
 from kumoapi.jobs import WriteMode
 from kumoapi.plugin import (
+    FileStoreSink,
     ModelRegistryLocation,
     PublishedModel,
     SourceConnector,
@@ -394,7 +395,7 @@ class _ArrowExportFiles:
 
 class FilesystemSink(ObjectStoreSinkBackend):
     """The object-store file writers over any sink's ``filesystem()``."""
-    def __init__(self, sink: Any) -> None:
+    def __init__(self, sink: FileStoreSink) -> None:
         self._sink = sink
         self.provider = type(sink).__name__
 
