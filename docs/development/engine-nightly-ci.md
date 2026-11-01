@@ -118,9 +118,15 @@ Twelve retained cases support score replay. The saved static-link normal model
 passed repeat and partial checks, but reload reordered two positions for one
 of 176,856 entities. The strict order assertion remains FAIL.
 An isolated GPU replay reproduced the same swap without reloading the model.
-Public deterministic PyTorch algorithms removed the variation in a controlled
-single-batch experiment. This narrows the cause to GPU computation order;
-it does not prove that the full case or sixteen-case workflow passes.
+With public deterministic PyTorch algorithms, the saved model then passed
+full repeat, partial and reload rank checks on the original inputs, with zero
+new fits. Reload verified 303 restored tensors. The three checks took 345.30
+seconds and processed 88,428,000, 44,214,000 and 88,428,000 output rows.
+Repeat and reload scores matched exactly. Partial scores differed by at most
+`0.000322878360748291`, above the compact PR check's `1e-4` bound.
+Keep that difference visible under nightly's existing reporting policy.
+These checks compare the same new runtime protocol. They preserve the earlier
+historical-protocol FAIL and do not establish a full sixteen-case workflow PASS.
 Static-link control and both temporal-link cases lack located and verified
 historical models and raw predictions. Preserve these gaps and every failure.
 
