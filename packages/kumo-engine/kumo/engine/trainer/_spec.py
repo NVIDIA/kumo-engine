@@ -145,7 +145,11 @@ def read_bundle_artifact_paths(
     return {
         entry['role']: str(bundle_dir / entry['relative_path'])
         for entry in artifacts
-        if entry['role'] not in (SPEC_ROLE, PROVENANCE_ROLE,
-                                 SCORING_DEFAULTS_ROLE, HOLDOUT_ROLE,
-                                 HOLDOUT_META_ROLE)
+        if entry['role'] not in (
+            SPEC_ROLE,
+            PROVENANCE_ROLE,
+            SCORING_DEFAULTS_ROLE,
+            HOLDOUT_ROLE,
+            HOLDOUT_META_ROLE,
+        )
     }, bundle_id

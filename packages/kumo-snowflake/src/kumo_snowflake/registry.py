@@ -527,25 +527,26 @@ class SnowflakeModelRegistryMixin:
                           location.model_name, version.version_name,
                           metadata.get(BUNDLE_ID_KEY))
                 _backfill(version, metrics, location.comment)
-            else:
-                name = location.version or _next_version(
-                    registry, location.model_name)
-                for attempt in range(3):
-                    try:
-                        version = registry.log_model(
-                            model_name=location.model_name,
-                            version_name=name,
-                            comment=_comment(location.comment, metrics),
-                            metrics=record,
-                            **args,
-                            **_task(bundle),
-                        )
-                        break
-                    except Exception:
-                        taken, name = name, location.version or _next_version(
-                            registry, location.model_name)
-                        if name == taken or attempt == 2:
-                            raise
+                return _published(connector, version, metadata=metadata,
+                                  metrics=metrics)
+            name = location.version or _next_version(registry,
+                                                     location.model_name)
+            for attempt in range(3):
+                try:
+                    version = registry.log_model(
+                        model_name=location.model_name,
+                        version_name=name,
+                        comment=_comment(location.comment, metrics),
+                        metrics=record,
+                        **args,
+                        **_task(bundle),
+                    )
+                    break
+                except Exception:
+                    taken, name = name, location.version or _next_version(
+                        registry, location.model_name)
+                    if name == taken or attempt == 2:
+                        raise
         return _published(connector, version, metadata=metadata,
                           metrics=metrics)
 

@@ -761,10 +761,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
         self._log_routed(routed, self._parent)
 
     def _log_routed(self, routed: Routed, run_id: str) -> None:
-        datasets = [d for d in map(self._dataset_input, routed.datasets) if d]
-        if datasets:
-            with self.target.scope():
-                self._client.log_inputs(run_id, datasets=datasets)
+        self._log_inputs(run_id, routed.datasets)
         scalars = routed.scalars
         self._log_metrics(run_id, {s.name: s.value for s in scalars
                                    if s.role == 'model'},
@@ -779,6 +776,12 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
         if routed.tags:
             self._log_tags(run_id, routed.tags)
         self._write_tables(run_id, routed.tables)
+
+    def _log_inputs(self, run_id: str, summaries: Sequence[Dataset]) -> None:
+        datasets = [d for d in map(self._dataset_input, summaries) if d]
+        if datasets:
+            with self.target.scope():
+                self._client.log_inputs(run_id, datasets=datasets)
 
     def _dataset_input(self, summary: Dataset) -> Any:
         source = _dataset_source(summary.source)
@@ -1095,8 +1098,8 @@ def log_model(
             none.
         target: as in `MlflowTracking`.
     """
+    from kumo.engine._manifest import artifact_summaries
     from kumo.engine._mlops import snapshot_uri
-    from kumo.engine._tracking import fit_inputs
     from kumo.engine.trainer._provenance import bundle_manifest
     from kumo.engine.trainer._run_spec import registry_metrics
 
@@ -1119,7 +1122,14 @@ def log_model(
             run_id = client.create_run(
                 tracking._experiment_for(client)).info.run_id
         experiment_id = client.get_run(run_id).info.experiment_id
-        _log_inputs(mlflow, client, run_id, fit_inputs(result.manifest))
+    summaries = [] if result.manifest is None else artifact_summaries(
+        result.manifest, 'training')
+    try:
+        tracking._log_inputs(
+            run_id, [s for s in summaries if isinstance(s, Dataset)])
+    except Exception as error:
+        logger.warning('Could not log the fit\'s source tables to MLflow: %s',
+                       format_error(error), exc_info=True)
     registered = getattr(result.registered_model, 'name', None)
     info = _log_model(target, client, result.bundle_dir,
                       bundle_manifest(result.bundle_dir, result.id),
@@ -1299,30 +1309,6 @@ def _requirement(config: Any) -> str:
             for encoder in table.values()):
         extras.append('text')
     return f"kumo-engine[{','.join(extras)}]=={__version__}"
-
-
-def _log_inputs(mlflow: Any, client: Any, run_id: str,
-                inputs: Mapping[str, Mapping[str, Optional[str]]]) -> None:
-    try:
-        meta = import_provider('mlflow.data.meta_dataset', 'mlflow')
-        entities = mlflow.entities
-        datasets = []
-        for name, entry in inputs.items():
-            source = _dataset_source(entry)
-            if source is None:
-                continue
-            dataset = meta.MetaDataset(source, name=name,
-                                       digest=_digest(name, entry, {}))
-            datasets.append(
-                entities.DatasetInput(
-                    dataset._to_mlflow_entity(),
-                    tags=[entities.InputTag('mlflow.data.context',
-                                            'training')]))
-        if datasets:
-            client.log_inputs(run_id, datasets=datasets)
-    except Exception as error:
-        logger.warning('Could not log the fit\'s source tables to MLflow: %s',
-                       format_error(error), exc_info=True)
 
 
 def _register(target: Any, client: Any, info: Any,

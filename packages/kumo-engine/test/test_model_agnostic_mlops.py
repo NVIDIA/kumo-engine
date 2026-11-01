@@ -87,8 +87,7 @@ class _Tracker:
 def test_any_run_is_tracked_from_its_spec():
     tracker = _Tracker()
     session = TrackingSession(tracker)
-    spec = RunSpec(kind='custom', params={'lr': 0.1},
-                   inputs={'users': {'connector': 'S3'}})
+    spec = RunSpec(kind='custom', params={'lr': 0.1})
     session.start(lambda: spec)
     session.on_event(Event('trial_started', 0.0, trial=1,
                            params={'attempt': 1}))

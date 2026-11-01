@@ -416,43 +416,6 @@ def test_source_tables_are_logged_as_native_inputs(
     assert mlflow.data.get_source(orders).delta_table_id == 'table-id'
 
 
-def test_fit_inputs_come_from_the_embedded_parents():
-    from kumo.engine._manifest import (
-        ModelManifest,
-        ModelParents,
-        SnapshotManifest,
-        SnapshotParents,
-        SourceTableEntry,
-        TrainingTableManifest,
-        TrainingTableParents,
-        stub,
-    )
-    from kumo.engine._tracking import fit_inputs
-
-    entry = {'connector': 'LOCAL_FILE', 'location': '/data/ents.parquet',
-             'version': '1790000000', 'version_kind': 'timestamp'}
-    snapshot = SnapshotManifest(id='s', parents=SnapshotParents(
-        source_tables={'ents': SourceTableEntry(**entry, sql='SELECT 1')}))
-    custom = SourceTableEntry(**{**entry, 'version': None})
-    table = TrainingTableManifest(id='t', parents=TrainingTableParents(
-        snapshot=snapshot, source_table=custom))
-    model = ModelManifest(id='m', parents=ModelParents(
-        training_table=table, warm_start=ModelManifest(
-            id='w', parents=ModelParents(training_table=TrainingTableManifest(
-                id='u', parents=TrainingTableParents(snapshot=SnapshotManifest(
-                    id='v', parents=SnapshotParents(source_tables={
-                        'old': SourceTableEntry(**entry)}))))))))
-
-    expected = {'ents': entry, 'training_table': {**entry, 'version': None}}
-    assert fit_inputs(table) == expected
-    assert fit_inputs(model) == expected
-    assert fit_inputs(TrainingTableManifest(id='t', parents=TrainingTableParents(
-        snapshot=stub('snapshot', 's'), source_table=custom))) == {
-            'training_table': {**entry, 'version': None}}
-    assert fit_inputs(stub('model', 'm')) == {}
-    assert fit_inputs(None) == {}
-
-
 def test_monitoring_folds_into_its_prediction_run(tracking_uri):
     from kumo_core.summaries import Note, Table, Tag
 
@@ -566,7 +529,7 @@ def test_link_prediction_metric_names_are_logged(tracking_uri):
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     tracker = MlflowTracking(experiment_name='lp', log_system_metrics=False)
-    tags = {'kumo.kind': 'fit'}
+    tags = {'kumo.kind': 'fit', 'kumo.run_id': 'r'}
     tracker.start(RunRecord(name='r', tags=tags))
     tracker.finish(
         RunRecord(name='r', tags=tags, metrics={

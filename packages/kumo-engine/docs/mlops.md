@@ -101,9 +101,10 @@ The registered version also scores inside Snowflake: see [Batch inference in Sno
 | `result.id` | a model (its bundle id) | `<root>/models/<id>/`; the `kumo.bundle_id` run tag; `kumo_bundle_id` on the registered version |
 | `run.id` | a prediction run | `<root>/predictions/<id>/`; the `kumo.prediction_id` run tag; the `PREDICTION_ID` column of a table output written with `WriteMode.APPEND` |
 | `result.registered_model.version` | the registered version | the registry |
-| `result.tracking`, `run.tracking` | the tracker's run of the fit or prediction: `platform`, `experiment`, `run_id`, `run_name`, `url` | the tracker's UI |
+| `result.tracking` | the tracker's run of the fit: `platform`, `experiment`, `run_id`, `run_name`, `url` | the tracker's UI |
+| `run.tracking` | the tracker's run of the prediction, with the same fields | the tracker's UI |
 
-Find runs with the platform's UI, or by tag: `kumo.kind` (`fit`, `prediction`), `kumo.bundle_id`, `kumo.prediction_id`. [What you'll see in MLflow and Snowsight](#what-youll-see-in-mlflow-and-snowsight) lists each run's names, metrics, tables and tags.
+Find runs with the platform's UI, or by tag: `kumo.kind` (`fit`, `trial`, `prediction`), `kumo.bundle_id`, `kumo.prediction_id`. [What you'll see in MLflow and Snowsight](#what-youll-see-in-mlflow-and-snowsight) lists each run's names, metrics, tables and tags.
 
 ## Turning MLOps on
 
@@ -497,7 +498,8 @@ Every artifact carries `_provenance.json`, metadata only (the underscore keeps S
 ### Artifacts, bundles and dependencies
 
 - A model's **bundle** holds only its own state: weights, encoders, the training spec and the holdout. Its manifest's **`parents`** are lineage; its **`dependencies`** are what `predict` needs besides the bundle and a snapshot: the `predictor` entry point, the `kumo-engine` `package` (with `[text]` when a text column is encoded) and content-addressed `asset`s.
-- **Assets** are stored once under `<root>/assets/<asset_kind>/<sha256>/` and shared by every model that uses them. `Trainer.load`, the pyfunc, `run_batch` and the jobs look for each at the location recorded, then under the enclosing block's root, then in the embedding-model store, check its sha256 and cache non-local copies under `~/.cache/kumo/assets/`. An asset on a stage, a volume or a bucket is read with the identity the loading call was given: `Trainer.load_from_connector(connector, ...)`, `load_model(uri, target=DatabricksConnector(...) or SageMakerMLflow(arn, identity=...))`, the block root's connector, or `mlflow.pyfunc.load_model(uri, model_config={"assets_from": connector})`. A stored asset that cannot be found raises `MissingDependencyError` naming the argument that passes such a connector.
+- **Assets** are stored once under `<root>/assets/<asset_kind>/<sha256>/` and shared by every model that uses them. `Trainer.load`, the pyfunc and the jobs look for each at the location recorded, then under the enclosing block's root, then in the embedding-model store, check its sha256 and cache non-local copies under `~/.cache/kumo/assets/`. An asset on a stage, a volume or a bucket is read with the identity the loading call was given: `Trainer.load_from_connector(connector, ...)`, `load_model(uri, target=DatabricksConnector(...) or SageMakerMLflow(arn, identity=...))`, the block root's connector, or `mlflow.pyfunc.load_model(uri, model_config={"assets_from": connector})`. A stored asset that cannot be found raises `MissingDependencyError` naming the argument that passes such a connector.
+  Snowflake `run_batch` looks for them the same way.
 - **Text encoders** are the first assets: word-vector models (`GloVeVectors`) are stored; other `TokenEmbeddingModel`s are recorded by fingerprint and must be registered wherever the model loads:
 
 ```python
@@ -605,7 +607,9 @@ table is diluted.
 
 ### Custom trackers
 
-Other systems plug in through `kumo.engine.tracking.Tracking`, which receives ready-built `RunRecord`s so every tracker records the same names: `start(record)` with the fit run, `on_trial(record, event)` with a trial attempt after each of its events, and `finish(record, error)` with the final record (`None` when tracking stopped early). Optional members: `prepare()`, `tags`, `check(registry)` (when `kumo.MLOps` is built), `log_model(bundle_dir, manifest, snapshot, registry)` (logs and registers, returning the version) or `connector` (a connector whose model registry `registry` registers in), `load_model(location)` and `register(result, location)` (for loading and `result.export(cfg)`), `platform`/`run_id`/`run_url` (recorded as `result.tracking`), and the best-effort `log_prediction_run(record)` and `log_monitoring(record)`. A tracker that raises is not called again for that fit and its run ends failed. `RunRecord.inputs` maps each source table to its `connector`, `location`, `version` and `version_kind`; a tracker's `tags` are added except `kumo.*` and param names.
+Other systems plug in through `kumo.engine.tracking.Tracking`, which receives ready-built `RunRecord`s so every tracker records the same names: `start(record)` with the fit run, `on_trial(record, event)` with a trial attempt after each of its events, and `finish(record, error)` with the final record (`None` when tracking stopped early). Optional members: `prepare()`, `tags`, `check(registry)` (when `kumo.MLOps` is built), `log_model(bundle_dir, manifest, snapshot, registry)` (logs and registers, returning the version) or `connector` (a connector whose model registry `registry` registers in), `load_model(location)` and `register(result, location)` (for loading and `result.export(cfg)`), `platform`/`run_id`/`run_url` (recorded as `result.tracking`). A tracker that raises is not called again for that fit and its run ends failed. Source tables arrive in `finish` as `Dataset` summaries in `record.summaries`, each with its `name`, `source` (`connector`, `location`, `version`, `version_kind`), `schema`, `profile` and `context`; a tracker's `tags` are added except `kumo.*` and param names.
+
+A tracker may also define the best-effort `log_prediction_run(record)` and `log_monitoring(record)`, each called with a finished run's record.
 
 ### Progress events
 

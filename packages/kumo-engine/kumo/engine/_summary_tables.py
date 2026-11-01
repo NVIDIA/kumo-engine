@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Series and histograms as tables, and summaries routed for trackers."""
+r"""Summaries routed for trackers, and tables as tracker JSON."""
 
 import json
 import math

@@ -101,7 +101,6 @@ from kumo.engine._tracking import (
     RunSpec,
     TrackingSession,
     as_tracking,
-    fit_inputs,
     logged_names,
     system_metrics,
 )
@@ -158,9 +157,9 @@ class TrainingResult:
 
     `published_model` records the destination's assigned name, version and URI
     when `fit()` exports the bundle. It is `None` without an export.
-    `registered_model` is the version a `kumo.MLOps` ``registry`` registered,
-    or the registered version this model was loaded from, and
-    `registered_alias` the alias it was registered with or loaded by.
+    `registered_model` is the version a `kumo.MLOps` ``registry`` registered.
+    A loaded model's is the registered version it was loaded from, and
+    `registered_alias` is the alias it was registered with or loaded by.
 
     `holdout_path` is the published model's holdout Parquet file written by
     `fit()`, or `None` when it has none (no holdout task, or a model refit on
@@ -207,7 +206,7 @@ class TrainingResult:
 
     @property
     def tracking(self) -> Optional[TrackingRef]:
-        """The tracker's run of the fit; None when not tracked."""
+        """The experiment tracker's run of the fit, if tracked."""
         manifest = self.manifest
         return self._tracking or (None if manifest is None else
                                   manifest.tracking)
@@ -806,6 +805,14 @@ def _logs_models(settings: Any) -> bool:
     return tracker is not None and tracker.log_model is not None
 
 
+def _preflight(output_config: PredictionOutputConfig) -> None:
+    preflight = getattr(output_config.writer(), 'preflight_write_files', None)
+    if callable(preflight):
+        for destination in output_config.destinations().values():
+            preflight(output_config.connector, destination,
+                      write_mode=output_config.write_mode)
+
+
 def _publish(bundle_dir: Path, bundle_id: Optional[str],
              metrics: Mapping[str, float], export_config: ModelOutputConfig,
              warn: bool = True
@@ -856,6 +863,87 @@ def _publish(bundle_dir: Path, bundle_id: Optional[str],
                     f"{full_error(error)}", error, 4)
             return published, error
     return published, None
+
+
+def _warm_start_plan(
+    public_plan: ModelPlan, warm_start: Optional['Trainer']
+) -> Tuple[CoreModelPlan, ModelPlan, Optional[Dict[str, str]], Optional[str]]:
+    r"""The model plan with the warm start's inherited, and its artifacts."""
+    from kumo_core.automl.runtime import inherit_warm_start_model_plan
+    from kumo_core.io.json import load_json
+
+    model_plan = _to_core_model_plan(public_plan)
+    if warm_start is None:
+        return model_plan, public_plan, None, None
+    if warm_start._training_result is None:
+        raise ValueError("warm_start requires a fitted or loaded Trainer")
+    artifacts, bundle_id = read_bundle_artifact_paths(
+        warm_start._training_result.bundle_dir)
+    inherit_warm_start_model_plan(
+        model_plan,
+        load_json(artifacts['resolved_model_plan'], CoreModelPlan),
+    )
+    return (model_plan, public_model_plan_from_internal(model_plan),
+            artifacts, bundle_id)
+
+
+def _validate_model_plan(model_plan: CoreModelPlan,
+                         workflow: TrainingWorkflowRequest,
+                         train_table: TrainingTable) -> None:
+    from kumo_core.pquery import (
+        query_is_temporal,
+        target_to_entity_paths,
+        to_plan_graph,
+    )
+    from kumo_core.training.custom_table import contract
+    from kumo_core.training.export import read_spec, stage_parts
+    from kumo_core.training.workflow import resolve_model_plan
+    from kumo_core.types import TaskType
+    from kumoapi.pquery import QueryType
+    from pyarrow import parquet
+
+    parts = stage_parts(read_spec(str(train_table.staging_dir)))
+    seed_part = next(part for paths in parts.values() for part in paths)
+    seed_schema = parquet.read_schema(train_table.staging_dir / seed_part)
+    entity_tables = [workflow.query.entity_table]
+    if (workflow.query.rhs_node_type is not None
+            and workflow.query.rhs_node_type not in entity_tables):
+        entity_tables.append(workflow.query.rhs_node_type)
+    resolve_model_plan(
+        model_plan,
+        workflow.search,
+        training_table_generation_plan=train_table.generation_plan,
+        task_type=TaskType(workflow.query.task_type),
+        query_type=QueryType(workflow.query.query_type),
+        has_train_table_time_col=query_is_temporal(workflow.query,
+                                                   workflow.graph),
+        entity_table_names=entity_tables,
+        target_to_entity_paths=target_to_entity_paths(
+            workflow.query, workflow.graph),
+        has_train_table_weight_col=contract()['weight_output_column']
+        in seed_schema.names,
+        graph=to_plan_graph(workflow.graph),
+    )
+
+
+def _explain(best_trainer: Any, run_id: str) -> None:
+    try:
+        best_trainer.explain(
+            explain_methods=[
+                ExplainMethod.COLUMN_ANALYSIS,
+                ExplainMethod.GRADIENT,
+                ExplainMethod.SUBGRAPH_COLLECTOR,
+            ],
+            stage='test',
+        )
+        aggregate_subgraph_features(
+            str(Path(best_trainer.subgraph_collector_dir()) / 'test'),
+            TrainingStage.TEST)
+    except Exception:
+        logger.exception(
+            'Training succeeded, but post-training explanations '
+            'failed for run %s. The trained model remains available.',
+            run_id)
 
 
 def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
@@ -1259,6 +1347,7 @@ class Trainer:
         deps: Dependencies,
         model_name: Optional[str] = None,
     ) -> TrainingResult:
+        from kumo_core.artifacts import bundle_task_type
         from kumo_core.automl.runtime import validate_warm_start_task_type
         from kumo_core.io.json import to_json_dict
         from kumo_core.training.search import AutoMLSearchOptions
@@ -1283,22 +1372,20 @@ class Trainer:
             training_table_generation_plan=train_table.generation_plan,
             search=AutoMLSearchOptions(),
         )
-        task_type = TaskType(workflow.query.task_type)
         if scoring_defaults is not None:
             scoring_defaults = normalized_scoring_defaults(
-                scoring_defaults, task_type)
+                scoring_defaults, TaskType(workflow.query.task_type))
         if warm_start_artifacts is not None:
-            from kumo_core.artifacts import bundle_task_type
-
             validate_warm_start_task_type(
-                task_type, bundle_task_type(warm_start_artifacts))
+                TaskType(workflow.query.task_type),
+                bundle_task_type(warm_start_artifacts),
+            )
         _validate_model_plan(model_plan, workflow, train_table)
         materialized = self._materialize_training(workflow, train_table,
                                                   run_dir, effective_plan)
         tracking.start(lambda: fit_spec(FitContext(
             query=train_table.query,
             model_plan=to_json_dict(materialized.model_plan),
-            inputs=fit_inputs(train_table.manifest),
             started=started_at,
             snapshot_id=snapshot.id,
             task_type=materialized.task.task_type.value,
