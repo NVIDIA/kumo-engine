@@ -785,7 +785,6 @@ def _connector_registry(
         settings: Any,
         snapshot_id: Optional[str] = None) -> Optional[ModelOutputConfig]:
     r"""The registry a connector tracker registers in."""
-    from kumo.engine._deps import reads
     from kumo.engine._mlops import snapshot_path
 
     if (settings is None or settings.registry is None
@@ -795,7 +794,7 @@ def _connector_registry(
     connector = tracker.connector
     serving = None
     if (snapshot_id and settings.wants('snapshot')
-            and reads(connector, settings.root.path)):
+            and dependency.reads(connector, settings.root.path)):
         serving = settings.root.uri(snapshot_path(snapshot_id))
     return ModelOutputConfig(
         connector, location=settings.registry,
@@ -1872,9 +1871,7 @@ class Trainer:
         published = sink.fetch_model(cast(SourceConnector, model_registry),
                                      str(bundle_dir), path=address.path,
                                      location=address.location)
-        from kumo.engine._deps import assets_through
-
-        with assets_through(
+        with dependency.assets_through(
                 model_registry, bundle_dir, lambda reader, _: (
                     f'pass a {reader}(...) with an identity that reads it '
                     f'as Trainer.load_from_connector(model_registry, ...)')):
