@@ -87,7 +87,9 @@ with kumo.mlops(cfg):
     run = result.predict(snapshot, output_config=kumo.PredictionOutputConfig(sf, path="CHURN_SCORES"))
 ```
 
-The registered version also scores inside Snowflake: see [Batch inference in Snowflake](#batch-inference-in-snowflake). It serves with the torch and CUDA build installed where it registers, so install one the GPU pool runs first, e.g. `pip install --index-url https://download.pytorch.org/whl/cu126 "torch==2.12.*"`. To serve only a better model, move its alias yourself: [Promote a model](#promote-a-model).
+The registered version also scores inside Snowflake: see [Batch inference in Snowflake](#batch-inference-in-snowflake). It serves with the torch and CUDA build installed where it registers, so install one the GPU pool runs first, e.g. `pip install --index-url https://download.pytorch.org/whl/cu126 "torch==2.12.*"`.
+
+To serve only a better model, move its alias yourself: [Promote a model](#promote-a-model).
 
 ## How it fits together
 
@@ -146,7 +148,8 @@ table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{tabl
 
 - `result.registered_model` is the version `MLOps(registry=)` registered; `result.published_model` the one `fit(export_config=...)` published.
 - `result.tracking` is the tracker's run: `TrackingRef(platform="databricks", run_id="...", url="https://.../ml/experiments/.../runs/...")`. The model's `_provenance.json` records the same.
-- `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict`, the MLflow pyfunc, Snowflake `run_batch` and the scoring jobs apply them when a call omits them; explicit arguments and a query's `TOP k` win. A binary model always returns `True_PROB`; with no threshold passed or stored, its `TARGET_PRED` is null. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
+- `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict`, the MLflow pyfunc and the scoring jobs apply them when a call omits them; explicit arguments and a query's `TOP k` win. A binary model always returns `True_PROB`; with no threshold passed or stored, its `TARGET_PRED` is null. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
+  Snowflake `run_batch` applies them too.
 - `result.export(cfg)` (or `trainer.export(cfg)` for a loaded model) registers a model at `cfg.registry` through its tracker. On every platform, registering a bundle the registry already holds under that name returns its version instead of adding one.
 - If registration fails, `fit` warns with the full error and returns with `registered_model=None` (with `on_error="raise"`, it raises), and the fit run ends failed with `kumo.error`. Registering a bundle the registry already holds under the name returns that version (logged at info) and moves the alias to it.
 
@@ -484,7 +487,8 @@ Every artifact has one way out and one way back. A `kumo.MLOps` stands in for th
 | Prediction run | `run.export(PredictionOutputConfig(connector, path=...))`, or `predict(output_config=...)` | `PredictionResult.load_from_connector(connector, path=...)` |
 | Evaluation | `evaluation.export(PredictionOutputConfig(connector, path=...))` | `EvaluationResult.load_from_connector(connector, path=...)` |
 
-Loading needs a file destination; a table export is for consumers outside kumo-engine. Exporting again to a destination that holds a complete copy of the same artifact reuses it (logged at info). `ModelOutputConfig(sf, location=..., serving_snapshot=..., serving_options=...)` publishes to the Snowflake Model Registry outside a block; `serving_snapshot` takes a stage path, or a `GraphSnapshot` or snapshot id stored under the block's stage root.
+Loading needs a file destination; a table export is for consumers outside kumo-engine. Exporting again to a destination that holds a complete copy of the same artifact reuses it (logged at info). `ModelOutputConfig(connector, location=...)` publishes to a connector's registry outside a block.
+With a `SnowflakeConnector`, `ModelOutputConfig(sf, location=..., serving_snapshot=..., serving_options=...)` publishes to the Snowflake Model Registry outside a block; `serving_snapshot` takes a stage path, or a `GraphSnapshot` or snapshot id stored under the block's stage root.
 
 ### Lineage and manifests
 
