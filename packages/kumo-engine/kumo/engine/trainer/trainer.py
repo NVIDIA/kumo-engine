@@ -65,7 +65,7 @@ from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer._provenance import (
     FitRecord,
-    parent_model,
+    bundle_manifest,
     read_provenance,
 )
 from kumo.engine.trainer._spec import (
@@ -673,7 +673,7 @@ class Trainer:
             model_plan=effective_plan,
             provenance=FitRecord(
                 train_table=train_table,
-                warm_start=None if warm_start is None else parent_model(
+                warm_start=None if warm_start is None else bundle_manifest(
                     warm_start._training_result.bundle_dir,
                     warm_start_bundle_id),
                 started_at=started_at, fit_mode=fit_mode),

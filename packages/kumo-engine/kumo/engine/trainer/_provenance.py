@@ -67,8 +67,8 @@ def embedded_model(manifest: ModelManifest) -> ModelManifest:
         parents, warm_start=stub('model', parents.warm_start.id)))
 
 
-def parent_model(bundle_dir: Path, bundle_id: Optional[str]
-                 ) -> Optional[ModelManifest]:
+def bundle_manifest(bundle_dir: Path,
+                    bundle_id: Optional[str]) -> Optional[ModelManifest]:
     r"""The manifest of the bundle at ``bundle_dir``, or a stub."""
     manifest = read_provenance(bundle_dir)
     if manifest is not None:
