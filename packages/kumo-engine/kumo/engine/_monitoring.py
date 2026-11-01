@@ -13,7 +13,16 @@ import warnings
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Tuple,
+)
 from uuid import uuid4
 
 import numpy as np
@@ -27,34 +36,14 @@ from kumo_core.summaries import Dataset, Note, Scalar, Summary, Table, Tag
 
 from kumo.engine._manifest import PredictionManifest, TrackingRef
 from kumo.engine._text import number
-from kumo.engine._tracking import logged_names, metric_name
+from kumo.engine._tracking import (
+    as_tracking,
+    log_run,
+    logged_names,
+    metric_name,
+)
 
 _EVALUATION_FILE = '_evaluation.json'
-
-
-def _for_model_monitor(files: Any, directory: Path) -> list:
-    r"""The files with TARGET as 0/1 and UTC times without a zone."""
-    import pyarrow as pa
-    import pyarrow.parquet as parquet
-
-    def monitored(field: Any) -> Any:
-        if field.name == 'TARGET' and pa.types.is_boolean(field.type):
-            return field.with_type(pa.int8())
-        if pa.types.is_timestamp(field.type) and field.type.tz is not None:
-            return field.with_type(pa.timestamp(field.type.unit))
-        return field
-
-    typed = []
-    for path in files:
-        source = parquet.ParquetFile(path)
-        schema = pa.schema([monitored(field) for field in source.schema_arrow])
-        target = str(directory / Path(path).name)
-        with parquet.ParquetWriter(target, schema) as writer:
-            for batch in source.iter_batches():
-                writer.write_table(
-                    pa.Table.from_batches([batch]).cast(schema))
-        typed.append(target)
-    return typed
 
 
 @dataclass(frozen=True)
@@ -90,10 +79,6 @@ class EvaluationResult:
         import tempfile
 
         from kumo.engine._scratch import get_scratch_dir
-        from kumo.engine.connector import (
-            SnowflakeConnector,
-            is_file_destination,
-        )
         from kumo.engine.trainer.trainer import _holds_parquet
 
         if self.actuals is None:
@@ -115,10 +100,8 @@ class EvaluationResult:
             }
         get_scratch_dir().mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=get_scratch_dir()) as typed:
-            if isinstance(output_config.connector, SnowflakeConnector
-                          ) and not is_file_destination(
-                              output_config.connector, destination):
-                files = _for_model_monitor(files, Path(typed))
+            files = output_config.connector._monitored_files(
+                destination, files, Path(typed))
             output_config._write(destination, files,
                                  export_id=f'{self.prediction_id}-evaluation-'
                                  f'{Path(self.actuals).name}-{written}',
@@ -282,32 +265,17 @@ _TASKS = {
 
 def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
               query: str) -> None:
-    import diskgraph
-    from kumo_core.pquery import _target_maximum
-    from kumo_core.training import custom_table
-    from kumo_core.types import PredictionArtifactType
-    from kumoapi.pquery.AST import Filter
     from pyarrow import parquet
-
-    from kumo.engine.pquery.predictive_query import PredictiveQuery
 
     reasons = out['reasons']
     out['step'] = 'parsing the query'
-    pquery = PredictiveQuery._from_snapshot(snapshot, query)
-    if isinstance(pquery._parsed.query.entity_ast, Filter):
-        unfiltered = copy.copy(pquery._parsed.query)
-        unfiltered.entity_ast = unfiltered.entity_ast.target
-        pquery = PredictiveQuery._from_snapshot(snapshot,
-                                                unfiltered.to_string())
+    pquery = _unfiltered_query(snapshot, query)
     parsed = pquery._parsed
     static = parsed.query_type == 'static'
     out['task_type'] = parsed.task_type
 
     out['step'] = 'reading the predictions'
-    files = [
-        str(path) for path in replace(
-            run, artifact_type=PredictionArtifactType.PREDICTIONS).files
-    ]
+    files = _prediction_files(run)
     columns = parquet.read_schema(files[0]).names
     manifest = run.manifest
     anchors = () if static or manifest is None else tuple(
@@ -318,31 +286,84 @@ def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
     out['anchors'] = tuple(
         pd.Timestamp(anchor, tz='UTC').isoformat() for anchor in anchors)
     if anchors:
-        frame = parsed.query.get_combined_date_offset_range()
-        try:
-            latest = _target_maximum(parsed, str(snapshot.index_path), min)
-            window_end = (pd.Timestamp(max(anchors)) + frame.end_date_offset +
-                          (parsed.forecast_length - 1) * frame.timeframe)
-            out['matured'] = bool(window_end <= pd.Timestamp(latest))
-        except Exception as error:
-            reasons['matured'] = str(error)
+        _check_maturity(out, parsed, snapshot, anchors)
     task = _TASKS.get(parsed.task_type)
     if task is None:
         reasons['metrics'] = f'{parsed.task_type} metrics are not supported'
         return
-    if not static and not anchors:
-        reasons['metrics'] = 'the run records no anchor timestamps'
-        return
-    if 'ANCHOR_TIMESTAMP' in keys and 'ANCHOR_TIMESTAMP' not in columns:
-        reasons['metrics'] = ('the run has several anchors but its '
-                              'predictions have no ANCHOR_TIMESTAMP column')
+    unsupported = _unsupported(static, anchors, keys, columns)
+    if unsupported is not None:
+        reasons['metrics'] = unsupported
         return
 
     out['step'] = 'generating labels'
-    entity, timestamp, target = (custom_table.entity_column(),
-                                 custom_table.timestamp_column(),
-                                 custom_table.target_column())
     actuals = _actuals_dir(run, snapshot)
+    joined = _join_labels(out, trainer, pquery, snapshot, manifest, files,
+                          columns, anchors, keys, task, actuals)
+    if joined is None:
+        reasons['metrics'] = 'no entity has a label at these anchors'
+        return
+    _record_metrics(out, joined, actuals)
+
+
+def _unfiltered_query(snapshot: Any, query: str) -> Any:
+    from kumoapi.pquery.AST import Filter
+
+    from kumo.engine.pquery.predictive_query import PredictiveQuery
+
+    pquery = PredictiveQuery._from_snapshot(snapshot, query)
+    if not isinstance(pquery._parsed.query.entity_ast, Filter):
+        return pquery
+    unfiltered = copy.copy(pquery._parsed.query)
+    unfiltered.entity_ast = unfiltered.entity_ast.target
+    return PredictiveQuery._from_snapshot(snapshot, unfiltered.to_string())
+
+
+def _prediction_files(run: Any) -> List[str]:
+    from kumo_core.types import PredictionArtifactType
+
+    return [
+        str(path) for path in replace(
+            run, artifact_type=PredictionArtifactType.PREDICTIONS).files
+    ]
+
+
+def _check_maturity(out: Dict[str, Any], parsed: Any, snapshot: Any,
+                    anchors: Tuple[int, ...]) -> None:
+    from kumo_core.pquery import _target_maximum
+
+    frame = parsed.query.get_combined_date_offset_range()
+    try:
+        latest = _target_maximum(parsed, str(snapshot.index_path), min)
+        window_end = (pd.Timestamp(max(anchors)) + frame.end_date_offset +
+                      (parsed.forecast_length - 1) * frame.timeframe)
+        out['matured'] = bool(window_end <= pd.Timestamp(latest))
+    except Exception as error:
+        out['reasons']['matured'] = str(error)
+
+
+def _unsupported(static: bool, anchors: Tuple[int, ...], keys: List[str],
+                 columns: List[str]) -> Optional[str]:
+    if not static and not anchors:
+        return 'the run records no anchor timestamps'
+    if 'ANCHOR_TIMESTAMP' in keys and 'ANCHOR_TIMESTAMP' not in columns:
+        return ('the run has several anchors but its predictions have no '
+                'ANCHOR_TIMESTAMP column')
+    return None
+
+
+def _join_labels(out: Dict[str, Any], trainer: Any, pquery: Any,
+                 snapshot: Any, manifest: Optional[PredictionManifest],
+                 files: List[str], columns: List[str],
+                 anchors: Tuple[int, ...], keys: List[str], task: str,
+                 actuals: Path) -> Optional[Dict[str, Any]]:
+    r"""Predictions joined with labels; None when no entity has a label."""
+    import diskgraph
+    from kumo_core.training import custom_table
+    from pyarrow import parquet
+
+    labels = (custom_table.entity_column(), custom_table.timestamp_column(),
+              custom_table.target_column())
     spill = actuals.parent / f'.spill-{uuid4().hex}'
     try:
         with pquery._label_parts(
@@ -351,35 +372,49 @@ def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
             out['step'] = 'joining labels with predictions'
             label_columns = parquet.read_schema(parts[0]).names
             shutil.rmtree(actuals, ignore_errors=True)
-            emitted = [name for name in _EMITTED[task] if name in columns]
-            spec = {
-                'task': task,
-                'prediction_keys': keys,
-                'label_keys': [entity, timestamp][:len(keys)],
-                'label_target': target,
-                'actuals_dir': str(actuals),
-                'actual_columns': [[entity, 'ENTITY']] +
-                ([[timestamp, 'ANCHOR_TIMESTAMP']]
-                 if timestamp in label_columns and not static else []) +
-                [[target, 'TARGET']],
-                'prediction_columns': [[name, name] for name in emitted],
-                'constant_timestamps': ([[
-                    'ANCHOR_TIMESTAMP', _prediction_time(manifest)
-                ]] if static and manifest is not None else []) +
-                [['EVALUATED_AT', time.time_ns()]],
-                'spill_dir': str(spill),
-            }
-            joined = json.loads(
+            spec = _join_spec(task, keys, labels, label_columns, columns,
+                              pquery._parsed.query_type == 'static',
+                              manifest, actuals, spill)
+            return json.loads(
                 diskgraph.evaluate_prediction_parquet(files, parts,
                                                       json.dumps(spec)))
     except Exception as error:
         if (out['step'] != 'generating labels'
                 or 'empty training table' not in str(error)):
             raise
-        reasons['metrics'] = 'no entity has a label at these anchors'
-        return
+        return None
     finally:
         shutil.rmtree(spill, ignore_errors=True)
+
+
+def _join_spec(task: str, keys: List[str], labels: Tuple[str, str, str],
+               label_columns: List[str], columns: List[str], static: bool,
+               manifest: Optional[PredictionManifest], actuals: Path,
+               spill: Path) -> Dict[str, Any]:
+    entity, timestamp, target = labels
+    emitted = [name for name in _EMITTED[task] if name in columns]
+    return {
+        'task': task,
+        'prediction_keys': keys,
+        'label_keys': [entity, timestamp][:len(keys)],
+        'label_target': target,
+        'actuals_dir': str(actuals),
+        'actual_columns': [[entity, 'ENTITY']] +
+        ([[timestamp, 'ANCHOR_TIMESTAMP']]
+         if timestamp in label_columns and not static else []) +
+        [[target, 'TARGET']],
+        'prediction_columns': [[name, name] for name in emitted],
+        'constant_timestamps': ([[
+            'ANCHOR_TIMESTAMP', _prediction_time(manifest)
+        ]] if static and manifest is not None else []) +
+        [['EVALUATED_AT', time.time_ns()]],
+        'spill_dir': str(spill),
+    }
+
+
+def _record_metrics(out: Dict[str, Any], joined: Mapping[str, Any],
+                    actuals: Path) -> None:
+    reasons = out['reasons']
     out.update(rows=joined['rows'], labelled=joined['labelled'],
                actuals=str(actuals) if joined['labelled'] else None)
     if out['labelled'] == 0:
@@ -428,11 +463,11 @@ def score_drift(trainer: Any, run: Any, *, previous: Any, snapshot: Any,
     counts = _score_counts(run)
     model = getattr(getattr(trainer, 'result', None), 'manifest', None)
     holdout = getattr(model, 'holdout', None)
-    against = _drift(counts, holdout_counts(model), "the model's holdout",
-                     'holdout', reasons)
-    earlier = {} if previous is None else _drift(
-        counts, _score_counts(previous), 'the previous run', 'previous',
-        reasons)
+    references = {'holdout': holdout_counts(model)}
+    if previous is not None:
+        references['previous'] = _score_counts(previous)
+    drifts = {side: _drift(counts, reference, side, reasons)
+              for side, reference in references.items()}
 
     sides = _snapshot_stats(trainer, run, snapshot, training_snapshot, root)
     totals = [side['counts'] for side in sides.values()]
@@ -448,15 +483,10 @@ def score_drift(trainer: Any, run: Any, *, previous: Any, snapshot: Any,
         prediction_id=getattr(run, 'id', None),
         bundle_id=run_bundle,
         score=None if counts is None else drift_column(counts),
-        psi=against.get('psi'),
-        ks=against.get('ks'),
-        wasserstein=against.get('wasserstein'),
         holdout_truncated=None if holdout is None else holdout.truncated,
         bundle_matches=_same(run_bundle, _bundle_id(trainer)),
         previous_prediction_id=getattr(previous, 'id', None),
-        previous_psi=earlier.get('psi'),
-        previous_ks=earlier.get('ks'),
-        previous_wasserstein=earlier.get('wasserstein'),
+        **_drift_fields(drifts),
         input_changes=input_changes,
         reasons=reasons,
         features=_features(trainer, sides, reasons),
@@ -470,9 +500,24 @@ def _score_counts(run: Any) -> Optional[Counts]:
     return None if counts is None else Counts.from_dict(counts)
 
 
-def _drift(counts: Optional[Counts], reference: Optional[Counts], name: str,
-           side: str, reasons: Dict[str, str]) -> Dict[str, float]:
+class _Reference(NamedTuple):
+    prefix: str
+    name: str
+    label: str
+
+
+_REFERENCES = {
+    'holdout': _Reference('', "the model's holdout",
+                          'holdout scores at training'),
+    'previous': _Reference('previous_', 'the previous run', 'previous run'),
+}
+_STATISTICS = ('psi', 'ks', 'wasserstein')
+
+
+def _drift(counts: Optional[Counts], reference: Optional[Counts], side: str,
+           reasons: Dict[str, str]) -> Dict[str, float]:
     r"""Drift of counts from reference; empty, with why in reasons[side]."""
+    name = _REFERENCES[side].name
     if counts is None:
         reasons[side] = 'the run records no score counts'
     elif reference is None:
@@ -486,18 +531,32 @@ def _drift(counts: Optional[Counts], reference: Optional[Counts], name: str,
     return {}
 
 
+def _drift_fields(drifts: Mapping[str, Mapping[str, float]]
+                  ) -> Dict[str, Optional[float]]:
+    return {reference.prefix + statistic: drifts.get(side, {}).get(statistic)
+            for side, reference in _REFERENCES.items()
+            for statistic in _STATISTICS}
+
+
+def _comparisons(report: 'DriftReport'
+                 ) -> Dict[str, Dict[str, Optional[float]]]:
+    r"""The report's score drift per reference, as _drift_fields stored it."""
+    return {side: {statistic: getattr(report, reference.prefix + statistic)
+                   for statistic in _STATISTICS}
+            for side, reference in _REFERENCES.items()}
+
+
 def track(report: Any, run: Any, settings: Any, trainer: Any,
           started: datetime, labels: Any = None, previous: Any = None) -> Any:
     r"""Tracks a monitoring call, following on_error on failure."""
-    tracking = None if settings is None else settings.tracking
-    if tracking is None:
+    tracker = as_tracking(None if settings is None else settings.tracking)
+    if tracker is None:
         return report
 
     from kumo.engine._mlops import full_error, raise_on_error, warn_failure
-    from kumo.engine._tracking import log_run
 
     try:
-        record = _record(report, run, tracking, trainer, started, labels,
+        record = _record(report, run, tracker, trainer, started, labels,
                          previous)
     except Exception as error:
         if settings.on_error == 'warn':
@@ -506,15 +565,14 @@ def track(report: Any, run: Any, settings: Any, trainer: Any,
                 error, 3)
         failure: Optional[BaseException] = error
     else:
-        failure = log_run(tracking, 'log_monitoring', record)
+        failure = log_run(tracker, tracker.log_monitoring, record)
     raise_on_error(settings, failure, f'Monitoring of prediction run '
                    f'{getattr(run, "id", None)}', stacklevel=3)
-    run_id = getattr(tracking, 'run_id', None)
-    if failure is not None or not run_id:
+    if failure is not None or not tracker.run_id:
         return report
     return replace(report, tracking=TrackingRef(
-        platform=str(getattr(tracking, 'platform', type(tracking).__name__)),
-        run_id=str(run_id), url=getattr(tracking, 'run_url', None)))
+        platform=str(tracker.platform), run_id=str(tracker.run_id),
+        url=tracker.run_url))
 
 
 _IDENTITY = ('kumo.prediction_id', 'kumo.bundle_id', 'kumo.as_of',
@@ -537,7 +595,7 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
     if manifest is not None:
         prediction = prediction_record(manifest, model=model)
         identity, label = prediction.tags, prediction.model_label
-    platform = getattr(tracking, 'platform', None)
+    platform = tracking.platform
     ref = getattr(run, 'tracking', None)
     tracked = ref is not None and ref.platform == platform
     earlier = getattr(previous, 'tracking', None)
@@ -565,29 +623,27 @@ def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
     r"""Score drift, input changes and column drift."""
     summaries: List[Summary] = []
     reasons = report.reasons
-    holdout = {'psi': report.psi, 'ks': report.ks,
-               'wasserstein': report.wasserstein}
-    previous = {'psi': report.previous_psi, 'ks': report.previous_ks,
-                'wasserstein': report.previous_wasserstein}
+    comparisons = _comparisons(report)
+    holdout, previous = comparisons['holdout'], comparisons['previous']
     if report.previous_prediction_id:
         summaries.append(Tag('kumo.drift_previous',
                              report.previous_prediction_id))
-    if report.previous_psi is not None:
+    if previous['psi'] is not None:
         summaries += [Scalar(f'drift/{name}_vs_prev', value)
                       for name, value in previous.items()]
-    sides = [] if report.bundle_matches is False else [
-        ('holdout scores at training', holdout)]
-    sides.append(('previous run', previous))
-    rows = tuple((side, values['psi'],
-                  '' if values is holdout and not shift
-                  else _shift(values['psi']), values['ks'],
-                  values['wasserstein'])
-                 for side, values in sides if values['psi'] is not None)
+    if report.bundle_matches is False:
+        comparisons.pop('holdout')
+    rows = tuple((_REFERENCES[side].label, values['psi'],
+                  '' if side == 'holdout' and not shift
+                  else _shift(values['psi']),
+                  *(values[name] for name in _STATISTICS[1:]))
+                 for side, values in comparisons.items()
+                 if values['psi'] is not None)
     if rows:
         summaries.append(Table('drift/score', ('compared with', 'psi',
-                                               'shift', 'ks', 'wasserstein'),
+                                               'shift', *_STATISTICS[1:]),
                                rows, brief=True))
-    if report.previous_psi is not None:
+    if previous['psi'] is not None:
         name = previous_name or report.previous_prediction_id
         summaries.append(Note('notes', f'Previous run: {name}.'))
     if report.bundle_matches is False:
@@ -595,7 +651,7 @@ def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
             "This trainer's model did not score this run, so its drift vs "
             'holdout scores is not logged'
             + (f"; against this trainer's holdout scores: {_values(holdout)}"
-               if report.psi is not None else '') + '.')))
+               if holdout['psi'] is not None else '') + '.')))
         reasons = {name: reason for name, reason in reasons.items()
                    if name == 'previous'}
     else:

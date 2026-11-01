@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """A model bundle's ``_provenance.json``; excluded from the bundle id."""
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,51 +29,52 @@ from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer._spec import PROVENANCE_ROLE, listed_file
 
 
-def write_provenance(
-    bundle_dir: Path,
-    *,
-    bundle_id: str,
-    train_table: TrainingTable,
-    warm_start: Optional[ModelManifest],
-    started_at: datetime,
-    holdout_truncated: Optional[bool],
-    fit_mode: Optional[str],
-    tracking: Optional[TrackingRef] = None,
-    dependencies: Optional[List[Dependency]] = None,
-    holdout_counts: Optional[Dict[str, Any]] = None,
-    holdout_window: Optional[Tuple[int, int, int, str]] = None,
-) -> None:
-    from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
+@dataclass(frozen=True)
+class FitRecord:
+    train_table: TrainingTable
+    warm_start: Optional[ModelManifest]
+    started_at: datetime
+    fit_mode: Optional[str]
+    tracking: Optional[TrackingRef] = None
+    dependencies: Optional[List[Dependency]] = None
+    holdout_truncated: Optional[bool] = None
+    holdout_counts: Optional[Dict[str, Any]] = None
+    holdout_window: Optional[Tuple[int, int, int, str]] = None
 
-    finished_at = datetime.now(timezone.utc)
-    table = train_table.manifest
-    holdout = None if holdout_counts is None or fit_mode == 'refit_full' else (
-        HoldoutStats(truncated=holdout_truncated,
-                     rows=holdout_rows(holdout_counts), columns={},
-                     counts=holdout_counts,
-                     window=None if holdout_window is None else list(
-                         holdout_window)))
-    write_manifest(
-        bundle_dir / PROVENANCE_FILE,
-        ModelManifest(
-            id=bundle_id,
-            parents=ModelParents(
-                training_table=embedded(table) if table is not None else
-                stub('training_table', train_table.id or train_table.tt_id),
-                warm_start=None
-                if warm_start is None else embedded_model(warm_start)),
-            fit=FitTiming(
-                started_at=started_at.isoformat(timespec='seconds'),
-                finished_at=finished_at.isoformat(timespec='seconds'),
-                seconds=round((finished_at - started_at).total_seconds(), 3),
-            ),
-            fit_mode=fit_mode,
-            tracking=tracking,
-            dependencies=dependencies,
-            holdout=holdout,
-            **stamp(),
-        ))
-    add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
+    def write(self, bundle_dir: Path, bundle_id: str) -> None:
+        from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
+
+        finished_at = datetime.now(timezone.utc)
+        started_at, train_table = self.started_at, self.train_table
+        table = train_table.manifest
+        counts, window = self.holdout_counts, self.holdout_window
+        holdout = None if counts is None or self.fit_mode == 'refit_full' else (
+            HoldoutStats(truncated=self.holdout_truncated,
+                         rows=holdout_rows(counts), counts=counts,
+                         window=None if window is None else list(window)))
+        write_manifest(
+            bundle_dir / PROVENANCE_FILE,
+            ModelManifest(
+                id=bundle_id,
+                parents=ModelParents(
+                    training_table=embedded(table) if table is not None else
+                    stub('training_table', train_table.id
+                         or train_table.tt_id),
+                    warm_start=None if self.warm_start is None else
+                    embedded_model(self.warm_start)),
+                fit=FitTiming(
+                    started_at=started_at.isoformat(timespec='seconds'),
+                    finished_at=finished_at.isoformat(timespec='seconds'),
+                    seconds=round(
+                        (finished_at - started_at).total_seconds(), 3),
+                ),
+                fit_mode=self.fit_mode,
+                tracking=self.tracking,
+                dependencies=self.dependencies,
+                holdout=holdout,
+                **stamp(),
+            ))
+        add_bundle_file(bundle_dir, PROVENANCE_ROLE, PROVENANCE_FILE)
 
 
 def embedded_model(manifest: ModelManifest) -> ModelManifest:

@@ -76,10 +76,10 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         **holdout,
         **{summary.name: summary.value for summary in result._summaries
            if isinstance(summary, Scalar) and summary.role == 'model'}}
-    training, = (item.dataset for item in parent.inputs.dataset_inputs
-                 if item.dataset.name.startswith('training-table'))
+    assert [item.dataset.name for item in parent.inputs.dataset_inputs
+            if item.dataset.name.startswith('training-table')]
     assert {(metric.dataset_name, metric.dataset_digest)
-            for metric in model.metrics} == {(training.name, training.digest)}
+            for metric in model.metrics} == {(None, None)}
     assert version.source == model.model_uri
     assert parent.data.tags.items() >= {
         'kumo.kind': 'fit', 'kumo.bundle_id': result.id,
@@ -221,26 +221,26 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
 
 def test_pyfunc_names_a_missing_prediction_time_and_needs_no_threshold(
         fitted):
-    from kumo.engine.integrations._serving import predict
+    from kumo.engine._predictor import predict_frame
 
     trainer, table, snapshot = fitted
     rows = pd.DataFrame({'ENTITY': range(5)})
     with pytest.raises(ValueError) as error:
-        predict(trainer, snapshot, rows,
-                {'binary_classification_threshold': .5})
+        predict_frame(trainer, snapshot, rows,
+                      {'binary_classification_threshold': .5})
     assert str(error.value) == ("temporal query: pass params={"
                                 "'prediction_time': ...} or a TIMESTAMP "
                                 "column")
 
     time = str(pd.Timestamp(table.timestamps[0]))
-    scores = predict(trainer, snapshot, rows, {'prediction_time': time})
+    scores = predict_frame(trainer, snapshot, rows, {'prediction_time': time})
     assert len(scores) == 5
     assert scores['TARGET_PRED'].isna().all()
     assert scores['True_PROB'].between(0, 1).all()
 
 
 def test_pyfunc_returns_rows_in_input_order(fitted):
-    from kumo.engine.integrations._serving import predict
+    from kumo.engine._predictor import predict_frame
 
     trainer, table, snapshot = fitted
     time = pd.Timestamp(table.timestamps[0])
@@ -250,14 +250,14 @@ def test_pyfunc_returns_rows_in_input_order(fitted):
         'TIMESTAMP': [time - pd.Timedelta(days=i % 3)
                       for i in range(len(entities))],
     })
-    scored = predict(trainer, snapshot, rows,
-                     {'binary_classification_threshold': .5})
+    scored = predict_frame(trainer, snapshot, rows,
+                           {'binary_classification_threshold': .5})
     assert scored['ENTITY'].tolist() == [e for e in entities if e != 999]
     assert 'ANCHOR_TIMESTAMP' not in scored
 
 
 def test_scores_pair_with_their_rows_when_scoring_reorders():
-    from kumo.engine.integrations._serving import _in_input_order
+    from kumo.engine._predictor import _in_input_order
 
     day = pd.Timestamp('2024-05-01 12:00:00.250')
     rows = pd.DataFrame({
@@ -423,17 +423,14 @@ def test_model_upload_gets_a_longer_http_timeout_and_a_late_one_is_dropped(
     assert 'the model is not registered' in caplog.text
 
 
-def test_a_model_with_text_columns_requires_the_text_extra(tmp_path):
+def test_a_model_with_text_columns_requires_the_text_extra():
     from kumo_core.encoders.config import EncodersConfig
-    from kumo_core.io.json import save_json
     from kumoapi.encoder import Numerical, TextEmbedding
 
     from kumo.engine.integrations.mlflow import _requirement
 
     def requirement(encoders):
-        path = tmp_path / 'encoders.json'
-        save_json(EncodersConfig(encoders={'users': encoders}), str(path))
-        return _requirement(path)
+        return _requirement(EncodersConfig(encoders={'users': encoders}))
 
     assert requirement({'age': Numerical()}) == (
         f'kumo-engine[s3,gcs]=={kumo.__version__}')

@@ -36,16 +36,6 @@ class Series:
 
 
 @dataclass(frozen=True)
-class Curve:
-    r"""``y`` against ``x``, two series over the same steps, such as ROC's
-    true-positive against false-positive rate over thresholds."""
-
-    name: str
-    x: Series
-    y: Series
-
-
-@dataclass(frozen=True)
 class Histogram:
     r"""``counts[i]`` values in ``[edges[i - 1], edges[i])``: ``counts[0]``
     below ``edges[0]`` and ``counts[-1]`` at or above ``edges[-1]``, all
@@ -101,5 +91,5 @@ class Dataset:
     context: str
 
 
-Summary = Union[Scalar, Tag, Series, Curve, Histogram, Table, Confusion,
-                Note, Dataset]
+Summary = Union[Scalar, Tag, Series, Histogram, Table, Confusion, Note,
+                Dataset]

@@ -4,6 +4,7 @@
 r"""A run's Markdown card, for any tracker."""
 
 import re
+from dataclasses import dataclass
 from typing import Any, List, Mapping, Optional, Sequence
 from urllib.parse import quote
 
@@ -33,6 +34,49 @@ _NAMED = ('source_table', 'prediction_output')
 _STEPS = {'snapshot': 'Graph snapshot', 'training_table': 'Training table'}
 _CONSOLES = {'s3': 'https://s3.console.aws.amazon.com/s3/buckets/{}?prefix={}/',
              'gs': 'https://console.cloud.google.com/storage/browser/{}/{}'}
+
+
+@dataclass(frozen=True)
+class Card:
+    heading: Sequence[str]
+    intro: str
+    summaries: Sequence[Summary]
+    blocks: Sequence[str] = ()
+
+    def text(self, files: Sequence[str]) -> str:
+        return '\n'.join([*self.heading, *body(
+            self.intro, self.summaries, files, self.blocks)])
+
+    def minimal(self, files: Sequence[str]) -> str:
+        return '\n'.join([*self.heading, '', self.intro,
+                          *(['', *self.blocks] if self.blocks else []), '',
+                          files_line(files)])
+
+
+def run_card(tags: Mapping[str, str], params: Mapping[str, str],
+             metrics: Mapping[str, float], model_metrics: Mapping[str, float],
+             query: Optional[str], summaries: Sequence[Summary],
+             fit_run: Optional[str] = None, link: Optional[str] = None,
+             blocks: Sequence[str] = ()) -> Card:
+    kind = tags.get('kumo.kind', '')
+    return Card(heading(kind, metrics, tags),
+                intro(kind, tags, params, query, fit_run, link),
+                [*holdout(kind, model_metrics, tags), *summaries], blocks)
+
+
+def refreshed(card: str, metrics: Mapping[str, float],
+              tags: Mapping[str, str], params: Mapping[str, str]) -> str:
+    r"""``card`` with its heading and a fit's line redone."""
+    kind = tags.get('kumo.kind', '')
+    lines = card.split('\n')
+    lines[:2] = heading(kind, metrics, tags)
+    if kind == 'fit' and len(lines) > 3:
+        lines[3] = fit_line(tags, params)
+    return '\n'.join(lines)
+
+
+def shortened(card: str, files: Sequence[str]) -> str:
+    return '\n'.join([*card.split('\n')[:4], '', files_line(files)])
 
 
 def heading(kind: str, metrics: Mapping[str, float],

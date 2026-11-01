@@ -383,32 +383,24 @@ def test_reexport_after_redaction_publishes_the_redacted_manifest(
         'record_sources'] is False
 
 
-def test_reexport_replaces_an_export_missing_a_remote_file(
-        tmp_path, scratch, graph, exports):
+@pytest.mark.parametrize('damage', ['missing_file', 'damaged'])
+def test_reexport_replaces_an_export_that_is_not_an_intact_copy(
+        tmp_path, scratch, graph, exports, damage):
     snapshot = graph.snapshot()
     location, exported = _export(snapshot, exports, tmp_path)
     first = _generation(exported)
-    (first / 'index' / 'col_stats.json').unlink()
+    stats = first / 'index/col_stats.json'
+    if damage == 'missing_file':
+        stats.unlink()
+    else:
+        stats.write_bytes(stats.read_bytes()[:3])
+        (first / 'index/index_metadata.json').unlink()
+        _edit_manifest(exported, lambda m: m.update(snapshot_id='other'))
     assert snapshot.export(SnapshotOutputConfig(exports, 'one')) == location
-    assert _generation(exported) != first
+    assert not first.exists()
     scratch('empty')
     assert _index_files(_load(exports, location).index_path) == _index_files(
         snapshot.index_path)
-
-
-def test_reexport_supersedes_a_damaged_export(tmp_path, scratch, graph,
-                                              exports):
-    snapshot = graph.snapshot()
-    location, exported = _export(snapshot, exports, tmp_path)
-    damaged = _generation(exported)
-    stats = damaged / 'index/col_stats.json'
-    stats.write_bytes(stats.read_bytes()[:3])
-    (damaged / 'index/index_metadata.json').unlink()
-    _edit_manifest(exported, lambda m: m.update(snapshot_id='other'))
-    assert snapshot.export(SnapshotOutputConfig(exports, 'one')) == location
-    assert not damaged.exists()
-    scratch('gpu')
-    assert _load(exports, location).id == snapshot.id
 
 
 def test_failed_load_leaves_nothing_and_restarts_cleanly(

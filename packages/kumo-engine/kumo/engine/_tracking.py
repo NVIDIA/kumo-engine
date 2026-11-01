@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import queue
-import re
 import threading
 import time
 import warnings
@@ -20,6 +19,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
+    ContextManager,
     Dict,
     Iterator,
     List,
@@ -32,14 +32,15 @@ from typing import (
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.instrumentation import format_error
+from kumo_core.summaries import Scalar, Summary
 
 from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
+from kumo.engine._run_names import model_label, run_name, scored_model
 from kumo.engine._text import entity, number
 from kumo.engine._version import __version__
 
 if TYPE_CHECKING:
-    from kumo_core.summaries import Summary
     from kumoapi.plugin import ModelRegistryLocation, PublishedModel
 
     from kumo.engine._manifest import (
@@ -70,7 +71,7 @@ class RunRecord:
     artifacts: Mapping[str, str] = field(default_factory=dict)
     inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
         default_factory=dict)
-    summaries: Tuple['Summary', ...] = ()
+    summaries: Tuple[Summary, ...] = ()
     description: Optional[str] = None
     model_label: Optional[str] = None
     started: Optional[datetime] = None
@@ -94,7 +95,7 @@ class RunSpec:
         default_factory=dict)
     parents: Mapping[str, Optional[str]] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
-    summaries: Sequence['Summary'] = ()
+    summaries: Sequence[Summary] = ()
     status: Optional[str] = None
     error: Optional[str] = None
     description: Optional[str] = None
@@ -122,8 +123,8 @@ def fit_inputs(manifest: Any) -> Dict[str, Dict[str, Optional[str]]]:
         if source is not None:
             tables['training_table'] = source
         return {
-            str(name): {key: _text(getattr(entry, key))
-                        for key in INPUT_FIELDS}
+            str(name): {key: None if getattr(entry, key) is None else str(
+                getattr(entry, key)) for key in INPUT_FIELDS}
             for name, entry in tables.items()
         }
     except Exception as error:
@@ -144,8 +145,6 @@ def _text(value: Any) -> Optional[str]:
 
 def model_metrics(record: RunRecord) -> Dict[str, float]:
     r"""A run's metrics and its exact ``role='model'`` scalars."""
-    from kumo_core.summaries import Scalar
-
     return {**record.metrics,
             **{summary.name: summary.value for summary in record.summaries
                if isinstance(summary, Scalar) and summary.role == 'model'}}
@@ -183,14 +182,6 @@ def logged_names(metrics: Mapping[str, Any],
         named[f'test/{metric}' if latest and not refit_full else
               f'before_refit/{metric}'] = value
     return named
-
-
-def model_label(registered: Optional[str], query: Optional[str],
-                task_type: Optional[str]) -> str:
-    r"""The registered name's last part, else <entity>-<task type>."""
-    if registered:
-        return registered.rsplit('.', 1)[-1]
-    return '-'.join(filter(None, (entity(query), task_type))) or 'model'
 
 
 def by_step(steps: Mapping[str, Sequence[Tuple[int, float]]]
@@ -234,18 +225,16 @@ def run_record(spec: RunSpec) -> RunRecord:
     )
 
 
-def _user_tags(tags: Optional[Mapping[str, Any]],
+def _user_tags(tags: Mapping[str, Any],
                params: Mapping[str, str]) -> Dict[str, str]:
-    dropped = sorted(key for key in tags or {}
+    dropped = sorted(key for key in tags
                      if key.startswith('kumo.') or key in params)
     if dropped:
         warnings.warn(
             f'Tracking tags {dropped} are reserved and not recorded.',
             UserWarning, stacklevel=3)
-    return {
-        key: str(value)
-        for key, value in (tags or {}).items() if key not in dropped
-    }
+    return {key: str(value) for key, value in tags.items()
+            if key not in dropped}
 
 
 def trial_spec(events: Sequence[Event]) -> RunSpec:
@@ -302,9 +291,9 @@ def prediction_record(manifest: 'PredictionManifest',
     return run_record(
         RunSpec(
             kind='prediction',
-            name=run_name('prediction', (
-                f'{label}-{manifest.parents.model.id[:8]}' if registered is None
-                else versioned(label, registered.version)), suffix),
+            name=run_name('prediction', scored_model(
+                label, getattr(registered, 'version', None),
+                manifest.parents.model.id), suffix),
             name_suffix=suffix,
             model_label=label,
             started=_started(manifest),
@@ -347,25 +336,6 @@ def prediction_parents(manifest: Optional['PredictionManifest']
                              'training_table', None)
     return {'snapshot_id': manifest.parents.snapshot.id,
             'task_type': getattr(training_table, 'task_type', None)}
-
-
-def logs_models(tracker: Any) -> bool:
-    return callable(getattr(tracker, 'log_model', None))
-
-
-def run_name(kind: str, core: str, suffix: Optional[str] = None) -> str:
-    r"""<kind>-<core><suffix>, the kind not repeated."""
-    word = _KIND_WORDS.get(kind, kind)
-    named = re.match(rf'{word}([-_]|$)', core, re.IGNORECASE)
-    return (core if named else f'{word}-{core}') + (suffix or '')
-
-
-_KIND_WORDS = {'prediction': 'predict'}
-
-
-def versioned(model: str, version: str) -> str:
-    r"""<model>-v<version>, or <model>-<version> for a named version."""
-    return f'{model}-v{version}' if version.isdigit() else f'{model}-{version}'
 
 
 def fit_run_id(manifest: Any) -> Optional[str]:
@@ -486,7 +456,8 @@ def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
 @contextmanager
 def system_metrics(tracking: Any) -> Iterator[None]:
     r"""Samples system metrics during the block, if the tracker can."""
-    sample = getattr(tracking, 'sample_system_metrics', None)
+    tracker = as_tracking(tracking)
+    sample = None if tracker is None else tracker.sample_system_metrics
     if sample is None or _rank() != 0:
         yield
         return
@@ -507,7 +478,8 @@ def track_prediction(
         summaries: Callable[[], Sequence['Summary']] = tuple
 ) -> Optional[Exception]:
     r"""Tracks a prediction run; returns the failure instead of raising."""
-    if getattr(tracking, 'log_prediction_run', None) is None:
+    tracker = as_tracking(tracking)
+    if tracker is None or tracker.log_prediction_run is None:
         return None
     try:
         if manifest is None:
@@ -517,7 +489,7 @@ def track_prediction(
         logger.warning('Experiment tracking failed: %s; the prediction run '
                        'is not tracked', full_error(failure), exc_info=_debug())
         return failure
-    return log_run(tracking, 'log_prediction_run', record)
+    return log_run(tracker, tracker.log_prediction_run, record)
 
 
 class SingleRunHooks:
@@ -566,6 +538,70 @@ class Tracking(Protocol):
         ...
 
 
+class TrackingBase(Tracking):
+    r"""`Tracking` with defaults for its optional members."""
+
+    run_id: Optional[str] = None
+    run_url: Optional[str] = None
+    tags: Optional[Mapping[str, str]] = None
+    connector: Any = None
+    log_model: Optional[Callable[..., Optional['PublishedModel']]] = None
+    register: Optional[Callable[..., 'PublishedModel']] = None
+    load_model: Optional[Callable[..., Any]] = None
+    experiment: Optional[str] = None
+    logged_run_name: Optional[str] = None
+    log_prediction_run: Optional[Callable[[RunRecord], None]] = None
+    log_monitoring: Optional[Callable[[RunRecord], None]] = None
+    sample_system_metrics: Optional[Callable[[], ContextManager[None]]] = None
+    serving_options: Optional[Mapping[str, str]] = None
+
+    @property
+    def platform(self) -> str:
+        return type(self).__name__
+
+    def prepare(self) -> None:
+        pass
+
+    def check(self, registry: Optional['ModelRegistryLocation'] = None
+              ) -> None:
+        pass
+
+    def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
+        pass
+
+
+class _Foreign(TrackingBase):
+    r"""A tracker that does not subclass `TrackingBase`, with its defaults."""
+
+    def __init__(self, tracker: Any) -> None:
+        self._tracker = tracker
+
+    def __getattribute__(self, name: str) -> Any:
+        if name.startswith('_'):
+            return object.__getattribute__(self, name)
+        if name in ('start', 'on_trial', 'finish'):
+            return getattr(self._tracker, name)
+        value = getattr(self._tracker, name, _MISSING)
+        called = name in ('check', 'log_model', 'register')
+        if value is _MISSING or called and not callable(value):
+            return object.__getattribute__(self, name)
+        return value
+
+    @property
+    def platform(self) -> str:
+        return type(self._tracker).__name__
+
+    def __repr__(self) -> str:
+        return repr(self._tracker)
+
+
+def as_tracking(tracking: Any) -> Optional[TrackingBase]:
+    r"""``tracking``, wrapped unless it subclasses `TrackingBase`."""
+    if tracking is None or isinstance(tracking, TrackingBase):
+        return tracking
+    return _Foreign(tracking)
+
+
 @dataclass
 class _Search:
     r"""The fit run's series: one trial's epochs, or a search's best."""
@@ -612,9 +648,8 @@ class RegistrationError(Exception):
 
 
 class TrackingSession:
-    def __init__(self, tracking: Optional[Tracking],
-                 warn: bool = True) -> None:
-        self._tracker = tracking if _rank() == 0 else None
+    def __init__(self, tracking: Any, warn: bool = True) -> None:
+        self._tracker = as_tracking(tracking) if _rank() == 0 else None
         self._warn = warn
         self.spec: Optional[RunSpec] = None
         self._trials: Dict[int, List[Event]] = {}
@@ -645,14 +680,14 @@ class TrackingSession:
             return
         self.spec = value
         self._search = _Search.of(value.params)
-        self._call(lambda tracker: getattr(tracker, 'prepare', _none)())
+        self._call(lambda tracker: tracker.prepare())
         self._worker = threading.Thread(target=self._work,
                                         name='kumo-tracking', daemon=True)
         self._worker.start()
 
-        def begin(tracker: Tracking) -> None:
+        def begin(tracker: TrackingBase) -> None:
             tracker.start(run_record(dataclasses.replace(value, tags={
-                **value.tags, **(getattr(tracker, 'tags', None) or {})
+                **value.tags, **(tracker.tags or {})
             })))
 
         started = self._submit(lambda: self._call(begin))
@@ -696,8 +731,7 @@ class TrackingSession:
             for metrics, step in self._once_a_line(
                     None, event, (logged_names(series[0]), series[1])):
                 self._submit(lambda metrics=metrics, step=step: self._call(
-                    lambda tracker: getattr(tracker, 'log_metrics', _none)(
-                        metrics, step)))
+                    lambda tracker: tracker.log_metrics(metrics, step)))
 
     def _once_a_line(self, key: Any, event: Event,
                      item: Any) -> List[Any]:
@@ -719,7 +753,7 @@ class TrackingSession:
     ) -> Tuple[Optional['PublishedModel'], Optional[BaseException]]:
         r"""The tracker's ``log_model``, run on the tracking thread."""
         if self._worker is None or (self._tracker is not None
-                                    and not logs_models(self._tracker)):
+                                    and self._tracker.log_model is None):
             return None, None
         done = threading.Event()
         failed: List[BaseException] = []
@@ -733,9 +767,8 @@ class TrackingSession:
                         'tracking stopped after an earlier failure' + (
                             '' if self.error is None else
                             f' ({full_error(self.error)})'))
-                registered.append(
-                    getattr(tracker, 'log_model')(bundle_dir, manifest,
-                                                  snapshot, registry))
+                registered.append(tracker.log_model(bundle_dir, manifest,
+                                                    snapshot, registry))
             except BaseException as error:
                 failed.append(error)
             finally:
@@ -849,7 +882,7 @@ class TrackingSession:
                 logger.warning('Experiment tracking failed: %s',
                                full_error(error), exc_info=_debug())
 
-    def _call(self, call: Callable[[Tracking], Any]) -> None:
+    def _call(self, call: Callable[[TrackingBase], Any]) -> None:
         tracker = self._tracker
         if tracker is None:
             return
@@ -868,24 +901,23 @@ class TrackingSession:
             self.error = error
 
 
-def tracking_ref(tracker: Any) -> Optional['TrackingRef']:
+def tracking_ref(tracking: Any) -> Optional['TrackingRef']:
     r"""The tracker's latest run."""
     from kumo.engine._manifest import TrackingRef
 
-    run_id = getattr(tracker, 'run_id', None)
-    if tracker is None or not run_id:
+    tracker = as_tracking(tracking)
+    if tracker is None or not tracker.run_id:
         return None
     return TrackingRef(
-        platform=str(getattr(tracker, 'platform', type(tracker).__name__)),
-        run_id=str(run_id), url=getattr(tracker, 'run_url', None),
-        experiment=getattr(tracker, 'experiment', None),
-        run_name=getattr(tracker, 'logged_run_name', None))
+        platform=str(tracker.platform), run_id=str(tracker.run_id),
+        url=tracker.run_url, experiment=tracker.experiment,
+        run_name=tracker.logged_run_name)
 
 
-def log_run(tracking: Any, hook: str,
+def log_run(tracker: TrackingBase,
+            method: Optional[Callable[[RunRecord], None]],
             record: RunRecord) -> Optional[Exception]:
-    r"""Runs tracking.<hook>(record) on a thread; returns the failure."""
-    method = getattr(tracking, hook, None)
+    r"""Runs ``method(record)`` on a thread; returns the failure."""
     if method is None or _rank() != 0:
         return None
     failed: List[Exception] = []
@@ -900,7 +932,7 @@ def log_run(tracking: Any, hook: str,
             failed.append(error)
 
     try:
-        getattr(tracking, 'prepare', _none)()
+        tracker.prepare()
     except Exception as error:
         logger.warning('Experiment tracking failed: %s; the %s run is not '
                        'tracked', full_error(error),
@@ -920,8 +952,7 @@ def _debug() -> bool:
     return logger.isEnabledFor(logging.DEBUG)
 
 
-def _none(*args: Any) -> None:
-    return None
+_MISSING = object()
 
 
 def _abandon(tracker: Tracking) -> None:

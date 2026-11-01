@@ -150,7 +150,8 @@ def test_an_instance_in_use_is_left_alone_and_fails_strict_mode(
         trainer.fit(table, snapshot=snapshot, mlops=kumo.MLOps(
             str(tmp_path / 'root'), tracking=_tracking(session),
             store=False, on_error='raise'))
-    failure = log_run(_tracking(session), 'log_prediction_run',
+    tracker = _tracking(session)
+    failure = log_run(tracker, tracker.log_prediction_run,
                       prediction_record(PREDICTION_MANIFEST))
 
     assert trainer.result is not None
@@ -436,7 +437,8 @@ def test_a_full_experiment_is_not_tracked_into(fake, caplog):
 
     session = _with_runs(fake, 500)
 
-    failure = log_run(_tracking(session), 'log_prediction_run',
+    tracker = _tracking(session)
+    failure = log_run(tracker, tracker.log_prediction_run,
                       _prediction('2026-10-29', '6'))
 
     assert len(fake._instance.runs) == 500

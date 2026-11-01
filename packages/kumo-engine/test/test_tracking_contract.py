@@ -21,7 +21,6 @@ from kumo_core.prediction_counts import count_predictions
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.summaries import (
     Confusion,
-    Curve,
     Dataset,
     Histogram,
     Note,
@@ -527,8 +526,6 @@ def test_adapter_records_a_single_trial_fit_epoch_by_epoch_without_trials(
 SUMMARIES = (
     Scalar('test/brier', 0.25),
     Series('search/trials', ((1, 3.0), (2, 4.0)), x_label='trial'),
-    Curve('test/roc', Series('test/roc/fpr', ((0, 1.0), (1, 0.5))),
-          Series('test/roc/tpr', ((0, 1.0), (1, 0.75)))),
     Histogram('pred/True_PROB/hist', (0.5,), (3, 4)),
     Table('graph/col_stats', ('table', 'rows'), (('ents', 400),)),
     Confusion('test/confusion', ('a', 'b'), ((5, 1), (2, 7))),
@@ -552,8 +549,6 @@ def test_adapter_logs_each_summary_type(adapter, mlflow_adapter):
                 for path, text in fit.artifacts.items()} == {
             'search.json': {'columns': ['trial', 'trials'],
                             'data': [[1, 3.0], [2, 4.0]]},
-            'test/roc.json': {'columns': ['step', 'fpr', 'tpr'],
-                              'data': [[0, 1.0, 1.0], [1, 0.5, 0.75]]},
             'pred/True_PROB.json': {
                 'columns': ['from', 'to', 'hist', 'hist cumulative share'],
                 'data': [[None, 0.5, 3, 0.428571], [0.5, None, 4, 1.0]]},
@@ -574,8 +569,7 @@ def test_adapter_logs_each_summary_type(adapter, mlflow_adapter):
                               ('test', 'confusion.json'))} == tables
     assert json.loads(run.data.tags['mlflow.loggedArtifacts']) == [
         {'path': f'{name}.json', 'type': 'table'} for name in (
-            'search', 'test/roc', 'pred/True_PROB', 'graph/col_stats',
-            'test/confusion')]
+            'search', 'pred/True_PROB', 'graph/col_stats', 'test/confusion')]
     dataset, = run.inputs.dataset_inputs
     assert (dataset.dataset.name, dataset.dataset.digest,
             dataset.tags[0].value) == ('ents', hashlib.sha256(json.dumps(
@@ -713,7 +707,7 @@ def test_a_prediction_is_as_of_its_anchors_else_its_snapshot(
      'PREDICT_nightly-2024-04-29'),
 ])
 def test_a_run_name_starts_with_its_kind_once(kind, core, suffix, name):
-    from kumo.engine._tracking import run_name
+    from kumo.engine._run_names import run_name
 
     assert run_name(kind, core, suffix) == name
 
@@ -786,7 +780,6 @@ def test_a_failing_summary_is_a_tracking_failure_not_a_predict_one():
 def test_every_summary_type_is_routed():
     from kumo_core.summaries import (
         Confusion,
-        Curve,
         Dataset,
         Histogram,
         Note,
@@ -801,8 +794,6 @@ def test_every_summary_type_is_routed():
     chart = Series('pred/x_count_by_score_pct', ((0, 1.0), ), chart=True)
     summaries = [
         Scalar('a', 1.0), Tag('t', 'v'), chart,
-        Curve('test/roc', Series('test/roc/fpr', ((0, 0.0), )),
-              Series('test/roc/tpr', ((0, 1.0), ))),
         Histogram('pred/h', (0.5, ), (1, 2)), Table('brief', ('c', ), (),
                                                     brief=True),
         Table('big', ('c', ), ()), Note('notes', 'n'),
@@ -812,9 +803,9 @@ def test_every_summary_type_is_routed():
     charted, tabled = route(summaries, True), route(summaries, False)
     assert charted.charts == {chart.name: chart.points}
     assert [t.name for t in charted.tables] == [
-        'test/roc', 'pred', 'big', 'test/confusion']
+        'pred', 'big', 'test/confusion']
     assert 'pred/x_count_by_score_pct' not in tabled.charts
-    assert len(tabled.tables) == 5
+    assert len(tabled.tables) == 4
     assert [type(s) for s in charted.card] == [Table, Note]
     assert (len(charted.scalars), charted.tags,
             len(charted.datasets)) == (1, {'t': 'v'}, 1)

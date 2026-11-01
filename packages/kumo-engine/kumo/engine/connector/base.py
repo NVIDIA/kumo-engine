@@ -119,6 +119,11 @@ class Connector(ABC):
     def validate_scratch_dir(self, scratch_dir: Path) -> None:
         """Hook for connectors with local sources to reject scratch overlap."""
 
+    def _monitored_files(self, destination: str, files: List[str],
+                         directory: Path) -> List[str]:
+        r"""``files`` typed for this platform's model monitor."""
+        return files
+
     def table(self, table_name: str):
         r"""A reference to `table_name` within this connector -- a
         `kumo.engine.connector.source_table.SourceTable`. Unannotated (not

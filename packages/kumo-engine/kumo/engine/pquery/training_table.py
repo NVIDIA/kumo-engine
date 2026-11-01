@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.model_plan import TrainingTableGenerationPlan
+from kumo_core.training.table import TrainTableRequest
 from kumoapi.model_plan import \
     TrainingTableGenerationPlan as PublicGenerationPlan
 from kumoapi.train import TrainingTableSpec
@@ -31,8 +32,6 @@ from kumo.engine.graph import GraphSnapshot
 if TYPE_CHECKING:
     from kumo.engine.trainer.output_config import TrainingTableOutputConfig
 
-STAGING_MANIFEST_FILE = PROVENANCE_FILE
-EXPORT_MANIFEST_FILE = PROVENANCE_FILE
 _RANDOM_SPLITS = ('RandomSplit', 'RandomLinkSplit')
 
 
@@ -69,7 +68,7 @@ class TrainingTable:
     @property
     def manifest(self) -> Optional[TrainingTableManifest]:
         """Lineage recorded at generation; None for older tables."""
-        return read_manifest(self.staging_dir / STAGING_MANIFEST_FILE,
+        return read_manifest(self.staging_dir / PROVENANCE_FILE,
                              TrainingTableManifest)
 
     def export(self, output_config: "TrainingTableOutputConfig") -> str:
@@ -106,17 +105,17 @@ class TrainingTable:
 
         from kumo.engine.connector import is_file_destination
 
-        manifest = self.staging_dir / STAGING_MANIFEST_FILE
+        manifest = self.staging_dir / PROVENANCE_FILE
         name = output_config.table_name.rstrip('/')
         try:
             if (not is_file_destination(connector, output_config.table_name)
                     or layout.file_type(name) == layout.CSV
                     or not manifest.is_file()):
                 return {}
-            return {'sidecars': {EXPORT_MANIFEST_FILE: manifest.read_bytes()}}
+            return {'sidecars': {PROVENANCE_FILE: manifest.read_bytes()}}
         except Exception as error:
             warnings.warn(
-                f"Exporting without {EXPORT_MANIFEST_FILE}: {error}",
+                f"Exporting without {PROVENANCE_FILE}: {error}",
                 UserWarning, stacklevel=3)
             return {}
 
@@ -143,7 +142,7 @@ class TrainingTable:
 
         path = settings.root.location(f'training_tables/{self.id}/')
         try:
-            settings.locate(self.staging_dir / STAGING_MANIFEST_FILE,
+            settings.locate(self.staging_dir / PROVENANCE_FILE,
                             TrainingTableManifest, f'training_tables/{self.id}')
             filesystem, root = file_store(settings.root.connector, path)
             if filesystem.get_file_info(
@@ -286,7 +285,7 @@ class TrainingTable:
             required_stages=task_plan.task_dataset.required_stages,
             generation_plan=generation_plan,
         )
-        return _finish(
+        return finish_generated(
             table, snapshot, task_plan.train_table, mlops,
             source_table=provenance.source_table(
                 source_table.connector, source_table.table_name,
@@ -302,16 +301,16 @@ def _record_sources(snapshot: GraphSnapshot) -> bool:
     return manifest is not None and manifest.record_sources is True
 
 
-def _finish(table: TrainingTable, snapshot: GraphSnapshot, request: Any,
-            mlops: Optional[Any], *,
-            source_table: Optional[SourceTableEntry] = None,
-            source_version: Any = None,
-            started: Optional[Start] = None) -> TrainingTable:
+def finish_generated(table: TrainingTable, snapshot: GraphSnapshot,
+                     request: TrainTableRequest, mlops: Optional[Any], *,
+                     source_table: Optional[SourceTableEntry] = None,
+                     source_version: Any = None,
+                     started: Optional[Start] = None) -> TrainingTable:
     from kumo.engine._mlops import resolve
 
     settings = resolve(mlops)
     seed = None
-    if getattr(request, 'split_family', None) in _RANDOM_SPLITS:
+    if request.split_family in _RANDOM_SPLITS:
         seed = (request.split_config or {}).get('rnd_seed') or 0
     table = replace(table, id=_table_id(table, snapshot, seed, source_version,
                                         custom=source_table is not None))
@@ -348,12 +347,12 @@ def _table_id(table: TrainingTable, snapshot: GraphSnapshot,
 
 
 def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
-                     request: Any, seed: Optional[int], *,
+                     request: TrainTableRequest, seed: Optional[int], *,
                      source_table: Optional[SourceTableEntry] = None,
                      started: Optional[Start] = None) -> None:
     from kumo.engine._manifest import embedded, stub
 
-    path = table.staging_dir / STAGING_MANIFEST_FILE
+    path = table.staging_dir / PROVENANCE_FILE
     try:
         from kumo_core.io.json import to_json_dict
 

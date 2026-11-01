@@ -260,7 +260,7 @@ def test_prediction_manifest_round_trips_unchanged(graph, classifier,
     newer = json.loads(result._manifest_path.read_text())
     newer['future'] = {'a': 1}
     newer['scoring']['calibration'] = 'none'
-    newer['stats']['predictions']['predicted_positive_rate'] = None
+    newer['prediction_table']['skip_reason'] = None
     source = tmp_path / 'newer.json'
     source.write_text(json.dumps(newer, indent=2, sort_keys=True) + '\n')
 
@@ -270,7 +270,7 @@ def test_prediction_manifest_round_trips_unchanged(graph, classifier,
     assert (tmp_path / 'out.json').read_bytes() == source.read_bytes()
     assert manifest.extra == {'future': {'a': 1}}
     assert manifest.scoring.extra == {'calibration': 'none'}
-    assert manifest.stats['predictions'].predicted_positive_rate is None
+    assert manifest.prediction_table.skip_reason is None
 
 
 @pytest.mark.parametrize('argument, source', [(None, 'bundle'),

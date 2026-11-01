@@ -107,7 +107,8 @@ def test_derived_export_publishes_the_child_bundle_id(fitted):
     child = trainer.result.with_scoring_defaults(
         kumo.ScoringDefaults(binary_classification_threshold=.4))
     calls = []
-    sink = SimpleNamespace(publish_model=lambda *a, **k: calls.append(k) or
+    sink = SimpleNamespace(write_table=lambda *a: None,
+                           publish_model=lambda *a, **k: calls.append(k) or
                            PublishedModel(name='m', version='1', uri='u'))
     child._trainer.export(
         kumo.ModelOutputConfig(SimpleNamespace(sink_backend=sink), path='m'))

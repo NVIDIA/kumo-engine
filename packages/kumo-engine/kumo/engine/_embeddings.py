@@ -116,10 +116,7 @@ def require_text_encoders(deps: Any, store: EmbeddingModelStore,
 
 def with_text_encoders(store: EmbeddingModelStore, encoders: Any,
                        deps: Any) -> EmbeddingModelStore:
-    r"""``store`` plus the stored word vectors of the model's text encoders,
-    resolved where ``deps`` looks for assets. Unless a place was given to
-    look, ``store`` alone serves, as before; a missing model it does not
-    have either is an error."""
+    r"""``store`` plus the model's stored word vectors that ``deps`` finds."""
     from kumo.engine._deps import MissingDependencyError, loaded
 
     added: Dict[str, Any] = {}

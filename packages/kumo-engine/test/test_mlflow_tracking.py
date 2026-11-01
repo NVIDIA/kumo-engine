@@ -472,7 +472,7 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
     monitoring = {'kumo.kind': 'monitoring', 'kumo.prediction_id': 'pred-1'}
 
     later = MlflowTracking('scores', log_system_metrics=False)
-    assert log_run(later, 'log_monitoring', RunRecord(
+    assert log_run(later, later.log_monitoring, RunRecord(
         tags={**monitoring, 'kumo.monitor': 'drift'}, summaries=(
             Tag('kumo.drift_previous', 'pred-0'),
             Scalar('drift/psi_prev', 0.01),
@@ -484,7 +484,7 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
             Table('drift/inputs/orders', ('column', 'psi'),
                   (('AMOUNT', 0.12),))))) is None
     assert (later.run_id, later.run_url) == (tracker.run_id, tracker.run_url)
-    assert log_run(later, 'log_monitoring', RunRecord(
+    assert log_run(later, later.log_monitoring, RunRecord(
         tags={**monitoring, 'kumo.monitor': 'evaluate'},
         prediction_run=predicted.info.run_id, summaries=(
             Tag('kumo.labels_snapshot_id', 'g@2'),
@@ -526,7 +526,7 @@ def test_monitoring_folds_into_its_prediction_run(tracking_uri):
         '<!-- /kumo:realized -->', '', 'Full lineage: `_provenance.json`.',
         *TAIL]))
 
-    failure = log_run(later, 'log_monitoring', RunRecord(
+    failure = log_run(later, later.log_monitoring, RunRecord(
         tags={**monitoring, 'kumo.prediction_id': 'pred-2'}))
     assert str(failure) == 'No MLflow prediction run has kumo.prediction_id ' \
         'pred-2'
@@ -685,7 +685,7 @@ def test_prediction_run_logs_the_system_metrics_sampled_while_it_scored(
 
 def test_series_and_histograms_become_one_table_per_name_prefix(
         tracking_uri):
-    from kumo_core.summaries import Curve, Histogram, Series
+    from kumo_core.summaries import Histogram, Series
 
     from kumo.engine._tracking import RunRecord
     from kumo.engine.integrations.mlflow import MlflowTracking
@@ -696,8 +696,6 @@ def test_series_and_histograms_become_one_table_per_name_prefix(
     tracker.finish(RunRecord(name='r', tags=tags, summaries=(
         Series('holdout/by_k/map', ((10, 0.25), (1, 0.5)), 'k'),
         Series('holdout/by_k/recall', ((1, 0.125),), 'k'),
-        Curve('holdout/by_bin', Series('holdout/by_bin/fpr', ((0, 1.0),), 'bin'),
-              Series('holdout/by_bin/tpr', ((0, 0.75),), 'bin')),
         Histogram('holdout/histogram/actual', (0.0, 1.0), (1, 2, 1)),
         Histogram('holdout/histogram/predicted', (0.0, 1.0), (0, 3, 1)),
         Histogram('holdout/histogram/other', (5.0,), (2, 2)))), None)
@@ -712,8 +710,6 @@ def test_series_and_histograms_become_one_table_per_name_prefix(
     assert table('holdout/by_k') == {'columns': ['k', 'map', 'recall'],
                                      'data': [[1, 0.5, 0.125],
                                               [10, 0.25, None]]}
-    assert table('holdout/by_bin') == {'columns': ['bin', 'fpr', 'tpr'],
-                                       'data': [[0, 1.0, 0.75]]}
     assert table('holdout/histogram') == {
         'columns': ['from', 'to', 'actual', 'predicted',
                     'actual cumulative share', 'predicted cumulative share'],

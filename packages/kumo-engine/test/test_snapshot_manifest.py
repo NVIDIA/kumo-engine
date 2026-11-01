@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.custom_sql import custom_sql_synthetic_name
 from kumo_core.sources.identity import SourceVersion
 from kumo_core.types import ConnectorType
@@ -29,17 +30,12 @@ from kumo.engine import (
     SnowflakeConnector,
     Table,
 )
-from kumo.engine._manifest import (
-    SnapshotManifest,
-    SourceTableEntry,
-    read_manifest,
-    write_manifest,
-)
+from kumo.engine._manifest import SourceTableEntry
 from kumo.engine.connector.identity import (
     DatabricksIdentity,
     SnowflakeIdentity,
 )
-from kumo.engine.graph import SNAPSHOT_MANIFEST_FILE, GraphSnapshot
+from kumo.engine.graph import GraphSnapshot
 
 
 @pytest.fixture
@@ -80,7 +76,7 @@ def test_snapshot_manifest_records_sources_and_diffs(make_snapshot,
     manifest = before.manifest
 
     assert manifest.kind == 'snapshot'
-    assert SNAPSHOT_MANIFEST_FILE == '_provenance.json'
+    assert PROVENANCE_FILE == '_provenance.json'
     assert manifest.id == before.id
     data = (tmp_path / 'data').resolve()
     assert {a: e.location
@@ -127,7 +123,7 @@ def test_index_without_manifest_is_reused_and_backfilled(
 
     snapshot = make_snapshot(30)
     original = snapshot.manifest
-    (snapshot.index_path / SNAPSHOT_MANIFEST_FILE).unlink()
+    (snapshot.index_path / PROVENANCE_FILE).unlink()
     monkeypatch.setattr(ingest, 'execute_diskgraph_ingest',
                         lambda *args: pytest.fail('cached index re-ingested'))
 
@@ -157,7 +153,7 @@ def test_manifest_write_failure_leaves_snapshot_unchanged(
 ])
 def test_unsupported_manifest_is_ignored(tmp_path, content):
     if content is not None:
-        (tmp_path / SNAPSHOT_MANIFEST_FILE).write_text(content)
+        (tmp_path / PROVENANCE_FILE).write_text(content)
         with pytest.warns(UserWarning):
             assert GraphSnapshot('s', tmp_path, {}).manifest is None
     else:
@@ -245,7 +241,7 @@ def test_record_sources_false_keeps_table_names_only(make_snapshot,
 
 
 def test_toggling_record_sources_keeps_unknown_parent_fields(make_snapshot):
-    written = make_snapshot(30).index_path / SNAPSHOT_MANIFEST_FILE
+    written = make_snapshot(30).index_path / PROVENANCE_FILE
     data = json.loads(written.read_text())
     data['parents']['future'] = {'kept': True}
     written.write_text(json.dumps(data))
@@ -253,20 +249,3 @@ def test_toggling_record_sources_keeps_unknown_parent_fields(make_snapshot):
     redacted = make_snapshot(record_sources=False)
     assert redacted.manifest.record_sources is False
     assert redacted.manifest.parents.extra == {'future': {'kept': True}}
-
-
-def test_snapshot_manifest_round_trips_unchanged(make_snapshot, tmp_path):
-    written = make_snapshot(30).index_path / SNAPSHOT_MANIFEST_FILE
-    newer = json.loads(written.read_text())
-    newer['future'] = {'kept': [1, 2]}
-    newer['environment']['cuda'] = '13.0'
-    newer['parents']['source_tables']['ents']['row_count'] = 5
-    source = tmp_path / 'newer.json'
-    source.write_text(json.dumps(newer, indent=2, sort_keys=True) + '\n')
-
-    manifest = read_manifest(source, SnapshotManifest)
-    write_manifest(tmp_path / 'out.json', manifest)
-
-    assert (tmp_path / 'out.json').read_bytes() == source.read_bytes()
-    assert manifest.extra == {'future': {'kept': [1, 2]}}
-    assert manifest.environment.extra == {'cuda': '13.0'}

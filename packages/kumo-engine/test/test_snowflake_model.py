@@ -11,7 +11,8 @@ import pandas as pd
 import pytest
 
 import kumo.engine as kumo
-from kumo.engine.integrations import _serving, _snowflake_serving
+from kumo.engine._predictor import predict_frame
+from kumo.engine.integrations import _snowflake_serving
 
 pytest.importorskip('snowflake.ml.model')
 
@@ -85,11 +86,11 @@ def test_a_packaged_version_scores_like_the_trainer(served, tmp_path,
     rows = pd.DataFrame({'ENTITY': [str(i) for i in range(10)]})
     scored = model.predict(rows, prediction_time=time,
                            binary_classification_threshold=0.5)
-    expected = _serving.predict(trainer, snapshot,
-                                pd.DataFrame({'ENTITY': range(10)}), {
-                                    'prediction_time': time,
-                                    'binary_classification_threshold': 0.5
-                                }).assign(ENTITY=lambda f: f.ENTITY.astype(str))
+    expected = predict_frame(trainer, snapshot,
+                             pd.DataFrame({'ENTITY': range(10)}), {
+                                 'prediction_time': time,
+                                 'binary_classification_threshold': 0.5
+                             }).assign(ENTITY=lambda f: f.ENTITY.astype(str))
     pd.testing.assert_frame_equal(
         scored.sort_values('ENTITY').reset_index(drop=True),
         expected.sort_values('ENTITY').reset_index(drop=True), rtol=1e-4)

@@ -140,19 +140,17 @@ def imported(entry: str) -> Any:
 class Dependencies:
     r"""Records a fit's dependencies and resolves a model's assets."""
     def __init__(self, records: Sequence[Dependency] = (),
-                 settings: Any = None,
-                 locations: Sequence[Location] = ()) -> None:
+                 settings: Any = None) -> None:
         self.records: List[Dependency] = list(records)
         self.errors: List[BaseException] = []
         self._settings = settings
-        self._locations = [*locations, *_LOCATIONS.get()]
+        self._locations = list(_LOCATIONS.get())
         self._hint = _HINT.get()
 
     @classmethod
-    def of(cls, manifest: Optional[ModelManifest], settings: Any = None,
-           locations: Sequence[Location] = ()) -> 'Dependencies':
-        return cls(getattr(manifest, 'dependencies', None) or (), settings,
-                   locations)
+    def of(cls, manifest: Optional[ModelManifest],
+           settings: Any = None) -> 'Dependencies':
+        return cls((manifest and manifest.dependencies) or (), settings)
 
     def add(self, dependency: Dependency) -> Dependency:
         self.records.append(dependency)

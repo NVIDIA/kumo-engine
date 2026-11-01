@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from kumo_core.summaries import (
     Confusion,
-    Curve,
     Dataset,
     Histogram,
     Note,
@@ -35,10 +34,6 @@ class SummaryTables:
         x_label, columns = self.series.setdefault(
             parent or summary.name, (summary.x_label, {}))
         columns[column] = dict(summary.points)
-
-    def add_curve(self, summary: Curve) -> None:
-        self.add_series(summary.x)
-        self.add_series(summary.y)
 
     def add_histogram(self, summary: Histogram) -> None:
         name = summary.name.rpartition('/')[0] or summary.name
@@ -68,8 +63,8 @@ class Routed:
 
 
 def route(summaries: Sequence[Summary], charts: bool) -> Routed:
-    r"""Brief tables and notes go on the card; series, curves and histograms
-    become tables; chart series stay charts only when ``charts``."""
+    r"""Brief tables and notes go on the card; series and histograms become
+    tables; chart series stay charts only when ``charts``."""
     routed, grouped, tables = Routed(), SummaryTables(), []
     for summary in summaries:
         if isinstance(summary, Scalar):
@@ -80,8 +75,6 @@ def route(summaries: Sequence[Summary], charts: bool) -> Routed:
             routed.charts[summary.name] = summary.points
         elif isinstance(summary, Series):
             grouped.add_series(summary)
-        elif isinstance(summary, Curve):
-            grouped.add_curve(summary)
         elif isinstance(summary, Histogram):
             grouped.add_histogram(summary)
         elif isinstance(summary, Dataset):

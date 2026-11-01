@@ -107,8 +107,6 @@ if TYPE_CHECKING:
     from kumo.engine.trainer.output_config import SnapshotOutputConfig
 from kumo.engine.table import Table
 
-SNAPSHOT_MANIFEST_FILE = PROVENANCE_FILE
-
 logger = logging.getLogger(__name__)
 _warned_scratch: set[Path] = set()
 _warned_backfill: set[Path] = set()
@@ -156,14 +154,6 @@ def _warn_low_fk_match_rates(stats: Dict[str, Any],
                 )
 
 
-def _ingest_stats(path: Any) -> Dict[str, Any]:
-    try:
-        stats = json.loads(Path(path).read_text())['stats']
-    except (OSError, ValueError, KeyError, TypeError):
-        return {}
-    return stats if isinstance(stats, dict) else {}
-
-
 def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
     from kumo_core.diskgraph.validation import parse_failure_warning
 
@@ -187,8 +177,11 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
                 warnings.warn(parse_failure_warning(name, column, count),
                               UserWarning, stacklevel=3)
 
-    stats = _ingest_stats(getattr(result, 'ingest_stats_path', None))
-    if not stats:
+    try:
+        stats = json.loads(Path(result.ingest_stats_path).read_text())['stats']
+    except (AttributeError, OSError, ValueError, KeyError, TypeError):
+        return
+    if not isinstance(stats, dict):
         return
     tables = {table['table_name']: table for table in graph_config['tables']}
     duplicates: Dict[str, int] = {}
@@ -279,27 +272,24 @@ def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
                        after: Mapping[str, Any], stacklevel: int,
                        strict: bool = False) -> None:
     r"""Warn of a snapshot of another graph; strict raises on schema change."""
-    if before is None:
-        warnings.warn(
-            f"{message} The model does not record its training graph, so "
-            "what differs is unknown; a different connector or table "
-            "location alone also changes the graph id.", UserWarning,
-            stacklevel=stacklevel + 1)
-        return
-    changes = schema_changes(before, after)
+    changes = None if before is None else schema_changes(before, after)
     if changes and strict:
         raise ValueError(
             f"{message} Schema changes: {'; '.join(changes)}. With "
             f"on_error='raise' a model scores only the graph it was trained "
             f"on: declare the same tables, column types (Table.with_column("
             f"name, stype=...)) and edges.")
-    if changes:
-        warnings.warn(f"{message} Schema changes: {'; '.join(changes)}.",
-                      UserWarning, stacklevel=stacklevel + 1)
+    if changes is None:
+        detail = ("The model does not record its training graph, so what "
+                  "differs is unknown; a different connector or table "
+                  "location alone also changes the graph id.")
+    elif changes:
+        detail = f"Schema changes: {'; '.join(changes)}."
     else:
-        warnings.warn(f"{message} The schema is the same; only table "
-                      "connectors or locations differ.", UserWarning,
-                      stacklevel=stacklevel + 1)
+        detail = ("The schema is the same; only table connectors or "
+                  "locations differ.")
+    warnings.warn(f"{message} {detail}", UserWarning,
+                  stacklevel=stacklevel + 1)
 
 
 class _SnapshotEvents(EventEmitter):
@@ -558,7 +548,7 @@ class GraphSnapshot:
     @property
     def manifest(self) -> SnapshotManifest | None:
         """The snapshot manifest stored next to the index, if any."""
-        return read_manifest(Path(self.index_path) / SNAPSHOT_MANIFEST_FILE,
+        return read_manifest(Path(self.index_path) / PROVENANCE_FILE,
                              SnapshotManifest)
 
 
@@ -566,7 +556,7 @@ def _write_snapshot_manifest(result: Any, snapshot_id: str,
                              source_tables: Dict[str, SourceTableEntry],
                              record_sources: bool, *, fresh: bool,
                              build: Optional[BuildCost] = None) -> None:
-    path = Path(result.index_path) / SNAPSHOT_MANIFEST_FILE
+    path = Path(result.index_path) / PROVENANCE_FILE
     try:
         if not fresh and path.exists():
             existing = read_manifest(path, SnapshotManifest)

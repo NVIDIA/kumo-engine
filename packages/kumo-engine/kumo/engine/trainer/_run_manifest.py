@@ -67,7 +67,11 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
            snapshot: Any = None) -> Optional[TrackingRef]:
     r"""Export, record, store and track a prediction run."""
     from kumo.engine._mlops import raise_on_error
-    from kumo.engine._tracking import track_prediction, tracking_ref
+    from kumo.engine._tracking import (
+        as_tracking,
+        track_prediction,
+        tracking_ref,
+    )
 
     records = ([] if output_config is None else output_records(output_config))
     written: List[PredictionOutput] = []
@@ -99,8 +103,9 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
             untracked = track_prediction(
                 manifest, settings.tracking, error or unstored, model,
                 lambda: _scoring_summaries(manifest, snapshot))
-            tracked = getattr(settings.tracking, 'log_prediction_run', None)
-            if untracked is None and tracked is not None:
+            tracker = as_tracking(settings.tracking)
+            if (untracked is None and tracker is not None
+                    and tracker.log_prediction_run is not None):
                 tracking = tracking_ref(settings.tracking)
     untracked = unstored or untracked
     if untracked is not None:
@@ -227,9 +232,8 @@ def _record_predictions(
     counts: Optional[Dict[str, Any]] = None,
 ) -> PredictionManifest:
     r"""A prediction run's manifest for any model."""
-    stats: Dict[str, Dict[str, Any]] = {}
+    stats: Dict[str, ArtifactStats] = {}
     for name, (rows, files) in outputs.items():
-        stats[name] = {'rows': rows}
         if name == 'predictions' and counts is None:
             try:
                 counted = output_counts(files(), task_type,
@@ -239,8 +243,8 @@ def _record_predictions(
                 warnings.warn(
                     f"Recording the prediction manifest without score "
                     f"counts: {error}", UserWarning, stacklevel=5)
-        if name == 'predictions' and counts is not None:
-            stats[name]['counts'] = counts
+        stats[name] = ArtifactStats(
+            rows=rows, counts=counts if name == 'predictions' else None)
     return PredictionManifest(
         id=run_id,
         parents=PredictionParents(
@@ -253,10 +257,7 @@ def _record_predictions(
         outputs=[],
         status=None,
         timings=RunTimings(started_at=started_at, finished_at=None),
-        stats={
-            name: ArtifactStats.from_dict(record)
-            for name, record in stats.items()
-        },
+        stats=stats,
         **stamp(),
     )
 
