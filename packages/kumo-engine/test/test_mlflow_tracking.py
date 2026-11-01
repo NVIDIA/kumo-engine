@@ -26,6 +26,7 @@ from test_tracking_contract import (
 )
 
 import kumo.engine as kumo
+from kumo.engine._manifest import TrackingRef
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._tracking import logged_names, run_record
 from kumo.engine.trainer._run_spec import fit_spec
@@ -113,7 +114,8 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
         if run.data.tags.get('mlflow.parentRunId') == outer.info.run_id
     ]
     assert tracking.run_id == parent.info.run_id
-    assert re.fullmatch(r'fit-\d{8}-\d{4}', parent.info.run_name)
+    assert re.fullmatch(r'fit-ents-regression-\d{8}-\d{6}',
+                        parent.info.run_name)
     children = sorted(
         (run for run in runs
          if run.data.tags.get('mlflow.parentRunId') == parent.info.run_id),
@@ -133,8 +135,11 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
     assert parent.data.tags['kumo.bundle_id'] == result.id
     stored = tmp_path / 'root' / 'models' / result.id / PROVENANCE_FILE
     assert json.loads(stored.read_text())['tracking'] == {
-        'platform': 'mlflow', 'run_id': parent.info.run_id}
-    assert result.tracking.run_id == parent.info.run_id
+        'platform': 'mlflow', 'run_id': parent.info.run_id,
+        'experiment': 'ents', 'run_name': parent.info.run_name}
+    assert result.tracking == TrackingRef(
+        platform='mlflow', run_id=parent.info.run_id, experiment='ents',
+        run_name=parent.info.run_name)
     logged = client.download_artifacts(parent.info.run_id, PROVENANCE_FILE,
                                        str(tmp_path))
     assert json.loads(Path(logged).read_text())['id'] == result.id
@@ -161,8 +166,8 @@ def test_fit_logs_a_run_per_fit_and_per_trial(table_and_snapshot, tmp_path,
         'uri': str((tmp_path / 'data' / 'ents.parquet').resolve())
     }
 
-    assert [run.info.run_name
-            for run in children] == ['trial-1-attempt-1', 'trial-2-attempt-1']
+    assert [run.info.run_name for run in children] == [
+        f'trial-{i}-{parent.info.run_name}' for i in (1, 2)]
     for child in children:
         assert child.info.status == 'FINISHED'
         assert child.data.tags['kumo.status'] == 'succeeded'
@@ -224,15 +229,16 @@ def test_mlflow_error_ends_runs_failed_and_is_not_raised(
     assert statuses == {'FAILED'}
 
 
-def test_a_user_run_name_wins_over_the_default(tracking_uri):
+def test_a_user_run_name_names_every_run(tracking_uri):
     from kumo.engine.integrations.mlflow import MlflowTracking
 
-    replay(MlflowTracking(run_name='nightly', log_system_metrics=False))
+    tracking = MlflowTracking(run_name='nightly', log_system_metrics=False)
+    replay(tracking)
     join_tracking_threads()
 
     names = {run.info.run_name for run in _runs(mlflow.MlflowClient())
              if 'mlflow.parentRunId' not in run.data.tags}
-    assert names == {'nightly'}
+    assert names == {'fit-nightly'}
 
 
 SAGEMAKER = ('arn:aws:sagemaker:us-west-2:account:'

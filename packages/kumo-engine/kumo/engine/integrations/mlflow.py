@@ -29,6 +29,7 @@ from typing import (
     Sequence,
     Set,
     Tuple,
+    cast,
 )
 from urllib.parse import quote
 
@@ -38,6 +39,7 @@ from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
+from kumo.engine._run_names import record_name, trial_name
 from kumo.engine._text import metric_key
 from kumo.engine._tracking import (
     DROPPED_PARAMS,
@@ -111,12 +113,14 @@ class MlflowTracking(TrackingBase):
         self.tags = dict(tags or {})
         self.logs_model = log_model
         self._outer: Optional[str] = None
+        self.logged_run_name: Optional[str] = None
+        self.experiment: Optional[str] = None
+        self._experiment_id: Optional[str] = None
         self._reset()
 
     def _reset(self) -> None:
         self._client: Any = None
         self._parent: Optional[str] = None
-        self._experiment_id: Optional[str] = None
         self._children: Dict[Tuple[int, int], str] = {}
         self._artifacts: Set[str] = set()
         self._model_id: Optional[str] = None
@@ -261,16 +265,27 @@ class MlflowTracking(TrackingBase):
         context = import_provider('mlflow.tracking.context.registry',
                                   'mlflow')
         with self.target.scope():
-            parent = {} if self._outer is None else {
-                'mlflow.parentRunId': self._outer
-            }
+            experiment = (client.get_experiment_by_name(self.experiment_name)
+                          if self.experiment_name is not None else
+                          client.get_experiment(self._default_experiment
+                                                or '0'))
+            if experiment is None:
+                experiment = client.get_experiment(
+                    client.create_experiment(self.experiment_name))
+            experiment_id, self.experiment = (experiment.experiment_id,
+                                              experiment.name)
+            tags = dict(record.tags)
+            if self._outer is not None:
+                tags['mlflow.parentRunId'] = self._outer
+            kind = record.tags.get('kumo.kind')
+            name = (record_name(record, self.run_name)
+                    if self.run_name and kind in ('fit', 'prediction')
+                    else record.name)
             run = client.create_run(
-                self._experiment_for(client),
-                run_name=(self.run_name if self.run_name
-                          and record.tags.get('kumo.kind') == 'fit' else
-                          record.name),
-                tags=context.resolve_tags({**record.tags, **parent}))
+                experiment_id, run_name=name,
+                tags=context.resolve_tags(tags))
         self._parent = self.run_id = run.info.run_id
+        self.logged_run_name = run.info.run_name
         self._experiment_id = run.info.experiment_id
         if self.log_system_metrics and record.tags.get('kumo.kind') == 'fit':
             self._guard.enter_context(
@@ -283,7 +298,8 @@ class MlflowTracking(TrackingBase):
         if event.name == 'trial_started':
             with self.target.scope():
                 run = self._client.create_run(
-                    self._experiment_id, run_name=record.name,
+                    self._experiment_id, run_name=trial_name(
+                        *key, cast(str, self.logged_run_name)),
                     tags={**record.tags, 'mlflow.parentRunId': self._parent})
             self._children[key] = run.info.run_id
             self._log_params(run.info.run_id, record.params)

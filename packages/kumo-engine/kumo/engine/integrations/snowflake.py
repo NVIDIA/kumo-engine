@@ -7,7 +7,6 @@ import logging
 import posixpath
 import re
 import tempfile
-import uuid
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
@@ -17,6 +16,7 @@ from kumo_core.sources.sql import resolve_snowflake_identifier
 from kumo_core.summaries import Scalar, Table, Tag
 
 from kumo.engine._events import Event
+from kumo.engine._run_names import record_name
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
@@ -72,6 +72,7 @@ class SnowflakeTracking(TrackingBase):
         self.run_name = run_name
         self.tags = dict(tags or {})
         self.native_model_lineage = native_model_lineage
+        self.logged_run_name: Optional[str] = None
         self._reset()
 
     def _reset(self) -> None:
@@ -123,7 +124,7 @@ class SnowflakeTracking(TrackingBase):
 
     def start(self, record: RunRecord) -> None:
         self._reset()
-        self.run_id = None
+        self.run_id = self.logged_run_name = None
         cls = self._module.ExperimentTracking
         tracking = getattr(cls, '_instance', None)
         if tracking is None:
@@ -139,11 +140,14 @@ class SnowflakeTracking(TrackingBase):
         experiment = tracking.set_experiment(self.experiment_name,
                                              database_name=database,
                                              schema_name=schema)
-        self._run = tracking.start_run(
-            self._new_run_name(
-                tracking, experiment.name,
-                self.run_name or _run_identifier(record.name or 'fit')))
-        self.run_id = str(self._run.name)
+        existing = [
+            str(row['name'])
+            for row in tracking._sql_client.show_runs_in_experiment(
+                experiment_name=experiment.name)
+        ]
+        self._run = tracking.start_run(self._new_run_name(
+            existing, _identifier(record_name(record, self.run_name))))
+        self.run_id = self.logged_run_name = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)
@@ -205,26 +209,16 @@ class SnowflakeTracking(TrackingBase):
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         self._log_metrics(metrics, _EPOCH_METRICS, step=step)
 
-    def _new_run_name(self, tracking: Any, experiment: Any,
-                      run_name: str) -> Optional[str]:
+    def _new_run_name(self, existing: List[str], run_name: str) -> str:
         # start_run matches name with LIKE.
-        existing = [
-            str(row['name'])
-            for row in tracking._sql_client.show_runs_in_experiment(
-                experiment_name=experiment)
-        ]
-        short = uuid.uuid4().hex
-        for name in (run_name, _suffixed(run_name, short[:8]),
-                     _suffixed(run_name, short)):
-            if not _taken(name, existing):
-                break
-        else:
-            name = None
-        if name != run_name:
+        name, number = run_name, 1
+        while _taken(name, existing):
+            number += 1
+            name = f'{run_name}_{number}'
+        if number > 1:
             logger.warning(
                 'Snowflake run %s already exists in experiment %s; recording '
-                'this fit as %s', run_name, self.experiment_name,
-                name or 'a generated run name')
+                'this run as %s', run_name, self.experiment_name, name)
         return name
 
     def _log_scalar(self, summary: Scalar) -> None:
@@ -276,22 +270,11 @@ class SnowflakeTracking(TrackingBase):
             self._tracking.log_metrics(kept, step=step)
 
 
-def _run_identifier(name: str) -> str:
-    name = re.sub(r'[^A-Za-z0-9_]', '_', name)
-    return name if re.match(r'[A-Za-z_]', name) else f'_{name}'
-
-
-def _suffixed(name: str, suffix: str) -> str:
-    if len(name) > 1 and name[0] == name[-1] == '"':
-        return f'{name[:-1]}_{suffix}"'
-    return f'{name}_{suffix}'
+def _identifier(name: str) -> str:
+    return re.sub(r'[^A-Za-z0-9_]+', '_', name).upper()
 
 
 def _taken(name: str, existing: List[str]) -> bool:
-    resolved = resolve_snowflake_identifier(name)
-    regex = ''.join('.*' if c == '%' else '.' if c == '_' else re.escape(c)
-                    for c in name)
-    return any(
-        other == resolved
-        or re.fullmatch(regex, other, re.IGNORECASE | re.DOTALL) is not None
-        for other in existing)
+    regex = ''.join('.' if c == '_' else re.escape(c) for c in name)
+    return any(re.fullmatch(regex, other, re.IGNORECASE | re.DOTALL)
+               for other in existing)

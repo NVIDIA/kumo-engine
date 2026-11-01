@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import inspect
-import re
 import threading
+from datetime import datetime, timezone
 from unittest import mock
 
 import _snowflake_experiment_fake
@@ -14,7 +14,7 @@ from kumoapi.model_plan import ModelPlan
 from test_fit_events import table_and_snapshot  # noqa: F401
 from test_tracking_contract import CONTEXT, EVENTS, RESULT
 
-from kumo.engine._tracking import TrackingSession
+from kumo.engine._tracking import RunRecord, TrackingSession
 from kumo.engine.trainer._run_spec import fit_spec, fitted_spec
 
 FAKED = ('__init__', 'set_experiment', 'start_run', 'end_run', 'log_params',
@@ -153,8 +153,9 @@ def test_location_defaults_to_the_session_not_the_last_fit(fake):
     assert not any(call[0].startswith('run.') for call in fake._instance.calls)
 
 
-@pytest.mark.parametrize('taken', ['FIT', 'MYXRUN'])
-def test_an_existing_run_is_never_resumed(fake, taken, caplog):
+@pytest.mark.parametrize('taken,run_name,new', [
+    ('FIT', 'fit', 'FIT_2'), ('FIT_MYXRUN', 'my_run', 'FIT_MY_RUN_2')])
+def test_an_existing_run_is_never_resumed(fake, taken, run_name, new, caplog):
     session = FakeSession()
     user = fake(session)
     user.set_experiment('ents')
@@ -168,12 +169,11 @@ def test_an_existing_run_is_never_resumed(fake, taken, caplog):
     tracking = _tracking(session, run_name=run_name)
     _replay(tracking)
 
-    new = tracking.run_id
-    assert re.fullmatch(f'{run_name}_[0-9a-f]{{8}}'.upper(), new)
+    assert tracking.run_id == tracking.logged_run_name == new
     assert set(user.runs) == {taken, new}
     assert user.runs[taken]['params'] == {}
     assert user.runs[new]['status'] == 'FINISHED'
-    assert 'recording this fit as' in caplog.text
+    assert 'recording this run as' in caplog.text
 
 
 def test_metric_and_param_limits(fake, monkeypatch):
@@ -195,14 +195,6 @@ def test_metric_and_param_limits(fake, monkeypatch):
     assert run['params']['kumo.dropped_params'] == '1'
     assert 'note' not in run['params']
     assert run['params']['level'] == '2'
-
-
-def test_quoted_run_names_are_taken_only_by_their_exact_name():
-    from kumo.engine.integrations.snowflake import _taken
-
-    assert _taken('"MyRun"', ['MyRun'])
-    assert not _taken('"MyRun"', ['MYRUN'])
-    assert _taken('my_run', ['MYXRUN'])
 
 
 def test_the_users_session_is_not_altered(fake):
@@ -272,3 +264,27 @@ def test_mlops_loads_a_registered_model_through_the_tracker(
     })]
     with pytest.raises(ValueError, match='SnowflakeTracking\\(connector'):
         _tracking().load_model(location)
+
+
+@pytest.mark.parametrize('record, name', [
+    (RunRecord(tags={'kumo.kind': 'fit'}, model_label='kumo-demo-churn',
+               started=datetime(2026, 10, 29, 6, 18, 5, tzinfo=timezone.utc)),
+     'FIT_KUMO_DEMO_CHURN_20261029_061805'),
+])
+def test_runs_are_named_by_kind_model_version_and_date(fake, record, name):
+    tracking = _tracking()
+    tracking.start(record)
+    tracking.finish(record, None)
+
+    assert list(fake._instance.runs) == [name]
+
+
+@pytest.mark.parametrize('record, name', [
+    (RunRecord(tags={'kumo.kind': 'fit'}), 'FIT_NIGHTLY'),
+])
+def test_a_user_run_name_names_every_run(fake, record, name):
+    tracking = _tracking(run_name='nightly')
+    tracking.start(record)
+    tracking.finish(record, None)
+
+    assert list(fake._instance.runs) == [name]

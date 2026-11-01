@@ -343,6 +343,8 @@ class TrackingRef(Record):
     platform: str
     run_id: str
     url: Optional[str] = omit_none()
+    experiment: Optional[str] = omit_none()
+    run_name: Optional[str] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)

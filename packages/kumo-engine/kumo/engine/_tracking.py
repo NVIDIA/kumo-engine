@@ -12,6 +12,7 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -58,6 +59,9 @@ class RunRecord:
     tags: Mapping[str, str] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
     summaries: Tuple[Summary, ...] = ()
+    model_label: Optional[str] = None
+    started: Optional[datetime] = None
+    name_suffix: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,9 @@ class RunSpec:
     summaries: Sequence[Summary] = ()
     status: Optional[str] = None
     error: Optional[str] = None
+    model_label: Optional[str] = None
+    started: Optional[datetime] = None
+    name_suffix: Optional[str] = None
 
 
 def logged_name(name: str) -> str:
@@ -118,6 +125,9 @@ def run_record(spec: RunSpec) -> RunRecord:
         },
         artifacts=dict(spec.artifacts),
         summaries=tuple(spec.summaries),
+        model_label=spec.model_label,
+        started=spec.started,
+        name_suffix=spec.name_suffix,
     )
 
 
@@ -184,6 +194,8 @@ class TrackingBase(Tracking):
     log_model: Optional[Callable[..., Optional['PublishedModel']]] = None
     register: Optional[Callable[..., 'PublishedModel']] = None
     load_model: Optional[Callable[..., Any]] = None
+    experiment: Optional[str] = None
+    logged_run_name: Optional[str] = None
 
     @property
     def platform(self) -> str:
@@ -342,16 +354,10 @@ class TrackingSession:
             self._started.set()
 
     def pointer(self) -> Optional['TrackingRef']:
-        r"""The tracker's own run, once it started."""
-        from kumo.engine._manifest import TrackingRef
-
+        r"""The tracker's own run, once it started (`tracking_ref`)."""
         if self.spec is None or not self._started.wait(FINISH_SECONDS):
             return None
-        tracker = self._tracker
-        if tracker is None or not tracker.run_id:
-            return None
-        return TrackingRef(platform=str(tracker.platform),
-                           run_id=str(tracker.run_id), url=tracker.run_url)
+        return tracking_ref(self._tracker)
 
     def on_event(self, event: Event) -> None:
         if self.spec is None or event.trial is None:
@@ -518,6 +524,19 @@ class TrackingSession:
     def _fail(self, error: BaseException) -> None:
         if self.error is None:
             self.error = error
+
+
+def tracking_ref(tracking: Any) -> Optional['TrackingRef']:
+    r"""The tracker's latest run."""
+    from kumo.engine._manifest import TrackingRef
+
+    tracker = as_tracking(tracking)
+    if tracker is None or not tracker.run_id:
+        return None
+    return TrackingRef(
+        platform=str(tracker.platform), run_id=str(tracker.run_id),
+        url=tracker.run_url, experiment=tracker.experiment,
+        run_name=tracker.logged_run_name)
 
 
 def _debug() -> bool:

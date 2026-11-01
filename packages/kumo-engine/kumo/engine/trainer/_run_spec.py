@@ -12,6 +12,7 @@ from typing import Any, Iterator, Mapping, Optional, Sequence, Tuple
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.summaries import Summary
 
+from kumo.engine._run_names import fit_name, model_label
 from kumo.engine._tracking import RunSpec
 from kumo.engine._version import __version__
 
@@ -30,10 +31,12 @@ class FitContext:
 
 def fit_spec(context: FitContext) -> RunSpec:
     started = context.started or datetime.now(timezone.utc)
+    model = model_label(context.model_name, context.query, context.task_type)
     return RunSpec(
         kind='fit',
-        name='-'.join(filter(None, ('fit', context.model_name,
-                                    started.strftime('%Y%m%d-%H%M')))),
+        name=fit_name(model, started),
+        model_label=model,
+        started=started,
         params=dict(_flatten(context.model_plan)),
         parents={'snapshot_id': context.snapshot_id,
                  'task_type': context.task_type,
