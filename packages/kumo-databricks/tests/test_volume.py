@@ -25,6 +25,13 @@ def filesystem(objects=None, part_bytes=None):
     return PyFileSystem(handler), volume
 
 
+def volume_sink():
+    sink = DatabricksSinkBackend()
+    volume = FakeVolume()
+    sink._client = lambda connector: FakeWorkspaceClient(volume)
+    return sink, volume
+
+
 def write(fs, path, body, piece=700):
     with fs.open_output_stream(path) as writer:
         for start in range(0, len(body), piece):
@@ -108,9 +115,7 @@ def test_refused_upload_raises_permission_error():
 
 
 def test_sink_filesystem_only_takes_volume_paths():
-    sink = DatabricksSinkBackend()
-    volume = FakeVolume()
-    sink._client = lambda connector: FakeWorkspaceClient(volume)
+    sink, volume = volume_sink()
     connector = SimpleNamespace()
     fs, path = sink.filesystem(connector, f'{ROOT}/exports/')
     assert path == f'{ROOT}/exports'
@@ -125,9 +130,7 @@ def test_sink_filesystem_only_takes_volume_paths():
 
 
 def test_bundle_publish_and_fetch_through_a_volume_path(tmp_path):
-    sink = DatabricksSinkBackend()
-    volume = FakeVolume()
-    sink._client = lambda connector: FakeWorkspaceClient(volume)
+    sink, volume = volume_sink()
     bundle = tmp_path / 'bundle'
     (bundle / 'model').mkdir(parents=True)
     (bundle / 'training-spec.json').write_text('{}')
@@ -145,9 +148,7 @@ def test_bundle_publish_and_fetch_through_a_volume_path(tmp_path):
 
 
 def test_predictions_and_frames_written_to_a_volume_path(tmp_path):
-    sink = DatabricksSinkBackend()
-    volume = FakeVolume()
-    sink._client = lambda connector: FakeWorkspaceClient(volume)
+    sink, volume = volume_sink()
     part = tmp_path / 'part-0.parquet'
     pq.write_table(pa.table({'users': [1, 2], 'score': [0.1, 0.9]}), part)
     written = sink.write_files(SimpleNamespace(), f'{ROOT}/predictions/',
@@ -164,9 +165,7 @@ def test_an_occupied_volume_directory_is_refused_before_scoring(tmp_path):
     from kumo_core.artifact_export import ArtifactDestinationConflict
     from kumoapi.jobs import WriteMode
 
-    sink = DatabricksSinkBackend()
-    volume = FakeVolume()
-    sink._client = lambda connector: FakeWorkspaceClient(volume)
+    sink, volume = volume_sink()
     target = f'{ROOT}/predictions/'
     sink.preflight_write_files(SimpleNamespace(), target)
     part = tmp_path / 'part-0.parquet'
