@@ -192,6 +192,7 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 - `source` is a `SnowflakeConnector`, whose identity opens the session and whose Snowflake Model Registry `MLOps(registry=)` registers in, or a Snowpark session, which tracks only.
 - `database` and `schema_name` default to the session's (`PUBLIC` when only `database` is given). The fit is in Snowsight under AI & ML » Experiments.
 - The registered version carries the bundle; load it with `Trainer.load_from_connector`.
+- It needs `CREATE EXPERIMENT` on the schema, or `MODIFY` on an existing experiment.
 
 ### What you'll see in MLflow and Snowsight
 
@@ -208,7 +209,7 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 
 **The card.** Each run's description (the Overview on MLflow, `run_card.md` on Snowflake) starts with a card.
 - The heading is the run's status and watch numbers. For a fit: the tuned holdout metric and data problems. For a
-  prediction: realized quality, `psi` vs the holdout with its shift (small < 0.1, moderate 0.1–0.25, large > 0.25),
+  prediction: realized quality, `psi` vs the holdout with its shift (none for link prediction, whose holdout scores are partial; small < 0.1, moderate 0.1–0.25, large > 0.25),
   the entities scored and their date, when their labels mature, the skipped share and data problems.
 - Then one sentence says what the run is. A fit names its model, task, the trial and the epoch its curves and holdout
   metrics come from (the epoch with the best validation tune metric, tag `kumo.best_epoch`). A prediction names its
@@ -224,14 +225,14 @@ Every value comes from exact counts over all rows, with no sampling. kumo-engine
 
 **Metrics.**
 - Fit: per-epoch `train/<metric>` and `val/<metric>`, step = epoch, and the holdout quality as `test/<metric>`: the trainer's `test/auroc`, `test/ap`, `test/acc`, `test/mae`, `test/map_at_10`, `test/loss` and the like, and `test/logloss`, `test/brier`, `test/f1`, `test/r2` and the like from exact counts. The holdout is the training table's test split. MLflow's Model metrics tab shows them as `train`, `val` and `test` sections.
-- The `test/` values are also logged on the fit's logged model, against the training table dataset, so the model page, the Models tab and the registry's Compare versions view show them; they are also in the registered version's description. After a refit they describe the refit model the bundle ships; the model before the refit is `before_refit/<metric>`.
+- The `test/` values are also logged on the fit's logged model, without a dataset so every version shares one `test/<metric>` column, so the model page, the Models tab and the registry's Compare versions view show them; they are also in the registered version's description. After a refit they describe the refit model the bundle ships; the model before the refit is `before_refit/<metric>`.
 - `loss` (`train/loss`, `val/loss`, `test/loss`) is the training objective, the model plan's `optimization.loss` (weighted when the plan weights examples), averaged as the trainer averages it. `logloss` is the plain log loss of the shipped probabilities over every holdout row. Compare models on `test/logloss`; `loss` compares only fits with the same objective.
 - `ap` is average precision, the precision at each threshold weighted by the recall it adds; `auprc` is the area under the precision-recall curve by trapezoids, which runs slightly higher on few distinct scores. They usually agree to two digits; `ap` is the one to compare.
 - Prediction: `pred/rows`, `pred/skipped_share`, `pred/positive_rate` (binary, with a threshold), `pred/item_coverage` and `pred/top_1pct_items_share` (ranking and link prediction); `drift/psi`, `drift/ks` and `drift/wasserstein` vs the model's holdout scores at training ([definitions](#drift-statistics)). After `score_drift`: `drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev` against the previous run (`_vs_prev` always means the previous run, never training), and `drift/inputs_max_psi`, the largest input-column PSI. After `evaluate`: `realized/<metric>` and `realized/labelled_share`. A prediction run's Model metrics tab shows "Model metrics (0)": the model's own quality is on its fit run.
 - `pred/<column>_count_by_score_pct`: step = the score in hundredths, so step 37 counts the entities scored from 0.37 to under 0.38 (step 99 includes 1.0). Logged for the 20 most predicted classes' probability columns; not on Snowflake, whose histogram tables carry the same counts.
 - `pred/recommendations_by_item_rank`: step = an item's rank by how often it was recommended (1 = most recommended, up to 100); the value is how many times it was recommended.
-- Data preparation: a fit's or prediction's card shows how long the graph snapshot and the training table took to build and their size on disk, read from their manifests. A snapshot or table built in an earlier process shows its original build, marked "(built earlier, reused)". The same numbers are `prep.<step>.seconds` and `prep.<step>.bytes`: tags on MLflow, params on Snowflake.
-- System metrics: `system/*`, step = seconds since the start, sampled every second and logged every 10 seconds and once more when the run ends, on fit and prediction runs. A run with fewer than 2 readings logs none, and monitoring work written into a prediction run does not sample separately. They cover the run's own work (training or scoring), not data preparation.
+- Data preparation: a fit's or prediction's card shows how long the graph snapshot and the training table took to build and their size on disk, read from their manifests. A snapshot or table built in an earlier process shows its original build, marked "(built earlier, reused)". The same numbers are `prep.<step>.seconds` and `prep.<step>.bytes`: tags on every tracker (Snowflake stores tags as params).
+- System metrics: `system/*` (GPU usage too when `nvidia-ml-py` is installed, which `kumo-engine[mlflow]` does), step = seconds since the start, sampled every second and logged every 10 seconds and once more when the run ends, on fit and prediction runs. A run with fewer than 2 readings logs none, and monitoring work written into a prediction run does not sample separately. They cover the run's own work (training or scoring), not data preparation.
 - A series is logged once it has two points, so a one-epoch fit or trial logs no epoch curves; the fit's card lists that epoch's values instead.
 - Read one run's numbers in its Overview's Metrics table, below Details. The Model metrics tab is for the epoch and system curves; MLflow draws every other metric there as a single bar.
 
@@ -464,8 +465,8 @@ Every artifact carries `_provenance.json`, metadata only (the underscore keeps S
 
 - **Snapshot:** each source table's connector, location and version, and the engine build. `graph.snapshot(record_sources=False)` keeps only connector and table names, a SHA-256 of each location, and Custom SQL as a hash.
 - **Training table:** the query, generation plan, task type and split seed, its snapshot, and for `TrainingTable.from_source_table` the source table. `table.id` is deterministic over snapshot, query, plan, seed and engine build; a source without a version gets a random id.
-- **Model** (`ModelManifest`, `result.manifest`): the bundle id (a content hash excluding the manifest), fit times and fit mode, the training table and warm-start model (an embedded model keeps only ids of its own model parents), `tracking` (the tracker's run), `dependencies` and `holdout` (score statistics of the holdout rows: count, mean, min, max, q01..q99; the positive rate for binary tasks), the baseline `score_drift` compares against. The bundle carries the holdout predictions (`holdout.parquet`), so `holdout_df()` works on a loaded model.
-- **Prediction run** (`PredictionManifest`, `run.manifest`): its id; the model and the scoring snapshot; the prediction table (query hash, anchors, `requested_rows`, `scored_rows`, `skipped_rows` and up to 5 skipped ids per reason); the scoring options and where each came from; `outputs`, the destinations `output_config` wrote (even after a partial failure) and, with MLOps on, the copies stored under the artifact root; status, timings and score statistics per output; with MLOps on, also the scores' exact counts in fixed bins (`stats['predictions'].counts`): probabilities in hundredths, or the training target's bins.
+- **Model** (`ModelManifest`, `result.manifest`): the bundle id (a content hash excluding the manifest), fit times and fit mode, the training table and warm-start model (an embedded model keeps only ids of its own model parents), `tracking` (the tracker's run), `dependencies` and `holdout` (the holdout scores' `rows`, whether they were `truncated` to fit a size limit, their exact `counts` in fixed bins and their `window`), the baseline `score_drift` compares against. The bundle carries the holdout predictions (`holdout.parquet`), so `holdout_df()` works on a loaded model.
+- **Prediction run** (`PredictionManifest`, `run.manifest`): its id; the model and the scoring snapshot; the prediction table (query hash, anchors, `requested_rows`, `scored_rows`, `skipped_rows` and a sample of up to 20 skipped ids in all); the scoring options and where each came from; `outputs`, the destinations `output_config` wrote (even after a partial failure) and, with MLOps on, the copies stored under the artifact root; status, timings and score statistics per output; with MLOps on, also the scores' exact counts in fixed bins (`stats['predictions'].counts`): probabilities in hundredths, or the training target's bins.
 
 ### Artifacts, bundles and dependencies
 
@@ -506,7 +507,7 @@ A text column `infer_metadata()` reads as categorical (short values from a small
 
 ### Drift statistics
 
-Score drift is the distribution of a prediction run's scores compared with the model's own holdout scores at training ("vs holdout": `drift/psi`, `drift/ks`, `drift/wasserstein`, logged with the prediction) and, after `score_drift(previous=...)`, with the previous run's ("vs previous": `drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev`; `_vs_prev` never means training).
+Score drift is the distribution of a prediction run's scores compared with the model's own holdout scores at training ("vs holdout": `drift/psi`, `drift/ks`, `drift/wasserstein`, logged with the prediction) and, after `score_drift(previous=...)`, with the previous run's ("vs previous": `drift/psi_vs_prev`, `drift/ks_vs_prev`, `drift/wasserstein_vs_prev`; `_vs_prev` never means training). A link prediction's holdout scores are partial, so its "vs holdout" numbers carry no shift verdict.
 
 | statistic | definition | reading |
 |---|---|---|
@@ -531,11 +532,11 @@ first (by PSI, then by null-rate change). A table leaves out measures that none 
 |---|---|---|
 | `psi` | numerical, categorical | Numerical: over up to 10 groups of DiskGraph's fixed value bins (eight per power of two, the same in every snapshot), cut where the training snapshot's cumulative share reaches each decile. Exact. Categorical: over the categories; approximate when DiskGraph capped or sampled them (`category_counts_capped`). Shares are floored at 1e-6 for numerical psi; categorical psi adds 1e-6 to each share and renormalises. |
 | `shift` | numerical, categorical | The PSI rule of thumb: < 0.1 small, 0.1–0.25 moderate, > 0.25 large |
-| `mean change (training sd)` | numerical | (mean now − mean at training) / training standard deviation |
-| `null rate change (pp)` | all | in percentage points |
-| `distinct values change ≈ (%)` | numerical, categorical, text | DiskGraph's approximate distinct counts (within a few percent) |
-| `newest value change (days)` | timestamp | how much later the newest value is now |
-| `mean tokens change ≈ (%)` | text | from DiskGraph's text sample of about 10K rows |
+| `mean Δ sd` | numerical | (mean now − mean at training) / training standard deviation |
+| `null Δ pp` | all | in percentage points |
+| `distinct Δ≈ %` | numerical, categorical, text | DiskGraph's approximate distinct counts (within a few percent) |
+| `newest Δ days` | timestamp | how much later the newest value is now |
+| `tokens Δ≈ %` | text | from DiskGraph's text sample of about 10K rows |
 
 A column whose type changed shows only `old → new`. `drift/inputs_max_psi` is the largest column PSI, for sorting
 runs and alerts, for example ``metrics.`drift/inputs_max_psi` > 0.25``. The card names the three columns with the
