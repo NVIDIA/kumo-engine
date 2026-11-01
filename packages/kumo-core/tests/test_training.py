@@ -37,6 +37,7 @@ from kumo_core.types import TaskType
 class Evaluation:
     def __init__(self, metrics):
         self.metrics = metrics
+        self.counts = None
         self.saved = []
 
     def save_all(self, **kwargs):
