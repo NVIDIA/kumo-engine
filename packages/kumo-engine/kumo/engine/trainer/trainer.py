@@ -79,7 +79,6 @@ from kumo.engine._manifest import (
     ModelManifest,
     TrackingRef,
     artifact_summaries,
-    stub,
 )
 from kumo.engine._mlops import full_error, warn_failure
 from kumo.engine._predictor import TRAINER_PREDICTOR
@@ -97,7 +96,7 @@ from kumo.engine.pquery.prediction_table import PredictionTable
 from kumo.engine.pquery.training_table import TrainingTable
 from kumo.engine.trainer._provenance import (
     FitRecord,
-    parent_model,
+    bundle_manifest,
     read_provenance,
     record_derivation,
 )
@@ -760,9 +759,9 @@ class Trainer:
             **result.metrics, 'seconds': seconds
         }, params={'status': 'succeeded'})
         registered, error = _store_and_register(
-            result.bundle_dir, result.manifest or (
-                None if result.bundle_id is None else stub(
-                    'model', result.bundle_id)), settings, session=session,
+            result.bundle_dir,
+            bundle_manifest(result.bundle_dir, result.bundle_id), settings,
+            session=session,
             snapshot=snapshot, metrics=result.metrics, warn=warn,
             stored=(deps.errors or [None])[0])
         if registered is not None:
@@ -1001,7 +1000,7 @@ class Trainer:
             model_plan=effective_plan,
             provenance=FitRecord(
                 train_table=train_table,
-                warm_start=None if warm_start is None else parent_model(
+                warm_start=None if warm_start is None else bundle_manifest(
                     warm_start._training_result.bundle_dir,
                     warm_start_bundle_id),
                 started_at=started_at, fit_mode=fit_mode,

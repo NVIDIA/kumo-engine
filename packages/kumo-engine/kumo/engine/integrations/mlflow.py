@@ -211,8 +211,8 @@ class MlflowTracking(TrackingBase):
     def register(self, result: Any,
                  location: ModelRegistryLocation) -> PublishedModel:
         r"""Registers a `TrainingResult` at ``location``."""
-        from kumo.engine._manifest import stub
         from kumo.engine.graph import GraphSnapshot
+        from kumo.engine.trainer._provenance import bundle_manifest
         from kumo.engine.trainer._spec import read_training_spec
         from kumo.engine.trainer.trainer import registry_pointers
 
@@ -234,7 +234,8 @@ class MlflowTracking(TrackingBase):
                         experiment_id,
                         tags={'kumo.bundle_id': str(result.id)}).info.run_id
                 info = _log_model(self.target, client, result.bundle_dir,
-                                  result.manifest or stub('model', result.id),
+                                  bundle_manifest(result.bundle_dir,
+                                                  result.id),
                                   snapshot, run_id, experiment_id)
                 with self.target.scope():
                     client.set_terminated(run_id, 'FINISHED')
@@ -594,9 +595,9 @@ def log_model(
             none.
         target: as in `MlflowTracking`.
     """
-    from kumo.engine._manifest import stub
     from kumo.engine._mlops import snapshot_uri
     from kumo.engine._tracking import fit_inputs
+    from kumo.engine.trainer._provenance import bundle_manifest
 
     mlflow = import_provider('mlflow', 'mlflow')
     result = trainer.result
@@ -618,8 +619,8 @@ def log_model(
                 tracking._experiment_for(client)).info.run_id
         experiment_id = client.get_run(run_id).info.experiment_id
         _log_inputs(mlflow, client, run_id, fit_inputs(result.manifest))
-    info = _log_model(target, client, result.bundle_dir, result.manifest or
-                      (None if result.id is None else stub('model', result.id)),
+    info = _log_model(target, client, result.bundle_dir,
+                      bundle_manifest(result.bundle_dir, result.id),
                       snapshot, run_id, experiment_id, name,
                       snapshot_uri(serving_snapshot))
     tracking._log_metrics(run_id, result.metrics, model_id=info.model_id)

@@ -79,8 +79,8 @@ def embedded_model(manifest: ModelManifest) -> ModelManifest:
         derived_from=cut(parents.derived_from)))
 
 
-def parent_model(bundle_dir: Path, bundle_id: Optional[str]
-                 ) -> Optional[ModelManifest]:
+def bundle_manifest(bundle_dir: Path,
+                    bundle_id: Optional[str]) -> Optional[ModelManifest]:
     r"""The manifest of the bundle at ``bundle_dir``, or a stub."""
     manifest = read_provenance(bundle_dir)
     if manifest is not None:
@@ -102,7 +102,7 @@ def record_derivation(bundle_dir: Path, parent_dir: Path,
         bundle_id_from_manifest,
     )
 
-    parent = parent_model(parent_dir, parent_id)
+    parent = bundle_manifest(parent_dir, parent_id)
     write_manifest(
         bundle_dir / PROVENANCE_FILE,
         ModelManifest(
