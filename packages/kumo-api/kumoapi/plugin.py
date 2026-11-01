@@ -66,12 +66,8 @@ __all__ = [
     'registry_lineage',
 ]
 
-#: Prefix of the keys an engine export records in registry metadata.
 REGISTRY_KEY_PREFIX = 'kumo_'
-#: Registry metadata key marking a version as a Kumo engine bundle.
 ENGINE_MARKER = 'kumo_engine'
-#: Registry metadata key holding the version's bundle id; the bundle's own
-#: provenance.json holds its lineage.
 BUNDLE_ID_KEY = 'kumo_bundle_id'
 _ALIAS = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,254}')
 _RESERVED_ALIAS = re.compile(r'DEFAULT|FIRST|LAST|LATEST|V[0-9]+', re.I)
@@ -170,8 +166,7 @@ class ModelRegistryLocation:
             assign the next one on export; on import it selects Snowflake's
             default or Databricks' latest Kumo version.
         comment: Optional description recorded on the version.
-        alias: Set on the new version after export; on import, the version
-            it points at. Exclusive with :obj:`version`.
+        alias: Set on the new version on export; read on import.
     """
     model_name: str
     version: Optional[str] = None
@@ -740,8 +735,7 @@ class ModelFetchingSink(ArtifactSink, Protocol):
 
 @runtime_checkable
 class ModelAliasingSink(ArtifactSink, Protocol):
-    r"""A registry sink that sets aliases and fetches by
-    :attr:`ModelRegistryLocation.alias`."""
+    r"""A registry sink that sets and fetches by alias."""
     def set_model_alias(
         self,
         connector: SourceConnector,
@@ -753,22 +747,17 @@ class ModelAliasingSink(ArtifactSink, Protocol):
 
 
 def check_model_alias(alias: str) -> None:
-    r"""Raises :class:`ValueError` unless every model registry can set
-    :obj:`alias`: a letter or underscore, then letters, digits or underscores
-    (at most 255), and not ``DEFAULT``, ``FIRST``, ``LAST``, ``LATEST`` or
-    ``v<digits>`` in any case."""
+    r"""Raises :class:`ValueError` unless every registry accepts ``alias``."""
     if (not isinstance(alias, str) or not _ALIAS.fullmatch(alias)
             or _RESERVED_ALIAS.fullmatch(alias)):
         raise ValueError(
-            f'{alias!r} cannot be set as a model alias: use letters, digits '
-            f'and underscores, starting with a letter or underscore, and '
-            f'avoid the reserved DEFAULT, FIRST, LAST, LATEST and v<digits> '
-            f'(for DEFAULT use ALTER MODEL ... SET DEFAULT_VERSION).')
+            f'{alias!r} cannot be a model alias: use letters, digits and '
+            f'underscores, not starting with a digit, other than the reserved '
+            f'DEFAULT, FIRST, LAST, LATEST and v<digits>.')
 
 
 def registry_lineage(recorded: Mapping[str, Any]) -> Dict[str, str]:
-    r"""The ``kumo_*`` entries of a version's registry metadata, such as
-    :data:`BUNDLE_ID_KEY`, as strings and without :data:`ENGINE_MARKER`."""
+    r"""A version's ``kumo_*`` registry metadata, without the marker."""
     return {
         key: str(value)
         for key, value in recorded.items()

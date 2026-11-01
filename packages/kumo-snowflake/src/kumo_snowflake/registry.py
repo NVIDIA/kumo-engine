@@ -123,11 +123,8 @@ def _bundle_model(bundle_dir: str) -> "custom_model.CustomModel":
         Deliberately not runnable. Scoring a Kumo model needs a materialized
         DiskGraph task over the graph being scored, built where the data is, so
         this refuses rather than answering. The version exists to carry,
-        version and expose the bundle. Load it with
-        ``Trainer.load_from_connector(SnowflakeConnector(...),
-        location=ModelRegistryLocation(...))`` and predict against a snapshot
-        (kumo-engine), or with :func:`kumoai_studio.import_model` (hosted
-        service).
+        version and expose the bundle; load it with
+        ``Trainer.load_from_connector``.
         """
         # Unquoted, and evaluated here rather than deferred: the registry
         # compares this annotation against `pandas.DataFrame` itself, so a
@@ -135,17 +132,13 @@ def _bundle_model(bundle_dir: str) -> "custom_model.CustomModel":
         @custom_model.inference_api
         def predict(self, df: pd.DataFrame) -> pd.DataFrame:
             raise NotImplementedError(
-                "This model version carries a Kumo model bundle; it does not "
-                "score in Snowflake. Load it with Trainer.load_from_connector("
-                "SnowflakeConnector(...), location=ModelRegistryLocation(...)) "
-                "and predict against a snapshot (kumo-engine), or "
-                "kumoai_studio.import_model() (hosted service).")
+                "This model version holds a Kumo bundle and does not score in "
+                "Snowflake; load it with Trainer.load_from_connector.")
 
     return _BundleModel(
         custom_model.ModelContext(artifacts={'bundle': bundle_dir}))
 
 
-#: Snowflake ML task types by Kumo task type; Model Monitor needs one.
 _TASKS = {
     'binary_classification': 'TABULAR_BINARY_CLASSIFICATION',
     'multiclass_classification': 'TABULAR_MULTI_CLASSIFICATION',
@@ -154,8 +147,7 @@ _TASKS = {
 
 
 def _task(bundle: Path) -> Dict[str, Any]:
-    r"""``task=`` for ``log_model`` from the bundle's prediction schema;
-    empty for other tasks, or when it cannot be read."""
+    r"""``log_model``'s ``task=`` for the bundle, if Snowflake has one."""
     try:
         from snowflake.ml.model import type_hints
 
@@ -302,8 +294,7 @@ class SnowflakeModelRegistryMixin:
 
     def check_model_location(self, connector: SourceConnector,
                              location: ModelRegistryLocation) -> None:
-        r"""Raises :class:`ValueError` unless ``location.model_name`` is a
-        Snowflake identifier."""
+        r"""Raises ``ValueError`` unless the model name is an identifier."""
         del connector
         if not _MODEL_NAME.fullmatch(location.model_name):
             raise ValueError(
@@ -350,8 +341,7 @@ class SnowflakeModelRegistryMixin:
                 the model, and optionally the version. A version of ``None``
                 lets the registry assign one -- the usual case, and the reason
                 this reports back what it created.
-            metadata: Returned with the publication result; its
-                ``kumo_bundle_id`` is also recorded in the version's metrics.
+            metadata: Returned with the result; its bundle id is recorded.
             metrics: Returned with the publication result. Training metrics
                 remain in the bundle's metrics.json.
             project_id: Ignored; a local runtime has no projects.
@@ -397,7 +387,6 @@ class SnowflakeModelRegistryMixin:
         That marker makes discovery both cheap and precise:
         versions logged by another tool are omitted, and no bundle is
         downloaded merely to decide whether it belongs in this list.
-        ``metadata`` carries the recorded ``kumo_bundle_id``.
         """
         del project_id
         found: List[PublishedModel] = []
@@ -433,15 +422,13 @@ class SnowflakeModelRegistryMixin:
                 though the caller always hands this a fresh, empty
                 ``mkdtemp``.
             path: Refused, as in :meth:`publish_model`.
-            location: The model, and optionally the version or an alias. With
-                neither, takes the registry's default version, which is what a
-                caller who names none means.
+            location: The model, and optionally a version or alias (else the
+                registry's default version).
             project_id: Ignored.
 
         Returns:
             The name, the version actually read -- resolved, when the caller
-            named none -- where it lives, metrics read from metrics.json, and
-            the version's recorded ``kumo_bundle_id`` as ``metadata``.
+            named none -- where it lives, metrics and the recorded bundle id.
         """
         del project_id
         _refuse_path(path, 'fetching')
@@ -497,11 +484,7 @@ class SnowflakeModelRegistryMixin:
         location: ModelRegistryLocation,
         alias: str,
     ) -> None:
-        r"""Points :obj:`alias` at ``location.version``, moving it if held.
-
-        Snowflake allows one alias per version. A failed move puts the alias
-        back on the version that held it.
-        """
+        r"""Points :obj:`alias` at ``location.version``, moving it if held."""
         if location.version is None:
             raise ValueError('Setting an alias needs a ModelRegistryLocation '
                              'naming an exact version.')

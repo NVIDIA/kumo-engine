@@ -85,7 +85,6 @@ class OptunaSearcher(Searcher[PlanT]):
         return self.current_trial.suggest_categorical(key, value)
 
     def analyze(self, path: str) -> None:
-        # Optuna flags its matplotlib plots as experimental on every call.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore",
                                   optuna.exceptions.ExperimentalWarning)

@@ -237,7 +237,7 @@ class _WorkerHandle:
             # observation for a worker that won the startup/exit race.
             pass
         except OSError as error:
-            # Sandboxes such as SageMaker hosting refuse pidfd_open.
+            # SageMaker hosting refuses pidfd_open.
             if error.errno not in (errno.ENOSYS, errno.EPERM):
                 os.close(sentinel_fd)
                 raise
@@ -268,7 +268,6 @@ class _WorkerHandle:
             if self.pidfd is not None:
                 _pidfd_send_signal(self.pidfd, sig)
             else:
-                # Without a pidfd the live sentinel above guards the pid.
                 os.kill(self.pid, sig)
         except ProcessLookupError:
             pass
