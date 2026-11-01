@@ -84,6 +84,7 @@ _UPLOAD_HTTP = {'MLFLOW_HTTP_REQUEST_TIMEOUT': '600'}
 _PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS')
 _SAGEMAKER_MODEL = re.compile(r'[a-zA-Z0-9](-*[a-zA-Z0-9]){0,56}')
 _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
+_HINTED: set = set()
 
 
 class MlflowTracking(TrackingBase):
@@ -404,7 +405,6 @@ class MlflowTracking(TrackingBase):
         status = 'FAILED'
         kind = None if record is None else record.tags.get('kumo.kind')
         started = self._parent is not None
-        fit_run = started and kind == 'fit'
         ended = None if record is None else _millis(record.finished)
         try:
             if record is not None and self._parent is not None:
@@ -427,8 +427,12 @@ class MlflowTracking(TrackingBase):
                              status, ended)
             self._reset()
         hint = _sagemaker_ui_hint(self.target.tracking_uri)
-        if fit_run and hint:
-            warnings.warn(hint, UserWarning, stacklevel=2)
+        if (hint and started and kind in ('fit', 'prediction')
+                and self.target.tracking_uri not in _HINTED):
+            _HINTED.add(self.target.tracking_uri)
+            warnings.warn(f'MLflow run {self.logged_run_name!r} in experiment '
+                          f'{self.experiment!r}: {hint}', UserWarning,
+                          stacklevel=2)
 
     def _fit_of(self, fit_id: Optional[str]) -> Tuple[Any, Any]:
         r"""The fit run's info and its logged model, each None if missing."""

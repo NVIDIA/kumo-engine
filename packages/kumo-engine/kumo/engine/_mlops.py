@@ -120,8 +120,8 @@ class MLOps:
             check_model_alias(registry.alias)
         if tracker is not None and tracker.log_model is not None:
             if registry.version is not None:
-                raise ValueError('MLflow assigns registered model versions; '
-                                 'leave ModelRegistryLocation.version unset.')
+                raise ValueError('the tracker assigns registered model '
+                                 'versions; leave ModelRegistryLocation.version unset.')
             return
         connector = None if tracker is None else tracker.connector
         if connector is None:
