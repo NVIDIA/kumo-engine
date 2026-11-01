@@ -81,7 +81,6 @@ EVENTS = [
     _event('fit_ended', metrics={'val_mae': 0.3, 'test_mae': 0.32,
                                  'seconds': 9.0}, status='succeeded'),
 ]
-SEARCH = {'search/best_val_mae': ((1, 0.35), (2, 0.3))}
 SELECTED = {'train_loss': ((1, 0.6), (2, 0.4)), 'val_mae': ((1, 0.5), (2, 0.3))}
 BUNDLE = 'b' * 64
 RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
@@ -144,7 +143,7 @@ def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
     if result is not None:
         spec = fitted_spec(spec, result)
     spec = replace(spec, steps=series if series is not None else {
-        **SEARCH, **({} if error else SELECTED)})
+        **({} if error else SELECTED)})
     if series is None and not error:
         spec = replace(spec, parents={**spec.parents, 'best_trial': 2})
     if 'error' in events[-1].params:
@@ -376,8 +375,7 @@ def test_records_of_the_recorded_fit():
             'kumo.bundle_id': 'x', 'training_job.tune_metric': 'y', 'a': 1}))
     assert spoofed.tags.keys() - fit.tags.keys() == {'a'}
     assert fit.metrics == {'test/mae': 0.32}
-    assert fit.steps == {'search/best_val_mae': ((1, 0.35), (2, 0.3)),
-                         'train/loss': ((1, 0.6), (2, 0.4)),
+    assert fit.steps == {'train/loss': ((1, 0.6), (2, 0.4)),
                          'val/mae': ((1, 0.5), (2, 0.3))}
     registered = SimpleNamespace(**{
         **vars(RESULT), 'registered_alias': 'candidate',
@@ -391,9 +389,11 @@ def test_records_of_the_recorded_fit():
 
     oom = records['trial-2-attempt-1']
     assert oom == RunRecord(
-        name='trial-2-attempt-1',
+        name='trial-2-attempt-1', model_label='ents-regression',
         params={'optimization.base_lr': '0.001', 'attempt': '1'}, tags={
             'kumo.kind': 'trial',
+            'kumo.snapshot_id': SNAPSHOT,
+            'kumo.task_type': 'regression',
             'kumo.status': 'failed',
             'kumo.error': 'OutOfMemoryError: CUDA out of memory',
         })
@@ -413,7 +413,8 @@ def test_adapter_records_the_same_runs(adapter, tmp_path):
     assert gaps(expected, adapter.observe(), adapter) == []
 
 
-def test_adapter_records_a_single_trial_fit_epoch_by_epoch(adapter):
+def test_adapter_records_a_single_trial_fit_epoch_by_epoch_without_trials(
+        adapter):
     plan = {**CONTEXT.model_plan,
             'training_job': {'tune_metric': 'mae', 'num_experiments': 1}}
     events = [EVENTS[0], *_epochs(1, (0.5, 0.4), (0.3, 0.35)), EVENTS[3],
@@ -423,6 +424,7 @@ def test_adapter_records_a_single_trial_fit_epoch_by_epoch(adapter):
                           'train_loss': ((1, 0.5), (2, 0.3)),
                           'val_mae': ((1, 0.4), (2, 0.35))})
 
+    assert list(expected) == [FIT]
     assert gaps(expected, adapter.observe(), adapter) == []
 
 

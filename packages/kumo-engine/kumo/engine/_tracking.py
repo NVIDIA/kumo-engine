@@ -129,6 +129,9 @@ def by_step(steps: Mapping[str, Sequence[Tuple[int, float]]]
     return sorted(grouped.items())
 
 
+_TRIAL_PARENTS = ('snapshot_id', 'task_type')
+
+
 def run_record(spec: RunSpec) -> RunRecord:
     params = {key: _param_value(value) for key, value in spec.params.items()}
     return RunRecord(
@@ -280,7 +283,6 @@ class _Search:
     metric: str
     lower: bool
     best: Optional[Tuple[float, int]] = None
-    trials: int = 0
 
     @classmethod
     def of(cls, params: Mapping[str, Any]) -> '_Search':
@@ -301,12 +303,11 @@ class _Search:
         if self.best is None or (value < self.best[0] if self.lower else
                                  value > self.best[0]):
             self.best = (value, event.trial or 0)
-        self.trials += 1
-        return {f'search/best_{self.metric}': self.best[0]}, self.trials
+        return None
 
 
 class RegistrationError(Exception):
-    r"""Registering, not logging, the model failed."""
+    r"""Registering the logged model failed."""
 
 
 class TrackingSession:
@@ -371,11 +372,18 @@ class TrackingSession:
                 **event.params, 'attempt': events[0].params['attempt']
             })
         events.append(event)
-        record = run_record(trial_spec(events))
-        logged = dataclasses.replace(event,
-                                     metrics=logged_names(event.metrics))
-        self._submit(lambda: self._call(
-            lambda tracker: tracker.on_trial(record, logged)))
+        if self._search is not None and not self._search.single:
+            trial = trial_spec(events)
+            record = run_record(dataclasses.replace(
+                trial, model_label=self.spec.model_label, parents={
+                    **{name: self.spec.parents.get(name)
+                       for name in _TRIAL_PARENTS},
+                    **trial.parents
+                }))
+            logged = dataclasses.replace(event,
+                                         metrics=logged_names(event.metrics))
+            self._submit(lambda: self._call(
+                lambda tracker: tracker.on_trial(record, logged)))
         series = None if self._search is None else self._search.on(event)
         if series is not None:
             metrics, step = logged_names(series[0]), series[1]
@@ -443,7 +451,7 @@ class TrackingSession:
 
     def finish(self, spec: Optional[Callable[[], RunSpec]],
                error: Optional[BaseException]) -> None:
-        r"""Ends the run with ``spec()`` (`None`: the started spec)."""
+        r"""Ends the run, failed if error."""
         worker = self._worker
         if self.spec is None or worker is None:
             return
