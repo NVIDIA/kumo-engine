@@ -238,8 +238,7 @@ def _schema_tables(config: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 def schema_changes(before: Mapping[str, Any],
                    after: Mapping[str, Any]) -> List[str]:
-    r"""How two graph configs differ in tables, columns, types, keys and
-    edges; empty when only connectors or table locations differ."""
+    r"""Schema differences between two graph configs."""
     old, new = _schema_tables(before), _schema_tables(after)
     changes = [
         f"table {name} {'removed' if name in old else 'added'}"
@@ -337,7 +336,6 @@ def _load_local(connector: Any, path: str, root: str,
         try:
             load_into(connector, path, root, manifest, target)
         except FileNotFoundError:
-            # A newer export of this snapshot committed meanwhile.
             newer_root, newer = read(connector, path)
             if (newer_root == root
                     or newer['snapshot_id'] != manifest['snapshot_id']):
@@ -426,26 +424,18 @@ class GraphSnapshot:
 
     @property
     def _graph_key(self) -> str:
-        """The `Graph.id` this snapshot was built from."""
         return self.id.partition('@')[0]
 
     @property
     def _data_version(self) -> str:
-        """The full source-version fingerprint; `id` holds its first 16."""
         return Path(self.index_path).name
 
     @cached_property
     def _native_graph(self) -> NativeGraph:
-        """`graph_config` normalized, as `Graph.native_graph`."""
         return normalize_graph(self.graph_config)
 
     def export(self, output_config: 'SnapshotOutputConfig') -> str:
-        r"""Copy the index to `<path>/<graph id>/<data version[:16]>` and
-        return that location. An earlier export there stays loadable until
-        the new one commits, then is replaced. The connector must hold files
-        at the path: an S3, GCS or file connector, or a volume or stage
-        whose sink offers a filesystem.
-        """
+        r"""Export the snapshot via ``output_config``; returns its location."""
         from kumo.engine._snapshot_io import export
 
         return export(self, output_config.connector, output_config.path)
@@ -455,15 +445,13 @@ class GraphSnapshot:
                             path: Optional[str] = None,
                             id: Optional[str] = None,
                             graph: Optional['Graph'] = None) -> 'GraphSnapshot':
-        r"""Copy the snapshot exported at `path` into the local store.
+        r"""Load a snapshot exported at `path`.
 
         Args:
             connector: a connector, or a `kumo.MLOps` for its artifact root.
             path: the location `export` returned.
-            id: instead of `path`, the id of a snapshot stored under the
-                artifact root of the `kumo.MLOps` passed as `connector`.
-            graph: if given, warn when its source tables changed since the
-                snapshot was built (see `source_changes`).
+            id: a snapshot id under the `kumo.MLOps` root, instead of `path`.
+            graph: warn if its sources changed since the snapshot.
         """
         from kumo.engine._mlops import MLOps, on_root, snapshot_path
         from kumo.engine._snapshot_io import read
@@ -501,8 +489,7 @@ class GraphSnapshot:
                 UserWarning, stacklevel=3)
 
     def source_changes(self, graph: 'Graph') -> Dict[str, Dict[str, Any]]:
-        r"""Each of `graph`'s tables' source status since this snapshot:
-        `unchanged`, `changed` or `unknown`. Never raises."""
+        r"""Each of `graph`'s tables as `unchanged`, `changed` or `unknown`."""
         from kumo_core.sources.parallel import run_in_parallel
 
         try:
@@ -524,7 +511,7 @@ class GraphSnapshot:
 
     @property
     def manifest(self) -> SnapshotManifest | None:
-        """The snapshot manifest stored next to the index, if any."""
+        """The stored snapshot manifest, if any."""
         return read_manifest(Path(self.index_path) / PROVENANCE_FILE,
                              SnapshotManifest)
 
@@ -705,12 +692,9 @@ class Graph:
         it's reused as is.
 
         Args:
-            mlops: a `kumo.MLOps`; with MLOps on (this or a `kumo.mlops`
-                block), the snapshot is also exported under the artifact
-                root's `snapshots/`, unless it is there already.
-            record_sources: if False, the snapshot manifest records each
-                source as connector and table name only (no bucket, path or
-                account) and Custom SQL as a hash only (no SQL text).
+            mlops: also export the snapshot under this `kumo.MLOps` root.
+            record_sources: if False, record sources without locations or
+                SQL text.
             callbacks: called with each progress `Event`.
         """
         self.validate()

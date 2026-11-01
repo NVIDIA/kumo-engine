@@ -35,12 +35,10 @@ class _Root:
     _uri: str
 
     def location(self, relative: str) -> str:
-        r"""``relative`` as a path on :attr:`connector`."""
         base = self.path.rstrip('/')
         return f'{base}/{relative}' if base else relative
 
     def uri(self, relative: str) -> str:
-        r"""``relative`` as a full URI or path, for messages and records."""
         return f"{self._uri.rstrip('/')}/{relative}"
 
 
@@ -137,7 +135,6 @@ class MLOps:
         return self.root.uri(snapshot_path(snapshot))
 
     def wants(self, kind: str) -> bool:
-        r"""Whether artifacts of ``kind`` are stored under the root."""
         return kind in self.kinds
 
     def locate(self, path: Path, kind: Type[M], relative: str) -> Optional[M]:
@@ -165,9 +162,7 @@ def _require_within_root(connector: Any, path: str) -> None:
         name = type(connector).__name__
         raise ValueError(
             f'artifact_root {path!r} is outside this {name}\'s {within} '
-            f'({error}), so nothing could be stored there. Give the root '
-            f'a connector that contains it: ({name}(root_dir={path!r}, '
-            f'identity=...), {path!r}).') from error
+            f'({error}); give it a connector that contains it.') from error
 
 
 def _require_writable(root: _Root) -> None:
@@ -190,7 +185,7 @@ def _require_writable(root: _Root) -> None:
             return
         try:
             filesystem.open_output_stream(probe).close()
-        except FileNotFoundError:  # a store with directories, before first use
+        except FileNotFoundError:
             filesystem.create_dir(posixpath.dirname(probe), recursive=True)
             filesystem.open_output_stream(probe).close()
         delete = getattr(root.connector.sink_backend, 'delete_file', None)
@@ -200,10 +195,9 @@ def _require_writable(root: _Root) -> None:
             delete(root.connector, probe)
     except Exception as error:
         raise PermissionError(
-            f'kumo.MLOps cannot write under artifact_root '
-            f'{root.uri("")!r}: {type(error).__name__}: {error}. Grant this '
-            f'identity write and delete rights on it, or pick another '
-            f'root.') from error
+            f'kumo.MLOps cannot write under artifact_root {root.uri("")!r} '
+            f'({type(error).__name__}: {error}); grant write and delete '
+            f'rights or pick another root.') from error
 
 
 _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(
@@ -223,8 +217,7 @@ def mlops(settings: MLOps) -> Iterator[MLOps]:
 
 
 def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
-    r"""The settings a call runs with: its ``mlops=`` argument, else the
-    enclosing block's, else None (off)."""
+    r"""The ``mlops=`` argument, else the enclosing block's."""
     return settings if settings is not None else _CURRENT.get()
 
 
@@ -259,15 +252,13 @@ def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
 
 
 def on_root(source: Any, path: str) -> Tuple[Any, str]:
-    r"""The connector and path a ``load_from_connector(source, path=...)``
-    reads: an `MLOps` ``source`` reads ``path`` under its artifact root."""
+    r"""``path`` under an `MLOps` root, else ``source`` as given."""
     if isinstance(source, MLOps):
         return source.root.connector, source.root.location(path.lstrip('/'))
     return source, path
 
 
 def snapshot_path(snapshot: Any) -> str:
-    r"""Where a snapshot, or a snapshot id, is stored under a root."""
     snapshot_id = snapshot if isinstance(snapshot, str) else snapshot.id
     return 'snapshots/' + snapshot_id.replace('@', '/')
 

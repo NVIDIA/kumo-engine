@@ -53,20 +53,18 @@ class TrainingTable:
     required_stages: tuple[str, ...]
     #: Effective generation settings carried forward into ``Trainer.fit``.
     generation_plan: TrainingTableGenerationPlan
-    #: The artifact id: the same snapshot, query, plan, split seed and
-    #: engine build give the same id. None for a hand-built table.
     id: Optional[str] = field(default=None, compare=False)
 
     @property
     def tt_id(self) -> str:
-        """The id DiskGraph assigned to this table at generation."""
+        """The DiskGraph id of this table."""
         from kumo_core.training.export import read_spec
 
         return read_spec(str(self.staging_dir))['tt_id']
 
     @property
     def manifest(self) -> Optional[TrainingTableManifest]:
-        """Lineage recorded at generation; None for older tables."""
+        """The recorded manifest, if any."""
         return read_manifest(self.staging_dir / PROVENANCE_FILE,
                              TrainingTableManifest)
 
@@ -122,10 +120,7 @@ class TrainingTable:
     def load_from_connector(cls, connector: Any, *, path: str,
                             pquery: "PredictiveQuery",  # noqa: F821
                             snapshot: GraphSnapshot) -> "TrainingTable":
-        r"""Materialize a table written by :meth:`export` (a directory with a
-        ``SPLIT`` column) against ``snapshot``, as :meth:`from_source_table`
-        with ``split_col='SPLIT'``. A `kumo.MLOps` ``connector`` reads
-        ``path`` under its artifact root (``training_tables/<id>``)."""
+        r"""Load a table written by :meth:`export` against ``snapshot``."""
         from kumo.engine._mlops import on_root
 
         connector, path = on_root(connector, path)

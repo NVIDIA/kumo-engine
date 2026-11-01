@@ -157,17 +157,17 @@ class TrainingResult:
 
     @property
     def id(self) -> Optional[str]:
-        """The model's id: its bundle id."""
+        """The bundle id."""
         return self.bundle_id
 
     @property
     def manifest(self) -> Optional[ModelManifest]:
-        """The bundle's ``_provenance.json``; None for older bundles."""
+        """The bundle manifest, if any."""
         return read_provenance(self.bundle_dir)
 
     @property
     def snapshot_id(self) -> Optional[str]:
-        """The id of the snapshot the model was trained on."""
+        """The id of the training snapshot."""
         if not (self.bundle_dir / SPEC_FILE).is_file():
             return None
         return read_training_spec(self.bundle_dir).snapshot_id
@@ -335,8 +335,7 @@ HOLDOUT_META_FILE = 'holdout-meta.json'
 
 
 def _bundle_holdout(result: TrainingResult) -> TrainingResult:
-    r"""Copy the holdout and its size record into the bundle, so a model
-    loaded from a registry or path still has them."""
+    r"""Copy the holdout into the bundle."""
     from kumo_core.artifacts import add_bundle_file
 
     if result.holdout_path is None:
@@ -1102,13 +1101,8 @@ class Trainer:
     ) -> PredictionResult:
         r"""Score a snapshot and return durable file-backed results.
 
-        ``predict(snapshot)`` scores the trained query's population at
-        ``prediction_time`` (as :meth:`PredictiveQuery.generate_prediction_table`);
-        ``entities`` is a source table of ``ENTITY1`` (and ``TIMESTAMP``
-        where the task needs one) rows to score instead. It warns when the
-        snapshot was taken of another graph than the one the model was
-        trained on. ``predict(prediction_table, snapshot=...)`` scores a
-        prediction table generated beforehand, as before.
+        Scores the query's population at ``prediction_time``, or the
+        ``entities`` given, or a ``prediction_table`` generated beforehand.
 
         The trainer must contain fitted state from :meth:`fit`, :meth:`load`,
         or :meth:`load_from_connector`. Without ``output_config``,

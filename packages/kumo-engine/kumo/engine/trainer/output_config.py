@@ -97,8 +97,7 @@ class TrainingTableOutputConfig:
 
 @dataclass(frozen=True)
 class SnapshotOutputConfig:
-    """Export a graph snapshot under ``path`` via ``connector``, a file
-    destination (`GraphSnapshot.export`)."""
+    """Where `GraphSnapshot.export` writes."""
 
     connector: Connector
     path: str
