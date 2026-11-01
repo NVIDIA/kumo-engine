@@ -52,6 +52,7 @@ from kumo.engine._run_names import (
     trial_name,
 )
 from kumo.engine._summary_tables import Routed, route, table_json
+from kumo.engine._text import metric_key
 from kumo.engine._tracking import (
     DROPPED_PARAMS,
     RegistrationError,
@@ -1126,11 +1127,6 @@ def _sagemaker_ui_hint(tracking_uri: str) -> Optional[str]:
                f'--arn {tracking_uri} --region {region}')
     return ("MLflow's run links do not open on SageMaker: open the MLflow UI "
             f'from SageMaker Studio or at the URL `{command}` prints.')
-
-
-def metric_key(name: str) -> str:
-    r"""``map@10`` as ``map_at_10``: MLflow rejects ``@``."""
-    return name.replace('@', '_at_')
 
 
 def log_model(
