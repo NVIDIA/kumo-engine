@@ -5,6 +5,7 @@
 import copy
 import fcntl
 import importlib.util
+import inspect
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +16,19 @@ SOURCE = Path(__file__).parents[1] / 'scripts/weekly_b9.py'
 
 
 class RetainedChecks(unittest.TestCase):
+    def test_retained_prediction_loads_current_wheel_helpers(self):
+        spec = importlib.util.spec_from_file_location('b9', SOURCE)
+        b9 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(b9)
+        helper = b9.installation_helper()
+        for name, arguments in [('verify_installed_files', (None, None)),
+                                ('verify_checkpoint', (None, None, 'a' * 64))]:
+            with self.subTest(name=name):
+                function = getattr(helper, name, None)
+                self.assertTrue(callable(function),
+                                'B9 must load the current wheel helper')
+                inspect.signature(function).bind(*arguments)
+
     def test_busy_host_stops_before_runtime_imports_or_input_reads(self):
         spec = importlib.util.spec_from_file_location('b9', SOURCE)
         b9 = importlib.util.module_from_spec(spec)

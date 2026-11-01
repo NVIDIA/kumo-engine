@@ -46,11 +46,7 @@ def check_devices(records, count, checkpoint):
 
 
 def installation_helper():
-    source = Path(__file__).resolve().parents[1] / 'test/wheel_gpu_smoke.py'
-    spec = importlib.util.spec_from_file_location('b9_install', source)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return worker.installation_helper()
 
 
 @contextmanager
