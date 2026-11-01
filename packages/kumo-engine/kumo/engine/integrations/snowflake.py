@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Snowflake Experiment Tracking for `Trainer.fit`
-(``pip install 'kumo-engine[snowflake]'``)."""
+r"""Snowflake Experiment Tracking for `Trainer.fit`."""
 
 import logging
 import posixpath
@@ -38,31 +37,11 @@ _FINISH_PARAMS = 20
 
 
 class SnowflakeTracking(TrackingBase):
-    r"""Records `Trainer.fit` in Snowflake Experiment Tracking as one run;
-    trial attempts are logged in it under ``trial-<n>-attempt-<m>/`` names and
-    tags are logged as params. Snowflake has no dataset inputs, so a fit's
-    source tables are not recorded as inputs. The Snowpark session's
-    parameters are not changed.
+    r"""Records `Trainer.fit` in Snowflake Experiment Tracking as one run.
 
     Args:
-        source: a ``SnowflakeConnector``, whose identity opens the session
-            and whose Snowflake Model Registry ``kumo.MLOps(registry=...)``
-            registers models in; or a Snowpark session, which tracks only.
-            It needs CREATE EXPERIMENT on the schema, or MODIFY on an
-            existing experiment.
-        experiment_name: experiment for the fit run, created if missing.
-        database: `None` uses the session's current database.
-        schema_name: `None` uses the session's current schema, or ``PUBLIC``
-            when `database` is given or the session has none.
-        run_name: name of the fit run. `None` names it after its registry
-            model and UTC start, as ``fit_users_churn_20261027_0618``; a
-            taken name gets a random suffix.
-        tags: extra tags for the fit run.
-        native_model_lineage: keep the run open as a context for the whole
-            fit, so models registered meanwhile are linked to it.
-
-    ``run_id`` is the latest fit run's name (Snowflake runs are identified
-    by name), once it has started.
+        source: a ``SnowflakeConnector``, or a Snowpark session (tracking only).
+        native_model_lineage: link models registered during the fit to its run.
     """
 
     platform = 'snowflake'
@@ -108,8 +87,7 @@ class SnowflakeTracking(TrackingBase):
         self._dropped_params = 0
 
     def load_model(self, location: Any, **kwargs: Any) -> Any:
-        r"""The `Trainer` of the Snowflake Model Registry version
-        ``location`` names, through this tracker's connector."""
+        r"""The `Trainer` registered at ``location``."""
         from kumo.engine.trainer.trainer import Trainer
 
         if self.connector is None:
@@ -125,8 +103,7 @@ class SnowflakeTracking(TrackingBase):
         return database, schema or 'PUBLIC'
 
     def check(self, registry: Any = None) -> None:
-        r"""Raises before any work unless the session can see the
-        experiment's schema (one metadata query, no warehouse)."""
+        r"""Raises unless the session can see the experiment's schema."""
         database, schema = self._location()
         if database is None:
             return
@@ -141,9 +118,8 @@ class SnowflakeTracking(TrackingBase):
                 f'{type(error).__name__}: {error}') from error
         if not rows:
             raise ValueError(
-                f'Snowflake Experiment Tracking needs schema {database}.'
-                f'{schema}, which does not exist or this role '
-                f'cannot see.')
+                f'Snowflake schema {database}.{schema} does not exist or this '
+                f'role cannot see it.')
 
     def start(self, record: RunRecord) -> None:
         self._reset()
@@ -155,11 +131,9 @@ class SnowflakeTracking(TrackingBase):
         elif (not hasattr(tracking, '_run') or tracking._run is not None
               or getattr(tracking, '_session', None) is not self.session):
             raise RuntimeError(
-                f'Snowflake ExperimentTracking is in use in this process, by '
-                f'an active run or another Snowpark session, so this '
-                f'{record.tags.get("kumo.kind")} run is not tracked in '
-                f'Snowflake; end that run, or pass SnowflakeTracking the '
-                f'session it uses')
+                f'Snowflake ExperimentTracking is already in use in this '
+                f'process, so this {record.tags.get("kumo.kind")} run is not '
+                f'tracked; end that run or pass its session.')
         self._tracking = tracking
         database, schema = self._location()
         experiment = tracking.set_experiment(self.experiment_name,
@@ -235,7 +209,7 @@ class SnowflakeTracking(TrackingBase):
                       run_name: Optional[str]) -> Optional[str]:
         if run_name is None:
             return None
-        # start_run matches name as a LIKE pattern.
+        # start_run matches name with LIKE.
         existing = [
             str(row['name'])
             for row in tracking._sql_client.show_runs_in_experiment(
@@ -305,7 +279,6 @@ class SnowflakeTracking(TrackingBase):
 
 
 def _run_identifier(name: str) -> str:
-    r"""``name`` as an unquoted identifier, which artifact URIs need."""
     name = re.sub(r'[^A-Za-z0-9_]', '_', name)
     return name if re.match(r'[A-Za-z_]', name) else f'_{name}'
 

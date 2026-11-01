@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""MLflow tracking and models for `Trainer.fit`
-(``pip install 'kumo-engine[mlflow]'``)."""
+r"""MLflow tracking and model logging for `Trainer.fit`."""
 
 import hashlib
 import json
@@ -69,7 +68,6 @@ logger = logging.getLogger(__name__)
 
 _MAX_PARAM_KEY = 250
 _MAX_PARAM_VALUE = 6000
-# MLflow's Windows-safe charset.
 _PARAM_KEY = re.compile(r'[/\w.\- ]+')
 _HTTP_LIMITS = {
     'MLFLOW_HTTP_REQUEST_MAX_RETRIES': '2',
@@ -82,39 +80,10 @@ _UC_FORBIDDEN = re.compile(r'[ /\x00-\x1f\x7f]')
 
 
 class MlflowTracking(TrackingBase):
-    r"""Records `Trainer.fit` in MLflow: one run per fit (under the active
-    run, if any, on the same server) with a child run per trial attempt.
-    Source tables are logged as run inputs: Databricks tables as Delta
-    tables (Unity Catalog then links them to a model registered from the
-    run), file and object-store sources by URI. Params MLflow rejects are
-    counted in ``kumo.dropped_params``. Concurrent fits in one process are
-    not supported.
+    r"""Records `Trainer.fit` in MLflow, one run per fit.
 
     Args:
-        experiment_name: experiment for the fit run, created if missing.
-            `None` uses MLflow's current experiment; required to record
-            runs at a ``target``.
-        run_name: name of the fit run. `None` names it after its registry
-            model and UTC start, as ``fit-users-churn-20261027-0618``.
-        log_system_metrics: sample CPU, memory, disk, network and (with
-            ``nvidia-ml-py``) GPU usage on the fit run.
-        tags: extra tags for the fit run.
-        log_model: log the fitted model on the fit run (see `log_model`)
-            before the fit returns. ``kumo.MLOps(registry=
-            ModelRegistryLocation(...))`` also registers it, which implies
-            this.
-        target: where to record, with the credentials that reach it: a
-            ``DatabricksConnector`` (Databricks MLflow and Unity Catalog,
-            as its identity), a `SageMakerMLflow`, or another MLflow
-            server's tracking URI. `None` uses MLflow's own tracking and
-            registry URIs, read once here.
-
-    With explicit credentials, each MLflow call sets process-wide state
-    for its duration (docs/mlops.md, "Credentials"): do not call MLflow or
-    Databricks yourself on other threads during a fit.
-
-    ``run_id`` is the MLflow id of the latest fit run, once it has started,
-    and ``run_url`` its link in the MLflow UI, where the server has one.
+        target: a ``DatabricksConnector``, `SageMakerMLflow` or tracking URI.
     """
 
     def __init__(
@@ -164,10 +133,7 @@ class MlflowTracking(TrackingBase):
 
     @contextmanager
     def client(self) -> Iterator[Any]:
-        r"""An ``MlflowClient`` for this tracker's server, with its
-        credentials and tracking URI set for the block, so your own MLflow
-        calls (the client's, or ``mlflow.search_runs``) reach the server
-        kumo-engine records to, as the same identity."""
+        r"""An ``MlflowClient`` with this tracker's credentials."""
         with self.target.scope(), global_tracking_uri(
                 self.target.tracking_uri):
             yield self.target.client()
@@ -210,10 +176,8 @@ class MlflowTracking(TrackingBase):
                     return
                 raise RuntimeError(
                     f'Could not create the MLflow experiment '
-                    f'{self.experiment_name!r}: {full_error(error)}. Its '
-                    f'parent folder must exist: on Databricks, create it '
-                    f'with `databricks workspace mkdirs <folder>` or in the '
-                    f'workspace UI.') from error
+                    f'{self.experiment_name!r}: {full_error(error)}; create '
+                    f'its parent folder first.') from error
 
     def prepare(self) -> None:
         active = self._mlflow.active_run()
@@ -230,16 +194,15 @@ class MlflowTracking(TrackingBase):
 
     def _require_experiment(self) -> None:
         if self._named and self.experiment_name is None:
-            raise ValueError('MlflowTracking(target=...) records runs in an '
-                             'experiment: pass experiment_name.')
+            raise ValueError('MlflowTracking(target=...) needs '
+                             'experiment_name.')
 
     def load_model(self, location: ModelRegistryLocation,
                    **kwargs: Any) -> 'Trainer':
         r"""The `Trainer` of ``location``'s alias or version."""
         if (location.alias is None) == (location.version is None):
-            raise ValueError('Loading from an MLflow registry takes a '
-                             'ModelRegistryLocation with an alias or a '
-                             'version.')
+            raise ValueError('Pass a ModelRegistryLocation with either an '
+                             'alias or a version.')
         reference = (f'@{location.alias}'
                      if location.alias else f'/{location.version}')
         return load_model(f'models:/{location.model_name}{reference}',
@@ -247,8 +210,7 @@ class MlflowTracking(TrackingBase):
 
     def register(self, result: Any,
                  location: ModelRegistryLocation) -> PublishedModel:
-        r"""Registers a `TrainingResult` at ``location``, reusing a version
-        that holds its bundle."""
+        r"""Registers a `TrainingResult` at ``location``."""
         from kumo.engine._manifest import stub
         from kumo.engine.graph import GraphSnapshot
         from kumo.engine.trainer._spec import read_training_spec
@@ -312,7 +274,7 @@ class MlflowTracking(TrackingBase):
                 _SystemMetrics(self.log_metrics))
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
-        if record.tags.get('kumo.kind') != 'fit':  # a fit logs Datasets
+        if record.tags.get('kumo.kind') != 'fit':
             with self.target.scope():
                 _log_inputs(self._mlflow, client, self._parent, record.inputs)
 
@@ -503,7 +465,7 @@ class MlflowTracking(TrackingBase):
                     run_id, metrics=batch[start:start + _BATCH_METRICS])
 
 
-_BATCH_METRICS = 1000  # MLflow's per-request limit
+_BATCH_METRICS = 1000
 _SYSTEM_METRICS_FAILURES = 6
 _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
                  'float32': 'float', 'bool': 'boolean', 'date': 'datetime',
@@ -511,8 +473,6 @@ _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
 
 
 class _SystemMetrics:
-    r"""MLflow's system monitors, logged with the tracker's credentials."""
-
     def __init__(self, log: Callable[[Mapping[str, float], int], None],
                  interval: float = 10.0) -> None:
         self._log = log
@@ -585,9 +545,7 @@ def check_model_name(name: str, registry_uri: str) -> None:
         if not _SAGEMAKER_MODEL.fullmatch(name):
             raise ValueError(
                 f'SageMaker MLflow cannot register a model named {name!r}: '
-                f'use letters, digits and hyphens, starting and ending with '
-                f'a letter or digit, at most 57 letters and digits '
-                f'(^[a-zA-Z0-9](-*[a-zA-Z0-9]){{0,56}}$), e.g. '
+                f'use up to 57 letters and digits joined by hyphens, e.g. '
                 f"'users-churn'.")
     elif is_databricks_unity_catalog_uri(registry_uri or ''):
         parts = name.split('.')
@@ -596,9 +554,7 @@ def check_model_name(name: str, registry_uri: str) -> None:
                 for part in parts):
             raise ValueError(
                 f'Unity Catalog cannot register a model named {name!r}: use '
-                f'catalog.schema.model (on a cluster, a shorter name takes '
-                f'its current catalog and schema), each part at most 255 '
-                f'characters with no space, "/" or control character, e.g. '
+                f'catalog.schema.model without spaces or "/", e.g. '
                 f"'main.ml.users_churn'.")
 
 
@@ -631,16 +587,13 @@ def log_model(
     target: Any = None,
     experiment_name: Optional[str] = None,
 ) -> Any:
-    r"""Log a trainer's bundle as an MLflow pyfunc model in ``run_id`` (or
-    the active run, else a new one in ``experiment_name``) with its source
-    tables as run inputs; returns its `ModelInfo`. ``target`` says where,
-    with what credentials, as in `MlflowTracking`; `None` uses MLflow's own
-    tracking URI. Scores with ``predict(entities, params={'snapshot':
-    uri})``; with ``serving_snapshot`` (an exported snapshot URI, or a
-    `GraphSnapshot` or snapshot id stored under the artifact root of the
-    enclosing `kumo.mlops` block), each serving replica downloads that
-    snapshot once at startup and scores against it when no ``snapshot``
-    param is given."""
+    r"""Logs a trainer as an MLflow pyfunc model; returns its `ModelInfo`.
+
+    Args:
+        serving_snapshot: snapshot to score against when the request names
+            none.
+        target: as in `MlflowTracking`.
+    """
     from kumo.engine._manifest import stub
     from kumo.engine._mlops import snapshot_uri
     from kumo.engine._tracking import fit_inputs
@@ -683,9 +636,11 @@ def load_model(
     target: Any = None,
     accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
 ) -> 'Trainer':
-    r"""Restore the `Trainer` of a model `log_model` logged, from the
-    server ``target`` reaches, as in `MlflowTracking` (`None`: MLflow's own
-    tracking URI)."""
+    r"""Restores the `Trainer` of a model `log_model` logged.
+
+    Args:
+        target: as in `MlflowTracking`.
+    """
     from kumo.engine._scratch import new_run_id, trainer_scratch_dir
     from kumo.engine.trainer.trainer import Trainer, warn_if_other_bundle
 
@@ -730,7 +685,6 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
                snapshot: Optional['GraphSnapshot'], run_id: str,
                experiment_id: str, name: str = 'model',
                serving_snapshot: Optional[str] = None) -> Any:
-    r"""``mlflow.pyfunc.log_model`` through ``client``."""
     from kumo_core.artifacts import PROVENANCE_FILE
 
     from kumo.engine.integrations import _mlflow_model, _mlflow_model_code
@@ -873,7 +827,6 @@ def _register(target: Any, client: Any, info: Any,
 
 def _registered_version(client: Any, name: str,
                         metadata: Mapping[str, str]) -> Optional[str]:
-    r"""The version of ``name`` that already holds this bundle, if any."""
     bundle = metadata.get(BUNDLE_ID_KEY)
     if not bundle:
         return None
@@ -887,7 +840,7 @@ def _registered_version(client: Any, name: str,
                 return None
             raise
         for version in page:
-            # Unity Catalog's search results carry tags as a method.
+            # Unity Catalog returns tags as a method.
             tags = version.tags
             if not isinstance(tags, Mapping) or not tags:
                 tags = client.get_model_version(name, version.version).tags
@@ -924,9 +877,8 @@ def check_registry_schema(name: str, registry_uri: str) -> None:
         raise ValueError(
             f"Unity Catalog cannot register {name!r}: "
             f"{body.get('error_code', response.status_code)}: "
-            f"{body.get('message', response.reason)}. The catalog and schema "
-            f"must exist, and the registering principal needs USE CATALOG, "
-            f"USE SCHEMA and CREATE MODEL on them.")
+            f"{body.get('message', response.reason)}; create the schema or "
+            f"grant USE CATALOG, USE SCHEMA and CREATE MODEL on it.")
     response.raise_for_status()
 
 

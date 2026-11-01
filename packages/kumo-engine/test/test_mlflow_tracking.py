@@ -38,7 +38,7 @@ QUERY = 'PREDICT ents.Y FOR EACH ents.ID'
 
 @pytest.fixture
 def tracking_uri(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)  # the default artifact root is ./mlruns
+    monkeypatch.chdir(tmp_path)
     previous = mlflow.get_tracking_uri()
     uri = f'sqlite:///{tmp_path / "mlflow.db"}'
     mlflow.set_tracking_uri(uri)
@@ -281,7 +281,7 @@ def test_building_mlops_creates_the_experiment_or_says_why_it_cannot(
 
     monkeypatch.setattr(mlflow.MlflowClient, 'create_experiment', refuse)
     with pytest.raises(RuntimeError, match=r"experiment '/Shared/x/churn'.*"
-                       r"folder does not exist.*parent folder must exist"):
+                       r"folder does not exist.*create its parent folder"):
         kumo.MLOps(str(tmp_path), tracking=MlflowTracking(
             '/Shared/x/churn', log_system_metrics=False, target=uri))
 

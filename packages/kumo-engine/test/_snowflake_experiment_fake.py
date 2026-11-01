@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""A recording stand-in for `snowflake.ml.experiment.ExperimentTracking` that
-keeps its observable rules (singleton, one active run, LIKE-matched resume)."""
+"""A recording fake of `snowflake.ml.experiment.ExperimentTracking`."""
 
 import os
 import re

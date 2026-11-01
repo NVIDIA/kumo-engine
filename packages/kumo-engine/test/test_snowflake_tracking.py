@@ -130,7 +130,7 @@ def test_an_instance_in_use_is_left_alone_and_fails_strict_mode(
     plan.optimization.max_epochs = 2
     plan.optimization.max_steps_per_epoch = 2
     trainer = kumo.Trainer(plan)
-    in_use = 'Snowflake ExperimentTracking is in use in this process'
+    in_use = 'Snowflake ExperimentTracking is already in use'
 
     with pytest.raises(RuntimeError, match=in_use):
         trainer.fit(table, snapshot=snapshot, mlops=kumo.MLOps(
@@ -162,7 +162,7 @@ def test_an_existing_run_is_never_resumed(fake, taken, caplog):
     if taken == 'FIT':
         user.end_run()
     else:
-        user._run = None  # still running, in another process
+        user._run = None
     run_name = 'fit' if taken == 'FIT' else 'my_run'
 
     tracking = _tracking(session, run_name=run_name)
@@ -242,7 +242,7 @@ def test_a_connector_opens_the_session_and_the_schema_is_checked_first(
     assert session.statements == ["SHOW SCHEMAS LIKE 'RUNS' IN DATABASE DB"]
 
     tracking.session = _SchemaSession([])
-    with pytest.raises(ValueError, match='needs schema DB.RUNS'):
+    with pytest.raises(ValueError, match='schema DB.RUNS does not exist'):
         kumo.MLOps('/tmp/root', tracking=tracking)
     with pytest.raises(ValueError, match='or a Snowpark session'):
         _tracking(None)
