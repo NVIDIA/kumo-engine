@@ -345,7 +345,7 @@ def verify_model_bundle(bundle: Path) -> str:
 
 
 def bundle_id_from_manifest(bundle: Path) -> str:
-    """The bundle id from the digests a freshly published bundle lists."""
+    """The bundle id from the manifest digests."""
     manifest_path = Path(bundle) / VitalArtifactPublicationPolicy.MANIFEST_NAME
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     return _bundle_id((str(entry['relative_path']), str(entry['sha256']))
@@ -360,7 +360,7 @@ def _bundle_id(pairs: Iterable[tuple[str, str]]) -> str:
 
 
 def add_bundle_file(bundle_dir: Path, role: str, relative_path: str) -> None:
-    """List one file already written in a bundle in its publication manifest."""
+    """List a written bundle file in the publication manifest."""
     bundle_dir = Path(bundle_dir)
     path = bundle_dir / relative_path
     manifest_path = bundle_dir / VitalArtifactPublicationPolicy.MANIFEST_NAME
