@@ -18,10 +18,13 @@ verification belong to the preparation layer. This gateway reads those files;
 it does not upload or register them. Missing extension metadata returns
 `FailedPrecondition` so the caller can finish materialization before retrying.
 
-Protocol version 5 uses a stable Arrow envelope containing JSON metadata and
+Protocol version 6 uses a stable Arrow envelope containing JSON metadata and
 Arrow IPC components. A `DoGet` ticket contains one normalized epoch/shard
-request. The server reports sample/batch counts, then streams complete batches
-and validates native shard completion. Errors propagate through final RPC status.
+request. The initial Arrow schema carries JSON metadata under `kumo.sampling`:
+`version`, `num_samples`, and `num_batches`. Every subsequent record batch contains
+sampling data; there are no iterator or end control batches. Flight EOF completes
+the stream, and the client validates its received count and final RPC status.
+The server also verifies that native iteration matches its advertised count.
 
 A one-slot native output queue reserves capacity before sampling each batch.
 Batch envelopes retain the 64 MiB payload limit. Each client prefetches at most

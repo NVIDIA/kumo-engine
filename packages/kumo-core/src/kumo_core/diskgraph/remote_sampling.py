@@ -25,6 +25,7 @@ from pyarrow import flight
 from kumo_core.diskgraph.sampling_protocol import (
     SAMPLING_VERSION,
     decode_frame,
+    decode_stream_metadata,
 )
 
 _NATIVE_ARGUMENTS = (
@@ -89,7 +90,7 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
         request: Versioned native iterator request.
 
     Raises:
-        ValueError: If framing, version, or completion metadata is invalid.
+        ValueError: If schema metadata, batch framing or completion counts are invalid.
         TypeError: If frame metadata is not an object.
         flight.FlightError: If the gateway rejects or interrupts the request.
     """
@@ -108,7 +109,6 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
             generic_options=[("grpc.max_receive_message_length", 128 * 1024**2)],
         )
         self._reader: flight.FlightStreamReader | None = None
-        self._expected_batches: int | None = None
         self._closed = False
         self._batches = 0
         self._owner: RemoteRuntimeIndex | None = None
@@ -118,31 +118,12 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
                 flight.Ticket(payload),
                 options=flight.FlightCallOptions(timeout=3600),
             )
-            metadata, components = self._read_frame()
-            if (
-                metadata.get("kind") != "iterator"
-                or metadata.get("version") != SAMPLING_VERSION
-                or components
-                or type(metadata.get("num_samples")) is not int
-                or metadata["num_samples"] < 0
-            ):
-                raise ValueError("Invalid task iterator metadata")
-            self._num_samples: int = metadata["num_samples"]
-            count = metadata.get("num_batches")
-            if type(count) is not int or count < 0:
-                raise ValueError("Invalid iterator batch count")
-            self._expected_batches = count
+            self._num_samples, self._expected_batches = decode_stream_metadata(
+                self._reader.schema
+            )
         except BaseException:
             self.close()
             raise
-
-    def _read_frame(self) -> tuple[dict[str, Any], list[bytes]]:
-        assert self._reader is not None
-        try:
-            chunk = self._reader.read_chunk()
-        except StopIteration as error:
-            raise ValueError("Task stream ended without a completion frame") from error
-        return decode_frame(chunk.data)
 
     def num_samples(self) -> int:
         """Return the server's sample count for this stage and shard."""
@@ -153,34 +134,22 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
         if self._closed:
             raise StopIteration
         try:
-            metadata, components = self._read_frame()
-            if metadata.get("kind") == "end":
-                if (
-                    type(metadata.get("batches")) is not int
-                    or metadata.get("batches") != self._batches
-                    or components
-                    or (
-                        self._expected_batches is not None
-                        and self._batches != self._expected_batches
-                    )
-                ):
-                    raise ValueError("Invalid task stream completion count")
-                # Observe the final RPC status as well as the logical end frame.
-                assert self._reader is not None
-                try:
-                    self._reader.read_chunk()
-                except StopIteration:
-                    self.close()
-                    raise
-                raise ValueError("Unexpected data after task stream completion")
+            assert self._reader is not None
+            try:
+                chunk = self._reader.read_chunk()
+            except StopIteration as error:
+                if self._batches != self._expected_batches:
+                    raise ValueError(
+                        "Incomplete task stream: expected "
+                        f"{self._expected_batches} batches, received {self._batches}"
+                    ) from error
+                raise
+            metadata, components = decode_frame(chunk.data)
             if (
                 metadata.get("kind") != "batch"
                 or type(metadata.get("batch_id")) is not int
                 or metadata.get("batch_id") != self._batches
-                or (
-                    self._expected_batches is not None
-                    and self._batches >= self._expected_batches
-                )
+                or self._batches >= self._expected_batches
             ):
                 raise ValueError("Invalid task batch sequence")
             value = _decode(metadata.get("value"), components)

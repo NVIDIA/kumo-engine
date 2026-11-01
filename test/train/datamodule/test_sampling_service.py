@@ -62,7 +62,7 @@ def test_service_rejects_unsafe_paths(prepared_task: str, relative: str) -> None
         SamplingServiceConfig(Path(prepared_task).parent / "graph")
     )
     try:
-        request = {"kind": "epoch", "version": 5, "extension_ref": relative}
+        request = {"kind": "epoch", "version": 6, "extension_ref": relative}
         with pytest.raises((flight.FlightServerError, pa.ArrowInvalid)):
             RemoteTaskIterator(service.endpoint(), request)
         assert service.health()["active_streams"] == 0
@@ -154,7 +154,7 @@ def test_service_rejects_invalid_engine_seeds(prepared_task: str, seed: int) -> 
     )
     request = {
         "kind": "epoch",
-        "version": 5,
+        "version": 6,
         "extension_ref": "train_tables/remote_test",
         "engine_seed": seed,
     }

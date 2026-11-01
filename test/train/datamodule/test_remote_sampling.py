@@ -43,21 +43,40 @@ def _frame(metadata: dict[str, Any], parts: list[bytes] | None = None) -> MagicM
     return MagicMock(data=batch)
 
 
+def _stream_schema(
+    num_batches: int = 1, num_samples: int = 3, version: int = 6
+) -> pa.Schema:
+    from kumo_core.diskgraph.sampling_protocol import (
+        ENVELOPE_SCHEMA,
+        STREAM_METADATA_KEY,
+    )
+
+    return ENVELOPE_SCHEMA.with_metadata(
+        {
+            STREAM_METADATA_KEY: orjson.dumps(
+                {
+                    "version": version,
+                    "num_samples": num_samples,
+                    "num_batches": num_batches,
+                }
+            )
+        }
+    )
+
+
 def _install_transport(
-    monkeypatch: pytest.MonkeyPatch, frames: list[MagicMock | Exception]
+    monkeypatch: pytest.MonkeyPatch,
+    frames: list[MagicMock | Exception],
+    *,
+    schema: pa.Schema | None = None,
 ) -> tuple[MagicMock, MagicMock]:
     reader = MagicMock()
+    reader.schema = schema if schema is not None else _stream_schema()
     reader.read_chunk.side_effect = frames
     client = MagicMock()
     client.do_get.return_value = reader
     monkeypatch.setattr(remote.flight, "FlightClient", MagicMock(return_value=client))
     return client, reader
-
-
-def _start(num_batches: int = 1) -> MagicMock:
-    return _frame(
-        {"kind": "iterator", "version": 5, "num_samples": 3, "num_batches": num_batches}
-    )
 
 
 def _ipc(batch: pa.RecordBatch) -> bytes:
@@ -84,12 +103,10 @@ def test_complete_batches_preserve_arrow_types(monkeypatch: pytest.MonkeyPatch) 
     client, reader = _install_transport(
         monkeypatch,
         [
-            _start(),
             _frame(
                 {"kind": "batch", "batch_id": 0, "value": value},
                 [_ipc(targets), _ipc(features), _ipc(nodes)],
             ),
-            _frame({"kind": "end", "batches": 1}),
             StopIteration(),
         ],
     )
@@ -108,8 +125,8 @@ def test_complete_batches_preserve_arrow_types(monkeypatch: pytest.MonkeyPatch) 
 @pytest.mark.parametrize(
     "frame, message",
     [
-        (StopIteration(), "without a completion"),
-        (_frame({"kind": "end", "batches": 9}), "completion count"),
+        (StopIteration(), "Incomplete"),
+        (_frame({"kind": "unexpected"}), "sequence"),
         (_frame({"kind": "batch", "batch_id": 1}), "sequence"),
         (_frame({"kind": "batch", "batch_id": 0, "value": {}}), "contents"),
         (
@@ -128,7 +145,7 @@ def test_bad_streams_fail_and_close(
     monkeypatch: pytest.MonkeyPatch, frame: MagicMock | Exception, message: str
 ) -> None:
     """Malformed or truncated streams never masquerade as an epoch end."""
-    client, reader = _install_transport(monkeypatch, [_start(), frame])
+    client, reader = _install_transport(monkeypatch, [frame])
     iterator = remote.RemoteTaskIterator("grpc://sampler:50051", {})
     with pytest.raises(ValueError, match=message):
         next(iterator)
@@ -140,24 +157,123 @@ def test_bad_streams_fail_and_close(
 def test_rejects_incompatible_protocol(
     monkeypatch: pytest.MonkeyPatch, version: int
 ) -> None:
-    """The first frame must declare the supported version."""
+    """The stream schema must declare the supported version before reading batches."""
     client, _ = _install_transport(
         monkeypatch,
-        [_frame({"kind": "iterator", "version": version, "num_samples": 3})],
+        [],
+        schema=_stream_schema(version=version),
     )
     with pytest.raises(ValueError, match="metadata"):
         remote.RemoteTaskIterator("grpc://sampler:50051", {})
     client.close.assert_called_once()
 
 
-def test_observes_rpc_error_after_end(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Even a logical end must be followed by a successful Flight status."""
-    client, _ = _install_transport(
+@pytest.mark.parametrize("num_batches", [0, 1])
+def test_observes_final_rpc_error(
+    monkeypatch: pytest.MonkeyPatch, num_batches: int
+) -> None:
+    """Receiving the advertised batch count cannot hide a final Flight failure."""
+    frames = [
+        _frame(
+            {
+                "kind": "batch",
+                "batch_id": batch_id,
+                "value": {"task": {}, "graphs": {}, "raw_features": {}},
+            }
+        )
+        for batch_id in range(num_batches)
+    ]
+    client, reader = _install_transport(
         monkeypatch,
-        [_start(0), _frame({"kind": "end", "batches": 0}), OSError("connection lost")],
+        [*frames, OSError("connection lost")],
+        schema=_stream_schema(num_batches=num_batches),
     )
     iterator = remote.RemoteTaskIterator("grpc://sampler:50051", {})
     with pytest.raises(OSError, match="connection lost"):
+        list(iterator)
+    assert reader.read_chunk.call_count == num_batches + 1
+    client.close.assert_called_once()
+
+
+def test_empty_shard_completes_at_flight_eof(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A schema and successful EOF suffice for an empty shard."""
+    client, reader = _install_transport(
+        monkeypatch, [StopIteration()], schema=_stream_schema(0, 0)
+    )
+    iterator = remote.RemoteTaskIterator("grpc://sampler:50051", {})
+    assert iterator.num_samples() == 0
+    assert list(iterator) == []
+    reader.read_chunk.assert_called_once()
+    client.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {},
+        {"version": 6, "num_samples": 3},
+        {"version": 6, "num_samples": -1, "num_batches": 1},
+        {"version": 6, "num_samples": True, "num_batches": 1},
+        {"version": 6, "num_samples": 3, "num_batches": -1},
+        {"version": 6, "num_samples": 3, "num_batches": False},
+        {"version": 6.0, "num_samples": 3, "num_batches": 1},
+        [],
+        None,
+    ],
+)
+def test_rejects_invalid_schema_counts(
+    monkeypatch: pytest.MonkeyPatch, metadata: object
+) -> None:
+    """Invalid schema counts fail before reading data and close the connection."""
+    from kumo_core.diskgraph.sampling_protocol import (
+        ENVELOPE_SCHEMA,
+        STREAM_METADATA_KEY,
+    )
+
+    schema = ENVELOPE_SCHEMA.with_metadata(
+        {STREAM_METADATA_KEY: orjson.dumps(metadata)}
+    )
+    client, reader = _install_transport(monkeypatch, [], schema=schema)
+    with pytest.raises(ValueError, match="metadata"):
+        remote.RemoteTaskIterator("grpc://sampler:50051", {})
+    reader.read_chunk.assert_not_called()
+    client.close.assert_called_once()
+
+
+def test_schema_metadata_is_required_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing, malformed and oversized headers cannot bypass schema validation."""
+    from kumo_core.diskgraph import sampling_protocol as protocol
+
+    for schema in [
+        protocol.ENVELOPE_SCHEMA,
+        pa.schema([]).with_metadata(_stream_schema().metadata),
+        protocol.ENVELOPE_SCHEMA.with_metadata({protocol.STREAM_METADATA_KEY: b"{"}),
+    ]:
+        with pytest.raises(ValueError):
+            protocol.decode_stream_metadata(schema)
+    schema = _stream_schema()
+    monkeypatch.setattr(protocol, "MAX_BATCH_BYTES", 1)
+    with pytest.raises(ValueError, match="metadata"):
+        protocol.decode_stream_metadata(schema)
+
+
+def test_rejects_batches_beyond_schema_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server cannot append unadvertised batches to an otherwise valid stream."""
+    frames = [
+        _frame(
+            {
+                "kind": "batch",
+                "batch_id": batch_id,
+                "value": {"task": {}, "graphs": {}, "raw_features": {}},
+            }
+        )
+        for batch_id in range(2)
+    ]
+    client, _ = _install_transport(monkeypatch, frames)
+    iterator = remote.RemoteTaskIterator("grpc://sampler:50051", {})
+    with pytest.raises(ValueError, match="sequence"):
         list(iterator)
     client.close.assert_called_once()
 
@@ -216,7 +332,7 @@ def test_normalizes_options_for_remote_epoch(
     factory.assert_not_called()
     request = stream_factory.call_args.args[1]
     assert request["kind"] == "epoch"
-    assert request["version"] == 5
+    assert request["version"] == 6
     options = request["options"]
     assert options["worker_id"] == 1
     assert options["epoch"] == 7
@@ -297,7 +413,7 @@ def test_request_failure_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_midstream_failure_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """A transport failure propagates without reconnecting or replaying rows."""
-    client, reader = _install_transport(monkeypatch, [_start(), OSError("broken")])
+    client, reader = _install_transport(monkeypatch, [OSError("broken")])
     iterator = remote.RemoteTaskIterator("grpc://sampler:50051", {})
     with pytest.raises(OSError, match="broken"):
         next(iterator)
@@ -322,10 +438,10 @@ def test_source_closes_all_streams_when_cancellation_fails(
 ) -> None:
     """A cleanup error on one stream must not leak the remaining streams."""
     source = remote.RemoteRuntimeIndex("portable.json", "grpc://sampler:50051")
-    first_client, first_reader = _install_transport(monkeypatch, [_start()])
+    first_client, first_reader = _install_transport(monkeypatch, [])
     first = remote.RemoteTaskIterator(source.endpoint, {})
     first_reader.cancel.side_effect = OSError("cancel failed")
-    second_client, _ = _install_transport(monkeypatch, [_start()])
+    second_client, _ = _install_transport(monkeypatch, [])
     second = remote.RemoteTaskIterator(source.endpoint, {})
     source._streams.update([first, second])
     first._owner = source

@@ -117,10 +117,6 @@ impl Output {
             }
         })
     }
-    fn batch(&mut self, batch: RecordBatch) -> Result<(), Status> {
-        let permit = self.reserve()?;
-        self.reserved_batch(permit, batch)
-    }
     fn reserve(&mut self) -> Result<mpsc::OwnedPermit<Result<FlightData, Status>>, Status> {
         let permit = tokio::runtime::Handle::current().block_on(async {
             tokio::select! {
@@ -242,8 +238,8 @@ fn epoch(
         };
         let mut iterator = request.options.open(index, &extension)?;
         let expected = iterator.worker_batch_count() as u64;
-        output.send(SchemaAsIpc::new(&protocol::schema(), &IpcWriteOptions::default()).into())?;
-        output.batch(envelope(json!({"kind":"iterator","version":VERSION,"num_samples":iterator.num_samples(),"num_batches":expected}), vec![])?)?;
+        let schema = protocol::stream_schema(iterator.num_samples() as u64, expected);
+        output.send(SchemaAsIpc::new(&schema, &IpcWriteOptions::default()).into())?;
         while lease.count < expected {
             // Reserve before sampling: a full queue must not create another native batch.
             let permit = output.reserve()?;
@@ -279,10 +275,6 @@ fn epoch(
                 "Native shard exceeded its declared batch count",
             ));
         }
-        output.batch(envelope(
-            json!({"kind":"end","batches":lease.count}),
-            vec![],
-        )?)?;
         lease.complete = true;
         Ok(())
     })();

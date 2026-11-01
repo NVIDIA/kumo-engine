@@ -9,10 +9,11 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use serde_json::Value;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tonic::Status;
 
-pub(crate) const VERSION: u32 = 5;
+pub(crate) const VERSION: u32 = 6;
+pub(crate) const STREAM_METADATA_KEY: &str = "kumo.sampling";
 pub(crate) const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 
 pub(crate) fn schema() -> Arc<Schema> {
@@ -24,6 +25,16 @@ pub(crate) fn schema() -> Arc<Schema> {
             false,
         ),
     ]))
+}
+
+pub(crate) fn stream_schema(num_samples: u64, num_batches: u64) -> Arc<Schema> {
+    let metadata = serde_json::json!({
+        "version": VERSION, "num_samples": num_samples, "num_batches": num_batches
+    });
+    Arc::new(schema().as_ref().clone().with_metadata(HashMap::from([(
+        STREAM_METADATA_KEY.into(),
+        metadata.to_string(),
+    )])))
 }
 
 pub(crate) fn envelope(metadata: Value, parts: Vec<Vec<u8>>) -> Result<RecordBatch, Status> {
@@ -52,6 +63,20 @@ pub(crate) fn envelope(metadata: Value, parts: Vec<Vec<u8>>) -> Result<RecordBat
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn stream_schema_carries_counts_without_changing_batch_fields() {
+        let result = stream_schema(17, 3);
+        assert_eq!(result.fields(), schema().fields());
+        let metadata: Value =
+            serde_json::from_str(&result.metadata()[STREAM_METADATA_KEY]).unwrap();
+        assert_eq!(
+            metadata,
+            json!({"version":VERSION,"num_samples":17,"num_batches":3})
+        );
+        let empty = stream_schema(0, 0);
+        let metadata: Value = serde_json::from_str(&empty.metadata()[STREAM_METADATA_KEY]).unwrap();
+        assert_eq!(metadata["num_batches"], 0);
+    }
     #[test]
     fn rejects_payloads_that_exceed_the_frame_budget() {
         let error = envelope(json!({"kind":"batch"}), vec![vec![0; MAX_BATCH_BYTES]]).unwrap_err();

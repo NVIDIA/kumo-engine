@@ -13,7 +13,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
 from test.train.datamodule import test_remote_sampling_integration as parity
-from test.train.datamodule.test_remote_sampling import _frame
+from test.train.datamodule.test_remote_sampling import _frame, _stream_schema
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -25,7 +25,10 @@ from kumo_core.diskgraph.remote_sampling import (
     RemoteRuntimeIndex,
     RemoteTaskIterator,
 )
-from kumo_core.diskgraph.sampling_protocol import decode_frame
+from kumo_core.diskgraph.sampling_protocol import (
+    decode_frame,
+    decode_stream_metadata,
+)
 from kumo_core.diskgraph.sampling_service import (
     SamplingService,
     SamplingServiceConfig,
@@ -244,21 +247,31 @@ def test_missing_task_artifact_fails_until_materialized(
         service.close()
 
 
-@pytest.mark.parametrize("completion", [None, {"kind": "end", "batches": 0}])
-def test_push_rejects_truncated_epochs(completion: dict[str, Any] | None) -> None:
-    """Matching a received-batch count alone cannot certify a complete shard."""
+@pytest.mark.parametrize("received", [0, 1])
+def test_push_rejects_truncated_epochs(received: int) -> None:
+    """Successful EOF with fewer batches than the schema promises is incomplete."""
     client = MagicMock()
     reader = MagicMock()
+    reader.schema = _stream_schema(num_batches=2, num_samples=4)
     reader.read_chunk.side_effect = [
-        _frame({"kind": "iterator", "version": 5, "num_samples": 4, "num_batches": 2}),
-        StopIteration() if completion is None else _frame(completion),
+        *[
+            _frame(
+                {
+                    "kind": "batch",
+                    "batch_id": batch_id,
+                    "value": {"task": {}, "graphs": {}, "raw_features": {}},
+                }
+            )
+            for batch_id in range(received)
+        ],
+        StopIteration(),
     ]
     client.do_get.return_value = reader
     iterator = RemoteTaskIterator(
-        "grpc://unused:1", {"kind": "epoch", "version": 5}, client=client
+        "grpc://unused:1", {"kind": "epoch", "version": 6}, client=client
     )
-    with pytest.raises(ValueError, match="completion"):
-        next(iterator)
+    with pytest.raises(ValueError, match="Incomplete"):
+        list(iterator)
     reader.cancel.assert_called_once()
 
 
@@ -375,7 +388,7 @@ def test_replicas_produce_concurrently(prepared_task: str) -> None:
         cleanup.callback(client.close)
         request = {
             "kind": "epoch",
-            "version": 5,
+            "version": 6,
             "extension_ref": "train_tables/remote_test",
             "engine_seed": 42,
             "num_threads": 1,
@@ -392,7 +405,8 @@ def test_replicas_produce_concurrently(prepared_task: str) -> None:
             },
         }
         reader = client.do_get(flight.Ticket(orjson.dumps(request)))
-        assert decode_frame(reader.read_chunk().data)[0]["num_batches"] == 3
+        assert decode_stream_metadata(reader.schema) == (6, 3)
+        assert decode_frame(reader.read_chunk().data)[0]["kind"] == "batch"
         runtime = RemoteRuntimeIndex(prepared_task, second.endpoint(), 42, 1)
         cleanup.callback(runtime.close)
         try:

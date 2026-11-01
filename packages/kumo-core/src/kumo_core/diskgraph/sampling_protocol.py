@@ -10,7 +10,8 @@ from typing import Any
 import orjson
 import pyarrow as pa
 
-SAMPLING_VERSION = 5
+SAMPLING_VERSION = 6
+STREAM_METADATA_KEY = b"kumo.sampling"
 MAX_BATCH_BYTES = 64 * 1024**2
 ENVELOPE_SCHEMA = pa.schema(
     [
@@ -47,3 +48,36 @@ def decode_frame(batch: pa.RecordBatch | None) -> tuple[dict[str, Any], list[byt
     if not isinstance(metadata, dict):
         raise TypeError("Invalid task frame metadata")
     return metadata, components
+
+
+def decode_stream_metadata(schema: pa.Schema) -> tuple[int, int]:
+    """Read native shard counts from the Flight stream's initial schema.
+
+    Args:
+        schema: Arrow schema received by the Flight reader.
+
+    Returns:
+        The shard's sample count and expected batch count.
+
+    Raises:
+        ValueError: If the schema, version, counts or metadata size is invalid.
+    """
+    payload = (schema.metadata or {}).get(STREAM_METADATA_KEY)
+    if (
+        not schema.equals(ENVELOPE_SCHEMA)
+        or payload is None
+        or len(payload) > MAX_BATCH_BYTES
+    ):
+        raise ValueError("Invalid sampling stream schema metadata")
+    metadata = orjson.loads(payload)
+    if (
+        not isinstance(metadata, dict)
+        or type(metadata.get("version")) is not int
+        or metadata["version"] != SAMPLING_VERSION
+        or type(metadata.get("num_samples")) is not int
+        or metadata["num_samples"] < 0
+        or type(metadata.get("num_batches")) is not int
+        or metadata["num_batches"] < 0
+    ):
+        raise ValueError("Invalid sampling stream schema metadata")
+    return metadata["num_samples"], metadata["num_batches"]
