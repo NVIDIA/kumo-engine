@@ -276,28 +276,29 @@ def _listed_holdout(bundle_dir: Path) -> tuple[Optional[Path], Optional[bool]]:
     return path, truncated
 
 
-def _store_model(result: TrainingResult, settings: Any) -> None:
-    r"""Copy the bundle under the root unless already there."""
+def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
+                 settings: Any) -> None:
+    r"""Copies the bundle under the root unless it is there."""
     from kumo_core.object_store_sink import holds_bundle, upload_bundle
     from pyarrow.fs import FileSelector
 
     from kumo.engine._mlops import warn_not_stored
     from kumo.engine.connector import file_store
 
-    if result.bundle_id is None:
+    if manifest is None:
         return
     try:
         filesystem, root = file_store(
             settings.root.connector,
-            settings.root.location(f'models/{result.bundle_id}'))
-        if holds_bundle(filesystem, root, str(result.bundle_dir)):
+            settings.root.location(f'models/{manifest.id}'))
+        if holds_bundle(filesystem, root, str(bundle_dir)):
             return
         if filesystem.get_file_info(
                 FileSelector(root, allow_not_found=True)):
             filesystem.delete_dir_contents(root, missing_dir_ok=True)
-        upload_bundle(filesystem, root, str(result.bundle_dir))
+        upload_bundle(filesystem, root, str(bundle_dir))
     except Exception as error:
-        warn_not_stored(f'model {result.bundle_id}', error, stacklevel=4)
+        warn_not_stored(f'model {manifest.id}', error, stacklevel=3)
 
 
 def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
@@ -474,6 +475,30 @@ class Trainer:
         Each call returns a new `TrainingResult`; `Trainer.result` holds the
         latest.
         """
+        if export_config is not None:
+            _require_publisher(export_config)
+        from kumo.engine._mlops import resolve
+
+        settings = resolve(mlops)
+        run_id = f'{self._id}-fit-{new_run_id()}'
+        result = self._fit(train_table, snapshot=snapshot,
+                           export_config=export_config,
+                           warm_start=warm_start, run_id=run_id)
+        if settings is not None and settings.wants('model'):
+            _store_model(result.bundle_dir,
+                         bundle_manifest(result.bundle_dir, result.bundle_id),
+                         settings)
+        return result
+
+    def _fit(
+        self,
+        train_table: TrainingTable,
+        *,
+        snapshot: GraphSnapshot,
+        export_config: Optional[ModelOutputConfig],
+        warm_start: Optional[Self],
+        run_id: str,
+    ) -> TrainingResult:
         from kumo_core.automl.runtime import (
             inherit_warm_start_model_plan,
             validate_warm_start_task_type,
@@ -495,13 +520,7 @@ class Trainer:
 
         from kumo.engine.trainer._runtime import local_training_bindings
 
-        if export_config is not None:
-            _require_publisher(export_config)
-        from kumo.engine._mlops import resolve
-
-        settings = resolve(mlops)
         started_at = datetime.now(timezone.utc)
-        run_id = f'{self._id}-fit-{new_run_id()}'
         run_dir = self.scratch_dir / 'runs' / run_id
 
         model_plan = _to_core_model_plan(self._model_plan)
@@ -677,7 +696,6 @@ class Trainer:
                     warm_start._training_result.bundle_dir,
                     warm_start_bundle_id),
                 started_at=started_at, fit_mode=fit_mode),
-            settings=settings,
         )
 
     def _finish_fit(
@@ -691,7 +709,6 @@ class Trainer:
         graph_config: Optional[Dict[str, Any]] = None,
         model_plan: Optional[ModelPlan] = None,
         provenance: Optional[FitRecord] = None,
-        settings: Optional[Any] = None,
     ) -> TrainingResult:
         """Commit durable fit outputs before making this trainer usable."""
         from kumo_core.artifacts import bundle_id_from_manifest
@@ -737,8 +754,6 @@ class Trainer:
             )
             training_result = replace(training_result,
                                       published_model=published)
-        if settings is not None and settings.wants('model'):
-            _store_model(training_result, settings)
 
         training_result = replace(training_result, _trainer=self)
         self._training_result = training_result
