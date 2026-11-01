@@ -37,13 +37,11 @@ _read_modes_lock = threading.Lock()
 
 
 def _pattern(relative: str) -> str:
-    # PATTERN sees the stage's internal path, so anchor the suffix.
     escaped = ''.join(f'[{c}]' if c in '.$+' else c for c in relative)
     return f'.*/{escaped}'
 
 
 class StageFileSystemHandler(ChunkedFileHandler):
-    # One object up to this size, so COPY INTO reads it.
     part_bytes = 4 << 30
 
     def __init__(self, session: SnowflakeSession, root: str) -> None:
@@ -100,10 +98,8 @@ class StageFileSystemHandler(ChunkedFileHandler):
         mode = self._read_mode()
         if mode == _ENCRYPTED:
             raise OSError(
-                f'Snowflake stage {self._stage} encrypts files client-side '
-                "(SNOWFLAKE_FULL), so LIST reports encrypted sizes and kumo "
-                'cannot read its files back. Use a stage created with '
-                "ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE').")
+                f'Snowflake stage {self._stage} is client-side encrypted; '
+                "use ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE').")
         if mode == _RANGED:
             return _RangedPart(self, path)
         return _DownloadedPart(self, path, size)
@@ -124,8 +120,8 @@ class StageFileSystemHandler(ChunkedFileHandler):
                 self._files._put(probe, root)
         except Exception as error:
             logger.warning(
-                'Could not verify ranged reads on Snowflake stage %s (%s; '
-                'the role may lack WRITE), so each file is downloaded whole.',
+                'Ranged reads unverified on stage %s (%s; role may lack WRITE); '
+                'downloading whole files.',
                 self._stage, safe_summary(error))
             return _GET
         try:
@@ -142,10 +138,9 @@ class StageFileSystemHandler(ChunkedFileHandler):
                                safe_summary(error))
         if not ranged:
             logger.warning(
-                'Snowflake stage %s does not serve byte ranges of plaintext '
-                'over presigned URLs, so each file is downloaded whole. '
-                "Create artifact stages with ENCRYPTION = (TYPE = "
-                "'SNOWFLAKE_SSE') for ranged reads.", self._stage)
+                'Stage %s serves no byte ranges; downloading whole files. '
+                "Use ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') for ranged reads.",
+                self._stage)
         return _RANGED if ranged else _GET
 
     def _url(self, path: str) -> str:

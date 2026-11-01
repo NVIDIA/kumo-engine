@@ -264,8 +264,7 @@ def _version_holding(registry: "Registry", model_name: str,
                 return version
             _LOG.warning(
                 '%s version %s holds bundle %s for another serving '
-                'environment (torch, CUDA, Python or requirements); '
-                'registering a new version', model_name,
+                'environment; registering a new version', model_name,
                 version.version_name, bundle_id)
     return None
 
@@ -391,8 +390,8 @@ def _backfill(version: "ModelVersion", metrics: Mapping[str, float],
             version.comment = wanted
     except Exception as error:
         _LOG.warning(
-            'Could not record the holdout metrics on %s version %s, which '
-            'needs OWNERSHIP of the model: %s', version.model_name,
+            'Could not record holdout metrics on %s version %s (needs '
+            'OWNERSHIP of the model): %s', version.model_name,
             version.version_name, error)
 
 

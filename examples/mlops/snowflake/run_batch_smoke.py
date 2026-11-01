@@ -1,12 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Live smoke: fit a small model on synthetic data, register it in the
-Snowflake Model Registry with a serving snapshot on a stage, score it with
-``ModelVersion.run_batch`` on a GPU compute pool, and compare the job's output
-with local scores. The steps were verified live; this script was not run
-itself. See "Batch inference in Snowflake" in
-packages/kumo-engine/docs/mlops.md for the pool, grants and stage it needs.
+"""Live smoke: register a model with a stage snapshot and score it with run_batch.
+
+See "Batch inference in Snowflake" in packages/kumo-engine/docs/mlops.md.
 
     python run_batch_smoke.py --connection-name <connections.toml entry> \\
         --warehouse WH --database ML --schema MODELS \\

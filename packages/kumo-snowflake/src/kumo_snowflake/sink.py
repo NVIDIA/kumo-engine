@@ -151,46 +151,12 @@ class _SnowflakeTables(SnowflakeModelRegistryMixin, _SnowflakeSessions):
 
 
 class SnowflakeSinkBackend(FileStoreRouting, _SnowflakeTables):
-    r"""Writes a produced artifact to a Snowflake table.
+    r"""Writes artifacts to Snowflake tables and models to its Model Registry.
 
-    The write direction of
-    :class:`~kumo_snowflake.backend.SnowflakeSourceBackend`, and
-    registered beside it: a :class:`~kumoai_studio.backend.LocalBackend` gets one by
-    default, so
-    exporting a batch prediction back to the warehouse it was read from needs
-    no more setup than reading did.
-
-    It also publishes trained models to the Snowflake Model Registry, through
-    :class:`~kumo_snowflake.registry.SnowflakeModelRegistryMixin`.
-    That half needs ``snowflake-ml-python``, which the ``snowflake`` extra
-    installs, and is imported only when a model actually moves -- so writing a
-    table costs nothing for it.
-
-    Identifiers are written **as given**, quoted. That is the one decision here
-    a caller can see: a table exported as ``churn_predictions`` is
-    ``"churn_predictions"`` in Snowflake and stays lower case, rather than
-    being folded to upper as an unquoted identifier would be. It is the choice
-    that round-trips -- the reader in this package looks tables and columns up
-    in ``INFORMATION_SCHEMA`` by exact name -- so an exported table can be read
-    straight back through the same connector.
+    Table identifiers are written as given, quoted.
 
     Args:
-        identity: A fallback identity, used only for connectors that name none
-            themselves. As with the reader, leaving it unset is the common
-            case, since a bound
-            :class:`~kumoai_studio.connector.SnowflakeConnector` records the identity
-            it was created with. That identity needs ``CREATE TABLE`` on the
-            connector's schema, which a read-only role used for ingest will
-            not have.
-
-    Example:
-        >>> import kumoai_studio as kumo  # doctest: +SKIP
-        >>> from kumo_snowflake import SnowflakeSinkBackend  # doctest: +SKIP
-        >>> kumo.set_backend(kumo.LocalBackend(  # doctest: +SKIP
-        ...     storage=paths,
-        ...     sinks={kumo.DataSourceType.SNOWFLAKE:
-        ...            SnowflakeSinkBackend(identity='prod-sf')},
-        ... ))
+        identity: Fallback identity for connectors that name none.
     """
 
     _default_hint = ('LocalBackend(sinks={DataSourceType.SNOWFLAKE: '

@@ -456,7 +456,7 @@ def test_a_refused_backfill_warns_naming_ownership(caplog):
     registry_module._backfill(version, METRICS, None)
 
     assert version.calls == []
-    assert 'needs OWNERSHIP of the model' in caplog.text
+    assert '(needs OWNERSHIP of the model)' in caplog.text
     assert 'Insufficient privileges' in caplog.text
 
 

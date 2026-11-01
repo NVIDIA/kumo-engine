@@ -105,13 +105,7 @@ class FakeSessions:
 
 
 class FakeStage:
-    """An in-memory named internal stage behind a Snowpark-shaped session.
-
-    LIST and REMOVE match by string prefix, as Snowflake does, and report
-    names under the lower-cased stage name. ``ciphertext`` makes LIST report
-    padded sizes and presigned fetches return encrypted bytes, as a
-    ``SNOWFLAKE_FULL`` stage does.
-    """
+    """An in-memory named internal stage behind a Snowpark-shaped session."""
     def __init__(self, stage: str = '@DB.SCHEMA.KUMO_ARTIFACTS') -> None:
         self.stage = stage
         self.objects: dict[str, bytes] = {}
@@ -132,8 +126,6 @@ class FakeStage:
         return f"{self.stage.rsplit('.', 1)[1].lower()}/{relative}"
 
     def _matched(self, relative: str) -> str:
-        # What Snowflake matches REMOVE/GET PATTERN against: the listed name
-        # behind further internal path segments.
         return f'internal/{self._listed(relative)}'
 
     def session(self) -> Any:
@@ -145,7 +137,6 @@ class FakeStage:
         verb, _, rest = sql.partition(' ')
         if verb == 'LIST':
             prefix = self._relative(rest)
-            # A client-side encrypted stage lists padded ciphertext sizes.
             return [(self._listed(name), (len(data) // 16 + 1) *
                      16 if self.ciphertext else len(data), 'md5', 'date')
                     for name, data in sorted(self.objects.items())
