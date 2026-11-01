@@ -61,10 +61,14 @@ def embedded_model(manifest: ModelManifest) -> ModelManifest:
     r"""``manifest`` for embedding, its own model parents cut to stubs."""
     copy = embedded(manifest)
     parents = copy.parents
-    if parents is None or parents.warm_start is None:
+    if parents is None:
         return copy
+
+    def cut(model: Optional[ModelManifest]) -> Optional[ModelManifest]:
+        return None if model is None else stub('model', model.id)
+
     return replace(copy, parents=replace(
-        parents, warm_start=stub('model', parents.warm_start.id)))
+        parents, warm_start=cut(parents.warm_start)))
 
 
 def bundle_manifest(bundle_dir: Path,
