@@ -117,7 +117,6 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
 
 def _scoring_summaries(manifest: Optional[PredictionManifest],
                        snapshot: Any) -> List[Summary]:
-    r"""The scoring snapshot's summaries and the run's artifact summaries."""
     from kumo.engine._data_summaries import snapshot_summaries, table_details
     from kumo.engine._manifest import artifact_summaries
 
@@ -231,7 +230,6 @@ def _record_predictions(
     started_at: str,
     counts: Optional[Dict[str, Any]] = None,
 ) -> PredictionManifest:
-    r"""A prediction run's manifest for any model."""
     stats: Dict[str, ArtifactStats] = {}
     for name, (rows, files) in outputs.items():
         if name == 'predictions' and counts is None:

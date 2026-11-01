@@ -398,12 +398,10 @@ def _horizons(size: int) -> List[int]:
 
 
 def _above(counts: np.ndarray) -> np.ndarray:
-    r"""Counts at or above each edge."""
     return np.cumsum(counts[::-1])[::-1][1:].astype(np.float64)
 
 
 def _by_threshold(positive: np.ndarray, negative: np.ndarray) -> Table:
-    r"""Rows and confusion rates at each hundredth threshold."""
     tp, fp = _above(positive), _above(negative)
     positives, negatives = float(positive.sum()), float(negative.sum())
     return Table(
@@ -421,7 +419,6 @@ def _calibration(edges: Sequence[float],
                  extent: Optional[Tuple[float, float]], rows: np.ndarray,
                  x_sum: np.ndarray, y_sum: np.ndarray,
                  names: Tuple[str, str]) -> Table:
-    r"""Per non-empty bin, its rows and their mean ``x`` and ``y``."""
     bounds = bin_bounds(edges, extent)
     return Table('holdout/calibration', ('from', 'to', 'rows', *names),
                  tuple((bounds[b].item(), bounds[b + 1].item(), int(rows[b]),

@@ -327,7 +327,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             return published
 
     def _logged_model(self, fit: Any) -> Any:
-        r"""The model the fit run ``fit`` logged, if any."""
         try:
             with self.target.scope():
                 models = self._client.search_logged_models(
@@ -348,7 +347,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             return self._experiment_for(self._client, name)
 
     def _rename_fit(self, fit: Any, published: PublishedModel) -> None:
-        r"""Names the fit run after its first registered version."""
         if not is_dated_fit(fit.run_name):
             return
         name = registered_fit_name(published.name, published.version)
@@ -712,7 +710,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                                  _sealed(card) + user)
 
     def _rename(self, record: RunRecord) -> None:
-        r"""Names a registered fit and its trials after the version."""
         version = record.tags.get('kumo.model_version')
         if version is None:
             return
@@ -735,7 +732,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
 
     def _describe(self, published: PublishedModel, fit_id: str,
                   metrics: Mapping[str, float]) -> None:
-        r"""Adds the fit's headline metrics, run and bundle to its version."""
         with self.target.scope():
             run = self._client.get_run(fit_id)
         _describe_version(self.target, self._client, published, _version_text(
@@ -847,7 +843,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                                              summary.context)])
 
     def _write_tables(self, run_id: str, tables: Sequence[Table]) -> None:
-        r"""Writes tables as JSON listed for the UI's table view."""
         if not tables:
             return
         for table in tables:
@@ -923,7 +918,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
 
 def _digest(name: str, source: Mapping[str, Optional[str]],
             schema: Mapping[str, Any]) -> str:
-    r"""A dataset digest over name, source and schema."""
     return hashlib.sha256(json.dumps(
         [name, dict(source), dict(schema)], sort_keys=True,
         default=str).encode()).hexdigest()[:8]

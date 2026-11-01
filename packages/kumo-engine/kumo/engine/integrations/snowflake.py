@@ -276,7 +276,6 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                              for table in routed.tables})
 
     def _log_card(self, record: RunRecord) -> None:
-        r"""Writes run_card.md."""
         try:
             card = _card.run_card(record.tags, record.params, self._values,
                                   model_metrics(record), record.description,
@@ -353,7 +352,6 @@ def _model_param(record: RunRecord) -> Dict[str, str]:
 
 
 def _identifier(name: str) -> str:
-    r"""An unquoted identifier, as artifact URIs need."""
     return re.sub(r'[^A-Za-z0-9_]+', '_', name).upper()
 
 

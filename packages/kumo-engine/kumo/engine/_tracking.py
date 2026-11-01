@@ -374,7 +374,6 @@ def _tune_metric(model: Any) -> Optional[str]:
 
 def _one_epoch_note(spec: RunSpec,
                     held: Optional[Mapping[str, float]]) -> RunSpec:
-    r"""Single-point series moved into a note."""
     from kumo_core.summaries import Note
 
     single = {name: points[0][1] for name, points in spec.steps.items()
@@ -395,7 +394,6 @@ def _one_epoch_note(spec: RunSpec,
 
 def _labels_mature(manifest: 'PredictionManifest',
                    window: Optional[Sequence[Any]]) -> Optional[str]:
-    r"""When the latest anchor's labels are all known (UTC)."""
     import pandas as pd
 
     anchors = manifest.prediction_table.anchors
@@ -421,7 +419,6 @@ def _utc(text: str) -> datetime:
 def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
                           window: Optional[Sequence[Any]] = None
                           ) -> List['Summary']:
-    r"""Row counts, skipped rows and score summaries with drift."""
     from kumo_core.prediction_counts import prediction_summaries
     from kumo_core.score_counts import Counts
     from kumo_core.summaries import Note, Scalar

@@ -104,7 +104,6 @@ class PredictionOutputConfig:
     def _write(self, destination: str, files: List[str],
                export_id: Optional[str], ids: Tuple[Optional[str], ...],
                sidecars: Optional[Mapping[str, bytes]] = None) -> str:
-        r"""Write files; OVERWRITE empties a directory first."""
         from kumo_core.object_store_sink import holds_export
         from kumo_core.sources import layout
 

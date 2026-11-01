@@ -879,7 +879,6 @@ def _warm_start_plan(
 def _validate_model_plan(model_plan: CoreModelPlan,
                          workflow: TrainingWorkflowRequest,
                          train_table: TrainingTable) -> None:
-    r"""Rejects a bad plan before the index is extended."""
     from kumo_core.pquery import (
         query_is_temporal,
         target_to_entity_paths,

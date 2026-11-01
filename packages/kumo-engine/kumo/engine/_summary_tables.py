@@ -93,7 +93,6 @@ def _series_table(name: str, x_label: str,
 
 
 def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
-    r"""Same-edge histograms as one table, empty bins dropped."""
     edges = histograms[0].edges
     extents = [h.extent for h in histograms if h.extent is not None]
     first = min((extent[0] for extent in extents), default=None)

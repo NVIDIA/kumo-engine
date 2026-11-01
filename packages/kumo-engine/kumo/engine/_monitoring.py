@@ -327,7 +327,6 @@ def _join_labels(out: Dict[str, Any], trainer: Any, pquery: Any,
                  files: List[str], columns: List[str],
                  anchors: Tuple[int, ...], keys: List[str], task: str,
                  actuals: Path) -> Optional[Dict[str, Any]]:
-    r"""Predictions joined with labels; None when no entity has a label."""
     import diskgraph
     from kumo_core.training import custom_table
     from pyarrow import parquet
@@ -551,7 +550,6 @@ _IDENTITY = ('kumo.prediction_id', 'kumo.bundle_id', 'kumo.as_of',
 
 def _record(report: Any, run: Any, tracking: Any, trainer: Any,
             started: datetime, labels: Any, previous: Any) -> Any:
-    r"""The report as a run record tagged like its prediction run."""
     from kumo.engine._tracking import RunSpec, prediction_record, run_record
 
     evaluating = isinstance(report, EvaluationResult)
@@ -590,7 +588,6 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
 
 def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
                      shift: bool) -> List[Summary]:
-    r"""Score drift, input changes and column drift."""
     summaries: List[Summary] = []
     reasons = report.reasons
     comparisons = _comparisons(report)
@@ -636,7 +633,6 @@ def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
 def _evaluation_summaries(result: EvaluationResult, labels: Any,
                           model: Any = None,
                           scored: Optional[int] = None) -> List[Summary]:
-    r"""Realized metrics beside the holdout's, the labelled share and notes."""
     from kumo.engine._manifest import artifact_summaries
 
     manifest = getattr(labels, 'manifest', None)
@@ -693,7 +689,6 @@ def _tune_metric(model: Any) -> Optional[str]:
 
 
 def _holdout(model: Any) -> Dict[str, float]:
-    r"""The shipped ``model``'s holdout metrics."""
     refit_full = getattr(getattr(model, 'manifest', None), 'fit_mode',
                          None) == 'refit_full'
     named = logged_names(getattr(model, 'metrics', None) or {}, refit_full)
@@ -724,7 +719,6 @@ def _values(values: Mapping[str, Optional[float]]) -> str:
 
 
 def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
-    r"""Tables and links whose size changed since training."""
     summaries: List[Summary] = []
     for name, unit, links in (('drift/table_rows', 'rows', False),
                               ('drift/link_edges', 'edges', True)):
@@ -749,7 +743,6 @@ def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
 
 def _input_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
                  ) -> List[Summary]:
-    r"""Per source table, each encoded column's change, most shifted first."""
     summaries: List[Summary] = []
     shifted = []
     for table, columns in sorted(features.items()):
@@ -860,7 +853,6 @@ _SMOOTHING = 1e-6
 
 def _features(trainer: Any, sides: Mapping[str, Mapping[str, Any]],
               reasons: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
-    r"""Column statistic changes since the training snapshot."""
     try:
         before, after = (side['col_stats'] for side in sides.values())
         if not (isinstance(before, dict) and isinstance(after, dict)):
@@ -927,7 +919,6 @@ _NAMED_BY = {'training': "the model's manifest", 'scoring': "the run's manifest"
 def _snapshot_stats(trainer: Any, run: Any, snapshot: Any,
                     training_snapshot: Any,
                     root: Any) -> Dict[str, Dict[str, Any]]:
-    r"""Column statistics, ingest counts and links of both snapshots."""
     model = getattr(getattr(trainer, 'result', None), 'manifest', None)
     sides = {}
     for side, passed, manifest in (
