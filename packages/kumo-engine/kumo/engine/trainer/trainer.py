@@ -343,6 +343,22 @@ def _preflight(output_config: PredictionOutputConfig) -> None:
                       write_mode=output_config.write_mode)
 
 
+def _publish(bundle_dir: Path, metrics: Mapping[str, float],
+             export_config: ModelOutputConfig) -> PublishedModel:
+    spec = read_training_spec(bundle_dir)
+    return export_config.connector.sink_backend.publish_model(
+        export_config.connector,
+        str(bundle_dir),
+        path=export_config.path,
+        location=export_config.location,
+        metadata={
+            name: str(getattr(spec, name))
+            for name in ('spec_version', 'predictive_query', 'snapshot_id')
+        },
+        metrics=metrics,
+    )
+
+
 def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
     from kumo_core.artifacts import stage_model_bundle
     return stage_model_bundle(artifacts, dest)
@@ -744,21 +760,10 @@ class Trainer:
                     f"Publishing the model bundle without _provenance.json: "
                     f"{error}", UserWarning, stacklevel=3)
         if export_config is not None:
-            spec = read_training_spec(training_result.bundle_dir)
-            published = export_config.connector.sink_backend.publish_model(
-                export_config.connector,
-                str(training_result.bundle_dir),
-                path=export_config.path,
-                location=export_config.location,
-                metadata={
-                    name: str(getattr(spec, name))
-                    for name in ('spec_version', 'predictive_query',
-                                 'snapshot_id')
-                },
-                metrics=training_result.metrics,
-            )
-            training_result = replace(training_result,
-                                      published_model=published)
+            training_result = replace(
+                training_result, published_model=_publish(
+                    training_result.bundle_dir, training_result.metrics,
+                    export_config))
 
         training_result = replace(training_result, _trainer=self)
         self._training_result = training_result
