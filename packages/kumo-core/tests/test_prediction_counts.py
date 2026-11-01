@@ -186,7 +186,7 @@ def test_class_names_are_safe_column_names():
 
 @pytest.mark.parametrize('steps', [3, 30])
 def test_forecasts_count_each_kept_horizon_and_drift_from_the_holdout(steps):
-    from kumo_core.evaluation_counts import _horizons
+    from kumo_core.evaluation_counts import kept_horizons
 
     rng = np.random.default_rng(4)
     values = rng.normal(size=40 * steps)
@@ -208,7 +208,7 @@ def test_forecasts_count_each_kept_horizon_and_drift_from_the_holdout(steps):
 
     logged = _by_name(prediction_summaries(reduce(Counts.merge, parts),
                                            threshold=None, baseline=holdout))
-    kept = _horizons(steps)
+    kept = kept_horizons(steps)
     assert len(kept) == min(steps, 12)
     assert [name for name in logged if name.startswith('pred/histogram/')] == [
         'pred/histogram/predicted',

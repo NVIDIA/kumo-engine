@@ -20,7 +20,7 @@ from kumo_core.types import TaskType
 
 _EPS = 1e-15
 _TOP_K = 5
-_TOP_CLASSES = 20
+TOP_CLASSES = 20
 _RESIDUAL_BINS = 40
 _HORIZONS = 12
 _TOP_SCORE_BINS = 100
@@ -207,7 +207,7 @@ def _multiclass_summaries(counts: Counts,
                   2 * precision * recall / np.maximum(precision + recall,
                                                       _EPS), 0.0)
     seen = (support + predicted) > 0
-    top = [int(i) for i in np.argsort(-support, kind='stable')[:_TOP_CLASSES]]
+    top = [int(i) for i in np.argsort(-support, kind='stable')[:TOP_CLASSES]]
     return [
         _model('logloss', float(arrays['logloss']) / rows),
         _model('f1_macro', float(f1[seen].mean())),
@@ -311,7 +311,7 @@ def _multilabel_summaries(counts: Counts,
     recall = tp / np.maximum(tp + fn, 1)
     f1 = 2 * tp / np.maximum(2 * tp + fp + fn, 1)
     seen = (tp + fp + fn) > 0
-    top = np.argsort(-arrays['support'], kind='stable')[:_TOP_CLASSES]
+    top = np.argsort(-arrays['support'], kind='stable')[:TOP_CLASSES]
     tp_all, fp_all, fn_all = tp.sum(), fp.sum(), fn.sum()
     entities = np.flatnonzero(arrays['labels'] + arrays['predicted_labels'])
     return [
@@ -343,7 +343,7 @@ def _forecasting(pred: np.ndarray, target: np.ndarray,
                          ('horizon_target', target),
                          ('horizon_target_squared', target**2)):
         counts.histogram(name, 'horizon', horizon, weights=values)
-    for h in _horizons(size):
+    for h in kept_horizons(size):
         counts.histogram(f'TARGET_PRED_h{h + 1}', 'target', pred[horizon == h])
     return counts
 
@@ -390,7 +390,7 @@ def horizon_label(h: int, timeframe: Optional[Timeframe] = None) -> str:
     return f'({start + h * step}, {end + h * step}] {unit}'
 
 
-def _horizons(size: int) -> List[int]:
+def kept_horizons(size: int) -> List[int]:
     if size <= _HORIZONS:
         return list(range(size))
     return sorted({int(h) for h in np.linspace(0, size - 1, _HORIZONS)
