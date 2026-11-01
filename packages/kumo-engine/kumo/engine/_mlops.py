@@ -39,11 +39,11 @@ class _Root:
 
 @dataclass(frozen=True)
 class MLOps:
-    r"""Where artifacts are stored.
+    r"""MLOps settings.
 
     Args:
-        artifact_root: a URI or path, or a ``(connector, path)`` pair.
-        store: artifact kinds to store; ``True`` for all, ``False`` for none.
+        artifact_root: a URI, local path or ``(connector, path)`` pair.
+        store: artifact kinds to store; ``True`` for all, ``False`` none.
         on_error: ``'warn'`` or ``'raise'`` when MLOps fails.
     """
 
@@ -153,7 +153,7 @@ _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def mlops(settings: MLOps) -> Iterator[MLOps]:
-    r"""Store artifacts of calls in this block under ``settings``."""
+    r"""Turns MLOps on, as ``settings`` says, for the calls in the block."""
     if not isinstance(settings, MLOps):
         raise TypeError('kumo.mlops() takes a kumo.MLOps')
     token = _CURRENT.set(settings)
