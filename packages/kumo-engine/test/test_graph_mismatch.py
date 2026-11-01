@@ -82,4 +82,4 @@ def test_schema_changes_ignore_connectors_and_locations():
     assert schema_changes(
         config('dev', [age]),
         config('dev', [{**age, 'dtype': 'float64'}], tables=('users', 'x'))
-    ) == ['table x added', 'users columns']
+    ) == ['table x added', 'users columns (age)']

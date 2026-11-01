@@ -44,13 +44,13 @@ class _Root:
 
 @dataclass(frozen=True)
 class MLOps:
-    r"""Where artifacts go and what records them.
+    r"""MLOps settings.
 
     Args:
         artifact_root: a URI, local path or ``(connector, path)`` pair.
         registry: where each fit registers its model, through the tracker.
         store: artifact kinds to store; ``True`` for all, ``False`` none.
-        on_error: ``'warn'`` or ``'raise'`` when tracking or registry fails.
+        on_error: ``'warn'`` or ``'raise'`` when MLOps fails.
     """
 
     artifact_root: Union[str, Tuple[Any, str]]
@@ -226,8 +226,7 @@ def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
     r"""Raises or warns about ``error``, as ``settings.on_error`` says."""
     if error is None or settings is None:
         return
-    message = (f'{call} finished, but MLOps storing, tracking or '
-               f'registration failed: {full_error(error)}')
+    message = f'{call} finished, but MLOps failed: {full_error(error)}'
     if settings.on_error == 'raise':
         raise RuntimeError(message) from error
     warn_failure(message, error, stacklevel + 1)
