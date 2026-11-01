@@ -59,12 +59,12 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         if 'mlflow.parentRunId' not in run.data.tags
     ]
     model, = mlflow.search_logged_models(output_format='list')
-    assert model.source_run_id == parent.info.run_id
+    assert (model.name, model.source_run_id) == ('m', parent.info.run_id)
+    version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
     metrics = {metric.key: metric.value for metric in model.metrics}
     holdout = {name: value for name, value in logged_names(
         result.metrics).items() if not name.startswith(('train/', 'val/'))}
     assert metrics == holdout
-    version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
     assert version.source == model.model_uri
     assert parent.data.tags.items() >= {
         'kumo.kind': 'fit', 'kumo.bundle_id': result.id,
@@ -108,6 +108,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
                        registry=kumo.ModelRegistryLocation('m2'))
     first = champion.export(other)
     assert first.version == '1' and champion.export(other) == first
+    assert len(mlflow.search_logged_models(output_format='list')) == 1
     assert load_model('models:/m2/1').result.id == result.id
 
     original = mlflow.models.Model.load
@@ -145,6 +146,8 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
     assert {metric.key: metric.value
             for metric in mlflow.get_logged_model(info.model_id).metrics
             } == registry_metrics(trainer.result)
+    assert mlflow.get_logged_model(info.model_id).name == (
+        'ents-binary_classification')
     assert [c['name'] for c in info.signature.outputs.to_dict()
             ] == ['ENTITY', 'TARGET_PRED', 'False_PROB', 'True_PROB']
     pyfunc = mlflow.pyfunc.load_model(info.model_uri)
@@ -367,7 +370,7 @@ def test_model_upload_gets_a_longer_http_timeout_and_a_late_one_is_dropped(
     location = kumo.ModelRegistryLocation('m')
     seen = []
 
-    def log_model(*args):
+    def log_model(target, client, bundle_dir, manifest, snapshot, **kwargs):
         seen.append(os.environ.get('MLFLOW_HTTP_REQUEST_TIMEOUT'))
         if len(seen) == 2:
             tracker.finish(None, None)
@@ -523,3 +526,46 @@ def test_a_tracking_start_failure_names_its_cause_and_can_raise(
         'earlier failure (MlflowException: RESOURCE_DOES_NOT_EXIST: Parent '
         'of /NoSuchFolder/churn does not exist.)'
     ]
+
+
+def test_a_logged_model_is_named_after_its_model():
+    from kumo.engine.integrations.mlflow import _logged_model_name
+
+    manifest = SimpleNamespace(parents=SimpleNamespace(
+        training_table=SimpleNamespace(
+            query='PREDICT users.CHURN FOR EACH users.ID',
+            task_type='binary_classification')))
+    assert _logged_model_name('main.ml.churn', manifest) == 'churn'
+    assert _logged_model_name('a/b:c%d"e\'f', None) == 'a-b-c-d-e-f'
+    assert _logged_model_name(None, manifest) == 'users-binary_classification'
+    assert _logged_model_name(None, None) == 'model'
+
+
+def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
+        table_and_snapshot, tmp_path, tracking_uri):
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    table, snapshot = table_and_snapshot
+    tracking = MlflowTracking('fits', log_system_metrics=False)
+    result = kumo.Trainer(_plan()).fit(table, snapshot=snapshot, mlops=(
+        kumo.MLOps(str(tmp_path / 'root'), tracking=tracking)))
+    fits = [mlflow.get_experiment_by_name('fits').experiment_id]
+    assert mlflow.MlflowClient().search_logged_models(fits) == []
+    published = tracking.register(result, kumo.ModelRegistryLocation('m'))
+
+    fit = mlflow.get_run(result.tracking.run_id)
+    model, = mlflow.MlflowClient().search_logged_models(fits)
+    assert (published.version, model.source_run_id, model.name) == (
+        '1', fit.info.run_id, 'm')
+    assert {m.key: m.value for m in model.metrics} == registry_metrics(result)
+
+    other = f'sqlite:///{tmp_path / "other.db"}'
+    mlflow.set_tracking_uri(other)
+    untracked = MlflowTracking(log_system_metrics=False)
+    assert untracked.register(result, kumo.ModelRegistryLocation('m')) == (
+        published)
+    client = mlflow.MlflowClient(other)
+    experiment = client.get_experiment_by_name('m').experiment_id
+    model, = client.search_logged_models([experiment])
+    assert (model.source_run_id, client.search_runs([experiment])) == (
+        None, [])

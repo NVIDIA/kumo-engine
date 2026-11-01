@@ -293,7 +293,7 @@ def test_pin_databricks_auth_variables():
 
 def test_registering_a_registered_bundle_reuses_its_version(
         tracking_uri, caplog):
-    from kumo.engine.integrations.mlflow import _register
+    from kumo.engine.integrations.mlflow import _register, _registered_version
 
     target = resolve(None)
     client = target.client()
@@ -302,13 +302,15 @@ def test_registering_a_registered_bundle_reuses_its_version(
                            run_id=run.info.run_id, model_id=None)
     location = kumo.ModelRegistryLocation('churn', alias='champion')
 
-    first = _register(target, client, info, location,
-                      {'kumo_bundle_id': 'a'})
+    def register(bundle):
+        pointers = {'kumo_bundle_id': bundle}
+        return _register(target, client, info, location, pointers,
+                         _registered_version(client, 'churn', pointers))
+
+    first = register('a')
     with caplog.at_level('INFO'):
-        again = _register(target, client, info, location,
-                          {'kumo_bundle_id': 'a'})
-    other = _register(target, client, info, location,
-                      {'kumo_bundle_id': 'b'})
+        again = register('a')
+    other = register('b')
 
     assert (first.version, again.version, other.version) == ('1', '1', '2')
     assert 'churn version 1 already holds bundle a; reused it' in caplog.text

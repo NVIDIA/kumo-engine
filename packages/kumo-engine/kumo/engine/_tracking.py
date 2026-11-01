@@ -194,6 +194,12 @@ def trial_spec(events: Sequence[Event]) -> RunSpec:
     )
 
 
+def fit_run_id(manifest: Any) -> Optional[str]:
+    r"""The tracker's run of the fit a `ModelManifest` records."""
+    tracking = getattr(manifest, 'tracking', None)
+    return None if tracking is None else tracking.run_id
+
+
 class Tracking(Protocol):
     r"""Records one `Trainer.fit` in an experiment tracker."""
     def start(self, record: RunRecord) -> None:

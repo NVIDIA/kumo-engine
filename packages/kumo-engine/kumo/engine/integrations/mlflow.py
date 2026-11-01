@@ -16,6 +16,7 @@ import warnings
 from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -40,7 +41,7 @@ from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
-from kumo.engine._run_names import record_name, trial_name
+from kumo.engine._run_names import model_label, record_name, trial_name
 from kumo.engine._summary_tables import Routed, route, table_json
 from kumo.engine._text import metric_key
 from kumo.engine._tracking import (
@@ -49,6 +50,7 @@ from kumo.engine._tracking import (
     RunRecord,
     TrackingBase,
     by_step,
+    fit_run_id,
 )
 from kumo.engine._version import __version__
 from kumo.engine.connector._extras import import_provider
@@ -192,12 +194,14 @@ class MlflowTracking(TrackingBase):
         self._outer = (active.info.run_id
                        if active is not None and same else None)
 
-    def _experiment_for(self, client: Any) -> str:
-        if self.experiment_name is None:
+    def _experiment_for(self, client: Any,
+                        name: Optional[str] = None) -> str:
+        name = name or self.experiment_name
+        if name is None:
             return self._default_experiment or '0'
-        experiment = client.get_experiment_by_name(self.experiment_name)
-        return (experiment.experiment_id if experiment else
-                client.create_experiment(self.experiment_name))
+        experiment = client.get_experiment_by_name(name)
+        return (experiment.experiment_id
+                if experiment else client.create_experiment(name))
 
     def _require_experiment(self) -> None:
         if self._named and self.experiment_name is None:
@@ -210,43 +214,76 @@ class MlflowTracking(TrackingBase):
         if (location.alias is None) == (location.version is None):
             raise ValueError('Pass a ModelRegistryLocation with either an '
                              'alias or a version.')
-        reference = (f'@{location.alias}'
-                     if location.alias else f'/{location.version}')
-        return load_model(f'models:/{location.model_name}{reference}',
-                          target=self.target, **kwargs)
+        name, alias, version = (location.model_name, location.alias,
+                                location.version)
+        if alias:
+            with self.target.scope():
+                version = self.target.client().get_model_version_by_alias(
+                    name, alias).version
+        uri = f'models:/{name}/{version}'
+        trainer = load_model(uri, target=self.target, **kwargs)
+        return trainer
 
     def register(self, result: Any,
                  location: ModelRegistryLocation) -> PublishedModel:
         r"""Registers a `TrainingResult` at ``location``."""
         from kumo.engine.graph import GraphSnapshot
         from kumo.engine.trainer._provenance import bundle_manifest
+        from kumo.engine.trainer._run_spec import registry_metrics
         from kumo.engine.trainer._spec import read_training_spec
         from kumo.engine.trainer.trainer import registry_pointers
 
         self._require_experiment()
-        client = self.target.client()
+        self._client = client = self.target.client()
         pointers = registry_pointers(result.id)
+        metrics = registry_metrics(result)
         with _limited_http():
             with self.target.scope():
                 held = _registered_version(client, location.model_name,
                                            pointers)
-            info = None
-            if held is None:
+            fit, model = self._fit_of(fit_run_id(result.manifest))
+            info = None if model is None else SimpleNamespace(
+                model_uri=f'models:/{model.model_id}', run_id=fit.run_id,
+                model_id=model.model_id)
+            if held is None and info is None:
                 spec = read_training_spec(result.bundle_dir)
                 snapshot = GraphSnapshot(spec.snapshot_id, Path(),
                                          spec.graph_config or {})
-                with self.target.scope():
-                    experiment_id = self._experiment_for(client)
-                    run_id = client.create_run(
-                        experiment_id,
-                        tags={'kumo.bundle_id': str(result.id)}).info.run_id
-                info = _log_model(self.target, client, result.bundle_dir,
-                                  bundle_manifest(result.bundle_dir,
-                                                  result.id),
-                                  snapshot, run_id, experiment_id)
-                with self.target.scope():
-                    client.set_terminated(run_id, 'FINISHED')
-            return _register(self.target, client, info, location, pointers)
+                info = _log_model(
+                    self.target, client, result.bundle_dir,
+                    bundle_manifest(result.bundle_dir, result.id), snapshot,
+                    name=_logged_model_name(location.model_name,
+                                            result.manifest),
+                    run_id=None if fit is None else fit.run_id,
+                    experiment_id=(self._registry_experiment(
+                        location.model_name) if fit is None else
+                                   fit.experiment_id), serving_snapshot=None)
+                if fit is not None:
+                    self._log_metrics(fit.run_id, metrics,
+                                      model_id=info.model_id)
+            published = _register(self.target, client, info, location,
+                                  pointers, held)
+            return published
+
+    def _logged_model(self, fit: Any) -> Any:
+        try:
+            with self.target.scope():
+                models = self._client.search_logged_models(
+                    [fit.experiment_id],
+                    filter_string=f"source_run_id = '{fit.run_id}'",
+                    max_results=1)
+        except Exception:
+            logger.debug('No logged model of %s', fit.run_id, exc_info=True)
+            return None
+        return models[0] if models else None
+
+    def _registry_experiment(self, model_name: str) -> str:
+        r"""The experiment for a model logged in no run, never Default."""
+        name = self.experiment_name or model_label(model_name, None, None)
+        if self.experiment_name is None and self.platform == 'databricks':
+            name = f'/Shared/kumo/{name}'
+        with self.target.scope():
+            return self._experiment_for(self._client, name)
 
     def start(self, record: RunRecord) -> None:
         self._require_experiment()
@@ -336,7 +373,11 @@ class MlflowTracking(TrackingBase):
         os.environ.update(upload)
         try:
             info = _log_model(self.target, self._client, bundle_dir, manifest,
-                              snapshot, run_id, self._experiment_id)
+                              snapshot, name=_logged_model_name(
+                                  registry and registry.model_name, manifest),
+                              run_id=run_id,
+                              experiment_id=self._experiment_id,
+                              serving_snapshot=None)
         finally:
             if self._parent == run_id:
                 os.environ.update({name: _HTTP_LIMITS[name] for name in upload})
@@ -347,9 +388,13 @@ class MlflowTracking(TrackingBase):
         self._model_id = info.model_id
         if registry is None:
             return None
+        pointers = registry_pointers(_id(manifest))
         try:
+            with self.target.scope():
+                held = _registered_version(self._client,
+                                           registry.model_name, pointers)
             return _register(self.target, self._client, info, registry,
-                             registry_pointers(_id(manifest)))
+                             pointers, held)
         except Exception as error:
             raise RegistrationError(full_error(error)) from error
 
@@ -383,6 +428,18 @@ class MlflowTracking(TrackingBase):
         hint = _sagemaker_ui_hint(self.target.tracking_uri)
         if fit_run and hint:
             warnings.warn(hint, UserWarning, stacklevel=2)
+
+    def _fit_of(self, fit_id: Optional[str]) -> Tuple[Any, Any]:
+        r"""The fit run's info and its logged model, each None if missing."""
+        if not fit_id:
+            return None, None
+        try:
+            with self.target.scope():
+                fit = self._client.get_run(fit_id).info
+        except Exception:
+            logger.debug('No fit run %s here', fit_id, exc_info=True)
+            return None, None
+        return fit, self._logged_model(fit)
 
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         self._log_metrics(self._parent, metrics, step)
@@ -626,7 +683,7 @@ def log_model(
     trainer: 'Trainer',
     *,
     snapshot: 'GraphSnapshot',
-    name: str = 'model',
+    name: Optional[str] = None,
     run_id: Optional[str] = None,
     serving_snapshot: Any = None,
     target: Any = None,
@@ -652,7 +709,7 @@ def log_model(
     target = tracking.target
     if run_id is None:
         tracking._require_experiment()
-    tracking._client = client = target.client()
+    client = tracking._client = target.client()
     active = mlflow.active_run()
     if run_id is None and active is not None and (
             mlflow.get_tracking_uri() == target.tracking_uri):
@@ -671,10 +728,13 @@ def log_model(
     except Exception as error:
         logger.warning('Could not log the fit\'s source tables to MLflow: %s',
                        format_error(error), exc_info=True)
+    registered = getattr(result.registered_model, 'name', None)
     info = _log_model(target, client, result.bundle_dir,
                       bundle_manifest(result.bundle_dir, result.id),
-                      snapshot, run_id, experiment_id, name,
-                      snapshot_uri(serving_snapshot))
+                      snapshot, name=name or _logged_model_name(
+                          registered, result.manifest), run_id=run_id,
+                      experiment_id=experiment_id,
+                      serving_snapshot=snapshot_uri(serving_snapshot))
     tracking._log_metrics(run_id, registry_metrics(result),
                           model_id=info.model_id)
     if created:
@@ -734,11 +794,20 @@ def _download(mlflow: Any, target: Any, model_uri: str,
         tracking_uri=target.tracking_uri, registry_uri=target.registry_uri)
 
 
+def _logged_model_name(registered: Optional[str], manifest: Any) -> str:
+    r"""model_label without the characters MLflow rejects."""
+    table = getattr(getattr(manifest, 'parents', None), 'training_table',
+                    None)
+    return re.sub(r'[/:.%"\']', '-', model_label(
+        registered, getattr(table, 'query', None),
+        getattr(table, 'task_type', None)))
+
+
 def _log_model(target: Any, client: Any, bundle_dir: Path,
                manifest: Optional['ModelManifest'],
-               snapshot: Optional['GraphSnapshot'], run_id: str,
-               experiment_id: str, name: str = 'model',
-               serving_snapshot: Optional[str] = None) -> Any:
+               snapshot: Optional['GraphSnapshot'], *, name: str,
+               run_id: Optional[str], experiment_id: Optional[str],
+               serving_snapshot: Optional[str]) -> Any:
     from kumo_core.artifacts import PROVENANCE_FILE
 
     from kumo.engine.integrations import _mlflow_model, _mlflow_model_code
@@ -757,10 +826,11 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
     pointers = registry_pointers(_id(manifest))
     provenance = bundle_dir / PROVENANCE_FILE
     with target.scope():
+        run = None if run_id is None else client.get_run(run_id)
         model = client.create_logged_model(
-            experiment_id,
-            name=name, source_run_id=run_id,
-            params=dict(client.get_run(run_id).data.params))
+            experiment_id or run.info.experiment_id, name=name,
+            source_run_id=run_id,
+            params=None if run is None else dict(run.data.params))
     mlflow_model = mlflow.models.Model(
         artifact_path=model.artifact_location, model_uuid=model.model_id,
         run_id=run_id, metadata=pointers, model_id=model.model_id)
@@ -798,9 +868,10 @@ def _log_model(target: Any, client: Any, bundle_dir: Path,
                     repository.log_artifacts(local)
                 logged = client.finalize_logged_model(model.model_id,
                                                       'READY')
-                client.log_outputs(run_id, [
-                    mlflow.entities.LoggedModelOutput(model.model_id, 0)
-                ])
+                if run_id is not None:
+                    client.log_outputs(run_id, [
+                        mlflow.entities.LoggedModelOutput(model.model_id, 0)
+                    ])
     except BaseException:
         with target.scope():
             _quietly(client.finalize_logged_model, model.model_id, 'FAILED')
@@ -828,10 +899,11 @@ def _requirement(config: Any) -> str:
 
 def _register(target: Any, client: Any, info: Any,
               location: ModelRegistryLocation,
-              metadata: Mapping[str, str]) -> PublishedModel:
+              metadata: Mapping[str, str],
+              version: Optional[str]) -> PublishedModel:
+    r"""Registers ``info`` as a new version unless ``version`` holds it."""
     name = location.model_name
     with target.scope():
-        version = _registered_version(client, name, metadata)
         if version is None:
             try:
                 client.create_registered_model(name)
