@@ -206,9 +206,7 @@ class SnowflakeTracking(TrackingBase):
         self._log_metrics(metrics, _EPOCH_METRICS, step=step)
 
     def _new_run_name(self, tracking: Any, experiment: Any,
-                      run_name: Optional[str]) -> Optional[str]:
-        if run_name is None:
-            return None
+                      run_name: str) -> Optional[str]:
         # start_run matches name with LIKE.
         existing = [
             str(row['name'])
