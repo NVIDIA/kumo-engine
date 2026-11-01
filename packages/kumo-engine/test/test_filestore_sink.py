@@ -163,7 +163,7 @@ def test_parquet_writes_stay_plain_up_to_one_part(connector):
     sink.write_table(connector, '@stage/small.parquet', frame)
     sink.write_table(connector, '@stage/big.parquet',
                      pd.DataFrame({'x': [os.urandom(50).hex() for _ in range(100)]}))
-    store = connector.sink_backend.store
+    store = sink.store
     assert '@stage/small.parquet' in store.objects
     assert any(
         name.startswith('@stage/big.parquet.chunks/')
@@ -178,7 +178,7 @@ def test_an_occupied_directory_is_refused_before_scoring(connector):
 
     sink = connector.sink_backend
     sink.preflight_write_files(connector, '@stage/out/')
-    connector.sink_backend.store.objects['@stage/out/old.parquet'] = b'x'
+    sink.store.objects['@stage/out/old.parquet'] = b'x'
     for mode in (None, 'OVERWRITE', 'APPEND'):
         with pytest.raises(ArtifactDestinationConflict, match='already'):
             sink.preflight_write_files(connector, '@stage/out/', mode)

@@ -5,6 +5,7 @@
 import os
 import posixpath
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
@@ -12,6 +13,7 @@ from typing import Any, Mapping, Optional, Tuple
 import pandas as pd
 from kumoapi.jobs import WriteMode
 from kumoapi.plugin import (
+    FileStoreSink,
     ModelRegistryLocation,
     PublishedModel,
     SourceConnector,
@@ -44,13 +46,6 @@ def upload_file(filesystem: FileSystem, source: str,
                 destination: str) -> None:
     with open(source, 'rb') as reader, open_sized(
             filesystem, destination, os.path.getsize(source)) as writer:
-        shutil.copyfileobj(reader, writer, _CHUNK)
-
-
-def download_file(filesystem: FileSystem, source: str,
-                  destination: str) -> None:
-    with filesystem.open_input_stream(source) as reader, \
-            open(destination, 'wb') as writer:
         shutil.copyfileobj(reader, writer, _CHUNK)
 
 
@@ -174,7 +169,9 @@ class ObjectStoreSinkBackend(ABC):
 
     def _download_file(self, filesystem, source, destination):
         """Providers may transfer a model file without the streaming fallback."""
-        download_file(filesystem, source, destination)
+        with filesystem.open_input_stream(source) as reader, \
+                open(destination, 'wb') as writer:
+            shutil.copyfileobj(reader, writer, _CHUNK)
 
     def fetch_model(
         self,
@@ -294,9 +291,8 @@ def _write_one(filesystem: FileSystem, frame: pd.DataFrame, path: str,
     if not _chunked(filesystem):
         pq.write_table(table, path, filesystem=filesystem)
         return
-    import tempfile
-
     from kumo_core.chunked_fs import spool_root
+
     # Spool to learn the size.
     with tempfile.TemporaryDirectory(
             dir=spool_root(filesystem.handler)) as spool:
@@ -399,7 +395,7 @@ class _ArrowExportFiles:
 
 class FilesystemSink(ObjectStoreSinkBackend):
     """The object-store file writers over any sink's ``filesystem()``."""
-    def __init__(self, sink: Any) -> None:
+    def __init__(self, sink: FileStoreSink) -> None:
         self._sink = sink
         self.provider = type(sink).__name__
 

@@ -19,6 +19,8 @@ minus the server-registry-only fields (`name`, `description`, `project_id`,
 
 from typing import Any, Optional, Tuple
 
+from kumoapi.plugin import FileStoreSink
+
 from kumo.engine.connector.adls import ADLSConnector
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.bigquery import BigQueryConnector
@@ -39,9 +41,7 @@ from kumo.engine.connector.snowflake import SnowflakeConnector
 from kumo.engine.connector.source_table import SourceTable, SQLSourceTable
 
 
-def _file_sink(connector: Any, path: str) -> Any:
-    from kumoapi.plugin import FileStoreSink
-
+def _file_sink(connector: Connector, path: str) -> Optional[FileStoreSink]:
     try:
         sink = connector.sink_backend
     except NotImplementedError:
@@ -50,12 +50,12 @@ def _file_sink(connector: Any, path: str) -> Any:
         connector, path) else None
 
 
-def is_file_destination(connector: Any, path: str) -> bool:
+def is_file_destination(connector: Connector, path: str) -> bool:
     r"""Whether ``path`` is a file location rather than a table."""
     return _file_sink(connector, path) is not None
 
 
-def file_store(connector: Any, path: str) -> Optional[Tuple[Any, str]]:
+def file_store(connector: Connector, path: str) -> Optional[Tuple[Any, str]]:
     r"""The ``(filesystem, path)`` of a file destination; None for a table."""
     sink = _file_sink(connector, path)
     return None if sink is None else sink.filesystem(connector, path)
