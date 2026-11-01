@@ -21,8 +21,6 @@ from kumoapi.model_plan import ModelPlan, TrainingTableGenerationPlan
 SPEC_FILE = 'training-spec.json'
 SPEC_VERSION = 1
 
-#: What `kumo_core`'s `VitalArtifactPublicationPolicy` names its own
-#: manifest; `training-spec.json` is listed in it like every other file.
 MANIFEST_FILE = 'publication-manifest.json'
 SPEC_ROLE = 'training_spec'
 PROVENANCE_ROLE = 'provenance'

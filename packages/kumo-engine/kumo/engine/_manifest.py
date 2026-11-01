@@ -42,9 +42,7 @@ def omit_none() -> Any:
 
 @dataclass(frozen=True)
 class Artifact:
-    r"""An artifact a manifest names, stored at ``location``, which tracked
-    runs tag as ``tag``. A dataset is data a run reads, or writes when its
-    ``context`` is ``output``."""
+    """An artifact a manifest names."""
 
     kind: str
     id: str
@@ -59,13 +57,12 @@ class Artifact:
 
 @dataclass(frozen=True, kw_only=True)
 class Record:
-    """A JSON object; keys this version does not know are kept in ``extra``."""
+    """A JSON object that keeps unknown keys in ``extra``."""
 
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False,
                                      compare=False)
 
     def as_artifact(self, key: str) -> Optional[Artifact]:
-        r"""The artifact this record names as ``key``, if any."""
         return None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -153,13 +150,12 @@ class SourceTableEntry(Record):
                         version_kind=self.version_kind)
 
 
-#: The artifact kinds, as manifests and the artifact root name them.
 KINDS = ('snapshot', 'training_table', 'model')
 
 
 @dataclass(frozen=True, kw_only=True)
 class Manifest(Record):
-    """An artifact's record; a stub sets only kind, id and reconstructed."""
+    """An artifact's record."""
 
     kind: str = ''
     schema_version: int = SCHEMA_VERSION
@@ -169,11 +165,8 @@ class Manifest(Record):
     reconstructed: Optional[bool] = omit_none()
     location: Optional[str] = omit_none()
 
-    #: Fields left out where this manifest is embedded in a child's.
     EMBED_OMITS = ()
-    #: Whether this kind is data a run reads or writes.
     IS_DATASET: ClassVar[bool] = False
-    #: The tag of its location in tracked runs.
     URI_TAG: ClassVar[Optional[str]] = None
 
     def as_artifact(self, key: str) -> Artifact:
@@ -183,7 +176,7 @@ class Manifest(Record):
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
-    r"""``manifest``'s artifact and those it names, depth first, once each."""
+    """``manifest`` and the artifacts it names, once each."""
     found: Dict[Any, Artifact] = {}
     for artifact in _walk(manifest, manifest.kind, manifest):
         found.setdefault((artifact.kind, artifact.id), artifact)
@@ -217,7 +210,6 @@ def stamp() -> Dict[str, Any]:
         environment=environment())
 
 
-#: Envelope fields for a manifest rebuilt after the fact.
 RECONSTRUCTED: Dict[str, Any] = dict(created_at=None, environment=None,
                                      reconstructed=True)
 
@@ -234,12 +226,12 @@ def _kinds() -> Dict[str, Type['Manifest']]:
 
 
 def stub(kind: str, id: str) -> 'Manifest':
-    """The manifest of a ``kind`` artifact known only by its ``id``."""
+    """A manifest knowing only ``kind`` and ``id``."""
     return _kinds()[kind](id=id, reconstructed=True)
 
 
 def embedded(manifest: M) -> M:
-    """``manifest`` without the fields a child's copy leaves out."""
+    """``manifest`` minus the fields a child's copy omits."""
     return replace(manifest, **{
         name: None
         for name in manifest.EMBED_OMITS
@@ -263,7 +255,7 @@ class SnapshotParents(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class SnapshotManifest(Manifest):
-    """The source tables and engine build a snapshot was made from."""
+    """The sources and engine build of a snapshot."""
 
     kind: str = 'snapshot'
     IS_DATASET: ClassVar[bool] = True
@@ -279,7 +271,7 @@ class TrainingTableParents(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class TrainingTableManifest(Manifest):
-    """The snapshot, query and rows a training table was made from."""
+    """The snapshot, query and rows of a training table."""
 
     kind: str = 'training_table'
     IS_DATASET: ClassVar[bool] = True
@@ -305,9 +297,7 @@ class FitTiming(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class ModelManifest(Manifest):
-    """How a model bundle was fitted: from which training table (embedded,
-    with its snapshot) and warm-start model, when, and with which fit
-    mode. Its ``id`` is the bundle id."""
+    """How a model bundle was fitted; ``id`` is the bundle id."""
 
     kind: str = 'model'
     URI_TAG: ClassVar[Optional[str]] = 'kumo.bundle_uri'

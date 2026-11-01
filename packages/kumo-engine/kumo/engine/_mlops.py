@@ -21,31 +21,20 @@ class _Root:
     _uri: str
 
     def location(self, relative: str) -> str:
-        r"""``relative`` as a path on :attr:`connector`."""
         base = self.path.rstrip('/')
         return f'{base}/{relative}' if base else relative
 
     def uri(self, relative: str) -> str:
-        r"""``relative`` as a full URI or path, for messages and records."""
         return f"{self._uri.rstrip('/')}/{relative}"
 
 
 @dataclass(frozen=True)
 class MLOps:
-    r"""Where artifacts go, for :func:`mlops` blocks and ``mlops=``
-    arguments.
+    r"""Where artifacts are stored.
 
     Args:
-        artifact_root: an ``s3://``, ``gs://``, ``file://`` or local path
-            (``/Volumes/...`` on a Databricks cluster), or a ``(connector,
-            path)`` pair for a store a URI cannot reach, such as a volume
-            through a ``DatabricksConnector`` or a Snowflake stage.
-        store: the artifact kinds stored under the root when produced
-            (``snapshot``, ``training_table``, ``model``);
-            ``True`` for all, ``False`` for none.
-
-    In ``load_from_connector`` calls, an ``MLOps`` stands in for the
-    connector, with paths relative to its artifact root.
+        artifact_root: a URI or path, or a ``(connector, path)`` pair.
+        store: artifact kinds to store; ``True`` for all, ``False`` for none.
     """
 
     artifact_root: Union[str, Tuple[Any, str]]
@@ -88,7 +77,6 @@ class MLOps:
         object.__setattr__(self, 'kinds', kinds)
 
     def wants(self, kind: str) -> bool:
-        r"""Whether artifacts of ``kind`` are stored under the root."""
         return kind in self.kinds
 
 
@@ -107,9 +95,7 @@ def _require_within_root(connector: Any, path: str) -> None:
         name = type(connector).__name__
         raise ValueError(
             f'artifact_root {path!r} is outside this {name}\'s {within} '
-            f'({error}), so nothing could be stored there. Give the root '
-            f'a connector that contains it: ({name}(root_dir={path!r}, '
-            f'identity=...), {path!r}).') from error
+            f'({error}); give it a connector that contains it.') from error
 
 
 def _require_writable(root: _Root) -> None:
@@ -132,7 +118,7 @@ def _require_writable(root: _Root) -> None:
             return
         try:
             filesystem.open_output_stream(probe).close()
-        except FileNotFoundError:  # a store with directories, before first use
+        except FileNotFoundError:
             filesystem.create_dir(posixpath.dirname(probe), recursive=True)
             filesystem.open_output_stream(probe).close()
         delete = getattr(root.connector.sink_backend, 'delete_file', None)
@@ -142,10 +128,9 @@ def _require_writable(root: _Root) -> None:
             delete(root.connector, probe)
     except Exception as error:
         raise PermissionError(
-            f'kumo.MLOps cannot write under artifact_root '
-            f'{root.uri("")!r}: {type(error).__name__}: {error}. Grant this '
-            f'identity write and delete rights on it, or pick another '
-            f'root.') from error
+            f'kumo.MLOps cannot write under artifact_root {root.uri("")!r} '
+            f'({type(error).__name__}: {error}); grant write and delete '
+            f'rights or pick another root.') from error
 
 
 _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(
@@ -154,10 +139,7 @@ _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def mlops(settings: MLOps) -> Iterator[MLOps]:
-    r"""Turns MLOps on for the calls in the block (in this thread or asyncio
-    task): each snapshot, training table and model is stored
-    under ``settings.artifact_root``. An inner block replaces an outer one;
-    an ``mlops=`` argument replaces both for its call."""
+    r"""Store artifacts of calls in this block under ``settings``."""
     if not isinstance(settings, MLOps):
         raise TypeError('kumo.mlops() takes a kumo.MLOps')
     token = _CURRENT.set(settings)
@@ -168,8 +150,7 @@ def mlops(settings: MLOps) -> Iterator[MLOps]:
 
 
 def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
-    r"""The settings a call runs with: its ``mlops=`` argument, else the
-    enclosing block's, else None (off)."""
+    r"""The ``mlops=`` argument, else the enclosing block's."""
     return settings if settings is not None else _CURRENT.get()
 
 
@@ -179,14 +160,12 @@ def warn_not_stored(what: str, error: Exception, stacklevel: int) -> None:
 
 
 def on_root(source: Any, path: str) -> Tuple[Any, str]:
-    r"""The connector and path a ``load_from_connector(source, path=...)``
-    reads: an `MLOps` ``source`` reads ``path`` under its artifact root."""
+    r"""``path`` under an `MLOps` root, else ``source`` as given."""
     if isinstance(source, MLOps):
         return source.root.connector, source.root.location(path.lstrip('/'))
     return source, path
 
 
 def snapshot_path(snapshot: Any) -> str:
-    r"""Where a snapshot, or a snapshot id, is stored under a root."""
     snapshot_id = snapshot if isinstance(snapshot, str) else snapshot.id
     return 'snapshots/' + snapshot_id.replace('@', '/')
