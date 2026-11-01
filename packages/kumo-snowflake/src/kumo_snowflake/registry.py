@@ -455,13 +455,12 @@ class SnowflakeModelRegistryMixin:
             # Resolved before anything on disk is touched: a name the registry
             # does not know must not cost the caller the bundle already there.
             model = registry.get_model(location.model_name)
-            alias = getattr(location, 'alias', None)
-            if alias is not None:
-                if resolved(alias) not in _alias_holders(model):
+            if location.alias is not None:
+                if resolved(location.alias) not in _alias_holders(model):
                     raise ValueError(
                         f'No version of {location.model_name} holds alias '
-                        f'{alias}.')
-                version = model.version(alias)
+                        f'{location.alias}.')
+                version = model.version(location.alias)
             elif location.version is None:
                 version = model.default
             else:
