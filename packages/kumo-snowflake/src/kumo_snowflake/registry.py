@@ -76,13 +76,12 @@ _MODEL_NAME = re.compile(rf'(?:{_IDENTIFIER}\.){{0,2}}{_IDENTIFIER}')
 _LOG = logging.getLogger(__name__)
 
 SERVING_KEY = 'kumo_serving'
+MODEL_BUILDER_GROUP = 'kumo_snowflake.registry_models'
 
 
 class ServingEnvironmentError(ValueError):
     r"""A runnable version's serving environment cannot work."""
 
-
-MODEL_BUILDER_GROUP = 'kumo_snowflake.registry_models'
 
 #: Where a fetched version is unpacked before its bundle is lifted out. Named
 #: rather than a temporary directory so a half-finished import leaves something
@@ -290,22 +289,22 @@ def _export(session: Any, version: "ModelVersion", directory: Path) -> None:
             f'{resolved(str(version.version_name))}/')
     names = [
         PurePosixPath(*PurePosixPath(row['name']).parts[2:])
-        for row in session.sql(f"LIST {_quoted(root + 'model/')}").collect()
+        for row in session.sql(f"LIST {_literal(root + 'model/')}").collect()
     ]
 
     def get(name: PurePosixPath) -> None:
         local = directory / confined(str(name.parent))
         local.mkdir(parents=True, exist_ok=True)
         with session.connection.cursor() as cursor:
-            cursor.execute(f"GET {_quoted(root + str(name))} "
-                           f"{_quoted(f'file://{local}')}")
+            cursor.execute(f"GET {_literal(root + str(name))} "
+                           f"{_literal(f'file://{local}')}")
 
     with ThreadPoolExecutor(_EXPORT_WORKERS) as pool:
         list(pool.map(get, [name for name in names
                             if name.parts[:2] != ('model', 'code')]))
 
 
-def _quoted(url: str) -> str:
+def _literal(url: str) -> str:
     return "'" + url.replace('\\', '\\\\').replace("'", "\\'") + "'"
 
 
