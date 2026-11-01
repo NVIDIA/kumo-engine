@@ -47,13 +47,6 @@ def upload_file(filesystem: FileSystem, source: str,
         shutil.copyfileobj(reader, writer, _CHUNK)
 
 
-def download_file(filesystem: FileSystem, source: str,
-                  destination: str) -> None:
-    with filesystem.open_input_stream(source) as reader, \
-            open(destination, 'wb') as writer:
-        shutil.copyfileobj(reader, writer, _CHUNK)
-
-
 def upload_bundle(filesystem: FileSystem, destination: str,
                   bundle_dir: str) -> None:
     """Copy ``bundle_dir`` under ``destination``, provenance last."""
@@ -174,7 +167,9 @@ class ObjectStoreSinkBackend(ABC):
 
     def _download_file(self, filesystem, source, destination):
         """Providers may transfer a model file without the streaming fallback."""
-        download_file(filesystem, source, destination)
+        with filesystem.open_input_stream(source) as reader, \
+                open(destination, 'wb') as writer:
+            shutil.copyfileobj(reader, writer, _CHUNK)
 
     def fetch_model(
         self,
