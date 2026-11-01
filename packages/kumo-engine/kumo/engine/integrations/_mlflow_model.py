@@ -6,8 +6,8 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 
 from kumo.engine.connector._extras import import_provider
-from kumo.engine.connector.base import Connector
 from kumo.engine.graph import GraphSnapshot
+from kumo.engine.integrations._serving import snapshot_location
 
 _pyfunc = import_provider('mlflow.pyfunc', 'mlflow')
 _schema = import_provider('mlflow.types.schema', 'mlflow')
@@ -51,13 +51,6 @@ class KumoModel(_pyfunc.PythonModel):
             self._snapshots[uri] = GraphSnapshot.load_from_connector(
                 connector, path=path)
         return self._snapshots[uri]
-
-
-def snapshot_location(uri: str) -> Tuple[Connector, str]:
-    from kumo.engine.connector import connector_for_root
-
-    parent, slash, name = uri.rstrip('/').rpartition('/')
-    return connector_for_root(parent or slash or '.'), name
 
 
 def signature(snapshot: GraphSnapshot, query: str) -> Tuple[Any, pd.DataFrame]:

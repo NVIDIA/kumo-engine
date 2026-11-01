@@ -126,12 +126,10 @@ def _in_input_order(rows: pd.DataFrame, scored: pd.DataFrame) -> pd.DataFrame:
 def _temporal(trainer: Any, snapshot: Any) -> bool:
     from kumo_core.pquery import query_is_temporal
 
-    from kumo.engine.pquery import PredictiveQuery
+    from kumo.engine.integrations._serving import parsed_query
 
-    return query_is_temporal(
-        PredictiveQuery._from_snapshot(snapshot,
-                                       trainer._training_query)._parsed,
-        snapshot._native_graph)
+    return query_is_temporal(parsed_query(trainer, snapshot),
+                             snapshot._native_graph)
 
 
 def _seconds(values: pd.Series) -> pd.Series:
