@@ -13,8 +13,8 @@ the `USAGE` and `SELECT` a read-only analyst already holds.
 or `PredictionOutputConfig(snowflake_connector,
 output_paths={"predictions": "@ML.ARTIFACTS.KUMO/scores/"})`, and
 `Trainer.load_from_connector` reads a model back from one. For an MLOps
-artifact root on a stage, see `packages/kumo-engine/docs/mlops.md`. File names may
-use only `A-Z a-z 0-9 _ $ = + . , / -`.
+artifact root on a stage, see `packages/kumo-engine/docs/mlops.md`. File names
+may use only `A-Z a-z 0-9 _ $ = + . , / -`.
 
 A file of up to 4 GiB is one staged object. A larger one is stored as numbered
 parts under `<name>.chunks/`, which only kumo reads back. To load exported
