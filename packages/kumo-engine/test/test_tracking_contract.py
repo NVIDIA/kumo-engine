@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Every tracking adapter records the same run records as a recorded fit
-and a recorded prediction run."""
+"""Every tracking adapter records the same runs."""
 
 import hashlib
 import json
@@ -106,8 +105,7 @@ EVENTS = [
     _event('fit_ended', metrics={'val_mae': 0.3, 'test_mae': 0.32,
                                  'seconds': 9.0}, status='succeeded'),
 ]
-# The fit run's own series: once the fit succeeds, the selected trial 2's
-# epochs.
+# The fit run's series: the selected trial 2's epochs.
 SELECTED = {'train_loss': ((1, 0.6), (2, 0.4)), 'val_mae': ((1, 0.5), (2, 0.3))}
 BUNDLE = 'b' * 64
 RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
@@ -393,8 +391,6 @@ def snowflake_adapter(monkeypatch):
                     runs['tags'][name] = value
                 else:
                     runs['params'][name] = value
-            # Snowflake's own run duration and card are checked in
-            # test_snowflake_tracking.
             for key, value, step in run['metrics']:
                 if key == 'duration_seconds':
                     continue
@@ -413,9 +409,7 @@ def snowflake_adapter(monkeypatch):
         return observed
 
     def expected(records):
-        r"""What Snowflake keeps of a trial: its params, status, error and
-        best tuned validation metric, under ``TRIAL_<i>`` (a retry under
-        ``TRIAL_<i>_ATTEMPT_<j>``)."""
+        r"""What Snowflake keeps of each trial."""
         kept = {}
         for key, record in records.items():
             if record.tags['kumo.kind'] == 'trial':
@@ -434,7 +428,6 @@ def snowflake_adapter(monkeypatch):
         make=lambda: SnowflakeTracking(_snowflake_experiment_fake.FakeSession(),
                                        experiment_name='ents', tags=USER_TAGS),
         observe=observe, step_metrics=True, artifacts=True,
-        # Snowflake names are checked in test_snowflake_tracking.
         run_name=lambda name: None, expected=expected)
 
 

@@ -361,8 +361,7 @@ def test_manifest_failures_warn_and_keep_outputs(graph, classifier, tmp_path,
         bare, bare_exported = run('bare')
     assert bare.manifest is None and bare.bundle_id is None
     assert not (tmp_path / 'bare' / '_provenance.json').exists()
-    # Scores agree to float tolerance: GPU scoring is not bit-reproducible,
-    # so a label may differ only where its probability sits at the threshold.
+    # GPU scoring is not bit-reproducible.
     clear = (exported['True_PROB'] - 0.5).abs() > 1e-3
     for other in (partial_exported, unknown_exported, bare_exported):
         pd.testing.assert_frame_equal(

@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Prediction runs and monitoring work for any model's output files, with a
-model manifest that records no fit."""
+"""Prediction runs and monitoring for any model's output files."""
 
 from types import SimpleNamespace
 
