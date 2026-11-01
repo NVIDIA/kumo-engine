@@ -36,11 +36,9 @@ from kumo.engine._manifest import (
 )
 
 Location = Union[str, Tuple[Any, str]]
-
-
 Hint = Callable[[str, str], str]
-READERS = (('@', 'SnowflakeConnector'), ('/Volumes/', 'DatabricksConnector'),
-           ('s3://', 'S3Connector'), ('gs://', 'GCSConnector'))
+_READERS = (('@', 'SnowflakeConnector'), ('/Volumes/', 'DatabricksConnector'),
+            ('s3://', 'S3Connector'), ('gs://', 'GCSConnector'))
 
 _LOCATIONS: ContextVar[Tuple[Location, ...]] = ContextVar(
     'kumo_asset_locations', default=())
@@ -194,7 +192,7 @@ class Dependencies:
             if directory is not None and _verified(directory, record):
                 return directory
         location = record.location or ''
-        reader = next((name for prefix, name in READERS
+        reader = next((name for prefix, name in _READERS
                        if location.startswith(prefix)), None)
         if reader is not None and self._hint is not None:
             raise MissingDependencyError(
