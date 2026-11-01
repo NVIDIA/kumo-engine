@@ -1,22 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Manual live check, not run in CI: fit a small model on synthetic data on
-this machine, record it in Databricks, SageMaker or Snowflake with an
-explicit identity, register it, and load it back. A few minutes on a CPU.
-Install kumo-engine[mlflow,databricks], kumo-engine[mlflow,sagemaker] or
-kumo-engine[snowflake].
-
-    python smoke.py databricks --host https://<workspace> --client-id <id> \
-        --catalog main --schema ml --warehouse <id> --experiment /Users/<you>/kumo-smoke
-    python smoke.py sagemaker --arn <tracking server ARN> --role-arn <role ARN>
-    python smoke.py snowflake --database ML --schema RUNS --warehouse <wh> \
-        --account <account> --user <user> --private-key-file key.p8
-
-Secrets come from DATABRICKS_CLIENT_SECRET (Databricks) or the key file
-(Snowflake); --role-arn may be left out to use the ambient AWS identity,
-with no MLFLOW_TRACKING_URI needed.
-"""
+"""Manual live check per platform; Databricks reads DATABRICKS_CLIENT_SECRET."""
 
 import argparse
 import os
