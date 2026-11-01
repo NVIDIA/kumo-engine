@@ -5,6 +5,7 @@
 import os
 import posixpath
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
@@ -289,9 +290,8 @@ def _write_one(filesystem: FileSystem, frame: pd.DataFrame, path: str,
     if not _chunked(filesystem):
         pq.write_table(table, path, filesystem=filesystem)
         return
-    import tempfile
-
     from kumo_core.chunked_fs import spool_root
+
     # Spool to learn the size.
     with tempfile.TemporaryDirectory(
             dir=spool_root(filesystem.handler)) as spool:
