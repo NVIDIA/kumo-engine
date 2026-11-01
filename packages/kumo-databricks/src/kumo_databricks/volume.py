@@ -203,7 +203,9 @@ class _Upload(io.RawIOBase):
 
     def write(self, data) -> int:
         piece = bytes(data)
-        self._put(piece)
+        if not self._offer(piece):
+            self._finish()
+            raise OSError(f'{self._path}: the upload stopped reading')
         return len(piece)
 
     def _offer(self, piece: Any) -> bool:
@@ -215,14 +217,10 @@ class _Upload(io.RawIOBase):
                 continue
         return False
 
-    def _put(self, piece: Optional[bytes]) -> None:
-        if self._offer(piece):
-            return
+    def _finish(self) -> None:
         self._thread.join()
         if self._error is not None:
             raise self._error
-        if piece is not None:
-            raise OSError(f'{self._path}: the upload stopped reading')
 
     def abort(self) -> None:
         if self.closed:
@@ -235,9 +233,7 @@ class _Upload(io.RawIOBase):
         if self.closed:
             return
         try:
-            self._put(None)
-            self._thread.join()
-            if self._error is not None:
-                raise self._error
+            self._offer(None)
+            self._finish()
         finally:
             super().close()
