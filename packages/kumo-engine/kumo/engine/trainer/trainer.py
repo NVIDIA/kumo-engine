@@ -174,8 +174,7 @@ class TrainingResult:
 
     @property
     def tracking(self) -> Optional[TrackingRef]:
-        """The experiment tracker's run of the fit: its ``platform``,
-        ``run_id`` and ``url``; None when the fit was not tracked."""
+        """The experiment tracker's run of the fit, if tracked."""
         manifest = self.manifest
         return None if manifest is None else manifest.tracking
 
@@ -184,9 +183,7 @@ class TrainingResult:
         return self._model('predict').predict(*args, **kwargs)
 
     def export(self, config: Any) -> PublishedModel:
-        """Publish this model's bundle to a ``ModelOutputConfig``, or
-        register it at a `kumo.MLOps` ``registry`` through its tracker; a
-        registry that already holds the bundle returns that version."""
+        """Publishes the bundle to a ``ModelOutputConfig`` or ``MLOps``."""
         from kumo.engine._mlops import MLOps
 
         if isinstance(config, MLOps):
@@ -204,10 +201,7 @@ class TrainingResult:
 
     def with_scoring_defaults(self,
                               defaults: ScoringDefaults) -> 'TrainingResult':
-        """A copy of this model whose ``predict`` applies ``defaults`` when a
-        call omits them; a new bundle, whose manifest names this one in
-        ``parents.derived_from``. To register a model with its defaults,
-        pass ``fit(scoring_defaults=...)`` instead."""
+        """A copy of this model whose ``predict`` applies ``defaults``."""
         from kumo_core.artifacts import bundle_task_type
 
         if self._trainer is None:
@@ -387,7 +381,6 @@ def _store_and_register(
     warn: bool = True,
     stored: Optional[BaseException] = None,
 ) -> Tuple[Optional[PublishedModel], Optional[BaseException]]:
-    r"""Stores, logs and registers a bundle; returns it and any error."""
     if stored is None and settings is not None and settings.wants('model'):
         try:
             _store_model(bundle_dir, manifest, settings)
@@ -441,8 +434,7 @@ def _fit_summaries(snapshot: GraphSnapshot, train_table: TrainingTable,
 
 def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
                  settings: Any) -> None:
-    r"""Copy the bundle to ``<root>/models/<bundle id>/`` unless a complete
-    copy is there."""
+    r"""Copies the bundle under the root unless it is there."""
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
     from kumo_core.object_store_sink import holds_bundle, upload_bundle
     from pyarrow.fs import FileSelector
@@ -514,7 +506,6 @@ def _require_publisher(export_config: ModelOutputConfig) -> None:
 
 def _with_metrics(model: Optional[PublishedModel],
                   metrics: Mapping[str, float]) -> Optional[PublishedModel]:
-    r"""``model`` with ``metrics``, where its registry returned none."""
     if model is None or model.metrics:
         return model
     return replace(model, metrics=dict(metrics))
@@ -596,7 +587,6 @@ _UNACTIONABLE = (
 
 
 def _without_unactionable_warnings(method: _F) -> _F:
-    r"""Runs ``method`` without third-party notes users cannot act on."""
     @functools.wraps(method)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         tips = logging.getLogger('pytorch_lightning.utilities.rank_zero')
@@ -683,8 +673,7 @@ class Trainer:
         return self._training_result
 
     def export(self, config: Any) -> PublishedModel:
-        """Publish the fitted or loaded model bundle, as
-        :meth:`TrainingResult.export`."""
+        """Publishes the model, as :meth:`TrainingResult.export`."""
         return self._fitted('export').export(config)
 
     @_without_unactionable_warnings
@@ -718,9 +707,7 @@ class Trainer:
                 generate_training_table(snapshot)`.
             snapshot: graph data and features to train against.
             export_config: if given, publishes the trained model bundle.
-            scoring_defaults: prediction arguments the bundle applies when
-                ``predict`` omits them, such as a classification threshold;
-                stored, registered and served with the model.
+            scoring_defaults: arguments ``predict`` applies when omitted.
             warm_start: a fitted trainer or one restored with ``load`` or
                 ``load_from_connector``. Reuses its selected weights, optimizer
                 state, fitted encoders, architecture and neighbor sampling;
@@ -730,11 +717,8 @@ class Trainer:
                 architecture; they support prediction but are unreliable
                 warm-start sources.
             mlops: a `kumo.MLOps`; with MLOps on (this or a `kumo.mlops`
-                block), the bundle is also stored under the artifact root and
-                the fit is recorded by its ``tracking``.
-            callbacks: called with each progress
-                `kumo.engine.tracking.Event`; a callback that raises is logged
-                and not called again.
+                block), the bundle is also stored and the fit tracked.
+            callbacks: called with each progress `Event`.
 
         Each call returns a new `TrainingResult`; `Trainer.result` holds the
         latest.
@@ -1422,8 +1406,7 @@ class Trainer:
         from trusted publishers; checkpoint deserialization happens at predict.
         ``accelerator`` selects the device for this instance (default: ``auto``).
         A `kumo.MLOps` ``model_registry`` reads ``path`` under its artifact
-        root (``models/<id>``) and ``location`` from the registry its
-        tracker registers in.
+        root (``models/<id>``) and ``location`` in its tracker's registry.
         """
         from kumo.engine._mlops import MLOps, on_root
 

@@ -76,8 +76,7 @@ def get_scratch_dir() -> Path:
 
 @contextmanager
 def scoped_scratch_dir(path: Path) -> Iterator[None]:
-    r"""Nests this thread's (context's) new scratch directories under
-    ``path`` instead of the configured root."""
+    r"""Nests this context's new scratch directories under ``path``."""
     token = _scoped_root.set(path)
     try:
         yield

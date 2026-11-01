@@ -87,7 +87,6 @@ INPUT_FIELDS = ('connector', 'location', 'version', 'version_kind')
 
 
 def fit_inputs(manifest: Any) -> Dict[str, Dict[str, Optional[str]]]:
-    r"""Source tables of a training table or model manifest."""
     try:
         table = manifest
         if getattr(manifest, 'kind', None) == 'model':
@@ -116,8 +115,7 @@ def _parents(manifest: Any) -> Any:
 
 
 def logged_name(name: str) -> str:
-    r"""``val_auroc`` as ``val/auroc``, ``best_val_auroc`` as
-    ``val/best_auroc``."""
+    r"""``val_auroc`` as ``val/auroc``."""
     best = name.startswith('best_')
     split, _, metric = name.removeprefix('best_').partition('_')
     if split not in ('train', 'val', 'test') or not metric:
@@ -131,7 +129,6 @@ def logged_names(metrics: Mapping[str, Any]) -> Dict[str, Any]:
 
 def by_step(steps: Mapping[str, Sequence[Tuple[int, float]]]
             ) -> List[Tuple[int, Dict[str, float]]]:
-    r"""Each step's metrics, in step order."""
     grouped: Dict[int, Dict[str, float]] = {}
     for name, history in steps.items():
         for step, value in history:
@@ -174,7 +171,6 @@ def _user_tags(tags: Mapping[str, Any],
 
 
 def trial_spec(events: Sequence[Event]) -> RunSpec:
-    r"""One trial attempt of a fit, from its events so far."""
     started = next(event for event in events if event.name == 'trial_started')
     trial, attempt = started.trial, int(started.params['attempt'])
     metrics: Dict[str, float] = {}
@@ -203,25 +199,7 @@ def trial_spec(events: Sequence[Event]) -> RunSpec:
 
 
 class Tracking(Protocol):
-    r"""Records one `Trainer.fit` in an experiment tracker.
-
-    Calls come from one background thread. `start` gets the fit run's
-    record without metrics, `on_trial` a trial attempt's record so far with
-    the event that updated it, and `finish` the fit run's final record
-    (`None` if tracking stopped early, which should end the run as failed).
-    Optional members: ``prepare()``, called first on the fit's own thread;
-    ``log_metrics(metrics, step)``, series of the fit run as they come (a
-    single trial's epochs, or a search's best validation metric after each
-    trial); ``tags`` (extra fit-run tags); ``log_model(bundle_dir, manifest,
-    snapshot, registry)``, called after a fit that succeeded and before
-    `finish`, which the fit waits for while the tracking thread is alive, up
-    to an hour (an error, a stopped thread or the time limit ends the run as
-    failed), and which returns the version it registered at ``registry``, a
-    ``ModelRegistryLocation``; ``connector``, a connector whose model
-    registry ``registry`` registers in when there is no ``log_model``; and
-    ``platform``, ``run_id`` and ``run_url``, the tracker's own run once
-    `start` returned, recorded as the model manifest's ``tracking``.
-    """
+    r"""Records one `Trainer.fit` in an experiment tracker."""
     def start(self, record: RunRecord) -> None:
         ...
 
@@ -313,7 +291,6 @@ class _Foreign(TrackingBase):
 
 
 def as_tracking(tracking: Any) -> Optional[TrackingBase]:
-    r"""``tracking``, wrapped unless it subclasses `TrackingBase`."""
     if tracking is None or isinstance(tracking, TrackingBase):
         return tracking
     return _Foreign(tracking)
@@ -442,7 +419,6 @@ class TrackingSession:
         snapshot: Any,
         registry: Optional['ModelRegistryLocation'] = None,
     ) -> Tuple[Optional['PublishedModel'], Optional[BaseException]]:
-        r"""The tracker's ``log_model``, run on the tracking thread."""
         if self._worker is None or (self._tracker is not None
                                     and self._tracker.log_model is None):
             return None, None

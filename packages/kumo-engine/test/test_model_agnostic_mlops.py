@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""The MLOps seams take any bundle, run and predictor, not only the
-Trainer's."""
+"""The MLOps seams take any bundle, run and predictor."""
 
 import io
 import json
@@ -288,8 +287,7 @@ def test_a_model_serves_from_its_bundle_snapshot_and_assets_alone(
 
 
 class _PrefixOnlyS3:
-    r"""An S3 filesystem whose credentials cover only the root's prefix:
-    HeadBucket and parent marker objects are refused."""
+    r"""S3 credentials that cover only the root's prefix."""
     type_name = 's3'
 
     def __init__(self):

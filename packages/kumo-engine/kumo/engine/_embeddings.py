@@ -15,9 +15,7 @@ from kumo_core.embedding_models import EmbeddingModelStore
 def no_encoder_inference_warnings(
         overridden: Optional[Collection[str]] = None) -> Iterator[None]:
     # Only fit reports what inference chose: training tables do not use it,
-    # and a trained model encodes columns as it was trained to. Given the
-    # columns whose encoders the model plan overrides, fit stays silent on
-    # those alone.
+    # and a trained model encodes columns as it was trained to.
     def drop(record: logging.LogRecord) -> bool:
         if overridden is None:
             return record.levelno < logging.WARNING
@@ -94,8 +92,7 @@ def _text_encoders(encoders: Any) -> List[Any]:
 
 def require_text_encoders(deps: Any, store: EmbeddingModelStore,
                           encoders: Any) -> bool:
-    r"""Records the word vectors of a fitted model's text encoders in
-    ``deps``; returns whether it has any."""
+    r"""Records the model's text-encoder vectors; returns whether any."""
     from kumo_core.embedding_models import GloVeVectors, resolve_encoder
 
     from kumo.engine._manifest import Dependency

@@ -101,8 +101,7 @@ class SnowflakeConnector(Connector):
         return SnowflakeSinkBackend(identity=self.identity)
 
     def session(self) -> Any:
-        r"""The Snowpark session this connector reads through: its identity,
-        pointed at its warehouse, database and schema, kept alive."""
+        r"""The Snowpark session this connector reads through."""
         with self.source_backend._session(self) as session:
             return session
 

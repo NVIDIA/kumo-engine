@@ -272,8 +272,6 @@ def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
 
 
 class _SnapshotEvents(EventEmitter):
-    r"""Snapshot progress: each event goes to the callbacks and the log,
-    with the seconds since the snapshot started."""
 
     def __init__(self, callbacks: Sequence[Callable[[Event], None]]):
         super().__init__(callbacks)
@@ -713,9 +711,7 @@ class Graph:
             record_sources: if False, the snapshot manifest records each
                 source as connector and table name only (no bucket, path or
                 account) and Custom SQL as a hash only (no SQL text).
-            callbacks: called with each progress event,
-                `snapshot_started`, `table_staged` (per table) and
-                `snapshot_ended`; each is also logged at INFO.
+            callbacks: called with each progress `Event`.
         """
         self.validate()
         for table in self._named_tables.values():

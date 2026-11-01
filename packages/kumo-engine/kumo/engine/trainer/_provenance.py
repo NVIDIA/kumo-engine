@@ -95,8 +95,7 @@ def read_provenance(bundle_dir: Path) -> Optional[ModelManifest]:
 
 def record_derivation(bundle_dir: Path, parent_dir: Path,
                       parent_id: Optional[str]) -> None:
-    r"""Writes the manifest of ``bundle_dir``, a copy of the bundle at
-    ``parent_dir`` with other scoring defaults."""
+    r"""Writes the manifest of a bundle derived from ``parent_dir``."""
     from kumo_core.artifacts import (
         PROVENANCE_FILE,
         add_bundle_file,

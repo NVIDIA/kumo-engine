@@ -210,7 +210,6 @@ def _walk(value: Any, key: str, root: Manifest) -> Iterator[Artifact]:
             yield from _walk(item, key, root)
 
 
-#: Connector kinds of the artifact root's URI schemes.
 _SCHEMES = {'s3': 'S3', 'gs': 'GCS', 'file': 'LOCAL_FILE', '': 'LOCAL_FILE'}
 
 Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
@@ -219,8 +218,7 @@ Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
 def artifact_summaries(manifest: Manifest, context: str,
                        settings: Any = None,
                        details: Optional[Details] = None) -> List[Summary]:
-    r"""Tags locating ``manifest``'s artifacts, and a `Dataset` per stored
-    dataset."""
+    r"""Tags locating ``manifest``'s artifacts, and its `Dataset`s."""
     located = [item for item in artifacts(manifest) if item.location]
     tags: Dict[str, str] = {}
     for item in located:
@@ -348,9 +346,7 @@ class FitTiming(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class TrackingRef(Record):
-    r"""A run in an experiment tracker: its ``platform`` (``mlflow``,
-    ``databricks``, ``sagemaker``, ``snowflake``), the platform's own
-    ``run_id`` and, where the platform has one, the run's ``url``."""
+    r"""A run in an experiment tracker."""
 
     platform: str
     run_id: str
@@ -359,9 +355,7 @@ class TrackingRef(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class Dependency(Record):
-    r"""One thing a model needs to predict: its ``predictor`` entry point,
-    a ``package`` requirement, or an ``asset`` (content-addressed by
-    ``sha256``, loaded by ``entry_point``, stored at ``location``)."""
+    r"""A predictor, package or asset a model needs to predict."""
 
     kind: str
     name: str
@@ -385,9 +379,7 @@ class Dependency(Record):
 class ModelManifest(Manifest):
     """How a model bundle was fitted: from which training table (embedded,
     with its snapshot) and warm-start model, when, and with which fit
-    mode. Its ``id`` is the bundle id; ``dependencies`` is what predicting
-    needs besides the bundle and a snapshot (none listed: the built-in
-    `Trainer` predictor)."""
+    mode. Its ``id`` is the bundle id."""
 
     kind: str = 'model'
     URI_TAG: ClassVar[Optional[str]] = 'kumo.bundle_uri'
@@ -402,8 +394,7 @@ class ModelManifest(Manifest):
 
 @dataclass(frozen=True, kw_only=True)
 class AssetManifest(Manifest):
-    """An asset a model depends on, stored once under
-    ``<root>/assets/<asset_kind>/<sha256>/``; its ``id`` is the sha256."""
+    """An asset a model depends on; its ``id`` is the sha256."""
 
     kind: str = 'asset'
     asset_kind: Optional[str] = None

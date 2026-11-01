@@ -23,7 +23,6 @@ _COLUMN_STATS = ('count', 'null_rate', 'num_unique', 'min', 'max', 'mean',
 _TOP_CATEGORIES = 10
 _EDGE_STATS = {'FRAC_SRC_NONZERO_DEGREE': 'src_match_frac',
                'FRAC_DST_NONZERO_DEGREE': 'dst_match_frac'}
-# The Kumo platform's data checks.
 _BAD_TIME_FRACTION = 0.05
 _INVALID_FRACTION = 0.10
 _MIN_MATCH_FRACTION = 0.20
@@ -86,7 +85,6 @@ def _profiles(columns: Mapping[str, Mapping[str, Any]]
 
 def _relations(edge_stats: Mapping[str, Any],
                ingest: Mapping[str, Any]) -> Dict[str, Dict[str, float]]:
-    r"""Each relation's counts and match fractions, by DiskGraph name."""
     relations: Dict[str, Dict[str, float]] = {
         name: {'count': count}
         for name, count in (ingest.get('edge_counts') or {}).items()

@@ -192,8 +192,7 @@ def export_location(snapshot: Any, path: str) -> str:
 
 
 def store(snapshot: Any, settings: Any) -> None:
-    r"""Export ``snapshot`` under ``<root>/snapshots/`` unless a complete
-    export of it is there."""
+    r"""Exports ``snapshot`` under the root unless it is there."""
     from kumo.engine._manifest import SnapshotManifest
     from kumo.engine._mlops import snapshot_path
 
