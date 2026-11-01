@@ -653,7 +653,7 @@ def log_model(
     target = tracking.target
     if run_id is None:
         tracking._require_experiment()
-    client = target.client()
+    tracking._client = client = target.client()
     active = mlflow.active_run()
     if run_id is None and active is not None and (
             mlflow.get_tracking_uri() == target.tracking_uri):
@@ -669,15 +669,9 @@ def log_model(
                       (None if result.id is None else stub('model', result.id)),
                       snapshot, run_id, experiment_id, name,
                       snapshot_uri(serving_snapshot))
-    with target.scope():
-        if result.metrics:
-            client.log_batch(run_id, metrics=[
-                mlflow.entities.Metric(metric_key(key), float(value),
-                                       int(time.time() * 1000), 0,
-                                       model_id=info.model_id)
-                for key, value in result.metrics.items()
-            ])
-        if created:
+    tracking._log_metrics(run_id, result.metrics, model_id=info.model_id)
+    if created:
+        with target.scope():
             client.set_terminated(run_id, 'FINISHED')
     return info
 
