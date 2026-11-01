@@ -13,7 +13,6 @@ from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
 from test.train.datamodule import test_remote_sampling_integration as parity
-from test.train.datamodule.test_remote_sampling import _frame, _stream_schema
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -21,14 +20,7 @@ import diskgraph
 import orjson
 import pyarrow as pa
 import pytest
-from kumo_core.diskgraph.remote_sampling import (
-    RemoteRuntimeIndex,
-    RemoteTaskIterator,
-)
-from kumo_core.diskgraph.sampling_protocol import (
-    decode_frame,
-    decode_stream_metadata,
-)
+from kumo_core.diskgraph.remote_sampling import RemoteRuntimeIndex
 from kumo_core.diskgraph.sampling_service import (
     SamplingService,
     SamplingServiceConfig,
@@ -206,10 +198,7 @@ def test_prepared_task_is_reused_without_artifact_rpcs(
         for epoch in range(3):
             iterator, _ = runtime.iter(**{**_options(), "epoch": epoch})
             assert len(list(iterator)) == 3
-        observed.list_actions.assert_not_called()
-        observed.do_action.assert_not_called()
-        observed.do_put.assert_not_called()
-        assert observed.do_get.call_count == 3
+        assert observed.open.call_count == 3
         assert service.health()["get_streams"] == 3
         assert not trainer_root.exists()
     finally:
@@ -245,34 +234,6 @@ def test_missing_task_artifact_fails_until_materialized(
     finally:
         runtime.close()
         service.close()
-
-
-@pytest.mark.parametrize("received", [0, 1])
-def test_push_rejects_truncated_epochs(received: int) -> None:
-    """Successful EOF with fewer batches than the schema promises is incomplete."""
-    client = MagicMock()
-    reader = MagicMock()
-    reader.schema = _stream_schema(num_batches=2, num_samples=4)
-    reader.read_chunk.side_effect = [
-        *[
-            _frame(
-                {
-                    "kind": "batch",
-                    "batch_id": batch_id,
-                    "value": {"task": {}, "graphs": {}, "raw_features": {}},
-                }
-            )
-            for batch_id in range(received)
-        ],
-        StopIteration(),
-    ]
-    client.do_get.return_value = reader
-    iterator = RemoteTaskIterator(
-        "grpc://unused:1", {"kind": "epoch", "version": 6}, client=client
-    )
-    with pytest.raises(ValueError, match="Incomplete"):
-        list(iterator)
-    reader.cancel.assert_called_once()
 
 
 def test_close_interrupts_a_blocked_push_reader(
@@ -384,11 +345,11 @@ def test_replicas_produce_concurrently(prepared_task: str) -> None:
         second = SamplingService(SamplingServiceConfig(graph))
         cleanup.callback(first.close)
         cleanup.callback(second.close)
-        client = flight.connect(first.endpoint())
+        client = diskgraph.SamplingClient(first.endpoint())
         cleanup.callback(client.close)
         request = {
             "kind": "epoch",
-            "version": 6,
+            "version": diskgraph.SAMPLING_PROTOCOL_VERSION,
             "extension_ref": "train_tables/remote_test",
             "engine_seed": 42,
             "num_threads": 1,
@@ -404,9 +365,9 @@ def test_replicas_produce_concurrently(prepared_task: str) -> None:
                 "fused": False,
             },
         }
-        reader = client.do_get(flight.Ticket(orjson.dumps(request)))
-        assert decode_stream_metadata(reader.schema) == (6, 3)
-        assert decode_frame(reader.read_chunk().data)[0]["kind"] == "batch"
+        reader = client.open(orjson.dumps(request))
+        assert (reader.num_samples, reader.num_batches) == (6, 3)
+        assert set(next(reader)) == {"task", "graphs", "raw_features"}
         runtime = RemoteRuntimeIndex(prepared_task, second.endpoint(), 42, 1)
         cleanup.callback(runtime.close)
         try:
@@ -415,4 +376,4 @@ def test_replicas_produce_concurrently(prepared_task: str) -> None:
             assert first.health()["task_requests"] == 1
             assert second.health()["batches"] == 3
         finally:
-            reader.cancel()
+            reader.close()

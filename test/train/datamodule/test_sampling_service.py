@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from test.train.datamodule import test_remote_sampling_integration as parity
 
+import diskgraph
 import orjson
 import pyarrow as pa
 import pytest
@@ -62,7 +63,11 @@ def test_service_rejects_unsafe_paths(prepared_task: str, relative: str) -> None
         SamplingServiceConfig(Path(prepared_task).parent / "graph")
     )
     try:
-        request = {"kind": "epoch", "version": 6, "extension_ref": relative}
+        request = {
+            "kind": "epoch",
+            "version": diskgraph.SAMPLING_PROTOCOL_VERSION,
+            "extension_ref": relative,
+        }
         with pytest.raises((flight.FlightServerError, pa.ArrowInvalid)):
             RemoteTaskIterator(service.endpoint(), request)
         assert service.health()["active_streams"] == 0
@@ -154,7 +159,7 @@ def test_service_rejects_invalid_engine_seeds(prepared_task: str, seed: int) -> 
     )
     request = {
         "kind": "epoch",
-        "version": 6,
+        "version": diskgraph.SAMPLING_PROTOCOL_VERSION,
         "extension_ref": "train_tables/remote_test",
         "engine_seed": seed,
     }

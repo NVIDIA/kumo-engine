@@ -18,16 +18,27 @@ verification belong to the preparation layer. This gateway reads those files;
 it does not upload or register them. Missing extension metadata returns
 `FailedPrecondition` so the caller can finish materialization before retrying.
 
-Protocol version 6 uses a stable Arrow envelope containing JSON metadata and
-Arrow IPC components. A `DoGet` ticket contains one normalized epoch/shard
-request. The initial Arrow schema carries JSON metadata under `kumo.sampling`:
-`version`, `num_samples`, and `num_batches`. Every subsequent record batch contains
-sampling data; there are no iterator or end control batches. Flight EOF completes
-the stream, and the client validates its received count and final RPC status.
-The server also verifies that native iteration matches its advertised count.
+Protocol version 7 streams native Arrow component record batches. A `DoGet`
+ticket contains one normalized epoch/shard request. The initial empty Arrow
+schema carries JSON metadata under `kumo.sampling`: `version`, `num_samples`,
+and `num_batches`. Each component then sends its own schema, optional dictionaries,
+and record batch, allowing task arrays, targets, graph arrays and feature tables
+to have different schemas and row counts. Flight `app_metadata` identifies the
+logical batch, component position and component count; the first component's
+record batch also carries the small JSON layout that assembles the native batch.
+There are no binary wrapper columns, nested IPC streams, or iterator/end control
+record batches. Flight EOF completes the stream, and the client validates its
+received count and final RPC status. The server also verifies native counts.
+
+`diskgraph.SamplingClient` uses Rust's low-level `FlightDataDecoder`, which
+supports schema changes and resets dictionaries between schemas. The ordinary
+PyArrow Flight reader assumes a fixed schema and cannot read this protocol.
+The native client validates and assembles a complete minibatch before exposing
+its arrays and record batches through the Arrow C Data Interface to Python.
 
 A one-slot native output queue reserves capacity before sampling each batch.
-Batch envelopes retain the 64 MiB payload limit. Each client prefetches at most
+Each logical minibatch has a cumulative 64 MiB wire-payload limit, including
+component schemas, dictionaries and application metadata. Each client prefetches at most
 one decoded batch per server. When the trainer pauses, client prefetch and gRPC
 buffers fill, Flight stops draining the output queue, and the native producer
 waits for capacity. There are no application credit messages. These queue limits

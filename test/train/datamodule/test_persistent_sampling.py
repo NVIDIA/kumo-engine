@@ -1,19 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Shared runtime ownership and sampling envelope validation."""
+"""Shared runtime ownership and sampling stream lifetime."""
 
 from __future__ import annotations
 
 from collections.abc import Generator
-from test.train.datamodule.test_remote_sampling import _frame
 from typing import Any
 from unittest.mock import MagicMock
 
-import pyarrow as pa
 import pytest
 from kumo_core.diskgraph import remote_sampling as remote
-from kumo_core.diskgraph.sampling_protocol import decode_frame
 
 
 @pytest.fixture
@@ -77,25 +74,6 @@ def test_failed_worker_shutdown_still_closes_sampling_streams() -> None:
     with pytest.raises(OSError, match="cleanup failed"):
         module.shutdown_dataloader_workers()
     source.close.assert_called_once()
-
-
-@pytest.mark.parametrize("frame", [None, pa.record_batch({"wrong": [1]})])
-def test_frame_decoder_rejects_invalid_envelopes(frame: pa.RecordBatch | None) -> None:
-    """Reject missing and schema-mismatched Flight payloads."""
-    with pytest.raises(ValueError, match="envelope"):
-        decode_frame(frame)
-
-
-def test_frame_decoder_enforces_the_byte_budget(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Enforce the inbound budget before parsing JSON or Arrow components."""
-    from kumo_core.diskgraph import sampling_protocol
-
-    frame = _frame({"kind": "sample"}, [b"data"]).data
-    monkeypatch.setattr(sampling_protocol, "MAX_BATCH_BYTES", 1)
-    with pytest.raises(ValueError, match="64 MiB"):
-        decode_frame(frame)
 
 
 @pytest.mark.parametrize("mode", ["uncapped", "capped", "stage_targets", "grouped"])

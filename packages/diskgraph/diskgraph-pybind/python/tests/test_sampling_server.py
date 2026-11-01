@@ -105,3 +105,25 @@ def test_dropping_the_handle_releases_its_listener(graph: Path) -> None:
                 return
         time.sleep(0.01)
     raise AssertionError("Dropped embedded server retained its listening socket")
+
+
+def test_native_client_close_is_idempotent_and_prevents_new_requests() -> None:
+    """Closing a lazy native client needs no listener and prohibits future RPCs."""
+    client = diskgraph.SamplingClient("grpc://127.0.0.1:1")
+    client.close()
+    client.close()
+    with pytest.raises(flight.FlightCancelledError, match="closed"):
+        client.open(b"{}")
+
+
+def test_native_client_preserves_server_argument_errors(graph: Path) -> None:
+    """Native client failures retain the familiar PyArrow exception types."""
+    import pyarrow as pa
+
+    with diskgraph.SamplingServer(graph) as server:
+        client = diskgraph.SamplingClient(server.endpoint())
+        try:
+            with pytest.raises(pa.ArrowInvalid):
+                client.open(b"{")
+        finally:
+            client.close()

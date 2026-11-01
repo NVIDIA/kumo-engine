@@ -187,6 +187,7 @@ use diskgraph_engine::state::{SamplingState, StatePool};
 
 mod artifact_helpers;
 mod sampling_server;
+mod sampling_client;
 mod bp_col_stats;
 mod col_stats_export;
 mod custom_tt_entry;
@@ -1575,6 +1576,9 @@ fn validated_index_resume_progress(output_dir: &str) -> PyResult<Option<Vec<Stri
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<sampling_server::PySamplingServer>()?;
+    m.add_class::<sampling_client::PySamplingClient>()?;
+    m.add_class::<sampling_client::PySamplingStream>()?;
+    m.add("SAMPLING_PROTOCOL_VERSION", diskgraph_gateway::SAMPLING_PROTOCOL_VERSION)?;
     if let Ok(handle) = pyo3_log::try_init() {
         let _ = PYTHON_LOGGER.set(handle);
     }

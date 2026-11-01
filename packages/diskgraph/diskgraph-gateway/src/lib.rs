@@ -28,14 +28,17 @@ use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
+mod client;
 mod encoding;
 mod paths;
 mod protocol;
 mod runtime;
 mod server;
+pub use client::{DecodedBatch, SamplingClient, SamplingStream};
 use encoding::BatchEncoder;
 use paths::task_path;
-use protocol::{envelope, MAX_BATCH_BYTES, VERSION};
+pub use protocol::VERSION as SAMPLING_PROTOCOL_VERSION;
+use protocol::{ComponentMetadata, MAX_BATCH_BYTES, VERSION};
 use runtime::{runtime_error, TaskRequest};
 pub use server::{SamplingServer, ServerConfig};
 
@@ -129,28 +132,77 @@ impl Output {
         }
         Ok(permit)
     }
-    fn reserved_batch(
-        &self,
+    fn components(
+        &mut self,
         permit: mpsc::OwnedPermit<Result<FlightData, Status>>,
-        batch: RecordBatch,
+        batch_id: u64,
+        value: Value,
+        parts: Vec<RecordBatch>,
     ) -> Result<(), Status> {
         if self.tx.is_closed() || *self.stop.borrow() {
             return Err(Status::cancelled("Consumer closed"));
         }
-        let (dictionaries, data) = IpcDataGenerator::default()
-            .encode(
-                &batch,
-                &mut DictionaryTracker::new(false),
-                &IpcWriteOptions::default(),
-                &mut CompressionContext::default(),
-            )
-            .map_err(|error| Status::internal(error.to_string()))?;
-        if !dictionaries.is_empty() {
-            return Err(Status::internal(
-                "Task envelopes must not contain dictionaries",
-            ));
+        let num_components = parts.len();
+        let mut value = Some(value);
+        let mut permit = Some(permit);
+        let mut size = 0;
+        for (component_id, batch) in parts.into_iter().enumerate() {
+            let tag = ComponentMetadata {
+                batch_id,
+                component_id,
+                num_components,
+                value: None,
+            };
+            let metadata = serde_json::to_vec(&tag).unwrap();
+            let options = IpcWriteOptions::default();
+            let generator = IpcDataGenerator::default();
+            let mut dictionaries = DictionaryTracker::new(false);
+            let mut schema: FlightData = generator
+                .schema_to_bytes_with_dictionary_tracker(
+                    &batch.schema(),
+                    &mut dictionaries,
+                    &options,
+                )
+                .into();
+            schema.app_metadata = metadata.clone().into();
+            let (dictionaries, data) = generator
+                .encode(
+                    &batch,
+                    &mut dictionaries,
+                    &options,
+                    &mut CompressionContext::default(),
+                )
+                .map_err(|error| Status::internal(error.to_string()))?;
+            let mut messages = vec![schema];
+            messages.extend(dictionaries.into_iter().map(|data| {
+                let mut frame: FlightData = data.into();
+                frame.app_metadata = metadata.clone().into();
+                frame
+            }));
+            let mut frame: FlightData = data.into();
+            frame.app_metadata = serde_json::to_vec(&ComponentMetadata {
+                value: value.take(),
+                ..tag
+            })
+            .unwrap()
+            .into();
+            messages.push(frame);
+            for message in messages {
+                size += message.data_header.len()
+                    + message.data_body.len()
+                    + message.app_metadata.len();
+                if size > MAX_BATCH_BYTES {
+                    return Err(Status::resource_exhausted(
+                        "Task batch exceeds 64 MiB; reduce batch size or fanout",
+                    ));
+                }
+                if let Some(permit) = permit.take() {
+                    permit.send(Ok(message));
+                } else {
+                    self.send(message)?;
+                }
+            }
         }
-        permit.send(Ok(data.into()));
         Ok(())
     }
 }
@@ -253,13 +305,7 @@ fn epoch(
             let value = encoder
                 .batch(batch)
                 .map_err(|error| Status::resource_exhausted(error.to_string()))?;
-            output.reserved_batch(
-                permit,
-                envelope(
-                    json!({"kind":"batch","batch_id":lease.count,"value":value}),
-                    encoder.parts,
-                )?,
-            )?;
+            output.components(permit, lease.count, value, encoder.parts)?;
             lease.count += 1;
             let total = state.batches.fetch_add(1, Ordering::Relaxed) + 1;
             if total == 1 || total.is_multiple_of(100) {
@@ -458,6 +504,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn output_streams_dictionary_and_nested_columns_as_native_arrow() {
+        use arrow_array::{
+            types::{Int32Type, Int64Type},
+            ArrayRef, DictionaryArray, ListArray,
+        };
+        use arrow_flight::decode::{DecodedPayload, FlightDataDecoder};
+        use futures::StreamExt;
+        let batch = RecordBatch::try_from_iter([
+            (
+                "category",
+                Arc::new(DictionaryArray::<Int32Type>::from_iter([
+                    Some("a"),
+                    Some("b"),
+                ])) as ArrayRef,
+            ),
+            (
+                "nested",
+                Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>([
+                    Some(vec![Some(1), None]),
+                    None,
+                ])) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let expected = batch.clone();
+        let (tx, rx) = mpsc::channel(1);
+        let (_stop, receiver) = watch::channel(false);
+        let producer = tokio::task::spawn_blocking(move || {
+            let mut output = Output { tx, stop: receiver };
+            let permit = output.reserve().unwrap();
+            output
+                .components(
+                    permit,
+                    0,
+                    json!({"task":{},"graphs":{},"raw_features":{}}),
+                    vec![batch],
+                )
+                .unwrap();
+        });
+        let mut decoder = FlightDataDecoder::new(
+            ReceiverStream::new(rx).map(|message| message.map_err(Into::into)),
+        );
+        assert!(matches!(
+            decoder.next().await.unwrap().unwrap().payload,
+            DecodedPayload::Schema(_)
+        ));
+        let data = decoder.next().await.unwrap().unwrap();
+        let tag: ComponentMetadata = serde_json::from_slice(&data.inner.app_metadata).unwrap();
+        assert_eq!(
+            (tag.batch_id, tag.component_id, tag.num_components),
+            (0, 0, 1)
+        );
+        assert!(tag.value.is_some());
+        let DecodedPayload::RecordBatch(batch) = data.payload else {
+            panic!("Expected native Arrow batch")
+        };
+        assert_eq!(batch, expected);
+        assert!(decoder.next().await.is_none());
+        producer.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn full_output_queue_reserves_capacity_before_production() {
         let (tx, mut rx) = mpsc::channel(1);
         tx.try_send(Ok(FlightData::default())).unwrap();
@@ -468,7 +576,14 @@ mod tests {
             let permit = output.reserve().unwrap();
             produced.send(()).unwrap();
             output
-                .reserved_batch(permit, envelope(json!({"kind":"batch"}), vec![]).unwrap())
+                .components(
+                    permit,
+                    0,
+                    json!({}),
+                    vec![RecordBatch::new_empty(std::sync::Arc::new(
+                        arrow_schema::Schema::empty(),
+                    ))],
+                )
                 .unwrap();
         });
         assert!(
@@ -481,6 +596,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        rx.recv().await.unwrap().unwrap();
         rx.recv().await.unwrap().unwrap();
         producer.await.unwrap();
         drop(stop);

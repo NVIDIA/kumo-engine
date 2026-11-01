@@ -4,6 +4,9 @@
 
 from ._c import (
     SamplingServer,
+    SamplingClient,
+    SamplingStream,
+    SAMPLING_PROTOCOL_VERSION,
     export_tt_artifacts,
     convert_kumo_config,
     ingest,
@@ -112,6 +115,9 @@ def __getattr__(name):
 
 __all__ = [
     "SamplingServer",
+    "SamplingClient",
+    "SamplingStream",
+    "SAMPLING_PROTOCOL_VERSION",
     "export_tt_artifacts",
     "convert_kumo_config",
     "ingest",

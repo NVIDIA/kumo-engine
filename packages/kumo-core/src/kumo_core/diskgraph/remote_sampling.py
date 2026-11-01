@@ -19,14 +19,9 @@ from typing import Any
 
 import orjson
 import pyarrow as pa
+from diskgraph import SAMPLING_PROTOCOL_VERSION, SamplingClient, SamplingStream
 from diskgraph.runtime_batch_iterator import RuntimeIndex
 from pyarrow import flight
-
-from kumo_core.diskgraph.sampling_protocol import (
-    SAMPLING_VERSION,
-    decode_frame,
-    decode_stream_metadata,
-)
 
 _NATIVE_ARGUMENTS = (
     "stage_table",
@@ -60,38 +55,16 @@ _NATIVE_ARGUMENTS = (
 )
 
 
-def _decode(value: Any, components: list[bytes]) -> Any:
-    if isinstance(value, dict):
-        if set(value) == {"__arrow__", "array"} and type(value["array"]) is bool:
-            slot = value["__arrow__"]
-            if type(slot) is not int or not 0 <= slot < len(components):
-                raise ValueError("Invalid Arrow component reference")
-            with pa.ipc.open_stream(components[slot]) as reader:
-                batches = list(reader)
-            if len(batches) != 1:
-                raise ValueError("Expected one record batch per Arrow component")
-            batch = batches[0]
-            if value["array"]:
-                if batch.num_columns != 1:
-                    raise ValueError("Array component must contain one column")
-                return batch.column(0)
-            return batch
-        return {key: _decode(item, components) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_decode(item, components) for item in value]
-    return value
-
-
 class RemoteTaskIterator(Iterator[dict[str, Any]]):
     """Own one Flight stream and reject incomplete epochs.
 
     Args:
         endpoint: Flight URI of the gateway serving the immutable graph.
         request: Versioned native iterator request.
+        client: Optional shared native connection; the caller retains ownership.
 
     Raises:
-        ValueError: If schema metadata, batch framing or completion counts are invalid.
-        TypeError: If frame metadata is not an object.
+        ValueError: If native component metadata or completion counts are invalid.
         flight.FlightError: If the gateway rejects or interrupts the request.
     """
 
@@ -100,27 +73,18 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
         endpoint: str,
         request: dict[str, Any],
         *,
-        client: flight.FlightClient | None = None,
+        client: SamplingClient | None = None,
     ) -> None:
         """Open a stream and validate its initial metadata."""
         self._owns_client = client is None
-        self._client = client or flight.FlightClient(
-            endpoint,
-            generic_options=[("grpc.max_receive_message_length", 128 * 1024**2)],
-        )
-        self._reader: flight.FlightStreamReader | None = None
+        self._client = client or SamplingClient(endpoint)
+        self._reader: SamplingStream | None = None
         self._closed = False
-        self._batches = 0
         self._owner: RemoteRuntimeIndex | None = None
         try:
             payload = orjson.dumps(request, option=orjson.OPT_SERIALIZE_NUMPY)
-            self._reader = self._client.do_get(
-                flight.Ticket(payload),
-                options=flight.FlightCallOptions(timeout=3600),
-            )
-            self._num_samples, self._expected_batches = decode_stream_metadata(
-                self._reader.schema
-            )
+            self._reader = self._client.open(payload)
+            self._num_samples = self._reader.num_samples
         except BaseException:
             self.close()
             raise
@@ -135,32 +99,7 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
             raise StopIteration
         try:
             assert self._reader is not None
-            try:
-                chunk = self._reader.read_chunk()
-            except StopIteration as error:
-                if self._batches != self._expected_batches:
-                    raise ValueError(
-                        "Incomplete task stream: expected "
-                        f"{self._expected_batches} batches, received {self._batches}"
-                    ) from error
-                raise
-            metadata, components = decode_frame(chunk.data)
-            if (
-                metadata.get("kind") != "batch"
-                or type(metadata.get("batch_id")) is not int
-                or metadata.get("batch_id") != self._batches
-                or self._batches >= self._expected_batches
-            ):
-                raise ValueError("Invalid task batch sequence")
-            value = _decode(metadata.get("value"), components)
-            if not isinstance(value, dict) or set(value) != {
-                "task",
-                "graphs",
-                "raw_features",
-            }:
-                raise ValueError("Invalid task batch contents")
-            self._batches += 1
-            return value
+            return next(self._reader)
         except BaseException:
             self.close()
             raise
@@ -179,7 +118,7 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
             self._owner = None
         try:
             if self._reader is not None:
-                self._reader.cancel()
+                self._reader.close()
         finally:
             if self._owns_client:
                 self._client.close()
@@ -234,7 +173,7 @@ class RemotePushIterator(Iterator[dict[str, Any]]):
                 }
                 request = {
                     "kind": "epoch",
-                    "version": SAMPLING_VERSION,
+                    "version": SAMPLING_PROTOCOL_VERSION,
                     "extension_ref": extension_ref,
                     "engine_seed": owner._rnd_seed,
                     "num_threads": owner._num_threads or 1,
@@ -350,20 +289,17 @@ class RemoteRuntimeIndex(RuntimeIndex):
             raise ValueError("Sampling endpoints must be unique")
         self.endpoint = self.endpoints[0]
         self._streams: set[RemotePushIterator | RemoteTaskIterator] = set()
-        self._clients: dict[str, flight.FlightClient] = {}
+        self._clients: dict[str, SamplingClient] = {}
 
     @property
-    def client(self) -> flight.FlightClient:
+    def client(self) -> SamplingClient:
         """Return the first replica's connection for single-endpoint callers."""
         return self._client_for(self.endpoint)
 
-    def _client_for(self, endpoint: str) -> flight.FlightClient:
+    def _client_for(self, endpoint: str) -> SamplingClient:
         client = self._clients.get(endpoint)
         if client is None:
-            client = flight.FlightClient(
-                endpoint,
-                generic_options=[("grpc.max_receive_message_length", 128 * 1024**2)],
-            )
+            client = SamplingClient(endpoint)
             self._clients[endpoint] = client
         return client
 

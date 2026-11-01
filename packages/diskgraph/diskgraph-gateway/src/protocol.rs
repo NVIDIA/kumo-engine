@@ -2,84 +2,57 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Versioned Arrow envelopes shared with the Python Flight client.
-use arrow_array::{
-    builder::{BinaryBuilder, ListBuilder},
-    BinaryArray, RecordBatch,
-};
-use arrow_schema::{DataType, Field, Schema};
+//! Native Flight schema changes and per-component metadata.
+use arrow_schema::Schema;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
-use tonic::Status;
 
-pub(crate) const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 pub(crate) const STREAM_METADATA_KEY: &str = "kumo.sampling";
 pub(crate) const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 
-pub(crate) fn schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("metadata", DataType::Binary, false),
-        Field::new(
-            "components",
-            DataType::List(Arc::new(Field::new("item", DataType::Binary, true))),
-            false,
-        ),
-    ]))
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StreamMetadata {
+    pub version: u32,
+    pub num_samples: u64,
+    pub num_batches: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ComponentMetadata {
+    pub batch_id: u64,
+    pub component_id: usize,
+    pub num_components: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
 }
 
 pub(crate) fn stream_schema(num_samples: u64, num_batches: u64) -> Arc<Schema> {
-    let metadata = serde_json::json!({
-        "version": VERSION, "num_samples": num_samples, "num_batches": num_batches
-    });
-    Arc::new(schema().as_ref().clone().with_metadata(HashMap::from([(
+    let metadata = StreamMetadata {
+        version: VERSION,
+        num_samples,
+        num_batches,
+    };
+    Arc::new(Schema::empty().with_metadata(HashMap::from([(
         STREAM_METADATA_KEY.into(),
-        metadata.to_string(),
+        serde_json::to_string(&metadata).unwrap(),
     )])))
-}
-
-pub(crate) fn envelope(metadata: Value, parts: Vec<Vec<u8>>) -> Result<RecordBatch, Status> {
-    let metadata = metadata.to_string();
-    if metadata.len() + parts.iter().map(Vec::len).sum::<usize>() > MAX_BATCH_BYTES {
-        return Err(Status::resource_exhausted(
-            "Task batch exceeds 64 MiB; reduce batch size or fanout",
-        ));
-    }
-    let mut builder = ListBuilder::new(BinaryBuilder::new());
-    for part in parts {
-        builder.values().append_value(part);
-    }
-    builder.append(true);
-    RecordBatch::try_new(
-        schema(),
-        vec![
-            Arc::new(BinaryArray::from(vec![metadata.as_bytes()])),
-            Arc::new(builder.finish()),
-        ],
-    )
-    .map_err(|error| Status::internal(error.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     #[test]
-    fn stream_schema_carries_counts_without_changing_batch_fields() {
+    fn stream_schema_carries_counts_without_fake_data_columns() {
         let result = stream_schema(17, 3);
-        assert_eq!(result.fields(), schema().fields());
-        let metadata: Value =
+        assert!(result.fields().is_empty());
+        let metadata: StreamMetadata =
             serde_json::from_str(&result.metadata()[STREAM_METADATA_KEY]).unwrap();
-        assert_eq!(
-            metadata,
-            json!({"version":VERSION,"num_samples":17,"num_batches":3})
-        );
-        let empty = stream_schema(0, 0);
-        let metadata: Value = serde_json::from_str(&empty.metadata()[STREAM_METADATA_KEY]).unwrap();
-        assert_eq!(metadata["num_batches"], 0);
-    }
-    #[test]
-    fn rejects_payloads_that_exceed_the_frame_budget() {
-        let error = envelope(json!({"kind":"batch"}), vec![vec![0; MAX_BATCH_BYTES]]).unwrap_err();
-        assert_eq!(error.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(metadata.version, VERSION);
+        assert_eq!(metadata.num_samples, 17);
+        assert_eq!(metadata.num_batches, 3);
     }
 }

@@ -3,9 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Encode native task batches without constructing Python objects.
-use crate::protocol::MAX_BATCH_BYTES;
 use arrow_array::{ArrayRef, RecordBatch};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Schema};
 use diskgraph_engine::output::{GraphChannel, RuntimeBatch};
 use serde_json::{json, Value};
@@ -13,25 +11,13 @@ use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct BatchEncoder {
-    pub(crate) parts: Vec<Vec<u8>>,
-    bytes: usize,
+    pub(crate) parts: Vec<RecordBatch>,
 }
 impl BatchEncoder {
-    fn record_batch(&mut self, batch: &RecordBatch, array: bool) -> anyhow::Result<Value> {
-        let mut payload = Vec::new();
-        {
-            let mut writer = StreamWriter::try_new(&mut payload, &batch.schema())?;
-            writer.write(batch)?;
-            writer.finish()?;
-        }
-        self.bytes += payload.len();
-        anyhow::ensure!(
-            self.bytes <= MAX_BATCH_BYTES,
-            "Task batch exceeds 64 MiB; reduce batch size or fanout"
-        );
+    fn record_batch(&mut self, batch: &RecordBatch, array: bool) -> Value {
         let slot = self.parts.len();
-        self.parts.push(payload);
-        Ok(json!({"__arrow__":slot,"array":array}))
+        self.parts.push(batch.clone());
+        json!({"__arrow__":slot,"array":array})
     }
     fn array(&mut self, array: impl Into<ArrayRef>) -> anyhow::Result<Value> {
         let array = array.into();
@@ -40,7 +26,7 @@ impl BatchEncoder {
             array.data_type().clone(),
             true,
         )]));
-        self.record_batch(&RecordBatch::try_new(schema, vec![array])?, true)
+        Ok(self.record_batch(&RecordBatch::try_new(schema, vec![array])?, true))
     }
     pub(crate) fn batch(&mut self, batch: RuntimeBatch) -> anyhow::Result<Value> {
         use arrow_array::{BooleanArray, Float32Array, Int64Array, UInt32Array, UInt64Array};
@@ -87,7 +73,7 @@ impl BatchEncoder {
             );
         }
         if let Some(target) = task.target {
-            t.insert("target".into(), self.record_batch(&target, false)?);
+            t.insert("target".into(), self.record_batch(&target, false));
         }
         t.insert("amount_m".into(), json!(task.amount_m));
         t.insert("num_positives".into(), json!(task.num_positives));
@@ -126,7 +112,7 @@ impl BatchEncoder {
                 .batches
                 .iter()
                 .map(|b| self.record_batch(b, false))
-                .collect::<anyhow::Result<Vec<_>>>()?;
+                .collect::<Vec<_>>();
             features.insert(name.clone(), json!({"key":name,"num_rows":bank.batches.iter().map(RecordBatch::num_rows).sum::<usize>(),"record_batches":records}));
         }
         Ok(json!({"task":t,"graphs":graphs,"raw_features":features}))
@@ -182,10 +168,8 @@ impl BatchEncoder {
 mod tests {
     use super::*;
     use crate::paths::resolve_beneath;
-    use crate::protocol::envelope;
     use crate::runtime::TaskOptions;
-    use arrow_array::{Array, Int64Array, ListArray};
-    use arrow_ipc::reader::StreamReader;
+    use arrow_array::Int64Array;
     use diskgraph_engine::output::{RawFeatureBank, TaskBag};
     use std::collections::HashMap;
 
@@ -231,17 +215,11 @@ mod tests {
         assert!(value["graphs"]["main"]["node_ids"]["users"].is_object());
         assert_eq!(value["raw_features"]["users"]["num_rows"], 1);
         let slot = value["task"]["target"]["__arrow__"].as_u64().unwrap() as usize;
-        let mut reader =
-            StreamReader::try_new(std::io::Cursor::new(&encoder.parts[slot]), None).unwrap();
-        assert_eq!(reader.next().unwrap().unwrap(), target);
-        let wrapped = envelope(json!({"kind":"batch","value":value}), encoder.parts).unwrap();
-        assert_eq!(wrapped.num_rows(), 1);
-        let components = wrapped
-            .column(1)
-            .as_any()
-            .downcast_ref::<ListArray>()
-            .unwrap();
-        assert!(!components.value(0).is_empty());
+        assert_eq!(encoder.parts[slot], target);
+        assert_eq!(
+            encoder.parts[slot].column(0).data_type(),
+            &arrow_schema::DataType::Int64
+        );
     }
 
     #[test]

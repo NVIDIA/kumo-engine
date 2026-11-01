@@ -199,3 +199,11 @@ readiness. `close()` cancels streams and joins the listener while releasing the
 GIL. Dropping a handle signals asynchronous shutdown; use explicit close or the
 context manager for deterministic cleanup. Configure Python logging before
 starting the server to receive native lifecycle and progress events.
+
+`diskgraph.SamplingClient(endpoint).open(ticket_bytes)` opens an epoch shard and
+returns a `SamplingStream` with `num_samples`, `num_batches`, iteration and
+`close()`. The Rust client accepts component schema changes and exports complete
+native batches through the Arrow C Data Interface. Closing a client cancels its
+streams; closing a stream interrupts blocked reads. Network reads release the
+GIL. The standard PyArrow Flight reader assumes one schema and cannot consume
+this component protocol. See the [gateway contract](../diskgraph-gateway/README.md).
