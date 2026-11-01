@@ -18,7 +18,6 @@ from typing import (
     Any,
     Callable,
     Dict,
-    Iterator,
     List,
     Mapping,
     Optional,
@@ -576,14 +575,6 @@ def _rank() -> int:
         if os.environ.get(name, '').strip() not in ('', '0'):
             return 1
     return 0
-
-
-def _flatten(value: Any, prefix: str = '') -> Iterator[Tuple[str, Any]]:
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            yield from _flatten(item, f'{prefix}{key}.')
-    else:
-        yield prefix[:-1], value
 
 
 def _param_value(value: Any) -> str:

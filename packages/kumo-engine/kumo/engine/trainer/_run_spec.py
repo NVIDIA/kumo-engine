@@ -7,12 +7,12 @@ import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Iterator, Mapping, Optional, Sequence, Tuple
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.summaries import Summary
 
-from kumo.engine._tracking import RunSpec, _flatten
+from kumo.engine._tracking import RunSpec
 from kumo.engine._version import __version__
 
 
@@ -78,3 +78,11 @@ def _registered(model: Any, alias: Optional[str]) -> Mapping[str, Any]:
         return {}
     return {'model_name': model.name, 'model_version': model.version,
             'model_alias': alias}
+
+
+def _flatten(value: Any, prefix: str = '') -> Iterator[Tuple[str, Any]]:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            yield from _flatten(item, f'{prefix}{key}.')
+    else:
+        yield prefix[:-1], value
