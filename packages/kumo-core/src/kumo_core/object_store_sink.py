@@ -100,7 +100,6 @@ def file_sizes(filesystem: FileSystem, directory: str) -> dict[str, int]:
     }
 
 
-
 class ObjectStoreSinkBackend(ABC):
     scheme: str
     provider: str
