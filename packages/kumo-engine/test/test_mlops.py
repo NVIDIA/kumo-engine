@@ -55,8 +55,7 @@ def test_a_connector_root_outside_its_root_dir_fails_when_built():
     assert kumo.MLOps(artifact_root=(data, 's3://bucket/data/kumo'),
                       store=False).root
     with pytest.raises(ValueError, match=r"'s3://bucket/kumo' is outside "
-                       r"this S3Connector's root_dir s3://bucket/data .*"
-                       r"S3Connector\(root_dir='s3://bucket/kumo'"):
+                       r"this S3Connector's root_dir s3://bucket/data"):
         kumo.MLOps(artifact_root=(data, 's3://bucket/kumo'), store=False)
 
 

@@ -51,7 +51,6 @@ def make_snapshot(tmp_path, monkeypatch):
                 'EID': np.arange(events),
                 'ENT_ID': np.arange(events) % 5,
             }).to_parquet(data / 'events.parquet')
-            # Single-file versions are mtime seconds.
             stamp = 1.7e9 + events
             os.utime(data / 'events.parquet', (stamp, stamp))
         connector = FileConnector(root_dir=str(data))
