@@ -47,9 +47,9 @@ def _address(connector: SourceConnector, path: Optional[str],
                                               schema=config.schema_name)
     if len(name) > 255 or _UC_FORBIDDEN.search(name):
         raise ValueError(
-            f'Unity Catalog cannot register a model named {name!r}: use at '
-            f'most 255 characters with no space, "/", "." or control '
-            f"character, e.g. 'users_churn'.")
+            f'Unity Catalog cannot register a model named {name!r}: use up to '
+            f'255 characters without spaces, "/" or ".", e.g. '
+            f"'users_churn'.")
     return f'{config.catalog}.{schema}.{name}'
 
 
@@ -338,8 +338,7 @@ class DatabricksModelRegistryMixin(_DatabricksSessions):
     """Publish, discover and reload bundles; prediction remains in Kumo."""
     def check_model_location(self, connector: SourceConnector,
                              location: ModelRegistryLocation) -> None:
-        """Raise ``ValueError`` unless ``location`` names a model this
-        connector's catalog and schema can hold."""
+        """Raises ``ValueError`` unless this schema can hold ``location``."""
         _address(connector, None, location)
 
     def publish_model(

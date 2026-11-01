@@ -21,9 +21,7 @@ class S3SinkBackend(S3Sessions, ObjectStoreSinkBackend):
         return f'{type(self).__name__}(identity={self._identity!r})'
 
     def delete_file(self, connector: Any, path: str) -> None:
-        r"""Deletes the object at ``path`` (``<bucket>/<key>``). Unlike
-        pyarrow's delete, which recreates an emptied parent as a zero-byte
-        ``<prefix>/`` object, this leaves no object behind."""
+        r"""Delete ``path`` (``<bucket>/<key>``) leaving no ``<prefix>/`` object."""
         bucket, _, key = path.partition('/')
         session, _, connection = self._resolved_session(connector, bucket)
         if isinstance(session, S3FileSystem):

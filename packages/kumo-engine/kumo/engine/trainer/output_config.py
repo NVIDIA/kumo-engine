@@ -142,8 +142,7 @@ class TrainingTableOutputConfig:
 
 @dataclass(frozen=True)
 class SnapshotOutputConfig:
-    """Export a graph snapshot under ``path`` via ``connector``, a file
-    destination (`GraphSnapshot.export`)."""
+    """Where `GraphSnapshot.export` writes."""
 
     connector: Connector
     path: str
@@ -163,8 +162,7 @@ class ModelOutputConfig:
 
 
 def check_model_location(config: ModelOutputConfig) -> None:
-    """Raises ``ValueError`` unless ``config.location`` holds an alias and
-    a model name its registry accepts."""
+    """Raises ``ValueError`` unless ``config.location`` is registrable."""
     location = config.location
     if location is None:
         return

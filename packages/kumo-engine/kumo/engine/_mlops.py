@@ -35,43 +35,22 @@ class _Root:
     _uri: str
 
     def location(self, relative: str) -> str:
-        r"""``relative`` as a path on :attr:`connector`."""
         base = self.path.rstrip('/')
         return f'{base}/{relative}' if base else relative
 
     def uri(self, relative: str) -> str:
-        r"""``relative`` as a full URI or path, for messages and records."""
         return f"{self._uri.rstrip('/')}/{relative}"
 
 
 @dataclass(frozen=True)
 class MLOps:
-    r"""Where artifacts go and what records them, for :func:`mlops` blocks
-    and ``mlops=`` arguments.
+    r"""Where artifacts go and what records them.
 
     Args:
-        artifact_root: an ``s3://``, ``gs://``, ``file://`` or local path
-            (``/Volumes/...`` on a Databricks cluster), or a ``(connector,
-            path)`` pair for a store a URI cannot reach, such as a volume
-            through a ``DatabricksConnector`` or a Snowflake stage.
-        tracking: the experiment tracker, a
-            ``kumo.engine.tracking.Tracking``. Its ``check(registry)``, if
-            any, runs here, so a server or registry that is unreachable or
-            refuses these credentials fails before any work.
-        registry: a ``ModelRegistryLocation`` each fit registers its model
-            at, in the tracker's registry: MLflow's (Unity Catalog, SageMaker
-            MLflow) for ``MlflowTracking``, the Snowflake Model Registry for
-            ``SnowflakeTracking``.
-        store: the artifact kinds stored under the root when produced
-            (``snapshot``, ``training_table``, ``model``, ``prediction``);
-            ``True`` for all, ``False`` for none.
-        on_error: what a failure to track a run or register a model does:
-            ``'warn'`` warns and the call returns; ``'raise'`` raises once
-            the call has finished and stored its result, with the failure as
-            the cause.
-
-    In ``load_from_connector`` calls, an ``MLOps`` stands in for the
-    connector, with paths relative to its artifact root.
+        artifact_root: a URI, local path or ``(connector, path)`` pair.
+        registry: where each fit registers its model, through the tracker.
+        store: artifact kinds to store; ``True`` for all, ``False`` none.
+        on_error: ``'warn'`` or ``'raise'`` when tracking or registry fails.
     """
 
     artifact_root: Union[str, Tuple[Any, str]]
@@ -147,9 +126,8 @@ class MLOps:
         connector = None if tracker is None else tracker.connector
         if connector is None:
             raise ValueError(
-                'registry= registers through the tracker: pass '
-                'tracking=MlflowTracking(...) or SnowflakeTracking(connector, '
-                '...).')
+                'registry= needs tracking=MlflowTracking(...) or '
+                'SnowflakeTracking(connector, ...).')
         check_model_location(ModelOutputConfig(connector, location=registry))
 
     def snapshot_uri(self, snapshot: Any) -> str:
@@ -157,7 +135,6 @@ class MLOps:
         return self.root.uri(snapshot_path(snapshot))
 
     def wants(self, kind: str) -> bool:
-        r"""Whether artifacts of ``kind`` are stored under the root."""
         return kind in self.kinds
 
     def locate(self, path: Path, kind: Type[M], relative: str) -> Optional[M]:
@@ -185,9 +162,7 @@ def _require_within_root(connector: Any, path: str) -> None:
         name = type(connector).__name__
         raise ValueError(
             f'artifact_root {path!r} is outside this {name}\'s {within} '
-            f'({error}), so nothing could be stored there. Give the root '
-            f'a connector that contains it: ({name}(root_dir={path!r}, '
-            f'identity=...), {path!r}).') from error
+            f'({error}); give it a connector that contains it.') from error
 
 
 def _require_writable(root: _Root) -> None:
@@ -210,7 +185,7 @@ def _require_writable(root: _Root) -> None:
             return
         try:
             filesystem.open_output_stream(probe).close()
-        except FileNotFoundError:  # a store with directories, before first use
+        except FileNotFoundError:
             filesystem.create_dir(posixpath.dirname(probe), recursive=True)
             filesystem.open_output_stream(probe).close()
         delete = getattr(root.connector.sink_backend, 'delete_file', None)
@@ -220,10 +195,9 @@ def _require_writable(root: _Root) -> None:
             delete(root.connector, probe)
     except Exception as error:
         raise PermissionError(
-            f'kumo.MLOps cannot write under artifact_root '
-            f'{root.uri("")!r}: {type(error).__name__}: {error}. Grant this '
-            f'identity write and delete rights on it, or pick another '
-            f'root.') from error
+            f'kumo.MLOps cannot write under artifact_root {root.uri("")!r} '
+            f'({type(error).__name__}: {error}); grant write and delete '
+            f'rights or pick another root.') from error
 
 
 _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(
@@ -232,11 +206,7 @@ _CURRENT: contextvars.ContextVar[Optional[MLOps]] = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def mlops(settings: MLOps) -> Iterator[MLOps]:
-    r"""Turns MLOps on for the calls in the block (in this thread or asyncio
-    task): each snapshot, training table, model and prediction run is stored
-    under ``settings.artifact_root``. An inner block replaces an outer one;
-    an ``mlops=`` argument replaces both for its call. Runs are tracked and
-    models registered as ``settings`` says."""
+    r"""Turns MLOps on, as ``settings`` says, for the calls in the block."""
     if not isinstance(settings, MLOps):
         raise TypeError('kumo.mlops() takes a kumo.MLOps')
     token = _CURRENT.set(settings)
@@ -247,8 +217,7 @@ def mlops(settings: MLOps) -> Iterator[MLOps]:
 
 
 def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
-    r"""The settings a call runs with: its ``mlops=`` argument, else the
-    enclosing block's, else None (off)."""
+    r"""The ``mlops=`` argument, else the enclosing block's."""
     return settings if settings is not None else _CURRENT.get()
 
 
@@ -283,15 +252,13 @@ def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
 
 
 def on_root(source: Any, path: str) -> Tuple[Any, str]:
-    r"""The connector and path a ``load_from_connector(source, path=...)``
-    reads: an `MLOps` ``source`` reads ``path`` under its artifact root."""
+    r"""``path`` under an `MLOps` root, else ``source`` as given."""
     if isinstance(source, MLOps):
         return source.root.connector, source.root.location(path.lstrip('/'))
     return source, path
 
 
 def snapshot_path(snapshot: Any) -> str:
-    r"""Where a snapshot, or a snapshot id, is stored under a root."""
     snapshot_id = snapshot if isinstance(snapshot, str) else snapshot.id
     return 'snapshots/' + snapshot_id.replace('@', '/')
 
@@ -308,7 +275,6 @@ def snapshot_uri(snapshot: Any,
     settings = resolve(settings)
     if settings is None:
         raise ValueError(
-            'A snapshot given by object or id is read from the artifact '
-            'root: call this in a kumo.mlops block, or pass the location '
-            'snapshot.export(...) returned.')
+            'A snapshot object or id needs a kumo.mlops block; otherwise '
+            'pass the URI snapshot.export(...) returned.')
     return settings.snapshot_uri(snapshot)

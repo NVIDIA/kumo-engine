@@ -1,9 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""How `MlflowTracking` reaches its server: explicit credentials set exactly
-the state MLflow reads, only around each call; ambient ones set nothing. The
-last tests pin the MLflow and plugin internals this relies on."""
+r"""How `MlflowTracking` reaches its server."""
 
 import os
 import threading
@@ -62,8 +60,6 @@ def test_ambient_identities_set_no_credentials(monkeypatch, tracking_uri):
     target = resolve(_connector(DatabricksIdentity()))
     before = dict(os.environ)
     with target.scope():
-        # A profile or notebook identity: Unity Catalog registration
-        # downloads through the process-wide URI, so it points at Databricks.
         assert mlflow.get_tracking_uri() == 'databricks'
         assert {k: v for k, v in os.environ.items()
                 if k.startswith('DATABRICKS_')} == {'DATABRICKS_TOKEN': 'mine'}
@@ -99,7 +95,6 @@ def test_a_databricks_service_principal_lends_a_token_for_each_call(
     with target.scope():
         inside = {k: v for k, v in os.environ.items()
                   if k.startswith('DATABRICKS_')}
-        # Unity Catalog registration downloads through the global URI.
         assert mlflow.get_tracking_uri() == 'databricks'
     assert mlflow.get_tracking_uri() == previous
     assert inside == {'DATABRICKS_HOST': 'https://dbc.example',
@@ -194,7 +189,7 @@ def test_explicit_calls_take_turns(monkeypatch):
 
 def test_ambient_sagemaker_calls_see_its_uri_and_restore_the_global_one(
         tracking_uri, monkeypatch):
-    pytest.importorskip('sagemaker_mlflow')  # registers the arn store
+    pytest.importorskip('sagemaker_mlflow')
     from kumo.engine.integrations.mlflow import MlflowTracking
 
     seen = []
@@ -245,7 +240,7 @@ def test_an_unreachable_server_fails_when_mlops_is_built(
     with pytest.raises(RuntimeError, match='MLflow at http://127.0.0.1:9 '
                        'is not usable with these credentials'):
         kumo.MLOps(str(tmp_path), tracking=tracking)
-    with pytest.raises(ValueError, match='pass experiment_name'):
+    with pytest.raises(ValueError, match='needs experiment_name'):
         kumo.MLOps(str(tmp_path),
                    tracking=MlflowTracking(target='http://127.0.0.1:9'))
 
@@ -274,9 +269,6 @@ def test_a_missing_unity_catalog_schema_fails_when_mlops_is_built(
     integration.check_registry_schema('churn', 'databricks-uc')
     integration.check_registry_schema('a.b.c', 'sqlite:///x.db')
     assert len(calls) == 1
-
-
-# Pins: MLflow and plugin internals the code above relies on.
 
 
 def test_pin_set_tracking_uri_keeps_the_module_value(tracking_uri):
@@ -409,7 +401,7 @@ def test_kumo_calls_drop_mlflow_request_header_errors_only(caplog):
     headers = logging.getLogger('mlflow.tracking.request_header.registry')
     message = ('Encountered unexpected error during resolving request '
                'headers: %s')
-    headers.addHandler(caplog.handler)  # MLflow's loggers do not propagate
+    headers.addHandler(caplog.handler)
     try:
         with caplog.at_level('WARNING', logger=headers.name):
             with resolve('sqlite:///x.db').scope():

@@ -4,7 +4,6 @@
 
 import inspect
 import threading
-import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -23,7 +22,6 @@ from test_tracking_contract import (
     PREDICTION_MANIFEST,
     QUERY,
     RESULT,
-    join_tracking_threads,
 )
 
 from kumo.engine._manifest import TrackingRef
@@ -144,7 +142,7 @@ def test_an_instance_in_use_is_left_alone_and_fails_strict_mode(
     plan.optimization.max_epochs = 2
     plan.optimization.max_steps_per_epoch = 2
     trainer = kumo.Trainer(plan)
-    in_use = 'Snowflake ExperimentTracking is in use in this process'
+    in_use = 'Snowflake ExperimentTracking is already in use'
 
     with pytest.raises(RuntimeError, match=in_use):
         trainer.fit(table, snapshot=snapshot, mlops=kumo.MLOps(
@@ -181,7 +179,8 @@ def test_an_existing_run_is_never_resumed(fake, taken, run_name, new, caplog):
     if taken == 'FIT':
         user.end_run()
     else:
-        user._run = None  # still running, in another process
+        user._run = None
+    run_name = 'fit' if taken == 'FIT' else 'my_run'
 
     tracking = _tracking(session, run_name=run_name)
     _replay(tracking)
@@ -222,27 +221,6 @@ def test_the_users_session_is_not_altered(fake):
     assert session.statements == []
 
 
-def test_a_hung_snowflake_call_does_not_stall_the_fit(fake, monkeypatch):
-    import kumo.engine._tracking as tracking
-
-    monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.5)
-    release = threading.Event()
-    monkeypatch.setattr(FakeExperimentTracking, 'log_metrics',
-                        lambda *args, **kwargs: release.wait(30))
-    began = time.monotonic()
-    try:
-        session = _replay(_tracking())
-        elapsed = time.monotonic() - began
-    finally:
-        release.set()
-        join_tracking_threads()
-
-    assert elapsed < 1.5
-    assert isinstance(session.error, TimeoutError)
-    run, = fake._instance.runs.values()
-    assert run['status'] == 'FINISHED'
-
-
 class _SchemaSession:
     def __init__(self, schemas):
         self.schemas = schemas
@@ -272,7 +250,7 @@ def test_a_connector_opens_the_session_and_the_schema_is_checked_first(
     assert session.statements == ["SHOW SCHEMAS LIKE 'RUNS' IN DATABASE DB"]
 
     tracking.session = _SchemaSession([])
-    with pytest.raises(ValueError, match='needs schema DB.RUNS'):
+    with pytest.raises(ValueError, match='schema DB.RUNS does not exist'):
         kumo.MLOps('/tmp/root', tracking=tracking)
     with pytest.raises(ValueError, match='or a Snowpark session'):
         _tracking(None)

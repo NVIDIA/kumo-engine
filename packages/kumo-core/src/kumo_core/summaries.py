@@ -71,10 +71,7 @@ class Confusion:
 
 @dataclass(frozen=True)
 class Dataset:
-    r"""A source table: ``source`` its ``connector``, ``location``,
-    ``version`` and ``version_kind``; ``schema`` each column's ``stype`` and
-    ``dtype``; ``profile`` its rows and column statistics; ``context``
-    ``training`` or ``scoring``."""
+    r"""A source table's location, schema, profile and context."""
 
     name: str
     source: Mapping[str, Optional[str]]

@@ -229,7 +229,7 @@ def test_kumo_calls_drop_lightning_tips_and_only_those(caplog):
         rank_zero_info('GPU available: False')
 
     lightning = logging.getLogger('pytorch_lightning')
-    lightning.addHandler(caplog.handler)  # it does not propagate
+    lightning.addHandler(caplog.handler)
     try:
         with caplog.at_level('INFO', logger='pytorch_lightning'):
             fit()

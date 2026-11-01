@@ -46,7 +46,7 @@ def omit_none() -> Any:
 
 @dataclass(frozen=True)
 class Artifact:
-    r"""An artifact a manifest names, and how tracked runs tag it."""
+    """An artifact a manifest names."""
 
     kind: str
     id: str
@@ -62,13 +62,12 @@ class Artifact:
 
 @dataclass(frozen=True, kw_only=True)
 class Record:
-    """A JSON object; keys this version does not know are kept in ``extra``."""
+    """A JSON object that keeps unknown keys in ``extra``."""
 
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False,
                                      compare=False)
 
     def as_artifact(self, key: str) -> Optional[Artifact]:
-        r"""The artifact this record names as ``key``, if any."""
         return None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -156,13 +155,12 @@ class SourceTableEntry(Record):
                         version_kind=self.version_kind)
 
 
-#: The artifact kinds, as manifests and the artifact root name them.
 KINDS = ('snapshot', 'training_table', 'model', 'prediction')
 
 
 @dataclass(frozen=True, kw_only=True)
 class Manifest(Record):
-    """An artifact's record; a stub sets only kind, id and reconstructed."""
+    """An artifact's record."""
 
     kind: str = ''
     schema_version: int = SCHEMA_VERSION
@@ -172,9 +170,7 @@ class Manifest(Record):
     reconstructed: Optional[bool] = omit_none()
     location: Optional[str] = omit_none()
 
-    #: Fields left out where this manifest is embedded in a child's.
     EMBED_OMITS = ()
-    #: Whether this kind is data a run reads or writes.
     IS_DATASET: ClassVar[bool] = False
     URI_TAG: ClassVar[Optional[str]] = None
 
@@ -187,7 +183,7 @@ class Manifest(Record):
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
-    r"""``manifest``'s artifact and those it names, depth first, once each."""
+    """``manifest`` and the artifacts it names, once each."""
     found: Dict[Any, Artifact] = {}
     for artifact in _walk(manifest, manifest.kind, manifest):
         found.setdefault((artifact.kind, artifact.id), artifact)
@@ -212,7 +208,6 @@ def _walk(value: Any, key: str, root: Manifest) -> Iterator[Artifact]:
             yield from _walk(item, key, root)
 
 
-#: Connector kinds of the artifact root's URI schemes.
 _SCHEMES = {'s3': 'S3', 'gs': 'GCS', 'file': 'LOCAL_FILE', '': 'LOCAL_FILE'}
 
 Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
@@ -265,7 +260,6 @@ def stamp() -> Dict[str, Any]:
         environment=environment())
 
 
-#: Envelope fields for a manifest rebuilt after the fact.
 RECONSTRUCTED: Dict[str, Any] = dict(created_at=None, environment=None,
                                      reconstructed=True)
 
@@ -282,12 +276,12 @@ def _kinds() -> Dict[str, Type['Manifest']]:
 
 
 def stub(kind: str, id: str) -> 'Manifest':
-    """The manifest of a ``kind`` artifact known only by its ``id``."""
+    """A manifest knowing only ``kind`` and ``id``."""
     return _kinds()[kind](id=id, reconstructed=True)
 
 
 def embedded(manifest: M) -> M:
-    """``manifest`` without the fields a child's copy leaves out."""
+    """``manifest`` minus the fields a child's copy omits."""
     return replace(manifest, **{
         name: None
         for name in manifest.EMBED_OMITS
@@ -321,7 +315,7 @@ class SnapshotParents(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class SnapshotManifest(Manifest):
-    """The source tables and engine build a snapshot was made from."""
+    """The sources and engine build of a snapshot."""
 
     kind: str = 'snapshot'
     IS_DATASET: ClassVar[bool] = True
@@ -338,7 +332,7 @@ class TrainingTableParents(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class TrainingTableManifest(Manifest):
-    """The snapshot, query and rows a training table was made from."""
+    """The snapshot, query and rows of a training table."""
 
     kind: str = 'training_table'
     IS_DATASET: ClassVar[bool] = True
@@ -386,9 +380,7 @@ class TrackingRef(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class Dependency(Record):
-    r"""One thing a model needs to predict: its ``predictor`` entry point,
-    a ``package`` requirement, or an ``asset`` (content-addressed by
-    ``sha256``, loaded by ``entry_point``, stored at ``location``)."""
+    r"""A predictor, package or asset a model needs to predict."""
 
     kind: str
     name: str
@@ -417,11 +409,7 @@ class HoldoutStats(Record):
 
 @dataclass(frozen=True, kw_only=True)
 class ModelManifest(Manifest):
-    """How a model bundle was fitted: from which training table (embedded,
-    with its snapshot) and warm-start model, when, and with which fit
-    mode. Its ``id`` is the bundle id; ``dependencies`` is what predicting
-    needs besides the bundle and a snapshot (none listed: the built-in
-    `Trainer` predictor)."""
+    """How a model bundle was fitted; ``id`` is the bundle id."""
 
     kind: str = 'model'
     URI_TAG: ClassVar[Optional[str]] = 'kumo.bundle_uri'
@@ -514,8 +502,7 @@ class PredictionManifest(Manifest):
 
 @dataclass(frozen=True, kw_only=True)
 class AssetManifest(Manifest):
-    """An asset a model depends on, stored once under
-    ``<root>/assets/<asset_kind>/<sha256>/``; its ``id`` is the sha256."""
+    """An asset a model depends on; its ``id`` is the sha256."""
 
     kind: str = 'asset'
     asset_kind: Optional[str] = None

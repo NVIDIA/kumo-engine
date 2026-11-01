@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Snowflake Experiment Tracking (the ``snowflake`` extra)."""
+r"""Snowflake Experiment Tracking for `Trainer.fit`."""
 
 import logging
 import posixpath
@@ -44,25 +44,11 @@ _WARN_RUNS = 450
 
 
 class SnowflakeTracking(SingleRunHooks, TrackingBase):
-    r"""Records fits, prediction runs and monitoring calls in Snowflake
-    Experiment Tracking, one run each; tags are logged as params.
+    r"""Records each fit, prediction and monitoring call as a Snowflake run.
 
     Args:
-        source: a ``SnowflakeConnector``, whose identity opens the session
-            and whose Snowflake Model Registry ``kumo.MLOps(registry=...)``
-            registers models in; or a Snowpark session, which tracks only.
-            It needs CREATE EXPERIMENT on the schema, or MODIFY on an
-            existing experiment.
-        experiment_name: experiment for the fit run, created if missing.
-        database: `None` uses the session's current database.
-        schema_name: `None` uses the session's current schema, or ``PUBLIC``
-            when `database` is given or the session has none.
-        run_name: replaces ``<MODEL>_V<version>`` in each run's name.
-        tags: extra tags for the fit run.
-        native_model_lineage: keep the run open as a context for the whole
-            fit, so models registered meanwhile are linked to it.
-
-    ``run_id`` is the latest run's name. An experiment holds 500 runs.
+        source: a ``SnowflakeConnector``, or a Snowpark session (tracking only).
+        native_model_lineage: link models registered during the fit to its run.
     """
 
     platform = 'snowflake'
@@ -112,8 +98,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         self._dropped_params = 0
 
     def load_model(self, location: Any, **kwargs: Any) -> Any:
-        r"""The `Trainer` of the Snowflake Model Registry version
-        ``location`` names, through this tracker's connector."""
+        r"""The `Trainer` registered at ``location``."""
         from kumo.engine.trainer.trainer import Trainer
 
         if self.connector is None:
@@ -129,8 +114,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         return database, schema or 'PUBLIC'
 
     def check(self, registry: Any = None) -> None:
-        r"""Raises before any work unless the session can see the
-        experiment's schema (one metadata query, no warehouse)."""
+        r"""Raises unless the session can see the experiment's schema."""
         database, schema = self._location()
         if database is None:
             return
@@ -145,9 +129,8 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                 f'{type(error).__name__}: {error}') from error
         if not rows:
             raise ValueError(
-                f'Snowflake Experiment Tracking needs schema {database}.'
-                f'{schema}, which does not exist or this role '
-                f'cannot see.')
+                f'Snowflake schema {database}.{schema} does not exist or this '
+                f'role cannot see it.')
 
     def start(self, record: RunRecord) -> None:
         self._reset()
@@ -159,11 +142,9 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         elif (not hasattr(tracking, '_run') or tracking._run is not None
               or getattr(tracking, '_session', None) is not self.session):
             raise RuntimeError(
-                f'Snowflake ExperimentTracking is in use in this process, by '
-                f'an active run or another Snowpark session, so this '
-                f'{record.tags.get("kumo.kind")} run is not tracked in '
-                f'Snowflake; end that run, or pass SnowflakeTracking the '
-                f'session it uses')
+                f'Snowflake ExperimentTracking is already in use in this '
+                f'process, so this {record.tags.get("kumo.kind")} run is not '
+                f'tracked; end that run or pass its session.')
         self._tracking = tracking
         database, schema = self._location()
         experiment = tracking.set_experiment(self.experiment_name,
@@ -252,7 +233,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
                 self.experiment_name, runs, _MAX_RUNS)
 
     def _new_run_name(self, existing: List[str], run_name: str) -> str:
-        # start_run matches names as SQL LIKE patterns
+        # start_run matches name with LIKE.
         name, number = run_name, 1
         while _taken(name, existing):
             number += 1

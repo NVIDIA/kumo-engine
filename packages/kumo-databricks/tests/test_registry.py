@@ -227,7 +227,6 @@ class Client:
                 relative = key[len(path) + 1:]
                 child = relative.split('/')[0]
                 directory = '/' in relative
-                # The Files API lists directories with a trailing slash.
                 children[child] = SimpleNamespace(
                     path=f"{path}/{child}{'/' if directory else ''}",
                     is_directory=directory)

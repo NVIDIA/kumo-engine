@@ -21,8 +21,7 @@ CUSTOM_SQL_MAX_STALENESS_HOURS = 24
 
 
 class SourceVersion(str):
-    """A version string that also says what kind of evidence it is:
-    ``exact``, ``timestamp``, ``listing``, ``hour_bucket`` or ``unknown``."""
+    """A version string tagged with its evidence ``kind``."""
 
     kind: str
     dependencies: Mapping[str, str] | None

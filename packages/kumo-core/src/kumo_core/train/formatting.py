@@ -77,8 +77,7 @@ def _get_col_names(
 
 
 def prediction_output_columns(task_type: TaskType) -> list[str]:
-    r"""The prediction columns a scored row carries after its entity column,
-    for a target named ``TARGET`` and a time column named ``TIMESTAMP``."""
+    r"""The prediction columns a scored row carries after its entity."""
     if task_type in _CLASS_TASKS:
         return ['PREDICTED', 'CLASS', 'SCORE']
     if task_type.is_ranking:

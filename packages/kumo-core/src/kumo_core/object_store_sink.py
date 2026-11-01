@@ -503,11 +503,18 @@ class FilesystemSink(ObjectStoreSinkBackend):
 
 class FileStoreRouting:
     """Sends ``holds_files`` paths to :class:`FilesystemSink`, the rest on."""
+    def _rest(self, method):
+        rest = super()
+        if not hasattr(rest, method):
+            raise NotImplementedError(
+                f'{type(self).__name__} cannot {method} outside its files')
+        return rest
+
     def write_table(self, connector, table_name, frame,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
                     export_id=None):
         sink = FilesystemSink(self) if self.holds_files(
-            connector, table_name) else super()
+            connector, table_name) else self._rest('write_table')
         return sink.write_table(connector, table_name, frame, write_mode,
                                 project_id, export_id=export_id)
 
@@ -519,9 +526,9 @@ class FileStoreRouting:
                 connector, table_name, files, write_mode, project_id,
                 export_id=export_id, extra_columns=extra_columns,
                 sidecars=sidecars)
-        return super().write_files(connector, table_name, files, write_mode,
-                                   project_id, export_id=export_id,
-                                   extra_columns=extra_columns)
+        return self._rest('write_files').write_files(
+            connector, table_name, files, write_mode, project_id,
+            export_id=export_id, extra_columns=extra_columns)
 
     def publish_model(self, connector, bundle_dir, *, path=None, location=None,
                       metadata={}, metrics={}, project_id=None):
@@ -529,9 +536,9 @@ class FileStoreRouting:
                 connector, path):
             return FilesystemSink(self).publish_model(
                 connector, bundle_dir, path=path, metadata=metadata)
-        return super().publish_model(connector, bundle_dir, path=path,
-                                     location=location, metadata=metadata,
-                                     metrics=metrics, project_id=project_id)
+        return self._rest('publish_model').publish_model(
+            connector, bundle_dir, path=path, location=location,
+            metadata=metadata, metrics=metrics, project_id=project_id)
 
     def fetch_model(self, connector, local_dir, *, path=None, location=None,
                     project_id=None):
@@ -539,8 +546,9 @@ class FileStoreRouting:
                 connector, path):
             return FilesystemSink(self).fetch_model(connector, local_dir,
                                                     path=path)
-        return super().fetch_model(connector, local_dir, path=path,
-                                   location=location, project_id=project_id)
+        return self._rest('fetch_model').fetch_model(
+            connector, local_dir, path=path, location=location,
+            project_id=project_id)
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
         if self.holds_files(connector, table_name):

@@ -33,7 +33,6 @@ _EDGE_STATS = {'FRAC_SRC_NONZERO_DEGREE': 'src_match_frac',
 _HEALTH = ('table or link', 'rows', 'columns', 'dropped rows',
            'duplicate keys', 'rows without time', 'edges',
            'source matched', 'target matched', 'failed lookups')
-# The Kumo platform's data checks.
 _BAD_TIME_FRACTION = 0.05
 _INVALID_FRACTION = 0.10
 _MIN_MATCH_FRACTION = 0.20

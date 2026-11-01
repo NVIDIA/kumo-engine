@@ -215,3 +215,9 @@ def test_an_occupied_directory_is_refused_before_scoring(connector):
     for mode in (None, WriteMode.APPEND):
         with pytest.raises(ArtifactDestinationConflict, match='already'):
             sink.preflight_write_files(connector, '@stage/out/', mode)
+
+
+def test_a_file_only_sink_refuses_a_table(connector, tmp_path):
+    with pytest.raises(NotImplementedError, match='outside its files'):
+        connector.sink_backend.publish_model(connector, str(tmp_path),
+                                             path='DB.SCHEMA.T')
