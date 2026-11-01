@@ -27,7 +27,6 @@ from typing import (
     Literal,
     Mapping,
     Optional,
-    Sequence,
     Set,
     Tuple,
 )
@@ -489,25 +488,19 @@ class MlflowTracking(TrackingBase):
     def _log_metrics(self, run_id: Optional[str],
                      metrics: Mapping[str, float], step: int = 0,
                      model_id: Optional[str] = None) -> None:
-        if run_id is not None:
-            self._log_batch(run_id, [(name, value, step)
-                                     for name, value in metrics.items()],
-                            model_id)
-
-    def _log_batch(self, run_id: Optional[str],
-                   points: Sequence[Tuple[str, float, int]],
-                   model_id: Optional[str] = None) -> None:
+        if run_id is None or not metrics:
+            return
         entities = self._mlflow.entities
         timestamp = int(time.time() * 1000)
-        metrics = [
-            entities.Metric(metric_key(name), float(value), timestamp, step,
+        batch = [
+            entities.Metric(metric_key(key), float(value), timestamp, step,
                             model_id=model_id)
-            for name, value, step in points
+            for key, value in metrics.items()
         ]
         with self.target.scope():
-            for start in range(0, len(metrics), _BATCH_METRICS):
+            for start in range(0, len(batch), _BATCH_METRICS):
                 self._client.log_batch(
-                    run_id, metrics=metrics[start:start + _BATCH_METRICS])
+                    run_id, metrics=batch[start:start + _BATCH_METRICS])
 
 
 _BATCH_METRICS = 1000  # MLflow's per-request limit
