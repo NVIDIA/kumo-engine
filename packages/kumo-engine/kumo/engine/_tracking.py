@@ -28,7 +28,7 @@ from typing import (
 )
 
 from kumo_core.instrumentation import format_error
-from kumo_core.summaries import Dataset, Scalar, Summary, Table, Tag
+from kumo_core.summaries import Summary
 
 from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
@@ -210,34 +210,6 @@ class TrackingBase(Tracking):
 
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         pass
-
-    def log_summaries(self, summaries: Sequence[Summary]) -> None:
-        for summary in summaries:
-            if isinstance(summary, Scalar):
-                self._log_scalar(summary)
-            elif isinstance(summary, Tag):
-                self._log_tag(summary)
-            elif isinstance(summary, Dataset):
-                self._log_dataset(summary)
-            else:
-                self._log_table(summary)
-
-    def _log_scalar(self, summary: Scalar) -> None:
-        raise NotImplementedError
-
-    def _log_tag(self, summary: Tag) -> None:
-        raise NotImplementedError
-
-    def _log_table(self, summary: Table) -> None:
-        raise NotImplementedError
-
-    def _log_dataset(self, summary: Dataset) -> None:
-        pass
-
-
-def table_json(table: Table) -> str:
-    return json.dumps({'columns': list(table.columns),
-                       'data': [list(row) for row in table.rows]}, default=str)
 
 
 class _Foreign(TrackingBase):

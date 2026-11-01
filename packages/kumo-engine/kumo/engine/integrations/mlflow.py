@@ -34,12 +34,13 @@ from typing import (
 from urllib.parse import quote
 
 from kumo_core.instrumentation import format_error
-from kumo_core.summaries import Dataset, Scalar, Table, Tag
+from kumo_core.summaries import Dataset, Summary, Table
 from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
 from kumo.engine._run_names import record_name, trial_name
+from kumo.engine._summary_tables import Routed, route, table_json
 from kumo.engine._text import metric_key
 from kumo.engine._tracking import (
     DROPPED_PARAMS,
@@ -47,7 +48,6 @@ from kumo.engine._tracking import (
     RunRecord,
     TrackingBase,
     by_step,
-    table_json,
 )
 from kumo.engine._version import __version__
 from kumo.engine.connector._extras import import_provider
@@ -360,11 +360,11 @@ class MlflowTracking(TrackingBase):
             if record is not None and self._parent is not None:
                 for epoch, metrics in by_step(record.steps):
                     self._log_metrics(self._parent, metrics, epoch)
+                self._log_summaries(record.summaries)
                 self._log_metrics(self._parent, record.metrics,
                                   model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
                 self._log_artifacts(record.artifacts)
-                self.log_summaries(record.summaries)
                 if error is None:
                     status = 'FINISHED'
         finally:
@@ -383,27 +383,20 @@ class MlflowTracking(TrackingBase):
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         self._log_metrics(self._parent, metrics, step)
 
-    def _log_scalar(self, summary: Scalar) -> None:
-        model_id = self._model_id if summary.name.startswith('test/') else None
-        self._log_metrics(self._parent, {summary.name: summary.value},
-                          model_id=model_id)
+    def _log_summaries(self, summaries: Sequence[Summary]) -> None:
+        self._log_routed(route(summaries), self._parent)
 
-    def _log_tag(self, summary: Tag) -> None:
-        self._log_tags(self._parent, {summary.name: summary.value})
-
-    def _log_table(self, summary: Table) -> None:
-        path = f'{summary.name}.json'
-        self._log_artifacts({path: table_json(summary)})
-        with self.target.scope():
-            tags = self._client.get_run(self._parent).data.tags
-            logged = json.loads(tags.get('mlflow.loggedArtifacts', '[]'))
-            entry = {'path': path, 'type': 'table'}
-            if entry not in logged:
-                self._client.set_tag(self._parent, 'mlflow.loggedArtifacts',
-                                     json.dumps([*logged, entry]))
-
-    def _log_dataset(self, summary: Dataset) -> None:
-        self._log_inputs(self._parent, [summary])
+    def _log_routed(self, routed: Routed, run_id: str) -> None:
+        self._log_inputs(run_id, routed.datasets)
+        scalars = routed.scalars
+        self._log_metrics(run_id, {s.name: s.value for s in scalars
+                                   if s.role == 'model'},
+                          model_id=self._model_id)
+        self._log_metrics(run_id, {s.name: s.value for s in scalars
+                                   if s.role != 'model'})
+        if routed.tags:
+            self._log_tags(run_id, routed.tags)
+        self._write_tables(run_id, routed.tables)
 
     def _log_inputs(self, run_id: str, summaries: Sequence[Dataset]) -> None:
         datasets = [d for d in map(self._dataset_input, summaries) if d]
@@ -416,38 +409,57 @@ class MlflowTracking(TrackingBase):
         if source is None:
             return None
         entities = self._mlflow.entities
-        version = summary.source.get('version') or ''
         dataset = entities.Dataset(
             name=summary.name,
-            digest=version[:36] or hashlib.sha256(json.dumps(
-                dict(summary.source), sort_keys=True).encode()).hexdigest()[:8],
+            digest=_digest(summary.name, summary.source, summary.schema),
             source_type=source._get_source_type(),
             source=source.to_json(),
             schema=json.dumps({'mlflow_colspec': [
                 {'name': name, 'type': _COLUMN_TYPES.get(column['dtype'],
                                                          'string')}
                 for name, column in summary.schema.items()]}),
-            profile=json.dumps(summary.profile, default=str))
-        return entities.DatasetInput(dataset, tags=[entities.InputTag(
-            'mlflow.data.context', summary.context)])
+            profile=json.dumps({
+                key: value for key, value in summary.profile.items()
+                if not isinstance(value, (Mapping, list, tuple))
+            }, default=str))
+        return entities.DatasetInput(
+            dataset, tags=[entities.InputTag('mlflow.data.context',
+                                             summary.context)])
+
+    def _write_tables(self, run_id: str, tables: Sequence[Table]) -> None:
+        if not tables:
+            return
+        for table in tables:
+            self._write_text(run_id, f'{table.name}.json', table_json(table))
+        with self.target.scope():
+            tags = self._client.get_run(run_id).data.tags
+            logged = json.loads(tags.get('mlflow.loggedArtifacts', '[]'))
+            entries = [{'path': f'{table.name}.json', 'type': 'table'}
+                       for table in tables]
+            added = [entry for entry in entries if entry not in logged]
+            if added:
+                self._client.set_tag(run_id, 'mlflow.loggedArtifacts',
+                                     json.dumps([*logged, *added]))
 
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         for name, text in artifacts.items():
-            if name in self._artifacts:
-                continue
-            with self.target.scope():
-                repository = self.target.artifact_repository(
-                    self._client.get_run(self._parent).info.artifact_uri
-                ) if self.target.explicit else None
-                if repository is None:
-                    self._client.log_text(self._parent, text, name)
-                else:
-                    with tempfile.TemporaryDirectory() as tmp:
-                        path = Path(tmp) / posixpath.basename(name)
-                        path.write_text(text)
-                        repository.log_artifact(
-                            str(path), posixpath.dirname(name) or None)
-            self._artifacts.add(name)
+            if name not in self._artifacts:
+                self._write_text(self._parent, name, text)
+                self._artifacts.add(name)
+
+    def _write_text(self, run_id: str, name: str, text: str) -> None:
+        with self.target.scope():
+            repository = self.target.artifact_repository(
+                self._client.get_run(run_id).info.artifact_uri
+            ) if self.target.explicit else None
+            if repository is None:
+                self._client.log_text(run_id, text, name)
+            else:
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / posixpath.basename(name)
+                    path.write_text(text)
+                    repository.log_artifact(str(path),
+                                            posixpath.dirname(name) or None)
 
     def _log_tags(self, run_id: str, tags: Mapping[str, str]) -> None:
         entities = self._mlflow.entities
@@ -486,6 +498,13 @@ class MlflowTracking(TrackingBase):
             for start in range(0, len(batch), _BATCH_METRICS):
                 self._client.log_batch(
                     run_id, metrics=batch[start:start + _BATCH_METRICS])
+
+
+def _digest(name: str, source: Mapping[str, Optional[str]],
+            schema: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(
+        [name, dict(source), dict(schema)], sort_keys=True,
+        default=str).encode()).hexdigest()[:8]
 
 
 _BATCH_METRICS = 1000

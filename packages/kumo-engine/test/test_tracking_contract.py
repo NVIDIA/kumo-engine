@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Every tracking adapter records the same run records as a recorded fit."""
 
+import hashlib
 import json
 import threading
 import time
@@ -437,7 +438,9 @@ def test_adapter_logs_each_summary_type(adapter, mlflow_adapter):
         {'path': 'graph/col_stats.json', 'type': 'table'}]
     dataset, = run.inputs.dataset_inputs
     assert (dataset.dataset.name, dataset.dataset.digest,
-            dataset.tags[0].value) == ('ents', '1790000000', 'training')
+            dataset.tags[0].value) == ('ents', hashlib.sha256(json.dumps(
+                ['ents', INPUTS['ents'], SUMMARIES[-1].schema],
+                sort_keys=True).encode()).hexdigest()[:8], 'training')
     assert json.loads(dataset.dataset.schema) == {
         'mlflow_colspec': [{'name': 'ID', 'type': 'long'}]}
     assert json.loads(dataset.dataset.profile) == {'rows': 400}

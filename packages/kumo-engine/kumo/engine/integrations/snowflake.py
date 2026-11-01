@@ -9,21 +9,21 @@ import re
 import tempfile
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from kumo_core.instrumentation import format_error
 from kumo_core.sources.sql import resolve_snowflake_identifier
-from kumo_core.summaries import Scalar, Table, Tag
+from kumo_core.summaries import Summary
 
 from kumo.engine._events import Event
 from kumo.engine._run_names import record_name
+from kumo.engine._summary_tables import route, table_json
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
     RunRecord,
     TrackingBase,
     by_step,
-    table_json,
 )
 from kumo.engine.connector._extras import import_provider
 
@@ -187,7 +187,7 @@ class SnowflakeTracking(TrackingBase):
                                   for k, v in record.tags.items()
                                   if k not in self._start_tags}, _MAX_PARAMS)
                 self._log_artifacts(record.artifacts)
-                self.log_summaries(record.summaries)
+                self._log_summaries(record.summaries)
                 dropped = {DROPPED_METRICS: len(self._dropped_metrics),
                            DROPPED_PARAMS: self._dropped_params}
                 if any(dropped.values()):
@@ -221,14 +221,13 @@ class SnowflakeTracking(TrackingBase):
                 'this run as %s', run_name, self.experiment_name, name)
         return name
 
-    def _log_scalar(self, summary: Scalar) -> None:
-        self._log_metrics({summary.name: summary.value}, _MAX_METRICS)
-
-    def _log_tag(self, summary: Tag) -> None:
-        self._log_params({summary.name: summary.value})
-
-    def _log_table(self, summary: Table) -> None:
-        self._log_artifacts({f'{summary.name}.json': table_json(summary)})
+    def _log_summaries(self, summaries: Sequence[Summary]) -> None:
+        routed = route(summaries)
+        self._log_metrics({s.name: s.value for s in routed.scalars},
+                          _MAX_METRICS)
+        self._log_params(routed.tags)
+        self._log_artifacts({f'{table.name}.json': table_json(table)
+                             for table in routed.tables})
 
     def _log_artifacts(self, artifacts: Mapping[str, str]) -> None:
         with tempfile.TemporaryDirectory() as directory:
