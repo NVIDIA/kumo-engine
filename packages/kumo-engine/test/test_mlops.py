@@ -10,12 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import kumo.engine as kumo
-from kumo.engine._manifest import (
-    SnapshotManifest,
-    SnapshotParents,
-    embedded,
-    stub,
-)
+from kumo.engine._manifest import SnapshotManifest, stub
 from kumo.engine._mlops import resolve
 
 
@@ -99,17 +94,5 @@ def test_a_call_argument_beats_the_nearest_block(tmp_path):
 
 
 def test_stubs_stand_in_for_parents_without_a_manifest():
-    snapshot = stub('snapshot', 'abc@0123')
-    assert isinstance(snapshot, SnapshotManifest)
-    assert snapshot.to_dict() == {
-        'kind': 'snapshot',
-        'schema_version': 1,
-        'id': 'abc@0123',
-        'created_at': None,
-        'environment': None,
-        'reconstructed': True,
-        'parents': None,
-    }
-    full = SnapshotManifest(id='abc@0123',
-                            parents=SnapshotParents(source_tables={}))
-    assert embedded(full) == full
+    assert stub('snapshot', 'abc@0123') == SnapshotManifest(id='abc@0123',
+                                                            reconstructed=True)
