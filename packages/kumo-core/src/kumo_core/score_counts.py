@@ -101,11 +101,3 @@ def bin_bounds(edges: Sequence[float],
     r"""Each bin's ends, the open end bins closed at the extent."""
     low, high = extent or (edges[0], edges[-1])
     return np.array([min(low, edges[0]), *edges, max(high, edges[-1])])
-
-
-def merged(counts: Sequence[Counts]) -> Optional[Counts]:
-    r"""The sum of ``counts``; ``None`` for none."""
-    total: Optional[Counts] = None
-    for item in counts:
-        total = item if total is None else total.merge(item)
-    return total

@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 import json
+from functools import reduce
 
 import numpy as np
 import pytest
@@ -20,7 +21,7 @@ from kumo_core.prediction_counts import (
     prediction_summaries,
     save_counts,
 )
-from kumo_core.score_counts import PROBABILITY_EDGES, Counts, merged
+from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.score_drift import score_drift
 from kumo_core.summaries import Histogram, Note, Scalar, Series, Table
 from kumo_core.types import TaskType
@@ -44,7 +45,7 @@ def _batches(task_type, edges, columns, prob=None, pred=None, values=None):
                           target_pred=None if values is None else values[part],
                           columns=columns)
         parts.append(counts)
-    return merged(parts)
+    return reduce(Counts.merge, parts)
 
 
 def _by_name(summaries):
@@ -205,8 +206,8 @@ def test_forecasts_count_each_kept_horizon_and_drift_from_the_holdout(steps):
                           horizon=horizon[rows])
         parts.append(counts)
 
-    logged = _by_name(prediction_summaries(merged(parts), threshold=None,
-                                           baseline=holdout))
+    logged = _by_name(prediction_summaries(reduce(Counts.merge, parts),
+                                           threshold=None, baseline=holdout))
     kept = _horizons(steps)
     assert len(kept) == min(steps, 12)
     assert [name for name in logged if name.startswith('pred/histogram/')] == [
@@ -269,7 +270,7 @@ def test_recommendations_count_items_and_top_scores_across_workers(tmp_path):
         parts.append(load_counts(tmp_path / f'{worker}.json'))
     assert {path.suffix for path in tmp_path.iterdir()} == {'.json', '.npy'}
 
-    total = item_counts(merged(parts))
+    total = item_counts(reduce(Counts.merge, parts))
     summaries = prediction_summaries(total, threshold=None, baseline=holdout)
     logged = _by_name(summaries)
     valid = items[(items >= 0) & (items < catalogue)]

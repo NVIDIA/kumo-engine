@@ -2,10 +2,11 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 import json
+from functools import reduce
 
 import numpy as np
 import pytest
-from kumo_core.score_counts import PROBABILITY_EDGES, Counts, merged
+from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.summaries import Histogram
 
 
@@ -33,7 +34,7 @@ def test_batches_and_workers_add_up_to_the_brute_force_counts():
         batches.append(Counts.from_dict(json.loads(json.dumps(
             counts.to_dict()))))
 
-    total = merged(batches)
+    total = reduce(Counts.merge, batches)
     assert total.arrays['score'].tolist() == _brute_histogram(
         values, PROBABILITY_EDGES)
     assert total.arrays['sum'] == pytest.approx(_brute_histogram(
