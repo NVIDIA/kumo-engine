@@ -30,8 +30,7 @@ class FitContext:
     model_name: Optional[str] = None
 
 
-def fit_spec(context: FitContext, *,
-             tags: Optional[Mapping[str, Any]] = None) -> RunSpec:
+def fit_spec(context: FitContext) -> RunSpec:
     started = context.started or datetime.now(timezone.utc)
     return RunSpec(
         kind='fit',
@@ -43,7 +42,6 @@ def fit_spec(context: FitContext, *,
                  'tune_metric': (context.model_plan.get('training_job')
                                  or {}).get('tune_metric'),
                  'engine_version': __version__},
-        tags=dict(tags or {}),
         inputs=dict(context.inputs),
         artifacts={
             'query.pql': context.query,
