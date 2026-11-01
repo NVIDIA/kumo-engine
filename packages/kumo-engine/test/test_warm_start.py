@@ -21,7 +21,7 @@ from kumo_core.train.base_module import BaseLightningModule
 from kumo_core.train.trainer import get_best_ckpt_path
 from kumo_core.types import TaskType
 from kumoapi.model_plan import ModelPlan
-from kumoapi.plugin import ModelFetchingSink
+from kumoapi.plugin import ModelFetchingSink, PublishedModel
 
 from kumo.engine import FileConnector, Graph, PredictiveQuery, Table, Trainer
 
@@ -111,8 +111,9 @@ def test_bundle_warm_start_fit_reload_and_predict(tmp_path, monkeypatch, refit,
     shutil.rmtree(initial.scratch_dir)
     if refit == 'full':
         sink = Mock(spec=ModelFetchingSink)
-        sink.fetch_model.side_effect = lambda connector, target, **kwargs: shutil.copytree(
-            durable, target)
+        sink.fetch_model.side_effect = lambda connector, target, **kwargs: (
+            shutil.copytree(durable, target) and PublishedModel(
+                name='m', version='1', uri=str(durable)))
         source = Trainer.load_from_connector(SimpleNamespace(sink_backend=sink),
                                              path='retained-model')
     else:
