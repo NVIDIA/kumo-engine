@@ -255,7 +255,8 @@ def test_finish_fit_forwards_publication_details_and_returns_assigned_version(
         original, predictive_query='PREDICT COUNT(*)', snapshot_id='snap-123',
         training_table_generation=_generation_plan(),
         export_config=SimpleNamespace(connector=connector, path=path,
-                                      location=location))
+                                      location=location, serving_snapshot=None,
+                                      serving_options=None))
 
     assert len(calls) == 1
     assert calls[0][0] is connector
@@ -293,7 +294,7 @@ def test_finish_fit_failure_does_not_expose_state(tmp_path: Path, monkeypatch,
 
         export_config = SimpleNamespace(
             connector=SimpleNamespace(sink_backend=FailingSink()), path='model',
-            location=None)
+            location=None, serving_snapshot=None, serving_options=None)
 
     with pytest.raises(OSError):
         trainer._finish_fit(result, predictive_query='PREDICT COUNT(*)',
@@ -590,7 +591,8 @@ def _export(sink, bundle, location=None, artifact_paths=None):
         snapshot_id='snap-123', training_table_generation=_generation_plan(),
         export_config=SimpleNamespace(
             connector=SimpleNamespace(sink_backend=sink),
-            path=None if location else 'm', location=location))
+            path=None if location else 'm', location=location,
+            serving_snapshot=None, serving_options=None))
 
 
 def _recording_sink(calls):
