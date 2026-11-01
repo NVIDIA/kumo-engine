@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Materialized prediction tables and their shared compile path."""
 
+import re
 import warnings
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -285,17 +286,17 @@ def skipped_entities(report: Optional[Mapping[str, Any]],
 
 
 def _sample_ids(conditions: Any, rows_path: Path) -> Tuple[Any, ...]:
-    import re
-
     import pyarrow.parquet as pq
 
     ids: List[Any] = []
     try:
         for entry in conditions:
             for location in entry.get('samples') or ():
+                if len(ids) >= SKIPPED_SAMPLE:
+                    return tuple(ids)
                 found = re.fullmatch(r'(.+) row group (\d+) row (\d+)',
                                      str(location))
-                if found is None or len(ids) >= SKIPPED_SAMPLE:
+                if found is None:
                     continue
                 part = Path(rows_path)
                 part = part / found.group(1) if part.is_dir() else part
