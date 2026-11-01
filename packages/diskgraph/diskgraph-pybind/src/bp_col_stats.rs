@@ -3015,7 +3015,7 @@ mod tests {
             },
         )
         .unwrap();
-        let (mut full, mut default) = (parse(&full), parse(&default));
+        let (full, mut default) = (parse(&full), parse(&default));
         for key in [
             "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
             "SCORE__kumo.numerical__HISTOGRAM__False",
