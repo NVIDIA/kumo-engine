@@ -143,48 +143,10 @@ class _DatabricksTables(DatabricksModelRegistryMixin):
 
 
 class DatabricksSinkBackend(FileStoreRouting, _DatabricksTables):
-    r"""Writes a produced artifact to a Databricks Delta table.
-
-    Registered by default beside
-    :class:`~kumo_databricks.backend.DatabricksSourceBackend`, so a
-    run that read its graph from a catalog exports its predictions back to one
-    with no further setup. Installed as
-    ``pip install 'kumoai-studio[databricks]'``.
-
-    A destination names its schema and its table in one string, joined by
-    ``__kumo__``, because that is the only field a Databricks output has --
-    :func:`kumoai_studio.databricks.to_db_table_name` builds it from the
-    ``(schema, table)`` tuple an :class:`~kumoai_studio.artifact_export.OutputConfig`
-    takes. The schema must be the connector's own, which
-    :func:`kumo_databricks.output.within_schema` checks and the
-    hosted connector checks through as well.
-
-    Every write stages through the connector's managed volume,
-    ``<catalog>.<schema>._kumo_staging``, created on first use. That is not a
-    local choice: ``COPY INTO`` is how a Delta table is loaded, and hosted
-    states the alternatives -- S3, ADLS, an arbitrary volume, inline cloud
-    credentials -- are unsupported on purpose. The volume is emptied of what
-    this export put there once the table has landed.
+    """Writes artifacts to Delta tables, staged through the schema's volume.
 
     Args:
-        identity: A fallback identity, used only for connectors that name none
-            themselves. As with the reader, leaving it unset is the common
-            case, since a bound
-            :class:`~kumoai_studio.connector.DatabricksConnector` records the
-            identity it was created with. That identity needs ``CREATE TABLE``
-            on the connector's schema and ``READ``/``WRITE VOLUME`` on its
-            staging volume, which a read-only role used for ingest will not
-            have.
-
-    Example:
-        >>> import kumoai_studio as kumo  # doctest: +SKIP
-        >>> from kumo_databricks import (  # doctest: +SKIP
-        ...     DatabricksSinkBackend)
-        >>> kumo.set_backend(kumo.LocalBackend(  # doctest: +SKIP
-        ...     storage=paths,
-        ...     sinks={kumo.DataSourceType.DATABRICKS:
-        ...            DatabricksSinkBackend(identity='prod-dbx')},
-        ... ))
+        identity: Fallback identity for connectors that name none.
     """
 
     source_type = DataSourceType.DATABRICKS
