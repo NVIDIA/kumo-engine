@@ -91,8 +91,7 @@ def _client_for(principal: Principal) -> WorkspaceClient:
             f"Identity {principal.name!r} holds "
             f"{type(credentials).__name__} credentials; Databricks "
             f"authenticates a service principal with an OAuth secret.")
-    # Explicit: a DATABRICKS_TOKEN another thread lends MLflow must not
-    # make this client's configuration ambiguous.
+    # Explicit, so a DATABRICKS_TOKEN set for MLflow cannot leak in.
     return WorkspaceClient(
         host=config.host,
         client_id=config.client_id,

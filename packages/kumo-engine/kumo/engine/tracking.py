@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""API for writing an experiment-tracking adapter for ``kumo.MLOps(tracking=...)``."""
+r"""API for writing an experiment tracker for ``kumo.MLOps``."""
 
 from kumo.engine._events import Event
 from kumo.engine._tracking import RunRecord, Tracking

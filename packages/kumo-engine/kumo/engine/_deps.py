@@ -203,10 +203,8 @@ class Dependencies:
         raise MissingDependencyError(
             f"The model needs {asset_kind} {name!r} (sha256 "
             f"{record.sha256}), which is in none of "
-            f"{tried or 'no configured locations'}. Store it by fitting "
-            f"with MLOps on (it is kept under <artifact root>/assets/), "
-            f"predict inside a kumo.mlops block whose artifact root holds "
-            f"it, or register it where the model looks it up.")
+            f"{tried or 'no configured locations'}; predict in a kumo.mlops "
+            f"block whose artifact root holds it.")
 
     def candidates(self, record: Dependency) -> List[Tuple[Any, str]]:
         from kumo.engine.connector import connector_for_root
@@ -288,7 +286,6 @@ def asset_cache() -> Path:
 
 
 def _store(asset: Asset, sha256: str, settings: Any) -> Optional[str]:
-    r"""Writes ``asset`` once under the root; returns where."""
     from kumo_core.object_store_sink import _prepared
 
     from kumo.engine.connector import file_store

@@ -102,8 +102,6 @@ def _source_version(path: str, entries: Sequence[Any],
                     identity: ObjectIdentity | None = None) -> str:
     if len(entries) == 1 and entries[0].path.rstrip("/") == path.rstrip("/"):
         if identity is not None:
-            # The provider's version or entity tag; a second-resolution
-            # modification time cannot tell same-second rewrites apart.
             token, version, *_ = (*identity(entries[0].path), "")
             return SourceVersion(version or token.strip('"'), "exact")
         latest = entries[0].mtime

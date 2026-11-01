@@ -58,8 +58,8 @@ def test_predict_says_what_differs_from_the_training_graph(
         _predict(trainer, _other(snapshot, dropped), monkeypatch)
 
     strict = kumo.MLOps(str(tmp_path / 'root'), on_error='raise')
-    with pytest.raises(ValueError, match=r"Schema changes: events edges\. "
-                       r"With on_error='raise'"):
+    with pytest.raises(ValueError, match=r"Schema changes: events edges; "
+                       r"declare the same"):
         trainer.predict(_other(snapshot, dropped), mlops=strict,
                         binary_classification_threshold=.5)
     with pytest.warns(UserWarning, match='The schema is the same'):

@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+from functools import reduce
+
 import numpy as np
 import pytest
 from kumo_core.evaluation_counts import (
@@ -8,7 +10,7 @@ from kumo_core.evaluation_counts import (
     evaluation_counts,
     evaluation_summaries,
 )
-from kumo_core.score_counts import PROBABILITY_EDGES, merged
+from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.summaries import (
     Confusion,
     Histogram,
@@ -26,9 +28,9 @@ def _summaries(task_type, threshold=None, classes=(), timeframe=None,
                if not isinstance(value, tuple)}
               for part in np.array_split(np.arange(len(columns['target'])), 2)]
     edges = columns.get('target_edges', ())
-    counts = merged([evaluation_counts(task_type, threshold=threshold,
-                                       target_edges=edges, **half)
-                     for half in halves])
+    counts = reduce(Counts.merge, [
+        evaluation_counts(task_type, threshold=threshold, target_edges=edges,
+                          **half) for half in halves])
     summaries = evaluation_summaries(task_type, counts, threshold, classes,
                                      timeframe)
     return {summary.name: summary for summary in summaries}
@@ -276,8 +278,8 @@ def test_ranking_top_scores_are_counted_on_their_percentiles():
     rng = np.random.default_rng(5)
     prob = rng.normal(size=(500, 30))
 
-    counts = merged([evaluation_counts(TaskType.MULTILABEL_RANKING,
-                                       prob=prob, target=None)])
+    counts = evaluation_counts(TaskType.MULTILABEL_RANKING, prob=prob,
+                               target=None)
 
     top = prob.max(axis=1)
     edges = tuple(np.unique(np.quantile(top, np.linspace(0, 1, 101))))

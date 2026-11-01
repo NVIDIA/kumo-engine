@@ -24,32 +24,6 @@ _DEFINITIONS = frozenset({'from', 'to', 'threshold'})
 
 
 @dataclass
-class SummaryTables:
-    series: Dict[str, Tuple[str, Dict[str, Dict[int, float]]]] = field(
-        default_factory=dict)
-    histograms: Dict[str, List[Histogram]] = field(default_factory=dict)
-
-    def add_series(self, summary: Series) -> None:
-        parent, _, column = summary.name.rpartition('/')
-        x_label, columns = self.series.setdefault(
-            parent or summary.name, (summary.x_label, {}))
-        columns[column] = dict(summary.points)
-
-    def add_histogram(self, summary: Histogram) -> None:
-        name = summary.name.rpartition('/')[0] or summary.name
-        group = self.histograms.get(name)
-        if group and group[0].edges != summary.edges:
-            name = summary.name
-        self.histograms.setdefault(name, []).append(summary)
-
-    def tables(self) -> List[Table]:
-        return [*(_series_table(name, x_label, columns)
-                  for name, (x_label, columns) in self.series.items()),
-                *(_histogram_table(name, histograms)
-                  for name, histograms in self.histograms.items())]
-
-
-@dataclass
 class Routed:
     r"""Summaries sorted by how a tracker writes them."""
 
@@ -63,9 +37,10 @@ class Routed:
 
 
 def route(summaries: Sequence[Summary], charts: bool) -> Routed:
-    r"""Brief tables and notes go on the card; series and histograms become
-    tables; chart series stay charts only when ``charts``."""
-    routed, grouped, tables = Routed(), SummaryTables(), []
+    r"""Sorts summaries by how a tracker writes them."""
+    routed, tables = Routed(), []
+    series: Dict[str, Tuple[str, Dict[str, Dict[int, float]]]] = {}
+    histograms: Dict[str, List[Histogram]] = {}
     for summary in summaries:
         if isinstance(summary, Scalar):
             routed.scalars.append(summary)
@@ -74,9 +49,16 @@ def route(summaries: Sequence[Summary], charts: bool) -> Routed:
         elif isinstance(summary, Series) and summary.chart and charts:
             routed.charts[summary.name] = summary.points
         elif isinstance(summary, Series):
-            grouped.add_series(summary)
+            parent, _, column = summary.name.rpartition('/')
+            _, columns = series.setdefault(parent or summary.name,
+                                           (summary.x_label, {}))
+            columns[column] = dict(summary.points)
         elif isinstance(summary, Histogram):
-            grouped.add_histogram(summary)
+            name = summary.name.rpartition('/')[0] or summary.name
+            group = histograms.get(name)
+            if group and group[0].edges != summary.edges:
+                name = summary.name
+            histograms.setdefault(name, []).append(summary)
         elif isinstance(summary, Dataset):
             routed.datasets.append(summary)
         elif isinstance(summary, Note) or (isinstance(summary, Table)
@@ -88,7 +70,11 @@ def route(summaries: Sequence[Summary], charts: bool) -> Routed:
             tables.append(summary)
         else:
             raise TypeError(f'No route for {type(summary).__name__}')
-    routed.tables = [*grouped.tables(), *tables]
+    routed.tables = [
+        *(_series_table(name, x_label, columns)
+          for name, (x_label, columns) in series.items()),
+        *(_histogram_table(name, group)
+          for name, group in histograms.items()), *tables]
     return routed
 
 
@@ -106,7 +92,6 @@ def _series_table(name: str, x_label: str,
 
 
 def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
-    r"""Same-edge histograms as one table, empty bins dropped."""
     edges = histograms[0].edges
     extents = [h.extent for h in histograms if h.extent is not None]
     first = min((extent[0] for extent in extents), default=None)

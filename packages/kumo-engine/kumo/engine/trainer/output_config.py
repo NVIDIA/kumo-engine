@@ -4,7 +4,7 @@
 """Prediction, training table and model export destinations."""
 
 from dataclasses import dataclass, field
-from typing import Any, List, Mapping, Optional, cast
+from typing import Any, Dict, List, Mapping, Optional, Tuple, cast
 
 from kumo_core.sources.object_store_sessions import ObjectStoreSessions
 from kumoapi.jobs import MetadataField, PredictionArtifactType, WriteMode
@@ -22,18 +22,14 @@ from kumo.engine.connector.base import Connector
 
 @dataclass(frozen=True)
 class PredictionOutputConfig:
-    """Export via ``connector``.
+    """Where prediction outputs go, via ``connector``.
 
-    ``path`` names where predictions go: a directory or file on a file
-    destination (local, S3, GCS, a volume or stage), else a table. Use
-    ``output_paths`` for exact predictions/embeddings destinations, or
-    ``artifact_type`` and ``table_name`` for one legacy destination.
-    ``extra_fields`` applies to every selected artifact, only when passed to
-    ``Trainer.predict``; ``PredictionResult.export`` rejects it.
-    A table is replaced by default; ``WriteMode.APPEND`` adds rows with
-    ``PREDICTION_ID`` and ``BUNDLE_ID`` columns. A file destination is
-    written at exactly ``path``; ``WriteMode.OVERWRITE`` replaces what it
-    holds.
+    Args:
+        path: A directory or file on a file destination, else a table.
+        output_paths: Exact predictions and embeddings destinations.
+        extra_fields: Only for ``Trainer.predict``.
+        write_mode: ``APPEND`` adds ``PREDICTION_ID`` and ``BUNDLE_ID`` to a
+            table; ``OVERWRITE`` empties a file destination first.
     """
 
     connector: Connector
@@ -101,30 +97,30 @@ class PredictionOutputConfig:
                 'this sink only supports in-memory table output')
         return sink
 
-    def _write(self, destination: str, files: List[str], **kwargs) -> str:
-        r"""Write files; OVERWRITE empties a directory first."""
+    def _write(self, destination: str, files: List[str],
+               export_id: Optional[str], ids: Tuple[Optional[str], ...],
+               sidecars: Optional[Mapping[str, bytes]] = None) -> str:
         from kumo_core.object_store_sink import holds_export
+        from kumo_core.sources import layout
 
         store = file_store(self.connector, destination)
-        export_id = kwargs.get('export_id')
         if (self.write_mode is WriteMode.OVERWRITE and store is not None
                 and (destination.endswith('/') or len(files) > 1)
                 and not (export_id and holds_export(*store, export_id))):
             store[0].delete_dir_contents(store[1], missing_dir_ok=True)
+        extra: Dict[str, Any] = {}
+        if not is_file_destination(self.connector, destination):
+            columns = {name: value for name, value in zip(
+                ('PREDICTION_ID', 'BUNDLE_ID'), ids) if value}
+            if columns and self.write_mode is WriteMode.APPEND:
+                extra['extra_columns'] = columns
+        elif (sidecars is not None
+              and layout.file_type(destination.rstrip('/')) != layout.CSV):
+            extra['sidecars'] = sidecars
         return self.writer().write_files(
             self.connector, destination, files,
-            self.write_mode or WriteMode.OVERWRITE, **kwargs)
-
-    def _id_columns(self, destination: str, prediction_id: Optional[str],
-                    bundle_id: Optional[str]) -> dict[str, str]:
-        if (self.write_mode is not WriteMode.APPEND
-                or is_file_destination(self.connector, destination)):
-            return {}
-        return {
-            name: value
-            for name, value in (('PREDICTION_ID', prediction_id),
-                                ('BUNDLE_ID', bundle_id)) if value
-        }
+            self.write_mode or WriteMode.OVERWRITE, export_id=export_id,
+            **extra)
 
 
 @dataclass(frozen=True)
@@ -146,8 +142,7 @@ class TrainingTableOutputConfig:
 
 @dataclass(frozen=True)
 class SnapshotOutputConfig:
-    """Export a graph snapshot under ``path`` via ``connector``, a file
-    destination (`GraphSnapshot.export`)."""
+    """Where `GraphSnapshot.export` writes."""
 
     connector: Connector
     path: str
@@ -180,8 +175,7 @@ class ModelOutputConfig:
 
 
 def check_model_location(config: ModelOutputConfig) -> None:
-    """Raises ``ValueError`` unless ``config.location`` holds an alias and
-    a model name its registry accepts."""
+    """Raises ``ValueError`` unless ``config.location`` is registrable."""
     location = config.location
     if location is None:
         return

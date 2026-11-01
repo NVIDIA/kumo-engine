@@ -40,9 +40,8 @@ def _location(connector: Any, path: str) -> Tuple[FileSystem, str]:
     store = file_store(connector, path)
     if store is None:
         raise NotImplementedError(
-            f'{type(connector).__name__} cannot hold a snapshot export: export '
-            'needs a file destination (artifact root), such as an S3Connector, '
-            'GCSConnector or a FileConnector on a volume.')
+            f'{type(connector).__name__} cannot hold a snapshot export; use '
+            'an S3, GCS or file connector.')
     return store
 
 
@@ -192,8 +191,7 @@ def export_location(snapshot: Any, path: str) -> str:
 
 
 def store(snapshot: Any, settings: Any) -> None:
-    r"""Export ``snapshot`` under ``<root>/snapshots/`` unless a complete
-    export of it is there."""
+    r"""Exports ``snapshot`` under the root unless it is there."""
     from kumo.engine._manifest import SnapshotManifest
     from kumo.engine._mlops import snapshot_path
 
@@ -234,7 +232,6 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
         entry['rel_path']: int(entry['size_bytes'])
         for entry in json.loads(index_manifest)['files']
     }
-    # One generation per export; the marker, written last, names it.
     generation = uuid.uuid4().hex
     filesystem, root = _location(connector, location)
     base = f'{root}/{generation}'
@@ -282,7 +279,6 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
 
 def _holds_copy(connector: Any, location: str, snapshot_id: str,
                 index: Path, snapshot_manifest: bytes) -> bool:
-    r"""Whether ``location`` holds this index's bytes and manifest."""
     from kumo_core.object_store_sink import file_sizes
 
     try:
@@ -307,7 +303,6 @@ def _holds_copy(connector: Any, location: str, snapshot_id: str,
 
 def _commit(filesystem: FileSystem, root: str, generation: str,
             marker: bytes) -> None:
-    r"""Writes the marker atomically: a local rename, else one object put."""
     if filesystem.type_name == 'local':
         staged = f'{root}/{generation}/{_MANIFEST}'
         _write(filesystem, staged, marker)
@@ -319,7 +314,6 @@ def _commit(filesystem: FileSystem, root: str, generation: str,
 
 
 def _clean(filesystem: FileSystem, root: str) -> None:
-    r"""Removes superseded and abandoned generations, best effort."""
     from pyarrow.fs import FileSelector, FileType
 
     try:
@@ -359,16 +353,14 @@ def read(connector: Any, path: str) -> Tuple[str, dict]:
         raise _corrupt(path, f'unreadable {_MANIFEST}: {error}') from error
     if manifest is None:
         raise FileNotFoundError(
-            f'No complete snapshot export at {root}: it has no {_MANIFEST}. '
-            f'Check the path, or export the snapshot there with '
-            f'GraphSnapshot.export.')
+            f'No snapshot export at {root} (no {_MANIFEST}); check the path.')
     if not isinstance(manifest, dict):
         raise _corrupt(path, 'manifest is not a JSON object')
     if manifest.get('format') != _FORMAT:
         raise ValueError(
             f"Snapshot export at {path} has format "
-            f"{manifest.get('format')!r}; this kumo-engine reads format "
-            f"{_FORMAT}. Load it with the kumo-engine that exported it.")
+            f"{manifest.get('format')!r}, not {_FORMAT}; load it with the "
+            f"kumo-engine that exported it.")
     _check_key(manifest.get('graph_key'), manifest.get('data_version'),
                manifest.get('snapshot_id'))
     span, crcs = manifest.get('range_bytes'), manifest.get('crc32')
@@ -383,14 +375,12 @@ def read(connector: Any, path: str) -> Tuple[str, dict]:
 
 
 def export_identity(manifest: dict) -> str:
-    r"""A hash of an export's range checksums and index manifest."""
     return hashlib.sha256(json.dumps(
         [manifest['range_bytes'], manifest['crc32'],
          manifest['index_manifest']], sort_keys=True).encode()).hexdigest()
 
 
 def holds_export(index: Path, manifest: dict) -> bool:
-    r"""Whether the local ``index`` has the export's bytes."""
     from diskgraph import snapshot_range_checksums
 
     identity = export_identity(manifest)
@@ -533,5 +523,4 @@ def _check_readable(index: Path, manifest: dict) -> None:
         built = (manifest.get('environment') or {}).get('kumo_engine')
         raise RuntimeError(
             f'This DiskGraph cannot open the snapshot exported by kumo-engine '
-            f'{built} ({error}). Rebuild it with this kumo-engine or load it '
-            'with the exporting one.') from error
+            f'{built} ({error}); load it with that kumo-engine.') from error

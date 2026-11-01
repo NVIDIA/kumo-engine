@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Experimental: register the fit and score jobs as Snowflake Tasks; see
-README.md."""
+"""Experimental: register the fit and score jobs as Snowflake Tasks."""
 
 import argparse
 from pathlib import Path

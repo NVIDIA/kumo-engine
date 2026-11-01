@@ -16,9 +16,6 @@ the existing local backend's own `_LocalPQueryBackend.validate`
 `to_portable(definition)` -- the schema-level conversion, not an ingested
 snapshot -- that this doesn't need a `GraphSnapshot` either.
 
-`PredictiveQuery._from_snapshot(snapshot, query)` binds a snapshot instead and
-parses against `snapshot.graph_config`.
-
 Construction itself stays I/O-free, consistent with `Table`/`Graph`: nothing
 parses until `_parsed` is actually touched (by `validate()`, `get_task_type()`,
 or a caller directly). A failed parse is *not* cached -- `functools.
@@ -111,13 +108,6 @@ class PredictiveQuery:
     @classmethod
     def _from_snapshot(cls, snapshot: GraphSnapshot,
                        query: str) -> 'PredictiveQuery':
-        r"""Bind `query` to `snapshot`'s graph without its `Graph` object.
-
-        Snapshots passed to this query's methods must come from the same
-        graph (same `graph_key`). That only checks the snapshot belongs to
-        this query's graph; it says nothing about compatibility with a
-        trained model.
-        """
         return cls(graph=snapshot, query=query)
 
     @cached_property

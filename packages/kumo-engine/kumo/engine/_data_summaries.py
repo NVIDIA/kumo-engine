@@ -33,7 +33,6 @@ _EDGE_STATS = {'FRAC_SRC_NONZERO_DEGREE': 'src_match_frac',
 _HEALTH = ('table or link', 'rows', 'columns', 'dropped rows',
            'duplicate keys', 'rows without time', 'edges',
            'source matched', 'target matched', 'failed lookups')
-# The Kumo platform's data checks.
 _BAD_TIME_FRACTION = 0.05
 _INVALID_FRACTION = 0.10
 _MIN_MATCH_FRACTION = 0.20
@@ -153,7 +152,6 @@ def _profiles(columns: Mapping[str, Mapping[str, Any]]
 
 def _relations(edge_stats: Mapping[str, Any],
                ingest: Mapping[str, Any]) -> Dict[str, Dict[str, float]]:
-    r"""Each relation's edge count, match shares and lookup failures."""
     relations: Dict[str, Dict[str, float]] = {
         name: {'count': count}
         for name, count in (ingest.get('edge_counts') or {}).items()
@@ -186,7 +184,6 @@ def _links(table: Mapping[str, Any],
 def _health(ingest: Mapping[str, Any], columns: Mapping[str, Any],
             relations: Mapping[str, Mapping[str, float]],
             graph_config: Mapping[str, Any]) -> Table:
-    r"""A row per table, then per link."""
     duplicates = _by_table(ingest.get('pk_duplicate_counts'), ':')
     null_time = _by_table(ingest.get('pk_null_timestamp_drops'), ':shard-')
     dropped = ingest.get('dropped_rows_counts') or {}
@@ -215,7 +212,6 @@ def _link(table: Mapping[str, Any], fkey: Mapping[str, Any]) -> str:
 def _problems(ingest: Mapping[str, Any], columns: Mapping[str, Any],
               relations: Mapping[str, Mapping[str, float]],
               graph_config: Mapping[str, Any]) -> List[str]:
-    r"""Each table and link that breaks the Kumo platform's data checks."""
     duplicates = _by_table(ingest.get('pk_duplicate_counts'), ':')
     null_time = _by_table(ingest.get('pk_null_timestamp_drops'), ':shard-')
     sources = ingest.get('source_rows_by_table') or {}

@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Every tracking adapter records the same run records as a recorded fit
-and a recorded prediction run."""
+"""Every tracking adapter records the same runs."""
 
 import hashlib
 import json
@@ -89,7 +88,6 @@ def _epochs(trial, *values):
     ]
 
 
-# Trial 2's first attempt fails; epoch events carry no attempt, as in core.
 EVENTS = [
     _event('trial_started', 1, attempt=1, **{'optimization.base_lr': 0.01}),
     *_epochs(1, (0.5, 0.4), (0.3, 0.35)),
@@ -106,8 +104,6 @@ EVENTS = [
     _event('fit_ended', metrics={'val_mae': 0.3, 'test_mae': 0.32,
                                  'seconds': 9.0}, status='succeeded'),
 ]
-# The fit run's own series: once the fit succeeds, the selected trial 2's
-# epochs.
 SELECTED = {'train_loss': ((1, 0.6), (2, 0.4)), 'val_mae': ((1, 0.5), (2, 0.3))}
 BUNDLE = 'b' * 64
 RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
@@ -203,9 +199,7 @@ def join_tracking_threads():
 def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
            context=CONTEXT, series=None,
            summaries=()) -> Dict[str, RunRecord]:
-    r"""Feeds the recorded fit to `tracker`; returns the records expected
-    of it, with the fit run's ``series`` (default: the search's) and
-    ``summaries``."""
+    r"""Feeds the recorded fit to `tracker`; returns the expected records."""
     recorder = _Recorder(tracker)
     session = TrackingSession(recorder)
     session.start(lambda: fit_spec(context))
@@ -388,13 +382,11 @@ def snowflake_adapter(monkeypatch):
 
             for key, value in run['params'].items():
                 runs, name = bucket(key)
-                # Snowflake has no tags: they are params of the same name.
+                # Snowflake logs tags as params.
                 if name.startswith('kumo.') or name in USER_TAGS:
                     runs['tags'][name] = value
                 else:
                     runs['params'][name] = value
-            # Snowflake's own run duration and card are checked in
-            # test_snowflake_tracking.
             for key, value, step in run['metrics']:
                 if key == 'duration_seconds':
                     continue
@@ -413,9 +405,7 @@ def snowflake_adapter(monkeypatch):
         return observed
 
     def expected(records):
-        r"""What Snowflake keeps of a trial: its params, status, error and
-        best tuned validation metric, under ``TRIAL_<i>`` (a retry under
-        ``TRIAL_<i>_ATTEMPT_<j>``)."""
+        r"""What Snowflake keeps of each trial."""
         kept = {}
         for key, record in records.items():
             if record.tags['kumo.kind'] == 'trial':
@@ -434,7 +424,6 @@ def snowflake_adapter(monkeypatch):
         make=lambda: SnowflakeTracking(_snowflake_experiment_fake.FakeSession(),
                                        experiment_name='ents', tags=USER_TAGS),
         observe=observe, step_metrics=True, artifacts=True,
-        # Snowflake names are checked in test_snowflake_tracking.
         run_name=lambda name: None, expected=expected)
 
 

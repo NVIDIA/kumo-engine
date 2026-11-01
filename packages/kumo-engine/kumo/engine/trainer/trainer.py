@@ -191,17 +191,17 @@ class TrainingResult:
 
     @property
     def id(self) -> Optional[str]:
-        """The model's id: its bundle id."""
+        """The bundle id."""
         return self.bundle_id
 
     @property
     def manifest(self) -> Optional[ModelManifest]:
-        """The bundle's ``_provenance.json``; None for older bundles."""
+        """The bundle manifest, if any."""
         return read_provenance(self.bundle_dir)
 
     @property
     def snapshot_id(self) -> Optional[str]:
-        """The id of the snapshot the model was trained on."""
+        """The id of the training snapshot."""
         if not (self.bundle_dir / SPEC_FILE).is_file():
             return None
         return read_training_spec(self.bundle_dir).snapshot_id
@@ -218,9 +218,7 @@ class TrainingResult:
         return self._model('predict').predict(*args, **kwargs)
 
     def export(self, config: Any) -> PublishedModel:
-        """Publish this model's bundle to a ``ModelOutputConfig``, or
-        register it at a `kumo.MLOps` ``registry`` through its tracker; a
-        registry that already holds the bundle returns that version."""
+        """Publishes the bundle to a ``ModelOutputConfig`` or ``MLOps``."""
         from kumo.engine._mlops import MLOps
 
         if isinstance(config, MLOps):
@@ -238,10 +236,7 @@ class TrainingResult:
 
     def with_scoring_defaults(self,
                               defaults: ScoringDefaults) -> 'TrainingResult':
-        """A copy of this model whose ``predict`` applies ``defaults`` when a
-        call omits them; a new bundle, whose manifest names this one in
-        ``parents.derived_from``. To register a model with its defaults,
-        pass ``fit(scoring_defaults=...)`` instead."""
+        """A copy of this model whose ``predict`` applies ``defaults``."""
         from kumo_core.artifacts import bundle_task_type
 
         if self._trainer is None:
@@ -338,36 +333,21 @@ class PredictionResult:
     def load_from_connector(cls, connector: Connector, *,
                             path: str) -> 'PredictionResult':
         r"""Load a complete Parquet export, downloaded when first read."""
-        import tempfile
         import weakref
 
         from pyarrow.fs import FileType
 
         from kumo.engine._manifest import read_manifest
         from kumo.engine._mlops import on_root
-        from kumo.engine._scratch import get_scratch_dir
-        from kumo.engine.connector import file_store
 
         connector, path = on_root(connector, path)
-        store = file_store(connector, path)
-        if store is None:
-            raise TypeError(f'{path} is not a file destination of this '
-                            f'connector')
-        filesystem, root = store
-        root = root.rstrip('/')
+        filesystem, root = _export_root(connector, path)
         if (filesystem.get_file_info(f'{root}/_SUCCESS').type
                 == FileType.NotFound and filesystem.get_file_info(
                     f'{root}/predictions/_SUCCESS').type == FileType.File):
             root, path = f'{root}/predictions', f"{path.rstrip('/')}/predictions"
-        if filesystem.get_file_info(
-                f'{root}/_SUCCESS').type == FileType.NotFound:
-            raise FileNotFoundError(
-                f'{path} has no _SUCCESS marker: the export is incomplete or '
-                f'still running')
-        scratch = get_scratch_dir()
-        scratch.mkdir(parents=True, exist_ok=True)
-        local = Path(tempfile.mkdtemp(prefix='fetched-predictions-',
-                                      dir=scratch))
+        _require_success(filesystem, root, path)
+        local = _fetch_dir('fetched-predictions-')
         try:
             with filesystem.open_input_stream(
                     f'{root}/{PROVENANCE_FILE}') as reader:
@@ -490,19 +470,13 @@ class PredictionResult:
             files = replace(self, artifact_type=kind).files
             outputs.append((kind, destination, files))
         payload = _sidecar_bytes(sidecar)
+        sidecars = None if payload is None else {PROVENANCE_FILE: payload}
         bundle_id = None if sidecar is None else sidecar.parents.model.id
         for index, (kind, destination, files) in enumerate(outputs):
-            extra: Dict[str, Any] = ({'sidecars': {PROVENANCE_FILE: payload}}
-                                     if payload is not None and _holds_parquet(
-                                         output_config.connector, destination)
-                                     else {})
-            columns = output_config._id_columns(destination, self.id,
-                                                bundle_id)
-            if columns:
-                extra['extra_columns'] = columns
             output_config._write(
                 destination, list(files), export_id=None
-                if self.id is None else f'{self.id}-{kind.value}', **extra)
+                if self.id is None else f'{self.id}-{kind.value}',
+                ids=(self.id, bundle_id), sidecars=sidecars)
             if records is not None and written is not None:
                 written.append(records[index])
 
@@ -517,24 +491,57 @@ class _Export:
     def files(self) -> tuple[str, ...]:
         parts = self.local / 'parts'
         if not parts.is_dir():
-            from kumo_core.sources.transfer import StagedFile, fetch_all
-            from pyarrow.fs import FileSelector, FileType
-
-            def fetch(staged: StagedFile, target: str) -> None:
-                with self.filesystem.open_input_stream(staged.path) as reader, \
-                        open(target, 'wb') as writer:
-                    shutil.copyfileobj(reader, writer, 1 << 20)
-
             partial = self.local / 'parts.partial'
             shutil.rmtree(partial, ignore_errors=True)
-            listed = self.filesystem.get_file_info(FileSelector(self.root))
-            fetch_all([
-                StagedFile(info.path, info.size) for info in listed
-                if info.type == FileType.File and info.path.endswith(
-                    '.parquet')
-            ], str(partial), fetch=fetch)
+            fetch_parquet(self.filesystem, self.root, partial)
             partial.rename(parts)
         return tuple(sorted(map(str, parts.glob('*.parquet'))))
+
+
+def _export_root(connector: Connector, path: str) -> tuple[Any, str]:
+    from kumo.engine.connector import file_store
+
+    store = file_store(connector, path)
+    if store is None:
+        raise TypeError(f'{path} is not a file destination of this '
+                        f'connector')
+    return store[0], store[1].rstrip('/')
+
+
+def _require_success(filesystem: Any, root: str, path: str) -> None:
+    from pyarrow.fs import FileType
+
+    if filesystem.get_file_info(f'{root}/_SUCCESS').type == FileType.NotFound:
+        raise FileNotFoundError(
+            f'{path} has no _SUCCESS marker: the export is incomplete or '
+            f'still running')
+
+
+def _fetch_dir(prefix: str) -> Path:
+    import tempfile
+
+    from kumo.engine._scratch import get_scratch_dir
+
+    scratch = get_scratch_dir()
+    scratch.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=scratch))
+
+
+def fetch_parquet(filesystem: Any, root: str, target: Path) -> None:
+    r"""Download the Parquet files under ``root`` into ``target``."""
+    from kumo_core.sources.transfer import StagedFile, fetch_all
+    from pyarrow.fs import FileSelector, FileType
+
+    def fetch(staged: StagedFile, local: str) -> None:
+        with filesystem.open_input_stream(staged.path) as reader, \
+                open(local, 'wb') as writer:
+            shutil.copyfileobj(reader, writer, 1 << 20)
+
+    fetch_all([
+        StagedFile(info.path, info.size)
+        for info in filesystem.get_file_info(FileSelector(root))
+        if info.type == FileType.File and info.path.endswith('.parquet')
+    ], str(target), fetch=fetch)
 
 
 def _sidecar_bytes(manifest: Optional[PredictionManifest]) -> Optional[bytes]:
@@ -546,15 +553,6 @@ def _sidecar_bytes(manifest: Optional[PredictionManifest]) -> Optional[bytes]:
         warnings.warn(f"Exporting without {PROVENANCE_FILE}: {error}",
                       UserWarning, stacklevel=4)
         return None
-
-
-def _holds_parquet(connector: Connector, destination: str) -> bool:
-    from kumo_core.sources import layout
-
-    from kumo.engine.connector import is_file_destination
-
-    return (is_file_destination(connector, destination)
-            and layout.file_type(destination.rstrip('/')) != layout.CSV)
 
 
 def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
@@ -578,8 +576,7 @@ HOLDOUT_META_FILE = 'holdout-meta.json'
 
 
 def _bundle_holdout(result: TrainingResult) -> TrainingResult:
-    r"""Copy the holdout and its size record into the bundle, so a model
-    loaded from a registry or path still has them."""
+    r"""Copy the holdout into the bundle."""
     from kumo_core.artifacts import add_bundle_file
 
     if result.holdout_path is None:
@@ -624,7 +621,6 @@ def _store_and_register(
     warn: bool = True,
     stored: Optional[BaseException] = None,
 ) -> Tuple[Optional[PublishedModel], Optional[BaseException]]:
-    r"""Stores, logs and registers a bundle; returns it and any error."""
     if stored is None and settings is not None and settings.wants('model'):
         try:
             _store_model(bundle_dir, manifest, settings)
@@ -667,8 +663,7 @@ def _fit_identity(snapshot: GraphSnapshot,
 
 def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
                  settings: Any) -> None:
-    r"""Copy the bundle to ``<root>/models/<bundle id>/`` unless a complete
-    copy is there."""
+    r"""Copies the bundle under the root unless it is there."""
     from kumo_core.artifacts import PROVENANCE_FILE, add_bundle_file
     from kumo_core.object_store_sink import holds_bundle, upload_bundle
     from pyarrow.fs import FileSelector
@@ -781,7 +776,6 @@ _REFIT_FULL = ('The model was refit on all the data, the test split included, '
 
 def _with_metrics(model: Optional[PublishedModel],
                   metrics: Mapping[str, float]) -> Optional[PublishedModel]:
-    r"""``model`` with ``metrics``, where its registry returned none."""
     if model is None or model.metrics:
         return model
     return replace(model, metrics=dict(metrics))
@@ -899,7 +893,6 @@ def _warm_start_plan(
 def _validate_model_plan(model_plan: CoreModelPlan,
                          workflow: TrainingWorkflowRequest,
                          train_table: TrainingTable) -> None:
-    r"""Rejects a bad plan before the index is extended."""
     from kumo_core.pquery import (
         query_is_temporal,
         target_to_entity_paths,
@@ -1049,7 +1042,6 @@ _UNACTIONABLE = (
 
 
 def _without_unactionable_warnings(method: _F) -> _F:
-    r"""Runs ``method`` without third-party notes users cannot act on."""
     @functools.wraps(method)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         tips = logging.getLogger('pytorch_lightning.utilities.rank_zero')
@@ -1136,8 +1128,7 @@ class Trainer:
         return self._training_result
 
     def export(self, config: Any) -> PublishedModel:
-        """Publish the fitted or loaded model bundle, as
-        :meth:`TrainingResult.export`."""
+        """Publishes the model, as :meth:`TrainingResult.export`."""
         return self._fitted('export').export(config)
 
     @_without_unactionable_warnings
@@ -1171,9 +1162,7 @@ class Trainer:
                 generate_training_table(snapshot)`.
             snapshot: graph data and features to train against.
             export_config: if given, publishes the trained model bundle.
-            scoring_defaults: prediction arguments the bundle applies when
-                ``predict`` omits them, such as a classification threshold;
-                stored, registered and served with the model.
+            scoring_defaults: arguments ``predict`` applies when omitted.
             warm_start: a fitted trainer or one restored with ``load`` or
                 ``load_from_connector``. Reuses its selected weights, optimizer
                 state, fitted encoders, architecture and neighbor sampling;
@@ -1183,11 +1172,8 @@ class Trainer:
                 architecture; they support prediction but are unreliable
                 warm-start sources.
             mlops: a `kumo.MLOps`; with MLOps on (this or a `kumo.mlops`
-                block), the bundle is also stored under the artifact root and
-                the fit is recorded by its ``tracking``.
-            callbacks: called with each progress
-                `kumo.engine.tracking.Event`; a callback that raises is logged
-                and not called again.
+                block), the bundle is also stored and the fit tracked.
+            callbacks: called with each progress `Event`.
 
         Each call returns a new `TrainingResult`; `Trainer.result` holds the
         latest.
@@ -1548,13 +1534,8 @@ class Trainer:
     ) -> PredictionResult:
         r"""Score a snapshot and return durable file-backed results.
 
-        ``predict(snapshot)`` scores the trained query's population at
-        ``prediction_time`` (as :meth:`PredictiveQuery.generate_prediction_table`);
-        ``entities`` is a source table of ``ENTITY1`` (and ``TIMESTAMP``
-        where the task needs one) rows to score instead. It warns when the
-        snapshot was taken of another graph than the one the model was
-        trained on. ``predict(prediction_table, snapshot=...)`` scores a
-        prediction table generated beforehand, as before.
+        Scores the query's population at ``prediction_time``, or the
+        ``entities`` given, or a ``prediction_table`` generated beforehand.
 
         The trainer must contain fitted state from :meth:`fit`, :meth:`load`,
         or :meth:`load_from_connector`. Without ``output_config``,
@@ -1802,13 +1783,10 @@ class Trainer:
 
         Args:
             previous: An earlier run, for run-over-run statistics.
-            snapshot: The snapshot the run scored. By default, the one the
-                run's manifest names, from the local snapshot store or,
-                with MLOps on, the artifact root.
-            training_snapshot: The snapshot this model trained on; found
-                like ``snapshot`` by default.
-            mlops: Writes the report into ``run``'s prediction run when
-                tracking is on, like `evaluate`.
+            snapshot: The snapshot the run scored; by default the one its
+                manifest names.
+            training_snapshot: The snapshot this model trained on.
+            mlops: Tracks the report in ``run``'s prediction run.
         """
         from kumo.engine._mlops import resolve
         from kumo.engine._monitoring import score_drift, track
@@ -1863,8 +1841,7 @@ class Trainer:
         from trusted publishers; checkpoint deserialization happens at predict.
         ``accelerator`` selects the device for this instance (default: ``auto``).
         A `kumo.MLOps` ``model_registry`` reads ``path`` under its artifact
-        root (``models/<id>``) and ``location`` from the registry its
-        tracker registers in.
+        root (``models/<id>``) and ``location`` in its tracker's registry.
         """
         from kumo.engine._mlops import MLOps, on_root
 

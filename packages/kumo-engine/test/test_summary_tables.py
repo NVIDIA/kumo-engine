@@ -6,17 +6,16 @@ import json
 
 from kumo_core.summaries import Histogram, Table
 
-from kumo.engine._summary_tables import SummaryTables, table_json
+from kumo.engine._summary_tables import route, table_json
 
 
 def test_a_histogram_table_closes_its_end_bins_at_the_values_extent():
-    tables = SummaryTables()
-    tables.add_histogram(Histogram('holdout/histogram/actual', (0.0, 1.0),
-                                   (1, 2, 3), (-2.5, 4.0)))
-    tables.add_histogram(Histogram('holdout/histogram/predicted', (0.0, 1.0),
-                                   (0, 5, 1), (-1.0, 6.0)))
-
-    table, = tables.tables()
+    table, = route([
+        Histogram('holdout/histogram/actual', (0.0, 1.0), (1, 2, 3),
+                  (-2.5, 4.0)),
+        Histogram('holdout/histogram/predicted', (0.0, 1.0), (0, 5, 1),
+                  (-1.0, 6.0)),
+    ], charts=True).tables
 
     assert table.columns == ('from', 'to', 'actual', 'predicted',
                              'actual cumulative share',
@@ -36,10 +35,7 @@ def test_tables_round_measurements_and_keep_definitions_and_counts():
 
 
 def test_a_histogram_table_leaves_out_empty_bins():
-    tables = SummaryTables()
-    tables.add_histogram(Histogram('pred/histogram/score', (0.0, 0.5, 1.0),
-                                   (0, 4, 0, 1), (0.1, 1.0)))
-
-    table, = tables.tables()
+    table, = route([Histogram('pred/histogram/score', (0.0, 0.5, 1.0),
+                              (0, 4, 0, 1), (0.1, 1.0))], charts=True).tables
 
     assert table.rows == ((0.0, 0.5, 4, 0.8), (1.0, 1.0, 1, 1.0))

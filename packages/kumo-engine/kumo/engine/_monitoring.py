@@ -79,53 +79,40 @@ class EvaluationResult:
         import tempfile
 
         from kumo.engine._scratch import get_scratch_dir
-        from kumo.engine.trainer.trainer import _holds_parquet
 
         if self.actuals is None:
             raise ValueError(f'No evaluated rows: {dict(self.reasons)}')
         destination = output_config.destinations()['predictions']
         files = sorted(str(path) for path in Path(self.actuals).glob('*.parquet'))
         written = max(Path(path).stat().st_mtime_ns for path in files)
-        extra: Dict[str, Any] = {}
-        columns = output_config._id_columns(destination, self.prediction_id,
-                                            self.bundle_id)
-        if columns:
-            extra['extra_columns'] = columns
-        if _holds_parquet(output_config.connector, destination):
-            fields = dataclasses.asdict(self)
-            for name in ('actuals', 'tracking', '_exported'):
-                fields.pop(name)
-            extra['sidecars'] = {
-                _EVALUATION_FILE: json.dumps(fields, sort_keys=True).encode()
-            }
+        fields = dataclasses.asdict(self)
+        for name in ('actuals', 'tracking', '_exported'):
+            fields.pop(name)
         get_scratch_dir().mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=get_scratch_dir()) as typed:
             files = output_config.connector._monitored_files(
                 destination, files, Path(typed))
-            output_config._write(destination, files,
-                                 export_id=f'{self.prediction_id}-evaluation-'
-                                 f'{Path(self.actuals).name}-{written}',
-                                 **extra)
+            output_config._write(
+                destination, files, export_id=f'{self.prediction_id}-'
+                f'evaluation-{Path(self.actuals).name}-{written}',
+                ids=(self.prediction_id, self.bundle_id),
+                sidecars={_EVALUATION_FILE: json.dumps(
+                    fields, sort_keys=True).encode()})
 
     @classmethod
     def load_from_connector(cls, connector: Any, *,
                             path: str) -> 'EvaluationResult':
         r"""Load an evaluation that export wrote to a Parquet directory."""
-        import tempfile
         import weakref
 
-        from kumo_core.sources.transfer import StagedFile, fetch_all
-        from pyarrow.fs import FileSelector, FileType
+        from kumo.engine.trainer.trainer import (
+            _export_root,
+            _fetch_dir,
+            _require_success,
+            fetch_parquet,
+        )
 
-        from kumo.engine._scratch import get_scratch_dir
-        from kumo.engine.connector import file_store
-
-        store = file_store(connector, path)
-        if store is None:
-            raise TypeError(f'{path} is not a file destination of this '
-                            f'connector')
-        filesystem, root = store
-        root = root.rstrip('/')
+        filesystem, root = _export_root(connector, path)
         try:
             with filesystem.open_input_stream(
                     f'{root}/{_EVALUATION_FILE}') as reader:
@@ -134,26 +121,9 @@ class EvaluationResult:
             raise FileNotFoundError(
                 f'{path} has no {_EVALUATION_FILE}: not an evaluation export'
             ) from error
-        if filesystem.get_file_info(
-                f'{root}/_SUCCESS').type == FileType.NotFound:
-            raise FileNotFoundError(
-                f'{path} has no _SUCCESS marker: the export is incomplete or '
-                f'still running')
-        scratch = get_scratch_dir()
-        scratch.mkdir(parents=True, exist_ok=True)
-        local = Path(tempfile.mkdtemp(prefix='fetched-evaluation-',
-                                      dir=scratch))
-
-        def fetch(staged: StagedFile, target: str) -> None:
-            with filesystem.open_input_stream(staged.path) as reader, \
-                    open(target, 'wb') as writer:
-                shutil.copyfileobj(reader, writer, 1 << 20)
-
-        fetch_all([
-            StagedFile(info.path, info.size)
-            for info in filesystem.get_file_info(FileSelector(root))
-            if info.type == FileType.File and info.path.endswith('.parquet')
-        ], str(local / 'actuals'), fetch=fetch)
+        _require_success(filesystem, root, path)
+        local = _fetch_dir('fetched-evaluation-')
+        fetch_parquet(filesystem, root, local / 'actuals')
         fields['anchors'] = tuple(fields['anchors'])
         result = cls(**fields, actuals=str(local / 'actuals'),
                      _exported=local)
@@ -200,9 +170,9 @@ def evaluate(trainer: Any, run: Any, snapshot: Any) -> EvaluationResult:
     out.pop('step')
     if out['matured'] is False:
         warnings.warn(
-            f'Prediction run {run.id}: labels are not mature yet, since the '
-            'label window ends after the snapshot data; the metrics cover '
-            'only the outcomes observed so far.', UserWarning, stacklevel=3)
+            f'Prediction run {run.id}: labels are not mature yet, so the '
+            'metrics cover only the outcomes observed so far.', UserWarning,
+            stacklevel=3)
     return EvaluationResult(
         prediction_id=run.id,
         bundle_id=run.bundle_id,
@@ -357,7 +327,6 @@ def _join_labels(out: Dict[str, Any], trainer: Any, pquery: Any,
                  files: List[str], columns: List[str],
                  anchors: Tuple[int, ...], keys: List[str], task: str,
                  actuals: Path) -> Optional[Dict[str, Any]]:
-    r"""Predictions joined with labels; None when no entity has a label."""
     import diskgraph
     from kumo_core.training import custom_table
     from pyarrow import parquet
@@ -581,7 +550,6 @@ _IDENTITY = ('kumo.prediction_id', 'kumo.bundle_id', 'kumo.as_of',
 
 def _record(report: Any, run: Any, tracking: Any, trainer: Any,
             started: datetime, labels: Any, previous: Any) -> Any:
-    r"""The report as a run record tagged like its prediction run."""
     from kumo.engine._tracking import RunSpec, prediction_record, run_record
 
     evaluating = isinstance(report, EvaluationResult)
@@ -620,7 +588,6 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
 
 def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
                      shift: bool) -> List[Summary]:
-    r"""Score drift, input changes and column drift."""
     summaries: List[Summary] = []
     reasons = report.reasons
     comparisons = _comparisons(report)
@@ -666,7 +633,6 @@ def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
 def _evaluation_summaries(result: EvaluationResult, labels: Any,
                           model: Any = None,
                           scored: Optional[int] = None) -> List[Summary]:
-    r"""Realized metrics beside the holdout's, the labelled share and notes."""
     from kumo.engine._manifest import artifact_summaries
 
     manifest = getattr(labels, 'manifest', None)
@@ -723,7 +689,6 @@ def _tune_metric(model: Any) -> Optional[str]:
 
 
 def _holdout(model: Any) -> Dict[str, float]:
-    r"""The shipped ``model``'s holdout metrics."""
     refit_full = getattr(getattr(model, 'manifest', None), 'fit_mode',
                          None) == 'refit_full'
     named = logged_names(getattr(model, 'metrics', None) or {}, refit_full)
@@ -754,7 +719,6 @@ def _values(values: Mapping[str, Optional[float]]) -> str:
 
 
 def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
-    r"""Tables and links whose size changed since training."""
     summaries: List[Summary] = []
     for name, unit, links in (('drift/table_rows', 'rows', False),
                               ('drift/link_edges', 'edges', True)):
@@ -779,7 +743,6 @@ def _input_changes(changes: Mapping[str, Tuple[Any, Any]]) -> List[Summary]:
 
 def _input_drift(features: Mapping[str, Mapping[str, Mapping[str, Any]]]
                  ) -> List[Summary]:
-    r"""Per source table, each encoded column's change, most shifted first."""
     summaries: List[Summary] = []
     shifted = []
     for table, columns in sorted(features.items()):
@@ -890,7 +853,6 @@ _SMOOTHING = 1e-6
 
 def _features(trainer: Any, sides: Mapping[str, Mapping[str, Any]],
               reasons: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
-    r"""Column statistic changes since the training snapshot."""
     try:
         before, after = (side['col_stats'] for side in sides.values())
         if not (isinstance(before, dict) and isinstance(after, dict)):
@@ -957,7 +919,6 @@ _NAMED_BY = {'training': "the model's manifest", 'scoring': "the run's manifest"
 def _snapshot_stats(trainer: Any, run: Any, snapshot: Any,
                     training_snapshot: Any,
                     root: Any) -> Dict[str, Dict[str, Any]]:
-    r"""Column statistics, ingest counts and links of both snapshots."""
     model = getattr(getattr(trainer, 'result', None), 'manifest', None)
     sides = {}
     for side, passed, manifest in (

@@ -45,15 +45,10 @@ def _without_header_warnings() -> Iterator[None]:
 
 @dataclass(frozen=True)
 class SageMakerMLflow:
-    r"""A SageMaker managed MLflow tracking server or app, for
-    ``MlflowTracking(target=...)``.
+    r"""A SageMaker managed MLflow server, for ``MlflowTracking(target=)``.
 
     Args:
-        tracking_server_arn: the server's (or app's) ARN.
-        identity: a ``kumo.engine.connector.S3Identity`` with an access key
-            or a role to assume; `None` or ``S3Identity()`` uses the ambient
-            AWS credential chain (an instance or execution role,
-            ``aws configure``).
+        identity: an ``S3Identity``; `None` uses the ambient AWS credentials.
     """
 
     tracking_server_arn: str
@@ -152,7 +147,7 @@ def resolve(target: Any) -> Target:
     if isinstance(target, DatabricksConnector):
         return _databricks(target)
     raise TypeError(f'MlflowTracking(target=...) takes a DatabricksConnector, '
-                    f'a SageMakerMLflow or a tracking URI, not '
+                    f'SageMakerMLflow or tracking URI, not '
                     f'{type(target).__name__}.')
 
 
@@ -195,7 +190,6 @@ def _databricks(connector: Any) -> Target:
 
 @contextmanager
 def _databricks_token(client: Any) -> Iterator[None]:
-    r"""A short-lived ``DATABRICKS_TOKEN``; the secret stays out."""
     config_type = import_provider('databricks.sdk.config',
                                   'databricks').Config
     authorization = client.config.authenticate()['Authorization']
@@ -232,7 +226,6 @@ def _sagemaker(target: SageMakerMLflow) -> Target:
 
 @contextmanager
 def _sagemaker_session(arn: str, session: Any) -> Iterator[None]:
-    r"""The SageMaker plugin's state, signing with ``session``."""
     plugin = import_provider('sagemaker_mlflow.session', 'sagemaker')
     with environ({'SAGEMAKER_MLFLOW_ASSUME_ROLE_ARN': None}), \
             global_tracking_uri(arn), plugin.use_session(session):

@@ -101,7 +101,6 @@ def predict_frame(trainer: Any, snapshot: Any, rows: pd.DataFrame,
 
 
 def _in_input_order(rows: pd.DataFrame, scored: pd.DataFrame) -> pd.DataFrame:
-    r"""``scored`` in the order of ``rows``."""
     keys = ['ENTITY']
     left = pd.DataFrame({'ENTITY': rows['ENTITY1'].to_numpy()})
     right = scored[['ENTITY']].copy()

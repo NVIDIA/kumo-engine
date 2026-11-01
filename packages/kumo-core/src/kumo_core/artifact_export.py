@@ -304,8 +304,7 @@ def prepared_artifact_file(path, extra_columns=None, *, parquet_options=None,
         writer = None
         try:
             for batch in local_parquet_batches(path):
-                # In Arrow: a pandas round trip turns an all-null bool column
-                # into Arrow's null type.
+                # Pandas turns all-null bool columns into Arrow nulls.
                 table = pa.Table.from_batches([batch])
                 for name, value in (extra_columns or {}).items():
                     column = pa.array([value] * table.num_rows,

@@ -40,7 +40,6 @@ def test_predict_scores_a_snapshot_with_the_saved_query(fitted, tmp_path):
         legacy.sort_values('ENTITY').reset_index(drop=True), expected)
     with pytest.raises(ValueError, match='not both'):
         scores(entities=rows, prediction_time=graph_table.timestamps[0])
-    # Same schema under another graph id: scored, with an info log only.
     other = replace(snapshot, id='other@' + snapshot.id.split('@')[1])
     scored = trainer.predict(other, binary_classification_threshold=0.5).frame
     pd.testing.assert_frame_equal(

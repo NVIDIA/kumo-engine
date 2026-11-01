@@ -153,7 +153,7 @@ def test_a_loaded_or_fetched_model_keeps_its_holdout(graph, tmp_path,
 
 def test_a_bundle_without_a_holdout_says_so(graph, monkeypatch):
     monkeypatch.setattr('kumo.engine.trainer.trainer._bundle_holdout',
-                        lambda result: result)  # as bundles before the copy
+                        lambda result: result)
     result = _fit(graph, QUERY)
 
     loaded = kumo.Trainer.load(result.bundle_dir).result

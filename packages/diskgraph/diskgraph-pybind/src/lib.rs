@@ -1415,17 +1415,11 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 ///         invalid. Semantic and logical types are mapped through the same
 ///         ``map_kumo_stype`` / ``map_kumo_dtype`` helpers ingest uses.
 ///     data_version: version string stamped into every emitted entry.
-///     percentiles: also emit approximate ``PERCENTILES`` (q01 through q99,
-///         from each numerical column's t-digest).
 ///     summary_stats_by_class: emit ``SUMMARY_STATS_BY_CLASS`` for a
 ///         ``SCORE``/``CLASS`` pair (the default); ``False`` skips its
 ///         per-class map.
 ///     histograms: emit ``HISTOGRAM`` statistics (the default), which take a
 ///         second read; ``False`` skips them.
-///     category_counts_limit: keep at most this many ``CATEGORY_COUNTS``
-///         entries in the full output (all by default; the min output keeps
-///         20) and record ``CATEGORY_COUNTS_CAPPED``, whether counting hit
-///         the category cap so ``NUM_UNIQUE`` is an estimate.
 ///     max_per: compute every statistic over the maximum of each column
 ///         within each run of equal values of these columns, in path and row
 ///         order (for example each prediction's top score). Needs numerical
@@ -1444,10 +1438,8 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
     kumo_column_specs_json,
     data_version,
     *,
-    percentiles=false,
     summary_stats_by_class=true,
     histograms=true,
-    category_counts_limit=None,
     max_per=None,
     fixed_edges=None,
     _category_count_limit_for_testing=None,
@@ -1458,10 +1450,8 @@ fn compute_col_stats_for_parquet(
     parquet_paths: Vec<String>,
     kumo_column_specs_json: &str,
     data_version: &str,
-    percentiles: bool,
     summary_stats_by_class: bool,
     histograms: bool,
-    category_counts_limit: Option<usize>,
     max_per: Option<Vec<String>>,
     fixed_edges: Option<HashMap<String, Vec<f64>>>,
     _category_count_limit_for_testing: Option<u64>,
@@ -1534,10 +1524,8 @@ fn compute_col_stats_for_parquet(
     let data_version = data_version.to_string();
     let paths_owned = parquet_paths;
     let options = ColStatsOptions {
-        percentiles,
         summary_stats_by_class,
         histograms,
-        category_counts_limit,
         max_per: max_per.unwrap_or_default(),
         fixed_edges: fixed_edges.unwrap_or_default(),
     };

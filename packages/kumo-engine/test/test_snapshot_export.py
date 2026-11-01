@@ -204,8 +204,7 @@ def test_concurrent_exports_of_one_snapshot_both_succeed(
 
 
 def _rebuilt(snapshot, tmp_path, name):
-    r"""Another build of the same logical snapshot: same id and file sizes,
-    one digit different in ``col_stats.json``."""
+    r"""Same id and sizes, one digit changed in ``col_stats.json``."""
     index = (tmp_path / name / snapshot.index_path.parent.name /
              snapshot.index_path.name)
     shutil.copytree(snapshot.index_path, index)
@@ -519,9 +518,9 @@ def test_snapshot_manifest_travels_unchanged_or_is_reconstructed(
 
 def test_warehouse_connectors_are_not_supported(scratch, graph):
     connector = SimpleNamespace(sink_backend=object())
-    with pytest.raises(NotImplementedError, match='FileConnector'):
+    with pytest.raises(NotImplementedError, match='file connector'):
         graph.snapshot().export(SnapshotOutputConfig(connector, 'x'))
-    with pytest.raises(NotImplementedError, match='FileConnector'):
+    with pytest.raises(NotImplementedError, match='file connector'):
         _load(connector, 'x')
 
 
@@ -753,7 +752,7 @@ def test_a_sink_with_only_a_filesystem_holds_exports(tmp_path, scratch,
             with filesystem.open_input_file(info.path) as reader:
                 assert (loaded.index_path / info.path[len(root) + 1:]
                         ).read_bytes() == reader.read()
-    with pytest.raises(NotImplementedError, match='file destination'):
+    with pytest.raises(NotImplementedError, match='S3, GCS or file connector'):
         snapshot.export(SnapshotOutputConfig(connector, 'DB.SCHEMA'))
 
 
@@ -784,7 +783,7 @@ def test_a_mlops_block_stores_each_snapshot_once(tmp_path, scratch, graph,
 def test_loading_a_missing_export_names_its_full_path(tmp_path, exports):
     missing = tmp_path / 'exports' / 'snapshots' / 'graph' / 'version'
     with pytest.raises(FileNotFoundError,
-                       match=f'No complete snapshot export at {missing}: '):
+                       match=f'No snapshot export at {missing} '):
         _load(exports, 'snapshots/graph/version')
 
 

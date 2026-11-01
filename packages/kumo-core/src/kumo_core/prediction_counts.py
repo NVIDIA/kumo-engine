@@ -175,7 +175,6 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
 
 def _by_class(counts: Counts, ranked: str, order: Sequence[int],
               columns: Sequence[str], baseline: Optional[Counts]) -> Table:
-    r"""Each class's share here and in the holdout."""
     tally = counts.arrays[ranked]
     rows = (tally.sum() if ranked == 'classes' else
             counts.arrays['predicted_labels'].sum())
@@ -266,6 +265,5 @@ def _drift_note(counts: Counts, score: str) -> str:
 
 
 def _label(column: str) -> str:
-    r"""A score column's name as a table column."""
     return {'TARGET_PRED': 'predicted', 'top_score': 'top score'}.get(
         column, column.replace('/', '_'))
