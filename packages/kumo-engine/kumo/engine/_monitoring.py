@@ -170,9 +170,9 @@ def evaluate(trainer: Any, run: Any, snapshot: Any) -> EvaluationResult:
     out.pop('step')
     if out['matured'] is False:
         warnings.warn(
-            f'Prediction run {run.id}: labels are not mature yet, since the '
-            'label window ends after the snapshot data; the metrics cover '
-            'only the outcomes observed so far.', UserWarning, stacklevel=3)
+            f'Prediction run {run.id}: labels are not mature yet, so the '
+            'metrics cover only the outcomes observed so far.', UserWarning,
+            stacklevel=3)
     return EvaluationResult(
         prediction_id=run.id,
         bundle_id=run.bundle_id,

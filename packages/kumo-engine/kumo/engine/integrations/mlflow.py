@@ -679,8 +679,8 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             self._client.set_tag(run.info.run_id, 'kumo.card_frozen', 'true')
         warnings.warn(
             f'The description of MLflow run {run.info.run_name!r} was edited '
-            f"above kumo's card, so kumo no longer updates it. Notes after "
-            f"the card's last line are kept.", UserWarning, stacklevel=2)
+            f"above kumo's card, so kumo no longer updates it.", UserWarning,
+            stacklevel=2)
         return None
 
     def _set_card(self, run: Any,

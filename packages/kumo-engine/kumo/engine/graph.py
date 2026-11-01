@@ -275,10 +275,9 @@ def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
     changes = None if before is None else schema_changes(before, after)
     if changes and strict:
         raise ValueError(
-            f"{message} Schema changes: {'; '.join(changes)}. With "
-            f"on_error='raise' a model scores only the graph it was trained "
-            f"on: declare the same tables, column types (Table.with_column("
-            f"name, stype=...)) and edges.")
+            f"{message} Schema changes: {'; '.join(changes)}; declare the "
+            f"same tables, column types and edges to score with "
+            f"on_error='raise'.")
     if changes is None:
         detail = ("The model does not record its training graph, so what "
                   "differs is unknown; a different connector or table "
