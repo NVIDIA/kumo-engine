@@ -180,7 +180,9 @@ Handles table type detection, FK resolution, timestamp format inference, num_sha
 ### Embedded native sampling server
 
 `diskgraph.SamplingServer` starts the Rust Flight gateway on native background
-threads inside the Python process. No sampling subprocess is required.
+threads inside the Python process. No sampling subprocess is required. The caller
+must materialize and verify training-table extensions beneath the local graph
+before requesting epochs; the sampling transport only reads prepared artifacts.
 
 ```python
 import diskgraph

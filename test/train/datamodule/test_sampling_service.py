@@ -40,10 +40,7 @@ def remote_task(prepared_task: str) -> Iterator[tuple[str, str]]:
     """Serve real task iterators through the embedded native listener."""
     source = Path(prepared_task).parent / "graph"
     root = source.parent / "sampler_graph"
-    shutil.copytree(
-        source, root, ignore=shutil.ignore_patterns("train_tables", "pred_tables")
-    )
-    assert not (root / "train_tables").exists()
+    shutil.copytree(source, root)
     service = SamplingService(SamplingServiceConfig(root))
     try:
         assert service.health()["pid"] == os.getpid()
@@ -97,7 +94,6 @@ def test_epoch_shards_use_all_replicas(
     shutil.copytree(
         Path(prepared_task).parent / "graph",
         graph,
-        ignore=shutil.ignore_patterns("train_tables", "pred_tables"),
     )
     with ExitStack() as cleanup:
         services = []

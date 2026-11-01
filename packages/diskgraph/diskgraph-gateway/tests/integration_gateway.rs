@@ -41,7 +41,7 @@ async fn native_listener_reports_its_process_and_shutdown_state() {
         .into_inner()
         .collect::<Vec<_>>()
         .await;
-    assert_eq!(actions.len(), 2);
+    assert_eq!(actions.len(), 1);
     let mut result = client
         .do_action(Action {
             r#type: "health".into(),

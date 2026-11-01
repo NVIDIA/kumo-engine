@@ -6,13 +6,14 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from test.train.datamodule.test_remote_sampling import _frame
 from typing import Any
 from unittest.mock import MagicMock
 
 import pyarrow as pa
 import pytest
 from kumo_core.diskgraph import remote_sampling as remote
-from kumo_core.diskgraph.sampling_protocol import decode_frame, encode_frame
+from kumo_core.diskgraph.sampling_protocol import decode_frame
 
 
 @pytest.fixture
@@ -91,7 +92,7 @@ def test_frame_decoder_enforces_the_byte_budget(
     """Enforce the inbound budget before parsing JSON or Arrow components."""
     from kumo_core.diskgraph import sampling_protocol
 
-    frame = encode_frame({"kind": "sample"}, [b"data"])
+    frame = _frame({"kind": "sample"}, [b"data"]).data
     monkeypatch.setattr(sampling_protocol, "MAX_BATCH_BYTES", 1)
     with pytest.raises(ValueError, match="64 MiB"):
         decode_frame(frame)

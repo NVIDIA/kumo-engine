@@ -31,6 +31,9 @@ class SamplingServiceConfig:
 class SamplingService:
     """Start the native Flight server inside the caller's process.
 
+    Training-table artifacts must be materialized beneath the graph before epochs
+    are requested; the sampler does not distribute artifacts.
+
     Args:
         config: Graph location, bind IP address and native resource budgets.
 

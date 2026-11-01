@@ -181,9 +181,9 @@ impl BatchEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::resolve_beneath;
     use crate::protocol::envelope;
     use crate::runtime::TaskOptions;
-    use crate::storage::resolve_beneath;
     use arrow_array::{Array, Int64Array, ListArray};
     use arrow_ipc::reader::StreamReader;
     use diskgraph_engine::output::{RawFeatureBank, TaskBag};

@@ -5,7 +5,8 @@
 """Consume complete DiskGraph task batches from a Flight gateway.
 
 Workers own epoch shards and stream complete batches through bounded Flight
-DoGet responses. Task extensions are transferred once before opening stage streams.
+DoGet responses. Graph and training-table artifacts must be materialized on each
+worker before opening stage streams.
 """
 
 from __future__ import annotations
@@ -24,10 +25,6 @@ from pyarrow import flight
 from kumo_core.diskgraph.sampling_protocol import (
     SAMPLING_VERSION,
     decode_frame,
-)
-from kumo_core.diskgraph.sampling_task import (
-    task_files,
-    upload_task,
 )
 
 _NATIVE_ARGUMENTS = (
@@ -248,7 +245,6 @@ class RemotePushIterator(Iterator[dict[str, Any]]):
             endpoints = owner.endpoints
             if options.get("rhs_seed_node_type") is not None:
                 endpoints = endpoints[:1]
-            owner._prepare_task(extension_ref, endpoints)
             replicas = len(endpoints)
             options = dict(options)
             weighted = options.get("weighted_seed_sampling_json")
@@ -385,8 +381,6 @@ class RemoteRuntimeIndex(RuntimeIndex):
             raise ValueError("Sampling endpoints must be unique")
         self.endpoint = self.endpoints[0]
         self._streams: set[RemotePushIterator | RemoteTaskIterator] = set()
-        self._tasks: dict[str, tuple[str, list[tuple[str, int]]]] = {}
-        self._prepared: set[tuple[str, str]] = set()
         self._clients: dict[str, flight.FlightClient] = {}
 
     @property
@@ -403,25 +397,6 @@ class RemoteRuntimeIndex(RuntimeIndex):
             )
             self._clients[endpoint] = client
         return client
-
-    def _prepare_task(self, extension_ref: str, endpoints: tuple[str, ...]) -> None:
-        root = Path(self._parent_root) / extension_ref
-        identity = self._tasks.get(extension_ref)
-        for endpoint in endpoints:
-            key = (endpoint, extension_ref)
-            if key not in self._prepared:
-                client = self._client_for(endpoint)
-                actions = {action.type for action in client.list_actions()}
-                if "task_status" in actions:
-                    if identity is None:
-                        identity = task_files(root)
-                        self._tasks[extension_ref] = identity
-                    upload_task(client, root, extension_ref, identity)
-                else:
-                    raise ValueError(
-                        "Sampling endpoint does not support task epoch streaming"
-                    )
-                self._prepared.add(key)
 
     def _index_for(self, extension_ref: str) -> _RemoteNativeIndex:
         return _RemoteNativeIndex(self, extension_ref)
@@ -444,8 +419,6 @@ class RemoteRuntimeIndex(RuntimeIndex):
             ) as error:
                 errors.append(error)
         self._streams.clear()
-        self._tasks.clear()
-        self._prepared.clear()
         for client in self._clients.values():
             try:
                 client.close()

@@ -138,7 +138,7 @@ def prepared_task(tmp_path_factory: pytest.TempPathFactory) -> str:
 
 @pytest.fixture(scope="module")
 def remote_task(prepared_task: str) -> Iterator[tuple[str, str]]:
-    """Serve an independent graph replica, receiving the task through Flight."""
+    """Serve a replica with graph and training-table files prepared beforehand."""
     from pathlib import Path
 
     from kumo_core.diskgraph.sampling_service import (
@@ -148,9 +148,7 @@ def remote_task(prepared_task: str) -> Iterator[tuple[str, str]]:
 
     manifest = Path(prepared_task)
     graph = manifest.parent / "service_graph"
-    shutil.copytree(
-        manifest.parent / "graph", graph, ignore=shutil.ignore_patterns("train_tables")
-    )
+    shutil.copytree(manifest.parent / "graph", graph)
     service = SamplingService(SamplingServiceConfig(graph))
     try:
         yield prepared_task, service.endpoint()

@@ -2,7 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::storage::resolve_beneath;
+use crate::paths::resolve_beneath;
 use diskgraph_runtime::{RuntimeBatchIterator, RuntimeError, RuntimeIndex};
 use serde_json::{json, Value};
 use std::{collections::HashMap, path::Path, sync::Arc};

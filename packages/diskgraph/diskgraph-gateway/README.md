@@ -1,7 +1,7 @@
 # Native Flight gateway
 
 `diskgraph-gateway` serves complete task batches from `diskgraph-runtime` without
-loading Python. It owns immutable task registration, epoch/shard iteration,
+loading Python. It owns epoch/shard iteration over prepared local artifacts,
 Arrow serialization, bounded production, cancellation, health counters, and
 structured lifecycle/progress logs.
 
@@ -11,10 +11,12 @@ cargo run --release -p diskgraph-gateway -- \
   --max-streams 1 --max-threads 2
 ```
 
-The graph must already exist. The client registers its completed training-table
-extension with `DoPut`; file names, lengths, order, SHA-256 digest, and final
-completion are verified before an atomic rename publishes the task. Failed
-uploads remain in their hidden staging directory for diagnosis.
+The graph must already exist. Before requesting an epoch, the caller must
+materialize and verify its training-table extension beneath the graph at
+`train_tables/<id>` or `pred_tables/<id>`. Artifact distribution and manifest
+verification belong to the preparation layer. This gateway reads those files;
+it does not upload or register them. Missing extension metadata returns
+`FailedPrecondition` so the caller can finish materialization before retrying.
 
 Protocol version 5 uses a stable Arrow envelope containing JSON metadata and
 Arrow IPC components. A `DoGet` ticket contains one normalized epoch/shard
@@ -33,8 +35,10 @@ stream permit. Native sampling already in progress stops at the next batch
 boundary. Listener shutdown cancels all producers; a transport that is not being
 read may consume the existing five-second graceful-drain period before the
 listener force-closes it.
+New requests allow up to one second for a producer slot to become available,
+including release from a preceding cancelled stream, then report the server busy.
 
-`health` and `task_status` are the supported actions. The earlier per-request
+`health` is the supported action. The earlier per-request
 graph/feature ticket API is replaced by complete task epochs. This service is
 intended for trusted peers on a restricted network.
 

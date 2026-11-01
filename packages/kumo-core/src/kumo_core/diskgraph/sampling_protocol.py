@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Arrow sampling frames shared by Python Flight endpoints."""
+"""Decode native Arrow sampling frames in Python Flight clients."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import orjson
 import pyarrow as pa
 
 SAMPLING_VERSION = 5
-TASK_CHUNK_BYTES = 1024**2
 MAX_BATCH_BYTES = 64 * 1024**2
 ENVELOPE_SCHEMA = pa.schema(
     [
@@ -48,28 +47,3 @@ def decode_frame(batch: pa.RecordBatch | None) -> tuple[dict[str, Any], list[byt
     if not isinstance(metadata, dict):
         raise TypeError("Invalid task frame metadata")
     return metadata, components
-
-
-def encode_frame(metadata: dict[str, Any], components: list[bytes]) -> pa.RecordBatch:
-    """Build a protocol envelope containing metadata and Arrow IPC components.
-
-    Args:
-        metadata: Versioned frame metadata, including component references.
-        components: Binary payloads; batch frames use one Arrow IPC stream per
-            component; task uploads carry bounded file chunks.
-    Returns:
-        A one-row envelope using the native gateway's schema.
-    Raises:
-        ValueError: If the encoded frame exceeds the protocol's byte limit.
-        TypeError: If metadata cannot be encoded as JSON.
-    """
-    payload = orjson.dumps(metadata)
-    if len(payload) + sum(map(len, components)) > MAX_BATCH_BYTES:
-        raise ValueError("Task batch exceeds 64 MiB; reduce batch size or fanout")
-    return pa.RecordBatch.from_arrays(
-        [
-            pa.array([payload], pa.binary()),
-            pa.array([components], pa.list_(pa.binary())),
-        ],
-        schema=ENVELOPE_SCHEMA,
-    )

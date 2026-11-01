@@ -87,7 +87,7 @@ Kumo is not yet a uv workspace. These commands operate on `packages/kumo-core` e
 ## Remote batch sampling over Arrow Flight
 
 `diskgraph.SamplingServer` embeds the Rust Flight gateway inside its owning
-Python process. Rust calls `diskgraph-runtime` directly and owns task uploads,
+Python process. Rust calls `diskgraph-runtime` directly and owns
 sampling, Arrow encoding, flow control, and cancellation. Python manages the
 server handle and consumes Arrow batches through `RemoteRuntimeIndex`.
 
@@ -110,9 +110,14 @@ actor. `close()` cancels waiting streams and joins Rust serving threads without
 holding the GIL. Native lifecycle/progress messages use the existing Python
 logging bridge and appear in the actor's configured logs.
 
-The client registers each immutable training-table extension once per worker,
-using bounded file chunks and a content checksum. Epoch requests carry sampling,
-projection, seed, and shard settings in a `DoGet` ticket. The server reserves a
+Before opening epoch streams, the caller must materialize and verify graph and
+training-table artifacts on every worker through the artifact distribution path.
+Training-table extensions live at the same relative `train_tables/<id>` or
+`pred_tables/<id>` path beneath each graph replica. Sampling does not upload or
+register artifacts; missing task metadata fails with a preparation error.
+
+Epoch requests carry sampling, projection, seed, and shard settings in a `DoGet`
+ticket. The server reserves a
 slot in its bounded output queue before sampling a batch, and the client
 prefetches one decoded batch per server. gRPC flow control propagates a paused
 trainer back to the producer; additional transport buffers and native working

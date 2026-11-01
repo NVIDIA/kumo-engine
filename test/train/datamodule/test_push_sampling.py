@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Native feeder sharding, Flight backpressure and immutable task transfer."""
+"""Native shard streaming over prepared worker-local task artifacts."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
 from test.train.datamodule import test_remote_sampling_integration as parity
+from test.train.datamodule.test_remote_sampling import _frame
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -24,16 +25,11 @@ from kumo_core.diskgraph.remote_sampling import (
     RemoteRuntimeIndex,
     RemoteTaskIterator,
 )
-from kumo_core.diskgraph.sampling_protocol import (
-    ENVELOPE_SCHEMA,
-    decode_frame,
-    encode_frame,
-)
+from kumo_core.diskgraph.sampling_protocol import decode_frame
 from kumo_core.diskgraph.sampling_service import (
     SamplingService,
     SamplingServiceConfig,
 )
-from kumo_core.diskgraph.sampling_task import task_files, upload_task
 from pyarrow import flight
 
 prepared_task = parity.prepared_task
@@ -87,7 +83,7 @@ def test_push_matches_native_shards(
         services = []
         for replica in range(replicas):
             root = tmp_path / f"replica-{replica}"
-            shutil.copytree(source, root, ignore=shutil.ignore_patterns("train_tables"))
+            shutil.copytree(source, root)
             service = SamplingService(SamplingServiceConfig(root))
             services.append(service)
             cleanup.callback(service.close)
@@ -184,28 +180,65 @@ def test_transport_backpressure_stops_and_resumes_native_production(
         service.close()
 
 
-def test_task_transfer_is_reused_across_epochs(
+def test_prepared_task_is_reused_without_artifact_rpcs(
     prepared_task: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Task files transfer once while each epoch gets a fresh independent stream."""
+    """Prepared artifacts serve repeated epochs without registration or uploads."""
     root = tmp_path / "replica"
-    shutil.copytree(
-        Path(prepared_task).parent / "graph",
-        root,
-        ignore=shutil.ignore_patterns("train_tables"),
+    shutil.copytree(Path(prepared_task).parent / "graph", root)
+    trainer_root = tmp_path / "trainer-only"
+    manifest = orjson.loads(Path(prepared_task).read_bytes())
+    manifest["graph"]["index_path"] = str(trainer_root)
+    manifest["stages"]["train"]["index_path"] = str(
+        trainer_root / "train_tables/remote_test"
     )
+    portable_manifest = tmp_path / "portable.json"
+    portable_manifest.write_bytes(orjson.dumps(manifest))
     service = SamplingService(SamplingServiceConfig(root))
-    runtime = RemoteRuntimeIndex(prepared_task, service.endpoint(), 42, 1)
-    transfer = MagicMock(wraps=upload_task)
-    monkeypatch.setattr("kumo_core.diskgraph.remote_sampling.upload_task", transfer)
+    runtime = RemoteRuntimeIndex(str(portable_manifest), service.endpoint(), 42, 1)
+    client = runtime._client_for(service.endpoint())
+    observed = MagicMock(wraps=client)
+    monkeypatch.setattr(runtime, "_client_for", lambda _: observed)
     try:
         for epoch in range(3):
             iterator, _ = runtime.iter(**{**_options(), "epoch": epoch})
             assert len(list(iterator)) == 3
-        assert transfer.call_count == 1
+        observed.list_actions.assert_not_called()
+        observed.do_action.assert_not_called()
+        observed.do_put.assert_not_called()
+        assert observed.do_get.call_count == 3
         assert service.health()["get_streams"] == 3
-        local_task = Path(prepared_task).parent / "graph/train_tables/remote_test"
-        assert task_files(root / "train_tables/remote_test") == task_files(local_task)
+        assert not trainer_root.exists()
+    finally:
+        runtime.close()
+        service.close()
+
+
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_missing_task_artifact_fails_until_materialized(
+    prepared_task: str, tmp_path: Path, incomplete: bool
+) -> None:
+    """The sampler rejects missing artifacts and resumes after external preparation."""
+    root = tmp_path / "replica"
+    source = Path(prepared_task).parent / "graph"
+    shutil.copytree(source, root, ignore=shutil.ignore_patterns("train_tables"))
+    extension = root / "train_tables/remote_test"
+    if incomplete:
+        extension.mkdir(parents=True)
+    service = SamplingService(SamplingServiceConfig(root))
+    runtime = RemoteRuntimeIndex(prepared_task, service.endpoint(), 42, 1)
+    try:
+        with pytest.raises(
+            (flight.FlightServerError, pa.ArrowInvalid), match="materialize.*worker"
+        ):
+            runtime.iter(**_options())
+        assert not (extension / "index_metadata.json").exists()
+        _wait_for_idle(service)
+        shutil.copytree(
+            source / "train_tables/remote_test", extension, dirs_exist_ok=True
+        )
+        iterator, _ = runtime.iter(**_options())
+        assert len(list(iterator)) == 3
     finally:
         runtime.close()
         service.close()
@@ -217,15 +250,8 @@ def test_push_rejects_truncated_epochs(completion: dict[str, Any] | None) -> Non
     client = MagicMock()
     reader = MagicMock()
     reader.read_chunk.side_effect = [
-        MagicMock(
-            data=encode_frame(
-                {"kind": "iterator", "version": 5, "num_samples": 4, "num_batches": 2},
-                [],
-            )
-        ),
-        StopIteration()
-        if completion is None
-        else MagicMock(data=encode_frame(completion, [])),
+        _frame({"kind": "iterator", "version": 5, "num_samples": 4, "num_batches": 2}),
+        StopIteration() if completion is None else _frame(completion),
     ]
     client.do_get.return_value = reader
     iterator = RemoteTaskIterator(
@@ -234,34 +260,6 @@ def test_push_rejects_truncated_epochs(completion: dict[str, Any] | None) -> Non
     with pytest.raises(ValueError, match="completion"):
         next(iterator)
     reader.cancel.assert_called_once()
-
-
-def test_task_hash_is_canonical_and_rejects_symlinks(tmp_path: Path) -> None:
-    """Nested file names hash consistently and symbolic links are never followed."""
-    root = tmp_path / "task"
-    (root / "a").mkdir(parents=True)
-    (root / "a/data").write_bytes(b"content")
-    (root / "a.bin").write_bytes(b"other")
-    first = task_files(root)
-    assert first[1] == [("a.bin", 5), ("a/data", 7)]
-    assert task_files(root) == first
-    (root / "linked").symlink_to(root / "a.bin")
-    with pytest.raises(ValueError, match="symlinks"):
-        task_files(root)
-
-
-def test_upload_rejects_unacknowledged_checksum(tmp_path: Path) -> None:
-    """The trainer requires confirmation before an uploaded task can be used."""
-    root = tmp_path / "task"
-    root.mkdir()
-    (root / "data").write_bytes(b"content")
-    client = MagicMock()
-    client.do_action.return_value = [flight.Result(b"")]
-    writer, reader = MagicMock(), MagicMock()
-    reader.read.return_value = pa.py_buffer(b"wrong")
-    client.do_put.return_value = writer, reader
-    with pytest.raises(ValueError, match="acknowledged"):
-        upload_task(client, root, "train_tables/task", task_files(root))
 
 
 def test_close_interrupts_a_blocked_push_reader(
@@ -404,62 +402,3 @@ def test_replicas_produce_concurrently(prepared_task: str) -> None:
             assert second.health()["batches"] == 3
         finally:
             reader.cancel()
-
-
-@pytest.mark.parametrize("failure", ["path", "truncated", "checksum", "completion"])
-def test_invalid_task_transfer_is_not_published(
-    prepared_task: str, failure: str
-) -> None:
-    """Native upload validation never publishes incomplete or corrupt task files."""
-    service = SamplingService(
-        SamplingServiceConfig(Path(prepared_task).parent / "graph")
-    )
-    frames = [
-        encode_frame({"kind": "file", "path": "data", "size": 3}, []),
-        encode_frame({"kind": "data"}, [b"abc"]),
-        encode_frame({"kind": "end"}, []),
-    ]
-    if failure == "path":
-        frames[0] = encode_frame({"kind": "file", "path": "../escape", "size": 3}, [])
-    elif failure == "truncated":
-        frames[1] = encode_frame({"kind": "data"}, [b"a"])
-    elif failure == "completion":
-        frames.pop()
-    descriptor = flight.FlightDescriptor.for_command(
-        orjson.dumps(
-            {
-                "kind": "prepare_task",
-                "version": 5,
-                "extension_ref": "train_tables/invalid-task",
-                "sha256": "bad",
-            }
-        )
-    )
-    try:
-        with flight.connect(service.endpoint()) as client:
-            with pytest.raises((pa.ArrowException, flight.FlightError)):
-                writer, metadata = client.do_put(descriptor, ENVELOPE_SCHEMA)
-                with writer:
-                    for frame in frames:
-                        writer.write_batch(frame)
-                    writer.done_writing()
-                    metadata.read()
-            assert not (
-                Path(prepared_task).parent / "graph/train_tables/invalid-task"
-            ).exists()
-            status = list(
-                client.do_action(
-                    flight.Action(
-                        "task_status",
-                        orjson.dumps(
-                            {
-                                "extension_ref": "train_tables/invalid-task",
-                                "sha256": "bad",
-                            }
-                        ),
-                    )
-                )
-            )
-            assert status[0].body.to_pybytes() == b""
-    finally:
-        service.close()

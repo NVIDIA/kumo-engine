@@ -31,9 +31,15 @@ def auto_setup_kumo_backend() -> bool:
 
 
 def _frame(metadata: dict[str, Any], parts: list[bytes] | None = None) -> MagicMock:
-    from kumo_core.diskgraph.sampling_protocol import encode_frame
+    from kumo_core.diskgraph.sampling_protocol import ENVELOPE_SCHEMA
 
-    batch = encode_frame(metadata, parts or [])
+    batch = pa.RecordBatch.from_arrays(
+        [
+            pa.array([orjson.dumps(metadata)], pa.binary()),
+            pa.array([parts or []], pa.list_(pa.binary())),
+        ],
+        schema=ENVELOPE_SCHEMA,
+    )
     return MagicMock(data=batch)
 
 
@@ -188,7 +194,6 @@ def test_normalizes_options_for_remote_epoch(
     native.iter.return_value = native_iterator
     factory = MagicMock(return_value=native)
     monkeypatch.setattr("diskgraph._c.RuntimeIndex", factory)
-    monkeypatch.setattr(remote.RemoteRuntimeIndex, "_prepare_task", MagicMock())
     stream = MagicMock()
     stream.num_samples.return_value = 3
     stream_factory = MagicMock(return_value=stream)
