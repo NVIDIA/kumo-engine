@@ -139,10 +139,6 @@ def _parents(manifest: Any) -> Any:
     return getattr(manifest, 'parents', None)
 
 
-def _text(value: Any) -> Optional[str]:
-    return None if value is None else str(value)
-
-
 def model_metrics(record: RunRecord) -> Dict[str, float]:
     r"""A run's metrics and its exact ``role='model'`` scalars."""
     return {**record.metrics,
