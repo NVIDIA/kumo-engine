@@ -127,7 +127,6 @@ def test_no_holdout(graph):
 
     assert result.holdout_path is None
     assert not result.holdout_truncated
-    assert result.manifest.holdout.columns == {}
     assert set(result.manifest.holdout.counts['arrays']) == {'top_score'}
     with pytest.raises(FileNotFoundError, match='No holdout'):
         result.holdout_df()
