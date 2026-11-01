@@ -21,8 +21,10 @@ from kumo.engine._manifest import (
     SourceTableEntry,
     TrainingTableManifest,
     TrainingTableParents,
+    embedded,
     read_manifest,
     stamp,
+    stub,
     write_manifest,
 )
 from kumo.engine.connector.source_table import SourceTable
@@ -340,12 +342,10 @@ def _table_id(table: TrainingTable, snapshot: GraphSnapshot,
 def _record_manifest(table: TrainingTable, snapshot: GraphSnapshot,
                      request: TrainTableRequest, seed: Optional[int], *,
                      source_table: Optional[SourceTableEntry] = None) -> None:
-    from kumo.engine._manifest import embedded, stub
+    from kumo_core.io.json import to_json_dict
 
     path = table.staging_dir / PROVENANCE_FILE
     try:
-        from kumo_core.io.json import to_json_dict
-
         parent = snapshot.manifest
         write_manifest(
             path,

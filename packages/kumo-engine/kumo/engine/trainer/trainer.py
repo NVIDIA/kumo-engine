@@ -333,12 +333,12 @@ HOLDOUT_FILE = 'holdout.parquet'
 HOLDOUT_META_FILE = 'holdout-meta.json'
 
 
-def _bundle_holdout(result: TrainingResult) -> TrainingResult:
+def _bundle_holdout(result: TrainingResult) -> None:
     r"""Copy the holdout into the bundle."""
     from kumo_core.artifacts import add_bundle_file
 
     if result.holdout_path is None:
-        return result
+        return
     try:
         shutil.copyfile(result.holdout_path, result.bundle_dir / HOLDOUT_FILE)
         add_bundle_file(result.bundle_dir, HOLDOUT_ROLE, HOLDOUT_FILE)
@@ -352,7 +352,6 @@ def _bundle_holdout(result: TrainingResult) -> TrainingResult:
             f"Could not add the holdout to the model bundle: {error}; a "
             f"loaded copy of this model has no holdout_df().", UserWarning,
             stacklevel=4)
-    return result
 
 
 def _listed_holdout(bundle_dir: Path) -> tuple[Optional[Path], Optional[bool]]:
@@ -1039,7 +1038,7 @@ class Trainer:
                                    scoring_defaults)
             training_result = replace(training_result,
                                       scoring_defaults=scoring_defaults)
-        training_result = _bundle_holdout(training_result)
+        _bundle_holdout(training_result)
         try:
             training_result = replace(
                 training_result,
