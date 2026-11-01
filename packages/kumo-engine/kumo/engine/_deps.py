@@ -198,9 +198,8 @@ class Dependencies:
                        if location.startswith(prefix)), None)
         if reader is not None and self._hint is not None:
             raise MissingDependencyError(
-                f"The model needs {asset_kind} {name!r} (sha256 "
-                f"{record.sha256}), stored at {location}, which this "
-                f"process cannot read: {self._hint(reader, location)}.")
+                f"Cannot read {asset_kind} {name!r} (sha256 {record.sha256}) "
+                f"at {location}: {self._hint(reader, location)}.")
         raise MissingDependencyError(
             f"The model needs {asset_kind} {name!r} (sha256 "
             f"{record.sha256}), which is in none of "

@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""A Kumo bundle as a Snowflake Model Registry version that scores in
-Snowpark Container Services."""
+r"""A Kumo bundle as a Snowflake Model Registry version."""
 
 import json
 import shutil
@@ -22,13 +21,11 @@ DEFAULTS = {
     'python_version': f'{sys.version_info.major}.{sys.version_info.minor}',
     'function_type': 'TABLE_FUNCTION',
 }
-# torchmetrics: the image's CUDA index lacks the pinned version.
 EMBEDDED = ('kumo.engine', 'kumo_core', 'kumoapi', 'kumopql', 'kumo_snowflake',
             'diskgraph', 'torchmetrics')
 _EMBEDDED_DISTS = ('diskgraph', 'torchmetrics')
 REQUIRING = (('kumo_core', 'kumo-core'), ('kumopql', 'kumo-pql'))
 TEXT_REQUIREMENT = 'kumo-glove-6b-50d>=1.0.0,<2'
-# The inference image installs these; its pins win.
 PROVIDED = ('snowflake-snowpark-python', 'snowflake-connector-python')
 
 
@@ -91,9 +88,8 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
     if python != DEFAULTS['python_version']:
         raise _registry.ServingEnvironmentError(
             f"serving_options python_version={python!r} differs from the "
-            f"registering Python {DEFAULTS['python_version']}: snowflake-ml "
-            f"pickles the model by value, so the container must run the same "
-            f"Python. Register from Python {python} instead.")
+            f"registering Python {DEFAULTS['python_version']}; the container "
+            f"must run the same Python, so register from Python {python}.")
     environment: Dict[str, Any] = dict(
         pip_requirements=pip_requirements() +
         text_requirements(paths.get('encoders')),
@@ -125,18 +121,10 @@ def cuda_version(requested: Optional[str]) -> str:
     if requested is None:
         return built or CPU_TORCH_CUDA
     if built is not None and minor(requested) != built:
-        release = minor(torch.__version__.split('+')[0])
         raise _registry.ServingEnvironmentError(
-            f"serving_options cuda_version={requested!r}, but this "
-            f"installation's torch {torch.__version__} is built for CUDA "
-            f"{built}; the version's image would need torch {release} for "
-            f"CUDA {minor(requested)}, which jobs fail to install when it does "
-            f"not exist. Register from a torch built for CUDA "
-            f"{minor(requested)}, e.g. pip install --index-url "
-            f"https://download.pytorch.org/whl/cu"
-            f"{minor(requested).replace('.', '')} \"torch=={release}.*\" "
-            f"(another release if that one has no such build), or drop "
-            f"cuda_version to serve with CUDA {built}.")
+            f"serving_options cuda_version={requested!r}, but torch "
+            f"{torch.__version__} is built for CUDA {built}: register from a "
+            f"torch built for CUDA {minor(requested)} or drop cuda_version.")
     return requested
 
 

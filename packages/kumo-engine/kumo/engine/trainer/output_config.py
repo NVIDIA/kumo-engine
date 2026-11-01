@@ -161,11 +161,7 @@ SERVING_OPTIONS = ('cuda_version', 'python_version', 'function_type',
 
 @dataclass(frozen=True)
 class ModelOutputConfig:
-    """Publish a model to exactly one ``path`` or registry ``location``.
-
-    ``serving_snapshot`` and ``serving_options`` configure a Snowflake
-    version that scores in Snowflake.
-    """
+    """Publish a model to one ``path`` or registry ``location``."""
 
     connector: Connector
     path: Optional[str] = None

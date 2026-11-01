@@ -31,9 +31,8 @@ def score_registered(bundle: str, serving: str, rows: pd.DataFrame,
     uri = params.get('snapshot') or record.get('snapshot')
     if not uri:
         raise ValueError(
-            "No snapshot to score against: fit with a stage artifact root, "
-            "which stores the training snapshot there, or pass "
-            "InputSpec(params={'snapshot': '@DB.SCHEMA.STAGE/...'})")
+            "No snapshot to score against: fit with a stage artifact root "
+            "or pass InputSpec(params={'snapshot': '@DB.SCHEMA.STAGE/...'})")
     predictor = _cached(_predictors, bundle,
                         lambda: _staged(bundle, record, load_predictor))
     snapshot = _cached(_snapshots, uri, lambda: load_snapshot(uri, record))

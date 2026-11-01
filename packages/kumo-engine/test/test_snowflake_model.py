@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""A Kumo bundle as a runnable Snowflake Model Registry version, packaged
-and loaded by snowflake-ml's own packager, without a Snowflake account."""
+"""A Kumo bundle as a Snowflake Model Registry version, without an account."""
 
 import sys
 from pathlib import Path
@@ -132,13 +131,9 @@ def test_the_version_serves_with_the_cuda_of_the_installed_torch(
     with pytest.raises(ServingEnvironmentError) as raised:
         cuda_version('12.6')
     assert str(raised.value) == (
-        "serving_options cuda_version='12.6', but this installation's torch "
-        "2.15.0+cu132 is built for CUDA 13.2; the version's image would need "
-        "torch 2.15 for CUDA 12.6, which jobs fail to install when it does "
-        "not exist. Register from a torch built for CUDA 12.6, e.g. pip "
-        "install --index-url https://download.pytorch.org/whl/cu126 "
-        "\"torch==2.15.*\" (another release if that one has no such build), "
-        "or drop cuda_version to serve with CUDA 13.2.")
+        "serving_options cuda_version='12.6', but torch 2.15.0+cu132 is built "
+        "for CUDA 13.2: register from a torch built for CUDA 12.6 or drop "
+        "cuda_version.")
     monkeypatch.setattr('torch.version.cuda', None)
     assert cuda_version(None) == '12.6' and cuda_version('12.4') == '12.4'
 
