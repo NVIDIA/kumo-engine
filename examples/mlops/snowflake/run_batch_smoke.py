@@ -23,7 +23,7 @@ from kumoapi.typing import Stype
 import kumo.engine as kumo
 
 
-def fit(data: Path) -> tuple:
+def snapshot_and_query(data: Path) -> tuple:
     rng = np.random.default_rng(0)
     pd.DataFrame({'ID': np.arange(200)}).to_parquet(data / 'users.parquet')
     pd.DataFrame({
@@ -78,7 +78,7 @@ def main() -> None:
         database=args.database, schema_name=args.schema)
     stage = args.stage.rstrip('/')
     with tempfile.TemporaryDirectory() as tmp:
-        snapshot, query = fit(Path(tmp))
+        snapshot, query = snapshot_and_query(Path(tmp))
         exported = snapshot.export(
             kumo.SnapshotOutputConfig(sf, f'{stage}/smoke/snapshots'))
         trainer = kumo.Trainer(model_plan=ModelPlan())
