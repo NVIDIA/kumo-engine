@@ -95,18 +95,19 @@ def test_holdout_df_after_fit(graph):
     assert not (result.bundle_dir / 'test_df.parquet').exists()
 
 
-@pytest.mark.parametrize('refit_trainval,refit_full,explain,suffix', [
-    (False, False, False, ''),
-    (True, False, True, '_refit_trainval'),
-    (True, True, False, None),
+@pytest.mark.parametrize('refit_trainval,refit_full,explain,model', [
+    (False, False, False, 'fit'),
+    (True, False, True, 'refit_trainval'),
+    (True, True, True, None),
 ])
 def test_holdout_is_the_published_models(graph, refit_trainval, refit_full,
-                                         explain, suffix):
+                                         explain, model):
     result = _fit(graph, QUERY, refit_trainval, refit_full, explain)
 
-    if suffix is None:
+    if model is None:
         assert result.holdout_path is None
     else:
+        suffix = '' if model == 'fit' else '_refit_trainval'
         assert re.fullmatch(rf'version_\d+{suffix}',
                             result.holdout_path.parent.name)
         assert len(result.holdout_df()) > 0

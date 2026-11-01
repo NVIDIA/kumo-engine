@@ -326,6 +326,22 @@ def _to_core_model_plan(model_plan: ModelPlan) -> CoreModelPlan:
     return internal_model_plan_from_public(model_plan)
 
 
+def _require_publisher(export_config: ModelOutputConfig) -> None:
+    if not isinstance(export_config.connector.sink_backend,
+                      ModelPublishingSink):
+        raise NotImplementedError(
+            f'{type(export_config.connector).__name__} cannot publish '
+            f'models')
+
+
+def _preflight(output_config: PredictionOutputConfig) -> None:
+    preflight = getattr(output_config.writer(), 'preflight_write_files', None)
+    if callable(preflight):
+        for destination in output_config.destinations().values():
+            preflight(output_config.connector, destination,
+                      write_mode=output_config.write_mode)
+
+
 def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
     from kumo_core.artifacts import stage_model_bundle
     return stage_model_bundle(artifacts, dest)
@@ -479,12 +495,8 @@ class Trainer:
 
         from kumo.engine.trainer._runtime import local_training_bindings
 
-        if export_config is not None and not isinstance(
-                export_config.connector.sink_backend,
-                ModelPublishingSink):
-            raise NotImplementedError(
-                f'{type(export_config.connector).__name__} cannot publish '
-                f'models')
+        if export_config is not None:
+            _require_publisher(export_config)
         from kumo.engine._mlops import resolve
 
         settings = resolve(mlops)
@@ -885,12 +897,7 @@ class Trainer:
         )
 
         if output_config is not None:
-            preflight = getattr(output_config.writer(),
-                                'preflight_write_files', None)
-            if callable(preflight):
-                for destination in destinations.values():
-                    preflight(output_config.connector, destination,
-                              write_mode=output_config.write_mode)
+            _preflight(output_config)
 
         from kumo_core.encoders.config import EncodersConfig
         from kumo_core.io.json import load_json
