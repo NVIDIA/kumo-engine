@@ -159,7 +159,7 @@ def test_parquet_writes_stay_plain_up_to_one_part(connector):
     sink.write_table(connector, '@stage/small.parquet', frame)
     sink.write_table(connector, '@stage/big.parquet',
                      pd.DataFrame({'x': [os.urandom(50).hex() for _ in range(100)]}))
-    store = connector.sink_backend.store
+    store = sink.store
     assert '@stage/small.parquet' in store.objects
     assert any(
         name.startswith('@stage/big.parquet.chunks/')

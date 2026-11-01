@@ -36,7 +36,7 @@ class SourceVersion(str):
 
 
 def version_kind(version: object) -> str:
-    return getattr(version, "kind", "unknown")
+    return version.kind if isinstance(version, SourceVersion) else "unknown"
 
 
 def epoch_second(moment: datetime) -> str:

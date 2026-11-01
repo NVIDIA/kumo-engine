@@ -85,8 +85,7 @@ def embedded_model(manifest: ModelManifest) -> ModelManifest:
         return copy
 
     def cut(model: Optional[ModelManifest]) -> Optional[ModelManifest]:
-        return None if model is None else ModelManifest(id=model.id,
-                                                        reconstructed=True)
+        return None if model is None else stub('model', model.id)
 
     return replace(copy, parents=replace(
         parents, warm_start=cut(parents.warm_start),
