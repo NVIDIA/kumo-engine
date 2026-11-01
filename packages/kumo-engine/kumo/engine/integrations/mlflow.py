@@ -316,18 +316,13 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             published = _register(self.target, client, info, location,
                                   pointers)
             if fit is None:
-                text = _version_text(model_metrics(result), None, None,
-                                     None, True)
+                _describe_version(self.target, client, published,
+                                  _version_text(model_metrics(result), None,
+                                                None, None, True))
             else:
                 if held is None:
                     self._rename_fit(fit, published)
-                with self.target.scope():
-                    run = client.get_run(fit.run_id)
-                text = _version_text(
-                    model_metrics(result), run.data.tags.get(
-                        'kumo.tune_metric'), run.info.run_name,
-                    run.data.tags.get('kumo.bundle_uri'), not self._unity())
-            _describe_version(self.target, client, published, text)
+                self._describe(published, fit.run_id, model_metrics(result))
             return published
 
     def _logged_model(self, fit: Any) -> Any:
@@ -725,22 +720,23 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                 self._client.update_run(run_id, name=trial_name(*key, name))
 
     def _describe_version(self, record: RunRecord) -> None:
-        r"""Adds the fit's headline metrics, run and bundle to its version."""
         published = cast(PublishedModel, self._published)
         try:
-            with self.target.scope():
-                run = self._client.get_run(self._parent)
-            _describe_version(self.target, self._client, published,
-                              _version_text(
-                                  model_metrics(record),
-                                  record.tags.get('kumo.tune_metric'),
-                                  run.info.run_name,
-                                  run.data.tags.get('kumo.bundle_uri'),
-                                  not self._unity()))
+            self._describe(published, cast(str, self._parent),
+                           model_metrics(record))
         except Exception as error:
             logger.warning('Could not describe %s version %s: %s',
                            published.name, published.version,
                            format_error(error))
+
+    def _describe(self, published: PublishedModel, fit_id: str,
+                  metrics: Mapping[str, float]) -> None:
+        r"""Adds the fit's headline metrics, run and bundle to its version."""
+        with self.target.scope():
+            run = self._client.get_run(fit_id)
+        _describe_version(self.target, self._client, published, _version_text(
+            metrics, run.data.tags.get('kumo.tune_metric'), run.info.run_name,
+            run.data.tags.get('kumo.bundle_uri'), not self._unity()))
 
     def _fit_of(self, fit_id: Optional[str]) -> Tuple[Any, Any]:
         r"""The fit run's info and its logged model, each None if missing."""
