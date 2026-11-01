@@ -874,10 +874,9 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
         both_workers.wait(timeout=5)
         time.sleep(.05)
         run_name = Path(training_input.home_dir).name
-        return SimpleNamespace(
-            metrics={'run_name':
-                     run_name}, artifact_paths={}, explain_disabled=True,
-            best_trainer=_best_trainer(tmp_path))
+        return SimpleNamespace(metrics={'run_name': run_name},
+                               artifact_paths={}, explain_disabled=True,
+                               best_trainer=_best_trainer(tmp_path))
 
     monkeypatch.setattr(
         'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
