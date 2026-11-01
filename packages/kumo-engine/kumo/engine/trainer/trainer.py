@@ -282,7 +282,6 @@ def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
     from kumo_core.object_store_sink import holds_bundle, upload_bundle
     from pyarrow.fs import FileSelector
 
-    from kumo.engine._mlops import warn_not_stored
     from kumo.engine.connector import file_store
 
     if manifest is None:
@@ -298,7 +297,8 @@ def _store_model(bundle_dir: Path, manifest: Optional[ModelManifest],
             filesystem.delete_dir_contents(root, missing_dir_ok=True)
         upload_bundle(filesystem, root, str(bundle_dir))
     except Exception as error:
-        warn_not_stored(f'model {manifest.id}', error, stacklevel=3)
+        raise RuntimeError(f"Could not store model {manifest.id} under the "
+                           f"artifact root: {error}") from error
 
 
 def _published_holdout(trainer: Any) -> tuple[Optional[Path], Optional[bool]]:
@@ -477,7 +477,7 @@ class Trainer:
         """
         if export_config is not None:
             _require_publisher(export_config)
-        from kumo.engine._mlops import resolve
+        from kumo.engine._mlops import raise_on_error, resolve
 
         settings = resolve(mlops)
         run_id = f'{self._id}-fit-{new_run_id()}'
@@ -485,9 +485,14 @@ class Trainer:
                            export_config=export_config,
                            warm_start=warm_start, run_id=run_id)
         if settings is not None and settings.wants('model'):
-            _store_model(result.bundle_dir,
-                         bundle_manifest(result.bundle_dir, result.bundle_id),
-                         settings)
+            try:
+                _store_model(
+                    result.bundle_dir,
+                    bundle_manifest(result.bundle_dir, result.bundle_id),
+                    settings)
+            except Exception as error:
+                raise_on_error(settings, error,
+                               'Trainer.fit (its model is in trainer.result)')
         return result
 
     def _fit(

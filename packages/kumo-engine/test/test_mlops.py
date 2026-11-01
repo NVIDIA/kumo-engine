@@ -27,6 +27,8 @@ def test_mlops_needs_an_artifact_root_it_can_write_files_to(tmp_path):
         kumo.MLOps(artifact_root='@DB.SCHEMA.STAGE/kumo')
     with pytest.raises(ValueError, match='Unknown store kinds'):
         kumo.MLOps(artifact_root=str(tmp_path), store={'models'})
+    with pytest.raises(ValueError, match='on_error'):
+        kumo.MLOps(artifact_root=str(tmp_path), on_error='ignore')
 
 
 def test_a_root_is_a_uri_or_a_connector_and_path(tmp_path):

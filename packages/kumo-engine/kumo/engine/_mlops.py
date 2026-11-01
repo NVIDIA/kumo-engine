@@ -9,7 +9,16 @@ import os
 import posixpath
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, FrozenSet, Iterable, Iterator, Optional, Tuple, Union
+from typing import (
+    Any,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    Literal,
+    Optional,
+    Tuple,
+    Union,
+)
 
 from kumo.engine._manifest import KINDS
 
@@ -35,10 +44,12 @@ class MLOps:
     Args:
         artifact_root: a URI or path, or a ``(connector, path)`` pair.
         store: artifact kinds to store; ``True`` for all, ``False`` for none.
+        on_error: ``'warn'`` or ``'raise'`` when MLOps fails.
     """
 
     artifact_root: Union[str, Tuple[Any, str]]
     store: Union[bool, Iterable[str]] = field(default=True, kw_only=True)
+    on_error: Literal['warn', 'raise'] = field(default='warn', kw_only=True)
     root: _Root = field(init=False, repr=False, compare=False)
     kinds: FrozenSet[str] = field(init=False, repr=False, compare=False)
 
@@ -50,6 +61,9 @@ class MLOps:
 
         if not self.artifact_root:
             raise ValueError('MLOps needs an artifact_root.')
+        if self.on_error not in ('warn', 'raise'):
+            raise ValueError(f"on_error must be 'warn' or 'raise', not "
+                             f"{self.on_error!r}.")
         if isinstance(self.artifact_root, str):
             if self.artifact_root.startswith('@'):
                 raise ValueError(
@@ -154,9 +168,33 @@ def resolve(settings: Optional[MLOps] = None) -> Optional[MLOps]:
     return settings if settings is not None else _CURRENT.get()
 
 
-def warn_not_stored(what: str, error: Exception, stacklevel: int) -> None:
-    warnings.warn(f'Could not store {what} under the artifact root: {error}',
-                  UserWarning, stacklevel=stacklevel + 1)
+def raise_on_error(settings: Optional[MLOps], error: Optional[BaseException],
+                   call: str, stacklevel: int = 2) -> None:
+    r"""Raises or warns about ``error``, as ``settings.on_error`` says."""
+    if error is None or settings is None:
+        return
+    message = f'{call} finished, but MLOps failed: {full_error(error)}'
+    if settings.on_error == 'raise':
+        raise RuntimeError(message) from error
+    warn_failure(message, error, stacklevel + 1)
+
+
+def full_error(error: BaseException) -> str:
+    r"""``Type: message``, not shortened."""
+    return f'{type(error).__name__}: {error}'
+
+
+def warn_failure(message: str, error: BaseException, stacklevel: int = 2,
+                 also: Optional[BaseException] = None) -> None:
+    r"""Warns ``message`` once per ``error`` (and ``also``)."""
+    if getattr(error, '_kumo_warned', False):
+        return
+    warnings.warn(message, UserWarning, stacklevel=stacklevel + 1)
+    for reported in (error, also):
+        try:
+            setattr(reported, '_kumo_warned', True)
+        except AttributeError:
+            pass
 
 
 def on_root(source: Any, path: str) -> Tuple[Any, str]:
