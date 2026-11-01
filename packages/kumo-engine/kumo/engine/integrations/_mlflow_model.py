@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+import os
 from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 
 from kumo.engine.connector._extras import import_provider
-from kumo.engine.connector.base import Connector
 from kumo.engine.graph import GraphSnapshot
+from kumo.engine.integrations._serving import snapshot_location
 
 _pyfunc = import_provider('mlflow.pyfunc', 'mlflow')
 _schema = import_provider('mlflow.types.schema', 'mlflow')
@@ -24,9 +25,15 @@ _DTYPES = {
 
 class KumoModel(_pyfunc.PythonModel):
     def load_context(self, context: Any) -> None:
+        from kumo.engine._deps import assets_through
         from kumo.engine._predictor import load_predictor
 
-        self._predictor = load_predictor(context.artifacts['bundle'])
+        self._reader = context.model_config.get('assets_from')
+        bundle = context.artifacts['bundle']
+        with assets_through(
+                self._reader, bundle, lambda reader, _:
+                f'{_assets_from(reader)}, with an identity that reads it'):
+            self._predictor = load_predictor(bundle)
         self._columns = list(context.model_config['columns'])
         self._snapshots: Dict[str, GraphSnapshot] = {}
         self._default = context.model_config.get('snapshot')
@@ -46,18 +53,37 @@ class KumoModel(_pyfunc.PythonModel):
                                        params)
 
     def _snapshot(self, uri: str) -> GraphSnapshot:
+        from kumo.engine._deps import reads
+
         if uri not in self._snapshots:
-            connector, path = snapshot_location(uri)
-            self._snapshots[uri] = GraphSnapshot.load_from_connector(
-                connector, path=path)
+            connector, path = ((self._reader, uri)
+                               if self._reader is not None
+                               and reads(self._reader, uri) else
+                               snapshot_location(uri))
+            try:
+                self._snapshots[uri] = GraphSnapshot.load_from_connector(
+                    connector, path=path)
+            except FileNotFoundError as error:
+                reader = _remote_reader(uri)
+                if reader is None or connector is self._reader:
+                    raise
+                raise FileNotFoundError(
+                    f'{error} To read {uri} from here, '
+                    f'{_assets_from(reader)}.') from error
         return self._snapshots[uri]
 
 
-def snapshot_location(uri: str) -> Tuple[Connector, str]:
-    from kumo.engine.connector import connector_for_root
+def _assets_from(reader: str) -> str:
+    return (f"pass model_config={{'assets_from': {reader}(...)}} to "
+            f"mlflow.pyfunc.load_model(model_uri, ...)")
 
-    parent, slash, name = uri.rstrip('/').rpartition('/')
-    return connector_for_root(parent or slash or '.'), name
+
+def _remote_reader(uri: str) -> Optional[str]:
+    if uri.startswith('@'):
+        return 'SnowflakeConnector'
+    if uri.startswith('/Volumes/') and not os.path.isdir('/Volumes'):
+        return 'DatabricksConnector'
+    return None
 
 
 def signature(snapshot: GraphSnapshot, query: str) -> Tuple[Any, pd.DataFrame]:

@@ -169,7 +169,9 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
     info = log_model(trainer, snapshot=snapshot,
                      serving_snapshot=str(tmp_path / 'exports' / location))
 
-    assert mlflow.get_run(info.run_id).info.status == 'FINISHED'
+    run = mlflow.get_run(info.run_id)
+    assert run.info.status == 'FINISHED'
+    assert 'ents' in {item.dataset.name for item in run.inputs.dataset_inputs}
     requirements = mlflow.pyfunc.get_model_dependencies(info.model_uri)
     assert f'kumo-engine[gcs,s3]=={kumo.__version__}' in open(
         requirements).read().splitlines()
@@ -612,9 +614,10 @@ def test_a_later_registration_logs_the_model_in_its_fit_run_else_in_none(
 
     fit = mlflow.get_run(result.tracking.run_id)
     model, = mlflow.MlflowClient().search_logged_models(fits)
-    assert (published.version, fit.info.run_name, model.source_run_id,
-            model.name) == ('1', 'fit-m-v1', fit.info.run_id, 'm')
+    assert (published.version, model.source_run_id, model.name) == (
+        '1', fit.info.run_id, 'm')
     assert {m.key: m.value for m in model.metrics} == registry_metrics(result)
+    assert fit.info.run_name == 'fit-m-v1'
     assert fit.data.tags['kumo.model_version'] == '1'
     assert fit.data.tags['mlflow.note.content'].split('\n')[3].startswith(
         'Fit of `m` v1 for ')

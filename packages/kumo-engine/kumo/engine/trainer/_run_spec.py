@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""A `Trainer.fit` as a tracked run's `RunSpec`."""
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional, Sequence, Tuple
@@ -22,8 +22,6 @@ class FitContext:
 
     query: str
     model_plan: Mapping[str, Any]
-    inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
-        default_factory=dict)
     started: Optional[datetime] = None
     snapshot_id: Optional[str] = None
     task_type: Optional[str] = None
@@ -48,7 +46,6 @@ def fit_spec(context: FitContext) -> RunSpec:
                  'task_type': context.task_type,
                  'entity': entity(context.query),
                  'tune_metric': tune and metric_name(tune)},
-        inputs=dict(context.inputs),
         description=f'`{context.query}`',
     )
 

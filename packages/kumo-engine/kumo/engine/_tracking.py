@@ -69,8 +69,6 @@ class RunRecord:
                               ...]] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
-    inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
-        default_factory=dict)
     summaries: Tuple[Summary, ...] = ()
     description: Optional[str] = None
     model_label: Optional[str] = None
@@ -91,8 +89,6 @@ class RunSpec:
     steps: Mapping[str, Sequence[Tuple[int, float]]] = field(
         default_factory=dict)
     tags: Mapping[str, Any] = field(default_factory=dict)
-    inputs: Mapping[str, Mapping[str, Optional[str]]] = field(
-        default_factory=dict)
     parents: Mapping[str, Optional[str]] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
     summaries: Sequence[Summary] = ()
@@ -105,31 +101,9 @@ class RunSpec:
     name_suffix: Optional[str] = None
 
 
-INPUT_FIELDS = ('connector', 'location', 'version', 'version_kind')
-
-
-def fit_inputs(manifest: Any) -> Dict[str, Dict[str, Optional[str]]]:
-    try:
-        table, kind = manifest, getattr(manifest, 'kind', None)
-        if kind == 'model':
-            table = getattr(_parents(manifest), 'training_table', None)
-        parents = None if kind == 'prediction' else _parents(table)
-        snapshot = _parents(
-            getattr(_parents(manifest) if kind == 'prediction' else parents,
-                    'snapshot', None))
-        tables = dict(getattr(snapshot, 'source_tables', None) or {})
-        source = getattr(parents, 'source_table', None)
-        if source is not None:
-            tables['training_table'] = source
-        return {
-            str(name): {key: None if getattr(entry, key) is None else str(
-                getattr(entry, key)) for key in INPUT_FIELDS}
-            for name, entry in tables.items()
-        }
-    except Exception as error:
-        logger.warning('Could not read the fit\'s source tables: %s',
-                       format_error(error), exc_info=_debug())
-        return {}
+def metric_name(metric: str) -> str:
+    r"""The plan's acc is logged as accuracy."""
+    return 'accuracy' if metric == 'acc' else metric
 
 
 def _parents(manifest: Any) -> Any:
@@ -143,11 +117,6 @@ def model_metrics(record: RunRecord) -> Dict[str, float]:
     return {**record.metrics,
             **{summary.name: summary.value for summary in record.summaries
                if isinstance(summary, Scalar) and summary.role == 'model'}}
-
-
-def metric_name(metric: str) -> str:
-    r"""The plan's acc is logged as accuracy."""
-    return 'accuracy' if metric == 'acc' else metric
 
 
 def logged_name(name: str) -> str:
@@ -208,7 +177,6 @@ def run_record(spec: RunSpec) -> RunRecord:
             **({} if spec.error is None else {'kumo.error': spec.error}),
         },
         artifacts=dict(spec.artifacts),
-        inputs=dict(spec.inputs),
         summaries=tuple(spec.summaries),
         description=spec.description,
         model_label=spec.model_label,
@@ -311,7 +279,6 @@ def prediction_record(manifest: 'PredictionManifest',
                 json.dumps(manifest.to_dict(), indent=2, sort_keys=True,
                            default=str)
             },
-            inputs=fit_inputs(manifest),
             summaries=(*_prediction_summaries(
                 manifest, holdout_counts(model_manifest), window), *summaries,
                 *prep_summaries(manifest.parents.snapshot)),

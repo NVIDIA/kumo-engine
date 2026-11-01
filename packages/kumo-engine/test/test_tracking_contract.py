@@ -64,7 +64,7 @@ INPUTS = {
 }
 SNAPSHOT = f"{'s' * 64}@{'v' * 16}"
 CONTEXT = FitContext(
-    query=QUERY, inputs=INPUTS, snapshot_id=SNAPSHOT, task_type='regression',
+    query=QUERY, snapshot_id=SNAPSHOT, task_type='regression',
     started=datetime(2026, 10, 29, 6, 18, tzinfo=timezone.utc),
     model_plan={
         'optimization': {'base_lr': [0.01, 0.001], 'max_epochs': 2},
@@ -217,10 +217,10 @@ def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
         spec = fitted_spec(spec, result)
     spec = replace(spec, steps=series if series is not None else {
         **({} if error else SELECTED)})
+    if series is None and not error:
+        spec = replace(spec, parents={**spec.parents, 'best_trial': 2})
     if not error:
-        spec = replace(spec, parents={
-            **spec.parents, **({} if series is not None else {'best_trial': 2}),
-            'best_epoch': 2})
+        spec = replace(spec, parents={**spec.parents, 'best_epoch': 2})
     if 'error' in events[-1].params:
         spec = replace(spec, error=str(events[-1].params['error']))
     records[FIT] = run_record(spec)
@@ -468,7 +468,6 @@ def test_records_of_the_recorded_fit():
     assert 'kumo.model_alias' not in tags
     assert fit.artifacts == {}
     assert fit.description == f'`{QUERY}`'
-    assert fit.inputs == INPUTS
 
     oom = records['trial-2-attempt-1']
     assert oom == RunRecord(
@@ -527,6 +526,7 @@ def test_adapter_logs_each_summary_type(adapter, mlflow_adapter):
     replay(adapter.make(), summaries=SUMMARIES)
 
     fit = adapter.observe()[FIT]
+    assert fit.steps['test/brier'] == ((0, 0.25),)
     tables = {'col_stats.json': {'columns': ['table', 'rows'],
                                  'data': [['ents', 400]]},
               'confusion.json': {'columns': ['actual', 'a', 'b'],
@@ -664,7 +664,6 @@ def test_prediction_record_of_the_recorded_run():
                            'kumo.bundle_id': BUNDLE,
                            'kumo.snapshot_id': 'g@d'}
     assert record.description is None
-    assert record.inputs == INPUTS
     assert json.loads(record.artifacts[PROVENANCE_FILE]) == manifest.to_dict()
 
 
@@ -719,7 +718,6 @@ def test_prediction_record_of_a_partial_manifest():
     assert record.summaries == (
         Scalar('pred/rows', 50), Scalar('pred/skipped_share', 5 / 55),
         Note('notes', '5 requested rows were not scored: no history.'))
-    assert record.inputs == {}
     assert record.tags['kumo.error'] == 'RuntimeError: disk full'
 
 

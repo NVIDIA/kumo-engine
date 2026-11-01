@@ -117,6 +117,7 @@ def test_holdout_is_the_published_models(graph, refit_trainval, refit_full,
         suffix = '' if model == 'fit' else '_refit_trainval'
         assert re.fullmatch(rf'version_\d+{suffix}',
                             result.holdout_path.parent.name)
+        assert len(result.holdout_df()) > 0
         assert result.manifest.holdout.rows == len(result.holdout_df())
 
 
