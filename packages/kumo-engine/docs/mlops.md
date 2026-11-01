@@ -2,7 +2,7 @@
 
 Turn MLOps on with one `kumo.MLOps` and the normal `kumo.engine` calls store their snapshots, training tables and models under an artifact root, record fits in your experiment tracker, and register models in its registry.
 
-Install with `pip install "kumo-engine[mlflow]"` (add `s3`, `gcs`, `databricks`, `sagemaker` or `snowflake` as needed; Snowflake needs only `kumo-engine[snowflake]`). GPU, CUDA and Databricks Runtime notes are under [Install](#install).
+Install the engine wheel by path, `pip install "<wheel dir>/<kumo_engine wheel>[mlflow]"` (add `s3`, `gcs`, `databricks`, `sagemaker` or `snowflake` as needed; Snowflake needs only `[snowflake]`): PyPI's `kumo-engine` 1.0.0 predates this API (see [Install](#install)). GPU, CUDA and Databricks Runtime notes are under [Install](#install).
 
 ## Quickstart
 
@@ -99,7 +99,7 @@ To serve only a better model, move its alias yourself: [Promote a model](#promot
 | `table.id` | a training table | `<root>/training_tables/<id>/` |
 | `result.id` | a model (its bundle id) | `<root>/models/<id>/`; the `kumo.bundle_id` run tag; `kumo_bundle_id` on the registered version |
 | `result.registered_model.version` | the registered version | the registry |
-| `result.tracking` | the tracker's own run of the fit: `platform`, `run_id`, `url` | the tracker's UI |
+| `result.tracking` | the tracker's run of the fit: `platform`, `experiment`, `run_id`, `run_name`, `url` | the tracker's UI |
 
 Find runs with the platform's UI, or by tag: `kumo.kind` (`fit`, `trial`) and `kumo.bundle_id`.
 
@@ -108,13 +108,13 @@ Find runs with the platform's UI, or by tag: `kumo.kind` (`fit`, `trial`) and `k
 `kumo.MLOps` says where artifacts go and what records them. Use it as a block, or pass it as `mlops=` on a single call (`fit`, `graph.snapshot`, `generate_training_table`):
 
 ```python
-cfg = kumo.MLOps("s3://bucket/kumo", tracking=..., registry=..., on_error="raise")
+cfg = kumo.MLOps("s3://<bucket>/kumo", tracking=..., registry=..., on_error="raise")
 with kumo.mlops(cfg):
     snapshot = graph.snapshot()
 trainer.fit(table, snapshot=snapshot, mlops=cfg)
 ```
 
-- **`artifact_root`** (required): a URI (`s3://`, `gs://`, `file://`, or a local path, including `/Volumes/...` on a Databricks cluster) or a `(connector, path)` pair for a store a URI cannot reach: a volume through a `DatabricksConnector` (`"/Volumes/<catalog>/<schema>/<volume>/kumo"`) or a named stage through a `SnowflakeConnector` (`"@DB.SCHEMA.STAGE/kumo"`) once the installed sink holds files there.
+- **`artifact_root`** (required): a URI (`s3://`, `gs://`, `file://`, or a local path, including `/Volumes/...` on a Databricks cluster) or a `(connector, path)` pair for a store a URI cannot reach: a volume through a `DatabricksConnector` (`"/Volumes/<catalog>/<schema>/<volume>/kumo"`) or a named stage through a `SnowflakeConnector` (`"@DB.SCHEMA.STAGE/kumo"`) once the installed sink holds files there. The connector's `root_dir` must contain the path; `kumo.MLOps` raises otherwise, so a data connector rooted at `s3://<bucket>/data` cannot hold `s3://<bucket>/artifacts`.
 - **`tracking`**: `MlflowTracking` or `SnowflakeTracking` (below), or your own [`Tracking`](#custom-trackers).
 - **`registry`**: a `ModelRegistryLocation(name, alias=...)`; every fit registers its model there, in the tracker's registry.
 - **`store`**: the artifact kinds stored when produced: `snapshot`, `training_table` and `model` (default: all).
@@ -143,8 +143,8 @@ table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{tabl
 - `result.registered_model` is the version `MLOps(registry=)` registered; `result.published_model` the one `fit(export_config=...)` published.
 - `result.tracking` is the tracker's run: `TrackingRef(platform="databricks", run_id="...", url="https://.../ml/experiments/.../runs/...")`. The model's `_provenance.json` records the same.
 - `fit(scoring_defaults=kumo.ScoringDefaults(...))` stores prediction defaults in the bundle before it is stored and registered: `binary_classification_threshold` (binary and multilabel classification) and `num_classes_to_return` (multiclass, multilabel, link prediction). `predict` and the MLflow pyfunc apply them when a call omits them; explicit arguments and a query's `TOP k` win. A binary model always returns `True_PROB`; with no threshold passed or stored, its `TARGET_PRED` is null. `result.with_scoring_defaults(...)` retunes a fitted model as a new bundle whose manifest names the original in `parents.derived_from`.
-- `result.export(cfg)` (or `trainer.export(cfg)` for a loaded model) registers a model at `cfg.registry` through its tracker. On every platform, registering a bundle the registry already holds under that name returns its version instead of adding one.
-- If registration fails, `fit` warns with the full error and returns with `registered_model=None` (with `on_error="raise"`, it raises), and the fit run ends failed with `kumo.error`. Registering a bundle the registry already holds under the name returns that version (logged at info) and moves the alias to it.
+- `result.export(cfg)` (or `trainer.export(cfg)` for a loaded model) registers a model at `cfg.registry` through its tracker. On MLflow and Unity Catalog, registering a bundle the registry already holds under that name returns its version instead of adding one (found by its bundle id tag); the Snowflake Model Registry adds a new version each time.
+- If registration fails, `fit` warns with the full error and returns with `registered_model=None` (with `on_error="raise"`, it raises), and the fit run ends failed with `kumo.error`. On MLflow and Unity Catalog, a bundle the registry already holds under the name returns that version (logged at info) and the alias moves to it.
 
 **Model names** follow the registry's rules, checked when `kumo.MLOps` is built:
 
@@ -158,7 +158,7 @@ An alias is a letter or underscore followed by letters, digits or underscores; `
 
 ### Promote a model
 
-Register every fit under a candidate alias and move the serving alias yourself once the new model is better, comparing `result.metrics` with the champion's:
+Register every fit under a candidate alias and move the serving alias yourself once the new model is better, comparing `result.metrics` (the holdout's `test_<metric>`, logged to MLflow as `test/<metric>`) with the champion's:
 
 ```python
 with cfg.tracking.client() as client:          # the tracker's MLflow server, as its identity
@@ -171,9 +171,10 @@ with cfg.tracking.client() as client:          # the tracker's MLflow server, as
 In the Snowflake Model Registry a version holds at most one alias: take `champion` off the old version (there is none on the first promotion) and `candidate` off the new one, then set it:
 
 ```sql
-ALTER MODEL ML.MODELS.CHURN_GNN VERSION champion UNSET ALIAS;   -- skip on the first promotion
-ALTER MODEL ML.MODELS.CHURN_GNN VERSION V3 UNSET ALIAS;         -- V3 holds candidate
-ALTER MODEL ML.MODELS.CHURN_GNN VERSION V3 SET ALIAS = champion;
+SHOW VERSIONS IN MODEL ML.MODELS.CHURN_GNN;                         -- or result.registered_model.version
+ALTER MODEL ML.MODELS.CHURN_GNN VERSION champion UNSET ALIAS;        -- skip on the first promotion
+ALTER MODEL ML.MODELS.CHURN_GNN VERSION <version> UNSET ALIAS;       -- it holds candidate
+ALTER MODEL ML.MODELS.CHURN_GNN VERSION <version> SET ALIAS = champion;
 ```
 
 Jobs that load `alias="champion"` pick up the new version on their next run.
@@ -183,6 +184,7 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 `MlflowTracking(experiment_name=None, run_name=None, log_system_metrics=True, tags=None, log_model=False, *, target=None)`:
 - With no `target`, it records where MLflow's own configuration points (`MLFLOW_TRACKING_URI`, `mlflow.set_tracking_uri`; automatic on Databricks). `target` names another server with its credentials: a `DatabricksConnector`, a `SageMakerMLflow(arn)`, or a tracking URI. With a `target`, `experiment_name` is required to record runs.
 - `log_model=True` logs the model on the fit run without registering it; `MLOps(registry=)` implies it.
+- Building `kumo.MLOps` creates a missing experiment; if MLflow refuses (on Databricks, the experiment's folder must exist), it raises and says so.
 
 `SnowflakeTracking(source, *, experiment_name, database=None, schema_name=None, run_name=None, tags=None, native_model_lineage=False)`:
 - `source` is a `SnowflakeConnector`, whose identity opens the session and whose Snowflake Model Registry `MLOps(registry=)` registers in, or a Snowpark session, which tracks only.
@@ -198,14 +200,17 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 A model registered through `MlflowTracking` is an MLflow pyfunc: it serves with `mlflow.pyfunc.load_model(uri)`, `spark_udf` and Model Serving.
 
 ```python
-model = mlflow.pyfunc.load_model("models:/main.ml.users_churn@champion")
+with cfg.tracking.client():        # MLflow's own calls reach the tracker's server, as its identity
+    model = mlflow.pyfunc.load_model("models:/main.ml.users_churn@champion")
 scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
     "snapshot": cfg.snapshot_uri(snapshot),        # "/Volumes/main/ml/kumo/snapshots/<graph id>/<data version>"
-    "prediction_time": "2024-06-01"})              # temporal queries
+    "prediction_time": "2024-06-01"})              # temporal queries need it, or a TIMESTAMP column
 ```
 
-- Input rows have an `ENTITY` column and optionally a `TIMESTAMP`; scores come back in input order, one per scored row. Binary classification returns `True_PROB`; `TARGET_PRED` needs `params={"binary_classification_threshold": ...}` or a stored threshold, and is null without one.
+- Input rows have an `ENTITY` column and optionally a `TIMESTAMP`; a temporal query needs one of `TIMESTAMP` or `prediction_time`. Scores come back in input order, one per scored row. Binary classification returns `True_PROB`; `TARGET_PRED` needs `params={"binary_classification_threshold": ...}` or a stored threshold, and is null without one.
 - Each replica loads a snapshot on its first `predict` with that URI and keeps it. `log_model(trainer, snapshot=..., serving_snapshot=...)` logs a model whose replicas load that snapshot at startup and use it when no `snapshot` param is given; `serving_snapshot` takes a URI, or a `GraphSnapshot` or snapshot id stored under the block's artifact root.
+- Snapshot URIs: `s3://`, `gs://`, `file://` or a local path, read with the ambient credentials. A `/Volumes/...` path off a Databricks cluster, or a stage path, is read through `model_config={"assets_from": connector}` (below), e.g. the connector of a `(connector, "/Volumes/...")` root.
+- A model with stored assets (word vectors for text columns) on a volume, stage or bucket reads them, and snapshots there, with the identity it is given: `mlflow.pyfunc.load_model(uri, model_config={"assets_from": connector})`, a connector for that store with its credentials; an asset it cannot find raises, naming this option.
 - Serving needs an image with kumo-engine installed: `mlflow models serve -m <model dir> --env-manager local`. Its pip requirement is `kumo-engine[s3,gcs]` of the same version (plus `[text]` for text columns).
 
 ## Credentials and running off-platform
@@ -228,16 +233,21 @@ snowflake = SnowflakeTracking(SnowflakeConnector(warehouse="<wh>", database="ML"
 
 ### SageMaker managed MLflow
 
-1. Create a tracking server once (15-25 minutes): `aws sagemaker create-mlflow-tracking-server --tracking-server-name <name> --artifact-store-uri s3://<bucket>/mlflow --role-arn <server role ARN>`; the server role needs read and write on that prefix. A stopped server starts with `aws sagemaker start-mlflow-tracking-server --tracking-server-name <name>` (about 20 minutes); `kumo.MLOps` fails until `aws sagemaker describe-mlflow-tracking-server --tracking-server-name <name>` reports `Started`.
-2. Give the job's identity `sagemaker-mlflow:*` on the server ARN and S3 read and write on the artifact store and the kumo artifact root. Rights scoped to the root's prefix (`s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on `<bucket>/<prefix>/*`, `s3:ListBucket` limited to that prefix) suffice: kumo-engine makes no bucket-level calls.
+1. Create a tracking server once (15-25 minutes): `aws sagemaker create-mlflow-tracking-server --tracking-server-name <name> --artifact-store-uri s3://<bucket>/mlflow --role-arn <server role ARN>`; the server role needs read and write on that prefix. A stopped server starts with `aws sagemaker start-mlflow-tracking-server --tracking-server-name <name>` (about 20 minutes); `kumo.MLOps` fails until `aws sagemaker describe-mlflow-tracking-server --tracking-server-name <name>` reports `Started` (`Created` for a new server).
+2. Give the job's identity `sagemaker-mlflow:*` on the server ARN (an MLflow App instead needs `sagemaker:CallMlflowAppApi` on the app ARN; the sample policy on AWS's MLflow Apps setup page lists the Tracking Server actions, which don't apply) and S3 read and write on the artifact store and the kumo artifact root. Rights scoped to the root's prefix (`s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on `<bucket>/<prefix>/*`, `s3:ListBucket` limited to that prefix) suffice: kumo-engine makes no bucket-level calls.
 3. Install `kumo-engine[mlflow,sagemaker]` and pass `MlflowTracking(..., target=SageMakerMLflow(arn))`; the registry is the same server.
-4. MLflow's run links do not open on SageMaker: open the UI from SageMaker Studio, or at the URL `aws sagemaker create-presigned-mlflow-tracking-server-url --tracking-server-name <name>` prints. A tracked fit warns with this command, and `result.tracking.url` is `None`.
+4. MLflow's run links do not open on SageMaker. A tracked fit warns with the command below, and `result.tracking.url` is `None`. To open the UI:
+   - **SageMaker AI Studio** (not Studio Classic): Applications » MLflow, then Open MLflow on the server's menu. Studio acts as the domain's execution role, which needs `sagemaker-mlflow:AccessUI` (grant it on `*` if a policy scoped to the server ARN is still denied) and `sagemaker:ListMlflowTrackingServers` to list it).
+   - **SageMaker Unified Studio**: in an IAM-mode domain (tested), the project's MLflow page only lists servers connected to the project: Connect Tracking Server with its ARN. AWS documents Create MLflow Tracking Server and Create MLflow App on that page for other domains, deleted with the project (untested here).
+   - **Anywhere**, with your own credentials: `aws sagemaker create-presigned-mlflow-tracking-server-url --tracking-server-name <name>` prints a one-time URL valid for 5 minutes; it needs `sagemaker:CreatePresignedMlflowTrackingServerUrl` and `sagemaker-mlflow:AccessUI`.
+   - **MLflow App** instead of a server: `aws sagemaker create-mlflow-app --name <name> --artifact-store-uri s3://<bucket>/mlflow --role-arn <app role ARN>` (ready at `Created`, about 5 minutes); pass its ARN as the target. The UI: `aws sagemaker create-presigned-mlflow-app-url --arn <arn>` (needs `sagemaker:CreatePresignedMlflowAppUrl`), then pick the workspace `default`.
+5. In a SageMaker notebook, use a Python 3.11+ kernel with the wheel installed by path (`pip install --find-links <wheel dir> "<wheel dir>/<kumo_engine wheel>[mlflow,sagemaker,s3,text]" ipykernel ipywidgets`, then `python -m ipykernel install --user --name kumo-engine`); `SageMakerMLflow(arn)` uses the notebook's role. Notebook instances need the AL2023 platform (`notebook-al2023-v1`): the wheel needs glibc 2.34.
 
 ## Reference
 
 ### Install
 
-- A bare `kumo-engine[mlflow]` with `--find-links <wheel dir>` can resolve to an unrelated `kumo-engine` on PyPI; install the engine wheel by path: `pip install --find-links <wheel dir> "<wheel dir>/<kumo_engine wheel>[mlflow]"`.
+- Install the engine wheel by path, `pip install "<wheel dir>/<kumo_engine wheel>[mlflow]"`. PyPI's `kumo-engine` is the 1.0.0 release, which predates the MLOps API, and a bare `kumo-engine[mlflow]` resolves to it over a dev wheel; with it installed, `kumo.MLOps` raises `AttributeError: module 'kumo.engine' has no attribute 'MLOps'` and `pip show kumo-engine` says 1.0.0. The wheel `scripts/build_wheel.sh` builds bundles kumo-core, kumo-api, kumo-pql, DiskGraph and the connector packages; with separately built wheels, add `--find-links <wheel dir>`.
 - **GPU:** on a plain GPU VM or SageMaker image, install a torch build that matches the NVIDIA driver first, e.g. `pip install --index-url https://download.pytorch.org/whl/cu126 "torch==2.12.*" torchvision`. PyPI's default torch is built for a recent CUDA (`torch.version.cuda`; CUDA 13 needs driver ≥ 580); cu126 runs on ≥ 525.60. With `accelerator="auto"`, a torch that cannot use the driver runs on CPU: check `torch.cuda.is_available()`.
 - **Databricks:** Runtime 17.3 LTS ML or later keeps its torch, torchvision and pyarrow (kumo-engine accepts pyarrow 16 through 24; a custom CA bundle for S3 needs 21 or later). On 16.4 LTS ML pip replaces torch and breaks torchvision. The parent folder of an experiment path must exist. Registering to Unity Catalog from outside Databricks also needs `boto3`.
 - **Disk:** `kumo.configure(scratch_dir=...)` holds snapshots, tables and bundles; Python's own temporary files (multiprocessing) follow `TMPDIR`, so point both at a large local disk.
@@ -267,7 +277,7 @@ Every artifact carries `_provenance.json`, metadata only (the underscore keeps S
 ### Artifacts, bundles and dependencies
 
 - A model's **bundle** holds only its own state: weights, encoders, the training spec and the holdout. Its manifest's **`parents`** are lineage; its **`dependencies`** are what `predict` needs besides the bundle and a snapshot: the `predictor` entry point, the `kumo-engine` `package` (with `[text]` when a text column is encoded) and content-addressed `asset`s.
-- **Assets** are stored once under `<root>/assets/<asset_kind>/<sha256>/` and shared by every model that uses them. `Trainer.load` and the pyfunc look for each at the location recorded, then under the enclosing block's root, then in the embedding-model store, check its sha256 and cache non-local copies under `~/.cache/kumo/assets/`. A stored asset that cannot be found raises `MissingDependencyError`.
+- **Assets** are stored once under `<root>/assets/<asset_kind>/<sha256>/` and shared by every model that uses them. `Trainer.load` and the pyfunc look for each at the location recorded, then under the enclosing block's root, then in the embedding-model store, check its sha256 and cache non-local copies under `~/.cache/kumo/assets/`. An asset on a stage, a volume or a bucket is read with the identity the loading call was given: `Trainer.load_from_connector(connector, ...)`, `load_model(uri, target=DatabricksConnector(...) or SageMakerMLflow(arn, identity=...))`, the block root's connector, or `mlflow.pyfunc.load_model(uri, model_config={"assets_from": connector})`. A stored asset that cannot be found raises `MissingDependencyError` naming the argument that passes such a connector.
 - **Text encoders** are the first assets: word-vector models (`GloVeVectors`) are stored; other `TokenEmbeddingModel`s are recorded by fingerprint and must be registered wherever the model loads:
 
 ```python
@@ -295,11 +305,11 @@ Other systems plug in through `kumo.engine.tracking.Tracking`, which receives re
 
 ### Progress events
 
-`fit(callbacks=[...])` calls each callback with every `kumo.engine.tracking.Event`: `fit_started`, per trial `trial_started`, `epoch_ended` and `trial_ended`, then `fit_ended`. Ended events carry `params["status"]` and, on failure, `params["error"]`; a callback that raises is logged and not called again. For JSON lines: `callbacks=[lambda e: print(json.dumps(e.to_dict()))]`. `graph.snapshot(callbacks=[...])` reports `snapshot_started`, `table_staged` per table and `snapshot_ended` (with `snapshot_id` and `reused`), each with `params["seconds"]` since the start, and logs each at INFO.
+`fit(callbacks=[...])` calls each callback with every `kumo.engine.tracking.Event`: `fit_started`, per trial `trial_started`, `epoch_ended` and `trial_ended`, then `fit_ended`. Ended events carry `params["status"]` and, on failure, `params["error"]`; a callback that raises is logged and not called again. For JSON lines: `callbacks=[lambda e: print(json.dumps(e.to_dict()))]`. `graph.snapshot(callbacks=[...])` reports `snapshot_started`, `table_staged` per table and `snapshot_ended` (with `snapshot_id` and `reused`), each with `params["seconds"]`, the time since the snapshot started, and logs each at INFO. `callbacks=[print]` prints each as its name and fields, e.g. `table_staged table=users seconds=12.0`.
 
 ### Limits
 
 - Tracker calls run on a background thread; `fit` waits at most 30 s for tracking to finish, and up to an hour for model logging and registration (600 s MLflow HTTP timeout during the upload). During a fit MLflow HTTP calls use 2 retries and a 30 s timeout unless `MLFLOW_HTTP_REQUEST_MAX_RETRIES` / `MLFLOW_HTTP_REQUEST_TIMEOUT` are set. Only global rank 0 tracks.
-- MLflow rejects `@` in metric names: `test_map@10` is logged as `test_map_at_10`. Params MLflow rejects are counted in `kumo.dropped_params`.
-- Snowflake keeps 200 metrics and 1000 params per run; the rest are counted in `kumo.dropped_metrics` / `kumo.dropped_params`. Snowflake has no tags (they are params of the same name), no child runs and no dataset inputs. A taken `run_name` gets a random suffix; an active run elsewhere in the process is never resumed.
+- MLflow rejects `@` in metric names: the trainer's `test_map@10` is logged as `test/map_at_10`. Params MLflow rejects are counted in `kumo.dropped_params`.
+- Snowflake keeps 200 metrics and 1000 params per run; the rest are counted in `kumo.dropped_metrics` / `kumo.dropped_params`. Snowflake has no tags (they are params of the same name), no child runs and no dataset inputs. A taken run name gets `_2`, `_3` and so on; an active run elsewhere in the process is never resumed.
 - The fit's source tables are MLflow run inputs: Databricks tables as Delta tables at the snapshot's version (so Unity Catalog links them to the registered model), file sources by URI.
