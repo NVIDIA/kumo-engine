@@ -32,7 +32,7 @@ from typing import (
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.instrumentation import format_error
-from kumo_core.summaries import Scalar, Summary
+from kumo_core.summaries import Note, Scalar, Summary
 
 from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
@@ -370,8 +370,6 @@ def _tune_metric(model: Any) -> Optional[str]:
 
 def _one_epoch_note(spec: RunSpec,
                     held: Optional[Mapping[str, float]]) -> RunSpec:
-    from kumo_core.summaries import Note
-
     single = {name: points[0][1] for name, points in spec.steps.items()
               if len(points) < 2}
     values = {**{logged_name(name): value for name, value in single.items()},
@@ -414,13 +412,12 @@ def _utc(text: str) -> datetime:
 
 def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
                           window: Optional[Sequence[Any]] = None
-                          ) -> List['Summary']:
+                          ) -> List[Summary]:
     from kumo_core.prediction_counts import prediction_summaries
     from kumo_core.score_counts import Counts
-    from kumo_core.summaries import Note, Scalar
 
     table = manifest.prediction_table
-    summaries: List['Summary'] = []
+    summaries: List[Summary] = []
     if table.rows is not None:
         summaries.append(Scalar('pred/rows', table.rows))
     if table.skipped_rows is not None:
