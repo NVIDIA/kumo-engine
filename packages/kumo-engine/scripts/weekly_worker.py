@@ -38,7 +38,7 @@ def check_gpu_class(expected, actual):
 
 
 def installation_helper():
-    helper = Path(__file__).resolve().parents[1] / 'test/wheel_gpu_smoke.py'
+    helper = Path(__file__).with_name('nightly_check.py')
     spec = importlib.util.spec_from_file_location('weekly_install', helper)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

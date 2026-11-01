@@ -6,12 +6,14 @@
 import copy
 import fcntl
 import importlib.util
+import inspect
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZipFile
 
 SOURCE = Path(__file__).parents[1] / 'scripts/weekly_check.py'
 SPEC = importlib.util.spec_from_file_location('weekly_check', SOURCE)
@@ -66,6 +68,29 @@ def input_fixture(root):
 
 
 class WeeklyChecks(unittest.TestCase):
+    def test_shared_helper_checks_installed_wheel_bytes(self):
+        worker = importlib.util.module_from_spec(WORKER_SPEC)
+        WORKER_SPEC.loader.exec_module(worker)
+        helper = worker.installation_helper()
+        self.assertTrue(callable(getattr(helper, 'verify_checkpoint', None)),
+                        'The runtime helper must check restored weights')
+        inspect.signature(helper.verify_checkpoint).bind(None, None, 'a' * 64)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            installed = root / 'installed'
+            installed.mkdir()
+            (installed / 'module.py').write_bytes(b'approved wheel bytes')
+            wheel = root / 'candidate.whl'
+            with ZipFile(wheel, 'w') as archive:
+                archive.writestr('module.py', b'approved wheel bytes')
+            distribution = SimpleNamespace(
+                locate_file=lambda name: installed / name)
+            self.assertEqual(helper.verify_installed_files(wheel, distribution),
+                             1)
+            (installed / 'module.py').write_bytes(b'changed wheel bytes')
+            with self.assertRaises(ValueError):
+                helper.verify_installed_files(wheel, distribution)
+
     def test_admission_rejects_missing_prediction_inputs_before_a_fit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
