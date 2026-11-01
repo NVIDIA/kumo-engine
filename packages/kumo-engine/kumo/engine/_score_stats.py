@@ -49,7 +49,7 @@ def output_counts(paths: Paths, task_type: TaskType,
                       'dtype': 'bool'})
     full, _ = diskgraph.compute_col_stats_for_parquet(
         [str(path) for path in paths], json.dumps(specs), '',
-        percentiles=False, summary_stats_by_class=False, histograms=False,
+        summary_stats_by_class=False, histograms=False,
         max_per=[key for key in schema.names
                  if key not in _CLASS_COLUMNS and not key.startswith('__')]
         if top else [],

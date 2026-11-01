@@ -86,16 +86,10 @@ impl IntegerRange {
 /// Options beyond the ingest-compatible statistics; the default changes nothing.
 #[derive(Clone, Debug)]
 pub struct ColStatsOptions {
-    /// Emit `PERCENTILES` (q01..q99, approximate) for every numerical column.
-    pub percentiles: bool,
     /// Emit `SUMMARY_STATS_BY_CLASS` for a `SCORE`/`CLASS` column pair.
     pub summary_stats_by_class: bool,
     /// Emit `HISTOGRAM` / `HISTOGRAM_HALF_MONTH` (a second read).
     pub histograms: bool,
-    /// Keep at most this many `CATEGORY_COUNTS` entries in the full output,
-    /// and record `CATEGORY_COUNTS_CAPPED`: whether counting hit the
-    /// category cap, so `NUM_UNIQUE` is an estimate.
-    pub category_counts_limit: Option<usize>,
     /// Compute every statistic over the maximum of each column within each
     /// run of equal values of these columns, in path and row order. Needs
     /// numerical columns and no histograms or by-class summaries.
@@ -108,10 +102,8 @@ pub struct ColStatsOptions {
 impl Default for ColStatsOptions {
     fn default() -> Self {
         Self {
-            percentiles: false,
             summary_stats_by_class: true,
             histograms: true,
-            category_counts_limit: None,
             max_per: Vec::new(),
             fixed_edges: HashMap::new(),
         }
@@ -1423,26 +1415,8 @@ pub fn compute_parquet_col_stats_with_options(
     max_categories: u64,
     options: &ColStatsOptions,
 ) -> Result<(String, String)> {
-    let (mut acc, table_cat, run) =
+    let (acc, table_cat, run) =
         accumulate_parquet_col_stats(parquet_paths, columns, max_categories, options)?;
-    let percentiles: Vec<(usize, Vec<f64>)> = if options.percentiles {
-        let levels: Vec<f64> = (1..100).map(|q| q as f64 / 100.0).collect();
-        (0..columns.len())
-            .filter_map(|idx| Some((idx, acc.numerical_quantiles(idx, &levels)?)))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let capped: Vec<(usize, bool)> = if options.category_counts_limit.is_some() {
-        table_cat
-            .columns
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, counts)| Some((idx, counts.as_ref()?.is_capped())))
-            .collect()
-    } else {
-        Vec::new()
-    };
     let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
     let types: Vec<IngestedType> = columns.iter().map(|c| c.ingested_dtype.clone()).collect();
     let mut kumo = acc.into_kumo_stats(
@@ -1457,36 +1431,6 @@ pub fn compute_parquet_col_stats_with_options(
     add_distribution_stats(&run, &mut full, data_version, options.histograms)?;
     // Category arrays are filled in, and trimmed for min, when serialized.
     let mut min = full.clone();
-    for (idx, capped) in capped {
-        let name = &columns[idx].name;
-        let prefix = format!("{name}__");
-        let stype = full.keys().find_map(|key| {
-            key.strip_prefix(&prefix)?
-                .strip_suffix("__CATEGORY_COUNTS__False")
-                .map(str::to_string)
-        });
-        if let Some(stype) = stype {
-            let count = full
-                .get(&kumo_key(name, &stype, "COUNT", false))
-                .and_then(|entry| entry.get("value")?.as_u64())
-                .unwrap_or_default();
-            full.insert(
-                kumo_key(name, &stype, "CATEGORY_COUNTS_CAPPED", false),
-                kumo_entry(json!(capped), false, data_version, count),
-            );
-        }
-    }
-    for (idx, values) in percentiles {
-        let name = &columns[idx].name;
-        let count = full
-            .get(&kumo_key(name, "kumo.numerical", "COUNT", false))
-            .and_then(|entry| entry.get("value")?.as_u64())
-            .unwrap_or_default();
-        full.insert(
-            kumo_key(name, "kumo.numerical", "PERCENTILES", true),
-            kumo_entry(json!(values), true, data_version, count),
-        );
-    }
     add_summary_stats_by_class(&run, &mut full, &mut min, data_version);
     for ((idx, edges), histogram) in &run.fixed {
         let count = histogram.counts.iter().sum::<u64>();
@@ -1496,7 +1440,7 @@ pub fn compute_parquet_col_stats_with_options(
         );
     }
     Ok((
-        kumo.to_json_string(&full, options.category_counts_limit.unwrap_or(usize::MAX))?,
+        kumo.to_json_string(&full, usize::MAX)?,
         kumo.to_json_string(&min, MIN_COL_STATS_CATEGORY_LIMIT)?,
     ))
 }
@@ -3206,101 +3150,24 @@ mod tests {
             "v1",
             MAX_CATEGORIES,
             &ColStatsOptions {
-                percentiles: true,
                 summary_stats_by_class: false,
                 histograms: false,
-                category_counts_limit: Some(5),
                 ..Default::default()
             },
         )
         .unwrap();
         let (mut full, mut default) = (parse(&full), parse(&default));
-        let percentiles = full
-            .remove("SCORE__kumo.numerical__PERCENTILES__True")
-            .unwrap();
-        assert_eq!(percentiles["value"].as_array().unwrap().len(), 99);
-        assert_eq!(percentiles["num_entries"], json!(n));
         for key in [
             "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
             "SCORE__kumo.numerical__HISTOGRAM__False",
         ] {
             assert!(default.remove(key).is_some());
         }
-        assert_eq!(
-            full.remove("CLASS__kumo.categorical__CATEGORY_COUNTS_CAPPED__False").unwrap()["value"],
-            json!(false)
-        );
-        let counts_key = "CLASS__kumo.categorical__CATEGORY_COUNTS__False";
-        let all = default.remove(counts_key).unwrap()["value"].clone();
-        let top = full.remove(counts_key).unwrap()["value"].clone();
-        assert_eq!(top.as_array().unwrap()[..], all.as_array().unwrap()[..5]);
         assert_eq!(full, default);
         let mut default_min = parse(&default_min);
         default_min.remove("SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False");
         default_min.remove("SCORE__kumo.numerical__HISTOGRAM__False");
         assert_eq!(parse(&min), default_min);
-    }
-
-    #[test]
-    fn capped_category_counts_are_flagged() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("classes.parquet");
-        write_parquet(
-            &path,
-            Schema::new(vec![Field::new("CLASS", DataType::Utf8, false)]),
-            vec![StdArc::new(StringArray::from(vec!["a", "b", "c", "a"])) as ArrayRef],
-            100,
-        );
-        let columns = vec![col("CLASS", IngestedType::String, SemanticType::Categorical)];
-        let options = ColStatsOptions {
-            category_counts_limit: Some(1),
-            ..Default::default()
-        };
-        for (cap, capped) in [(2, true), (3, false)] {
-            let (full, _) =
-                compute_parquet_col_stats_with_options(&[path.as_path()], &columns, "v1", cap, &options)
-                    .unwrap();
-            assert_eq!(
-                val(&full, "CLASS__kumo.categorical__CATEGORY_COUNTS_CAPPED__False"),
-                json!(capped)
-            );
-            assert_eq!(
-                val(&full, "CLASS__kumo.categorical__CATEGORY_COUNTS__False"),
-                json!([["a", 2]])
-            );
-        }
-    }
-
-    #[test]
-    fn percentiles_track_exact_ranks() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("scores.parquet");
-        let mut scores: Vec<f64> = (1..=20_000).map(|i| (i as f64 / 2000.0).exp()).collect();
-        scores.extend((1..=5_000).map(|i| -(i as f64) / 10.0));
-        scores.push(f64::NAN);
-        write_scores(&path, scores.clone(), 1000);
-        let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
-
-        let full = with_options(
-            &[path.as_path()],
-            &columns,
-            ColStatsOptions {
-                percentiles: true,
-                ..Default::default()
-            },
-        );
-        let values = val(&full, "SCORE__kumo.numerical__PERCENTILES__True");
-        let mut finite: Vec<f64> = scores.into_iter().filter(|v| v.is_finite()).collect();
-        finite.sort_by(f64::total_cmp);
-        for (idx, value) in values.as_array().unwrap().iter().enumerate() {
-            let rank = finite.partition_point(|v| *v < value.as_f64().unwrap()) as f64
-                / finite.len() as f64;
-            assert!(
-                (rank - (idx + 1) as f64 / 100.0).abs() < 0.005,
-                "q{:02}",
-                idx + 1
-            );
-        }
     }
 
     #[test]
@@ -3343,7 +3210,6 @@ mod tests {
         let paths: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
         let columns = vec![col("SCORE", IngestedType::Float32, SemanticType::Numerical)];
         let options = |keys: &[&str]| ColStatsOptions {
-            percentiles: true,
             histograms: false,
             max_per: keys.iter().map(|key| key.to_string()).collect(),
             ..Default::default()
@@ -3356,10 +3222,6 @@ mod tests {
         assert_eq!(
             val(&full, "SCORE__kumo.numerical__MEAN__False"),
             json!((runs + 1) as f64 / 2.0)
-        );
-        assert_eq!(
-            val(&full, "SCORE__kumo.numerical__PERCENTILES__True").as_array().unwrap()[49],
-            json!(20.5)
         );
 
         let entity_only = with_options(&paths, &columns, options(&["ENTITY"]));
@@ -3376,10 +3238,7 @@ mod tests {
             .collect();
         write_scores(&path, scores, 300);
         let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
-        let options = ColStatsOptions {
-            percentiles: true,
-            ..Default::default()
-        };
+        let options = ColStatsOptions::default();
         let run = |threads| {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)

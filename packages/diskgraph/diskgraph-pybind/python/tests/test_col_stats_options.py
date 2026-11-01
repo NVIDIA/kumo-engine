@@ -27,16 +27,10 @@ def test_prediction_options_through_python(tmp_path):
         }), path, row_group_size=3)
 
     full, _ = diskgraph.compute_col_stats_for_parquet(
-        [str(path)], SPECS, "v1", percentiles=True,
-        summary_stats_by_class=False, histograms=False,
-        category_counts_limit=1)
-    stats = json.loads(full)
-    assert len(stats["SCORE__kumo.numerical__PERCENTILES__True"]["value"]) == 99
-    assert stats["CLASS__kumo.categorical__CATEGORY_COUNTS__False"][
-        "value"] == [["a", 3]]
-    assert stats["CLASS__kumo.categorical__CATEGORY_COUNTS_CAPPED__False"][
-        "value"] is False
-    assert not any("HISTOGRAM" in key or "BY_CLASS" in key for key in stats)
+        [str(path)], SPECS, "v1", summary_stats_by_class=False,
+        histograms=False)
+    assert not any("HISTOGRAM" in key or "BY_CLASS" in key
+                   for key in json.loads(full))
 
     full, _ = diskgraph.compute_col_stats_for_parquet(
         [str(path)], json.dumps(json.loads(SPECS)[:1]), "v1",
