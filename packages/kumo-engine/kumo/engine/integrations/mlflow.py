@@ -38,6 +38,7 @@ from kumoapi.plugin import BUNDLE_ID_KEY, ModelRegistryLocation, PublishedModel
 
 from kumo.engine._events import Event
 from kumo.engine._mlops import full_error
+from kumo.engine._text import metric_key
 from kumo.engine._tracking import (
     DROPPED_PARAMS,
     RegistrationError,
@@ -576,11 +577,6 @@ def _sagemaker_ui_hint(tracking_uri: str) -> Optional[str]:
                f'--arn {tracking_uri} --region {region}')
     return ("MLflow's run links do not open on SageMaker: open the MLflow UI "
             f'from SageMaker Studio or at the URL `{command}` prints.')
-
-
-def metric_key(name: str) -> str:
-    r"""``map@10`` as ``map_at_10``: MLflow rejects ``@``."""
-    return name.replace('@', '_at_')
 
 
 def log_model(
