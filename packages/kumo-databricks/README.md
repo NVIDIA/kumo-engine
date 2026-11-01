@@ -86,17 +86,15 @@ trainer.predict(prediction_table, snapshot=snapshot, output_config=PredictionOut
 
 For an MLOps artifact root on a volume, see `packages/kumo-engine/docs/mlops.md`.
 
-A file whose size is known when it is written (bundle files, exported
-Parquet parts) is stored as one object up to 4 GiB, so Spark
-and other tools read it directly. A larger one streams into
-`<name>.chunks/<generation>/00000`, `00001`, ... (4 GiB each, under the Files
-API's 5 GiB upload cap) with an empty `_SUCCESS` written last, and Kumo reads
-the newest committed generation back as one file. A file written without a
-known size stays one object up to
-256 MiB, staged on local disk under the engine scratch directory, and streams
-into parts above that. The identity needs `USE CATALOG`, `USE SCHEMA`, and
-`READ VOLUME` (loads) and `WRITE VOLUME` (exports) on the volume; no
-warehouse is used.
+A file whose size is known when it is written (bundle files, exported Parquet
+parts) is stored as one object up to 4 GiB, so Spark and other tools read it
+directly. A larger one streams into `<name>.chunks/<generation>/00000`,
+`00001`, ... (4 GiB each, under the Files API's 5 GiB upload cap) with an empty
+`_SUCCESS` written last, and Kumo reads the newest committed generation back as
+one file. A file written without a known size stays one object up to 256 MiB,
+staged on local disk under the engine scratch directory, and streams into parts
+above that. The identity needs `USE CATALOG`, `USE SCHEMA`, and `READ VOLUME`
+(loads) and `WRITE VOLUME` (exports) on the volume; no warehouse is used.
 
 ## Model registry
 
