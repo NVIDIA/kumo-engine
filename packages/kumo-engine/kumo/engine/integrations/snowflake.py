@@ -8,8 +8,9 @@ import posixpath
 import re
 import tempfile
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, List, Mapping, Optional, Sequence, Set, Tuple
 
 from kumo_core.instrumentation import format_error
 from kumo_core.sources.sql import resolve_snowflake_identifier
@@ -79,8 +80,9 @@ class SnowflakeTracking(TrackingBase):
         self._tracking: Any = None
         self._run: Any = None
         self._run_context = ExitStack()
-        self._trial_tags: Dict[Tuple[int, int], Set[str]] = {}
+        self._tune = 'loss'
         self._metrics: Set[str] = set()
+        self._started = _now()
         self._params = 0
         self._start_tags: Set[str] = set()
         self._artifacts: Set[str] = set()
@@ -145,35 +147,32 @@ class SnowflakeTracking(TrackingBase):
             for row in tracking._sql_client.show_runs_in_experiment(
                 experiment_name=experiment.name)
         ]
+        self._started = record.started or _now()
         self._run = tracking.start_run(self._new_run_name(
             existing, _identifier(record_name(record, self.run_name))))
         self.run_id = self.logged_run_name = str(self._run.name)
         if self.native_model_lineage:
             self._run_context.enter_context(self._run)
         self._start_tags = set(record.tags)
+        self._tune = record.tags.get('kumo.tune_metric', 'loss')
         self._log_params({**record.params, **record.tags})
         self._log_artifacts(record.artifacts)
 
     def on_trial(self, record: RunRecord, event: Event) -> None:
-        prefix = f'{record.name}/'
-        key = (event.trial or 0, int(event.params['attempt']))
+        if self._run is None:
+            return
+        attempt = int(event.params['attempt'])
+        prefix = f'TRIAL_{event.trial or 0}' + (
+            f'_ATTEMPT_{attempt}/' if attempt > 1 else '/')
         if event.name == 'trial_started':
-            self._trial_tags[key] = set(record.tags)
-            self._log_params({prefix + k: v
-                              for k, v in {**record.params,
-                                           **record.tags}.items()})
-        elif event.name == 'epoch_ended':
-            self._log_metrics({prefix + k: v
-                               for k, v in event.metrics.items()},
-                              _EPOCH_METRICS, step=event.epoch or 0)
+            self._log_params({prefix + k: v for k, v in record.params.items()})
         elif event.name == 'trial_ended':
-            self._log_metrics({prefix + k: v
-                               for k, v in record.metrics.items()},
-                              _SUMMARY_METRICS)
-            logged = self._trial_tags.pop(key, set())
-            self._log_params({prefix + k: v
-                              for k, v in record.tags.items()
-                              if k not in logged})
+            best = f'val/best_{self._tune}'
+            self._log_metrics({prefix + best: value
+                               for name, value in record.metrics.items()
+                               if name == best}, _SUMMARY_METRICS)
+            self._log_params({prefix + k: v for k, v in record.tags.items()
+                              if k in ('kumo.status', 'kumo.error')})
 
     def finish(self, record: Optional[RunRecord],
                error: Optional[BaseException]) -> None:
@@ -188,11 +187,10 @@ class SnowflakeTracking(TrackingBase):
                                   if k not in self._start_tags}, _MAX_PARAMS)
                 self._log_artifacts(record.artifacts)
                 self._log_summaries(record.summaries)
-                dropped = {DROPPED_METRICS: len(self._dropped_metrics),
-                           DROPPED_PARAMS: self._dropped_params}
-                if any(dropped.values()):
-                    self._tracking.log_params(
-                        {name: n for name, n in dropped.items() if n})
+                finished = record.finished or _now()
+                self._log_metrics({'duration_seconds': (
+                    finished - self._started).total_seconds()}, _MAX_METRICS)
+                self._log_dropped()
                 if error is None:
                     status = 'FINISHED'
         finally:
@@ -240,6 +238,15 @@ class SnowflakeTracking(TrackingBase):
                     str(path), posixpath.dirname(name) or None)
                 self._artifacts.add(name)
 
+    def _log_dropped(self) -> None:
+        dropped = {
+            DROPPED_METRICS: len(self._dropped_metrics),
+            DROPPED_PARAMS: self._dropped_params,
+        }
+        dropped = {name: count for name, count in dropped.items() if count}
+        if dropped:
+            self._tracking.log_params(dropped)
+
     def _log_params(self, params: Mapping[str, str],
                     limit: int = _MAX_PARAMS - _FINISH_PARAMS) -> None:
         kept = {}
@@ -267,6 +274,10 @@ class SnowflakeTracking(TrackingBase):
             kept[name] = value
         if kept:
             self._tracking.log_metrics(kept, step=step)
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _identifier(name: str) -> str:

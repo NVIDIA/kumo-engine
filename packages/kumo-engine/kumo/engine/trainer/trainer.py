@@ -95,7 +95,12 @@ from kumo.engine.trainer._provenance import (
     read_provenance,
     record_derivation,
 )
-from kumo.engine.trainer._run_spec import FitContext, fit_spec, fitted_spec
+from kumo.engine.trainer._run_spec import (
+    FitContext,
+    fit_spec,
+    fitted_spec,
+    registry_metrics,
+)
 from kumo.engine.trainer._scoring import (
     ScoringDefaults,
     normalized_scoring_defaults,
@@ -187,11 +192,12 @@ class TrainingResult:
             tracker = as_tracking(config.tracking)
             if tracker is not None and tracker.register is not None:
                 return cast(PublishedModel, _with_metrics(
-                    tracker.register(self, config.registry), self.metrics))
+                    tracker.register(self, config.registry),
+                    registry_metrics(self)))
             config = _connector_registry(config)
         _require_publisher(config)
-        return _publish(self.bundle_dir, self.bundle_id, self.metrics,
-                        config)[0]
+        return _publish(self.bundle_dir, self.bundle_id,
+                        registry_metrics(self), config)[0]
 
     def with_scoring_defaults(self,
                               defaults: ScoringDefaults) -> 'TrainingResult':
@@ -755,17 +761,14 @@ class Trainer:
         registered, error = _store_and_register(
             result.bundle_dir,
             bundle_manifest(result.bundle_dir, result.bundle_id), settings,
-            session=session,
-            snapshot=snapshot, metrics=result.metrics, warn=warn,
+            session=session, snapshot=snapshot, metrics=registry_metrics(result), warn=warn,
             stored=(deps.errors or [None])[0])
         if registered is not None:
             result = replace(result, registered_model=registered)
             self._training_result = result
-        alias = None if settings is None or settings.registry is None else (
-            settings.registry.alias)
         session.finish(
             lambda: fitted_spec(
-                cast(RunSpec, session.spec), result, seconds, alias,
+                cast(RunSpec, session.spec), result,
                 _fit_summaries(snapshot, train_table, result, settings)),
             error)
         raise_on_error(settings, session.error or error,
@@ -1053,7 +1056,7 @@ class Trainer:
             training_result = replace(
                 training_result, published_model=_publish(
                     training_result.bundle_dir, training_result.bundle_id,
-                    training_result.metrics, export_config)[0])
+                    registry_metrics(training_result), export_config)[0])
 
         training_result = replace(training_result, _trainer=self)
         self._training_result = training_result

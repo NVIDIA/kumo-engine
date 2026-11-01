@@ -61,6 +61,7 @@ class RunRecord:
     summaries: Tuple[Summary, ...] = ()
     model_label: Optional[str] = None
     started: Optional[datetime] = None
+    finished: Optional[datetime] = None
     name_suffix: Optional[str] = None
 
 
@@ -82,20 +83,41 @@ class RunSpec:
     error: Optional[str] = None
     model_label: Optional[str] = None
     started: Optional[datetime] = None
+    finished: Optional[datetime] = None
     name_suffix: Optional[str] = None
+
+
+def metric_name(metric: str) -> str:
+    r"""The plan's acc is logged as accuracy."""
+    return 'accuracy' if metric == 'acc' else metric
 
 
 def logged_name(name: str) -> str:
     r"""``val_auroc`` as ``val/auroc``."""
     best = name.startswith('best_')
     split, _, metric = name.removeprefix('best_').partition('_')
-    if split not in ('train', 'val', 'test') or not metric:
+    if split not in ('train', 'val') or not metric:
         return name
-    return f"{split}/{'best_' if best else ''}{metric}"
+    return f"{split}/{'best_' if best else ''}{metric_name(metric)}"
 
 
-def logged_names(metrics: Mapping[str, Any]) -> Dict[str, Any]:
-    return {logged_name(name): value for name, value in metrics.items()}
+def logged_names(metrics: Mapping[str, Any],
+                 refit_full: bool = False) -> Dict[str, Any]:
+    r"""Tracker names of metrics; test/<m> is the shipped model's holdout."""
+    refit = any(name.startswith('test_refit_') for name in metrics)
+    named = {}
+    for name, value in metrics.items():
+        if not name.startswith('test_'):
+            named[logged_name(name)] = value
+            continue
+        metric = name.removeprefix('test_')
+        latest = metric.startswith('refit_') == refit
+        metric = metric_name(metric.removeprefix('refit_'))
+        if not latest and refit_full:
+            continue
+        named[f'test/{metric}' if latest and not refit_full else
+              f'before_refit/{metric}'] = value
+    return named
 
 
 def by_step(steps: Mapping[str, Sequence[Tuple[int, float]]]
@@ -127,6 +149,7 @@ def run_record(spec: RunSpec) -> RunRecord:
         summaries=tuple(spec.summaries),
         model_label=spec.model_label,
         started=spec.started,
+        finished=spec.finished,
         name_suffix=spec.name_suffix,
     )
 
@@ -158,8 +181,8 @@ def trial_spec(events: Sequence[Event]) -> RunSpec:
                          error=None if 'error' not in event.params else str(
                              event.params['error']))
             metrics.update({
-                name if name == 'seconds' else f'best_{name}': value
-                for name, value in event.metrics.items()
+                f'best_{name}': value
+                for name, value in event.metrics.items() if name != 'seconds'
             })
     return RunSpec(
         kind='trial',

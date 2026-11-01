@@ -7,13 +7,14 @@ import json
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 
 from kumo_core.artifacts import PROVENANCE_FILE
-from kumo_core.summaries import Summary
+from kumo_core.summaries import Scalar, Summary
 
 from kumo.engine._run_names import fit_name, model_label
-from kumo.engine._tracking import RunSpec
+from kumo.engine._text import metric_key
+from kumo.engine._tracking import RunSpec, logged_names
 from kumo.engine._version import __version__
 
 
@@ -51,31 +52,46 @@ def fit_spec(context: FitContext) -> RunSpec:
     )
 
 
-def fitted_spec(spec: RunSpec, result: Any, seconds: Optional[float] = None,
-                alias: Optional[str] = None,
+def fitted_spec(spec: RunSpec, result: Any,
                 summaries: Sequence[Summary] = ()) -> RunSpec:
-    r"""``spec`` once the fit returned ``result``."""
+    r"""The fit run's spec once the fit returned."""
     artifacts = dict(spec.artifacts)
     provenance = Path(result.bundle_dir) / PROVENANCE_FILE
     if provenance.is_file():
         artifacts[PROVENANCE_FILE] = provenance.read_text(encoding='utf-8')
-    tested = {name: value for name, value in result.metrics.items()
-              if not name.startswith(('train_', 'val_'))}
     return replace(
-        spec, metrics={
-            **tested, **({} if seconds is None else {
-                'seconds': seconds
-            })
-        }, parents={**spec.parents, 'bundle_id': result.id,
-                    **_registered(result.registered_model, alias)},
+        spec, metrics=holdout_metrics(result),
+        parents={**spec.parents, 'bundle_id': result.id,
+                 **_registered(result.registered_model)},
         artifacts=artifacts, summaries=summaries)
 
 
-def _registered(model: Any, alias: Optional[str]) -> Mapping[str, Any]:
+def holdout_metrics(result: Any) -> Dict[str, float]:
+    r"""The trainer's test metrics under their logged names."""
+    return logged_names({
+        name: value for name, value in result.metrics.items()
+        if not name.startswith(('train_', 'val_'))
+    }, refit_full=_fit_mode(result) == 'refit_full')
+
+
+def registry_metrics(result: Any) -> Dict[str, float]:
+    r"""Holdout metrics and model scalars, as registries record them."""
+    return {metric_key(name): value for name, value in {
+        **holdout_metrics(result),
+        **{summary.name: summary.value
+           for summary in getattr(result, '_summaries', ())
+           if isinstance(summary, Scalar) and summary.role == 'model'}
+    }.items()}
+
+
+def _fit_mode(result: Any) -> Optional[str]:
+    return getattr(getattr(result, 'manifest', None), 'fit_mode', None)
+
+
+def _registered(model: Any) -> Mapping[str, Any]:
     if model is None:
         return {}
-    return {'model_name': model.name, 'model_version': model.version,
-            'model_alias': alias}
+    return {'model_name': model.name, 'model_version': model.version}
 
 
 def _flatten(value: Any, prefix: str = '') -> Iterator[Tuple[str, Any]]:

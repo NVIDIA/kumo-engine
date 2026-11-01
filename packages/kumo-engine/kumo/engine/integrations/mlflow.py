@@ -14,6 +14,7 @@ import threading
 import time
 import warnings
 from contextlib import ExitStack, contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -283,6 +284,7 @@ class MlflowTracking(TrackingBase):
                     else record.name)
             run = client.create_run(
                 experiment_id, run_name=name,
+                start_time=_millis(record.started),
                 tags=context.resolve_tags(tags))
         self._parent = self.run_id = run.info.run_id
         self.logged_run_name = run.info.run_name
@@ -354,8 +356,10 @@ class MlflowTracking(TrackingBase):
     def finish(self, record: Optional[RunRecord],
                error: Optional[BaseException]) -> None:
         status = 'FAILED'
-        fit_run = (record is not None and self._parent is not None
-                   and record.tags.get('kumo.kind') == 'fit')
+        kind = None if record is None else record.tags.get('kumo.kind')
+        started = self._parent is not None
+        fit_run = started and kind == 'fit'
+        ended = None if record is None else _millis(record.finished)
         try:
             if record is not None and self._parent is not None:
                 for epoch, metrics in by_step(record.steps):
@@ -374,7 +378,7 @@ class MlflowTracking(TrackingBase):
                     _quietly(self._client.set_terminated, run_id, 'FAILED')
                 if self._parent is not None:
                     _quietly(self._client.set_terminated, self._parent,
-                             status)
+                             status, ended)
             self._reset()
         hint = _sagemaker_ui_hint(self.target.tracking_uri)
         if fit_run and hint:
@@ -507,6 +511,10 @@ def _digest(name: str, source: Mapping[str, Optional[str]],
         default=str).encode()).hexdigest()[:8]
 
 
+def _millis(moment: Optional[datetime]) -> Optional[int]:
+    return None if moment is None else int(moment.timestamp() * 1000)
+
+
 _BATCH_METRICS = 1000
 _SYSTEM_METRICS_FAILURES = 6
 _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
@@ -634,6 +642,7 @@ def log_model(
     from kumo.engine._manifest import artifact_summaries
     from kumo.engine._mlops import snapshot_uri
     from kumo.engine.trainer._provenance import bundle_manifest
+    from kumo.engine.trainer._run_spec import registry_metrics
 
     mlflow = import_provider('mlflow', 'mlflow')
     result = trainer.result
@@ -666,7 +675,8 @@ def log_model(
                       bundle_manifest(result.bundle_dir, result.id),
                       snapshot, run_id, experiment_id, name,
                       snapshot_uri(serving_snapshot))
-    tracking._log_metrics(run_id, result.metrics, model_id=info.model_id)
+    tracking._log_metrics(run_id, registry_metrics(result),
+                          model_id=info.model_id)
     if created:
         with target.scope():
             client.set_terminated(run_id, 'FINISHED')

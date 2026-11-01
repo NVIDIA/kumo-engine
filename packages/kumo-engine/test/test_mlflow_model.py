@@ -21,6 +21,7 @@ from test_mlflow_tracking import (  # noqa: F401
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine._tracking import logged_names
+from kumo.engine.trainer._run_spec import registry_metrics
 
 mlflow = pytest.importorskip('mlflow')
 
@@ -60,19 +61,20 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
     model, = mlflow.search_logged_models(output_format='list')
     assert model.source_run_id == parent.info.run_id
     metrics = {metric.key: metric.value for metric in model.metrics}
-    assert metrics == {
-        **{name: value for name, value in logged_names(result.metrics).items()
-           if name.startswith('test/')}, 'seconds': metrics['seconds']}
+    holdout = {name: value for name, value in logged_names(
+        result.metrics).items() if not name.startswith(('train/', 'val/'))}
+    assert metrics == holdout
     version = mlflow.MlflowClient().get_model_version_by_alias('m', 'champion')
     assert version.source == model.model_uri
     assert parent.data.tags.items() >= {
         'kumo.kind': 'fit', 'kumo.bundle_id': result.id,
-        'kumo.model_name': 'm', 'kumo.model_version': str(version.version),
-        'kumo.model_alias': 'champion'}.items()
+        'kumo.model_name': 'm',
+        'kumo.model_version': str(version.version)}.items()
     assert result.registered_model == PublishedModel(
         name='m', version=str(version.version),
         uri=f'models:/m/{version.version}',
-        metadata={'kumo_bundle_id': result.id}, metrics=result.metrics)
+        metadata={'kumo_bundle_id': result.id},
+        metrics=registry_metrics(result))
     assert version.tags == {'kumo_bundle_id': result.id}
     assert trainer.result is result
 
@@ -140,9 +142,9 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
     requirements = mlflow.pyfunc.get_model_dependencies(info.model_uri)
     assert f'kumo-engine[gcs,s3]=={kumo.__version__}' in open(
         requirements).read().splitlines()
-    assert {metric.key
+    assert {metric.key: metric.value
             for metric in mlflow.get_logged_model(info.model_id).metrics
-            } == set(trainer.result.metrics)
+            } == registry_metrics(trainer.result)
     assert [c['name'] for c in info.signature.outputs.to_dict()
             ] == ['ENTITY', 'TARGET_PRED', 'False_PROB', 'True_PROB']
     pyfunc = mlflow.pyfunc.load_model(info.model_uri)

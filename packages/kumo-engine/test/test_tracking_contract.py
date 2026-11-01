@@ -86,7 +86,7 @@ SELECTED = {'train_loss': ((1, 0.6), (2, 0.4)), 'val_mae': ((1, 0.5), (2, 0.3))}
 BUNDLE = 'b' * 64
 RESULT = SimpleNamespace(metrics={'val_mae': 0.3, 'test_mae': 0.32},
                          id=BUNDLE, bundle_dir=Path('no-bundle'),
-                         registered_model=None)
+                         registered_model=None, registered_alias=None)
 
 
 class _Recorder:
@@ -135,15 +135,14 @@ def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
         session.on_event(event)
     session.finish(
         None if result is None else lambda: fitted_spec(
-            session.spec, result, events[-1].metrics.get('seconds'),
-            summaries=summaries), error)
+            session.spec, result, summaries=summaries), error)
     records = {
         record.name: record
         for hook, record in recorder.calls if hook == 'on_trial'
     }
     spec = replace(fit_spec(context), tags=USER_TAGS)
     if result is not None:
-        spec = fitted_spec(spec, result, events[-1].metrics.get('seconds'))
+        spec = fitted_spec(spec, result)
     spec = replace(spec, steps=series if series is not None else {
         **SEARCH, **({} if error else SELECTED)})
     if series is None and not error:
@@ -174,11 +173,13 @@ class Adapter:
     step_metrics: bool = False
     artifacts: bool = False
     run_name: Callable[[str], Optional[str]] = str
+    expected: Callable[[Dict[str, RunRecord]], Dict[str, RunRecord]] = dict
 
 
 def gaps(expected: Dict[str, RunRecord], observed: Dict[str, Observed],
          adapter: Adapter) -> List[str]:
     kept_params = adapter.kept_params
+    expected = adapter.expected(expected)
     found = []
     if set(observed) != set(expected):
         return [f'runs {sorted(observed)} != {sorted(expected)}']
@@ -295,7 +296,7 @@ def snowflake_adapter(monkeypatch):
 
             def bucket(key):
                 prefix, _, name = key.partition('/')
-                if not prefix.startswith('trial-'):
+                if not prefix.startswith('TRIAL_'):
                     prefix, name = '', key
                 return names.setdefault(prefix or None, {
                     'params': {}, 'tags': {}, 'metrics': {}, 'steps': {}
@@ -309,6 +310,8 @@ def snowflake_adapter(monkeypatch):
                 else:
                     runs['params'][name] = value
             for key, value, step in run['metrics']:
+                if key == 'duration_seconds':
+                    continue
                 runs, name = bucket(key)
                 runs['metrics'][name] = value
                 runs['steps'][name] = (*runs['steps'].get(name, ()),
@@ -320,11 +323,27 @@ def snowflake_adapter(monkeypatch):
                     **runs)
         return observed
 
+    def expected(records):
+        r"""What Snowflake keeps of each trial."""
+        kept = {}
+        for key, record in records.items():
+            if record.tags['kumo.kind'] == 'trial':
+                trial, attempt = key.split('-')[1::2]
+                key = f'TRIAL_{trial}' + (
+                    f'_ATTEMPT_{attempt}' if attempt != '1' else '')
+                record = replace(record, steps={}, metrics={
+                    name: value for name, value in record.metrics.items()
+                    if name == 'val/best_mae'}, tags={
+                        name: value for name, value in record.tags.items()
+                        if name in ('kumo.status', 'kumo.error')})
+            kept[key] = record
+        return kept
+
     return Adapter(
         make=lambda: SnowflakeTracking(_snowflake_experiment_fake.FakeSession(),
                                        experiment_name='ents', tags=USER_TAGS),
         observe=observe, step_metrics=True, artifacts=True,
-        run_name=lambda name: None)
+        run_name=lambda name: None, expected=expected)
 
 
 @pytest.fixture(params=['mlflow', 'snowflake'])
@@ -356,16 +375,17 @@ def test_records_of_the_recorded_fit():
         spoofed = run_record(replace(fit_spec(CONTEXT), tags={
             'kumo.bundle_id': 'x', 'training_job.tune_metric': 'y', 'a': 1}))
     assert spoofed.tags.keys() - fit.tags.keys() == {'a'}
-    assert fit.metrics == {'test/mae': 0.32, 'seconds': 9.0}
+    assert fit.metrics == {'test/mae': 0.32}
     assert fit.steps == {'search/best_val_mae': ((1, 0.35), (2, 0.3)),
                          'train/loss': ((1, 0.6), (2, 0.4)),
                          'val/mae': ((1, 0.5), (2, 0.3))}
-    registered = SimpleNamespace(**{**vars(RESULT), 'registered_model':
-                                    SimpleNamespace(name='ents', version='3')})
-    tags = run_record(fitted_spec(fit_spec(CONTEXT), registered,
-                                  alias='candidate')).tags
-    assert tags.items() >= {'kumo.model_name': 'ents', 'kumo.model_version':
-                            '3', 'kumo.model_alias': 'candidate'}.items()
+    registered = SimpleNamespace(**{
+        **vars(RESULT), 'registered_alias': 'candidate',
+        'registered_model': SimpleNamespace(name='ents', version='3')})
+    tags = run_record(fitted_spec(fit_spec(CONTEXT), registered)).tags
+    assert tags.items() >= {'kumo.model_name': 'ents',
+                            'kumo.model_version': '3'}.items()
+    assert 'kumo.model_alias' not in tags
     assert fit.artifacts['query.pql'] == QUERY
     assert json.loads(fit.artifacts['model_plan.json']) == CONTEXT.model_plan
 
@@ -379,7 +399,7 @@ def test_records_of_the_recorded_fit():
         })
     retry = records['trial-2-attempt-2']
     assert retry.params['attempt'] == '2'
-    assert retry.metrics == {'val/best_mae': 0.3, 'seconds': 4.0}
+    assert retry.metrics == {'val/best_mae': 0.3}
     assert retry.steps == {'train/loss': ((1, 0.6), (2, 0.4)),
                            'val/mae': ((1, 0.5), (2, 0.3))}
 
