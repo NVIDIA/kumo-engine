@@ -337,36 +337,21 @@ class PredictionResult:
     def load_from_connector(cls, connector: Connector, *,
                             path: str) -> 'PredictionResult':
         r"""Load a complete Parquet export, downloaded when first read."""
-        import tempfile
         import weakref
 
         from pyarrow.fs import FileType
 
         from kumo.engine._manifest import read_manifest
         from kumo.engine._mlops import on_root
-        from kumo.engine._scratch import get_scratch_dir
-        from kumo.engine.connector import file_store
 
         connector, path = on_root(connector, path)
-        store = file_store(connector, path)
-        if store is None:
-            raise TypeError(f'{path} is not a file destination of this '
-                            f'connector')
-        filesystem, root = store
-        root = root.rstrip('/')
+        filesystem, root = _export_root(connector, path)
         if (filesystem.get_file_info(f'{root}/_SUCCESS').type
                 == FileType.NotFound and filesystem.get_file_info(
                     f'{root}/predictions/_SUCCESS').type == FileType.File):
             root, path = f'{root}/predictions', f"{path.rstrip('/')}/predictions"
-        if filesystem.get_file_info(
-                f'{root}/_SUCCESS').type == FileType.NotFound:
-            raise FileNotFoundError(
-                f'{path} has no _SUCCESS marker: the export is incomplete or '
-                f'still running')
-        scratch = get_scratch_dir()
-        scratch.mkdir(parents=True, exist_ok=True)
-        local = Path(tempfile.mkdtemp(prefix='fetched-predictions-',
-                                      dir=scratch))
+        _require_success(filesystem, root, path)
+        local = _fetch_dir('fetched-predictions-')
         try:
             with filesystem.open_input_stream(
                     f'{root}/{PROVENANCE_FILE}') as reader:
@@ -489,19 +474,13 @@ class PredictionResult:
             files = replace(self, artifact_type=kind).files
             outputs.append((kind, destination, files))
         payload = _sidecar_bytes(sidecar)
+        sidecars = None if payload is None else {PROVENANCE_FILE: payload}
         bundle_id = None if sidecar is None else sidecar.parents.model.id
         for index, (kind, destination, files) in enumerate(outputs):
-            extra: Dict[str, Any] = ({'sidecars': {PROVENANCE_FILE: payload}}
-                                     if payload is not None and _holds_parquet(
-                                         output_config.connector, destination)
-                                     else {})
-            columns = output_config._id_columns(destination, self.id,
-                                                bundle_id)
-            if columns:
-                extra['extra_columns'] = columns
             output_config._write(
                 destination, list(files), export_id=None
-                if self.id is None else f'{self.id}-{kind.value}', **extra)
+                if self.id is None else f'{self.id}-{kind.value}',
+                ids=(self.id, bundle_id), sidecars=sidecars)
             if records is not None and written is not None:
                 written.append(records[index])
 
@@ -516,24 +495,57 @@ class _Export:
     def files(self) -> tuple[str, ...]:
         parts = self.local / 'parts'
         if not parts.is_dir():
-            from kumo_core.sources.transfer import StagedFile, fetch_all
-            from pyarrow.fs import FileSelector, FileType
-
-            def fetch(staged: StagedFile, target: str) -> None:
-                with self.filesystem.open_input_stream(staged.path) as reader, \
-                        open(target, 'wb') as writer:
-                    shutil.copyfileobj(reader, writer, 1 << 20)
-
             partial = self.local / 'parts.partial'
             shutil.rmtree(partial, ignore_errors=True)
-            listed = self.filesystem.get_file_info(FileSelector(self.root))
-            fetch_all([
-                StagedFile(info.path, info.size) for info in listed
-                if info.type == FileType.File and info.path.endswith(
-                    '.parquet')
-            ], str(partial), fetch=fetch)
+            fetch_parquet(self.filesystem, self.root, partial)
             partial.rename(parts)
         return tuple(sorted(map(str, parts.glob('*.parquet'))))
+
+
+def _export_root(connector: Connector, path: str) -> tuple[Any, str]:
+    from kumo.engine.connector import file_store
+
+    store = file_store(connector, path)
+    if store is None:
+        raise TypeError(f'{path} is not a file destination of this '
+                        f'connector')
+    return store[0], store[1].rstrip('/')
+
+
+def _require_success(filesystem: Any, root: str, path: str) -> None:
+    from pyarrow.fs import FileType
+
+    if filesystem.get_file_info(f'{root}/_SUCCESS').type == FileType.NotFound:
+        raise FileNotFoundError(
+            f'{path} has no _SUCCESS marker: the export is incomplete or '
+            f'still running')
+
+
+def _fetch_dir(prefix: str) -> Path:
+    import tempfile
+
+    from kumo.engine._scratch import get_scratch_dir
+
+    scratch = get_scratch_dir()
+    scratch.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=scratch))
+
+
+def fetch_parquet(filesystem: Any, root: str, target: Path) -> None:
+    r"""Download the Parquet files under ``root`` into ``target``."""
+    from kumo_core.sources.transfer import StagedFile, fetch_all
+    from pyarrow.fs import FileSelector, FileType
+
+    def fetch(staged: StagedFile, local: str) -> None:
+        with filesystem.open_input_stream(staged.path) as reader, \
+                open(local, 'wb') as writer:
+            shutil.copyfileobj(reader, writer, 1 << 20)
+
+    fetch_all([
+        StagedFile(info.path, info.size)
+        for info in filesystem.get_file_info(FileSelector(root))
+        if info.type == FileType.File and info.path.endswith('.parquet')
+    ], str(target), fetch=fetch)
 
 
 def _sidecar_bytes(manifest: Optional[PredictionManifest]) -> Optional[bytes]:
@@ -545,15 +557,6 @@ def _sidecar_bytes(manifest: Optional[PredictionManifest]) -> Optional[bytes]:
         warnings.warn(f"Exporting without {PROVENANCE_FILE}: {error}",
                       UserWarning, stacklevel=4)
         return None
-
-
-def _holds_parquet(connector: Connector, destination: str) -> bool:
-    from kumo_core.sources import layout
-
-    from kumo.engine.connector import is_file_destination
-
-    return (is_file_destination(connector, destination)
-            and layout.file_type(destination.rstrip('/')) != layout.CSV)
 
 
 def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
