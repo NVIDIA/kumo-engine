@@ -313,8 +313,24 @@ def reference_cases(reference, manifest):
     return references
 
 
+def configure_reproducibility():
+    """Use public deterministic kernels without changing the model recipe."""
+    import torch
+
+    workspace = ':4096:8'
+    if (torch.cuda.is_initialized()
+            and os.environ.get('CUBLAS_WORKSPACE_CONFIG') != workspace):
+        raise ValueError('Configure deterministic CUDA before initializing it')
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = workspace
+    torch.use_deterministic_algorithms(True, warn_only=False)
+    return dict(torch_deterministic_algorithms=True,
+                cublas_workspace_config=workspace)
+
+
 def verify_runtime(version, profile, *, reference_only=False):
     import torch
+
+    reproducibility = configure_reproducibility()
 
     import kumo.engine as kumo
 
@@ -359,7 +375,8 @@ def verify_runtime(version, profile, *, reference_only=False):
         if profile.get(name) != packages.get(name)
     }
     return dict(version=version, dependencies=packages,
-                dependency_changes=changes, gpu=properties.name, gpu_count=1,
+                dependency_changes=changes, reproducibility=reproducibility,
+                gpu=properties.name, gpu_count=1,
                 driver=driver, architecture=platform.machine(),
                 compute_capability=[properties.major,
                                     properties.minor], gpu_uuid=identifier,
@@ -802,6 +819,7 @@ def observe_cuda(state):
 
         class ObservedTrainer(base):
             def __init__(self, *args, **kwargs):
+                kwargs['deterministic'] = True
                 kwargs['callbacks'] = [*(kwargs.get('callbacks') or []), Proof()]
                 super().__init__(*args, **kwargs)
 
@@ -967,7 +985,8 @@ def comparison_context(reference, report, previous, directory):
     if dependency_signature != signature(paired_dependencies):
         reasons.append('Dependency profile is missing or different')
     for key in ('gpu', 'gpu_count', 'architecture', 'driver', 'torch', 'cuda',
-                'threads', 'cpu_count', 'system_memory_bytes', 'cache_protocol'):
+                'threads', 'cpu_count', 'system_memory_bytes', 'cache_protocol',
+                'reproducibility'):
         if observed.get(key) is None or observed[key] != runtime.get(key):
             reasons.append(f'Runtime comparison field is missing or different: {key}')
     actual = signature(stable_trainer(read(directory / 'trainer_config.json')))

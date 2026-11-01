@@ -213,6 +213,7 @@ def test_host_keeps_runner_output_fresh_and_copies_reference_before_compare(
                  'wheel': wheel}[key].read_bytes())
         elif len(command) > 3 and command[2].endswith('nightly_check.py'):
             if command[3] == 'run':
+                assert kwargs['env']['CUBLAS_WORKSPACE_CONFIG'] == ':4096:8'
                 with pytest.raises(ReachedInputs):
                     checker.run(SimpleNamespace(input_root=data,
                                                 input_sha256='',

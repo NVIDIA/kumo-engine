@@ -340,6 +340,7 @@ assert len(entries)==1 and entries[0]['download_info']['archive_info']['hashes']
                                PATH='/usr/local/bin:/usr/bin:/bin',
                                TMPDIR=temporary.name,
                                CUDA_VISIBLE_DEVICES='0',
+                               CUBLAS_WORKSPACE_CONFIG=':4096:8',
                                OMP_NUM_THREADS='4',
                                MKL_NUM_THREADS='4',
                                OPENBLAS_NUM_THREADS='4',

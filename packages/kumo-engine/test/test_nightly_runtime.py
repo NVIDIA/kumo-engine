@@ -4,6 +4,7 @@
 """Small CPU checks for failures that would invalidate a nightly result."""
 
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,29 @@ APPROVED = '1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e'
 
 
 class NightlyRuntimeTest(unittest.TestCase):
+    def test_reproducibility_uses_strict_public_torch_algorithms(self):
+        import torch
+
+        previous = torch.are_deterministic_algorithms_enabled()
+        warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+        self.addCleanup(torch.use_deterministic_algorithms, previous,
+                        warn_only=warn_only)
+        torch.use_deterministic_algorithms(False)
+        with patch.dict(os.environ, {'CUBLAS_WORKSPACE_CONFIG': ':16:8'}):
+            profile = nightly.configure_reproducibility()
+            self.assertTrue(torch.are_deterministic_algorithms_enabled())
+            self.assertFalse(
+                torch.is_deterministic_algorithms_warn_only_enabled())
+            self.assertEqual(profile, {
+                'torch_deterministic_algorithms': True,
+                'cublas_workspace_config': ':4096:8'
+            })
+            self.assertEqual(os.environ['CUBLAS_WORKSPACE_CONFIG'], ':4096:8')
+        with patch.dict(os.environ, {'CUBLAS_WORKSPACE_CONFIG': ':16:8'}), \
+                patch.object(torch.cuda, 'is_initialized', return_value=True):
+            with self.assertRaisesRegex(ValueError, 'before initializing'):
+                nightly.configure_reproducibility()
+
     def test_resource_capture_keeps_cpu_tree_and_gpu_measures_separate(self):
         import torch
 
@@ -265,6 +289,9 @@ class NightlyRuntimeTest(unittest.TestCase):
         import pytorch_lightning as pl
         import torch
 
+        self.addCleanup(torch.use_deterministic_algorithms,
+                        torch.are_deterministic_algorithms_enabled(),
+                        warn_only=torch.is_deterministic_algorithms_warn_only_enabled())
         model = pl.LightningModule()
         model.layer = torch.nn.Linear(2, 1)
         with tempfile.TemporaryDirectory() as directory:

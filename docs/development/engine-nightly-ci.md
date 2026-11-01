@@ -52,6 +52,13 @@ Keep product OOM recovery. Record batch counts and actual early stopping.
 A recovered reduced-batch operation cannot supply a valid timed case.
 Missing work or resource measurements invalidate the result.
 
+Use PyTorch's strict deterministic algorithms and set
+`CUBLAS_WORKSPACE_CONFIG=:4096:8` before CUDA initialization. Each Lightning
+trainer also requests deterministic execution. Unsupported operations fail
+instead of silently using a nondeterministic kernel. Record these runtime
+settings; different or missing settings exclude performance percentages.
+The wheel, model recipe, inputs, seed and batch setting remain unchanged.
+
 The same sixteen fits supply preparation, training, prediction, repeat,
 partial-prediction, reload, and complete-case times. Synchronize CUDA at
 operation boundaries. Record process-tree PSS/RSS, device memory used,
@@ -110,6 +117,10 @@ sixteen-case nightly roster.
 Twelve retained cases support score replay. The saved static-link normal model
 passed repeat and partial checks, but reload reordered two positions for one
 of 176,856 entities. The strict order assertion remains FAIL.
+An isolated GPU replay reproduced the same swap without reloading the model.
+Public deterministic PyTorch algorithms removed the variation in a controlled
+single-batch experiment. This narrows the cause to GPU computation order;
+it does not prove that the full case or sixteen-case workflow passes.
 Static-link control and both temporal-link cases lack located and verified
 historical models and raw predictions. Preserve these gaps and every failure.
 

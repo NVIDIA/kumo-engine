@@ -459,6 +459,10 @@ def test_timing_comparison_rejects_batch_reduction_and_unknown_training_work(
                    cpu_count=48,
                    system_memory_bytes=512 * 2**30,
                    cache_protocol='fixed',
+                   reproducibility={
+                       'torch_deterministic_algorithms': True,
+                       'cublas_workspace_config': ':4096:8'
+                   },
                    dependencies={'torch': '2'})
     reference = dict(reference_runtime=dict(observed=runtime))
     previous = dict(trainer_config_sha256=nightly.signature(config),
@@ -469,6 +473,15 @@ def test_timing_comparison_rejects_batch_reduction_and_unknown_training_work(
                                        early_stopping={}))
     assert nightly.comparison_context(reference, dict(runtime=runtime),
                                       previous, tmp_path)['compatible']
+    for profile in (
+            None,
+            dict(runtime['reproducibility'],
+                 torch_deterministic_algorithms=False)):
+        changed = dict(runtime, reproducibility=profile)
+        context = nightly.comparison_context(reference, dict(runtime=changed),
+                                             previous, tmp_path)
+        assert not context['compatible']
+        assert any('reproducibility' in reason for reason in context['reasons'])
     reduced = copy.deepcopy(row)
     reduced['work']['training_epochs'][0]['batch_sizes'][3] = 32
     nightly.save(tmp_path / 'result.json', reduced)
@@ -499,6 +512,9 @@ def test_comparison_allows_only_the_approved_dependency_pair(
     baseline = dict(gpu='RTX PRO 6000', gpu_count=1, architecture='x86_64',
                     driver='1', torch='2.14.1', cuda='13', threads=4,
                     cpu_count=48, system_memory_bytes=512 * 2**30,
+                    reproducibility={
+                        'torch_deterministic_algorithms': True,
+                        'cublas_workspace_config': ':4096:8'},
                     cache_protocol='fixed', dependencies={
                         'torch': '2.14.1', 'pytorch-lightning': '2.6.5'})
     reference = dict(reference_runtime=dict(observed=baseline))
