@@ -351,7 +351,7 @@ class PredictionResult:
             with filesystem.open_input_stream(
                     f'{root}/{PROVENANCE_FILE}') as reader:
                 (local / PROVENANCE_FILE).write_bytes(reader.read())
-        except (FileNotFoundError, OSError):
+        except OSError:
             pass
         manifest = read_manifest(local / PROVENANCE_FILE, PredictionManifest)
         here = str(_run_manifest.destination_record(connector,

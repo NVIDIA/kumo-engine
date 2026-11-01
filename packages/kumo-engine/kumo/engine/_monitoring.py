@@ -115,7 +115,7 @@ class EvaluationResult:
             with filesystem.open_input_stream(
                     f'{root}/{_EVALUATION_FILE}') as reader:
                 fields = json.loads(reader.read())
-        except (FileNotFoundError, OSError) as error:
+        except OSError as error:
             raise FileNotFoundError(
                 f'{path} has no {_EVALUATION_FILE}: not an evaluation export'
             ) from error
