@@ -43,7 +43,7 @@ The host lock covers input hashing, all five operations, and the final input aud
 Keep the evidence directory outside the immutable input tree. A failed worker causes the runner to
 stop the other workers and retain the failure. This check has no scheduled job.
 The native workload and input conversion still need validation on an admitted
-host before publication or GPU-workflow activation.
+host before reference approval or workflow activation.
 
 The focused CPU guards run with:
 
