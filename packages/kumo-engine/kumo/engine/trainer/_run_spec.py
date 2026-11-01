@@ -6,14 +6,14 @@ r"""A `Trainer.fit` as a tracked run's `RunSpec`."""
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.summaries import Scalar, Summary
 
 from kumo.engine._run_names import fit_name, model_label
 from kumo.engine._text import entity, metric_key
-from kumo.engine._tracking import RunSpec, _flatten, logged_names, metric_name
+from kumo.engine._tracking import RunSpec, logged_names, metric_name
 
 
 @dataclass(frozen=True)
@@ -33,8 +33,7 @@ class FitContext:
 _UNSET = '???'
 
 
-def fit_spec(context: FitContext, *,
-             tags: Optional[Mapping[str, Any]] = None) -> RunSpec:
+def fit_spec(context: FitContext) -> RunSpec:
     started = context.started or datetime.now(timezone.utc)
     model = model_label(context.model_name, context.query, context.task_type)
     tune = (context.model_plan.get('training_job') or {}).get('tune_metric')
@@ -49,7 +48,6 @@ def fit_spec(context: FitContext, *,
                  'task_type': context.task_type,
                  'entity': entity(context.query),
                  'tune_metric': tune and metric_name(tune)},
-        tags=dict(tags or {}),
         inputs=dict(context.inputs),
         description=f'`{context.query}`',
     )
@@ -95,3 +93,11 @@ def _registered(model: Any) -> Mapping[str, Any]:
     if model is None:
         return {}
     return {'model_name': model.name, 'model_version': model.version}
+
+
+def _flatten(value: Any, prefix: str = '') -> Iterator[Tuple[str, Any]]:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            yield from _flatten(item, f'{prefix}{key}.')
+    else:
+        yield prefix[:-1], value

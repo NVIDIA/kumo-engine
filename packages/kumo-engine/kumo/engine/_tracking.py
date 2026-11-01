@@ -930,14 +930,6 @@ def _rank() -> int:
     return 0
 
 
-def _flatten(value: Any, prefix: str = '') -> Iterator[Tuple[str, Any]]:
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            yield from _flatten(item, f'{prefix}{key}.')
-    else:
-        yield prefix[:-1], value
-
-
 def _param_value(value: Any) -> str:
     if isinstance(value, str):
         return value

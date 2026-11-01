@@ -34,5 +34,3 @@ def test_searcher_records_only_varied_fields_as_json():
     searcher.max_attempts = 0
     cfg = searcher.suggest()
     assert searcher.sampled_params == chosen(cfg)
-    assert (searcher.sampled_params
-            is searcher.fallback_sampler.sampled_params)

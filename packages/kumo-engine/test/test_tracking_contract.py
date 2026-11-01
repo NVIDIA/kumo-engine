@@ -212,7 +212,7 @@ def replay(tracker=None, events=EVENTS, result=RESULT, error=None,
         record.name: record
         for hook, record in recorder.calls if hook == 'on_trial'
     }
-    spec = fit_spec(context, tags=USER_TAGS)
+    spec = replace(fit_spec(context), tags=USER_TAGS)
     if result is not None:
         spec = fitted_spec(spec, result)
     spec = replace(spec, steps=series if series is not None else {
@@ -453,7 +453,7 @@ def test_records_of_the_recorded_fit():
     }
     with pytest.warns(UserWarning,
                       match="'kumo.bundle_id', 'training_job.tune_metric'"):
-        spoofed = run_record(fit_spec(CONTEXT, tags={
+        spoofed = run_record(replace(fit_spec(CONTEXT), tags={
             'kumo.bundle_id': 'x', 'training_job.tune_metric': 'y', 'a': 1}))
     assert spoofed.tags.keys() - fit.tags.keys() == {'a'}
     assert fit.metrics == {'test/mae': 0.32}

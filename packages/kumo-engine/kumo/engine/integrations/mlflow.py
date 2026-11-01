@@ -245,8 +245,8 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
     def register(self, result: Any,
                  location: ModelRegistryLocation) -> PublishedModel:
         r"""Registers a `TrainingResult` at ``location``."""
-        from kumo.engine._manifest import stub
         from kumo.engine.graph import GraphSnapshot
+        from kumo.engine.trainer._provenance import bundle_manifest
         from kumo.engine.trainer._run_spec import registry_metrics
         from kumo.engine.trainer._spec import read_training_spec
         from kumo.engine.trainer.trainer import registry_pointers
@@ -269,7 +269,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                                          spec.graph_config or {})
                 info = _log_model(
                     self.target, client, result.bundle_dir,
-                    result.manifest or stub('model', result.id), snapshot,
+                    bundle_manifest(result.bundle_dir, result.id), snapshot,
                     name=_logged_model_name(location.model_name,
                                             result.manifest),
                     run_id=None if fit is None else fit.run_id,
@@ -1095,9 +1095,9 @@ def log_model(
             none.
         target: as in `MlflowTracking`.
     """
-    from kumo.engine._manifest import stub
     from kumo.engine._mlops import snapshot_uri
     from kumo.engine._tracking import fit_inputs
+    from kumo.engine.trainer._provenance import bundle_manifest
     from kumo.engine.trainer._run_spec import registry_metrics
 
     mlflow = import_provider('mlflow', 'mlflow')
@@ -1121,8 +1121,8 @@ def log_model(
         experiment_id = client.get_run(run_id).info.experiment_id
         _log_inputs(mlflow, client, run_id, fit_inputs(result.manifest))
     registered = getattr(result.registered_model, 'name', None)
-    info = _log_model(target, client, result.bundle_dir, result.manifest or
-                      (None if result.id is None else stub('model', result.id)),
+    info = _log_model(target, client, result.bundle_dir,
+                      bundle_manifest(result.bundle_dir, result.id),
                       snapshot, name=name or _logged_model_name(
                           registered, result.manifest), run_id=run_id,
                       experiment_id=experiment_id,
