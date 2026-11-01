@@ -437,32 +437,37 @@ def test_system_metrics_skip_a_failed_log_and_stop_after_repeated_ones(
 
     from kumo.engine.integrations import mlflow as integration
 
-    calls = []
+    batches = []
 
-    def log(metrics, step):
-        calls.append(step)
-        if step == 0 or step >= 2:
+    def log(readings):
+        batches.append([(values, step) for values, step, _ in readings])
+        if len(batches) == 1 or len(batches) >= 3:
             raise ConnectionError('blip')
 
     monkeypatch.setattr(integration, '_metric_monitors', lambda: [_Monitor()])
+    monkeypatch.setattr(integration, '_FLUSH_SECONDS', 0.0)
     caplog.set_level(logging.INFO, integration.logger.name)
     with integration._SystemMetrics(log, interval=0.001) as metrics:
         metrics._thread.join(10)
 
-    assert calls == list(range(2 + integration._SYSTEM_METRICS_FAILURES))
+    reading = {'system/cpu': 1.0}
+    assert batches == [[(reading, 0), (reading, 1)], *[
+        [(reading, step)]
+        for step in range(2, 3 + integration._SYSTEM_METRICS_FAILURES)]]
     assert caplog.text.count('Could not log system metrics') == 1
     assert 'ConnectionError: blip' in caplog.text
     assert 'stopped after 6 failed logs in a row' in caplog.text
 
 
-def test_system_metrics_log_a_reading_when_a_run_ends_within_the_interval(
+def test_system_metrics_sample_every_second_unless_the_environment_says(
         monkeypatch):
     from kumo.engine.integrations import mlflow as integration
 
-    calls = []
     monkeypatch.setattr(integration, '_metric_monitors', lambda: [_Monitor()])
-    with integration._SystemMetrics(lambda metrics, step: calls.append(
-            (metrics, step)), interval=60):
+    batches = []
+    with integration._SystemMetrics(batches.append) as metrics:
         pass
-
-    assert calls == [({'system/cpu': 1.0}, 0)]
+    assert batches == []  # fewer than 2 readings
+    assert metrics._interval == 1.0
+    monkeypatch.setenv('MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL', '2')
+    assert integration._SystemMetrics(batches.append)._interval == 2.0

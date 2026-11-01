@@ -327,8 +327,9 @@ class MlflowTracking(TrackingBase):
         self.logged_run_name = run.info.run_name
         self._experiment_id = run.info.experiment_id
         if self.log_system_metrics and record.tags.get('kumo.kind') == 'fit':
-            self._guard.enter_context(
-                _SystemMetrics(self.log_metrics))
+            self._guard.enter_context(_SystemMetrics(
+                lambda readings: self._log_readings(client, run.info.run_id,
+                                                    readings)))
         self._log_params(self._parent, record.params)
         self._log_artifacts(record.artifacts)
 
@@ -443,6 +444,19 @@ class MlflowTracking(TrackingBase):
 
     def log_metrics(self, metrics: Mapping[str, float], step: int) -> None:
         self._log_metrics(self._parent, metrics, step)
+
+    def _log_readings(self, client: Any, run_id: str,
+                      readings: Sequence['_Reading']) -> None:
+        entities = self._mlflow.entities
+        metrics = [
+            entities.Metric(metric_key(name), float(value), timestamp, step)
+            for values, step, timestamp in readings
+            for name, value in values.items()
+        ]
+        with self.target.scope():
+            for start in range(0, len(metrics), _BATCH_METRICS):
+                client.log_batch(
+                    run_id, metrics=metrics[start:start + _BATCH_METRICS])
 
     def _log_summaries(self, summaries: Sequence[Summary]) -> None:
         self._log_routed(route(summaries), self._parent)
@@ -579,11 +593,17 @@ _COLUMN_TYPES = {'int64': 'long', 'int32': 'integer', 'float64': 'double',
                  'time': 'datetime'}
 
 
+_Reading = Tuple[Mapping[str, float], int, int]  # values, second, time
+_FLUSH_SECONDS = 10.0
+_MIN_READINGS = 2
+
+
 class _SystemMetrics:
-    def __init__(self, log: Callable[[Mapping[str, float], int], None],
-                 interval: float = 10.0) -> None:
+    def __init__(self, log: Callable[[List[_Reading]], None],
+                 interval: Optional[float] = None) -> None:
+        fixed = os.environ.get('MLFLOW_SYSTEM_METRICS_SAMPLING_INTERVAL')
         self._log = log
-        self._interval = interval
+        self._interval = interval or float(fixed or 1)
         self._monitors = _metric_monitors()
         self._failed = False
         self._stop = threading.Event()
@@ -598,10 +618,13 @@ class _SystemMetrics:
     def __exit__(self, *exc: Any) -> None:
         self._stop.set()
         if self._thread.is_alive():
-            self._thread.join(self._interval + 5)
+            self._thread.join(_FLUSH_SECONDS + 5)
 
     def _run(self) -> None:
-        step = failures = 0
+        began = flushed = time.monotonic()
+        readings: List[_Reading] = []
+        taken = failures = 0
+        step = -1
         stopped = False
         while not stopped:
             stopped = self._stop.wait(self._interval)
@@ -610,21 +633,27 @@ class _SystemMetrics:
                 monitor.collect_metrics()
                 metrics.update(monitor.aggregate_metrics())
                 monitor.clear_metrics()
+            step = max(round(time.monotonic() - began), step + 1)
+            readings.append(({f'system/{k}': v for k, v in metrics.items()},
+                             step, int(time.time() * 1000)))
+            taken += 1
+            if taken < _MIN_READINGS or not (
+                    stopped or time.monotonic() - flushed >= _FLUSH_SECONDS):
+                continue
+            batch, readings, flushed = readings, [], time.monotonic()
             try:
-                self._log({f'system/{k}': v
-                           for k, v in metrics.items()}, step)
+                self._log(batch)
                 failures = 0
             except Exception as error:
                 if not self._failed:
-                    logger.info('Could not log system metrics, skipping that '
-                                'reading: %s', format_error(error))
+                    logger.info('Could not log system metrics, skipping those '
+                                'readings: %s', format_error(error))
                 self._failed = True
                 failures += 1
                 if failures == _SYSTEM_METRICS_FAILURES:
                     logger.info('System metrics stopped after %d failed logs '
                                 'in a row', failures)
                     return
-            step += 1
 
 
 def _metric_monitors() -> List[Any]:
