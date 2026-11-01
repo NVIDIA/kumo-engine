@@ -623,11 +623,14 @@ def log_model(
             run_id = client.create_run(
                 tracking._experiment_for(client)).info.run_id
         experiment_id = client.get_run(run_id).info.experiment_id
-    if result.manifest is not None:
-        tracking._log_inputs(run_id, [
-            summary for summary in artifact_summaries(result.manifest,
-                                                      'training')
-            if isinstance(summary, Dataset)])
+    summaries = [] if result.manifest is None else artifact_summaries(
+        result.manifest, 'training')
+    try:
+        tracking._log_inputs(
+            run_id, [s for s in summaries if isinstance(s, Dataset)])
+    except Exception as error:
+        logger.warning('Could not log the fit\'s source tables to MLflow: %s',
+                       format_error(error), exc_info=True)
     info = _log_model(target, client, result.bundle_dir,
                       bundle_manifest(result.bundle_dir, result.id),
                       snapshot, run_id, experiment_id, name,
