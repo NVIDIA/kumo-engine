@@ -234,12 +234,23 @@ def schema_changes(before: Mapping[str, Any],
     ]
     for name in sorted(old.keys() & new.keys()):
         parts = sorted(
-            _SCHEMA_PARTS.get(key, key)
+            _SCHEMA_PARTS.get(key, key) + (_changed_columns(
+                old[name][key], new[name][key]) if key == 'cols' else '')
             for key in old[name].keys() | new[name].keys()
             if old[name].get(key) != new[name].get(key))
         if parts:
             changes.append(f"{name} {', '.join(parts)}")
     return changes
+
+
+def _changed_columns(before: List[str], after: List[str]) -> str:
+    old, new = ({
+        column['name']: column
+        for column in map(json.loads, side or [])
+    } for side in (before, after))
+    names = sorted(name for name in old.keys() | new.keys()
+                   if old.get(name) != new.get(name))
+    return f" ({', '.join(names)})" if names else ''
 
 
 def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
