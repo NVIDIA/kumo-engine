@@ -50,13 +50,13 @@ def test_a_new_kind_names_its_artifacts_without_other_changes():
 
     assert artifacts(report) == [
         Artifact('report', 'r', 's3://root/reports/r', True,
-                 'kumo.report_uri', version='r', version_kind='exact'),
+                 version='r', version_kind='exact'),
         Artifact('snapshot', 'g@d', 's3://root/snapshots/g/d', True,
-                 'kumo.snapshot_uri', version='g@d', version_kind='exact'),
+                 version='g@d', version_kind='exact'),
         Artifact('source_table', 'orders', 's3://data/orders', True,
                  connector='S3', version='7', version_kind='exact'),
         Artifact('model', 'm', 's3://root/models/m', False,
                  'kumo.bundle_uri', version='m', version_kind='exact'),
-        Artifact('snapshot', 'p', None, True, 'kumo.snapshot_uri',
-                 version='p', version_kind='exact'),
+        Artifact('snapshot', 'p', None, True, version='p',
+                 version_kind='exact'),
     ]

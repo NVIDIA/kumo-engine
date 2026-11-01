@@ -171,8 +171,7 @@ class Manifest(Record):
 
     def as_artifact(self, key: str) -> Artifact:
         return Artifact(self.kind, self.id, self.location, self.IS_DATASET,
-                        self.URI_TAG or f'kumo.{self.kind}_uri',
-                        version=self.id, version_kind='exact')
+                        self.URI_TAG, version=self.id, version_kind='exact')
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
