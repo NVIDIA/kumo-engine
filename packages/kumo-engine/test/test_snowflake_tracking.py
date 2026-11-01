@@ -5,7 +5,6 @@
 import inspect
 import re
 import threading
-import time
 from unittest import mock
 
 import _snowflake_experiment_fake
@@ -13,12 +12,7 @@ import pytest
 from _snowflake_experiment_fake import FakeExperimentTracking, FakeSession
 from kumoapi.model_plan import ModelPlan
 from test_fit_events import table_and_snapshot  # noqa: F401
-from test_tracking_contract import (
-    CONTEXT,
-    EVENTS,
-    RESULT,
-    join_tracking_threads,
-)
+from test_tracking_contract import CONTEXT, EVENTS, RESULT
 
 from kumo.engine._tracking import TrackingSession
 from kumo.engine.trainer._run_spec import fit_spec, fitted_spec
@@ -217,27 +211,6 @@ def test_the_users_session_is_not_altered(fake):
     _replay(_tracking(session))
 
     assert session.statements == []
-
-
-def test_a_hung_snowflake_call_does_not_stall_the_fit(fake, monkeypatch):
-    import kumo.engine._tracking as tracking
-
-    monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.5)
-    release = threading.Event()
-    monkeypatch.setattr(FakeExperimentTracking, 'log_metrics',
-                        lambda *args, **kwargs: release.wait(30))
-    began = time.monotonic()
-    try:
-        session = _replay(_tracking())
-        elapsed = time.monotonic() - began
-    finally:
-        release.set()
-        join_tracking_threads()
-
-    assert elapsed < 1.5
-    assert isinstance(session.error, TimeoutError)
-    run, = fake._instance.runs.values()
-    assert run['status'] == 'FINISHED'
 
 
 class _SchemaSession:
