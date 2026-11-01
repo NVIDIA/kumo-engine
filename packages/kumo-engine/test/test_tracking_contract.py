@@ -360,7 +360,7 @@ def test_records_of_the_recorded_fit():
     assert fit.tags == {'team': 'ents', 'kumo.kind': 'fit',
                         'kumo.bundle_id': BUNDLE, 'kumo.snapshot_id': SNAPSHOT,
                         'kumo.task_type': 'regression',
-                        'kumo.tune_metric': 'mae',
+                        'kumo.entity': 'ents', 'kumo.tune_metric': 'mae',
                         'kumo.engine_version': __version__,
                         'kumo.best_trial': '2'}
     assert fit.params == {
@@ -392,6 +392,7 @@ def test_records_of_the_recorded_fit():
         name='trial-2-attempt-1', model_label='ents-regression',
         params={'optimization.base_lr': '0.001', 'attempt': '1'}, tags={
             'kumo.kind': 'trial',
+            'kumo.engine_version': __version__,
             'kumo.snapshot_id': SNAPSHOT,
             'kumo.task_type': 'regression',
             'kumo.status': 'failed',

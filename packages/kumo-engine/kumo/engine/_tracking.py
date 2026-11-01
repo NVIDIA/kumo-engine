@@ -32,6 +32,7 @@ from kumo_core.summaries import Summary
 
 from kumo.engine._events import Event, _finite_floats
 from kumo.engine._mlops import full_error, warn_failure
+from kumo.engine._version import __version__
 
 if TYPE_CHECKING:
     from kumoapi.plugin import ModelRegistryLocation, PublishedModel
@@ -143,6 +144,7 @@ def run_record(spec: RunSpec) -> RunRecord:
         tags={
             **_user_tags(spec.tags, params),
             'kumo.kind': spec.kind,
+            'kumo.engine_version': __version__,
             **{f'kumo.{name}': str(value)
                for name, value in spec.parents.items() if value},
             **({} if spec.status is None else {'kumo.status': spec.status}),
