@@ -104,6 +104,7 @@ def test_holdout_is_the_published_models(graph, refit_trainval, refit_full,
                                          explain, model):
     result = _fit(graph, QUERY, refit_trainval, refit_full, explain)
 
+    assert result.manifest.fit_mode == (model or 'refit_full')
     if model is None:
         assert result.holdout_path is None
     else:
