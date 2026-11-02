@@ -118,14 +118,18 @@ class _Part:
             return b''
         if self._stream is None or offset != self._at:
             self._open(offset)
-        with _translated(self._path):
-            pieces, got = [], 0
-            while got < length:
-                piece = self._stream.read(min(_BUFFER, length - got))
-                if not piece:
-                    break
-                pieces.append(piece)
-                got += len(piece)
+        try:
+            with _translated(self._path):
+                pieces, got = [], 0
+                while got < length:
+                    piece = self._stream.read(min(_BUFFER, length - got))
+                    if not piece:
+                        break
+                    pieces.append(piece)
+                    got += len(piece)
+        except BaseException:
+            self.close()
+            raise
         self._at += got
         return b''.join(pieces)
 
