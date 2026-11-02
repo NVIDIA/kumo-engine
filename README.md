@@ -16,7 +16,7 @@
 
 **The dataloader for structured-data models: connected, time-correct context for every prediction, served from NVMe instead of RAM.**
 
-Models that predict from tables, relationships, and event histories need connected context for every prediction. SQL databases are slow at producing it, and holding a large graph in memory is expensive. Kumo Engine converts your tables into a compressed, NVMe-optimized graph (Rust-based DiskGraph) and streams time-correct neighborhoods to the GPU for training and batch prediction.
+Models that predict from tables, relationships, and event histories need connected context for every prediction. Databases are slow at producing it, and holding a large graph in memory is expensive. Kumo Engine converts your tables into a compressed, NVMe-optimized graph (Rust-based DiskGraph) and streams time-correct neighborhoods to the GPU for training and batch prediction.
 
 | Proof point | Result |
 | --- | --- |
