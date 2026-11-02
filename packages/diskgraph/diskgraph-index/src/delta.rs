@@ -480,6 +480,88 @@ pub fn merge<'a>(
     })
 }
 
+/// Check IDs, packed records, temporal ordering, and paired-edge checksums.
+/// Four SHA-256 words are accumulated independently, so traversal order does
+/// not matter while multiplicity does. Memory is bounded by relation count.
+pub fn validate(root: &Path) -> Result<serde_json::Value> {
+    use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
+    let graph = crate::graph::GraphIndexReader::open(&root.join("index_metadata.json"), root)?;
+    let mut node_counts = BTreeMap::new();
+    let mut signatures: BTreeMap<String, (u64, [u64; 4])> = BTreeMap::new();
+    for table in graph.tables() {
+        let mut nodes = 0u64;
+        for shard in 0..table.shard_count() {
+            let (first, last) = table.shard_id_range(shard).unwrap();
+            if first > last {
+                continue;
+            }
+            for id in first..=last {
+                nodes += 1;
+                let view = table.edges_for_node(id)?;
+                let _ = view.node_data()?;
+                for segment in view.relation_segments()? {
+                    let relation = &table.relations()[segment.layout.relation_id as usize];
+                    let destination = graph
+                        .table(&relation.dst_type)
+                        .context("missing destination table")?;
+                    let mut previous_key = u64::MAX;
+                    let signature = signatures.entry(relation.name.clone()).or_default();
+                    for bytes in segment.data.chunks_exact(segment.layout.entry_bytes) {
+                        ensure!(bytes.len() <= 16, "invalid edge width");
+                        let mut word = [0u8; 16];
+                        word[..bytes.len()].copy_from_slice(bytes);
+                        let word = u128::from_le_bytes(word);
+                        let dst = (word & segment.layout.dst_mask as u128) as u64;
+                        let key = ((word >> segment.layout.dst_bits)
+                            & segment.layout.dest_sort_key_mask.unwrap_or(0) as u128)
+                            as u64;
+                        ensure!(
+                            destination.shard_for_node(dst).is_some(),
+                            "dangling edge {}:{id}->{dst}",
+                            relation.name
+                        );
+                        ensure!(
+                            key <= previous_key,
+                            "unsorted temporal adjacency in {}",
+                            relation.name
+                        );
+                        previous_key = key;
+                        let reverse = relation
+                            .reverse_of
+                            .as_ref()
+                            .is_some_and(|name| name < &relation.name);
+                        let (a, b) = if reverse { (dst, id) } else { (id, dst) };
+                        let mut hash = Sha256::new();
+                        hash.update(a.to_le_bytes());
+                        hash.update(b.to_le_bytes());
+                        let hash = hash.finalize();
+                        signature.0 += 1;
+                        for (sum, bytes) in signature.1.iter_mut().zip(hash.chunks_exact(8)) {
+                            *sum = sum.wrapping_add(u64::from_le_bytes(bytes.try_into().unwrap()));
+                        }
+                    }
+                }
+            }
+        }
+        node_counts.insert(table.node_type().to_owned(), nodes);
+    }
+    for relation in graph.merged_edge_relations() {
+        if let Some(reverse) = &relation.reverse_of {
+            ensure!(
+                signatures.get(&relation.name) == signatures.get(reverse),
+                "forward/reverse edge mismatch: {} / {}",
+                relation.name,
+                reverse
+            );
+        }
+    }
+    Ok(
+        serde_json::json!({"nodes": node_counts, "edges": signatures.iter()
+        .map(|(name, (count, _))| (name, count)).collect::<BTreeMap<_, _>>()}),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,86 +779,4 @@ mod tests {
         };
         assert!(merge(base, &[entry], layout(4)).is_err());
     }
-}
-
-/// Check IDs, packed records, temporal ordering, and paired-edge checksums.
-/// Four SHA-256 words are accumulated independently, so traversal order does
-/// not matter while multiplicity does. Memory is bounded by relation count.
-pub fn validate(root: &Path) -> Result<serde_json::Value> {
-    use sha2::{Digest, Sha256};
-    use std::collections::BTreeMap;
-    let graph = crate::graph::GraphIndexReader::open(&root.join("index_metadata.json"), root)?;
-    let mut node_counts = BTreeMap::new();
-    let mut signatures: BTreeMap<String, (u64, [u64; 4])> = BTreeMap::new();
-    for table in graph.tables() {
-        let mut nodes = 0u64;
-        for shard in 0..table.shard_count() {
-            let (first, last) = table.shard_id_range(shard).unwrap();
-            if first > last {
-                continue;
-            }
-            for id in first..=last {
-                nodes += 1;
-                let view = table.edges_for_node(id)?;
-                let _ = view.node_data()?;
-                for segment in view.relation_segments()? {
-                    let relation = &table.relations()[segment.layout.relation_id as usize];
-                    let destination = graph
-                        .table(&relation.dst_type)
-                        .context("missing destination table")?;
-                    let mut previous_key = u64::MAX;
-                    let signature = signatures.entry(relation.name.clone()).or_default();
-                    for bytes in segment.data.chunks_exact(segment.layout.entry_bytes) {
-                        ensure!(bytes.len() <= 16, "invalid edge width");
-                        let mut word = [0u8; 16];
-                        word[..bytes.len()].copy_from_slice(bytes);
-                        let word = u128::from_le_bytes(word);
-                        let dst = (word & segment.layout.dst_mask as u128) as u64;
-                        let key = ((word >> segment.layout.dst_bits)
-                            & segment.layout.dest_sort_key_mask.unwrap_or(0) as u128)
-                            as u64;
-                        ensure!(
-                            destination.shard_for_node(dst).is_some(),
-                            "dangling edge {}:{id}->{dst}",
-                            relation.name
-                        );
-                        ensure!(
-                            key <= previous_key,
-                            "unsorted temporal adjacency in {}",
-                            relation.name
-                        );
-                        previous_key = key;
-                        let reverse = relation
-                            .reverse_of
-                            .as_ref()
-                            .is_some_and(|name| name < &relation.name);
-                        let (a, b) = if reverse { (dst, id) } else { (id, dst) };
-                        let mut hash = Sha256::new();
-                        hash.update(a.to_le_bytes());
-                        hash.update(b.to_le_bytes());
-                        let hash = hash.finalize();
-                        signature.0 += 1;
-                        for (sum, bytes) in signature.1.iter_mut().zip(hash.chunks_exact(8)) {
-                            *sum = sum.wrapping_add(u64::from_le_bytes(bytes.try_into().unwrap()));
-                        }
-                    }
-                }
-            }
-        }
-        node_counts.insert(table.node_type().to_owned(), nodes);
-    }
-    for relation in graph.merged_edge_relations() {
-        if let Some(reverse) = &relation.reverse_of {
-            ensure!(
-                signatures.get(&relation.name) == signatures.get(reverse),
-                "forward/reverse edge mismatch: {} / {}",
-                relation.name,
-                reverse
-            );
-        }
-    }
-    Ok(
-        serde_json::json!({"nodes": node_counts, "edges": signatures.iter()
-        .map(|(name, (count, _))| (name, count)).collect::<BTreeMap<_, _>>()}),
-    )
 }
