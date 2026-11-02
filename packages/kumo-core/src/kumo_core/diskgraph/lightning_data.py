@@ -1563,6 +1563,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
             for k, v in self.runtime_options.items()
             if k not in {"num_threads", "remote_sampling_endpoint"}
         }
+        stage_cleanups: dict[str, ExitStack] = {}
 
         def _open(
             stage: str,
@@ -1570,6 +1571,10 @@ class DiskgraphTaskBatchIterable(IterableDataset):
             stage_num_workers: int | None = None,
             stage_worker_id: int | None = None,
         ):
+            if stage not in stage_cleanups:
+                stage_cleanups[stage] = cleanup.enter_context(ExitStack())
+            stage_cleanup = stage_cleanups[stage]
+            stage_cleanup.close()
             stage_options = self.stage_runtime_options.get(stage, {})
             options = {**iter_options, **stage_options}
             iterator, num_samples = index.iter(
@@ -1585,7 +1590,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
                 group_by_timestamp=self.group_by_timestamp,
                 **options,
             )
-            cleanup.callback(iterator.close)
+            stage_cleanup.callback(iterator.close)
             return iterator, int(num_samples)
 
         if self.stage_batch_targets is not None:
@@ -1616,6 +1621,9 @@ class DiskgraphTaskBatchIterable(IterableDataset):
                         yield batch
                         break
                     except StopIteration:
+                        stage_cleanups[stage].close()
+                        del iterators[stage]
+                        del iterator
                         if not self.replay:
                             raise RuntimeError(
                                 f"stage {stage!r} exhausted before its "
@@ -1640,6 +1648,9 @@ class DiskgraphTaskBatchIterable(IterableDataset):
                         yielded[stage] += 1
                         yield batch
                         break
+                if yielded[stage] == local_targets[stage]:
+                    stage_cleanups[stage].close()
+                    del iterators[stage]
             return
 
         if self.group_by_timestamp:
@@ -1658,6 +1669,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
                         iterator, _ = _open(
                             stage, replay, stage_worker_id=stage_worker_id)
                         yield from itertools.islice(iterator, quota)
+                        stage_cleanups[stage].close()
                     offset += count
                     remaining -= take
                     available += count
@@ -1673,6 +1685,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
             for stage in self.stages:
                 iterator, _ = _open(stage, 0)
                 yield from iterator
+                stage_cleanups[stage].close()
             return
 
         effective_max_batches = self._effective_max_batches()
@@ -1690,6 +1703,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
                     had_any = True
                     if emitted >= per_worker_target:
                         return
+                stage_cleanups[stage].close()
             if not had_any or not self.replay:
                 # Defensive: empty shard (e.g. fewer seeds than workers).
                 return

@@ -15,6 +15,9 @@ import threading
 import time
 import types
 import warnings
+import weakref
+from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -887,6 +890,99 @@ def test_train_iter_replays_wheel_when_natural_lt_max_batches(
     # order changes rather than repeating verbatim.
     epochs = [call["kwargs"]["epoch"] for call in calls["history"]]
     assert epochs == [0, 1, 2]
+
+
+@pytest.mark.parametrize("mode", ["flat", "grouped", "interleaved", "natural"])
+@pytest.mark.parametrize("termination", ["exhaustion", "close", "error"])
+def test_task_iterators_release_completed_passes(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    termination: str,
+) -> None:
+    """Bound replay retention and close active passes on every exit path."""
+    live_iterators: weakref.WeakSet[Iterator[dict[str, str]]] = weakref.WeakSet()
+    close_counts: list[int] = []
+    last_opened: dict[str, int] = {}
+    next_calls = 0
+
+    class TaskIterator(Iterator[dict[str, str]]):
+        """Model a local iterator whose close does not free its allocations."""
+
+        def __init__(self, stage: str) -> None:
+            """Record the stage and allocate a close counter for this pass."""
+            self.stage = stage
+            self.identifier = len(close_counts)
+            self.remaining = 1
+            close_counts.append(0)
+
+        def __next__(self) -> dict[str, str]:
+            """Return one batch, or raise the injected sampling error."""
+            nonlocal next_calls
+            next_calls += 1
+            if termination == "error" and next_calls == 3:
+                raise ValueError("sampling failed")
+            if not self.remaining:
+                raise StopIteration
+            self.remaining -= 1
+            return {"stage": self.stage}
+
+        def close(self) -> None:
+            """Record cleanup without releasing any iterator state."""
+            close_counts[self.identifier] += 1
+
+    def open_iterator(**options: object) -> tuple[TaskIterator, int]:
+        """Open a pass only after its predecessor has been closed."""
+        stage = options["stage"]
+        assert isinstance(stage, str)
+        if stage in last_opened:
+            assert close_counts[last_opened[stage]] == 1
+        iterator = TaskIterator(stage)
+        live_iterators.add(iterator)
+        last_opened[stage] = iterator.identifier
+        return iterator, 1
+
+    index = types.SimpleNamespace(iter=open_iterator)
+    monkeypatch.setattr(
+        DiskgraphTaskBatchIterable, "_runtime_index", lambda self: index
+    )
+    dataset = DiskgraphTaskBatchIterable(
+        manifest_path="unused",
+        stage=("train", "val"),
+        sampling_plan={},
+        batch_size=1,
+        shuffle=True,
+        drop_last=False,
+        base_seed=0,
+        shuffle_state=_ShuffleStreamState(),
+        max_batches=None if mode == "natural" else 200,
+        min_steps_per_epoch=200,
+        group_by_timestamp=mode == "grouped",
+        stage_batch_targets=(
+            {"train": 100, "val": 100} if mode == "interleaved" else None
+        ),
+    )
+    dataset._grouped_stage_batch_counts = {"train": 1, "val": 1}
+
+    batches = iter(dataset)
+    assert isinstance(batches, types.GeneratorType)
+    with closing(batches):
+        if termination == "error":
+            with pytest.raises(ValueError, match="sampling failed"):
+                list(batches)
+        elif termination == "close":
+            next(batches)
+            next(batches)
+            if mode == "interleaved":
+                assert close_counts == [0, 0]
+        else:
+            batch_count = 0
+            for batch_count, _ in enumerate(batches, start=1):
+                assert len(live_iterators) <= 3
+            assert batch_count == (2 if mode == "natural" else 200)
+
+    assert close_counts
+    assert all(count >= 1 for count in close_counts)
+    assert not live_iterators
 
 
 def test_val_dataloader_does_not_replay_wheel_iterator(
