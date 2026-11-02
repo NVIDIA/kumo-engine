@@ -4,6 +4,7 @@
 r"""Exact test-split score counts and the holdout summaries."""
 
 import re
+from functools import reduce
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -24,6 +25,7 @@ TOP_CLASSES = 20
 _RESIDUAL_BINS = 40
 _HORIZONS = 12
 _TOP_SCORE_BINS = 100
+_CHUNK = 1 << 18
 BASELINE = ('True_PROB', 'confidence', 'top_score', 'classes', 'TARGET_PRED')
 Timeframe = Tuple[int, int, int, str]
 
@@ -35,12 +37,15 @@ def evaluation_counts(task_type: TaskType, *, target: Any,
                       horizon: Any = None) -> Optional[Counts]:
     r"""Counts of one test split; None for task types without them."""
     if task_type is TaskType.BINARY_CLASSIFICATION:
-        prob = np.asarray(prob, dtype=np.float64)
-        return _binary(prob[:, -1] if prob.ndim == 2 else prob,
-                       np.asarray(target).reshape(-1) == 1, threshold)
+        prob = np.asarray(prob)
+        return _in_chunks(lambda p, y: _binary(
+            np.asarray(p, dtype=np.float64), y.reshape(-1) == 1, threshold),
+            prob[:, -1] if prob.ndim == 2 else prob, np.asarray(target))
     if task_type is TaskType.MULTICLASS_CLASSIFICATION:
-        return _multiclass(np.asarray(prob, dtype=np.float64),
-                           np.asarray(target, dtype=np.int64).reshape(-1))
+        return _in_chunks(lambda p, y: _multiclass(
+            np.asarray(p, dtype=np.float64),
+            np.asarray(y, dtype=np.int64).reshape(-1)),
+            np.asarray(prob), np.asarray(target))
     if task_type is TaskType.MULTILABEL_CLASSIFICATION:
         return _multilabel(np.asarray(prob, dtype=np.float64),
                            np.asarray(pred).astype(bool),
@@ -49,11 +54,22 @@ def evaluation_counts(task_type: TaskType, *, target: Any,
         return top_score_counts(np.asarray(prob, dtype=np.float64).max(axis=1))
     if task_type in (TaskType.REGRESSION, TaskType.FORECASTING):
         values = (np.asarray(pred, dtype=np.float64).reshape(-1),
-                  np.asarray(target, dtype=np.float64).reshape(-1),
-                  tuple(target_edges))
-        return (_regression(*values) if horizon is None else
-                _forecasting(*values, np.asarray(horizon, dtype=np.int64)))
+                  np.asarray(target, dtype=np.float64).reshape(-1))
+        if horizon is None:
+            return _in_chunks(lambda p, y: _regression(
+                p, y, tuple(target_edges)), *values)
+        return _forecasting(*values, tuple(target_edges),
+                            np.asarray(horizon, dtype=np.int64))
     return None
+
+
+def _in_chunks(count: Any, *columns: np.ndarray) -> Counts:
+    r"""``count`` over bounded row chunks, merged."""
+    rows = len(columns[0])
+    step = max(1, _CHUNK // max(1, columns[0][:1].size))
+    return reduce(Counts.merge, (
+        count(*(column[start:start + step] for column in columns))
+        for start in range(0, max(rows, 1), step)))
 
 
 def top_score_counts(scores: Any) -> Counts:
@@ -181,12 +197,13 @@ def _multiclass(prob: np.ndarray, target: np.ndarray) -> Counts:
                      weights=confidence)
     counts.histogram('correct', 'score', confidence,
                      weights=predicted == target)
-    ranked = np.argsort(-prob, axis=1, kind='stable')[:, :_TOP_K]
+    own = prob[np.arange(target.size), target][:, None]
+    before = np.arange(size) < target[:, None]
+    rank = ((prob > own) | (before & (prob == own)) |
+            (np.isnan(own) & (before | ~np.isnan(prob)))).sum(axis=1)
     for k in range(1, min(_TOP_K, size) + 1):
-        counts.total(f'top_{k}', (ranked[:, :k] == target[:, None]).any(1)
-                     .sum())
-    counts.total('logloss', -np.log(np.clip(
-        prob[np.arange(target.size), target], _EPS, 1)).sum())
+        counts.total(f'top_{k}', (rank < k).sum())
+    counts.total('logloss', -np.log(np.clip(own[:, 0], _EPS, 1)).sum())
     counts.total('rows', target.size)
     return counts
 
