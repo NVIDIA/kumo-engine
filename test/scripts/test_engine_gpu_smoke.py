@@ -117,17 +117,19 @@ def test_links_require_the_complete_catalog_without_repeated_pairs():
 def test_reload_tolerance_accepts_boundary_and_rejects_larger_or_invalid_values(
 ):
     compare = runner().compare_predictions
-    assert compare([[0.]], [[1e-5]])['within_tolerance']
+    bound = 1e-4
+    assert compare([[0.]], [[bound]], task='regression',
+                   atol=bound)['within_tolerance']
     for before, after in (
-        ([[0.]], [[np.nextafter(1e-5, np.inf)]]),
-        ([[1.]], [[1.00002]]),
+        ([[0.]], [[np.nextafter(bound, np.inf)]]),
+        ([[1.]], [[1.001]]),
         ([], []),
         ([[1.]], [[1., 2.]]),
         ([[np.nan]], [[1.]]),
         ([[1.]], [[np.inf]]),
     ):
         with pytest.raises(ValueError):
-            compare(before, after)
+            compare(before, after, task='regression', atol=bound)
 
 
 def test_training_proof_rejects_zero_work_and_incomplete_fits():
@@ -146,18 +148,16 @@ def test_training_proof_rejects_zero_work_and_incomplete_fits():
 
 def test_custom_reload_tolerance_stays_enforced_and_rejects_invalid_bounds():
     compare = runner().compare_predictions
-    assert compare([[0.]], [[.004]], atol=.005)['within_tolerance']
+    assert compare([[0.]], [[.004]], task='regression',
+                   atol=.005)['within_tolerance']
     with pytest.raises(ValueError, match='exceeds'):
-        compare([[0.]], [[.006]], atol=.005)
-    with pytest.raises(ValueError, match='decisions'):
-        compare([[0.]], [[.004]], atol=.005, before_decisions=[True],
-                after_decisions=[False])
+        compare([[0.]], [[.006]], task='regression', atol=.005)
     for bound in (-1., np.nan, np.inf, -np.inf):
         with pytest.raises(ValueError, match='finite and nonnegative'):
-            compare([[0.]], [[0.]], atol=bound)
+            compare([[0.]], [[0.]], task='regression', atol=bound)
 
 
-def test_rtx_workflow_accepts_observed_repeat_difference_and_rejects_drift():
+def test_rtx_callers_supply_a_tolerance_enforced_at_its_boundary():
     root = RUNNER.parents[3]
     workflow = yaml.safe_load(
         (root / '.github/workflows/kumo-engine-pr.yml').read_text())
@@ -165,13 +165,14 @@ def test_rtx_workflow_accepts_observed_repeat_difference_and_rejects_drift():
         (root / '.github/actions/engine-gpu-smoke/action.yml').read_text())
     step = next(step for step in workflow['jobs']['gpu']['steps']
                 if step.get('uses') == './.github/actions/engine-gpu-smoke')
-    bound = float(step['with'].get('reload-atol',
-                                   action['inputs']['reload-atol']['default']))
+    assert action['inputs']['reload-atol']['required']
+    bound = float(step['with']['reload-atol'])
     compare = runner().compare_predictions
-    assert compare([[0.]], [[3.975629806518555e-5]],
+    assert compare([[0.]], [[bound]], task='regression',
                    atol=bound)['within_tolerance']
     with pytest.raises(ValueError, match='exceeds'):
-        compare([[0.]], [[1.0001e-4]], atol=bound)
+        compare([[0.]], [[np.nextafter(bound, np.inf)]],
+                task='regression', atol=bound)
 
 
 @pytest.mark.parametrize('task', [
@@ -186,7 +187,8 @@ def test_every_task_rejects_corrupted_reload_values_with_unchanged_decisions(
     after[0, 0] += .01
     decisions = None if task in ('regression', 'forecasting') else [[0, 1]]
     with pytest.raises(ValueError, match='exceeds'):
-        runner().compare_predictions(before, after, before_decisions=decisions,
+        runner().compare_predictions(before, after, task=task, atol=1e-4,
+                                     before_decisions=decisions,
                                      after_decisions=decisions)
 
 
@@ -194,7 +196,7 @@ def test_every_task_rejects_corrupted_reload_values_with_unchanged_decisions(
     'binary', 'multiclass', 'multilabel', 'multilabel_ranking', 'static_link',
     'temporal_link'
 ])
-def test_changed_labels_or_ranks_fail_even_when_scores_are_within_tolerance(
+def test_near_tie_label_or_rank_changes_pass_with_bounded_scores(
         task):
     smoke = runner()
     if task == 'binary':
@@ -224,6 +226,58 @@ def test_changed_labels_or_ranks_fail_even_when_scores_are_within_tolerance(
         smoke.prediction_decisions(task, frame, [10], classes=classes)
         for frame in (before, after)
     ]
+    result = smoke.compare_predictions(*values, task=task, atol=1e-4,
+                                       before_decisions=decisions[0],
+                                       after_decisions=decisions[1])
+    assert result['within_tolerance'] and not result['decisions_equal']
+
+
+@pytest.mark.parametrize('task,before,after,left,right', [
+    ('binary', [[.8, .2]], [[.8, .2]], [False], [True]),
+    ('multilabel', [[.8, .2]], [[.8, .2]], [[True, False]], [[False, True]]),
+    ('multiclass', [[.8, .2]], [[.8, .2]], [[True, False]], [[False, True]]),
+    ('static_link', [[3., 1.]], [[3., 1.]], [[0, 1]], [[1, 0]]),
+    ('temporal_link', [[.5, .5]], [[.5, .5]], [[0, 1]], [[0, 0]]),
+    ('multilabel_ranking', [[.5, .5]], [[.5, .5]], [[0, 1]], [[0, np.nan]]),
+])
+def test_decisions_cannot_change_arbitrarily_even_with_identical_scores(
+        task, before, after, left, right):
     with pytest.raises(ValueError, match='decisions'):
-        smoke.compare_predictions(*values, before_decisions=decisions[0],
-                                  after_decisions=decisions[1])
+        runner().compare_predictions(before, after, task=task, atol=1e-4,
+                                     before_decisions=left,
+                                     after_decisions=right)
+
+
+@pytest.mark.parametrize('gap,accepted', [
+    (1e-4, True), (np.nextafter(1e-4, np.inf), False),
+])
+def test_rank_swaps_use_the_tolerance_boundary(gap, accepted):
+    compare = runner().compare_predictions
+    args = dict(task='static_link', atol=1e-4,
+                before_decisions=[[0, 1]], after_decisions=[[1, 0]])
+    if accepted:
+        assert compare([[gap, 0.]], [[0., gap]], **args)['within_tolerance']
+    else:
+        with pytest.raises(ValueError):
+            compare([[gap, 0.]], [[0., gap]], **args)
+
+
+def test_rank_changes_cannot_hide_a_wide_reversal_inside_adjacent_ties():
+    with pytest.raises(ValueError, match='decisions'):
+        runner().compare_predictions(
+            [[3e-4, 2e-4, 1e-4, 0.]], [[3e-4, 2e-4, 1e-4, 0.]],
+            task='static_link', atol=2e-4,
+            before_decisions=[[0, 1, 2, 3]], after_decisions=[[2, 3, 0, 1]])
+
+
+def test_tolerance_is_required_by_the_runner_cli_and_pure_comparison(tmp_path):
+    import subprocess
+    import sys
+
+    with pytest.raises(TypeError):
+        runner().compare_predictions([[0.]], [[0.]], task='regression')
+    result = subprocess.run([
+        sys.executable, str(RUNNER), '--data-dir', '.', '--graph-metadata', '.',
+        '--output-dir', str(tmp_path), '--expected-version', 'test',
+    ], capture_output=True, text=True)
+    assert result.returncode == 2 and '--reload-atol' in result.stderr

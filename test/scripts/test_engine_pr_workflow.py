@@ -72,6 +72,50 @@ printf '%s\\n' "$data" | jq -r "${!#}"
     assert output.read_text() == f'gpu={expected}\n'
 
 
+def test_main_seeds_caches_without_querying_a_pr(tmp_path):
+    output = tmp_path / 'output'
+    result = _run('changes', GITHUB_REF_NAME='main',
+                  GITHUB_OUTPUT=str(output))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert output.read_text() == 'gpu=false\n'
+
+
+def test_wheel_step_propagates_one_target_directory_and_exact_build_tools(tmp_path):
+    import sys
+
+    calls = tmp_path / 'calls.jsonl'
+    executable = '''#!{python}
+import json, os, sys
+from pathlib import Path
+with Path(os.environ['CAPTURE']).open('a') as stream:
+    stream.write(json.dumps(dict(command=Path(sys.argv[0]).name,
+        args=sys.argv[1:], target=os.environ.get('CARGO_TARGET_DIR'),
+        constraints=os.environ.get('PIP_BUILD_CONSTRAINT'))) + '\\n')
+'''.format(python=sys.executable)
+    for name in ['python', 'packages/kumo-engine/scripts/build_wheel.sh']:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(executable)
+        path.chmod(0o755)
+    (tmp_path / 'temp').mkdir()
+    job = JOBS['wheel']
+    step = next(s for s in job['steps'] if s.get('name') == 'Build the candidate wheel')
+    env = {k: v.replace('${{ github.workspace }}', str(tmp_path)).replace(
+        '${{ runner.temp }}', str(tmp_path / 'temp'))
+           for k, v in job['env'].items()}
+    result = subprocess.run(['bash', '-e', '-c', step['run']], cwd=tmp_path,
+                            capture_output=True, text=True,
+                            env=dict(os.environ, **env, RUNNER_TEMP=str(tmp_path / 'temp'),
+                                     PATH=f'{tmp_path}:{os.environ["PATH"]}', CAPTURE=str(calls)))
+    assert result.returncode == 0, result.stderr
+    recorded = [json.loads(v) for v in calls.read_text().splitlines()]
+    expected = str(tmp_path / 'packages/diskgraph/target')
+    assert {v['target'] for v in recorded} == {expected}
+    tools = recorded[0]['args']
+    assert 'ziglang==0.17.0' in tools and 'cargo-zigbuild==0.24.0' in tools
+    assert Path(recorded[-1]['constraints']).read_text().strip() == 'ziglang==0.17.0'
+
+
 @pytest.mark.parametrize('event,changes,required,wheel,gpu,expected', [
     ('push', 'success', 'false', 'skipped', 'skipped', 0),
     ('push', 'success', 'true', 'success', 'success', 0),

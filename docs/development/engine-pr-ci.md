@@ -9,8 +9,9 @@ Python 3.12 environment. It runs on the
 ## Workflow selection
 
 The workflow runs on trusted `pull-request/<number>` branches created by the
-copy bot. A manual run accepts a PR number. The build and GPU jobs require
-the checked-out commit to match the current PR head.
+copy bot. For a manual run, select the PR branch in **Run workflow**, then enter
+its PR number. The selected branch commit must match the current PR head.
+Selecting `main` for an open PR fails that check.
 
 The `changes` job reads all changed files in the PR, including previous names
 of renamed files. It skips GPU work only when every file matches the documented
@@ -19,7 +20,8 @@ still checks the full PR. A manual run always selects the GPU check.
 
 The `kumo-engine-pr-ci` check always runs. It requires either a successful
 exemption decision or successful build and GPU jobs. Failed selection, build,
-and GPU jobs fail this check.
+and GPU jobs fail this check. Pushes to `main` build the wheel and seed caches
+without selecting the GPU or PR-required jobs.
 
 ## Eight task checks
 
@@ -35,15 +37,39 @@ and link outputs must contain all requested classes or catalog items.
 
 Repeated and reloaded predictions must match within an absolute tolerance of
 `0.0001`, with zero relative tolerance. This limit applies to every task,
-including regression and forecasting. Chosen labels and published ranks must
-match exactly. A comparison outside the tolerance fails the job.
+including regression and forecasting. A comparison outside the tolerance fails.
+
+Labels can change only when the scores explain the change within that same
+tolerance. Binary and multilabel decisions must follow the `0.5` threshold in
+each output. Multiclass decisions must choose a highest-scoring class. If the
+chosen class changes, the two classes must differ by at most `0.0001` in both
+outputs. A rank reversal is allowed only when each affected pair differs by at
+most `0.0001` in both outputs. A chain of adjacent ties cannot justify reversing
+two scores farther apart. Rank coordinates remain complete and unique.
 
 Training metrics report separately. They do not set a learning-quality gate.
-The shared `engine-gpu-smoke` action accepts one wheel path and an optional
-`reload-atol` value. Every caller enforces its chosen absolute tolerance for
-all eight tasks, with zero relative tolerance. The PR workflow sets `0.0001`
-for RTX. The shared action defaults to `0.00001`. There is no report-only
-comparison mode.
+The shared `engine-gpu-smoke` action requires one wheel path and an explicit
+`reload-atol` value. Its Python runner and comparison functions also require
+the tolerance. The PR workflow supplies `0.0001` for RTX. Every caller enforces
+its chosen absolute tolerance for all eight tasks, with zero relative tolerance.
+There is no report-only comparison mode.
+
+## Build and installer caches
+
+Both Rust build paths inherit one `CARGO_TARGET_DIR` at
+`packages/diskgraph/target`. The Rust cache restores that directory using a
+shared key and the action's toolchain and dependency hashes. It excludes
+workspace crates and Cargo binaries. Only `main` saves this cache; PR branches
+restore compatible entries from `main`.
+
+The build pins `ziglang`, `cargo-zigbuild` and pip to exact versions. A pip build
+constraint also pins Zig inside isolated Python builds.
+
+A CPU-only job on `main` seeds the same uv installer cache used on the GPU
+runner. It installs the candidate wheel without importing models or training.
+PR jobs restore this cache without saving branch-specific copies. Before saving,
+uv prunes the cache for CI. Cache hits alone do not establish a build speedup.
+Measure complete builds with and without restored caches on the same runner.
 
 ## Fixture download
 
