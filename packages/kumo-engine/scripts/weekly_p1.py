@@ -11,6 +11,7 @@ import importlib.metadata
 import importlib.util
 import json
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -23,6 +24,36 @@ _SPEC = importlib.util.spec_from_file_location(
     Path(__file__).with_name('weekly_check.py'))
 weekly = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(weekly)
+
+
+def workload_digest(manifest):
+    value = {
+        k: v
+        for k, v in manifest.items()
+        if k not in ('time_tolerance', 'calibration_only')
+    }
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True,
+                   separators=(',', ':')).encode()).hexdigest()
+
+
+def reference_operations(path, checksum, manifest, manifest_sha256):
+    if weekly.digest(path) != checksum:
+        raise ValueError('Approved P1 reference checksum differs')
+    value = weekly.read(path)
+    sources = value.get('measurement_results_sha256', [])
+    if (value.get('format') != 'kumo-engine-weekly-p1-reference-v1'
+            or value.get('status') != 'CALIBRATED'
+            or value.get('manifest_sha256') != manifest_sha256
+            or value.get('workload_sha256') != workload_digest(manifest)
+            or value.get('physical_fits') != 0 or not sources or any(
+                not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v)
+                for v in sources) or check_operations(
+                    value.get('operations', []), value.get('operations', []),
+                    atol_seconds=0., rtol=0.)['status'] != 'PASS'):
+        raise ValueError(
+            'P1 reference is incomplete or uses a different workload')
+    return value['operations']
 
 
 def check_operations(current, reference, *, atol_seconds, rtol):
@@ -194,6 +225,9 @@ def run(args):
 
 def run_locked(args):
     manifest = inputs(args.input_root, args.manifest_sha256)
+    baseline = reference_operations(
+        args.reference, args.reference_sha256, manifest,
+        args.manifest_sha256) if args.reference else None
     if args.output.exists():
         raise ValueError('Use a fresh P1 evidence directory')
     if args.output.resolve().is_relative_to(args.input_root.resolve()):
@@ -201,7 +235,7 @@ def run_locked(args):
     args.output.mkdir(parents=True)
     report = dict(format='kumo-engine-weekly-p1-result-v1', status='RUNNING',
                   manifest_sha256=args.manifest_sha256, physical_fits=0,
-                  operations=[])
+                  workload_sha256=workload_digest(manifest), operations=[])
     try:
         if not sys.flags.isolated or sys.prefix == sys.base_prefix:
             raise ValueError('Use an isolated wheel environment')
@@ -266,19 +300,9 @@ def run_locked(args):
                     for r in workers).encode()).hexdigest(), workers=workers)
             report['operations'].append(row)
             weekly.save(args.output / 'p1-result.json', report)
-        baseline = report['operations']
-        if args.reference:
-            if weekly.digest(args.reference) != args.reference_sha256:
-                raise ValueError('Approved P1 reference checksum differs')
-            reference = weekly.read(args.reference)
-            if reference['manifest_sha256'] != args.manifest_sha256 or reference[
-                    'physical_fits'] != 0:
-                raise ValueError(
-                    'P1 reference uses a different workload or contains training'
-                )
-            baseline = reference['operations']
-        report['comparison'] = check_operations(report['operations'], baseline,
-                                                **manifest['time_tolerance'])
+        report['comparison'] = check_operations(
+            report['operations'], baseline or report['operations'],
+            **manifest['time_tolerance'])
         report['status'] = report['comparison']['status']
         inputs(args.input_root, args.manifest_sha256)
     except Exception as error:

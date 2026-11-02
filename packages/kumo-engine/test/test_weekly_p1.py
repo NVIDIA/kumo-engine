@@ -17,6 +17,49 @@ SOURCE = Path(__file__).parents[1] / 'scripts/weekly_p1.py'
 
 
 class SamplingChecks(unittest.TestCase):
+    def test_reference_keeps_measurements_separate_from_the_timing_policy(self):
+        spec = importlib.util.spec_from_file_location('p1', SOURCE)
+        p1 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(p1)
+        manifest = dict(work=dict(n=300000), files={'index/data': 'a' * 64},
+                        time_tolerance=dict(atol_seconds=2., rtol=.1))
+        measured = copy.deepcopy(manifest)
+        measured['time_tolerance'] = dict(atol_seconds=0., rtol=0.)
+        measured['calibration_only'] = True
+        rows = [
+            dict(status='PASS', seeds=300000, batches=1172, nodes=1000000,
+                 edges=2000000, fetched_rows=1000000, seconds=10.,
+                 membership_sha256='a' * 64) for _ in range(5)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'reference.json'
+            value = dict(format='kumo-engine-weekly-p1-reference-v1',
+                         status='CALIBRATED', manifest_sha256='b' * 64,
+                         workload_sha256=p1.workload_digest(measured),
+                         physical_fits=0, operations=rows,
+                         measurement_results_sha256=['c' * 64])
+            p1.weekly.save(path, value)
+            self.assertEqual(
+                p1.reference_operations(path, p1.weekly.digest(path), manifest,
+                                        'b' * 64), rows)
+            for change in ('bytes', 'work', 'status', 'fits', 'checksum'):
+                candidate = copy.deepcopy(manifest)
+                reference = copy.deepcopy(value)
+                checksum = 'd' * 64 if change == 'checksum' else None
+                if change == 'bytes':
+                    candidate['files']['index/data'] = 'd' * 64
+                if change == 'work':
+                    candidate['work']['n'] -= 1
+                if change == 'status':
+                    reference['status'] = 'FAIL'
+                if change == 'fits':
+                    reference['physical_fits'] = 1
+                p1.weekly.save(path, reference)
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    p1.reference_operations(path, checksum
+                                            or p1.weekly.digest(path),
+                                            candidate, 'b' * 64)
+
     def test_installed_wheel_is_checked_before_sampling(self):
         spec = importlib.util.spec_from_file_location('p1', SOURCE)
         p1 = importlib.util.module_from_spec(spec)
