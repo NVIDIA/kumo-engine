@@ -16,6 +16,23 @@ SOURCE = Path(__file__).parents[1] / 'scripts/weekly_b9.py'
 
 
 class RetainedChecks(unittest.TestCase):
+    def test_active_gpu_work_stops_before_model_imports(self):
+        spec = importlib.util.spec_from_file_location('b9', SOURCE)
+        b9 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(b9)
+        with TemporaryDirectory() as directory:
+            args = SimpleNamespace(host_lock=Path(directory) / 'host.lock')
+            with patch.object(b9, 'run_locked',
+                              return_value='completed') as execute:
+                with patch.object(b9.subprocess, 'check_output',
+                                  return_value='123, gpu-a\n'):
+                    with self.assertRaisesRegex(ValueError, 'active GPU'):
+                        b9.run(args)
+                execute.assert_not_called()
+                with patch.object(b9.subprocess, 'check_output',
+                                  return_value=''):
+                    self.assertEqual(b9.run(args), 'completed')
+
     def test_both_calls_must_match_the_retained_reference(self):
         spec = importlib.util.spec_from_file_location('b9', SOURCE)
         b9 = importlib.util.module_from_spec(spec)

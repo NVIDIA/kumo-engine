@@ -127,6 +127,13 @@ def observe_predictions():
 def run(args):
     with args.host_lock.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        active = subprocess.check_output([
+            'nvidia-smi', '--query-compute-apps=pid,gpu_uuid',
+            '--format=csv,noheader,nounits'
+        ], text=True).strip()
+        if active:
+            raise ValueError(
+                'B9 cannot start while the host has active GPU work')
         return run_locked(args)
 
 
