@@ -516,17 +516,104 @@ def ranked_rows(batches, ids, catalog, exclusions, k, raw_limit, *,
                 boundary_ids=boundary_ids, boundary_scores=boundary_scores)
 
 
-def ordered_batches(files, directory):
-    import duckdb
+def ordered_batches(files, directory, *, ranked=True):
+    """Merge Parquet runs with bounded batches and at most 32 open inputs."""
+    import heapq
+    from contextlib import ExitStack, closing
+    from itertools import islice
+    from tempfile import TemporaryDirectory
+
+    import numpy as np
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     directory.mkdir(parents=True, exist_ok=True)
-    with duckdb.connect(config={
-            'memory_limit': '256MB',
-            'threads': 4,
-            'temp_directory': str(directory)
-    }) as db:
-        for batch in db.read_parquet(list(files)).order(
-                'ENTITY, SCORE DESC, CLASS ASC').fetch_record_batch(65536):
-            yield batch.to_pandas()
+    order = [('ENTITY', 'ascending')]
+    if ranked:
+        order += [('SCORE', 'descending'), ('CLASS', 'ascending')]
+    schema, sequence = None, 0
+    with TemporaryDirectory(prefix='parquet-sort-', dir=directory) as name:
+        work = Path(name)
+
+        def spill(tables):
+            nonlocal sequence
+            path = work / f'{sequence}.parquet'
+            sequence += 1
+            with pq.ParquetWriter(path, schema) as writer:
+                for table in tables:
+                    writer.write_table(table, row_group_size=4096)
+            return path
+
+        def rows(path):
+            with pq.ParquetFile(path) as reader:
+                for batch in reader.iter_batches(batch_size=512,
+                                                 use_threads=False):
+                    yield from batch.to_pandas(ignore_metadata=True).itertuples(
+                        index=False, name=None)
+
+        def merge(paths):
+            with ExitStack() as stack:
+                combined = heapq.merge(
+                    *(stack.enter_context(closing(rows(p))) for p in paths),
+                    key=key)
+                while chunk := list(islice(combined, 65536)):
+                    yield pa.Table.from_pandas(
+                        pd.DataFrame.from_records(chunk, columns=schema.names),
+                        schema=schema, preserve_index=False)
+
+        runs = []
+        for path in files:
+            with pq.ParquetFile(path) as reader:
+                for batch in reader.iter_batches(batch_size=65536,
+                                                 use_threads=False):
+                    if schema is None:
+                        schema = batch.schema.remove_metadata()
+                    if (not schema.equals(batch.schema, check_metadata=False) or
+                            not {column
+                                 for column, _ in order} <= set(schema.names)):
+                        raise ValueError('Prediction columns or schemas differ')
+                    for column in ('ENTITY',
+                                   'CLASS') if ranked else ('ENTITY', ):
+                        values = batch.column(schema.get_field_index(column))
+                        if not pa.types.is_integer(
+                                values.type) or values.null_count:
+                            raise ValueError(
+                                'Prediction keys must retain their integer type'
+                            )
+                    if ranked:
+                        scores = batch.column(
+                            schema.get_field_index('SCORE')).to_numpy(
+                                zero_copy_only=False)
+                        if (not pd.api.types.is_numeric_dtype(scores.dtype)
+                                or not np.isfinite(scores).all()):
+                            raise ValueError(
+                                'Prediction scores must be finite numbers')
+                    runs.append(
+                        spill([
+                            pa.Table.from_batches([batch],
+                                                  schema=schema).sort_by(order)
+                        ]))
+        if not runs:
+            return
+        entity = schema.get_field_index('ENTITY')
+        score, item = schema.get_field_index('SCORE'), schema.get_field_index(
+            'CLASS')
+        key = (lambda row: (row[entity], -row[score], row[item])
+               ) if ranked else lambda row: row[entity]
+        while len(runs) > 32:
+            following = []
+            for start in range(0, len(runs), 32):
+                group = runs[start:start + 32]
+                if len(group) == 1:
+                    following.extend(group)
+                    continue
+                following.append(spill(merge(group)))
+                for path in group:
+                    path.unlink()
+            runs = following
+        for table in merge(runs):
+            yield table.to_pandas(ignore_metadata=True)
 
 
 def verify_installed_files(wheel, distribution):

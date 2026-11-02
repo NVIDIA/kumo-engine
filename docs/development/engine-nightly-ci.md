@@ -70,6 +70,10 @@ both outputs. A top-K membership change also requires retained K+1 cutoff
 coordinates on both sides. Missing cutoff evidence or a wider change fails.
 These checks apply to repeated, partial, and reloaded predictions.
 
+PyArrow reads prediction Parquet files in fixed batches. The reader sorts
+temporary Parquet files and merges at most 32 inputs at a time. Temporary files
+stay in scratch and are removed when the reader finishes or closes.
+
 The runner uses public training results, artifact paths, saved bundles, and
 Lightning callbacks. It verifies that the reloaded weights match the selected
 checkpoint. It does not search private fit directories or replace Engine fit

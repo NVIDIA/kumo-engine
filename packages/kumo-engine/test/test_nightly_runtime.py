@@ -85,49 +85,78 @@ class NightlyRuntimeTest(unittest.TestCase):
 
     def test_ranked_sort_spills_without_losing_or_reordering_rows(self):
         import numpy as np
-        import pytest
+        import pyarrow as pa
+        import pyarrow.parquet as pq
 
-        duckdb = pytest.importorskip('duckdb')
-        connect = duckdb.connect
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / 'ranked.parquet'
-            with connect(config={'threads': 4}) as db:
-                db.sql("SELECT i AS ROW_ID, "
-                       "(hash(i)%100000000000)::BIGINT AS ENTITY, "
-                       "(i%500)::BIGINT AS CLASS, "
-                       "(hash(i+2)%1000000)::DOUBLE / 1000000 AS SCORE "
-                       "FROM range(8000000) t(i)").write_parquet(str(source))
+            schema = pa.schema([('ROW_ID', pa.int64()), ('ENTITY', pa.int64()),
+                                ('CLASS', pa.int64()), ('SCORE', pa.float64())])
+            with pq.ParquetWriter(source, schema) as writer:
+                for start in range(0, 8000000, 65536):
+                    rows = np.arange(start, min(start + 65536, 8000000))
+                    writer.write_table(
+                        pa.Table.from_arrays([
+                            rows, (rows * 1103515245 + 12345) % 100000000000,
+                            rows % 500, (rows * 48271 % 1000000) / 1000000
+                        ], schema=schema))
             seen = np.zeros(8000000, dtype=bool)
             count, previous = 0, None
-            # Reproduce the worker's 48-core default with a real DuckDB query.
-            with patch.object(
-                    duckdb, 'connect',
-                    side_effect=lambda *, config: connect(config={
-                        'threads': 48,
-                        **config
-                    })):
-                for frame in nightly.ordered_batches([str(source)],
-                                                     root / 'spill'):
-                    pd.testing.assert_frame_equal(
-                        frame,
-                        frame.sort_values(['ENTITY', 'SCORE', 'CLASS'],
-                                          ascending=[True, False, True]))
-                    first = (int(frame.ENTITY.iloc[0]),
-                             -float(frame.SCORE.iloc[0]),
-                             int(frame.CLASS.iloc[0]))
-                    if previous is not None:
-                        self.assertLessEqual(previous, first)
-                    previous = (int(frame.ENTITY.iloc[-1]),
-                                -float(frame.SCORE.iloc[-1]),
-                                int(frame.CLASS.iloc[-1]))
-                    positions = frame.ROW_ID.to_numpy()
-                    self.assertTrue(
-                        ((positions >= 0) & (positions < len(seen))).all())
-                    seen[positions] = True
-                    count += len(frame)
+            for frame in nightly.ordered_batches([str(source)], root / 'spill'):
+                pd.testing.assert_frame_equal(
+                    frame,
+                    frame.sort_values(['ENTITY', 'SCORE', 'CLASS'],
+                                      ascending=[True, False, True]))
+                first = (int(frame.ENTITY.iloc[0]), -float(frame.SCORE.iloc[0]),
+                         int(frame.CLASS.iloc[0]))
+                if previous is not None:
+                    self.assertLessEqual(previous, first)
+                previous = (int(frame.ENTITY.iloc[-1]),
+                            -float(frame.SCORE.iloc[-1]),
+                            int(frame.CLASS.iloc[-1]))
+                positions = frame.ROW_ID.to_numpy()
+                self.assertTrue(
+                    ((positions >= 0) & (positions < len(seen))).all())
+                seen[positions] = True
+                count += len(frame)
             self.assertEqual(count, 8000000)
             self.assertTrue(seen.all())
+            self.assertEqual(list((root / 'spill').iterdir()), [])
+
+    def test_parquet_merge_keeps_large_keys_and_exact_anchors_and_closes_work(
+            self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frame = pd.DataFrame(
+                dict(
+                    ENTITY=pd.Series(
+                        [2**63 + 3, 2**63 + 1, 2**63 + 3, 2**63 + 1],
+                        dtype='uint64'), CLASS=[4, 9, 2,
+                                                3], SCORE=[.4, .9, .4, .8],
+                    ROW_ID=[0, 1, 2, 3], ANCHOR_TIMESTAMP=pd.to_datetime([
+                        '2024-01-01 00:00:00.000000001',
+                        '2024-01-01 00:00:00.000000002',
+                        '2024-01-01 00:00:00.000000003',
+                        '2024-01-01 00:00:00.000000004'
+                    ])))
+            paths = [root / 'a.parquet', root / 'b.parquet']
+            frame.iloc[::2].to_parquet(paths[0], index=False)
+            frame.iloc[1::2].to_parquet(paths[1], index=False)
+            batches = nightly.ordered_batches([p.as_uri() for p in paths],
+                                              root / 'sort')
+            try:
+                actual = next(batches)
+                self.assertEqual(actual.ROW_ID.tolist(), [1, 3, 2, 0])
+                self.assertEqual(actual.ENTITY.tolist(),
+                                 [2**63 + 1, 2**63 + 1, 2**63 + 3, 2**63 + 3])
+                self.assertEqual(actual.ENTITY.dtype, frame.ENTITY.dtype)
+                self.assertEqual(
+                    actual.ANCHOR_TIMESTAMP.tolist(),
+                    frame.ANCHOR_TIMESTAMP.iloc[[1, 3, 2, 0]].tolist())
+            finally:
+                batches.close()
+            self.assertEqual(list((root / 'sort').iterdir()), [])
 
     def test_reported_recall_uses_all_positives_not_only_k(self):
         truth = pd.DataFrame({'TARGET1': [[1, 2, 3, 4, 5, 6]]})
