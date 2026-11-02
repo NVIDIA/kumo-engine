@@ -162,37 +162,75 @@ def check_learning(candidate, reference):
                              for v in tasks.values()) else 'FAIL', tasks=tasks)
 
 
-def compare_predictions(before, after, *, atol, rtol):
-    """Compare every stored coordinate. Labels and ranks must stay exact."""
-    if not all(finite(v) and v >= 0 for v in (atol, rtol)):
+def compare_predictions(before, after, *, atol, rtol, rank_atol=0.):
+    """Keep IDs and labels exact. Bound any explicitly approved rank swaps."""
+    if not all(finite(v) and v >= 0 for v in (atol, rtol, rank_atol)):
         raise ValueError('Prediction tolerances must be finite and nonnegative')
     ids = before.get('entity_ids', [])
+    ranks, observed_ranks = before.get('ranked_ids'), after.get('ranked_ids')
     if (not ids or len(set(ids)) != len(ids) or ids != after.get('entity_ids')
-            or before.get('ranked_ids') != after.get('ranked_ids')
+            or (ranks is None) != (observed_ranks is None)
+            or rank_atol == 0 and ranks != observed_ranks
             or before.get('decisions') != after.get('decisions')):
         raise ValueError('Prediction population, decisions, or ranks changed')
     left, right = before.get('values', []), after.get('values', [])
     if len(left) != len(ids) or len(right) != len(ids):
         raise ValueError('Prediction population is incomplete')
-    maximum = 0.
-    for a, b in zip(left, right, strict=True):
+    if ranks is not None and (len(ranks) != len(ids)
+                              or len(observed_ranks) != len(ids)):
+        raise ValueError('Prediction population is incomplete')
+    maximum, changed, inversions, maximum_gap = 0., 0, 0, 0.
+    for index, (a, b) in enumerate(zip(left, right, strict=True)):
         if not isinstance(a, list) or not a or not isinstance(
                 b, list) or len(a) != len(b):
             raise ValueError('Prediction coordinates changed')
-        for x, y in zip(a, b, strict=True):
-            if not finite(x) or not finite(y) or abs(x -
-                                                     y) > atol + rtol * abs(x):
+        if not all(finite(v) for v in (*a, *b)):
+            raise ValueError('Prediction values are nonfinite')
+        pairs = zip(a, b, strict=True)
+        if ranks is not None:
+            names, observed_names = ranks[index], observed_ranks[index]
+            if (len(names) != len(a) or len(observed_names) != len(b)
+                    or len(set(names)) != len(names)
+                    or len(set(observed_names)) != len(observed_names)
+                    or set(names) != set(observed_names)):
+                raise ValueError('Prediction ranking membership changed')
+            if any(x < y for row in (a, b) for x, y in zip(row, row[1:])):
+                raise ValueError('Prediction scores do not follow their ranks')
+            observed = dict(zip(observed_names, b, strict=True))
+            if names != observed_names:
+                changed += 1
+                positions = {name: i for i, name in enumerate(observed_names)}
+                for i, first in enumerate(names):
+                    for j in range(i + 1, len(names)):
+                        second = names[j]
+                        if positions[first] > positions[second]:
+                            gap = max(a[i] - a[j],
+                                      observed[second] - observed[first])
+                            if gap > rank_atol:
+                                raise ValueError(
+                                    'Rank swap exceeds the approved score-gap budget'
+                                )
+                            maximum_gap = max(maximum_gap, gap)
+                            inversions += 1
+            pairs = ((value, observed[name])
+                     for name, value in zip(names, a, strict=True))
+        for x, y in pairs:
+            if abs(x - y) > atol + rtol * abs(x):
                 raise ValueError(
                     'Prediction values exceed the approved tolerance')
             maximum = max(maximum, abs(x - y))
     return dict(status='PASS', entities=len(ids), max_abs_difference=maximum,
-                atol=atol, rtol=rtol)
+                atol=atol, rtol=rtol, rank_atol=rank_atol,
+                rank_changed_entities=changed, rank_inversions=inversions,
+                max_reordered_score_gap=maximum_gap)
 
 
-def replay_reference(model_path, stored, load, predict, *, atol, rtol):
+def replay_reference(model_path, stored, load, predict, *, atol, rtol,
+                     rank_atol=0.):
     model = load(model_path)
     observed = predict(model)
-    return compare_predictions(stored, observed, atol=atol, rtol=rtol)
+    return compare_predictions(stored, observed, atol=atol, rtol=rtol,
+                               rank_atol=rank_atol)
 
 
 def check_case_result(row, case_id, wheel, *, candidate):
@@ -258,9 +296,11 @@ def load_manifest(root, expected, *, verify_files=True, profile=None,
             raise ValueError(
                 'Freeze the ranking catalog and prediction limit before fitting'
             )
-        if not all(
-                finite(case['tolerance'][k]) and case['tolerance'][k] >= 0
-                for k in ('atol', 'rtol')):
+        tolerance = case.get('tolerance')
+        if (not isinstance(tolerance, dict)
+                or not {'atol', 'rtol'} <= tolerance.keys()
+                or not tolerance.keys() <= {'atol', 'rtol', 'rank_atol'}
+                or not all(finite(v) and v >= 0 for v in tolerance.values())):
             raise ValueError(
                 'Approve finite prediction tolerances before execution')
         for key in ('snapshot', 'training_table', 'model_plan',

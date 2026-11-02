@@ -27,8 +27,11 @@ feature schema. Time and memory differences remain reports for every task.
 Before each candidate fit, the installed candidate loads that case's approved
 reference model. It predicts the full stored population and compares the output
 with the stored reference predictions. This operation adds no fit. Entity IDs,
-labels, and ranks must match. Scores must stay within the manifest's approved
-absolute and relative tolerances. A public Lightning callback also compares the
+labels, and each ranked set of IDs must match exactly. Scores are compared by ID
+within the manifest's approved absolute and relative tolerances. Rank order stays
+exact unless the manifest explicitly approves a positive `rank_atol`. In that case,
+every reversed pair must have a score gap at or below that budget in both results.
+A public Lightning callback also compares the
 restored weights with the saved checkpoint. Checkpoint-format failures, missing
 rows, changed weights, and excess score drift fail the case. A candidate also reloads its own saved model.
 
@@ -53,7 +56,12 @@ Input artifacts cannot choose a Python module or shell script.
 Each case declares `dataset`, `metric`, `arm`, `seed`, `query`, `gpu_class`,
 `capacity`, and `tolerance`. `gpu_class` contains `compute_capability` and
 `minimum_memory_bytes`. `capacity` contains `memory_bytes` and `scratch_bytes`.
-`tolerance` contains finite nonnegative `atol` and `rtol` values. GPU identifiers
+`tolerance` contains finite nonnegative `atol` and `rtol` values. The optional
+`rank_atol` also requires a finite nonnegative value. Its default is zero, which
+keeps exact ranking order. A positive value only permits close-score permutations
+within the same ranked set. It never permits added, removed, or repeated IDs.
+Ranked scores must remain in descending order. Reference review must approve the
+score and rank budgets separately for each workload. GPU identifiers
 and driver versions are observations. They do not restrict host replacement.
 
 `query` binds the training query. If prediction uses a different frozen query,
@@ -77,8 +85,8 @@ Ranking cases also declare `raw_limit`. The reader sorts raw Parquet by entity,
 descending score, and class. It uses one thread and a 2 GB memory limit, with
 spill outside the evidence tree. It rejects incomplete populations, invalid
 catalog keys, and duplicate coordinates. It keeps the approved public top-K
-behavior when the returned boundary has ties. Reference replay still requires
-the same stored item order and score tolerance.
+behavior when the returned boundary has ties. Reference replay requires the
+same stored top-K membership and the approved score and rank budgets.
 
 All immutable files under the prepared snapshot and staging directories must
 appear in the checksum map and the case's file list. Exclude the native index's
