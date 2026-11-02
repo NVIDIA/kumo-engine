@@ -141,8 +141,8 @@ class NightlyRuntimeTest(unittest.TestCase):
                         '2024-01-01 00:00:00.000000004'
                     ])))
             paths = [root / 'a.parquet', root / 'b.parquet']
-            frame.iloc[::2].to_parquet(paths[0], index=False)
-            frame.iloc[1::2].to_parquet(paths[1], index=False)
+            frame.iloc[:2].to_parquet(paths[0], index=False)
+            frame.iloc[2:].to_parquet(paths[1], index=False)
             batches = nightly.ordered_batches([p.as_uri() for p in paths],
                                               root / 'sort')
             try:
