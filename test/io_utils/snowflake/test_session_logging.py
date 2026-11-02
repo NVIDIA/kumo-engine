@@ -4,10 +4,14 @@
 
 from __future__ import annotations
 
+from threading import local
+from types import SimpleNamespace
 from typing import cast
+from unittest import mock
 
 import pytest
 from snowflake.snowpark import Session
+from snowflake.snowpark._internal.server_connection import ServerConnection
 
 from io_utils import logging
 from io_utils.snowflake import session_logging
@@ -49,8 +53,10 @@ def test_logged_connector_cursor_execute_logs_error(tempdir, caplog):
         with pytest.raises(Exception):
             cur.execute("SELECT * FROM definitely_missing_table")
 
-    assert "operation=cursor.execute status=error" in caplog.text
-    assert "SELECT * FROM definitely_missing_table" not in caplog.text
+    messages = '\n'.join(record.getMessage() for record in caplog.records
+                         if record.name == session_logging.__name__)
+    assert "operation=cursor.execute status=error" in messages
+    assert "SELECT * FROM definitely_missing_table" not in messages
 
 
 @pytest.mark.private_resource('snowflake')
@@ -199,6 +205,34 @@ class _RetryCursor:
 
     def close(self):
         self.closed = True
+
+
+@pytest.mark.parametrize('cursor_storage', ['cold', 'cached', 'legacy'])
+def test_server_connection_wraps_cached_cursor(cursor_storage, caplog):
+    connection = _RetryConnection()
+    connection.session_id = 123
+    connection.is_closed = lambda: False
+    if cursor_storage == 'legacy':
+        server = SimpleNamespace(_conn=connection, _cursor=connection.cursor())
+    else:
+        server = object.__new__(ServerConnection)
+        server._conn = connection
+        server._thread_store = local()
+        server._telemetry_client = mock.Mock()
+        if cursor_storage == 'cached':
+            _ = server._cursor
+
+    wrapped = session_logging.ensure_logged_server_connection(server)
+    caplog.set_level(logging.INFO, logger=session_logging.__name__)
+    cursor = wrapped._cursor
+
+    assert cursor.execute('SELECT 1') == 'ok'
+    assert wrapped._cursor is cursor
+    assert any('operation=cursor.execute status=success' in record.getMessage()
+               and 'query_id=01234567-89ab-cdef-0123-456789abcdef'
+               in record.getMessage()
+               for record in caplog.records
+               if record.name == session_logging.__name__)
 
 
 def test_logged_cursor_retries_retryable_select(monkeypatch):
