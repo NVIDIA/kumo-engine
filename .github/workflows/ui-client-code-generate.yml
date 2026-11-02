@@ -54,16 +54,18 @@ jobs:
             .github/scripts/copied-pr.cjs
             .github/scripts/openapi-pr.cjs
             .github/workflows/ui-client-code-generate.yml
+            packages/kumo-api/**
             rest/app.py
             rest/config/**
             rest/main.py
             rest/routers/**
             rest/scripts/download_schema.py
+            rest/scripts/openapi_routes.py
             rest/utils/routers.py
             ui/src/gen/spec/**
 
       - name: Set up backend packages
-        if: steps.backend-changes.outputs.any_changed == 'true'
+        if: steps.backend-changes.outputs.any_modified == 'true'
         uses: ./.github/actions/setup
         with:
           python-version: "3.14"
@@ -71,7 +73,7 @@ jobs:
           ref: ${{ steps.pr.outputs.head }}
 
       - name: Download openapi.json files
-        if: steps.backend-changes.outputs.any_changed == 'true'
+        if: steps.backend-changes.outputs.any_modified == 'true'
         run: |
           PYTHONPATH="$GITHUB_WORKSPACE" \
             DEPLOY_STAGE=dev_local python -m rest.scripts.download_schema
@@ -79,26 +81,26 @@ jobs:
           jq -e '.paths | length > 0' ui/src/gen/spec/v1_openapi.json
 
       - name: Set up Node.js
-        if: steps.backend-changes.outputs.any_changed == 'true'
+        if: steps.backend-changes.outputs.any_modified == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "22"
 
       - name: Install UI dependencies
-        if: steps.backend-changes.outputs.any_changed == 'true'
+        if: steps.backend-changes.outputs.any_modified == 'true'
         run: |
           cd ui
           npm run install:catalog
           npm ci --ignore-scripts
 
       - name: Run linting and prettier
-        if: steps.backend-changes.outputs.any_changed == 'true'
+        if: steps.backend-changes.outputs.any_modified == 'true'
         run: |
           cd ui
           npm run lint-format-codegen --subdir=spec
 
       - name: Check for schema changes
-        if: steps.backend-changes.outputs.any_changed == 'true'
+        if: steps.backend-changes.outputs.any_modified == 'true'
         id: openapi-changes
         run: |
           if git diff --quiet --exit-code -- ui/src/gen/spec/; then
@@ -120,7 +122,7 @@ jobs:
       - name: Summarize schema analysis
         env:
           SCHEMA_CHANGED: ${{ steps.openapi-changes.outputs.changed }}
-          API_CHANGED: ${{ steps.backend-changes.outputs.any_changed }}
+          API_CHANGED: ${{ steps.backend-changes.outputs.any_modified }}
         run: |
           if [[ "$SCHEMA_CHANGED" == true ]]; then
             echo 'OpenAPI schemas need regeneration. Download the schema patch from this run.' >> "$GITHUB_STEP_SUMMARY"
@@ -132,6 +134,7 @@ jobs:
           echo "Analyzed commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update the OpenAPI PR comment
+        if: steps.openapi-changes.outputs.changed != ''
         env:
           SCHEMA_CHANGED: ${{ steps.openapi-changes.outputs.changed }}
         uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9

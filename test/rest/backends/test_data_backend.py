@@ -440,18 +440,21 @@ def _validate_public_s3_dataset(path: str):
         raise
 
 
+@pytest.mark.private_resource('aws')
 def test_csv_connector():
     valid_ret = _validate_public_s3_dataset(
         's3://kumo-public-datasets/netflix_integ_test_csv/')
     assert valid_ret.count_total == 3
 
 
+@pytest.mark.private_resource('aws')
 def test_parquet_connector():
     valid_ret = _validate_public_s3_dataset(
         's3://kumo-public-datasets/test_parquet/')
     assert valid_ret.count_total == 13
 
 
+@pytest.mark.private_resource('aws')
 def test_csv_parquet_connector():
     valid_ret = _validate_public_s3_dataset(
         's3://kumo-public-datasets/csv_parquet/')
@@ -460,6 +463,7 @@ def test_csv_parquet_connector():
     assert valid_ret.count_ignored == 0
 
 
+@pytest.mark.private_resource('aws')
 def test_large_number_files():
     valid_ret = _validate_public_s3_dataset(
         's3://kumo-public-datasets/test_1000_tables/')
