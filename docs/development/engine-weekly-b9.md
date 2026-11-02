@@ -18,8 +18,9 @@ private `kumo_core` methods or disable product memory recovery.
 
 A pass needs one complete GPU receipt for the first call and two receipts for
 the second call. The second call must use distinct processes and GPU identifiers.
-Both calls must retain the full prediction population. Entity IDs and ranks must
-match, and scores must stay within P2's approved `atol` and `rtol` values. A
+Both calls must retain the full prediction population. Each call must match the
+stored P2 predictions. The two calls must also match each other. Entity IDs and
+ranks must match, and scores must stay within P2's approved `atol` and `rtol` values. A
 missing receipt, CPU fallback, changed checkpoint, partial population, or excess
 prediction difference fails the run. Time remains a report.
 
@@ -32,9 +33,29 @@ bundle described in [the weekly guide](engine-weekly-ci.md).
 
 The shared host lock covers input hashing, runtime setup, both calls, and the final input audit. The runner
 keeps original models, raw outputs, canonical predictions, device receipts, and
-failures. It removes only its fresh scratch directory. This separate check has
-no scheduled job. Two-device capacity and the spawn callback path need a real
-GPU run before the change is ready for use.
+failures. It removes only its fresh scratch directory.
+
+The weekly workflow adds a separate `b9` job for manual candidate runs. It waits
+for P1 to finish before reserving the shared host. It runs after a P1 failure
+when the CPU checks, configuration, and wheel build succeeded. This preserves
+independent evidence for each check. It downloads the same candidate wheel,
+makes sure that its build receipt matches, and installs it in a fresh environment.
+The job exposes exactly two GPUs and has a 120-minute timeout. Reference-preparation
+mode skips it. There is no cron trigger.
+
+Add `b9` to `KUMO_ENGINE_WEEKLY_CONFIG` after reference review. It requires
+`runner` with the existing `group` and `labels`, absolute `input_root`,
+`reference_root`, `host_lock`, and `work_root`, plus `manifest_sha256` and
+`reference_sha256`. Use the same host lock as other workloads on that host.
+The job does not create a VM or approve a reference. Missing bindings stop
+configuration before prediction starts.
+
+The job uploads results, device receipts, raw Parquet, and canonical predictions
+as a separate `weekly-b9` artifact. It then removes its fresh environment and
+work directory. It preserves immutable inputs and the original reference models.
+A failed B9 job fails the workflow. P2 is a fixed performance workload without
+reserved quality answers. B9 therefore compares predictions rather than a quality
+score. Elapsed time remains a report until a separate timing policy is approved.
 
 The focused CPU guard runs with:
 

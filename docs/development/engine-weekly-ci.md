@@ -35,7 +35,8 @@ rows, changed weights, and excess score drift fail the case. A candidate also re
 P1 means five CPU sampling operations on commerce/100M. B9 means prediction with
 the retained P2 model on one GPU and then two matching GPUs. The separate
 [P1 job](engine-weekly-p1.md) follows the eleven cases during a manual candidate run.
-B9 remains a separate change.
+The separate [B9 job](engine-weekly-b9.md) follows P1. Each job uses the same
+candidate wheel and uploads its own evidence.
 
 ## Inputs and reference approval
 
