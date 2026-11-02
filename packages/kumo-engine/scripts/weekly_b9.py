@@ -27,6 +27,16 @@ _SPEC.loader.exec_module(worker)
 weekly = worker.weekly
 
 
+def check_predictions(reference, one_gpu, two_gpu, *, atol, rtol):
+    return dict(
+        one_gpu=weekly.compare_predictions(reference, one_gpu, atol=atol,
+                                           rtol=rtol),
+        two_gpu=weekly.compare_predictions(reference, two_gpu, atol=atol,
+                                           rtol=rtol),
+        worker_counts=weekly.compare_predictions(one_gpu, two_gpu, atol=atol,
+                                                 rtol=rtol))
+
+
 def check_devices(records, count, checkpoint):
     if (len(records) != count or {r['device']
                                   for r in records} != set(range(count))
@@ -228,8 +238,10 @@ def run_locked(args):
                 dict(workers=count, seconds=time.monotonic() - before,
                      devices=proof))
             weekly.save(args.output / 'b9-result.json', report)
-        report['comparison'] = weekly.compare_predictions(
-            *predictions, **case['tolerance'])
+        stored = weekly.read(args.reference_root /
+                             'cases/P2-fixed/predictions.json')
+        report['comparison'] = check_predictions(stored, *predictions,
+                                                 **case['tolerance'])
         report.update(status='PASS', manifest_sha256=args.manifest_sha256,
                       reference_sha256=args.reference_sha256)
         weekly.load_reference(args.reference_root, args.reference_sha256,

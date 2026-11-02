@@ -16,6 +16,28 @@ SOURCE = Path(__file__).parents[1] / 'scripts/weekly_b9.py'
 
 
 class RetainedChecks(unittest.TestCase):
+    def test_both_calls_must_match_the_retained_reference(self):
+        spec = importlib.util.spec_from_file_location('b9', SOURCE)
+        b9 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(b9)
+        reference = dict(entity_ids=[10, 20], ranked_ids=[[3, 4], [4, 5]],
+                         values=[[.8, .7], [.9, .6]])
+        candidate = copy.deepcopy(reference)
+        candidate['values'][0][0] += .001
+        result = b9.check_predictions(reference, candidate, reference,
+                                      atol=.002, rtol=0.)
+        self.assertEqual(set(result), {'one_gpu', 'two_gpu', 'worker_counts'})
+        drifted = copy.deepcopy(reference)
+        drifted['values'][0][0] += .01
+        # Matching each other does not excuse both calls drifting from the reference.
+        with self.assertRaises(ValueError):
+            b9.check_predictions(reference, drifted, drifted, atol=.002,
+                                 rtol=0.)
+        candidate['ranked_ids'][0].reverse()
+        with self.assertRaises(ValueError):
+            b9.check_predictions(reference, candidate, candidate, atol=.002,
+                                 rtol=0.)
+
     def test_retained_prediction_loads_current_wheel_helpers(self):
         spec = importlib.util.spec_from_file_location('b9', SOURCE)
         b9 = importlib.util.module_from_spec(spec)
