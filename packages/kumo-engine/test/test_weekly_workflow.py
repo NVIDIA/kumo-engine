@@ -48,6 +48,12 @@ class WorkflowChecks(unittest.TestCase):
                         host_lock=str(root / 'host.lock'),
                         work_root=str(root / 'p1-work'),
                         manifest_sha256='c' * 64, reference_sha256='d' * 64))
+            config['b9'] = dict(runner=profile['runner'], input_root=str(root),
+                                reference_root=str(root / 'b9-reference'),
+                                host_lock=str(root / 'host.lock'),
+                                work_root=str(root / 'b9-work'),
+                                manifest_sha256='e' * 64,
+                                reference_sha256='f' * 64)
             environment = dict(os.environ, MODE='candidate',
                                GITHUB_OUTPUT=str(root / 'outputs'))
             environment['WEEKLY_CONFIG'] = json.dumps(config)
@@ -63,6 +69,7 @@ class WorkflowChecks(unittest.TestCase):
                 [v['profile'] for v in json.loads(output['matrix'])['include']],
                 ['rtx', 'scale'])
             self.assertEqual(json.loads(output.get('p1', '{}')), config['p1'])
+            self.assertEqual(json.loads(output.get('b9', '{}')), config['b9'])
             del config['profiles']['scale']
             environment['WEEKLY_CONFIG'] = json.dumps(config)
             rejected = subprocess.run(
@@ -115,6 +122,53 @@ class WorkflowChecks(unittest.TestCase):
                 wheel.write_bytes(b'changed wheel')
                 with self.assertRaises(ValueError):
                     exec(compile(source, 'p1-workflow', 'exec'), {})
+                self.assertEqual(len(commands), 1)
+
+    def test_b9_job_uses_the_shared_wheel_and_retained_reference(self):
+        workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+        job = workflow['jobs'].get('b9')
+        self.assertIsNotNone(job, 'The manual weekly workflow must execute B9')
+        [step] = [
+            s for s in job['steps']
+            if s.get('name') == 'Run retained P2 prediction on one and two GPUs'
+        ]
+        source = '\n'.join(step['run'].splitlines()[1:-1])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wheels = root / 'weekly-b9-wheel'
+            wheels.mkdir()
+            wheel = wheels / 'candidate.whl'
+            wheel.write_bytes(b'candidate wheel')
+            checksum = hashlib.sha256(wheel.read_bytes()).hexdigest()
+            fixtures.weekly.save(
+                wheels / 'build.json',
+                dict(revision='a' * 40, tree='b' * 40, version='2.0.0',
+                     wheel_sha256=checksum))
+            config = dict(input_root=str(root / 'inputs'),
+                          reference_root=str(root / 'approved-models'),
+                          host_lock=str(root / 'shared.lock'),
+                          manifest_sha256='c' * 64, reference_sha256='d' * 64)
+            environment = dict(RUNNER_TEMP=str(root),
+                               WEEKLY_B9_ROOT=str(root / 'job'),
+                               B9_CONFIG=json.dumps(config))
+            commands = []
+            with patch.dict(os.environ, environment), patch.object(
+                    subprocess, 'run', side_effect=lambda command, **kwargs:
+                    commands.append(command)):
+                exec(compile(source, 'b9-workflow', 'exec'), {})
+                [command] = commands
+                arguments = dict(zip(command[3::2], command[4::2]))
+                self.assertEqual(arguments['--reference-root'],
+                                 config['reference_root'])
+                self.assertEqual(arguments['--reference-sha256'], 'd' * 64)
+                self.assertEqual(arguments['--manifest-sha256'], 'c' * 64)
+                self.assertEqual(arguments['--host-lock'], config['host_lock'])
+                self.assertEqual(arguments['--wheel'], str(wheel))
+                self.assertEqual(arguments['--wheel-sha256'], checksum)
+                self.assertEqual(arguments['--version'], '2.0.0')
+                wheel.write_bytes(b'changed wheel')
+                with self.assertRaises(ValueError):
+                    exec(compile(source, 'b9-workflow', 'exec'), {})
                 self.assertEqual(len(commands), 1)
 
     def test_admission_rejects_a_different_gpu_class_before_fitting(self):
