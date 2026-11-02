@@ -400,3 +400,37 @@ def test_a_writer_that_fails_to_open_keeps_the_old_file(
     gc.collect()
     assert _read(fs, 'root/a.bin') == b'preserve-me'
     assert os.listdir(tmp_path) == []
+
+
+@pytest.mark.parametrize('newer_commits_first', [True, False])
+def test_overlapping_writers_on_one_path_never_break_each_other(
+        store, newer_commits_first):
+    handler, fs = store
+    older = fs.open_output_stream('root/a.bin')
+    older.write(b'o' * 19)
+    newer = fs.open_output_stream('root/a.bin')
+    newer.write(b'n' * 21)
+    first, second = (newer, older) if newer_commits_first else (older, newer)
+    first.close()
+    older_rest = b'o' * 18 if newer_commits_first else b''
+    if older_rest:
+        older.write(older_rest)
+    second.close()
+    handler._forget('root/a.bin')
+    assert _read(fs, 'root/a.bin') == b'n' * 21
+    assert fs.get_file_info('root/a.bin').size == 21
+
+
+def test_a_committed_generation_with_missing_parts_is_skipped(store):
+    handler, fs = store
+    _write(fs, 'root/a.bin', b'1' * (2 * PART))
+    (good, _), = _generations(handler).items()
+    newer = good.rsplit('/', 1)[0] + '/99999999999999999999-ffffffff'
+    handler.objects[f'{newer}/00001'] = b'2' * PART
+    handler.objects[f'{newer}/_SUCCESS'] = b''
+    handler._forget('root/a.bin')
+    assert _read(fs, 'root/a.bin') == b'1' * (2 * PART)
+    for name in [n for n in handler.objects if n.startswith(good + '/')]:
+        del handler.objects[name]
+    handler._forget('root/a.bin')
+    assert fs.get_file_info('root/a.bin').type is FileType.NotFound

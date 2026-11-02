@@ -187,17 +187,19 @@ class ChunkedFileHandler(FileSystemHandler):
 
 def _logical_parts(objects: Dict[str, int],
                    directory: str) -> Optional[List[Tuple[str, int]]]:
-    committed = [
+    committed = sorted({
         posixpath.dirname(path) for path in objects
         if posixpath.basename(path) == DONE
         and posixpath.dirname(posixpath.dirname(path)) == directory
-    ]
-    if not committed:
-        return None
-    generation = max(committed)
-    return sorted((path, size) for path, size in objects.items()
-                  if posixpath.dirname(path) == generation
-                  and posixpath.basename(path) != DONE)
+    }, reverse=True)
+    for generation in committed:
+        parts = sorted((path, size) for path, size in objects.items()
+                       if posixpath.dirname(path) == generation
+                       and posixpath.basename(path) != DONE)
+        if [posixpath.basename(path) for path, _ in parts] == [
+                f'{index:05d}' for index in range(len(parts))]:
+            return parts
+    return None
 
 
 def _logical_files(objects: Dict[str, int]) -> Dict[str, int]:
@@ -396,12 +398,16 @@ class _Writer(io.RawIOBase):
         self._upload(f'{self._chunks}/{DONE}')
         if self._handler._size(self._path) is not None:
             self._handler._remove(self._path, tree=False)
-        stale = {
-            posixpath.dirname(path)
-            for path in self._handler._list(self._path + CHUNKS)
-        } - {self._chunks}
-        for generation in stale:
-            self._handler._remove(generation, tree=True)
+        self._drop_older()
+
+    def _drop_older(self) -> None:
+        objects = self._handler._list(self._path + CHUNKS)
+        for generation in {
+                posixpath.dirname(path) for path in objects
+                if posixpath.basename(path) == DONE
+        }:
+            if generation < self._chunks:
+                self._handler._remove(generation, tree=True)
 
     def _flush_part(self) -> None:
         self._upload(f'{self._chunks}/{self._parts:05d}')
@@ -432,11 +438,12 @@ class _Writer(io.RawIOBase):
             if self._failed:
                 _abandon(self._plain)
                 _abandon(self._part, close=True)
+                with contextlib.suppress(Exception):
+                    self._handler._remove(self._chunks, tree=True)
             elif self._plain is not None:
                 self._plain.close()
                 self._plain = None
-                if self._handler._list(self._path + CHUNKS):
-                    self._handler._remove(self._path + CHUNKS, tree=True)
+                self._drop_older()
             elif self._part is not None:
                 self._part.close()
                 self._part = None
@@ -446,8 +453,7 @@ class _Writer(io.RawIOBase):
                 self._commit_parts()
             else:
                 self._upload(self._path)
-                if self._handler._list(self._path + CHUNKS):
-                    self._handler._remove(self._path + CHUNKS, tree=True)
+                self._drop_older()
         finally:
             self._handler._forget(self._path)
             if self._spool is not None:
