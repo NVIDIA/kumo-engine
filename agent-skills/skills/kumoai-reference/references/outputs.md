@@ -29,18 +29,32 @@ existence and access first.
 
 ```python
 import kumo.engine as kumo
-from kumoapi.jobs import PredictionArtifactType, WriteMode
+from kumoapi.jobs import MetadataField, PredictionArtifactType, WriteMode
 
+# APPEND only; JOB_TIMESTAMP alone for a query with no time window.
+RUN_COLUMNS = [MetadataField.JOB_TIMESTAMP, MetadataField.ANCHOR_TIMESTAMP]
 output = kumo.PredictionOutputConfig(
     connector=output_connector,
     artifact_type=PredictionArtifactType.PREDICTIONS,
     table_name=OUTPUT_TABLE, write_mode=WRITE_MODE,
+    extra_fields=RUN_COLUMNS if WRITE_MODE == WriteMode.APPEND else [],
 )
 written = trainer.predict(
     population, snapshot=snapshot, output_config=output, **PREDICT_OPTIONS,
 )
 print(written.num_rows, written.files)
 ```
+
+**APPEND rows say which run wrote them.** An APPEND write adds `JOB_TIMESTAMP` (when the run
+started) and `ANCHOR_TIMESTAMP` (the time its predictions are for), so the table's history can be
+ordered and filtered by run, and a retried run shows as a second `JOB_TIMESTAMP`. A query with no
+time window has no anchor: pass `JOB_TIMESTAMP` alone, or the write fails after scoring.
+
+The write never adds a column to an existing table. When an APPEND destination already exists,
+read its columns before generating the artifact. If it lacks either column, a run would fail at
+the write, after training and scoring. Say so at the gate and let the user pick: add the missing
+columns (`ALTER TABLE … ADD COLUMN`, type `TIMESTAMP_NTZ`; earlier rows hold nulls), a new table
+the first run creates, or OVERWRITE. Adding columns is a write, confirmed like any other.
 
 The exact table name is used; no suffix is appended. Quote case-sensitive identifiers through
 Snowpark's identifier handling. Read back, with the session taken in the first cell
