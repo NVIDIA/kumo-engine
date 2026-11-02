@@ -293,11 +293,13 @@ run.id, run.bundle_id, run.snapshot_id, run.scored_rows, run.skipped_rows
 - Entities the snapshot does not hold are skipped and counted (`run.skipped_rows`, the `pred/skipped_share` metric), never refused.
 - A scoring job needs no `Graph` code: `GraphSnapshot.load_from_connector(cfg, id=...)` and `Trainer.load_from_connector(cfg, ...)`, then `predict`. It warns when the snapshot was taken of a different graph than the model's, naming the schema changes (tables, columns, types, keys, edges); under `on_error="raise"` it raises instead, before scoring.
 
+**Two ways to score.** `Trainer.predict` under `kumo.MLOps` is the canonical path: it writes a prediction run and its provenance under the artifact root, which `score_drift` and `evaluate` read. The platform adapters, the MLflow pyfunc's `predict` on a DataFrame (below) and a warehouse's batch call, return scores but record no Kumo prediction run, so there is nothing for `score_drift` or `evaluate` to read. To monitor scores, produce them with `Trainer.predict`.
+
 **Scheduled jobs:** [`examples/mlops`](../../../examples/mlops/README.md) has a fit job and a score job with Databricks Jobs, SageMaker Pipelines and Snowflake Tasks wiring.
 
 ### MLflow pyfunc
 
-A model registered through `MlflowTracking` is an MLflow pyfunc: it serves with `mlflow.pyfunc.load_model(uri)`, `spark_udf` and Model Serving.
+A model registered through `MlflowTracking` is also an MLflow pyfunc. It is a platform adapter: a way to load and score a registered Kumo model through MLflow's model API (`mlflow.pyfunc.load_model(uri)`, `spark_udf`, or `mlflow models serve`). It does not replace `Trainer.predict`, the batch prediction API. It is not a low-latency online service: each call scores the rows it is given against a snapshot.
 
 ```python
 with cfg.tracking.client():        # MLflow's own calls reach the tracker's server, as its identity
@@ -311,7 +313,7 @@ scores = model.predict(pd.DataFrame({"ENTITY": [1, 2, 3]}), params={
 - Each replica loads a snapshot on its first `predict` with that URI and keeps it. `log_model(trainer, snapshot=..., serving_snapshot=...)` logs a model whose replicas load that snapshot at startup and use it when no `snapshot` param is given; `serving_snapshot` takes a URI, or a `GraphSnapshot` or snapshot id stored under the block's artifact root.
 - Snapshot URIs: `s3://`, `gs://`, `file://` or a local path, read with the ambient credentials. A `/Volumes/...` path off a Databricks cluster, or a stage path, is read through `model_config={"assets_from": connector}` (below), e.g. the connector of a `(connector, "/Volumes/...")` root.
 - A model with stored assets (word vectors for text columns) on a volume, stage or bucket reads them, and snapshots there, with the identity it is given: `mlflow.pyfunc.load_model(uri, model_config={"assets_from": connector})`, a connector for that store with its credentials; an asset it cannot find raises, naming this option.
-- Serving needs an image with kumo-engine installed: `mlflow models serve -m <model dir> --env-manager local`. Its pip requirement is `kumo-engine[s3,gcs]` of the same version (plus `[text]` for text columns).
+- `mlflow models serve` needs an image with kumo-engine installed: `mlflow models serve -m <model dir> --env-manager local`. Its pip requirement is `kumo-engine[s3,gcs]` of the same version (plus `[text]` for text columns).
 
 ### Batch inference in Snowflake
 
