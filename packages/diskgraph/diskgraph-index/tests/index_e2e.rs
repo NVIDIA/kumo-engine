@@ -579,10 +579,8 @@ fn truncates_large_node_without_sort_key() {
         }])
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
-    let segments0 = reader
-        .edges_for_node(0)
-        .unwrap()
-        .relation_segments()
+    let view_segments0 = reader.edges_for_node(0).unwrap();
+    let segments0 = view_segments0.relation_segments()
         .unwrap();
     let seg = &segments0[0];
     let entry_bytes = seg.layout.entry_bytes as u64;
@@ -608,10 +606,8 @@ fn truncates_large_node_without_sort_key() {
         assert_eq!(built.build_stats.truncated_edges_total, 0);
     }
     // Next node should still decode correctly.
-    let segments1 = reader
-        .edges_for_node(1)
-        .unwrap()
-        .relation_segments()
+    let view_segments1 = reader.edges_for_node(1).unwrap();
+    let segments1 = view_segments1.relation_segments()
         .unwrap();
     assert_eq!(segments1[0].count, 1);
     let decoded1 = decode_relation(&reader, 1, 0);
@@ -667,10 +663,8 @@ fn truncates_large_node_with_sort_key() {
         }])
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
-    let segments0 = reader
-        .edges_for_node(0)
-        .unwrap()
-        .relation_segments()
+    let view_segments0 = reader.edges_for_node(0).unwrap();
+    let segments0 = view_segments0.relation_segments()
         .unwrap();
     let seg0 = &segments0[0];
     let entry_bytes = seg0.layout.entry_bytes as u64;
@@ -753,10 +747,8 @@ fn selects_wider_offsets_for_large_edge_lists() {
         .unwrap();
 
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
-    let segments = reader
-        .edges_for_node(0)
-        .unwrap()
-        .relation_segments()
+    let view_segments = reader.edges_for_node(0).unwrap();
+    let segments = view_segments.relation_segments()
         .unwrap();
     let entry_bytes = segments[0].layout.entry_bytes as u64;
     let required =
@@ -1120,10 +1112,8 @@ fn truncates_large_node_multi_relation() {
         ])
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
-    let segments = reader
-        .edges_for_node(0)
-        .unwrap()
-        .relation_segments()
+    let view_segments = reader.edges_for_node(0).unwrap();
+    let segments = view_segments.relation_segments()
         .unwrap();
     let seg_a = &segments[0];
     let seg_b = &segments[1];
@@ -1703,22 +1693,16 @@ fn builder_writes_node_data() {
         .unwrap();
 
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), true).unwrap();
-    let data0 = reader
-        .edges_for_node(0)
-        .unwrap()
-        .node_data()
+    let view_data0 = reader.edges_for_node(0).unwrap();
+    let data0 = view_data0.node_data()
         .unwrap()
         .unwrap();
-    let data1 = reader
-        .edges_for_node(1)
-        .unwrap()
-        .node_data()
+    let view_data1 = reader.edges_for_node(1).unwrap();
+    let data1 = view_data1.node_data()
         .unwrap()
         .unwrap();
-    let data2 = reader
-        .edges_for_node(2)
-        .unwrap()
-        .node_data()
+    let view_data2 = reader.edges_for_node(2).unwrap();
+    let data2 = view_data2.node_data()
         .unwrap()
         .unwrap();
     assert_eq!(data0, &[1, 2]);

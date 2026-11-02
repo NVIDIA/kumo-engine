@@ -150,6 +150,7 @@ pub struct ResolveColumnSpec {
 
 #[derive(Clone)]
 pub struct IngestOptions {
+    pub incremental: Option<crate::incremental::IncrementalConfig>,
     pub profile_dir: Option<PathBuf>,
     pub progress: Option<ProgressCallback>,
     pub parallel: bool,
@@ -186,6 +187,7 @@ pub struct IngestOptions {
 impl Default for IngestOptions {
     fn default() -> Self {
         Self {
+            incremental: None,
             profile_dir: None,
             progress: None,
             parallel: true,

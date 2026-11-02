@@ -405,6 +405,7 @@ fn ingest_parquet_with_edges_and_rowpack() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
+            incremental: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -646,6 +647,7 @@ fn ingest_parquet_multi_file_table_with_two_shards() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
+            incremental: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -775,6 +777,7 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let options = IngestOptions {
+        incremental: None,
         profile_dir: None,
         progress: None,
         parallel: true,
@@ -941,6 +944,7 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
+            incremental: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -1057,6 +1061,7 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let options = IngestOptions {
+        incremental: None,
         profile_dir: None,
         progress: None,
         parallel: true,
@@ -1145,6 +1150,7 @@ fn ingest_pk_map_header_has_expected_format() -> Result<()> {
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let options = IngestOptions {
+        incremental: None,
         profile_dir: None,
         progress: None,
         parallel: true,
@@ -1345,6 +1351,7 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
+            incremental: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -1631,6 +1638,7 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
+            incremental: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -1669,7 +1677,8 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
         .iter()
         .position(|rel| rel.name == "edge_Click_src_to_dst")
         .ok_or_else(|| anyhow!("missing edge_Click_src_to_dst relation"))?;
-    let segments = user_table.edges_for_node(0)?.relation_segments()?;
+    let edges = user_table.edges_for_node(0)?;
+    let segments = edges.relation_segments()?;
     let layout = &segments[rel_idx].layout;
     let dst_bytes = (layout.dst_bits as usize).div_ceil(8);
     assert!(
@@ -2162,6 +2171,7 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
+            incremental: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -2266,6 +2276,7 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
+            incremental: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -4189,6 +4200,7 @@ fn ingest_survives_empty_shards() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
+            incremental: None,
             profile_dir: None,
             progress: None,
             parallel: true,

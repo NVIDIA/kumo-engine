@@ -595,6 +595,11 @@ impl DiskGraphEngine {
     }
 
     pub fn load(path: &Path, random_seed: Option<u64>, num_threads: Option<usize>) -> Result<Self> {
+        if path.join(diskgraph_index::delta::MANIFEST).exists() {
+            let reader = diskgraph_index::graph::GraphIndexReader::open(&path.join("index_metadata.json"), path)
+                .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
+            return Self::from_reader(Arc::new(reader), random_seed, num_threads);
+        }
 
         let metadata_path = path.join("index_metadata.json");
         let metadata_bytes = std::fs::read(&metadata_path)
@@ -2473,7 +2478,7 @@ impl DiskGraphEngine {
                 let unique_ids: Vec<u64> = sorted_pairs.into_iter().map(|x| x.0).collect();
 
                 // 5. Fetch and Decode ONLY unique IDs
-                let mut raw_rows = Vec::with_capacity(unique_ids.len());
+                let mut views = Vec::with_capacity(unique_ids.len());
                 let mut last_shard_idx = 0;
 
                 for &global_id in &unique_ids {
@@ -2489,10 +2494,13 @@ impl DiskGraphEngine {
                     let local_id = global_id - shard.min_id;
                     let edges_view = shard
                         .reader
-                        .edges_for_node(local_id)
+                        .features_for_node(local_id)
                         .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
-                    let data = edges_view
+                    views.push(edges_view);
+                }
+                let raw_rows = views.iter().zip(&unique_ids).map(|(view, global_id)| {
+                    view
                         .node_data()
                         .map_err(|e| EngineError::DataCorruption(e.to_string()))?
                         .ok_or_else(|| {
@@ -2500,9 +2508,8 @@ impl DiskGraphEngine {
                                 "node {} has no feature data",
                                 global_id
                             ))
-                        })?;
-                    raw_rows.push(data);
-                }
+                        })
+                }).collect::<Result<Vec<_>>>()?;
 
                 let unique_batch = decoder
                     .decode_batch_to_arrow::<&[u8]>(&raw_rows, col_indices)
@@ -2965,7 +2972,7 @@ impl DiskGraphEngine {
                 .map(|(shard_idx, (mut shard_nodes, mut local_raw_edges))| {
                     local_raw_edges.clear();
                     if shard_nodes.is_empty() {
-                        return local_raw_edges;
+                        return Ok(local_raw_edges);
                     }
                     let shard = &shards[shard_idx];
 
@@ -2975,23 +2982,16 @@ impl DiskGraphEngine {
                         a.global_id.cmp(&b.global_id).then(a.seed_index.cmp(&b.seed_index))
                     });
 
-                    let mut current_segments = Vec::new();
-                    let mut last_id = None;
-
-                    // Thread-local scratch
+                    // Process consecutive seeds for one node against one parsed view.
                     let mut dst_scratch = Vec::with_capacity(128);
                     let mut key_scratch = Vec::with_capacity(128);
-
-                    for node in shard_nodes {
-                        // HUB DEDUPING
-                        if last_id != Some(node.global_id) {
-                            let local_id = node.global_id - shard.min_id;
-                            if let Ok(edges_view) = shard.reader.edges_for_node(local_id) {
-                                current_segments = edges_view.relation_segments().unwrap_or_default();
-                            }
-                            last_id = Some(node.global_id);
-                        }
-
+                    for nodes in shard_nodes.chunk_by(|a, b| a.global_id == b.global_id) {
+                        let local_id = nodes[0].global_id - shard.min_id;
+                        let view = shard.reader.edges_for_node(local_id)
+                            .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
+                        let current_segments = view.relation_segments()
+                            .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
+                        for node in nodes {
                         let type_local_map = self
                             .local_to_merged_rel
                             .get(src_type_id)
@@ -3043,10 +3043,11 @@ impl DiskGraphEngine {
                             }
                         }
                     }
-                    local_raw_edges
+                    }
+                    Ok::<_, EngineError>(local_raw_edges)
                 })
-                .collect()
-            );
+                .collect::<Result<Vec<_>>>()
+            )?;
 
             if self.per_seed_recording(fused) {
                 self.commit_edges(layer_idx, &raw_edges_results, state, output)?;

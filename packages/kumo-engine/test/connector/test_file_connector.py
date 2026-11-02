@@ -58,7 +58,7 @@ def test_missing_root_names_local_directory(tmp_path):
     assert 'bucket' not in message and 'prefix' not in message
 
 
-def test_public_graph_snapshot(local, tmp_path):
+def test_public_graph_snapshot(local, tmp_path, monkeypatch):
     connector, root = local
     original_mtime = (root / 'users.csv').stat().st_mtime
     assert connector.table_names() == ['events', 'users']
@@ -69,13 +69,24 @@ def test_public_graph_snapshot(local, tmp_path):
         edges=[Edge(src_table='events', fkey='user_id', dst_table='users')])
     graph.validate()
     snapshot = graph.snapshot()
-    assert graph.snapshot().id == snapshot.id
+    original_files = {p.relative_to(snapshot.index_path): p.read_bytes()
+                      for p in snapshot.index_path.rglob('*') if p.is_file()}
+    with monkeypatch.context() as patch:
+
+        def unexpected_stage(*args, **kwargs):
+            pytest.fail('An unchanged snapshot must not stage source tables')
+
+        patch.setattr(connector.source_backend, 'prepare_ingest',
+                      unexpected_stage)
+        assert graph.snapshot().id == snapshot.id
     (root / 'users.csv').write_text('id,name\n1,Alice\n2,Bob\n3,Charlie\n')
-    # Local source versions intentionally use whole-second modification
-    # times. Model a later source update instead of depending on test runtime
-    # to cross that boundary.
-    os.utime(root / 'users.csv', (original_mtime + 2, original_mtime + 2))
+    # Restoring the timestamp must not conceal changed source bytes.
+    os.utime(root / 'users.csv', (original_mtime, original_mtime))
     assert graph.snapshot().id != snapshot.id
+    assert original_files == {
+        p.relative_to(snapshot.index_path): p.read_bytes()
+        for p in snapshot.index_path.rglob('*') if p.is_file()
+    }
     other = tmp_path / 'other.root'
     other.mkdir()
     (other / 'users.csv').write_text((root / 'users.csv').read_text())
@@ -272,7 +283,7 @@ def test_sink_escape_and_bundle_copy(local, tmp_path, destination):
                                         path='missing')
 
 
-def test_dot_names_metadata_stamp_and_permissions(local, tmp_path):
+def test_dot_names_content_stamp_and_permissions(local, tmp_path):
     connector, root = local
     dotted = root / 'users.v1.csv'
     dotted.write_text('id,name\n1,Alice\n')
@@ -283,7 +294,7 @@ def test_dot_names_metadata_stamp_and_permissions(local, tmp_path):
     dotted.write_text('id,name\n1,Other\n')
     os.utime(dotted, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     assert connector.source_backend.get_data_version(connector,
-                                                     'users.v1') == version
+                                                     'users.v1') != version
     destination = tmp_path / 'readonly'
     destination.mkdir()
     output = FileConnector(root_dir=str(destination))
@@ -604,3 +615,65 @@ def test_partitioned_source_changes_invalidate_graph_snapshot(tmp_path, change):
     assert updated.id != snapshot.id
     assert updated.index_path != snapshot.index_path
     assert snapshot.index_path.exists()
+
+
+def test_staging_uses_content_version_and_rejects_stale_version(
+        local, tmp_path):
+    connector, root = local
+    backend = connector.source_backend
+    version = backend.get_data_version(connector, 'users')
+    staged = backend.prepare_ingest(connector, 'users',
+                                    str(tmp_path / 'stage'))
+    assert staged.version == version
+    source = root / 'users.csv'
+    stat = source.stat()
+    source.write_text('id,name\n1,Other\n2,Bob\n')
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    with pytest.raises(RuntimeError, match='before staging'):
+        backend.prepare_ingest(connector,
+                               'users',
+                               str(tmp_path / 'stale'),
+                               data_version=version)
+
+
+def test_staging_rejects_concurrent_content_edit(local, tmp_path, monkeypatch):
+    from kumo_core.sources.object_store import ObjectStoreSourceReader
+
+    from kumo.engine.connector.file import _FileReader
+
+    connector, root = local
+    original = ObjectStoreSourceReader.prepare
+
+    def edit_after_read(self, *args, **kwargs):
+        staged = original(self, *args, **kwargs)
+        (root / 'users.csv').write_text('id,name\n1,Other\n2,Bob\n')
+        return staged
+
+    monkeypatch.setattr(ObjectStoreSourceReader, 'prepare', edit_after_read)
+    reader = _FileReader(pa.fs.LocalFileSystem(), root=str(root))
+    destination = tmp_path / 'torn'
+    from kumo_core.sources.types import ReadMode
+    with pytest.raises(RuntimeError, match='while staging'):
+        reader.prepare('users',
+                       str(destination),
+                       columns=None,
+                       mode=ReadMode.STREAMED)
+    assert not destination.exists()
+
+
+def test_staging_reuses_supplied_exact_fingerprint(local, tmp_path, monkeypatch):
+    from kumo.engine.connector.file import _FileReader
+
+    connector, root = local
+    calls = []
+    fingerprint = _FileReader.fingerprint
+
+    def record(self, table, **kwargs):
+        calls.append(table)
+        return fingerprint(self, table, **kwargs)
+
+    monkeypatch.setattr(_FileReader, 'fingerprint', record)
+    backend = connector.source_backend
+    version = backend.get_data_version(connector, 'users')
+    backend.prepare_ingest(connector, 'users', str(tmp_path / 'stage'), data_version=version)
+    assert calls == ['users', 'users']  # Preflight and post-staging verification.

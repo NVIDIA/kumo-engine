@@ -12,10 +12,15 @@ from pathlib import Path
 from typing import Literal, Union
 
 from kumo_core.artifact_export import ArtifactDestinationConflict
+from kumo_core.diskgraph.incremental import fingerprint_files
 from kumo_core.object_store_sink import ObjectStoreSinkBackend
 from kumo_core.sources import layout
-from kumo_core.sources.object_store import ObjectStoreSourceReader
+from kumo_core.sources.object_store import (
+    ObjectStoreSourceReader,
+    require_no_sql,
+)
 from kumo_core.sources.object_store_backend import ObjectStoreSourceBackend
+from kumo_core.sources.transfer import discard_destination
 from kumo_core.types.enums import ConnectorType
 from kumoapi.plugin import SourceConnector
 from kumoapi.source_table import FileType, LocalFileSourceTable
@@ -82,6 +87,26 @@ class _FileTableConfig:
 
 
 class _FileReader(ObjectStoreSourceReader):
+    def fingerprint(self, table, *, include_row_groups=True):
+        path, _ = self.resolve(table)
+        return fingerprint_files(table, Path(path), include_row_groups=include_row_groups)
+
+    def data_version(self, table, *, sql=None, columns=None):
+        require_no_sql(sql)
+        return self.fingerprint(table, include_row_groups=False).content_hash
+
+    def prepare(self, table, dest, *, version=None, **kwargs):
+        require_no_sql(kwargs.get('sql'))
+        before = version if version is not None else self.data_version(table)
+        try:
+            staged = super().prepare(table, dest, version=before, **kwargs)
+            if self.data_version(table) != before:
+                raise RuntimeError(f'Source changed before staging or while staging {table}')
+        except Exception:
+            discard_destination(dest)
+            raise
+        return staged
+
     def resolve(self, table):
         root = Path(self.root)
         name = _relative(table)
@@ -98,6 +123,10 @@ class _FileReader(ObjectStoreSourceReader):
 class _FileSourceBackend(ObjectStoreSourceBackend):
     scheme = 'file'
     mode = None
+
+    def get_source_fingerprint(self, connector, table_name, *, include_row_groups=True):
+        reader, name = self._reader(connector, table_name)
+        return reader.fingerprint(name, include_row_groups=include_row_groups)
 
     def _reader(self, connector: Union[Connector, SourceConnector], table_name):
         _relative(table_name)
@@ -245,10 +274,10 @@ class FileConnector(Connector):
     For usage and path rules, see
     https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/connect-your-data-linux.
 
-    Source versions use paths, sizes and modification times, not content
-    hashes: keep sources unchanged during reads, and do not restore
-    timestamps after edits. Source identities use canonical paths and are
-    not portable across machines.
+    Source versions hash file contents, including partition names. Keep
+    sources unchanged during reads; staging rejects detected changes.
+    Connector identities use canonical paths and are not portable across
+    machines.
 
     Write artifacts to a separate root. Single-file outputs overwrite,
     partitioned outputs need an empty directory, and append is unsupported.

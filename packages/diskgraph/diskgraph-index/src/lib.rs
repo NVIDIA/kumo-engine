@@ -15,6 +15,7 @@
 //! can be swapped in later without changing callers.
 
 pub mod builder;
+pub mod delta;
 pub mod graph;
 pub mod layout;
 pub mod pkmap;

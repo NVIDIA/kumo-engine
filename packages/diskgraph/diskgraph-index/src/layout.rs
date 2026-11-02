@@ -62,7 +62,7 @@ pub struct NodeEdgeStats {
 }
 
 /// Relation-specific layout information used to decode packed edges.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RelationLayout {
     pub relation_id: u16,
     pub dst_bits: u8,
@@ -77,7 +77,7 @@ pub struct RelationLayout {
 /// pointer into an mmapped region; decoding uses the on-disk layout rather than
 /// copying data out.
 pub struct EdgeListView<'a> {
-    pub raw: &'a [u8],
+    pub raw: std::borrow::Cow<'a, [u8]>,
     pub layouts: std::sync::Arc<Vec<RelationLayout>>,
     pub has_node_data: bool,
     pub node_data_len_bytes: u8,
@@ -86,11 +86,26 @@ pub struct EdgeListView<'a> {
 impl<'a> EdgeListView<'a> {
     /// Returns the relation segments for this node. Each entry contains the
     /// edge count and raw slice for that relation's edges.
-    pub fn relation_segments(&self) -> Result<Vec<RelationSegment<'a>>, std::io::Error> {
+    pub fn relation_segments(&self) -> Result<Vec<RelationSegment<'_>>, std::io::Error> {
         Ok(self.parse()?.0)
     }
 
-    pub fn node_data(&self) -> Result<Option<&'a [u8]>, std::io::Error> {
+    pub fn with_node_data(mut self, features: &[u8]) -> std::io::Result<Self> {
+        let (segments, old) = self.parse()?;
+        let old = old.ok_or(std::io::ErrorKind::InvalidData)?;
+        let edge_bytes: usize = segments.iter().map(|s| s.data.len()).sum();
+        let header = self.raw.len() - old.len() - edge_bytes - self.node_data_len_bytes as usize;
+        let mut raw = self.raw[..header].to_vec();
+        let length = u32::try_from(features.len()).map_err(|_| std::io::ErrorKind::InvalidData)?;
+        raw.extend_from_slice(&length.to_le_bytes());
+        for segment in segments { raw.extend_from_slice(segment.data); }
+        raw.extend_from_slice(features);
+        self.raw = std::borrow::Cow::Owned(raw);
+        self.node_data_len_bytes = 4;
+        Ok(self)
+    }
+
+    pub fn node_data(&self) -> Result<Option<&[u8]>, std::io::Error> {
         Ok(self.parse()?.1)
     }
 
@@ -125,7 +140,7 @@ impl<'a> EdgeListView<'a> {
         Ok(pk_value_matches(key, &value, &ctx.columns[col_idx]))
     }
 
-    fn parse(&self) -> Result<(Vec<RelationSegment<'a>>, Option<&'a [u8]>), std::io::Error> {
+    pub(crate) fn parse(&self) -> Result<(Vec<RelationSegment<'_>>, Option<&[u8]>), std::io::Error> {
         if self.raw.is_empty() {
             if self.has_node_data {
                 return Err(std::io::ErrorKind::InvalidData.into());
