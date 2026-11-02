@@ -2450,3 +2450,47 @@ def test_negative_sampling_parallel_temporal_valid_at_scale(tmp_path, multithrea
         "valid items dominate (96/128); no slot should be masked at this scale — "
         "any mask would imply the resample budget was unexpectedly exhausted"
     )
+
+
+def test_local_iterator_close_is_idempotent_noop(
+    seed_table_fixture: dict[str, Any],
+) -> None:
+    """Local iterators support uniform cleanup without changing synchronous output."""
+    from diskgraph import RuntimeIndex
+
+    index = RuntimeIndex(
+        seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
+    )
+    try:
+        iterator, count = index.iter(
+            stage="train",
+            sampling_plan=_sampling_plan(),
+            num_workers=1,
+            worker_id=0,
+            shuffle=False,
+            epoch=0,
+            batch_size=3,
+            entity_node_type="users",
+        )
+        assert iterator.close() is None
+        assert iterator.close() is None
+        batches = list(iterator)
+        assert sum(batch["task"]["num_positives"] for batch in batches) == count
+        iterator.close()
+        replacement, replacement_count = index.iter(
+            stage="train",
+            sampling_plan=_sampling_plan(),
+            num_workers=1,
+            worker_id=0,
+            shuffle=False,
+            epoch=1,
+            batch_size=3,
+            entity_node_type="users",
+        )
+        assert (
+            sum(batch["task"]["num_positives"] for batch in replacement)
+            == replacement_count
+        )
+        replacement.close()
+    finally:
+        index.close()

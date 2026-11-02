@@ -158,3 +158,8 @@ to cancel its prefetch while retaining shared connections; close the index at
 job teardown to cancel all epochs and release those connections. A closed index
 cannot be reopened. The data module creates a fresh shared handle when needed
 after job teardown.
+
+
+Runtime iterators always provide `close()`. Loader scopes register that method
+directly for both backends; local synchronous iterators use a no-op hook and
+remote iterators cancel their pending prefetch.

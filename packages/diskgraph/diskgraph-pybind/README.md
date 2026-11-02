@@ -270,3 +270,10 @@ terminal. The lower-level `diskgraph.RemoteRuntimeIndex(endpoints)` class accept
 `iter(SamplingRequest, graph_root)` directly and returns `RemoteBatchIterator`.
 Both handles expose `close()`; garbage collection signals asynchronous cleanup
 without joining while holding the GIL.
+
+
+All iterators returned by `RuntimeIndex.iter()` expose an idempotent `close()`.
+Remote iteration cancels pending readers and joins its prefetch threads. Local
+iteration is synchronous and implements a no-op close; normal iterator/index
+ownership releases its resources. Callers can register `iterator.close` directly
+for scope cleanup, without probing for an optional method.

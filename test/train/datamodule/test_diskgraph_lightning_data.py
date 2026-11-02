@@ -356,6 +356,9 @@ class _FakeTaskIterator:
         for _ in range(self.num_batches):
             yield _runtime_batch()
 
+    def close(self) -> None:
+        """Match the synchronous local iterator's no-op lifecycle hook."""
+
 
 def _backpressure_runtime_iter(*, worker_id: int, **_kwargs: Any):
     """Yield large prediction batches until the parent stops requesting them."""

@@ -503,6 +503,12 @@ impl RuntimeBatchIterator {
         })
     }
 
+    /// No-op lifecycle hook for synchronous local iteration.
+    ///
+    /// There is no background reader to cancel; resources follow normal
+    /// ownership of the iterator and its shared index.
+    pub fn close(&self) {}
+
     pub fn num_samples(&self) -> usize {
         self.inner.num_samples()
     }

@@ -1603,9 +1603,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
                 group_by_timestamp=self.group_by_timestamp,
                 **options,
             )
-            close = getattr(iterator, "close", None)
-            if callable(close):
-                cleanup.callback(close)
+            cleanup.callback(iterator.close)
             return iterator, int(num_samples)
 
         if self.stage_batch_targets is not None:

@@ -130,7 +130,10 @@ def test_iterable_cancels_remote_streams_on_early_exit(
 ) -> None:
     """Every scheduling branch owns and cancels its remote streams."""
     source = MagicMock()
-    source.iter.side_effect = lambda **_: (iter([{"task": {}}] * 3), 3)
+    batch_iterator = MagicMock()
+    batch_iterator.__iter__.side_effect = lambda: iter([{"task": {}}] * 3)
+    batch_iterator.__next__.side_effect = [{"task": {}}] * 3
+    source.iter.return_value = (batch_iterator, 3)
     source_factory = MagicMock(return_value=source)
     monkeypatch.setattr(diskgraph, "RuntimeIndex", source_factory)
     options: dict[str, Any] = {}
@@ -162,6 +165,7 @@ def test_iterable_cancels_remote_streams_on_early_exit(
     assert next(iterator) == {"task": {}}
     iterator.close()
     source.close.assert_called_once()
+    batch_iterator.close.assert_called()
     assert "remote_sampling_endpoint" not in source.iter.call_args.kwargs
     assert "_runtime_index_handle" not in dataset.__getstate__()
 
