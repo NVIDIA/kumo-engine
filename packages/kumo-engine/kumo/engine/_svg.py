@@ -31,7 +31,8 @@ def bar_chart(chart: BarChart) -> str:
 
     parts: List[str] = [
         f'<rect width="{_WIDTH}" height="{_HEIGHT}" fill="#fcfcfb"/>',
-        _text(_LEFT, 28, chart.title, 'start', _INK, 15)]
+        _text(_LEFT, 28, chart.title, 'start', _INK,
+              min(15, int((_WIDTH - _LEFT) * 1.8 / len(chart.title or ' '))))]
     for tick in range(5):
         level = y(step * tick)
         parts += [
