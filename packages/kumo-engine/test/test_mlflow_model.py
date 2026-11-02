@@ -156,8 +156,7 @@ def test_fit_logs_registers_and_serves_the_model(table_and_snapshot,
         load_model('models:/m@champion')
 
 
-def test_logged_model_scores_the_query_population_and_timed_rows(
-        fitted, tracking_uri, tmp_path, monkeypatch):
+def test_logged_model_scores_given_rows(fitted, tracking_uri, tmp_path):
     from kumo.engine.integrations.mlflow import log_model
 
     trainer, table, snapshot = fitted
@@ -194,32 +193,20 @@ def test_logged_model_scores_the_query_population_and_timed_rows(
     empty = pd.DataFrame({'ENTITY': pd.Series([], dtype='int64')})
     tables = get_scratch_dir() / 'prediction_tables'
     before = set(tables.glob('*'))
-    predict = kumo.Trainer.predict
-
-    def predict_beside_another_call(self, *args, **kwargs):
-        (tables / 'other-call').mkdir(parents=True, exist_ok=True)
-        return predict(self, *args, **kwargs)
-
-    monkeypatch.setattr(kumo.Trainer, 'predict', predict_beside_another_call)
 
     assert pyfunc.predict(empty, params=params).empty
     served = pyfunc.unwrap_python_model()._snapshots
     assert list(served) == [params['snapshot']]
-    pd.testing.assert_frame_equal(
-        _sorted(
-            pyfunc.predict(empty, params={
-                **params, 'snapshot': None, 'population': True
-            })), expected)
-    for rows, population in ((empty, True),
-                             (pd.DataFrame({'ENTITY': range(50)}), False)):
+    rows = pd.DataFrame({'ENTITY': range(50)})
+    for snapshot_param in (None, params['snapshot']):
         pd.testing.assert_frame_equal(
             _sorted(
                 pyfunc.predict(rows,
-                               params={**params, 'population': population})),
+                               params={**params, 'snapshot': snapshot_param})),
             expected)
     scratch = pyfunc.unwrap_python_model()._predictor.trainer.scratch_dir
     assert list(scratch.iterdir()) == []
-    assert set(tables.glob('*')) == before | {tables / 'other-call'}
+    assert set(tables.glob('*')) == before
 
 
 def test_pyfunc_names_a_missing_prediction_time_and_needs_no_threshold(

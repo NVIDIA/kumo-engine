@@ -43,7 +43,7 @@ class KumoModel(_pyfunc.PythonModel):
     def predict(self, context: Any, model_input: pd.DataFrame,
                 params: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
         params = params or {}
-        if len(model_input) == 0 and not params.get('population'):
+        if len(model_input) == 0:
             return pd.DataFrame(columns=self._columns)
         uri = params.get('snapshot') or self._default
         if not uri:
@@ -115,7 +115,6 @@ def signature(snapshot: GraphSnapshot, query: str) -> Tuple[Any, pd.DataFrame]:
         _schema.ParamSpec('prediction_time', 'string', None),
         _schema.ParamSpec('binary_classification_threshold', 'double', None),
         _schema.ParamSpec('num_classes_to_return', 'long', None),
-        _schema.ParamSpec('population', 'boolean', False),
     ])
     example = pd.DataFrame({
         'ENTITY': {
