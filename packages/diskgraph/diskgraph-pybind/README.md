@@ -170,6 +170,12 @@ value when a caller will immediately encode a batch. Sequence `batch` values
 are Arrow `RecordBatch` objects in both formats. Query semantics, ordering,
 limits, reductions, nulls, timings, and statistics are identical.
 
+Temporal row decoding uses Arrow `large_string`, `large_binary`, and `large_list`
+columns, including large string children inside lists. Their 64-bit offsets
+allow a query's combined values to exceed the 2 GiB limit of ordinary Arrow
+string and binary arrays without changing row values or order. This removes an
+offset limit; the complete query still needs enough memory for its output.
+
 `SamplerEngine.query_temporal_lengths(seed_nodes, seed_timestamps, plan_json)`
 is the exact scheduling companion. It visits only frames named by sequences,
 shares a frame traversal between all of its sequence consumers, applies each

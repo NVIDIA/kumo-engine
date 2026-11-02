@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::{anyhow, Result};
-use arrow_array::{Array, RecordBatch};
+use arrow_array::{Array, OffsetSizeTrait, RecordBatch};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use diskgraph_core::time::{convert_trunc, split_parts, TimeUnit};
@@ -22,6 +22,8 @@ pub mod access;
 pub mod parser;
 #[cfg(test)]
 mod tests_arrow;
+#[cfg(test)]
+mod tests_arrow_large;
 #[cfg(test)]
 #[allow(clippy::cloned_ref_to_slice_refs)]
 mod tests_arrow_matrix;
@@ -5535,6 +5537,16 @@ impl RowPackDecoder {
         requested_mask: &[bool],
         scratch: &mut RowPackDecodeScratch,
     ) -> Result<()> {
+        self.decode_row_to_builders_with_offsets::<i32>(row, builders, requested_mask, scratch)
+    }
+
+    fn decode_row_to_builders_with_offsets<O: OffsetSizeTrait>(
+        &self,
+        row: &[u8],
+        builders: &mut [Box<dyn arrow_array::builder::ArrayBuilder>],
+        requested_mask: &[bool],
+        scratch: &mut RowPackDecodeScratch,
+    ) -> Result<()> {
         use arrow_array::builder::BooleanBuilder;
         let mut reader = BitReader::new(row);
         let col_count = self.ctx.columns.len();
@@ -5566,7 +5578,7 @@ impl RowPackDecoder {
 
             if tag == 0 {
                 if requested {
-                    append_null(builders[builder_cursor].as_mut());
+                    append_null::<O>(builders[builder_cursor].as_mut());
                     builder_cursor += 1;
                 }
                 continue;
@@ -5587,7 +5599,7 @@ impl RowPackDecoder {
             }
 
             if requested {
-                decode_and_append_to_builder(
+                decode_and_append_to_builder::<O>(
                     builders[builder_cursor].as_mut(),
                     col,
                     tag,
@@ -5605,6 +5617,27 @@ impl RowPackDecoder {
     }
 
     pub fn decode_batch_to_arrow<T: AsRef<[u8]>>(
+        &self,
+        rows: &[T],
+        col_indices: &[usize],
+    ) -> Result<arrow_array::RecordBatch> {
+        self.decode_batch_to_arrow_with_offsets::<T, i32>(rows, col_indices)
+    }
+
+    /// Decode without the 2 GiB byte-buffer limit of Arrow's 32-bit offsets.
+    ///
+    /// Strings, binary values, and lists (including string-list children) use
+    /// 64-bit offsets. Logical values, nulls, row order, and projection order
+    /// match `decode_batch_to_arrow`; existing callers retain its small schema.
+    pub fn decode_batch_to_arrow_large<T: AsRef<[u8]>>(
+        &self,
+        rows: &[T],
+        col_indices: &[usize],
+    ) -> Result<arrow_array::RecordBatch> {
+        self.decode_batch_to_arrow_with_offsets::<T, i64>(rows, col_indices)
+    }
+
+    fn decode_batch_to_arrow_with_offsets<T: AsRef<[u8]>, O: OffsetSizeTrait>(
         &self,
         rows: &[T],
         col_indices: &[usize],
@@ -5636,8 +5669,12 @@ impl RowPackDecoder {
             if !requested_mask[idx] {
                 continue;
             }
-            let (field, builder) =
-                make_arrow_builder(&col.name, col.logical_type, rows.len(), self.clock)?;
+            let (field, builder) = make_arrow_builder_with_offsets::<O>(
+                &col.name,
+                col.logical_type,
+                rows.len(),
+                self.clock,
+            )?;
             decoded_indices.push(idx);
             fields.push(field);
             builders.push(builder);
@@ -5646,7 +5683,7 @@ impl RowPackDecoder {
         let mut scratch = RowPackDecodeScratch::default();
 
         for row in rows {
-            self.decode_row_to_builders(
+            self.decode_row_to_builders_with_offsets::<O>(
                 row.as_ref(),
                 &mut builders,
                 &requested_mask,
@@ -7164,7 +7201,7 @@ fn push_utf8_lossy(out: &mut String, bytes: &[u8]) {
     }
 }
 
-fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
+fn append_null<O: OffsetSizeTrait>(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
     use arrow_array::builder::*;
     if let Some(b) = builder.as_any_mut().downcast_mut::<BooleanBuilder>() {
         b.append_null();
@@ -7210,11 +7247,17 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
         b.append_null();
         return;
     }
-    if let Some(b) = builder.as_any_mut().downcast_mut::<StringBuilder>() {
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<GenericStringBuilder<O>>()
+    {
         b.append_null();
         return;
     }
-    if let Some(b) = builder.as_any_mut().downcast_mut::<BinaryBuilder>() {
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<GenericBinaryBuilder<O>>()
+    {
         b.append_null();
         return;
     }
@@ -7252,28 +7295,49 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
     }
     if let Some(b) = builder
         .as_any_mut()
-        .downcast_mut::<ListBuilder<Float32Builder>>()
+        .downcast_mut::<GenericListBuilder<O, Float32Builder>>()
     {
         b.append_null();
         return;
     }
     if let Some(b) = builder
         .as_any_mut()
-        .downcast_mut::<ListBuilder<Float64Builder>>()
+        .downcast_mut::<GenericListBuilder<O, Float64Builder>>()
     {
         b.append_null();
         return;
     }
     if let Some(b) = builder
         .as_any_mut()
-        .downcast_mut::<ListBuilder<Int64Builder>>()
+        .downcast_mut::<GenericListBuilder<O, Int8Builder>>()
     {
         b.append_null();
         return;
     }
     if let Some(b) = builder
         .as_any_mut()
-        .downcast_mut::<ListBuilder<StringBuilder>>()
+        .downcast_mut::<GenericListBuilder<O, Int16Builder>>()
+    {
+        b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<GenericListBuilder<O, Int32Builder>>()
+    {
+        b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<GenericListBuilder<O, Int64Builder>>()
+    {
+        b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<GenericListBuilder<O, GenericStringBuilder<O>>>()
     {
         b.append_null();
     }
@@ -7288,8 +7352,28 @@ pub fn make_arrow_builder(
     arrow_schema::Field,
     Box<dyn arrow_array::builder::ArrayBuilder>,
 )> {
+    make_arrow_builder_with_offsets::<i32>(name, dtype, capacity, clock)
+}
+
+fn make_arrow_builder_with_offsets<O: OffsetSizeTrait>(
+    name: &str,
+    dtype: IngestedType,
+    capacity: usize,
+    clock: TimeUnit,
+) -> Result<(
+    arrow_schema::Field,
+    Box<dyn arrow_array::builder::ArrayBuilder>,
+)> {
     use arrow_array::builder::*;
     use arrow_schema::DataType;
+
+    let list_type = |child, nullable| {
+        if O::IS_LARGE {
+            DataType::new_large_list(child, nullable)
+        } else {
+            DataType::new_list(child, nullable)
+        }
+    };
 
     let (arrow_type, builder): (DataType, Box<dyn ArrayBuilder>) = match dtype {
         IngestedType::Bool => (
@@ -7342,12 +7426,26 @@ pub fn make_arrow_builder(
         | IngestedType::Ip
         | IngestedType::Decimal128
         | IngestedType::Decimal256 => (
-            DataType::Utf8,
-            Box::new(StringBuilder::with_capacity(capacity, capacity * 32)),
+            if O::IS_LARGE {
+                DataType::LargeUtf8
+            } else {
+                DataType::Utf8
+            },
+            Box::new(GenericStringBuilder::<O>::with_capacity(
+                capacity,
+                capacity * 32,
+            )),
         ),
         IngestedType::Bytes => (
-            DataType::Binary,
-            Box::new(BinaryBuilder::with_capacity(capacity, capacity * 32)),
+            if O::IS_LARGE {
+                DataType::LargeBinary
+            } else {
+                DataType::Binary
+            },
+            Box::new(GenericBinaryBuilder::<O>::with_capacity(
+                capacity,
+                capacity * 32,
+            )),
         ),
         IngestedType::Timestamp => match clock {
             TimeUnit::Nanoseconds => (
@@ -7375,50 +7473,58 @@ pub fn make_arrow_builder(
         IngestedType::Float32Array | IngestedType::Float16Array => {
             let values_builder = Float32Builder::with_capacity(capacity * 32);
             (
-                DataType::new_list(DataType::Float32, true),
-                Box::new(ListBuilder::new(values_builder)),
+                list_type(DataType::Float32, true),
+                Box::new(GenericListBuilder::<O, _>::new(values_builder)),
             )
         }
         IngestedType::Float64Array => {
             let values_builder = Float64Builder::with_capacity(capacity * 32);
             (
-                DataType::new_list(DataType::Float64, true),
-                Box::new(ListBuilder::new(values_builder)),
+                list_type(DataType::Float64, true),
+                Box::new(GenericListBuilder::<O, _>::new(values_builder)),
             )
         }
         IngestedType::Int8Array => {
             let values_builder = Int8Builder::with_capacity(capacity * 32);
             (
-                DataType::new_list(DataType::Int8, true),
-                Box::new(ListBuilder::new(values_builder)),
+                list_type(DataType::Int8, true),
+                Box::new(GenericListBuilder::<O, _>::new(values_builder)),
             )
         }
         IngestedType::Int16Array => {
             let values_builder = Int16Builder::with_capacity(capacity * 32);
             (
-                DataType::new_list(DataType::Int16, true),
-                Box::new(ListBuilder::new(values_builder)),
+                list_type(DataType::Int16, true),
+                Box::new(GenericListBuilder::<O, _>::new(values_builder)),
             )
         }
         IngestedType::Int32Array => {
             let values_builder = Int32Builder::with_capacity(capacity * 32);
             (
-                DataType::new_list(DataType::Int32, true),
-                Box::new(ListBuilder::new(values_builder)),
+                list_type(DataType::Int32, true),
+                Box::new(GenericListBuilder::<O, _>::new(values_builder)),
             )
         }
         IngestedType::Int64Array => {
             let values_builder = Int64Builder::with_capacity(capacity * 32);
             (
-                DataType::new_list(DataType::Int64, true),
-                Box::new(ListBuilder::new(values_builder)),
+                list_type(DataType::Int64, true),
+                Box::new(GenericListBuilder::<O, _>::new(values_builder)),
             )
         }
         IngestedType::StringArray => {
-            let values_builder = StringBuilder::with_capacity(capacity * 32, capacity * 128);
+            let values_builder =
+                GenericStringBuilder::<O>::with_capacity(capacity * 32, capacity * 128);
             (
-                DataType::new_list(DataType::Utf8, true),
-                Box::new(ListBuilder::new(values_builder)),
+                list_type(
+                    if O::IS_LARGE {
+                        DataType::LargeUtf8
+                    } else {
+                        DataType::Utf8
+                    },
+                    true,
+                ),
+                Box::new(GenericListBuilder::<O, _>::new(values_builder)),
             )
         }
     };
@@ -7426,7 +7532,7 @@ pub fn make_arrow_builder(
     Ok((arrow_schema::Field::new(name, arrow_type, true), builder))
 }
 
-fn decode_and_append_to_builder(
+fn decode_and_append_to_builder<O: OffsetSizeTrait>(
     builder: &mut dyn arrow_array::builder::ArrayBuilder,
     col: &ColumnContext,
     tag: u8,
@@ -7502,7 +7608,7 @@ fn decode_and_append_to_builder(
             };
             builder
                 .as_any_mut()
-                .downcast_mut::<BinaryBuilder>()
+                .downcast_mut::<GenericBinaryBuilder<O>>()
                 .unwrap()
                 .append_value(bytes);
         }
@@ -7517,7 +7623,7 @@ fn decode_and_append_to_builder(
             let s = std::str::from_utf8(s).unwrap();
             builder
                 .as_any_mut()
-                .downcast_mut::<StringBuilder>()
+                .downcast_mut::<GenericStringBuilder<O>>()
                 .unwrap()
                 .append_value(s);
         }
@@ -7543,7 +7649,7 @@ fn decode_and_append_to_builder(
             let s = std::str::from_utf8(&buf).unwrap();
             builder
                 .as_any_mut()
-                .downcast_mut::<StringBuilder>()
+                .downcast_mut::<GenericStringBuilder<O>>()
                 .unwrap()
                 .append_value(s);
         }
@@ -7552,7 +7658,7 @@ fn decode_and_append_to_builder(
             let s = format_ip(bytes);
             builder
                 .as_any_mut()
-                .downcast_mut::<StringBuilder>()
+                .downcast_mut::<GenericStringBuilder<O>>()
                 .unwrap()
                 .append_value(s);
         }
@@ -7611,7 +7717,7 @@ fn decode_and_append_to_builder(
             };
             builder
                 .as_any_mut()
-                .downcast_mut::<StringBuilder>()
+                .downcast_mut::<GenericStringBuilder<O>>()
                 .unwrap()
                 .append_value(text);
         }
@@ -7626,7 +7732,7 @@ fn decode_and_append_to_builder(
             }
             builder
                 .as_any_mut()
-                .downcast_mut::<StringBuilder>()
+                .downcast_mut::<GenericStringBuilder<O>>()
                 .unwrap()
                 .append_value(&scratch.string);
         }
@@ -7643,7 +7749,7 @@ fn decode_and_append_to_builder(
                     }
                     let b = builder
                         .as_any_mut()
-                        .downcast_mut::<ListBuilder<Float32Builder>>()
+                        .downcast_mut::<GenericListBuilder<O, Float32Builder>>()
                         .unwrap();
                     b.values().append_slice(&scratch.float32);
                     b.append(true);
@@ -7656,7 +7762,7 @@ fn decode_and_append_to_builder(
                     }
                     let b = builder
                         .as_any_mut()
-                        .downcast_mut::<ListBuilder<Float64Builder>>()
+                        .downcast_mut::<GenericListBuilder<O, Float64Builder>>()
                         .unwrap();
                     b.values().append_slice(&scratch.float64);
                     b.append(true);
@@ -7675,7 +7781,7 @@ fn decode_and_append_to_builder(
             }
             let b = builder
                 .as_any_mut()
-                .downcast_mut::<ListBuilder<Int8Builder>>()
+                .downcast_mut::<GenericListBuilder<O, Int8Builder>>()
                 .unwrap();
             b.values().append_slice(&scratch.int8);
             b.append(true);
@@ -7691,7 +7797,7 @@ fn decode_and_append_to_builder(
             }
             let b = builder
                 .as_any_mut()
-                .downcast_mut::<ListBuilder<Int16Builder>>()
+                .downcast_mut::<GenericListBuilder<O, Int16Builder>>()
                 .unwrap();
             b.values().append_slice(&scratch.int16);
             b.append(true);
@@ -7707,7 +7813,7 @@ fn decode_and_append_to_builder(
             }
             let b = builder
                 .as_any_mut()
-                .downcast_mut::<ListBuilder<Int32Builder>>()
+                .downcast_mut::<GenericListBuilder<O, Int32Builder>>()
                 .unwrap();
             b.values().append_slice(&scratch.int32);
             b.append(true);
@@ -7723,7 +7829,7 @@ fn decode_and_append_to_builder(
             }
             let b = builder
                 .as_any_mut()
-                .downcast_mut::<ListBuilder<Int64Builder>>()
+                .downcast_mut::<GenericListBuilder<O, Int64Builder>>()
                 .unwrap();
             b.values().append_slice(&scratch.int64);
             b.append(true);
@@ -7742,7 +7848,7 @@ fn decode_and_append_to_builder(
             }
             let b = builder
                 .as_any_mut()
-                .downcast_mut::<ListBuilder<StringBuilder>>()
+                .downcast_mut::<GenericListBuilder<O, GenericStringBuilder<O>>>()
                 .unwrap();
             for _ in 0..len {
                 if data.is_empty() {
