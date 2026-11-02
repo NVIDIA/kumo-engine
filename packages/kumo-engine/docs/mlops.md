@@ -289,6 +289,8 @@ run.id, run.bundle_id, run.snapshot_id, run.scored_rows, run.skipped_rows
 - Entities the snapshot does not hold are skipped and counted (`run.skipped_rows`, the `pred/skipped_share` metric), never refused.
 - A scoring job needs no `Graph` code: `GraphSnapshot.load_from_connector(cfg, id=...)` and `Trainer.load_from_connector(cfg, ...)`, then `predict`. It warns when the snapshot was taken of a different graph than the model's, naming the schema changes (tables, columns, types, keys, edges); under `on_error="raise"` it raises instead, before scoring.
 
+**Two ways to score.** `Trainer.predict` under `kumo.MLOps` is the canonical path: it writes a prediction run and its provenance under the artifact root, which `score_drift` and `evaluate` read. The platform adapters, the MLflow pyfunc's `predict` on a DataFrame (below) and a warehouse's batch call, return scores but record no Kumo prediction run, so there is nothing for `score_drift` or `evaluate` to read. To monitor scores, produce them with `Trainer.predict`.
+
 **Scheduled jobs:** [`examples/mlops`](../../../examples/mlops/README.md) has a fit job and a score job with Databricks Jobs, SageMaker Pipelines and Snowflake Tasks wiring.
 
 ### MLflow pyfunc
