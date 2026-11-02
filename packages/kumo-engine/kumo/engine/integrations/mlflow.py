@@ -544,6 +544,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                                   model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
                 self._log_artifacts(record.artifacts)
+                self._log_files(record.files)
                 if kind == 'prediction':
                     self._fit = self._fit_of(record.tags.get('kumo.fit_run_id'))
                     self._log_model_input()
@@ -828,6 +829,17 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             if name not in self._artifacts:
                 self._write_text(self._parent, name, text)
                 self._artifacts.add(name)
+
+    def _log_files(self, files: Mapping[str, str]) -> None:
+        for name, directory in files.items():
+            with self.target.scope():
+                repository = self.target.artifact_repository(
+                    self._client.get_run(self._parent).info.artifact_uri
+                ) if self.target.explicit else None
+                if repository is None:
+                    self._client.log_artifacts(self._parent, directory, name)
+                else:
+                    repository.log_artifacts(directory, name)
 
     def _write_text(self, run_id: str, name: str, text: str) -> None:
         with self.target.scope():

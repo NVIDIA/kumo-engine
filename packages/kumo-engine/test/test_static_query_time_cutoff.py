@@ -75,3 +75,19 @@ def test_custom_prediction_rows_need_timestamp(fitted):
     table = PredictionTable.from_source_table(connector['anchored.parquet'],
                                               pq=pquery, snapshot=snapshot)
     assert table.row_count == 2
+
+
+def test_predict_refuses_static_rows_that_none_can_be_scored(fitted):
+    _, pquery, snapshot, connector, data, times = fitted
+    pd.DataFrame({
+        'ENTITY1': range(1000, 1004),
+        'TIMESTAMP': times[:4],
+    }).to_parquet(data / 'unknown.parquet')
+
+    with pytest.raises(ValueError) as raised:
+        PredictionTable.from_source_table(connector['unknown.parquet'],
+                                          pq=pquery, snapshot=snapshot)
+    assert str(raised.value) == (
+        'None of the 4 requested entities can be scored, found while building '
+        'the prediction table: not in snapshot '
+        '(sample: 1000, 1001, 1002, …)')

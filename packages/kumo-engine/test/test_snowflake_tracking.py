@@ -361,6 +361,19 @@ def test_a_prediction_run_names_its_model_and_lasts_as_long_as_it_ran(fake):
     assert ('duration_seconds', 60.0, 0) in run['metrics']
 
 
+def test_a_prediction_run_logs_its_skipped_rows(fake, tmp_path):
+    (tmp_path / 'part-0.parquet').write_bytes(b'PAR1\xff')
+    (tmp_path / '_SUCCESS').touch()
+    record = prediction_record(PREDICTION_MANIFEST, model=REGISTERED,
+                               files={'skipped': str(tmp_path)})
+
+    _tracking().log_prediction_run(record)
+
+    run, = fake._instance.runs.values()
+    assert run['artifacts']['skipped/part-0.parquet'] == b'PAR1\xff'
+    assert run['artifacts']['skipped/_SUCCESS'] == ''
+
+
 def _prediction(as_of, version=None, label='churn'):
     tags = {'kumo.kind': 'prediction', 'kumo.as_of': as_of,
             'kumo.bundle_id': 'b' * 64,

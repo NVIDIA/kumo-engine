@@ -79,6 +79,26 @@ pub enum RowFailureKind {
 }
 
 impl RowFailureKind {
+    /// The condition's `snake_case` name, as in the row_failures report.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::NullEntity => "null_entity",
+            Self::NullTarget => "null_target",
+            Self::NullTargetItem => "null_target_item",
+            Self::EmptyTargetList => "empty_target_list",
+            Self::NullTimestamp => "null_timestamp",
+            Self::NullWeight => "null_weight",
+            Self::NonFiniteWeight => "non_finite_weight",
+            Self::NegativeWeight => "negative_weight",
+            Self::WeightLengthMismatch => "weight_length_mismatch",
+            Self::NullSplit => "null_split",
+            Self::InvalidSplit => "invalid_split",
+            Self::UnknownEntity => "unknown_entity",
+            Self::NonCanonicalEntity => "non_canonical_entity",
+            Self::UnavailableTarget => "unavailable_target",
+        }
+    }
+
     pub fn describe(self) -> &'static str {
         match self {
             Self::NullEntity => "entity key is null",
@@ -144,11 +164,24 @@ pub struct RowFailures {
     rows_read: u64,
     skipped_rows: u64,
     entries: BTreeMap<(RowFailureKind, String), Entry>,
+    /// When set, the skipped rows since the last `take_skips`, as `(row,
+    /// conditions)`; drained per batch so it never outgrows one batch.
+    skips: Option<Vec<(u64, Vec<RowFailureKind>)>>,
 }
 
 impl RowFailures {
     pub fn add_rows_read(&mut self, rows: u64) {
         self.rows_read += rows;
+    }
+
+    /// Keep each skipped row for `take_skips`.
+    pub fn keep_skips(&mut self) {
+        self.skips.get_or_insert_with(Vec::new);
+    }
+
+    /// The rows skipped since the last call, as `(row, conditions)`.
+    pub fn take_skips(&mut self) -> Vec<(u64, Vec<RowFailureKind>)> {
+        self.skips.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
     /// Record all conditions before applying the policy once for this row.
@@ -182,6 +215,9 @@ impl RowFailures {
             )));
         }
         self.skipped_rows += 1;
+        if let Some(skips) = &mut self.skips {
+            skips.push((at.row, unique.iter().map(|(kind, _)| *kind).collect()));
+        }
         Ok(())
     }
 
@@ -411,6 +447,29 @@ mod tests {
         assert!(err.contains("ENTITY1"), "{err}");
         assert!(err.contains("part-0.parquet row group 1 row 7"), "{err}");
         assert_eq!(failures.skipped_rows(), 0);
+    }
+
+    #[test]
+    fn names_match_the_report() {
+        use RowFailureKind::*;
+        for kind in [
+            NullEntity,
+            NullTarget,
+            NullTargetItem,
+            EmptyTargetList,
+            NullTimestamp,
+            NullWeight,
+            NonFiniteWeight,
+            NegativeWeight,
+            WeightLengthMismatch,
+            NullSplit,
+            InvalidSplit,
+            UnknownEntity,
+            NonCanonicalEntity,
+            UnavailableTarget,
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), kind.name());
+        }
     }
 
     #[test]

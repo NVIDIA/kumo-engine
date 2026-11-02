@@ -77,6 +77,8 @@ class GeneratedPredictionTable:
     row_count: int
     tt_id: str
     row_failures: Mapping[str, Any] | None = None
+    #: Parquet parts listing every skipped caller-supplied row, if any.
+    skipped_rows_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -259,15 +261,17 @@ def generate_custom_prediction_table(
     if not isinstance(table_path, str) or not table_path:
         raise RuntimeError(
             "custom prediction-table builder result missing tt_parquet_path")
-    if row_count <= 0:
-        raise RuntimeError("custom prediction table contains no rows")
     failures = result.get("row_failures")
+    failures = failures if isinstance(failures, Mapping) else None
+    if row_count <= 0 and not (failures or {}).get("skipped_rows"):
+        raise RuntimeError("custom prediction table contains no rows")
     return GeneratedPredictionTable(
         staging_dir=staging_dir,
         table_path=table_path,
         row_count=row_count,
         tt_id=request.tt_id,
-        row_failures=failures if isinstance(failures, Mapping) else None,
+        row_failures=failures,
+        skipped_rows_dir=result.get("skipped_rows_dir"),
     )
 
 

@@ -69,6 +69,8 @@ class RunRecord:
                               ...]] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
+    #: Local directories logged as artifacts, by artifact path.
+    files: Mapping[str, str] = field(default_factory=dict)
     summaries: Tuple[Summary, ...] = ()
     description: Optional[str] = None
     model_label: Optional[str] = None
@@ -91,6 +93,7 @@ class RunSpec:
     tags: Mapping[str, Any] = field(default_factory=dict)
     parents: Mapping[str, Optional[str]] = field(default_factory=dict)
     artifacts: Mapping[str, str] = field(default_factory=dict)
+    files: Mapping[str, str] = field(default_factory=dict)
     summaries: Sequence[Summary] = ()
     status: Optional[str] = None
     error: Optional[str] = None
@@ -177,6 +180,7 @@ def run_record(spec: RunSpec) -> RunRecord:
             **({} if spec.error is None else {'kumo.error': spec.error}),
         },
         artifacts=dict(spec.artifacts),
+        files=dict(spec.files),
         summaries=tuple(spec.summaries),
         description=spec.description,
         model_label=spec.model_label,
@@ -229,7 +233,8 @@ def trial_spec(events: Sequence[Event]) -> RunSpec:
 def prediction_record(manifest: 'PredictionManifest',
                       error: Optional[BaseException] = None,
                       model: Any = None,
-                      summaries: Sequence['Summary'] = ()) -> RunRecord:
+                      summaries: Sequence['Summary'] = (),
+                      files: Mapping[str, str] = {}) -> RunRecord:
     r"""A prediction run's record, from its manifest."""
     from kumo.engine._prep_cost import prep_summaries
     from kumo.engine.trainer._provenance import holdout_counts
@@ -279,6 +284,7 @@ def prediction_record(manifest: 'PredictionManifest',
                 json.dumps(manifest.to_dict(), indent=2, sort_keys=True,
                            default=str)
             },
+            files=files,
             summaries=(*_prediction_summaries(
                 manifest, holdout_counts(model_manifest), window,
                 entity(getattr(trained, 'query', None)), as_of), *summaries,
@@ -394,10 +400,14 @@ def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
         summaries.append(Scalar('pred/skipped_share', table.skipped_rows /
                                 requested if requested else 0.0))
         if table.skipped_rows:
-            reason = f': {table.skip_reason}' if table.skip_reason else ''
+            reason = (', found while building the prediction table'
+                      + (f': {table.skip_reason}' if table.skip_reason else ''))
+            sample = ', '.join(map(str, table.skipped_sample or ()))
+            full = '; full list: skipped/' if table.skipped_location else ''
             summaries.append(Note(
                 'notes', f'{table.skipped_rows:,} requested rows were not '
-                f'scored{reason}.'))
+                f'scored{reason}' + (f' ({sample})' if sample else '') +
+                f'{full}.'))
     stats = (manifest.stats or {}).get('predictions')
     if stats is not None and stats.counts is not None:
         summaries += prediction_summaries(
@@ -430,7 +440,8 @@ def track_prediction(
         manifest: Optional['PredictionManifest'], tracking: Any,
         error: Optional[BaseException] = None,
         model: Any = None,
-        summaries: Callable[[], Sequence['Summary']] = tuple
+        summaries: Callable[[], Sequence['Summary']] = tuple,
+        files: Mapping[str, str] = {},
 ) -> Optional[Exception]:
     r"""Tracks a prediction run; returns the failure instead of raising."""
     tracker = as_tracking(tracking)
@@ -439,7 +450,8 @@ def track_prediction(
     try:
         if manifest is None:
             raise ValueError('the run has no prediction manifest')
-        record = prediction_record(manifest, error, model, summaries())
+        record = prediction_record(manifest, error, model, summaries(),
+                                   files)
     except Exception as failure:
         logger.warning('Experiment tracking failed: %s; the prediction run '
                        'is not tracked', full_error(failure), exc_info=_debug())
