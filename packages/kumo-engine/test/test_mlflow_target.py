@@ -198,6 +198,7 @@ def test_ambient_sagemaker_calls_see_its_uri_and_restore_the_global_one(
 
     def lookup(self, name):
         seen.append((self.tracking_uri, mlflow.get_tracking_uri()))
+        return SimpleNamespace(experiment_id='1')
 
     monkeypatch.setattr(mlflow.MlflowClient, 'get_experiment_by_name',
                         lookup)
