@@ -262,6 +262,84 @@ def test_a_multilabel_query_is_evaluated_per_class(categories, monkeypatch,
         hits / sum(actual.values()))
 
 
+@pytest.fixture(scope='module')
+def every_task(categories, tmp_path_factory):
+    data = tmp_path_factory.mktemp('every-task')
+    rng = np.random.default_rng(3)
+    categories.orders.assign(ITEM_ID=rng.integers(0, 30, 1500)).to_parquet(
+        data / 'orders.parquet')
+    pd.DataFrame({
+        'ID': np.arange(60), 'FLAG': rng.integers(0, 2, 60).astype(bool),
+        'AGE': rng.integers(18, 80, 60).astype(float),
+        'REGION': rng.choice(list('xyz'), 60),
+        'TAGS': ['|'.join(rng.choice(list('pqrs'), 2)) for _ in range(60)],
+    }).to_parquet(data / 'users.parquet')
+    pd.DataFrame({'IID': np.arange(30)}).to_parquet(data / 'items.parquet')
+    pd.DataFrame({'LID': np.arange(200), 'USER_ID': rng.integers(0, 60, 200),
+                  'ITEM_ID': rng.integers(0, 30, 200)}).to_parquet(
+                      data / 'likes.parquet')
+    connector = kumo.FileConnector(root_dir=str(data))
+
+    def table(name, key, time=None, **stypes):
+        table = kumo.Table.from_source_table(
+            connector[f'{name}.parquet'], primary_key=key,
+            time_column=time).infer_metadata()
+        for column, stype in stypes.items():
+            table = table.with_column(column, stype=stype)
+        return table
+
+    tables = {
+        'users': table('users', 'ID', REGION=Stype.categorical,
+                       TAGS=Stype.multicategorical),
+        'orders': table('orders', 'EID', 'TS', USER_ID=Stype.ID,
+                        ITEM_ID=Stype.ID, CAT=Stype.categorical),
+        'items': table('items', 'IID'),
+        'likes': table('likes', 'LID', USER_ID=Stype.ID, ITEM_ID=Stype.ID),
+    }
+
+    def graph(*facts):
+        graph = kumo.Graph(
+            tables={name: tables[name] for name in ('users', 'items', *facts)},
+            edges=[Edge(src_table=fact, fkey=key, dst_table=target)
+                   for fact in facts for key, target in (('USER_ID', 'users'),
+                                                         ('ITEM_ID', 'items'))])
+        return graph, graph.snapshot()
+
+    # Static link prediction needs a graph without time columns.
+    return {'orders': graph('orders', 'likes'), 'likes': graph('likes')}
+
+
+@pytest.mark.parametrize('query', [
+    'COUNT(orders.*, 0, 7, days) > 0', 'users.FLAG',
+    'SUM(orders.AMT, 0, 7, days)', 'users.AGE',
+    'SUM(orders.AMT, 0, 7, days) FORECAST 3 TIMEFRAMES',
+    'FIRST(orders.CAT, 0, 7, days)', 'users.REGION',
+    'LIST_DISTINCT(orders.CAT, 0, 7, days) CLASSIFY', 'users.TAGS CLASSIFY',
+    'LIST_DISTINCT(orders.CAT, 0, 7, days) RANK TOP 2', 'users.TAGS RANK TOP 2',
+    'LIST_DISTINCT(orders.ITEM_ID, 0, 7, days) RANK TOP 3',
+    'LIST_DISTINCT(likes.ITEM_ID) RANK TOP 3',
+])
+def test_evaluate_labels_are_the_fit_tables_rows_at_its_anchors(
+        every_task, query):
+    graph, snapshot = every_task['likes' if 'likes' in query else 'orders']
+    pquery = kumo.PredictiveQuery(graph=graph,
+                                  query=f'PREDICT {query} FOR EACH users.ID')
+    fit = pquery.generate_training_table(snapshot)
+    rows = pd.read_parquet(fit.train_table_path)
+    anchors = ()
+    if pquery._parsed.query_type != 'static':
+        anchors = tuple(sorted(rows['TIMESTAMP'].unique().astype('int64')))[-2:]
+        rows = rows[rows['TIMESTAMP'].astype('int64').isin(anchors)]
+    with pquery._label_parts(snapshot, anchors, fit.generation_plan) as parts:
+        labels = pd.concat(pd.read_parquet(part) for part in parts)
+
+    def ordered(frame):
+        keys = [key for key in ('ENTITY1', 'TIMESTAMP') if key in frame]
+        return frame.sort_values(keys).reset_index(drop=True).astype(str)
+
+    pd.testing.assert_frame_equal(ordered(labels), ordered(rows))
+
+
 def test_evaluate_joins_several_anchors(snapshots, classifier, monkeypatch):
     trainer, run = classifier
     anchors = [ANCHOR - pd.Timedelta(days=14), ANCHOR]
