@@ -798,6 +798,13 @@
         },
         {
           "license": "Apache-2.0",
+          "name": "diskgraph-runtime",
+          "source": "diskgraph-runtime/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
           "name": "diskgraph-train-table",
           "source": "diskgraph-train-table/Cargo.toml",
           "source_kind": "workspace-first-party",
@@ -5202,6 +5209,6 @@
       ]
     }
   ],
-  "cargo_lock_sha256": "297851eb08303a13a97f091c68cf3ce5ccac633ad3d7fe09724c1506e486cdaf",
+  "cargo_lock_sha256": "6d56773093a88b0cfef8ad978b1d21d7fb042609cbbf0629d6d6386b9f20bff0",
   "schema": 1
 }

@@ -71,6 +71,8 @@ DISTRIBUTIONS = (
                      wheel_source_root="packages/kumo-core/src"),
     DistributionSpec("packages/kumo-databricks/pyproject.toml",
                      "kumo-databricks", ("LICENSE", )),
+    DistributionSpec("packages/kumo-adls/pyproject.toml", "kumo-adls",
+                     ("LICENSE", )),
     DistributionSpec("packages/kumo-gcs/pyproject.toml", "kumo-gcs",
                      ("LICENSE", )),
     DistributionSpec("packages/kumo-pql/pyproject.toml", "kumo-pql",

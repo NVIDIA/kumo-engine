@@ -28,6 +28,8 @@ from kumoapi.table import Column
 from kumo.engine._version import __version__
 from kumo.engine.config import configure
 from kumo.engine.connector import (
+    ADLSConnector,
+    ADLSIdentity,
     BigQueryConnector,
     BigQueryIdentity,
     Connector,
@@ -57,6 +59,8 @@ from kumo.engine.trainer import (
 )
 
 __all__ = [
+    "ADLSConnector",
+    "ADLSIdentity",
     "__version__",
     "configure",
     "EmbeddingModelStore",

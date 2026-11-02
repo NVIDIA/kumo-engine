@@ -2,6 +2,14 @@
 
 This directory contains scripts for developer setup, CI checks, operational utilities, and releases. See [release tooling](./release/README.md) for the release-specific commands.
 
+## Object-store transfer diagnostics
+
+Shared S3/ADLS harnesses live in [`benchmarks/object_store/`](benchmarks/object_store/):
+[`compare_live.py`](benchmarks/object_store/compare_live.py) measures production
+raw bulk readers; [`compare_streams.py`](benchmarks/object_store/compare_streams.py)
+is a [fixed-geometry loopback stream diagnostic](benchmarks/object_store/matched-transfer.md).
+Their scopes and request geometry differ; keep their measurements separate.
+
 ## Version stamping
 
 kumo-engine, kumo-sdk, the platform, the Studio images, and the Helm charts share one version, kept in the root [`VERSION`](../VERSION) file as a PEP 440 string such as `1.1.0.dev0` (also `1.1.0`, `1.1.0b1` and `1.1.0rc1`). After changing it, run:
