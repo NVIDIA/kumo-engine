@@ -401,9 +401,12 @@ def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
                                 requested if requested else 0.0))
         if table.skipped_rows:
             reason = f': {table.skip_reason}' if table.skip_reason else ''
+            sample = ', '.join(map(str, table.skipped_sample or ()))
+            full = '; full list: skipped/' if table.skipped_location else ''
             summaries.append(Note(
                 'notes', f'{table.skipped_rows:,} requested rows were not '
-                f'scored{reason}.'))
+                f'scored{reason}' + (f' ({sample})' if sample else '') +
+                f'{full}.'))
     stats = (manifest.stats or {}).get('predictions')
     if stats is not None and stats.counts is not None:
         summaries += prediction_summaries(
