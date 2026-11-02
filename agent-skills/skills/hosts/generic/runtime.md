@@ -279,7 +279,7 @@ training takes — tell the user before starting.
 
 ## Graph visualization
 
-Notebook calls display an interactive HTML view; `graph.visualize().as_widget()` selects a widget on compatible hosts.
+Notebook calls display an interactive HTML view.
 For scripts, save an SVG and report its path on the Python runtime, which may be remote.
 Retrieve exports through that environment's file tools.
 
