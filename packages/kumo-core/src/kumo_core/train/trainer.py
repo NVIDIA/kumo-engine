@@ -2124,11 +2124,10 @@ class Trainer(PortableConfigMixin):
                            'target bins.')
             return None
         column = self.encoders.target.col_name
-        target = df[column].to_numpy(dtype=float)
-        horizon = (df.groupby(level=0).cumcount()
+        horizon = (len(df) // len(outputs['target'])
                    if task_type == TaskType.FORECASTING else None)
         return evaluation_counts(task_type, pred=df[f'{column}_PRED'],
-                                 target=target, target_edges=edges,
+                                 target=df[column], target_edges=edges,
                                  horizon=horizon)
 
     def _top_score_counts(self, prob: Any) -> Any:

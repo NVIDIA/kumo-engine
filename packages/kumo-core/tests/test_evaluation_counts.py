@@ -298,7 +298,16 @@ def _counts_cases(rng):
     prob = rng.dirichlet(np.ones(7), 500).round(1)
     prob[:3] = np.nan
     pred, target = rng.normal(size=(2, 500))
+    labels = rng.random((500, 4))
     return [
+        (TaskType.MULTILABEL_CLASSIFICATION,
+         dict(prob=labels, pred=labels > 0.5, target=rng.random((500, 4)) > 0.6)),
+        (TaskType.FORECASTING,
+         dict(pred=pred, target=target, target_edges=(-1.0, 0.0, 2.0),
+              horizon=np.arange(500) % 20)),
+        (TaskType.FORECASTING,
+         dict(pred=pred, target=target, target_edges=(-1.0, 0.0, 2.0),
+              horizon=20)),
         (TaskType.BINARY_CLASSIFICATION,
          dict(prob=prob[:, :2], target=rng.integers(0, 2, 500),
               threshold=0.3)),
@@ -327,7 +336,8 @@ def test_counts_do_not_depend_on_the_chunk_size(monkeypatch):
 
 
 def test_multiclass_top_k_breaks_ties_and_nans_like_a_stable_sort():
-    columns = _counts_cases(np.random.default_rng(7))[1][1]
+    columns = dict(_counts_cases(np.random.default_rng(7)))[
+        TaskType.MULTICLASS_CLASSIFICATION]
     prob, target = columns['prob'], columns['target']
 
     counts = evaluation_counts(TaskType.MULTICLASS_CLASSIFICATION, **columns)
@@ -344,9 +354,17 @@ def test_multiclass_top_k_breaks_ties_and_nans_like_a_stable_sort():
     (TaskType.BINARY_CLASSIFICATION,
      dict(prob=np.ones(4_000_000), target=np.ones(4_000_000),
           threshold=0.5)),
+    (TaskType.MULTILABEL_CLASSIFICATION,
+     dict(prob=np.ones((200_000, 50), np.float32),
+          pred=np.ones((200_000, 50), bool),
+          target=np.zeros((200_000, 50), bool))),
     (TaskType.REGRESSION,
-     dict(pred=np.ones(4_000_000), target=np.ones(4_000_000),
-          target_edges=(0.0, 1.0))),
+     dict(pred=np.ones(16_000_000, np.float32),
+          target=np.ones(16_000_000, np.float32), target_edges=(0.0, 1.0))),
+    (TaskType.FORECASTING,
+     dict(pred=np.ones(16_000_000, np.float32),
+          target=np.ones(16_000_000, np.float32), target_edges=(0.0, 1.0),
+          horizon=16)),
 ])
 def test_counts_allocate_far_less_than_their_input(task_type, columns):
     import tracemalloc
