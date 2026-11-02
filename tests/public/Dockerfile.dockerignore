@@ -19,6 +19,8 @@
 !packages/kumo-core/src/kumo_core/io/__init__.py
 !packages/kumo-core/src/kumo_core/io/filesystem.py
 !packages/kumo-core/src/kumo_core/io/json.py
+!packages/kumo-core/src/kumo_core/object_store_sink.py
+!packages/kumo-core/src/kumo_core/artifact_export.py
 !packages/kumo-core/src/kumo_core/stype_inference.py
 !packages/kumo-core/src/kumo_core/types/__init__.py
 !packages/kumo-core/src/kumo_core/types/enums.py
@@ -32,6 +34,8 @@
 !packages/kumo-s3/tests/**
 !packages/kumo-gcs/src/**
 !packages/kumo-gcs/tests/**
+!packages/kumo-adls/src/**
+!packages/kumo-adls/tests/**
 !packages/kumo-databricks/src/**
 !packages/kumo-databricks/tests/**
 !packages/kumo-snowflake/src/**

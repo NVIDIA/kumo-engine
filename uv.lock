@@ -51,6 +51,7 @@ torch-geometric = "2026-10-13T00:00:00Z"
 members = [
     "diskgraph",
     "kumo",
+    "kumo-adls",
     "kumo-api",
     "kumo-bigquery",
     "kumo-core",
@@ -3111,6 +3112,40 @@ provides-extras = ["tracing", "drawing", "rest", "full", "test", "dev", "data-pl
 public-tests = [{ name = "torch", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "kumo", group = "public-tests" } }]
 
 [[package]]
+name = "kumo-adls"
+version = "0.1.0.dev1"
+source = { editable = "packages/kumo-adls" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "azure-identity" },
+    { name = "azure-storage-file-datalake" },
+    { name = "fsspec", extra = ["http"] },
+    { name = "kumo-api" },
+    { name = "kumo-core" },
+    { name = "pyarrow" },
+    { name = "requests" },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "azure-core", specifier = ">=1.31,<2" },
+    { name = "azure-identity", specifier = ">=1.25,<2" },
+    { name = "azure-storage-file-datalake", specifier = ">=12.22,<13" },
+    { name = "fsspec" },
+    { name = "kumo-api", editable = "packages/kumo-api" },
+    { name = "kumo-core", editable = "packages/kumo-core" },
+    { name = "pyarrow", specifier = ">=24,<25" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" },
+    { name = "requests", specifier = ">=2.31,<3" },
+]
+provides-extras = ["test"]
+
+[[package]]
 name = "kumo-api"
 version = "3.0.0"
 source = { editable = "packages/kumo-api" }
@@ -3334,6 +3369,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+adls = [
+    { name = "kumo-adls" },
+]
 bigquery = [
     { name = "kumo-bigquery" },
 ]
@@ -3378,6 +3416,7 @@ requires-dist = [
     { name = "faiss-cpu", marker = "(platform_machine != 'x86_64' and extra == 'cpu') or (sys_platform != 'linux' and extra == 'cpu')", specifier = "==1.14.3" },
     { name = "faiss-gpu", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.14.3" },
     { name = "filelock", specifier = ">=3.0.0" },
+    { name = "kumo-adls", marker = "extra == 'adls'", editable = "packages/kumo-adls" },
     { name = "kumo-api", editable = "packages/kumo-api" },
     { name = "kumo-bigquery", marker = "extra == 'bigquery'", editable = "packages/kumo-bigquery" },
     { name = "kumo-core", editable = "packages/kumo-core" },
@@ -3395,7 +3434,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'test'", specifier = ">=2.9,<2.13" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
 ]
-provides-extras = ["cpu", "test", "snowflake", "databricks", "bigquery", "s3", "text", "gcs"]
+provides-extras = ["cpu", "test", "snowflake", "databricks", "bigquery", "s3", "text", "adls", "gcs"]
 
 [[package]]
 name = "kumo-gcs"

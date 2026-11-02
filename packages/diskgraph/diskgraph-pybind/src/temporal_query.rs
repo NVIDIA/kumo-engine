@@ -716,12 +716,14 @@ fn validate_frame_plan(plan: &FramePlan, root_type: &str) -> Result<(), String> 
     Ok(())
 }
 
+type FramePath<'a> = (Vec<(&'a EdgeRelationMetadata, Arc<TableReader>)>, String);
+
 /// Each hop's relation and source table, resolved independently of the anchors.
 fn frame_path<'a>(
     reader: &'a GraphIndexReader,
     plan: &FramePlan,
     root_type: &str,
-) -> Result<(Vec<(&'a EdgeRelationMetadata, Arc<TableReader>)>, String), String> {
+) -> Result<FramePath<'a>, String> {
     let mut destination = root_type.to_string();
     let mut hops = Vec::with_capacity(plan.path.len());
     for step in &plan.path {

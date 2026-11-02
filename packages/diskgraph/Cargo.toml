@@ -16,6 +16,7 @@ members = [
     "diskgraph-explain",
     "diskgraph-train-table",
     "diskgraph-engine",
+    "diskgraph-runtime",
     "diskgraph-gateway",
     "diskgraph-pybind",
 ]

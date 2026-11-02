@@ -34,7 +34,7 @@ RUN uv export --frozen --no-dev --no-emit-workspace --no-hashes \
 COPY --chown=65534:65534 . .
 RUN uv pip install --system --no-deps ./packages/kumo-api ./packages/kumo-sdk \
     ./packages/kumo-pql ./packages/kumo-core ./packages/kumo-engine \
-    ./packages/kumo-s3 ./packages/kumo-gcs ./packages/kumo-snowflake \
+    ./packages/kumo-s3 ./packages/kumo-gcs ./packages/kumo-adls ./packages/kumo-snowflake \
     ./packages/kumo-databricks ./packages/kumo-bigquery '.[full,test]' \
     && uv pip check
 ENV PYTHONPATH=/src DEPLOY_STAGE=test KUMO_TESTING=True \

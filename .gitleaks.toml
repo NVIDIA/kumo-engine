@@ -34,3 +34,11 @@ condition = "AND"
 regexTarget = "secret"
 regexes = ['''^YOUR_API_KEY$''']
 paths = ['''^packages/kumo-ui-catalog/src/stories/components/ui/Markdown\.stories\.tsx$''']
+
+[[allowlists]]
+description = "This loopback benchmark authentication-scheme label is not a credential."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^synthetic_sigv4$''']
+paths = ['''^scripts/benchmarks/object_store/compare_streams\.py$''']
