@@ -138,6 +138,21 @@ def test_the_version_serves_with_the_cuda_of_the_installed_torch(
     assert cuda_version(None) == '12.6' and cuda_version('12.4') == '12.4'
 
 
+@pytest.mark.parametrize('system, machine', [('linux', 'aarch64'),
+                                             ('darwin', 'x86_64')])
+def test_only_a_linux_x86_64_host_registers_a_runnable_version(
+        monkeypatch, system, machine):
+    from kumo_snowflake.registry import ServingEnvironmentError
+
+    from kumo.engine.integrations._snowflake_model import check_host
+
+    monkeypatch.setattr('sys.platform', system)
+    monkeypatch.setattr('platform.machine', lambda: machine)
+    with pytest.raises(ServingEnvironmentError,
+                       match=f'host is {system} {machine}: .*DiskGraph'):
+        check_host()
+
+
 def test_a_bundled_wheel_supplies_the_requirements(monkeypatch):
     import importlib.metadata as metadata
 

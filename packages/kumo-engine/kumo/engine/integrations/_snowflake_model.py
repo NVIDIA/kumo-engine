@@ -4,6 +4,7 @@
 r"""A Kumo bundle as a Snowflake Model Registry version."""
 
 import json
+import platform
 import shutil
 import sys
 from pathlib import Path
@@ -64,6 +65,7 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
         SERVING_SNAPSHOT_KEY,
     )
 
+    check_host()
     bundle = Path(bundle_dir)
     paths, _ = read_bundle_artifact_paths(bundle)
     task = bundle_task_type(paths)
@@ -108,6 +110,16 @@ def log_model_args(bundle_dir: str, metadata: Mapping[str, str],
         options=options,
         **environment,
     )
+
+
+def check_host() -> None:
+    r"""Rejects hosts whose native code the Linux x86_64 image cannot run."""
+    host = f'{sys.platform} {platform.machine()}'
+    if host != 'linux x86_64':
+        raise _registry.ServingEnvironmentError(
+            f"Snowpark Container Services runs linux x86_64, but this host "
+            f"is {host}: the version embeds this installation's DiskGraph "
+            f"native module, so register from a Linux x86_64 host.")
 
 
 def cuda_version(requested: Optional[str]) -> str:
