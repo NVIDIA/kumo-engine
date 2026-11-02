@@ -512,6 +512,9 @@ class OutputDestination(Record):
     location: Optional[str]
 
 
+PATH_CONNECTORS = ('LOCAL_FILE', 'S3', 'GCS')
+
+
 @dataclass(frozen=True, kw_only=True)
 class PredictionOutput(Record):
     artifact: str
@@ -520,7 +523,7 @@ class PredictionOutput(Record):
     def as_artifact(self, key: str) -> Artifact:
         connector, location = (self.destination.connector,
                                self.destination.location)
-        file = connector in ('LOCAL_FILE', 'S3', 'GCS') or (
+        file = connector in PATH_CONNECTORS or (
             location or '').startswith(('/', '@'))
         return Artifact('prediction_output', self.artifact, location, True,
                         'kumo.output_uri' if file else 'kumo.output_table',
