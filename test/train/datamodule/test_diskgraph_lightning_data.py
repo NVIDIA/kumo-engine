@@ -904,24 +904,38 @@ def test_val_dataloader_does_not_replay_wheel_iterator(
     assert len(calls["history"]) == 1
 
 
-def test_val_dataloader_honors_max_val_steps_without_replay(
+@pytest.mark.parametrize("stage", ["val", "test"])
+@pytest.mark.parametrize("max_steps, num_batches, num_rows", [
+    (3, 3, 6),
+    (None, 10, 20),
+])
+def test_eval_dataloader_honors_max_steps_without_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    stage: str,
+    max_steps: int | None,
+    num_batches: int,
+    num_rows: int,
 ) -> None:
-    calls = _install_fake_diskgraph(monkeypatch, batches_per_iterator=10)
+    input_ids = [[2 * i, 2 * i + 1] for i in range(10)]
+    calls = _install_fake_diskgraph(monkeypatch,
+                                    batch_input_ids_by_stage={stage: input_ids})
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={"val": 20}),
+        _manifest(tmp_path=tmp_path, stage_counts={stage: 20}),
         _mapper_bank(),
         sampling_plan={"layers": []},
         train_batch_size=2,
         eval_batch_size=2,
-        max_val_steps=3,
+        **{f"max_{stage}_steps": max_steps},
     )
+    loader = getattr(dm, f"{stage}_dataloader")
 
-    assert len(dm.val_dataloader()) == 3
-    batches = list(dm.val_dataloader())
+    assert len(loader()) == num_batches
+    batches = list(loader())
 
-    assert len(batches) == 3
+    assert len(batches) == num_batches
+    assert sum(batch["train_table"].input_id.numel()
+               for batch in batches) == num_rows
     assert len(calls["history"]) == 1
 
 
