@@ -100,7 +100,8 @@ Run the pure output and workflow checks in the existing development environment:
 These tests need pytest, NumPy, pandas, and PyYAML. They require no GPU or cloud
 access. The existing OSS Readiness pytest job also runs them.
 
-The CPU build and GPU jobs have separate time limits. Build time no longer
-uses the GPU job's budget. GitHub reports queue, build, and GPU job durations.
+The CPU build and GPU jobs have separate time limits. The wheel job has a
+60-minute limit, and the GPU job has a 22-minute limit. GitHub reports queue,
+build, and GPU job durations.
 The workflow retains the task summary as an artifact. Source and package
 test workflows keep their existing checks.

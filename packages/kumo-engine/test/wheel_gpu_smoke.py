@@ -97,8 +97,8 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
             values = ordered[['False_PROB', 'True_PROB']].to_numpy(dtype=float)
             if (not ((values >= 0) & (values <= 1)).all() or
                     not np.allclose(values.sum(axis=1), 1, atol=1e-6, rtol=1e-7)
-                    or not np.array_equal(ordered['TARGET_PRED'],
-                                          values[:, 1] > .5)):
+                    or not np.array_equal(ordered['TARGET_PRED'], values[:, 1]
+                                          > .5)):
                 raise ValueError(
                     'Binary probabilities or chosen labels are invalid')
         else:
@@ -116,10 +116,10 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
         if (not coordinates or len(set(coordinates)) != len(coordinates)
                 or frame[key].isna().any()
                 or frame.duplicated(['ENTITY', key]).any()
-                or set(zip(frame['ENTITY'], frame[key])) != {
-                    (entity, coordinate)
-                    for entity in ids for coordinate in coordinates
-                }):
+                or set(zip(frame['ENTITY'],
+                           frame[key])) != {(entity, coordinate)
+                                            for entity in ids
+                                            for coordinate in coordinates}):
             raise ValueError(
                 'Prediction output coordinates are incomplete or repeated')
         values = frame.pivot(
@@ -195,24 +195,32 @@ def compare_predictions(before, after, *, task, atol, before_decisions=None,
     choices = [np.asarray(v) for v in (before_decisions, after_decisions)]
     for values, selected in zip((left, right), choices):
         if task in ('binary', 'multilabel', 'multiclass'):
-            expected_shape = (len(values),) if task == 'binary' else values.shape
+            expected_shape = (
+                len(values), ) if task == 'binary' else values.shape
             if selected.shape != expected_shape or selected.dtype != np.bool_:
-                raise ValueError('Prediction decisions have invalid label coordinates')
+                raise ValueError(
+                    'Prediction decisions have invalid label coordinates')
             if task == 'multiclass':
                 if (not (selected.sum(axis=1) == 1).all() or not np.array_equal(
                         values[selected], values.max(axis=1))):
-                    raise ValueError('Prediction decisions must choose a highest score')
-            elif not np.array_equal(
-                    selected, (values[:, 1] if task == 'binary' else values) > .5):
-                raise ValueError('Prediction decisions must follow the threshold')
+                    raise ValueError(
+                        'Prediction decisions must choose a highest score')
+            else:
+                threshold_scores = values[:, 1] if task == 'binary' else values
+                if not np.array_equal(selected, threshold_scores > .5):
+                    raise ValueError(
+                        'Prediction decisions must follow the threshold')
         elif task in ('multilabel_ranking', 'static_link', 'temporal_link'):
-            if (selected.shape != values.shape or not np.issubdtype(
-                    selected.dtype, np.number) or not np.isfinite(selected).all()):
-                raise ValueError('Prediction decisions have invalid rank coordinates')
+            if (selected.shape != values.shape
+                    or not np.issubdtype(selected.dtype, np.number)
+                    or not np.isfinite(selected).all()):
+                raise ValueError(
+                    'Prediction decisions have invalid rank coordinates')
             ranks = np.sort(selected, axis=1)
             if (not np.isin(ranks[:, 0], [0, 1]).all() or not np.array_equal(
                     ranks, ranks[:, :1] + np.arange(values.shape[1]))):
-                raise ValueError('Prediction decisions must contain unique contiguous ranks')
+                raise ValueError(
+                    'Prediction decisions must contain unique contiguous ranks')
         else:
             raise ValueError('Unknown prediction decisions task')
     if task == 'multiclass':
@@ -228,9 +236,12 @@ def compare_predictions(before, after, *, task, atol, before_decisions=None,
         # A prefix minimum checks every inverted pair, including tie chains.
         for values in (left, right):
             for selected in choices:
-                ordered = np.take_along_axis(values, selected.argsort(axis=1), axis=1)
-                if (ordered - np.minimum.accumulate(ordered, axis=1) > atol).any():
-                    raise ValueError('Prediction decisions changed outside a near tie')
+                ordered = np.take_along_axis(values, selected.argsort(axis=1),
+                                             axis=1)
+                if (ordered - np.minimum.accumulate(ordered, axis=1)
+                        > atol).any():
+                    raise ValueError(
+                        'Prediction decisions changed outside a near tie')
     return result
 
 
@@ -423,8 +434,10 @@ def prepare_task(task, root, metadata, directory, graphs):
     inputs = directory / 'inputs.parquet'
     import pyarrow as pa
     pq.write_table(
-        pa.Table.from_pylist([{key: row[key]
-                               for key in columns} for row in test]), inputs)
+        pa.Table.from_pylist([{
+            key: row[key]
+            for key in columns
+        } for row in test]), inputs)
     return dict(query=query, snapshot=snapshot, training_table=table,
                 input_file=inputs, ids=ids, classes=classes, anchor=anchor)
 
@@ -441,8 +454,8 @@ def observe_cuda(state):
 
         def check(self, module, values):
             if (str(module.device) != 'cuda:0' or not values
-                    or any(not isinstance(value, torch.Tensor) or
-                           str(value.device) != 'cuda:0' or not value.numel()
+                    or any(not isinstance(value, torch.Tensor) or str(
+                        value.device) != 'cuda:0' or not value.numel()
                            for value in values)):
                 raise ValueError('Completed work did not use CUDA tensors')
             torch.cuda.synchronize()
