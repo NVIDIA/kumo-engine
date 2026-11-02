@@ -15,7 +15,10 @@ generates is undocumented) and has not been run end to end; see
   Tracking through the connector's Snowpark session.
 - **`KUMO_SCORE`** (`KUMO_SCORE_TASK`, daily 03:00 UTC) runs `score_job.py`,
   loading the version `champion` points at and writing
-  `USERS_CHURN_PREDICTIONS`.
+  `USERS_CHURN_PREDICTIONS`. It scores with `Trainer.predict`, so each run is
+  a Kumo prediction run under the artifact root that `evaluate` and
+  `score_drift` read; a native `run_batch` job on the version writes scores
+  only.
 
 To review a model before scoring, drop the alias from the registry location
 in `jobs.mlops` and move `champion` yourself

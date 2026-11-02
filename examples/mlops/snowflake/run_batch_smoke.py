@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Live smoke: register a model with a stage snapshot and score it with run_batch.
 
-See "Batch inference in Snowflake" in packages/kumo-engine/docs/mlops.md.
+run_batch writes scores only: no Kumo prediction run for evaluate or
+score_drift. See "Batch inference in Snowflake" in
+packages/kumo-engine/docs/mlops.md.
 
     python run_batch_smoke.py --connection-name <connections.toml entry> \\
         --warehouse WH --database ML --schema MODELS \\
