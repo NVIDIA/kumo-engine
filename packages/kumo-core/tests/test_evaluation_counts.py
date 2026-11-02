@@ -372,3 +372,16 @@ def test_counts_allocate_far_less_than_their_input(task_type, columns):
     peak = tracemalloc.get_traced_memory()[1]
     tracemalloc.stop()
     assert peak < columns.get('prob', columns.get('pred')).nbytes / 2
+
+
+def test_top_score_counts_copy_the_scores_once():
+    import tracemalloc
+
+    from kumo_core.evaluation_counts import top_score_counts
+    scores = np.random.default_rng(8).normal(size=4_000_000)
+
+    tracemalloc.start()
+    top_score_counts(scores)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert peak < 1.5 * scores.nbytes

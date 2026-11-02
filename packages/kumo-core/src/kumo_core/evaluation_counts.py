@@ -77,10 +77,13 @@ def top_score_counts(scores: Any) -> Counts:
     scores = np.asarray(scores, dtype=np.float64)
     scores = scores[np.isfinite(scores)]
     edges = () if not scores.size else tuple(np.unique(np.quantile(
-        scores, np.linspace(0, 1, _TOP_SCORE_BINS + 1))).tolist())
-    counts = Counts({'top_score': edges})
-    counts.histogram('top_score', 'top_score', scores)
-    counts.extent('top_score', scores)
+        scores, np.linspace(0, 1, _TOP_SCORE_BINS + 1),
+        overwrite_input=True)).tolist())
+    scores.sort()
+    counts = Counts({'top_score': edges}, {'top_score': np.diff(
+        np.searchsorted(scores, edges), prepend=0, append=scores.size)})
+    if scores.size:
+        counts.extents['top_score'] = (float(scores[0]), float(scores[-1]))
     return counts
 
 
