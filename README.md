@@ -31,10 +31,10 @@ For example, to predict whether a customer will order in the next 30 days, Kumo 
 
 **Benchmark highlight:** [One million three-hop neighborhoods in 19 seconds](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/resources/benchmarks).
 
-<img src="https://docs.nvidia.com/sdgm/api/fern-docs/favicon.ico" width="20" height="14" alt=""> **[Documentation](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-started-with-kumo-engine/overview)**<br>
-🛠️ **[Installation](#installation)**<br>
-🚀 **[Quick Tour](#quick-tour)**<br>
-📊 **[Benchmarks](#benchmarks)**
+**[Documentation](https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/get-started-with-kumo-engine/overview)**<br>
+**[Installation](#installation)**<br>
+**[Quick Tour](#quick-tour)**<br>
+**[Benchmarks](#benchmarks)**
 
 ## Key Capabilities
 
