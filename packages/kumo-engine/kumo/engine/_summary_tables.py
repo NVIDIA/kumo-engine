@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from kumo_core.summaries import (
+    BarChart,
     Confusion,
     Dataset,
     Histogram,
@@ -19,6 +20,8 @@ from kumo_core.summaries import (
     Table,
     Tag,
 )
+
+from kumo.engine._svg import bar_chart
 
 _DEFINITIONS = frozenset({'from', 'to', 'threshold'})
 
@@ -34,10 +37,11 @@ class Routed:
     tables: List[Table] = field(default_factory=list)
     card: List[Summary] = field(default_factory=list)
     datasets: List[Dataset] = field(default_factory=list)
+    files: Dict[str, str] = field(default_factory=dict)
 
 
 def route(summaries: Sequence[Summary], charts: bool) -> Routed:
-    r"""Sorts summaries by how a tracker writes them."""
+    r"""Sorts summaries by how a tracker writes them; skips unknown types."""
     routed, tables = Routed(), []
     series: Dict[str, Tuple[str, Dict[str, Dict[int, float]]]] = {}
     histograms: Dict[str, List[Histogram]] = {}
@@ -59,6 +63,8 @@ def route(summaries: Sequence[Summary], charts: bool) -> Routed:
             if group and group[0].edges != summary.edges:
                 name = summary.name
             histograms.setdefault(name, []).append(summary)
+        elif isinstance(summary, BarChart):
+            routed.files[f'charts/{summary.name}.svg'] = bar_chart(summary)
         elif isinstance(summary, Dataset):
             routed.datasets.append(summary)
         elif isinstance(summary, Note) or (isinstance(summary, Table)
@@ -68,8 +74,6 @@ def route(summaries: Sequence[Summary], charts: bool) -> Routed:
             tables.append(confusion_table(summary))
         elif isinstance(summary, Table):
             tables.append(summary)
-        else:
-            raise TypeError(f'No route for {type(summary).__name__}')
     routed.tables = [
         *(_series_table(name, x_label, columns)
           for name, (x_label, columns) in series.items()),

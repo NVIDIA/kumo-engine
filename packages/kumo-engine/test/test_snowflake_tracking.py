@@ -12,7 +12,7 @@ from unittest import mock
 import _snowflake_experiment_fake
 import pytest
 from _snowflake_experiment_fake import FakeExperimentTracking, FakeSession
-from kumo_core.summaries import Note, Scalar, Series, Table, Tag
+from kumo_core.summaries import BarChart, Note, Scalar, Series, Table, Tag
 from kumoapi.model_plan import ModelPlan
 from kumoapi.plugin import PublishedModel
 from test_fit_events import table_and_snapshot  # noqa: F401
@@ -309,8 +309,10 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
             Table('data/splits', ('split', 'rows'),
                   (('train', 8), ('val', 1), ('test', 1)), brief=True),
             Series('holdout/by_k/map', ((1, 0.5), (10, 0.25)), x_label='k'),
-            Series('pred/True_PROB_count_by_score_pct', ((0, 1.0), (1, 2.0)),
+            Series('pred/score_histogram', ((0, 1.0), (1, 2.0)),
                    'score_pct', chart=True),
+            BarChart('pred/score_histogram', 't', ('score', 'ents'),
+                     (0.0, 0.5, 1.0), (1.0, 2.0)),
             Table('data_preparation', ('step', 'seconds', 'bytes', 'reused'),
                   (('training_table', 12.5, 4300, False),), brief=True),
             Tag('prep.training_table.seconds', '12.5'),
@@ -333,6 +335,8 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
         'Full lineage: `_provenance.json`. Tables: `holdout/by_k.json`, '
         '`pred.json`.'])
     assert ('duration_seconds', 90.0, 0) in run['metrics']
+    assert run['artifacts']['charts/pred/score_histogram.svg'].startswith(
+        '<svg')
     assert run['params']['prep.training_table.seconds'] == '12.5'
     assert run['params']['prep.training_table.bytes'] == '4300'
 

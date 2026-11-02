@@ -684,7 +684,7 @@ def test_series_and_histograms_become_one_table_per_name_prefix(
 
 
 def test_charted_series_become_metrics_over_their_steps(tracking_uri):
-    from kumo_core.summaries import Series
+    from kumo_core.summaries import BarChart, Series
 
     from kumo.engine._tracking import RunRecord
     from kumo.engine.integrations.mlflow import MlflowTracking
@@ -693,14 +693,19 @@ def test_charted_series_become_metrics_over_their_steps(tracking_uri):
     tags = {'kumo.kind': 'prediction'}
     tracker.start(RunRecord(name='r', tags=tags))
     tracker.finish(RunRecord(name='r', tags=tags, summaries=(
-        Series('pred/c@d_count_by_score_pct', ((0, 3.0), (1, 0.0)),
-               'score_pct', chart=True),)), None)
+        Series('pred/score_histogram/c@d', ((0, 3.0), (1, 0.0)),
+               'score_pct', chart=True),
+        BarChart('pred/score_histogram/c', 't', ('score', 'ents'),
+                 (0.0, 0.5, 1.0), (3.0, 0.0)))), None)
 
     run = mlflow.get_run(tracker.run_id)
     history = mlflow.MlflowClient().get_metric_history(
-        tracker.run_id, 'pred/c_at_d_count_by_score_pct')
+        tracker.run_id, 'pred/score_histogram/c_at_d')
     assert [(m.step, m.value) for m in history] == [(0, 3.0), (1, 0.0)]
     assert 'mlflow.loggedArtifacts' not in run.data.tags
+    assert mlflow.artifacts.load_text(
+        f'{run.info.artifact_uri}/charts/pred/score_histogram/c.svg'
+    ).startswith('<svg')
 
 
 NOTES = "*kumo rewrites everything above this line; editing it stops kumo's updates.*"
@@ -911,9 +916,11 @@ def test_kumo_describes_an_unused_experiment_and_refreshes_its_own_text(
     client = mlflow.MlflowClient()
     client.create_experiment('mine', tags={'mlflow.note.content': 'Mine.'})
     client.create_run(client.create_experiment('used'))
-    client.create_run(client.create_experiment(
-        'stale', tags={'mlflow.note.content': 'kumo-engine: old names'}))
-    for name in ('new', 'mine', 'used', 'stale'):
+    for name, note in (('stale', 'kumo-engine: old names'),
+                       ('older', 'Runs from kumo-engine. Old.')):
+        client.create_run(client.create_experiment(
+            name, tags={'mlflow.note.content': note}))
+    for name in ('new', 'mine', 'used', 'stale', 'older'):
         tracker = MlflowTracking(name, log_system_metrics=False)
         for _ in range(2):
             tracker.start(RunRecord(name='r', tags={'kumo.kind': 'fit'}))
@@ -923,4 +930,4 @@ def test_kumo_describes_an_unused_experiment_and_refreshes_its_own_text(
             for experiment in client.search_experiments()
             if experiment.name != 'Default'} == {
         'new': _EXPERIMENT_NOTE, 'mine': 'Mine.', 'used': None,
-        'stale': _EXPERIMENT_NOTE}
+        'stale': _EXPERIMENT_NOTE, 'older': _EXPERIMENT_NOTE}

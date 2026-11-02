@@ -19,6 +19,7 @@ from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.prediction_counts import count_predictions
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.summaries import (
+    BarChart,
     Confusion,
     Dataset,
     Histogram,
@@ -646,14 +647,18 @@ def test_prediction_record_of_the_recorded_run():
         'threshold_source': 'argument',
     }
     assert record.metrics == {}
+    per_pct = tuple(np.bincount((SCORES * 100).astype(int),
+                                minlength=100).astype(float).tolist())
     assert record.summaries == (
         Scalar('pred/rows', 50),
         Histogram('pred/histogram/True_PROB', PROBABILITY_EDGES, tuple(
             np.bincount(np.searchsorted(PROBABILITY_EDGES, SCORES, 'right'),
                         minlength=102).tolist()), (min(SCORES), max(SCORES))),
-        Series('pred/True_PROB_count_by_score_pct', tuple(enumerate(
-            np.bincount((SCORES * 100).astype(int), minlength=100).astype(
-                float).tolist())), 'score_pct', chart=True),
+        Series('pred/score_histogram', tuple(enumerate(per_pct)), 'score_pct',
+               chart=True),
+        BarChart('pred/score_histogram', 'Scores of 50 entities, 2024-04-29',
+                 ('score', 'entities'), PROBABILITY_EDGES, per_pct, (),
+                 ('this run', 'holdout, scaled to the same total')),
         Table('pred/summary', ('column', 'mean', 'min', 'max'),
               (('True_PROB', SCORES.sum() / 50, 0.2, 0.6),), brief=True),
         Scalar('pred/positive_rate', 0.62))
@@ -764,8 +769,15 @@ def test_a_failing_summary_is_a_tracking_failure_not_a_predict_one():
     assert isinstance(failure, OSError) and recorder.calls == []
 
 
+def test_a_summary_type_no_tracker_knows_is_skipped():
+    from kumo.engine._summary_tables import Routed, route
+
+    assert route([object()], True) == Routed()
+
+
 def test_every_summary_type_is_routed():
     from kumo_core.summaries import (
+        BarChart,
         Confusion,
         Dataset,
         Histogram,
@@ -777,10 +789,13 @@ def test_every_summary_type_is_routed():
     )
 
     from kumo.engine._summary_tables import route
+    from kumo.engine._svg import bar_chart
 
-    chart = Series('pred/x_count_by_score_pct', ((0, 1.0), ), chart=True)
+    chart = Series('pred/score_histogram', ((0, 1.0), ), chart=True)
+    bars = BarChart('pred/score_histogram', 't', ('x', 'y'), (0.0, 1.0),
+                    (1.0, ))
     summaries = [
-        Scalar('a', 1.0), Tag('t', 'v'), chart,
+        Scalar('a', 1.0), Tag('t', 'v'), chart, bars,
         Histogram('pred/h', (0.5, ), (1, 2)), Table('brief', ('c', ), (),
                                                     brief=True),
         Table('big', ('c', ), ()), Note('notes', 'n'),
@@ -791,7 +806,9 @@ def test_every_summary_type_is_routed():
     assert charted.charts == {chart.name: chart.points}
     assert [t.name for t in charted.tables] == [
         'pred', 'big', 'test/confusion']
-    assert 'pred/x_count_by_score_pct' not in tabled.charts
+    assert 'pred/score_histogram' not in tabled.charts
+    assert charted.files == tabled.files == {
+        'charts/pred/score_histogram.svg': bar_chart(bars)}
     assert len(tabled.tables) == 4
     assert [type(s) for s in charted.card] == [Table, Note]
     assert (len(charted.scalars), charted.tags,

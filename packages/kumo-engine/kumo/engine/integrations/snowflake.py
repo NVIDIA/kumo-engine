@@ -254,8 +254,9 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         self._log_metrics({s.name: s.value for s in routed.scalars},
                           _MAX_METRICS)
         self._log_params(routed.tags)
-        self._log_artifacts({f'{table.name}.json': table_json(table)
-                             for table in routed.tables})
+        self._log_artifacts({**routed.files, **{
+            f'{table.name}.json': table_json(table)
+            for table in routed.tables}})
 
     def _log_card(self, record: RunRecord) -> None:
         try:

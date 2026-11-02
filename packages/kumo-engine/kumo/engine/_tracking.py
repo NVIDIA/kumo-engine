@@ -280,7 +280,8 @@ def prediction_record(manifest: 'PredictionManifest',
                            default=str)
             },
             summaries=(*_prediction_summaries(
-                manifest, holdout_counts(model_manifest), window), *summaries,
+                manifest, holdout_counts(model_manifest), window,
+                entity(getattr(trained, 'query', None)), as_of), *summaries,
                 *prep_summaries(manifest.parents.snapshot)),
             error=None if error is None else format_error(error),
         ))
@@ -378,8 +379,9 @@ def _utc(text: str) -> datetime:
 
 
 def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
-                          window: Optional[Sequence[Any]] = None
-                          ) -> List[Summary]:
+                          window: Optional[Sequence[Any]] = None,
+                          scored: Optional[str] = None,
+                          as_of: Optional[str] = None) -> List[Summary]:
     from kumo_core.prediction_counts import prediction_summaries
     from kumo_core.score_counts import Counts
 
@@ -402,7 +404,7 @@ def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
             Counts.from_dict(stats.counts),
             threshold=manifest.scoring.binary_classification_threshold,
             baseline=baseline, timeframe=None if window is None else tuple(
-                window))
+                window), entity=scored or 'entities', as_of=as_of)
     return summaries
 
 
