@@ -89,6 +89,30 @@ def test_a_download_that_ignores_the_range_is_refused():
             reader.read_at(10, 100)
 
 
+def test_a_read_after_a_dropped_download_starts_where_asked():
+    fs, volume = filesystem({f'{ROOT}/a': BODY})
+    do = volume.do
+
+    def dropping(*args, **kwargs):
+        volume.do = do
+        response = do(*args, **kwargs)
+        stream = response['contents']
+
+        def read(size, read=stream.read):
+            read(size // 2)
+            stream.read = read
+            raise ConnectionError('connection reset')
+
+        stream.read = read
+        return response
+
+    volume.do = dropping
+    with fs.open_input_file(f'{ROOT}/a') as reader:
+        with pytest.raises(OSError, match='ConnectionError'):
+            reader.read_at(10, 100)
+        assert reader.read_at(10, 100) == BODY[100:110]
+
+
 def test_directories_and_missing_paths():
     fs, volume = filesystem({
         f'{ROOT}/s/kumo_snapshot.json': b'{}',
