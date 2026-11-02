@@ -16,6 +16,27 @@ SOURCE = Path(__file__).parents[1] / 'scripts/weekly_b9.py'
 
 
 class RetainedChecks(unittest.TestCase):
+    def test_reviewed_rank_budget_reaches_all_three_reference_comparisons(self):
+        spec = importlib.util.spec_from_file_location('b9', SOURCE)
+        b9 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(b9)
+        # Reduced from the largest measured inversion in the native calibration.
+        reference = dict(entity_ids=[688709786], ranked_ids=[[1593078, 483]],
+                         values=[[5.197983264923096, 5.19797420501709]])
+        observed = dict(entity_ids=[688709786], ranked_ids=[[483, 1593078]],
+                        values=[[5.197980880737305, 5.197664260864258]])
+        result = b9.check_predictions(reference, reference, observed, atol=.002,
+                                      rtol=0., rank_atol=.0004)
+        self.assertTrue(
+            all(value['status'] == 'PASS' for value in result.values()))
+        self.assertAlmostEqual(
+            result['worker_counts']['max_reordered_score_gap'],
+            .000316619873046875)
+        for policy in (dict(atol=.002, rtol=0., rank_atol=.0003),
+                       dict(atol=.0001, rtol=0., rank_atol=.0004)):
+            with self.assertRaises(ValueError):
+                b9.check_predictions(reference, reference, observed, **policy)
+
     def test_drift_aligns_scores_by_class_and_reports_boundary_changes(self):
         spec = importlib.util.spec_from_file_location('b9', SOURCE)
         b9 = importlib.util.module_from_spec(spec)

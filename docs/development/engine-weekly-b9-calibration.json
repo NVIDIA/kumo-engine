@@ -1,0 +1,346 @@
+{
+  "format": "kumo-engine-weekly-b9-calibration-v1",
+  "approval": "PENDING_REVIEW",
+  "date_utc": "2026-11-02",
+  "physical_fits": 0,
+  "runtime": {
+    "version": "1.0.0",
+    "wheel_sha256": "1bc15ecb7696bce216b05aa883d6897d2b8ce4342c6c2f9d62b7cc28b314539e",
+    "dependencies": {
+      "cloudpickle": "3.1.2",
+      "mpmath": "1.3.0",
+      "nvidia-cuda-runtime-cu12": "12.9.79",
+      "optuna": "4.9.0",
+      "multidict": "7.1.0",
+      "psutil": "7.2.2",
+      "nvidia-nvjitlink": "13.4.92",
+      "certifi": "2026.10.19",
+      "torchmetrics": "1.8.1",
+      "nvidia-cusparse": "12.6.3.3",
+      "packaging": "26.3",
+      "cuda-pathfinder": "1.8.3",
+      "nvidia-cudnn-cu13": "9.24.0.43",
+      "nvidia-cusolver": "12.0.4.66",
+      "aiohappyeyeballs": "2.7.1",
+      "Werkzeug": "3.1.9",
+      "xxhash": "4.0.2",
+      "yarl": "1.25.1",
+      "tensorboard": "2.21.0",
+      "filelock": "4.2.4",
+      "nvidia-nvtx": "13.0.85",
+      "threadpoolctl": "3.7.0",
+      "absl-py": "2.5.1",
+      "fonttools": "4.67.0",
+      "antlr4-python3-runtime": "4.9.3",
+      "nvidia-cublas": "13.1.1.3",
+      "cycler": "0.12.1",
+      "pillow": "13.0.0",
+      "fsspec": "2026.9.0",
+      "nvidia-cufile": "1.15.1.6",
+      "frozenlist": "1.8.0",
+      "nvidia-curand-cu12": "10.3.10.19",
+      "typing-inspection": "0.4.4",
+      "aiohttp": "3.14.5",
+      "numpy": "2.5.4",
+      "propcache": "0.5.4",
+      "Markdown": "3.11.2",
+      "python-dateutil": "2.9.0.post0",
+      "matplotlib": "3.11.2",
+      "setuptools": "84.2.0",
+      "joblib": "1.6.0",
+      "tensorboard-data-server": "0.7.2",
+      "scikit-learn": "1.9.1",
+      "cuda-toolkit": "13.0.3.0",
+      "nvidia-cuda-runtime": "13.0.96",
+      "nvidia-cuda-nvrtc-cu12": "12.9.86",
+      "kiwisolver": "1.5.1",
+      "cuda-bindings": "13.4.4",
+      "pytorch-frame": "0.3.0",
+      "charset-normalizer": "3.5.2",
+      "nvidia-cuda-cupti": "13.0.85",
+      "tzdata": "2026.5",
+      "scipy": "1.18.1",
+      "tabulate": "0.8.10",
+      "nvidia-curand": "10.4.0.35",
+      "grpcio": "1.84.0",
+      "urllib3": "2.8.0",
+      "nvidia-cufft": "12.0.0.61",
+      "nvidia-nvshmem-cu13": "3.4.5",
+      "Mako": "1.4.3",
+      "aiosignal": "1.4.0",
+      "torch": "2.14.1",
+      "protobuf": "7.36.2",
+      "requests": "2.34.2",
+      "sympy": "1.14.0",
+      "pyparsing": "3.3.3",
+      "torch-geometric": "2.8.1",
+      "PyYAML": "6.0.3",
+      "tqdm": "4.70.1",
+      "pytz": "2026.5",
+      "narwhals": "2.27.1",
+      "MarkupSafe": "3.0.4",
+      "networkx": "3.7",
+      "pydantic": "2.14.1",
+      "nvidia-cusparselt-cu13": "0.8.1",
+      "nvidia-cuda-nvrtc": "13.0.88",
+      "nvidia-cublas-cu12": "12.9.2.10",
+      "pip": "24.0",
+      "nvidia-nccl-cu13": "2.30.7",
+      "attrs": "26.1.0",
+      "triton": "3.8.0",
+      "kumo-engine": "1.0.0",
+      "alembic": "1.20.0",
+      "six": "1.17.0",
+      "colorlog": "6.12.0",
+      "pytorch-lightning": "2.6.5",
+      "pyarrow": "24.0.0",
+      "SQLAlchemy": "2.1.5",
+      "typing_extensions": "4.16.0",
+      "pydantic_core": "2.50.1",
+      "idna": "3.20",
+      "faiss-gpu": "1.14.3",
+      "duckdb": "1.5.5",
+      "Jinja2": "3.1.6",
+      "annotated-types": "0.8.0",
+      "sqlglot": "30.17.0",
+      "lightning-utilities": "0.15.3",
+      "pandas": "2.3.3",
+      "contourpy": "1.4.0"
+    }
+  },
+  "model": {
+    "checkpoint_sha256": "630335ab98f9b3e614875e8e7be19b4b7fddb71743be000a79f6350cb2fe9218",
+    "retained_fit_id": "02fa8b9be95b44b49961bdb3fe3ee1b1/02fa8b9be95b44b49961bdb3fe3ee1b1-fit-a8275b439d2e4f2aab605239c3d37eaa",
+    "training_wheel_version": "1.0.0",
+    "restored_tensors_per_scorer": 349
+  },
+  "workload": {
+    "case": "P2-fixed",
+    "dataset": "commerce/25B",
+    "source_total_rows": 25026021819,
+    "graph_row_counts": {
+      "merchant_views": 14935348249,
+      "customers": 697080000,
+      "reviews": 459204548,
+      "favorites": 187290884,
+      "purchases": 4020073545,
+      "searches": 4725411889,
+      "merchants": 1612704
+    },
+    "entities_per_call": 200000,
+    "raw_classes_per_entity": 11,
+    "retained_top_k": 10,
+    "common_score_coordinates_per_comparison": 2000000,
+    "score_kind": "Unnormalized ranking scores, not probabilities."
+  },
+  "native_trial": {
+    "status": "FAIL",
+    "reason": "Exact-rank and zero-score-tolerance comparison rejected measured score and rank differences. Both CUDA prediction calls completed. The raw failure remains unchanged.",
+    "command_elapsed": "PT44M13.854S",
+    "reported_post_admission_seconds": 1390.2967730610399,
+    "call_timing_scope": "Load, prediction, and canonicalization; excludes input admission and graph staging.",
+    "calls": [
+      {
+        "workers": 1,
+        "seconds": 175.66150256199762,
+        "cuda_receipts": [
+          {
+            "status": "PASS",
+            "device": 0,
+            "model": "NVIDIA L4",
+            "batches": 392,
+            "elements": 2200000,
+            "fit_attempts": 0,
+            "restored_tensors": 349
+          }
+        ],
+        "distinct_processes_and_devices": true
+      },
+      {
+        "workers": 2,
+        "seconds": 112.43009056797018,
+        "cuda_receipts": [
+          {
+            "status": "PASS",
+            "device": 0,
+            "model": "NVIDIA L4",
+            "batches": 200,
+            "elements": 1100000,
+            "fit_attempts": 0,
+            "restored_tensors": 349
+          },
+          {
+            "status": "PASS",
+            "device": 1,
+            "model": "NVIDIA L4",
+            "batches": 200,
+            "elements": 1100000,
+            "fit_attempts": 0,
+            "restored_tensors": 349
+          }
+        ],
+        "distinct_processes_and_devices": true
+      }
+    ]
+  },
+  "comparisons": {
+    "one_gpu": {
+      "entities": 200000,
+      "rank_changed_entities": 18,
+      "membership_changed_entities": 0,
+      "removed_recommendations": 0,
+      "added_recommendations": 0,
+      "common_score_coordinates": 2000000,
+      "max_abs_common_score_difference": 0.0013227462768554688,
+      "rank_inversions": 18,
+      "max_reference_inversion_gap": 0.0002384185791015625,
+      "max_observed_inversion_gap": 0.0002899169921875
+    },
+    "two_gpu": {
+      "entities": 200000,
+      "rank_changed_entities": 28,
+      "membership_changed_entities": 0,
+      "removed_recommendations": 0,
+      "added_recommendations": 0,
+      "common_score_coordinates": 2000000,
+      "max_abs_common_score_difference": 0.0015606880187988281,
+      "rank_inversions": 28,
+      "max_reference_inversion_gap": 0.0003032684326171875,
+      "max_observed_inversion_gap": 0.000316619873046875
+    },
+    "worker_counts": {
+      "entities": 200000,
+      "rank_changed_entities": 24,
+      "membership_changed_entities": 0,
+      "removed_recommendations": 0,
+      "added_recommendations": 0,
+      "common_score_coordinates": 2000000,
+      "max_abs_common_score_difference": 0.0015611648559570312,
+      "rank_inversions": 24,
+      "max_reference_inversion_gap": 0.0002989768981933594,
+      "max_observed_inversion_gap": 0.000316619873046875,
+      "largest_inversion_example": {
+        "entity_id": 688709786,
+        "reference_ids": [
+          1593078,
+          483
+        ],
+        "reference_scores": [
+          5.197983264923096,
+          5.19797420501709
+        ],
+        "observed_scores": [
+          5.197664260864258,
+          5.197980880737305
+        ],
+        "reference_gap": 9.059906005859375e-06,
+        "observed_gap": 0.000316619873046875
+      }
+    }
+  },
+  "proposed_prediction_policy": {
+    "atol": 0.002,
+    "rtol": 0.0,
+    "rank_atol": 0.0004,
+    "derivation": "Take the largest absolute same-class score difference and largest reversed-pair gap across all three comparisons. Add 25 percent operational headroom and round each upward to one significant digit. This is not a confidence interval.",
+    "rules": [
+      "Require exact entity IDs, top-K membership, labels, and complete finite coordinates.",
+      "Compare scores by class ID within each entity.",
+      "A reversed pair must have score gap <= rank_atol in both the reference and observed output. Check every inverted pair.",
+      "Without an explicitly approved positive rank_atol, rank order remains exact."
+    ],
+    "largest_observed_score_difference": 0.0015611648559570312,
+    "largest_observed_reordered_pair_gap": 0.000316619873046875
+  },
+  "retained_output_policy_validation": {
+    "status": "PASS",
+    "scope": "Apply the proposed comparison policy to all retained raw outputs without rerunning a model or changing the original native result.",
+    "comparisons": {
+      "one_gpu": {
+        "status": "PASS",
+        "entities": 200000,
+        "max_abs_difference": 0.0013227462768554688,
+        "atol": 0.002,
+        "rtol": 0.0,
+        "rank_atol": 0.0004,
+        "rank_changed_entities": 18,
+        "rank_inversions": 18,
+        "max_reordered_score_gap": 0.0002899169921875
+      },
+      "two_gpu": {
+        "status": "PASS",
+        "entities": 200000,
+        "max_abs_difference": 0.0015606880187988281,
+        "atol": 0.002,
+        "rtol": 0.0,
+        "rank_atol": 0.0004,
+        "rank_changed_entities": 28,
+        "rank_inversions": 28,
+        "max_reordered_score_gap": 0.000316619873046875
+      },
+      "worker_counts": {
+        "status": "PASS",
+        "entities": 200000,
+        "max_abs_difference": 0.0015611648559570312,
+        "atol": 0.002,
+        "rtol": 0.0,
+        "rank_atol": 0.0004,
+        "rank_changed_entities": 24,
+        "rank_inversions": 24,
+        "max_reordered_score_gap": 0.000316619873046875
+      }
+    },
+    "negative_checks": {
+      "too_small_score": "Prediction values exceed the approved tolerance",
+      "too_small_rank_gap": "Rank swap exceeds the approved score-gap budget",
+      "changed_membership": "Prediction ranking membership changed"
+    }
+  },
+  "post_trial_input_audit": {
+    "status": "PASS",
+    "files": 7877,
+    "bytes": 1399809076131,
+    "seconds": 243.38543428498087,
+    "threads": 8,
+    "reference_payload_unchanged": true
+  },
+  "proposed_reference": {
+    "input_manifest_sha256": "05d09cd6e1d418cd55ad4847010357c99f1f16e4f4b642ab7c821236df6f5a2e",
+    "reference_sha256": "5610d7e345ab3d0b7b07a341f789a998661a40521c200f58834f236129fb7b57",
+    "workload_sha256": "8411b641d088676475b02f637b5b404dc1ce81b1f772a49216b77ed63a8aa2de",
+    "approval": "PENDING_REVIEW",
+    "scope": "Separate P2-only input and reference records bind the proposed policy to the original data, model, and predictions. Original records remain unchanged."
+  },
+  "evidence": {
+    "raw_result_sha256": "b257561650865aaa84d37a5a5c116cadf9fe445013950d26775446c7438f92a4",
+    "raw_prediction_sha256": {
+      "retained_reference": "c065a5861a069ebd8ba4719be823883e02e813ee79c72141082cbcce90110a98",
+      "one_gpu": "502ed2d7d2dc68d0a627232b705f0674a4f71efca5fddf2875fbaeb3fb61483a",
+      "two_gpu": "22b47c62b06fde6ccaf46b2def98f7bc425d454d02197ad556a7c960f989e5fd"
+    },
+    "measurement_manifest_sha256": "fbfb1e3f2608a4600b81f88e2acf80b9ed0fa7f6cf846743ba1e6f2fac5962d1",
+    "measurement_reference_sha256": "b09e5b5133749241922e7938774c75ba314ea60d81010c0097cfea4e6d15c76a",
+    "running_model_source_sha256": "925fa213c545c39192b949ff298f802aada6dc28d43a5efc5565597d404fbdc2",
+    "analysis_source_sha256": "224e3e45194fd111ad2051597423826bc6e7f4bc820c179c93e448b6f0a5cf6d",
+    "raw_analysis_sha256": "fce234748990104a1fa513c972c6c62fd8acd3ff20bbb9463852c3f0c8154b5b",
+    "policy_validation_code_sha256": {
+      "weekly_check.py": "71e8b8b4fc4c024933717caa56439a1b56c713a3ea87d769d819e459e99e8955",
+      "weekly_b9.py": "694864788599e9e868025aa7aca0bccf7ef75d6277554f49cf2353399a2fe510"
+    },
+    "unchanged_native_protocol": [
+      "Model prediction loop",
+      "Public Lightning observers",
+      "Checkpoint and per-device proof",
+      "Training rejection"
+    ]
+  },
+  "limits": [
+    "This is one native one-GPU/two-GPU trial plus the retained P2 predictions, all from the published 1.0.0 wheel. It does not establish a universal tolerance.",
+    "The host exposed two distinct NVIDIA L4 devices. Hardware observations do not become hardcoded admission rules.",
+    "The cause of the measured numerical drift was not isolated.",
+    "The original native trial remains FAIL. The later policy validation is a separate CPU comparison of retained outputs.",
+    "No different candidate wheel, GitHub dispatch, or complete manual workflow was qualified.",
+    "A maintainer must review the reference and policy before configuring their checksums. A successful comparison does not approve a reference.",
+    "B9 reports elapsed time. It has no timing gate or reserved quality answers."
+  ]
+}

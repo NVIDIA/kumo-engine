@@ -20,14 +20,39 @@ A pass needs one complete GPU receipt for the first call and two receipts for
 the second call. The second call must use distinct processes and GPU identifiers.
 Both calls must retain the full prediction population. Each call must match the
 stored P2 predictions. The two calls must also match each other. Entity IDs and
-ranks must match, and scores must stay within P2's approved `atol` and `rtol` values. A
-missing receipt, CPU fallback, changed checkpoint, partial population, or excess
+each top-K set must match exactly. Scores are compared by class ID within P2's
+approved `atol` and `rtol` values. Ranking order remains exact by default. An
+explicit positive `rank_atol` permits a reversed pair only when its score gap
+stays within that budget in both results. A missing receipt, CPU fallback,
+changed checkpoint, partial population, or excess
 prediction difference fails the run. Time remains a report.
 
 Before applying the gate, the runner records common-class score differences,
 changed rankings, added or removed recommendations, and up to five examples.
 These measurements remain in the result when a comparison fails. They do not
-approve a numerical difference or change the exact-rank requirement.
+approve a numerical difference or choose the rank budget automatically.
+
+The [calibration record](engine-weekly-b9-calibration.json) contains a direct
+trial with the published 1.0.0 wheel and the retained P2 model. Both CUDA calls
+completed with no fit. The one-GPU call took 175.66 seconds; the two-GPU call took
+112.43 seconds. Those times include load, prediction, and canonicalization.
+The complete command took 44 minutes 14 seconds, including input admission and
+graph staging. Every comparison preserved the top-ten membership for all 200000
+entities. Some near-equal scores changed order. The original exact-rank,
+zero-tolerance trial remains `FAIL`.
+
+The proposed policy is `atol=0.002`, `rtol=0`, and `rank_atol=0.0004`. It adds
+25 percent operational headroom to the largest measured score difference and
+reversed-pair gap, then rounds each upward to one significant digit. Applying
+this policy to all retained outputs passes all three comparisons. Smaller score
+and rank budgets, and a deliberately changed member ID, fail. This separate
+comparison does not change the original native result. A complete checksum audit
+after the trial confirms unchanged inputs and reference payload.
+
+The policy still needs reference review. One pilot does not establish a universal
+tolerance. It does not qualify a different candidate wheel or the full GitHub
+workflow. These values are calibration proposals, not runner defaults. B9 keeps
+exact top-K membership and does not whitelist observed entities.
 
 Invoke `weekly_b9.py` directly with the selected wheel's isolated Python
 interpreter. Supply `--input-root`, `--manifest-sha256`, `--reference-root`,

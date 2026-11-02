@@ -77,14 +77,12 @@ def prediction_drift(reference, observed):
     return report
 
 
-def check_predictions(reference, one_gpu, two_gpu, *, atol, rtol):
+def check_predictions(reference, one_gpu, two_gpu, *, atol, rtol, rank_atol=0.):
+    policy = dict(atol=atol, rtol=rtol, rank_atol=rank_atol)
     return dict(
-        one_gpu=weekly.compare_predictions(reference, one_gpu, atol=atol,
-                                           rtol=rtol),
-        two_gpu=weekly.compare_predictions(reference, two_gpu, atol=atol,
-                                           rtol=rtol),
-        worker_counts=weekly.compare_predictions(one_gpu, two_gpu, atol=atol,
-                                                 rtol=rtol))
+        one_gpu=weekly.compare_predictions(reference, one_gpu, **policy),
+        two_gpu=weekly.compare_predictions(reference, two_gpu, **policy),
+        worker_counts=weekly.compare_predictions(one_gpu, two_gpu, **policy))
 
 
 def check_devices(records, count, checkpoint):
