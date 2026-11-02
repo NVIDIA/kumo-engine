@@ -166,7 +166,7 @@ def generate_prediction_table(
                                          minimum, table_name)
             if error is not None:
                 raise ValueError(f"{error.title}. {error.message}")
-    compiler = runtime.DiskGraphPlanCompiler()
+    compiler = runtime.DiskGraphPlanCompiler(index_path=request.index_path)
     # Future targets belong to training only. Prediction retains the fitted
     # historical feature layout without asking the compiler for labels.
     forecast_options.pop("future_offsets_secs", None)

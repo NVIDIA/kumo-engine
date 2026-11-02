@@ -18,6 +18,7 @@ from typing import Callable, Optional
 from kumo_core.diskgraph.converter import convert_diskgraph_config
 from kumo_core.diskgraph.ingest import (
     normalize_legacy_column_aliases,
+    set_timestamp_precision,
     validate_diskgraph_ingest_config,
 )
 from kumo_core.diskgraph.runner import (
@@ -159,6 +160,7 @@ def run_diskgraph_ingest(
     source_specs: Optional[dict] = None,
     subprocess_environment: Optional[dict[str, Optional[str]]] = None,
     heartbeat: Optional[Callable[[], None]] = None,
+    timestamp_precision: str = 'seconds',
 ) -> DiskgraphIngestResult:
     """Convert the kumo graph config and launch the DiskGraph supervisor.
 
@@ -190,6 +192,7 @@ def run_diskgraph_ingest(
             source_specs=source_specs,
             subprocess_environment=subprocess_environment,
         )
+        set_timestamp_precision(ingest_config, timestamp_precision)
         validate_diskgraph_ingest_config(ingest_config)
 
     # DiskGraph owns phase detection, concurrency reduction after OOM, and

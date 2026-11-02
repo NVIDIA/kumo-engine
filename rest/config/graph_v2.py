@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import kumoapi.data_snapshot as snapshot_api
 import kumoapi.graph as api
 from kumo_core.types.schema import FPID
+from kumoapi.typing import TimestampPrecision
 from pydantic import (
     BaseModel,
     ValidationError,
@@ -391,6 +392,7 @@ class GraphSnapshotRequest:
 class GraphSnapshotResponse:
     snapshot_resource: snapshot_api.GraphSnapshotResource
     definition: api.GraphDefinition
+    timestamp_precision: TimestampPrecision = 'seconds'
 
 
 @kumo_dataclass
@@ -438,6 +440,7 @@ class GraphDataComputeInput:
     table_aliases: Dict[TableID, TableName] = field(default_factory=dict)
     pinned_data_versions: Dict[TableID,
                                TableDataVersion] = field(default_factory=dict)
+    timestamp_precision: TimestampPrecision = 'seconds'
 
     def __post_init__(self) -> None:
         for connector_id, reference in self.connectors.items():
