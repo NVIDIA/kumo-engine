@@ -15,7 +15,8 @@ struct Args {
     host: IpAddr,
     #[arg(short, long, default_value_t = 50051)]
     port: u16,
-    #[arg(long, default_value_t = 1)]
+    /// Concurrent producers: overlapping stages times loader workers using this server.
+    #[arg(long, default_value_t = 3)]
     max_streams: usize,
     #[arg(long, default_value_t = 2)]
     max_threads: usize,

@@ -16,6 +16,8 @@ use std::{net::IpAddr, path::PathBuf};
 ///     host: IP address to bind; use 0.0.0.0 for remote connections.
 ///     port: TCP port; zero atomically selects an available port.
 ///     max_streams: Positive limit on concurrent native epoch producers.
+///         Budget one per overlapping stage per concurrent loader worker.
+///         The default covers train/val/test for one worker.
 ///     max_threads: Positive per-index sampling thread budget.
 ///
 /// Raises:
@@ -30,7 +32,7 @@ pub(crate) struct PySamplingServer {
 #[pymethods]
 impl PySamplingServer {
     #[new]
-    #[pyo3(signature = (index_path, *, host="127.0.0.1", port=0, max_streams=1, max_threads=2))]
+    #[pyo3(signature = (index_path, *, host="127.0.0.1", port=0, max_streams=3, max_threads=2))]
     fn new(
         py: Python<'_>,
         index_path: PathBuf,

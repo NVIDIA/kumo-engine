@@ -11,7 +11,6 @@ from collections import deque
 from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
-from test.train.datamodule import test_remote_sampling_integration as parity
 from typing import Any
 
 import diskgraph
@@ -23,6 +22,8 @@ from kumo_core.diskgraph.sampling_service import (
     SamplingServiceConfig,
 )
 from pyarrow import flight
+
+from test.train.datamodule import test_remote_sampling_integration as parity
 
 prepared_task = parity.prepared_task
 
@@ -404,6 +405,68 @@ def test_remote_backend_drop_cancels_a_live_epoch(prepared_task: str) -> None:
         gc.collect()
         _wait_for_idle(service)
         assert list(iterator) == []
+
+
+@pytest.mark.parametrize("native_server", [False, True])
+@pytest.mark.parametrize("stage_count", [2, 3])
+@pytest.mark.parametrize("worker_count", [1, 2])
+def test_refit_stream_budget_allows_paused_stage_streams(
+    prepared_task: str,
+    tmp_path: Path,
+    native_server: bool,
+    stage_count: int,
+    worker_count: int,
+) -> None:
+    """Open every worker's stage streams while earlier producers are paused."""
+    graph = Path(prepared_task).parent / "graph"
+    stages = ("train", "val", "test")[:stage_count]
+    manifest = orjson.loads(Path(prepared_task).read_bytes())
+    manifest["stages"] = {stage: manifest["stages"]["train"] for stage in stages}
+    manifest_path = tmp_path / "refit_manifest.json"
+    manifest_path.write_bytes(orjson.dumps(manifest))
+    stream_count = stage_count * worker_count
+    options = {"max_streams": stream_count} if worker_count > 1 else {}
+    config = (
+        SamplingServiceConfig(graph)
+        if worker_count == 1
+        else SamplingServiceConfig(graph, max_streams=stream_count)
+    )
+    with ExitStack() as cleanup:
+        service = (
+            diskgraph.SamplingServer(graph, **options)
+            if native_server
+            else SamplingService(config)
+        )
+        cleanup.callback(service.close)
+        runtime = diskgraph.RuntimeIndex(
+            str(manifest_path),
+            sampling_endpoints=service.endpoint(),
+            rnd_seed=42,
+            num_threads=1,
+        )
+        cleanup.callback(runtime.close)
+        streams = []
+        for worker_id in range(worker_count):
+            for stage in stages:
+                stream, _ = runtime.iter(
+                    **{
+                        **_options(),
+                        "stage": stage,
+                        "batch_size": 1,
+                        "num_workers": worker_count,
+                        "worker_id": worker_id,
+                        "selected_stage_node_ids": [0] * 10000,
+                    }
+                )
+                cleanup.callback(stream.close)
+                streams.append(stream)
+                next(stream)
+
+        assert service.health()["active_streams"] == stream_count
+        for stream in streams:
+            assert next(stream)["task"]["input_ids"].to_pylist() == [0]
+        runtime.close()
+        _wait_for_idle(service)
 
 
 def test_shared_native_backend_closes_all_active_epochs(prepared_task: str) -> None:

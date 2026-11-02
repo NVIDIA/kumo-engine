@@ -105,6 +105,16 @@ endpoint = service.endpoint("10.0.0.5")
 # Retain service for the actor's lifetime; call service.close() during teardown.
 ```
 
+`max_streams` defaults to three, covering overlapping train/validation/test
+streams for one loader worker. Paused streams retain their permits while
+backpressure blocks their producers. For multiple workers, set `max_streams`
+to at least the number of overlapping stages times the total concurrent loader
+workers using that server, across all trainers. For example, two workers need
+four streams for train/validation refit or six for train/validation/test refit.
+Count a loader with `num_workers=0` as one worker. Each additional stream can
+retain a native producer and its buffers; `max_threads` remains a per-index
+thread budget.
+
 The wrapper starts the native listener during construction. Its `health()`
 returns native readiness and request/batch counters; its process ID matches the
 actor. `close()` cancels waiting streams and joins Rust serving threads without

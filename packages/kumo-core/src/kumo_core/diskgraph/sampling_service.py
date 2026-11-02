@@ -18,13 +18,15 @@ class SamplingServiceConfig:
         host: Bind IP address; use 0.0.0.0 for cross-node connections.
         port: TCP port; zero binds an available port atomically.
         max_streams: Positive maximum number of simultaneous native producers.
+            Budget one stream per overlapping stage per concurrent loader worker
+            using this server. The default covers train/val/test for one worker.
         max_threads: Positive native thread budget for each opened index.
     """
 
     index_path: Path
     host: str = "127.0.0.1"
     port: int = 0
-    max_streams: int = 1
+    max_streams: int = 3
     max_threads: int = 2
 
 

@@ -188,11 +188,16 @@ before requesting epochs; the sampling transport only reads prepared artifacts.
 import diskgraph
 
 with diskgraph.SamplingServer(
-    "/local/graph", host="0.0.0.0", max_streams=4, max_threads=2
+    "/local/graph", host="0.0.0.0", max_streams=6, max_threads=2
 ) as server:
     endpoint = server.endpoint("10.0.0.5")
     # Keep the handle alive while remote trainers use this endpoint.
 ```
+
+`max_streams` defaults to three for overlapping train/validation/test streams
+from one loader worker. Size it as overlapping stages times concurrent loader
+workers using this server, across all trainers; the example budgets three stages
+for two workers. Paused streams still hold their permits under backpressure.
 
 `port` reports the actual bound port; `health()` reports native counters and
 readiness. `close()` cancels streams and joins the listener while releasing the

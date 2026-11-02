@@ -11,8 +11,13 @@ remote Python iterators use one shared Arrow C Data exporter.
 ```bash
 cargo run --release -p diskgraph-gateway -- \
   --data /local/graph --host 0.0.0.0 --port 8815 \
-  --max-streams 1 --max-threads 2
+  --max-streams 6 --max-threads 2
 ```
+
+`--max-streams` defaults to three for overlapping train/validation/test streams
+from one loader worker. Budget overlapping stages times concurrent loader workers
+using this server, across all trainers; the example covers three stages for two
+workers. Paused streams retain their permits under backpressure.
 
 The graph must already exist. Before requesting an epoch, the caller must
 materialize and verify its training-table extension beneath the graph at
