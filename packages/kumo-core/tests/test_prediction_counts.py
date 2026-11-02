@@ -328,8 +328,8 @@ def test_recommendations_count_items_and_top_scores_across_workers(tmp_path):
         scores, holdout.edges['top_score'])
     assert [name for name in logged
             if name.startswith('pred/score_histogram')] == []
-    assert logged['pred/recommendations_by_item_rank'] == Series(
-        'pred/recommendations_by_item_rank',
+    assert logged['pred/item_popularity'] == Series(
+        'pred/item_popularity',
         tuple((rank, float(n)) for rank, n in
               enumerate(np.sort(per_item)[::-1][:100], 1) if n),
         'item_rank', chart=True)

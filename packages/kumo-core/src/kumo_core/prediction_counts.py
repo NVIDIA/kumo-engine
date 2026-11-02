@@ -305,7 +305,7 @@ def _per_pct(counts: np.ndarray) -> np.ndarray:
 def _by_item_rank(ranked: Sequence[float]) -> List[Series]:
     points = tuple((rank, float(count))
                    for rank, count in enumerate(ranked, 1) if count)
-    return [Series('pred/recommendations_by_item_rank', points, 'item_rank',
+    return [Series('pred/item_popularity', points, 'item_rank',
                    chart=True)] if len(points) > 1 else []
 
 

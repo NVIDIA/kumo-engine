@@ -139,11 +139,11 @@ def test_a_block_names_the_files_of_tables_moved_for_size():
 def test_the_chart_note_says_what_each_step_is():
     assert _card.charts({'pred/rows': 5}) == []
     charts = _card.charts({'pred/score_histogram': 1,
-                           'pred/recommendations_by_item_rank': 2})
+                           'pred/item_popularity': 2})
     assert charts == [Note(
         'notes', 'Charts: `pred/score_histogram`: step = score '
                  '× 100 (step 37 = scores 0.37–0.38); '
-                 '`pred/recommendations_by_item_rank`: step = item rank '
+                 '`pred/item_popularity`: step = item rank '
                  '(1 = most recommended).')]
 
 
