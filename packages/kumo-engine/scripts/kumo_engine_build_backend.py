@@ -13,7 +13,9 @@ import platform
 import subprocess
 import sys
 import sysconfig
+import venv
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from setuptools import build_meta
 from setuptools.build_meta import (
@@ -78,7 +80,6 @@ def build_wheel(
     environment = dict(
         os.environ,
         KUMO_REPO=str(script.parents[3]),
-        PYTHON=sys.executable,
         USE_ZIG="0",
         VERIFY_IMAGE="",
         PLATFORM_TAG="",
@@ -97,13 +98,35 @@ def build_wheel(
         raise RuntimeError("Source builds require Linux with glibc or macOS")
 
     try:
-        result = subprocess.run(
-            ["bash", str(script), "--no-zig", "--output-dir", wheel_directory],
-            env=environment,
-            stdout=subprocess.PIPE,
-            text=True,
-            check=True,
-        )
+        with TemporaryDirectory(prefix="kumo-source-build-") as directory:
+            venv.EnvBuilder(with_pip=False).create(directory)
+            python = str(Path(directory) / "bin/python")
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "--python",
+                    python,
+                    "install",
+                    "--no-deps",
+                    "pip>=25",
+                ],
+                env=environment,
+                stdout=sys.stderr,
+                check=True,
+            )
+            # Managed notebook paths can precede pip's isolated build packages.
+            environment.pop("PYTHONPATH", None)
+            environment.pop("PYTHONHOME", None)
+            environment.update(PYTHON=python, VIRTUAL_ENV=directory)
+            result = subprocess.run(
+                ["bash", str(script), "--no-zig", "--output-dir", wheel_directory],
+                env=environment,
+                stdout=subprocess.PIPE,
+                text=True,
+                check=True,
+            )
     except subprocess.CalledProcessError as error:
         if error.stdout:
             logger.error(f"Engine assembly failed:\n{error.stdout}")

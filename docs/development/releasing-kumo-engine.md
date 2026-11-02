@@ -170,7 +170,9 @@ extras work with source installs too, for example
 `python -m pip install './packages/kumo-engine[databricks]'`.
 
 The package's PEP 517 backend calls the same `build_wheel.sh` assembler used
-for releases. It builds every bundled component from the checkout and merges
+for releases in a temporary Python environment, excluding managed notebook
+paths that can override isolated build dependencies. It builds every bundled
+component from the checkout and merges
 their external requirements, entry points and legal notices into one wheel.
 The assembler selects the backend's internal `kumo-component=true` mode for
 its engine input wheel to avoid recursively assembling another bundle.

@@ -3,18 +3,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise pip's bundle backend without compiling native dependencies."""
 
+import importlib.metadata
 import importlib.util
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tomllib
 from pathlib import Path
 from types import ModuleType
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 from zipfile import ZipFile
 
 import pytest
+from wheel.wheelfile import WheelFile  # type: ignore[import-untyped]
 
 BACKEND = (
     Path(__file__).resolve().parents[2]
@@ -23,12 +27,16 @@ BACKEND = (
 
 
 @pytest.fixture
-def backend() -> ModuleType:
+def backend(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     """Return an independently loaded backend module for each test."""
     spec = importlib.util.spec_from_file_location("engine_source_backend", BACKEND)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temporary = MagicMock()
+    temporary.return_value.__enter__.return_value = "/isolated-build"
+    monkeypatch.setattr(module, "TemporaryDirectory", temporary)
+    monkeypatch.setattr(module.venv, "EnvBuilder", Mock())
     return module
 
 
@@ -58,6 +66,8 @@ def test_source_build_reuses_assembler_with_native_tags(
     monkeypatch.setenv("_PYPROJECT_HOOKS_BACKEND_PATH", "/outer-backend")
     monkeypatch.setenv("_PYPROJECT_HOOKS_BUILD_BACKEND", "outer_backend")
     monkeypatch.setenv("PIP_BUILD_TRACKER", "/outer-tracker")
+    monkeypatch.setenv("PYTHONPATH", "/managed-notebook-packages")
+    monkeypatch.setenv("PYTHONHOME", "/managed-python")
     wheel = "kumo_engine-1.0-cp311-abi3-linux_x86_64.whl"
     run = Mock(return_value=subprocess.CompletedProcess([], 0, f"/wheels/{wheel}\n"))
     monkeypatch.setattr(backend.subprocess, "run", run)
@@ -75,7 +85,24 @@ def test_source_build_reuses_assembler_with_native_tags(
     ]
     environment = run.call_args.kwargs["env"]
     assert environment["KUMO_REPO"] == str(BACKEND.parents[3])
-    assert environment["PYTHON"] == backend.sys.executable
+    assert environment["PYTHON"] == "/isolated-build/bin/python"
+    assert environment["VIRTUAL_ENV"] == "/isolated-build"
+    assert "PYTHONPATH" not in environment
+    assert "PYTHONHOME" not in environment
+    backend.venv.EnvBuilder.assert_called_once_with(with_pip=False)
+    backend.venv.EnvBuilder.return_value.create.assert_called_once_with(
+        "/isolated-build"
+    )
+    assert run.call_args_list[0].args[0] == [
+        backend.sys.executable,
+        "-m",
+        "pip",
+        "--python",
+        "/isolated-build/bin/python",
+        "install",
+        "--no-deps",
+        "pip>=25",
+    ]
     assert environment["USE_ZIG"] == "0"
     assert environment["VERIFY_IMAGE"] == ""
     assert environment["PLATFORM_TAG"] == expected_tag
@@ -183,6 +210,15 @@ def test_pip_frontend_installs_the_assembled_wheel(tmp_path: Path) -> None:
     source = repository / "packages/kumo-engine"
     scripts = source / "scripts"
     scripts.mkdir(parents=True)
+    build_tools = repository / "build-tools"
+    build_tools.mkdir()
+    pip = importlib.metadata.distribution("pip")
+    with WheelFile(build_tools / f"pip-{pip.version}-py3-none-any.whl", "w") as wheel:
+        for relative in pip.files or []:
+            if relative.name == "RECORD" or relative.suffix == ".pyc":
+                continue
+            if relative.parts[0] == "pip" or relative.parts[0].endswith(".dist-info"):
+                wheel.write(pip.locate_file(relative), str(relative))
     shutil.copyfile(BACKEND, scripts / BACKEND.name)
     project = tomllib.loads((BACKEND.parents[1] / "pyproject.toml").read_text())
     build = project["build-system"]
@@ -220,6 +256,13 @@ def test_pip_frontend_installs_the_assembled_wheel(tmp_path: Path) -> None:
         "set -eu\n"
         'test "$1" = --no-zig\n'
         'test "$2" = --output-dir\n'
+        '"$PYTHON" -c '
+        + shlex.quote(
+            "from pathlib import Path; import sysconfig; "
+            "Path(sysconfig.get_path('purelib'), 'test-build-tools.pth').write_text("
+            f"{sysconfig.get_path('purelib')!r})"
+        )
+        + "\n"
         '"$PYTHON" -m pip wheel --no-deps --no-index --no-build-isolation '
         '"$KUMO_REPO/component" -w "$KUMO_REPO/component-wheels"\n'
         '"$PYTHON" -m pip wheel --no-deps --no-index --no-build-isolation '
@@ -243,7 +286,12 @@ def test_pip_frontend_installs_the_assembled_wheel(tmp_path: Path) -> None:
     ):
         subprocess.run(
             [sys.executable, "-m", "pip", *arguments, "--no-deps", "--no-index"],
-            env=dict(os.environ, PIP_DISABLE_PIP_VERSION_CHECK="1"),
+            env=dict(
+                os.environ,
+                PIP_DISABLE_PIP_VERSION_CHECK="1",
+                PIP_NO_INDEX="1",
+                PIP_FIND_LINKS=str(build_tools),
+            ),
             check=True,
             capture_output=True,
             text=True,
