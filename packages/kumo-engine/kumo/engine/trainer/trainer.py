@@ -924,87 +924,6 @@ def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
 _F = TypeVar('_F', bound=Callable[..., Any])
 
 
-def _warm_start_plan(
-    public_plan: ModelPlan, warm_start: Optional['Trainer']
-) -> Tuple[CoreModelPlan, ModelPlan, Optional[Dict[str, str]], Optional[str]]:
-    r"""The model plan with the warm start's inherited, and its artifacts."""
-    from kumo_core.automl.runtime import inherit_warm_start_model_plan
-    from kumo_core.io.json import load_json
-
-    model_plan = _to_core_model_plan(public_plan)
-    if warm_start is None:
-        return model_plan, public_plan, None, None
-    if warm_start._training_result is None:
-        raise ValueError("warm_start requires a fitted or loaded Trainer")
-    artifacts, bundle_id = read_bundle_artifact_paths(
-        warm_start._training_result.bundle_dir)
-    inherit_warm_start_model_plan(
-        model_plan,
-        load_json(artifacts['resolved_model_plan'], CoreModelPlan),
-    )
-    return (model_plan, public_model_plan_from_internal(model_plan),
-            artifacts, bundle_id)
-
-
-def _validate_model_plan(model_plan: CoreModelPlan,
-                         workflow: TrainingWorkflowRequest,
-                         train_table: TrainingTable) -> None:
-    from kumo_core.pquery import (
-        query_is_temporal,
-        target_to_entity_paths,
-        to_plan_graph,
-    )
-    from kumo_core.training.custom_table import contract
-    from kumo_core.training.export import read_spec, stage_parts
-    from kumo_core.training.workflow import resolve_model_plan
-    from kumo_core.types import TaskType
-    from kumoapi.pquery import QueryType
-    from pyarrow import parquet
-
-    parts = stage_parts(read_spec(str(train_table.staging_dir)))
-    seed_part = next(part for paths in parts.values() for part in paths)
-    seed_schema = parquet.read_schema(train_table.staging_dir / seed_part)
-    entity_tables = [workflow.query.entity_table]
-    if (workflow.query.rhs_node_type is not None
-            and workflow.query.rhs_node_type not in entity_tables):
-        entity_tables.append(workflow.query.rhs_node_type)
-    resolve_model_plan(
-        model_plan,
-        workflow.search,
-        training_table_generation_plan=train_table.generation_plan,
-        task_type=TaskType(workflow.query.task_type),
-        query_type=QueryType(workflow.query.query_type),
-        has_train_table_time_col=query_is_temporal(workflow.query,
-                                                   workflow.graph),
-        entity_table_names=entity_tables,
-        target_to_entity_paths=target_to_entity_paths(
-            workflow.query, workflow.graph),
-        has_train_table_weight_col=contract()['weight_output_column']
-        in seed_schema.names,
-        graph=to_plan_graph(workflow.graph),
-    )
-
-
-def _explain(best_trainer: Any, run_id: str) -> None:
-    try:
-        best_trainer.explain(
-            explain_methods=[
-                ExplainMethod.COLUMN_ANALYSIS,
-                ExplainMethod.GRADIENT,
-                ExplainMethod.SUBGRAPH_COLLECTOR,
-            ],
-            stage='test',
-        )
-        aggregate_subgraph_features(
-            str(Path(best_trainer.subgraph_collector_dir()) / 'test'),
-            TrainingStage.TEST)
-    except Exception:
-        logger.exception(
-            'Training succeeded, but post-training explanations '
-            'failed for run %s. The trained model remains available.',
-            run_id)
-
-
 def _prediction_task_type(training_query: Optional[str], query: str,
                           graph_config: Any) -> Any:
     from kumo_core.prediction_options import prediction_query_contract
@@ -1028,14 +947,6 @@ def _requested_artifacts(
         PredictionArtifactType(name.upper())
         for name in destinations) or frozenset(
             {PredictionArtifactType.PREDICTIONS})
-
-
-def _preflight(output_config: PredictionOutputConfig) -> None:
-    preflight = getattr(output_config.writer(), 'preflight_write_files', None)
-    if callable(preflight):
-        for destination in output_config.destinations().values():
-            preflight(output_config.connector, destination,
-                      write_mode=output_config.write_mode)
 
 
 def _materialize_prediction(prediction_table: PredictionTable,
