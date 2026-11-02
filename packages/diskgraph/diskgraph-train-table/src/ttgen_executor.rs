@@ -1659,8 +1659,9 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
         }
     }
     // A source that keeps nothing trains on nothing and would report success.
-    // Both modes refuse it; the skip counts say why.
-    if total_rows == 0 {
+    // Both modes refuse it; the skip counts say why. A prediction returns the
+    // empty table with its row_failures so the caller can say why.
+    if total_rows == 0 && !resolved.is_prediction {
         stats.source_rows.failures.report(source.on_error).warn_if_any(0);
         return Err(empty_source_error(&stats.source_rows));
     }

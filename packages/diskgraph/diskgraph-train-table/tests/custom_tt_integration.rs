@@ -3314,6 +3314,40 @@ fn test_row_validation_source_that_keeps_no_rows_fails_in_both_modes() {
 }
 
 #[test]
+fn test_prediction_source_that_keeps_no_rows_returns_its_row_failures() {
+    let mut rows = NodeRows::good();
+    rows.entity = (10..15).map(Some).collect();
+    let err = run_node_rows(&rows, false, false, IngestOnError::Abort)
+        .err()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        err,
+        "Schema error: custom-TT source kept no rows (5 read, 5 skipped), so the run would \
+         train on nothing"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_users_only_graph(dir.path(), 5);
+    let pq = dir.path().join("rows.parquet");
+    synth_static_custom_tt_parquet(&pq, &[10, 11, 12, 13, 14], false);
+    let mut plan = make_custom_tt_target_only_node_plan();
+    plan.is_prediction = true;
+    let out_dir = tempfile::tempdir().unwrap();
+    let output = execute_tt_pass_with_source(
+        &plan,
+        &index,
+        out_dir.path(),
+        Some(source(&pq, IngestOnError::Abort)),
+    )
+    .unwrap();
+    assert_eq!(output.rows_written, 0);
+    let report = output.row_failures.unwrap();
+    assert_eq!(report.skipped_rows, 5);
+    assert_eq!(report.by_condition[0].condition, RowFailureKind::UnknownEntity);
+}
+
+#[test]
 fn test_row_validation_weight_with_no_positive_value_fails_in_both_modes() {
     for mode in [IngestOnError::Abort, IngestOnError::SkipRowOnError] {
         let mut rows = NodeRows::good();
