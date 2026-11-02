@@ -85,6 +85,7 @@ from kumo.engine._embeddings import (
 )
 from kumo.engine._events import Event, EventEmitter, query_sha256
 from kumo.engine._manifest import (
+    FIT_ROLES,
     Dependency,
     ModelManifest,
     PredictionManifest,
@@ -1286,7 +1287,7 @@ class Trainer:
                     *snapshot_summaries(Path(snapshot.index_path),
                                         snapshot.graph_config),
                     *([] if result.manifest is None else artifact_summaries(
-                        result.manifest, 'training',
+                        result.manifest, FIT_ROLES,
                         {**table_details(Path(snapshot.index_path),
                                          snapshot.id),
                          **training_table_details(train_table)})),

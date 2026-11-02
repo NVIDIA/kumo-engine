@@ -125,7 +125,8 @@ def _scoring_summaries(manifest: Optional[PredictionManifest],
     index = Path(snapshot.index_path)
     return [
         *snapshot_summaries(index, snapshot.graph_config),
-        *artifact_summaries(manifest, 'scoring',
+        *artifact_summaries(manifest, {'snapshot': 'scoring',
+                                       'source_table': 'scoring'},
                             table_details(index, snapshot.id)),
     ]
 

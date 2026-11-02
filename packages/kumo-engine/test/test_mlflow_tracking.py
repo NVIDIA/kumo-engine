@@ -392,7 +392,7 @@ def test_source_tables_are_logged_as_native_inputs(
     monkeypatch.setattr(DeltaDatasetSource, '_lookup_table_id',
                         lambda self, name: 'table-id')
     replay(MlflowTracking(log_system_metrics=False), summaries=[
-        Dataset(name, source, {}, {}, 'training')
+        Dataset(name, source, {}, {}, 'source table')
         for name, source in INPUTS.items()])
 
     run, = [run for run in _runs(mlflow.MlflowClient())

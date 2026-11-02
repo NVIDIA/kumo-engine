@@ -17,7 +17,7 @@ from kumo.engine._data_summaries import (
     table_details,
     target_edges,
 )
-from kumo.engine._manifest import artifact_summaries
+from kumo.engine._manifest import FIT_ROLES, artifact_summaries
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.pquery import PredictiveQuery
 
@@ -101,7 +101,7 @@ def test_summaries_match_the_snapshot_and_training_table(scratch):
                             users['AGE'].max())
     assert age['mean'] == pytest.approx(users['AGE'].mean())
     datasets = {s.name: s for s in artifact_summaries(
-        snapshot.manifest, 'training',
+        snapshot.manifest, FIT_ROLES,
         details=table_details(Path(snapshot.index_path)))
         if isinstance(s, Dataset)}
     assert set(datasets) == {'users', 'orders'}
@@ -112,7 +112,7 @@ def test_summaries_match_the_snapshot_and_training_table(scratch):
     assert datasets['orders'].profile['rows'] == 6000
     assert datasets['users'].source['location'] == str(
         (data / 'users.parquet').resolve())
-    assert datasets['users'].context == 'training'
+    assert datasets['users'].context == 'source table'
 
 
 def test_data_warnings_name_each_table_that_breaks_a_check(tmp_path):

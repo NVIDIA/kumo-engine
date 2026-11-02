@@ -173,13 +173,18 @@ class Manifest(Record):
     EMBED_OMITS = ()
     IS_DATASET: ClassVar[bool] = False
     URI_TAG: ClassVar[Optional[str]] = None
+    NOUN: ClassVar[Optional[str]] = None
+
+    @property
+    def title(self) -> str:
+        short = self.created_at and (
+            f"{self.created_at[:10]}-{re.split('[@-]', self.id)[-1][:6]}")
+        return f"{self.NOUN or self.kind.replace('_', ' ')} {short or self.id}"
 
     def as_artifact(self, key: str) -> Artifact:
         return Artifact(self.kind, self.id, self.location, self.IS_DATASET,
                         self.URI_TAG, version=self.id, version_kind='exact',
-                        label=self.created_at and
-                        f"{self.kind.replace('_', '-')}-{self.created_at[:10]}-"
-                        f"{re.split('[@-]', self.id)[-1][:6]}")
+                        label=self.title)
 
 
 def artifacts(manifest: Manifest) -> List[Artifact]:
@@ -213,7 +218,11 @@ _SCHEMES = {'s3': 'S3', 'gs': 'GCS', 'file': 'LOCAL_FILE', '': 'LOCAL_FILE'}
 Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
 
 
-def artifact_summaries(manifest: Manifest, context: str,
+FIT_ROLES = {'snapshot': 'graph context', 'training_table':
+             'training examples', 'source_table': 'source table'}
+
+
+def artifact_summaries(manifest: Manifest, roles: Mapping[str, str],
                        details: Optional[Details] = None) -> List[Summary]:
     r"""Location tags, the locations table and datasets of a manifest."""
     located = [item for item in artifacts(manifest) if item.location]
@@ -236,8 +245,9 @@ def artifact_summaries(manifest: Manifest, context: str,
                   'location': location, 'version': item.version,
                   'version_kind': item.version_kind}
         schema, profile = (details or {}).get(item.id, ({}, {}))
-        summaries.append(Dataset(item.label or item.id, source, schema,
-                                 profile, item.context or context))
+        summaries.append(Dataset(
+            item.label or item.id, source, schema, profile, item.context
+            or roles.get(item.kind, item.kind.replace('_', ' '))))
     return summaries
 
 
@@ -319,6 +329,7 @@ class SnapshotManifest(Manifest):
 
     kind: str = 'snapshot'
     IS_DATASET: ClassVar[bool] = True
+    NOUN: ClassVar[Optional[str]] = 'graph snapshot'
     parents: Optional[SnapshotParents] = None
     record_sources: Optional[bool] = omit_none()
     build: Optional[BuildCost] = omit_none()
