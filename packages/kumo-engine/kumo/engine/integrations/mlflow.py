@@ -356,7 +356,8 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                                               experiment.name)
             note = experiment.tags.get(_NOTE)
             if note != _EXPERIMENT_NOTE and (
-                    note.startswith('kumo-engine:') if note else
+                    note.startswith(('kumo-engine:', 'Runs from kumo-engine'))
+                    if note else
                     not client.search_runs([experiment_id], max_results=1)):
                 client.set_experiment_tag(experiment_id, _NOTE,
                                           _EXPERIMENT_NOTE)
@@ -889,19 +890,10 @@ def _digest(name: str, source: Mapping[str, Optional[str]],
 
 
 _NOTE = 'mlflow.note.content'
-_EXPERIMENT_NOTE = '\n'.join([
-    'kumo-engine: fit-<model>-v<N> = a fit · predict-<model>-v<N>-<date> = '
-    "one day's scoring",
-    '',
-    '- **Fits**: `fit-<model>-v<version>` once registered '
-    "(`fit-<model>-<YYYYMMDD-HHMMSS>` before), with a search's trials under "
-    "them. Filter `tags.kumo.kind = 'fit'`.",
-    '- **Predictions**: one per scoring day, '
-    "`predict-<model>-v<version>-<as-of date>`. Filter "
-    "`tags.kumo.kind = 'prediction'` and sort by the param `anchors` "
-    '(the as-of date).',
-    "Each run's description starts with its card; add notes below the "
-    "card's last line."])
+_EXPERIMENT_NOTE = (
+    "Runs from kumo-engine. Fits: `tags.kumo.kind = 'fit'`. Daily "
+    "predictions: `tags.kumo.kind = 'prediction'`, sorted by the `anchors` "
+    'param.')
 _CARD_END = re.compile(r'<!-- /kumo:card sha256=([0-9a-f]{16}) -->')
 _BLOCKS = ('drift', 'realized')
 _MONITORING_BYTES = 800

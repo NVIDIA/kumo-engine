@@ -916,9 +916,11 @@ def test_kumo_describes_an_unused_experiment_and_refreshes_its_own_text(
     client = mlflow.MlflowClient()
     client.create_experiment('mine', tags={'mlflow.note.content': 'Mine.'})
     client.create_run(client.create_experiment('used'))
-    client.create_run(client.create_experiment(
-        'stale', tags={'mlflow.note.content': 'kumo-engine: old names'}))
-    for name in ('new', 'mine', 'used', 'stale'):
+    for name, note in (('stale', 'kumo-engine: old names'),
+                       ('older', 'Runs from kumo-engine. Old.')):
+        client.create_run(client.create_experiment(
+            name, tags={'mlflow.note.content': note}))
+    for name in ('new', 'mine', 'used', 'stale', 'older'):
         tracker = MlflowTracking(name, log_system_metrics=False)
         for _ in range(2):
             tracker.start(RunRecord(name='r', tags={'kumo.kind': 'fit'}))
@@ -928,4 +930,4 @@ def test_kumo_describes_an_unused_experiment_and_refreshes_its_own_text(
             for experiment in client.search_experiments()
             if experiment.name != 'Default'} == {
         'new': _EXPERIMENT_NOTE, 'mine': 'Mine.', 'used': None,
-        'stale': _EXPERIMENT_NOTE}
+        'stale': _EXPERIMENT_NOTE, 'older': _EXPERIMENT_NOTE}
