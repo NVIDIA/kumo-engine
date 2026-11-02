@@ -280,11 +280,7 @@ Run only on explicit request (router Step 3).
 
 ## Graph visualization
 
-Reuse the graph in its existing Kumo notebook runtime for Markdown inspection or requested display; graph inspection alone does not require a GPU or a job.
-The modeling notebook's compute requirements still apply when it trains.
-Databricks uses the HTML view, whose interactivity requires trusted output and whose fullscreen control depends on host permission.
-Saved HTML includes a sample-free static fallback; rerun the visualization cell to reactivate it after a kernel restart.
-Exports are files on the notebook runtime's filesystem, not Unity Catalog tables or automatic browser downloads.
-Report that path and use the workspace's available file retrieval tools; copying to a volume or other persistent destination requires the user's destination and write scope.
+Databricks notebooks display the interactive HTML view; rerun the cell if saved output is static.
+Exports are saved on the notebook runtime; use the workspace's file tools to retrieve them.
 
-Source: shipped package (`kumo.engine.graph.Graph.visualize`, `kumo.engine._visualization.SVG`, `kumo.engine._widget`)
+Source: shipped package (`kumo.engine.graph.Graph.visualize`, `kumo.engine._visualization.SVG`)

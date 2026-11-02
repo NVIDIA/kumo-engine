@@ -31,7 +31,7 @@ build and artifact checks:
 
 | Request | Skill |
 |---|---|
-| Inspect or iterate a declared graph; display or export its schema and relationships | `kumo-graph-visualization/SKILL.md` |
+| Show or export a graph; inspect its schema during model iteration | `kumo-graph-visualization/SKILL.md` |
 | Attribution or column cohorts for an existing run | `kumo-model-explanations/SKILL.md` |
 | Metrics, trial comparisons, learning curves, recorded progress | `kumo-training-diagnostics/SKILL.md` |
 | Publish, reload, retain or retrieve a model or its artifacts | `kumo-model-persistence/SKILL.md` |
@@ -270,8 +270,8 @@ After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payloa
 
 1. Connector from environment credentials; confirmed tables, metadata, links; graph and PQL
    validation; SDK-default training table and model plan, no tuning.
-   After graph construction and validation, include the guarded optional-preview notebook cell for the human reader, with samples off; a visualization `ValueError` must not block modeling or change the graph.
-   Use `kumo-graph-visualization/SKILL.md` for this cell and for the agent's Markdown inspection of the graph definition; do not open or analyze its interactive view yourself.
+   After graph construction and validation, include the interactive graph cell from `kumo-graph-visualization/SKILL.md` for the user, before snapshot creation and training.
+   Visualization adds no approval gate; continue unless the user requests a pause for review.
 2. **Exactly one** training call — `trainer.fit(...)`. It blocks until training finishes and
    returns a `TrainingResult`; print its `metrics`.
 3. **Predict in the same notebook** — same `Trainer`, same process, immediately after
@@ -287,6 +287,7 @@ After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payloa
    still executes nothing (Step 3 is opt-in).
 
 The user may ask for a script instead of a notebook.
+Include the SVG export from `kumo-graph-visualization/SKILL.md` before training, saving it alongside run outputs and reporting its path.
 
 ### `batch_inference`
 

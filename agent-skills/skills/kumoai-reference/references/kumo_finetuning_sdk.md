@@ -377,9 +377,8 @@ Surface includes `.tables`, `.edges`, `.id`, `.native_graph`, `.validate()`, `.v
 **There is no `add_table`, `remove_table`, `link`, `unlink`, `infer_links`, `get_edge_stats`, or
 `get_table_stats`.**
 
-Visualization-capable builds expose `Graph.visualize(path=None, *, show_cols=False, show_samples=False, layout='auto')`.
-Check availability in the actual runtime and follow `kumo-graph-visualization/SKILL.md` for Markdown inspection, notebook display, exports, and optional samples.
-In generated modeling notebooks, place the capability's guarded optional-preview cell after graph construction and validation for the human reader; visualization limits must not block modeling or alter the graph, and generating the cell does not authorize executing the notebook.
+`Graph.visualize(path=None, *, show_cols=False, show_samples=False, layout='auto')` displays or exports the graph.
+Follow `kumo-graph-visualization/SKILL.md` for generated notebook visuals, script exports, and schema inspection during model iteration.
 
 Source: shipped package (`kumo.engine.graph`)
 
