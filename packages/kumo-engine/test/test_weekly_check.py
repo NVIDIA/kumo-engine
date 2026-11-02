@@ -617,6 +617,59 @@ class WeeklyChecks(unittest.TestCase):
                     weekly.compare_predictions(original, other, atol=1e-5,
                                                rtol=1e-5)
 
+    def test_rank_budget_only_allows_close_score_inversions_with_exact_membership(
+            self):
+        original = dict(entity_ids=[1], ranked_ids=[[3, 4]],
+                        values=[[.5002, .5]])
+        swapped = dict(entity_ids=[1], ranked_ids=[[4, 3]], values=[[.5001,
+                                                                     .5]])
+        with self.assertRaises(ValueError):
+            weekly.compare_predictions(original, swapped, atol=.002, rtol=0.)
+        result = weekly.replay_reference('saved', original, lambda _: object(),
+                                         lambda _: swapped, atol=.002, rtol=0.,
+                                         rank_atol=.0004)
+        self.assertEqual(result['status'], 'PASS')
+        self.assertEqual(result['rank_changed_entities'], 1)
+        self.assertEqual(result['rank_inversions'], 1)
+        self.assertAlmostEqual(result['max_abs_difference'], .0002)
+        self.assertAlmostEqual(result['max_reordered_score_gap'], .0002)
+        for before, after in [(dict(original, values=[[.5005, .5]]), swapped),
+                              (original, dict(swapped, values=[[.5005, .5]])),
+                              (original, dict(swapped, ranked_ids=[[5, 3]])),
+                              (original, dict(swapped, values=[[.4999, .5]])),
+                              (original,
+                               dict(swapped, values=[[float('nan'), .5]])),
+                              (dict(entity_ids=[1], ranked_ids=[[1, 2, 3]],
+                                    values=[[.5006, .5003, .5]]),
+                               dict(entity_ids=[1], ranked_ids=[[3, 2, 1]],
+                                    values=[[.5006, .5003, .5]]))]:
+            with self.subTest(before=before,
+                              after=after), self.assertRaises(ValueError):
+                weekly.compare_predictions(before, after, atol=.002, rtol=0.,
+                                           rank_atol=.0004)
+        for invalid in (-1., float('inf'), float('nan')):
+            with self.assertRaises(ValueError):
+                weekly.compare_predictions(original, original, atol=.002,
+                                           rtol=0., rank_atol=invalid)
+
+    def test_manifest_binds_and_validates_the_optional_rank_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            value = input_fixture(root)
+            value['cases'][-1]['tolerance']['rank_atol'] = .0004
+            weekly.save(root / 'manifest.json', value)
+            weekly.load_manifest(root, weekly.digest(root / 'manifest.json'))
+            for policy in (dict(atol=.002, rtol=0., rank_atol=-1.),
+                           dict(atol=.002, rtol=0., rank_atol='wide'),
+                           dict(atol=.002, rtol=0.,
+                                unreviewed=True), dict(rtol=0.,
+                                                       rank_atol=.0004)):
+                value['cases'][-1]['tolerance'] = policy
+                weekly.save(root / 'manifest.json', value)
+                with self.subTest(policy=policy), self.assertRaises(ValueError):
+                    weekly.load_manifest(root,
+                                         weekly.digest(root / 'manifest.json'))
+
     def test_case_failure_does_not_skip_remaining_cases(self):
         self.assertTrue(callable(getattr(weekly, 'execute_cases', None)))
         visited = []
