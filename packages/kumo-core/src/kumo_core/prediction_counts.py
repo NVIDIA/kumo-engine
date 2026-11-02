@@ -233,9 +233,15 @@ def _by_score_pct(column: str, counts: np.ndarray) -> Series:
     per_pct = counts[1:-1].astype(np.float64)
     per_pct[0] += counts[0]
     per_pct[-1] += counts[-1]
-    name = re.sub(r'[^\w.-]', '_', column)
-    return Series(f'pred/{name}_count_by_score_pct',
+    return Series(_score_histogram(column),
                   tuple(enumerate(per_pct.tolist())), 'score_pct', chart=True)
+
+
+def _score_histogram(column: str) -> str:
+    if column == 'True_PROB':
+        return 'pred/score_histogram'
+    name = re.sub(r'[^\w.-]', '_', column.removesuffix('_PROB'))
+    return f'pred/score_histogram/{name}'
 
 
 def _by_item_rank(ranked: Sequence[float]) -> List[Series]:

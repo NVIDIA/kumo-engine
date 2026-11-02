@@ -68,13 +68,12 @@ def test_binary_counts_match_brute_force():
 
     logged = _by_name(prediction_summaries(counts, threshold=0.4,
                                            baseline=None))
-    assert sorted(logged) == ['pred/True_PROB_count_by_score_pct',
-                              'pred/histogram/True_PROB', 'pred/positive_rate',
-                              'pred/summary']
+    assert sorted(logged) == ['pred/histogram/True_PROB', 'pred/positive_rate',
+                              'pred/score_histogram', 'pred/summary']
     per_pct = np.bincount(np.minimum(true * 100, 99).astype(int),
                           minlength=100)
-    assert logged['pred/True_PROB_count_by_score_pct'] == Series(
-        'pred/True_PROB_count_by_score_pct',
+    assert logged['pred/score_histogram'] == Series(
+        'pred/score_histogram',
         tuple(enumerate(per_pct.astype(float))), 'score_pct', chart=True)
     assert logged['pred/histogram/True_PROB'] == Histogram(
         'pred/histogram/True_PROB', PROBABILITY_EDGES,
@@ -106,6 +105,10 @@ def test_multiclass_summarizes_each_class_and_the_most_predicted():
     assert [name for name in logged if name.startswith('pred/histogram/')] == [
         'pred/histogram/confidence',
         *(f'pred/histogram/{columns[index]}' for index in order[:20])]
+    assert [name for name in logged
+            if name.startswith('pred/score_histogram')] == [
+        'pred/score_histogram/confidence',
+        *(f'pred/score_histogram/c{index}' for index in order[:20])]
     assert logged['pred/histogram/confidence'].counts == _brute_histogram(
         prob.max(axis=1), PROBABILITY_EDGES)
     assert logged['pred/by_class'].columns == (
@@ -236,10 +239,10 @@ def test_multilabel_counts_each_labels_predicted_rows_and_top_score():
     assert [name for name in logged if name.startswith('pred/histogram/')] == [
         'pred/histogram/top score',
         *(f'pred/histogram/{columns[index]}' for index in order[:20])]
-    assert [name for name in logged if name.endswith('_by_score_pct')] == [
-        'pred/top_score_count_by_score_pct',
-        *(f'pred/{columns[index]}_count_by_score_pct'
-          for index in order[:20])]
+    assert [name for name in logged
+            if name.startswith('pred/score_histogram')] == [
+        'pred/score_histogram/top_score',
+        *(f'pred/score_histogram/l{index}' for index in order[:20])]
     assert logged['pred/histogram/top score'].counts == _brute_histogram(
         prob.max(axis=1), PROBABILITY_EDGES)
     assert logged['pred/summary'].rows == (
@@ -290,7 +293,8 @@ def test_recommendations_count_items_and_top_scores_across_workers(tmp_path):
         np.sort(per_item)[-10:].sum() / valid.size)
     assert logged['pred/histogram/top score'].counts == _brute_histogram(
         scores, holdout.edges['top_score'])
-    assert [name for name in logged if name.endswith('_by_score_pct')] == []
+    assert [name for name in logged
+            if name.startswith('pred/score_histogram')] == []
     assert logged['pred/recommendations_by_item_rank'] == Series(
         'pred/recommendations_by_item_rank',
         tuple((rank, float(n)) for rank, n in

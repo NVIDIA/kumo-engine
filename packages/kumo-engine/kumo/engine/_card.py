@@ -230,11 +230,11 @@ def block(summaries: Sequence[Summary], moved: Sequence[Table] = ()) -> str:
 def charts(metrics: Mapping[str, float]) -> List[Note]:
     r"""A note on what the step of each chart in ``metrics`` is."""
     scored = sorted(name for name in metrics
-                    if name.endswith('_count_by_score_pct'))
+                    if name.startswith('pred/score_histogram'))
     steps = []
     if scored:
         name = (scored[0] if len(scored) == 1
-                else 'pred/<column>_count_by_score_pct')
+                else 'pred/score_histogram/<class>')
         steps.append(f'`{name}`: step = score × 100 (step 37 = scores '
                      '0.37–0.38)')
     if 'pred/recommendations_by_item_rank' in metrics:

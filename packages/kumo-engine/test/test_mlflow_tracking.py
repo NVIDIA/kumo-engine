@@ -693,12 +693,12 @@ def test_charted_series_become_metrics_over_their_steps(tracking_uri):
     tags = {'kumo.kind': 'prediction'}
     tracker.start(RunRecord(name='r', tags=tags))
     tracker.finish(RunRecord(name='r', tags=tags, summaries=(
-        Series('pred/c@d_count_by_score_pct', ((0, 3.0), (1, 0.0)),
+        Series('pred/score_histogram/c@d', ((0, 3.0), (1, 0.0)),
                'score_pct', chart=True),)), None)
 
     run = mlflow.get_run(tracker.run_id)
     history = mlflow.MlflowClient().get_metric_history(
-        tracker.run_id, 'pred/c_at_d_count_by_score_pct')
+        tracker.run_id, 'pred/score_histogram/c_at_d')
     assert [(m.step, m.value) for m in history] == [(0, 3.0), (1, 0.0)]
     assert 'mlflow.loggedArtifacts' not in run.data.tags
 

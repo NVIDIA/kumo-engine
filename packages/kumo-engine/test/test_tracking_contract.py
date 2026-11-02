@@ -651,7 +651,7 @@ def test_prediction_record_of_the_recorded_run():
         Histogram('pred/histogram/True_PROB', PROBABILITY_EDGES, tuple(
             np.bincount(np.searchsorted(PROBABILITY_EDGES, SCORES, 'right'),
                         minlength=102).tolist()), (min(SCORES), max(SCORES))),
-        Series('pred/True_PROB_count_by_score_pct', tuple(enumerate(
+        Series('pred/score_histogram', tuple(enumerate(
             np.bincount((SCORES * 100).astype(int), minlength=100).astype(
                 float).tolist())), 'score_pct', chart=True),
         Table('pred/summary', ('column', 'mean', 'min', 'max'),
@@ -778,7 +778,7 @@ def test_every_summary_type_is_routed():
 
     from kumo.engine._summary_tables import route
 
-    chart = Series('pred/x_count_by_score_pct', ((0, 1.0), ), chart=True)
+    chart = Series('pred/score_histogram', ((0, 1.0), ), chart=True)
     summaries = [
         Scalar('a', 1.0), Tag('t', 'v'), chart,
         Histogram('pred/h', (0.5, ), (1, 2)), Table('brief', ('c', ), (),
@@ -791,7 +791,7 @@ def test_every_summary_type_is_routed():
     assert charted.charts == {chart.name: chart.points}
     assert [t.name for t in charted.tables] == [
         'pred', 'big', 'test/confusion']
-    assert 'pred/x_count_by_score_pct' not in tabled.charts
+    assert 'pred/score_histogram' not in tabled.charts
     assert len(tabled.tables) == 4
     assert [type(s) for s in charted.card] == [Table, Note]
     assert (len(charted.scalars), charted.tags,
