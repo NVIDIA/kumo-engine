@@ -572,6 +572,11 @@ PredictionResult.export(output_config)
 - For Snowflake, always pass `artifact_type` and `table_name`. `output_paths` is for file and
   object-store connectors only; with a `SnowflakeConnector` it raises `ValueError`. Every
   connector's form is in §9.2.
+- `extra_fields=[MetadataField.JOB_TIMESTAMP, MetadataField.ANCHOR_TIMESTAMP]` (`kumoapi.jobs`)
+  adds those two columns: when the run started, and the time each prediction is anchored at.
+  `ANCHOR_TIMESTAMP` exists only for a query with a time window; requesting it for one without
+  raises `ValueError` after scoring. Source: shipped package (`kumo_core.train.output`,
+  `kumo_core.prediction_options`).
 
 - **`snapshot=` is required.** `output_config` is optional — omit it to keep results local.
 - `predict` requires a trainer holding fitted state — from `fit` on that same `Trainer`, or from
@@ -853,7 +858,6 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
   nowhere. `load_from_connector` needs a connector whose sink implements `ModelFetchingSink`
   (otherwise `TypeError`); `FileConnector` provides `fetch_model`, other sinks are unverified.
 - `num_workers` above 1.
-- `extra_fields` on `PredictionOutputConfig` (`MetadataField` values).
 - `PredictionResult.export` against Snowflake — in the package, exercised nowhere.
 - Whether a snapshot can be reused across graphs or persisted between processes.
 - The written column schema for a ranking task.

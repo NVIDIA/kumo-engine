@@ -111,7 +111,7 @@ session = get_active_session()   # first line of work: before any Kumo connector
 from pathlib import Path
 
 import kumo.engine as kumo
-from kumoapi.jobs import PredictionArtifactType, WriteMode
+from kumoapi.jobs import MetadataField, PredictionArtifactType, WriteMode
 
 # Literals from the Node 1d restatement, written into this file (replace each placeholder).
 WAREHOUSE = '<warehouse>'
@@ -150,7 +150,9 @@ result = loaded.predict(
     population, snapshot=snapshot, binary_classification_threshold=THRESHOLD,
     output_config=kumo.PredictionOutputConfig(
         connector=output, artifact_type=PredictionArtifactType.PREDICTIONS,
-        table_name=OUTPUT_TABLE, write_mode=WRITE_MODE),
+        table_name=OUTPUT_TABLE, write_mode=WRITE_MODE,
+        extra_fields=([MetadataField.JOB_TIMESTAMP, MetadataField.ANCHOR_TIMESTAMP]   # JOB_TIMESTAMP alone
+                      if WRITE_MODE == WriteMode.APPEND else [])),   # for a query with no time window (§8)
 )
 written = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE]).count()
 print('predicted rows:', result.num_rows, 'table rows:', written)
@@ -304,8 +306,11 @@ Settle each of these in the proposal before anything is created:
 
 - **Scoring time moves forward.** The script omits `prediction_time`, so each run anchors at the
   latest data. A date fixed in the script would score the same day forever.
-- **Write mode for repeated runs.** OVERWRITE keeps only the latest run. APPEND keeps history, but
-  a retried run adds a second copy of its rows. If the user already chose a mode, restate it with
+- **Write mode for repeated runs.** OVERWRITE keeps only the latest run. APPEND keeps history:
+  each row carries `JOB_TIMESTAMP` and `ANCHOR_TIMESTAMP`, and a retried run adds a second copy of
+  its rows under a second `JOB_TIMESTAMP`. An existing table without those columns fails the
+  write after scoring; settle it at the gate (`kumoai-reference/references/outputs.md` *Write
+  predictions*). If the user already chose a mode, restate it with
   that consequence. Otherwise ask which they want.
 - **The model version stays pinned.** A new version reaches the schedule only through an explicit
   change.
