@@ -51,10 +51,8 @@ See how to install Kumo Engine in a notebook, connect customer and order tables,
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="assets/kumo-notebook-demo.png">
   <source media="(max-width: 600px)" srcset="assets/kumo-notebook-demo.png">
-  <img src="assets/kumo-notebook-demo.gif" width="960" alt="A notebook installs the Kumo Engine development wheel with pip, defines customer and order tables, connects their foreign keys, and renders the table schema in a cell.">
+  <img src="assets/kumo-notebook-demo.gif" width="960" alt="A notebook user flow shows a PyPI install command, defines customer and order tables, connects their foreign keys, and renders the table schema in a cell.">
 </picture>
-
-[Static image](assets/kumo-notebook-demo.png) · [Full-size GIF](assets/kumo-notebook-demo.gif)
 
 Predict which customers will order in the next 30 days using their connected order history. Try the [Python quickstart](packages/kumo-engine/README.md#quickstart) with the bundled sample dataset.
 
