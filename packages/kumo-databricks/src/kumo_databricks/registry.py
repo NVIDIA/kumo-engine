@@ -34,7 +34,8 @@ def _address(connector: SourceConnector, path: Optional[str],
              location: Optional[ModelRegistryLocation]) -> str:
     if path is not None:
         raise ValueError('Databricks models take a ModelRegistryLocation, '
-                         'rather than a path.')
+                         'or a /Volumes/<catalog>/<schema>/<volume>/... '
+                         'path.')
     if location is None:
         raise ValueError('Pass a ModelRegistryLocation naming the model.')
     config = _target_config(connector)
