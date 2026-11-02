@@ -302,8 +302,11 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
     tracking = _tracking()
     tracking.start(start)
     tracking.finish(replace(start, metrics={'test/mae': 0.32}, tags={
-        **tags, 'kumo.data_warnings': '1'}, summaries=(
+        **tags, 'kumo.data_warnings': '1', 'kumo.bundle_id': 'b' * 64},
+        summaries=(
             Note('problems', 'link `ents.ID → users`: 14 % of rows match'),
+            Note('lineage/model', '`ents` v1 → graph snapshot g → training '
+                 'table t'),
             Table('locations', ('kind', 'id', 'location'),
                   (('model', 'b' * 64, 's3://b/models/b'),), brief=True),
             Table('data/splits', ('split', 'rows'),
@@ -329,7 +332,8 @@ def test_a_fit_run_gets_a_card_and_its_duration(fake, monkeypatch):
         '| --- | ---: |', '| train | 8 |', '| val | 1 |', '| test | 1 |', '',
         '**Data preparation**', '', '| step | time (s) | disk |',
         '| --- | ---: | --- |', '| Training table | 12.5 | 4.2 KiB |', '',
-        '**Where things are**', '', '| Artifact | Location |', '| --- | --- |',
+        '**Lineage**', '', '- `ents` v1 → graph snapshot g → training table '
+        't → model `bbbbbbbb`', '', '**Where things are**', '', '| Artifact | Location |', '| --- | --- |',
         '| model bundle `bbbbbbbb` | [`s3://b/models/b`](https://s3.console.'
         'aws.amazon.com/s3/buckets/b?prefix=models/b/) |', '',
         'Full lineage: `_provenance.json`. Tables: `holdout/by_k.json`, '
@@ -355,6 +359,19 @@ def test_a_prediction_run_names_its_model_and_lasts_as_long_as_it_ran(fake):
         'Scores of `churn` v3, trained by `FIT_CHURN_20261029_061800`.\n\n'
         'Full lineage: `_provenance.json`.')
     assert ('duration_seconds', 60.0, 0) in run['metrics']
+
+
+def test_a_prediction_run_logs_its_skipped_rows(fake, tmp_path):
+    (tmp_path / 'part-0.parquet').write_bytes(b'PAR1\xff')
+    (tmp_path / '_SUCCESS').touch()
+    record = prediction_record(PREDICTION_MANIFEST, model=REGISTERED,
+                               files={'skipped': str(tmp_path)})
+
+    _tracking().log_prediction_run(record)
+
+    run, = fake._instance.runs.values()
+    assert run['artifacts']['skipped/part-0.parquet'] == b'PAR1\xff'
+    assert run['artifacts']['skipped/_SUCCESS'] == ''
 
 
 def _prediction(as_of, version=None, label='churn'):

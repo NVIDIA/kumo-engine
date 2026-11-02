@@ -544,6 +544,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                                   model_id=self._model_id)
                 self._log_tags(self._parent, record.tags)
                 self._log_artifacts(record.artifacts)
+                self._log_files(record.files)
                 if kind == 'prediction':
                     self._fit = self._fit_of(record.tags.get('kumo.fit_run_id'))
                     self._log_model_input()
@@ -829,6 +830,17 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                 self._write_text(self._parent, name, text)
                 self._artifacts.add(name)
 
+    def _log_files(self, files: Mapping[str, str]) -> None:
+        for name, directory in files.items():
+            with self.target.scope():
+                repository = self.target.artifact_repository(
+                    self._client.get_run(self._parent).info.artifact_uri
+                ) if self.target.explicit else None
+                if repository is None:
+                    self._client.log_artifacts(self._parent, directory, name)
+                else:
+                    repository.log_artifacts(directory, name)
+
     def _write_text(self, run_id: str, name: str, text: str) -> None:
         with self.target.scope():
             repository = self.target.artifact_repository(
@@ -1092,7 +1104,7 @@ def log_model(
             none.
         target: as in `MlflowTracking`.
     """
-    from kumo.engine._manifest import artifact_summaries
+    from kumo.engine._manifest import FIT_ROLES, artifact_summaries
     from kumo.engine._mlops import snapshot_uri
     from kumo.engine.trainer._provenance import bundle_manifest
     from kumo.engine.trainer._run_spec import registry_metrics
@@ -1117,7 +1129,7 @@ def log_model(
                 tracking._experiment_for(client)).info.run_id
         experiment_id = client.get_run(run_id).info.experiment_id
     summaries = [] if result.manifest is None else artifact_summaries(
-        result.manifest, 'training')
+        result.manifest, FIT_ROLES)
     try:
         tracking._log_inputs(
             run_id, [s for s in summaries if isinstance(s, Dataset)])

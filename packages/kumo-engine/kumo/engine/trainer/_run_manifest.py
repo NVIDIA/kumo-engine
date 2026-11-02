@@ -4,6 +4,7 @@
 r"""Prediction-run manifest and output score statistics."""
 
 import json
+import shutil
 import warnings
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -43,6 +44,7 @@ from kumo.engine._score_stats import output_counts
 from kumo.engine.trainer._provenance import count_edges, embedded_model
 
 _OBJECT_STORES = frozenset({'LOCAL_FILE', 'S3', 'GCS'})
+SKIPPED_DIR = 'skipped'
 
 
 def _now() -> str:
@@ -100,9 +102,12 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
                     manifest = store(result, manifest, settings)
                 except Exception as failure:
                     unstored = failure
+            skipped = _local_skipped(result)
             untracked = track_prediction(
                 manifest, settings.tracking, error or unstored, model,
-                lambda: _scoring_summaries(manifest, snapshot))
+                lambda: _scoring_summaries(manifest, snapshot),
+                files={} if error or skipped is None else
+                {SKIPPED_DIR: str(skipped)})
             tracker = as_tracking(settings.tracking)
             if (untracked is None and tracker is not None
                     and tracker.log_prediction_run is not None):
@@ -118,14 +123,14 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
 def _scoring_summaries(manifest: Optional[PredictionManifest],
                        snapshot: Any) -> List[Summary]:
     from kumo.engine._data_summaries import snapshot_summaries, table_details
-    from kumo.engine._manifest import artifact_summaries
+    from kumo.engine._manifest import SCORING_ROLES, artifact_summaries
 
     if manifest is None:
         return []
     index = Path(snapshot.index_path)
     return [
         *snapshot_summaries(index, snapshot.graph_config),
-        *artifact_summaries(manifest, 'scoring',
+        *artifact_summaries(manifest, SCORING_ROLES,
                             table_details(index, snapshot.id)),
     ]
 
@@ -153,6 +158,7 @@ def store(result: Any, manifest: Optional[PredictionManifest],
         if manifest is not None:
             manifest = replace(manifest,
                                outputs=[*(manifest.outputs or []), *stored])
+            manifest = _store_skipped(result, manifest, settings, base)
         result._export(
             PredictionOutputConfig(settings.root.connector, output_paths={
                 name: settings.root.location(f'{base}/{name}/')
@@ -164,6 +170,46 @@ def store(result: Any, manifest: Optional[PredictionManifest],
     if manifest is not None:
         write(result, manifest)
     return manifest
+
+
+def _local_skipped(result: Any) -> Optional[Path]:
+    path = result._manifest_path.parent / SKIPPED_DIR
+    return path if path.is_dir() else None
+
+
+def _keep_skipped(prediction_table: Any, run_dir: Path) -> Optional[Path]:
+    r"""Copies the skipped rows beside the run's manifest."""
+    source = prediction_table.skipped_dir
+    if source is None or not source.is_dir():
+        return None
+    target = run_dir / SKIPPED_DIR
+    shutil.copytree(source, target, dirs_exist_ok=True)
+    (target / '_SUCCESS').touch()
+    return target
+
+
+def _rows(directory: Path) -> int:
+    r"""Rows in a directory of Parquet parts, from their footers."""
+    from pyarrow import parquet
+
+    return sum(parquet.ParquetFile(part).metadata.num_rows
+               for part in directory.glob('*.parquet'))
+
+
+def _store_skipped(result: Any, manifest: PredictionManifest, settings: Any,
+                   base: str) -> PredictionManifest:
+    local = _local_skipped(result)
+    if local is None:
+        return manifest
+    connector = settings.root.connector
+    destination = settings.root.location(f'{base}/{SKIPPED_DIR}/')
+    connector.sink_backend.write_files(
+        connector, destination,
+        sorted(str(part) for part in local.glob('*.parquet')),
+        WriteMode.OVERWRITE, export_id=f'{result.id}-{SKIPPED_DIR}')
+    return replace(manifest, prediction_table=replace(
+        manifest.prediction_table, skipped_location=destination_record(
+            connector, destination).location))
 
 
 def write(result: Any, manifest: PredictionManifest) -> None:
@@ -189,6 +235,9 @@ def _manifest(result: Any, trainer: Any, snapshot: Any,
     counts = Path(result.selection.pointer_path).parent / COUNTS_FILE
     model: Optional[ModelManifest] = trainer.result.manifest
     scoring_snapshot = snapshot.manifest
+    skipped = _keep_skipped(prediction_table, result._manifest_path.parent)
+    skipped_rows = (prediction_table.skipped_rows
+                    if skipped is None else _rows(skipped))
     return _record_predictions(
         result.id, {
             item.artifact_type.value.lower():
@@ -208,11 +257,12 @@ def _manifest(result: Any, trainer: Any, snapshot: Any,
                     timespec='seconds') for ts in prediction_table.timestamps
             ],
             rows=prediction_table.row_count,
-            requested_rows=prediction_table.requested_rows,
+            requested_rows=prediction_table.row_count + skipped_rows,
             scored_rows=prediction_table.row_count,
-            skipped_rows=prediction_table.skipped_rows,
+            skipped_rows=skipped_rows,
             skipped_sample=list(prediction_table.skipped_sample),
             skip_reason=prediction_table.skip_reason,
+            skipped_location=None if skipped is None else str(skipped),
         ), scoring=scoring, started_at=started_at,
         counts=json.loads(counts.read_text()) if counts.is_file() else None)
 

@@ -625,8 +625,8 @@ def _evaluation_summaries(result: EvaluationResult, labels: Any,
     manifest = getattr(labels, 'manifest', None)
     name = None if manifest is None else manifest.as_artifact('labels').label
     datasets = [] if manifest is None else [
-        replace(summary, context='labels')
-        for summary in artifact_summaries(manifest, 'labels')
+        summary for summary in artifact_summaries(
+            manifest, {manifest.kind: 'labels'})
         if isinstance(summary, Dataset)
         and summary.name == (name or manifest.id)]
     tune = _tune_metric(model)

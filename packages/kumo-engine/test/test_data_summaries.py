@@ -17,7 +17,7 @@ from kumo.engine._data_summaries import (
     table_details,
     target_edges,
 )
-from kumo.engine._manifest import artifact_summaries
+from kumo.engine._manifest import FIT_ROLES, artifact_summaries
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.pquery import PredictiveQuery
 
@@ -101,7 +101,7 @@ def test_summaries_match_the_snapshot_and_training_table(scratch):
                             users['AGE'].max())
     assert age['mean'] == pytest.approx(users['AGE'].mean())
     datasets = {s.name: s for s in artifact_summaries(
-        snapshot.manifest, 'training',
+        snapshot.manifest, FIT_ROLES,
         details=table_details(Path(snapshot.index_path)))
         if isinstance(s, Dataset)}
     assert set(datasets) == {'users', 'orders'}
@@ -112,7 +112,7 @@ def test_summaries_match_the_snapshot_and_training_table(scratch):
     assert datasets['orders'].profile['rows'] == 6000
     assert datasets['users'].source['location'] == str(
         (data / 'users.parquet').resolve())
-    assert datasets['users'].context == 'training'
+    assert datasets['users'].context == 'source table'
 
 
 def test_data_warnings_name_each_table_that_breaks_a_check(tmp_path):
@@ -181,7 +181,7 @@ def test_approximate_counts_never_exceed_the_exact_ones(tmp_path):
         ('BIO', 2000), ('AGE', 61)]
 
 
-def test_target_edges_are_even_bins_without_a_histogram(tmp_path):
+def test_target_edges_need_the_split_statistics_histogram(tmp_path):
     target = {'target_min': 0, 'target_percentile_25': 0, 'target_median': 0,
               'target_percentile_75': 25, 'target_max': 200,
               'target_mean': 30.5}
@@ -191,13 +191,11 @@ def test_target_edges_are_even_bins_without_a_histogram(tmp_path):
         'test_table_stats': {'num_train_rows': 10, 'target_distribution': {
             'target_mean': 1.5, 'target_min': -1, 'target_max': 9}}}))
 
-    edges = tuple(sorted({*(4.0 * i for i in range(51)), 25.0}))
-    assert target_edges(tmp_path) == edges
+    assert target_edges(tmp_path) == ()
     assert split_summaries(tmp_path) == [
         Table('data/splits', ('split', 'rows', 'distinct entities (approx.)',
                               'target mean'),
               (('train', 80, 20, 30.5), ('test', 10, None, 1.5)), brief=True),
-        Note('notes', 'Target histograms: 50 equal bins + 1 quartile edge.'),
     ]
     assert _bins_note({'histogram': {'bins': [0, 10, 20, 30]},
                        'target_min': 0, 'target_percentile_25': 5,

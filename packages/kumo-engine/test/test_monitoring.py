@@ -855,7 +855,7 @@ def test_tracked_monitoring_is_tagged_like_its_prediction_run(
     assert orders.columns[:3] == ('column', 'type', 'psi')
     assert ('AMT', 'numerical', amount['psi']) == orders.rows[0][:3]
     labels = snapshots.after.manifest
-    name = (f'snapshot-{labels.created_at[:10]}-'
+    name = (f'graph snapshot {labels.created_at[:10]}-'
             f"{labels.id.partition('@')[2][:6]}")
     auroc, ap = evaluation.metrics['auroc'], evaluation.metrics['ap']
     holdout = trainer.result.metrics
@@ -1031,7 +1031,7 @@ def test_evaluation_summaries_name_the_labels_snapshot(tmp_path):
     assert record.tags['kumo.monitor'] == 'evaluate'
     assert record.summaries == (
         Tag('kumo.labels_snapshot_id', 'g@023b25a5'),
-        Dataset('snapshot-2024-06-08-023b25', {
+        Dataset('graph snapshot 2024-06-08-023b25', {
             'connector': 'S3', 'location': 's3://b/snapshots/g/2',
             'version': 'g@023b25a5', 'version_kind': 'exact'}, {}, {},
             'labels'),
@@ -1040,7 +1040,7 @@ def test_evaluation_summaries_name_the_labels_snapshot(tmp_path):
         Table('realized/metrics', ('metric', 'realized', 'holdout'),
               (('auroc', 0.75, 0.85), ('ap', 0.5, None)), brief=True),
         Note('notes', '75 % labelled (3 of 4 scored rows), with labels from '
-             'snapshot-2024-06-08-023b25.'),
+             'graph snapshot 2024-06-08-023b25.'),
         Note('notes', 'Labels are not mature yet: the label window ends '
              'after the snapshot data.'),
         Note('notes', 'Realized metrics: a metric is undefined for these '

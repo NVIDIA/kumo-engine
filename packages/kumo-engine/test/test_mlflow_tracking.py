@@ -392,7 +392,7 @@ def test_source_tables_are_logged_as_native_inputs(
     monkeypatch.setattr(DeltaDatasetSource, '_lookup_table_id',
                         lambda self, name: 'table-id')
     replay(MlflowTracking(log_system_metrics=False), summaries=[
-        Dataset(name, source, {}, {}, 'training')
+        Dataset(name, source, {}, {}, 'source table')
         for name, source in INPUTS.items()])
 
     run, = [run for run in _runs(mlflow.MlflowClient())
@@ -522,6 +522,28 @@ def test_prediction_run_nests_under_the_active_run(tracking_uri):
         'predict-model-bbbbbbbb-2024-04-29',
         'predict-model-bbbbbbbb-2024-04-29-2',
         'FINISHED')
+
+
+def test_a_prediction_run_logs_its_skipped_rows(tracking_uri, tmp_path):
+    from test_tracking_contract import PREDICTION_MANIFEST
+
+    from kumo.engine._tracking import track_prediction
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    skipped = tmp_path / 'skipped'
+    skipped.mkdir()
+    (skipped / 'part-0.parquet').write_bytes(b'PAR1')
+    (skipped / '_SUCCESS').touch()
+    track_prediction(PREDICTION_MANIFEST,
+                     MlflowTracking(experiment_name='scores',
+                                    log_system_metrics=False),
+                     files={'skipped': str(skipped)})
+
+    client = mlflow.MlflowClient()
+    run, = (run for run in _runs(client) if 'kumo.kind' in run.data.tags)
+    assert sorted(item.path for item in client.list_artifacts(
+        run.info.run_id, 'skipped')) == ['skipped/_SUCCESS',
+                                         'skipped/part-0.parquet']
 
 
 def test_link_prediction_metric_names_are_logged(tracking_uri):
@@ -875,7 +897,7 @@ def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
     track_prediction(PREDICTION_MANIFEST, tracking, model=trained,
                      summaries=lambda: [
                          Dataset(name, INPUTS['ents'], {}, {}, context)
-                         for name, context in (('snapshot', 'scoring'),
+                         for name, context in (('snapshot', 'scoring graph'),
                                                ('predictions', 'output'))])
 
     run = client.get_run(tracking.run_id)

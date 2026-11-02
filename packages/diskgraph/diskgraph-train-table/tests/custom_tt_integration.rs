@@ -1136,10 +1136,15 @@ fn test_custom_tt_forecasting_date_offset_split_routes_all_stages() {
     let split_stats: serde_json::Value =
         serde_json::from_slice(&fs::read(out_dir.path().join("split_stats.json")).unwrap())
             .unwrap();
-    assert_eq!(
-        split_stats["train_table_stats"]["target_distribution"]["histogram"]["num_bins"],
-        0
-    );
+    let histogram = &split_stats["train_table_stats"]["target_distribution"]["histogram"];
+    assert_eq!(histogram["num_bins"], 50);
+    let counted: u64 = histogram["counts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|count| count.as_u64().unwrap())
+        .sum();
+    assert_eq!(counted, 2);
 }
 
 /// Unknown entity PK → rows skipped (documented behavior). Customer parquet
@@ -3311,6 +3316,139 @@ fn test_row_validation_source_that_keeps_no_rows_fails_in_both_modes() {
         .unwrap()
         .to_string();
     assert!(err.contains("5 read, 5 skipped"), "{err}");
+}
+
+#[test]
+fn test_prediction_source_that_keeps_no_rows_returns_its_row_failures() {
+    let mut rows = NodeRows::good();
+    rows.entity = (10..15).map(Some).collect();
+    let err = run_node_rows(&rows, false, false, IngestOnError::Abort)
+        .err()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        err,
+        "Schema error: custom-TT source kept no rows (5 read, 5 skipped), so the run would \
+         train on nothing"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_users_only_graph(dir.path(), 5);
+    let pq = dir.path().join("rows.parquet");
+    synth_static_custom_tt_parquet(&pq, &[10, 11, 12, 13, 14], false);
+    let mut plan = make_custom_tt_target_only_node_plan();
+    plan.is_prediction = true;
+    let out_dir = tempfile::tempdir().unwrap();
+    let output = execute_tt_pass_with_source(
+        &plan,
+        &index,
+        out_dir.path(),
+        Some(source(&pq, IngestOnError::Abort)),
+    )
+    .unwrap();
+    assert_eq!(output.rows_written, 0);
+    let report = output.row_failures.unwrap();
+    assert_eq!(report.skipped_rows, 5);
+    assert_eq!(report.by_condition[0].condition, RowFailureKind::UnknownEntity);
+}
+
+#[test]
+fn test_prediction_writes_every_skipped_row_with_its_conditions() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_users_only_graph(dir.path(), 5);
+    let ts = 1_700_000_000i64 * 1_000_000_000;
+    let mut entities = Vec::new();
+    let mut times = Vec::new();
+    let mut expected = Vec::new();
+    for row in 0..2_000i64 {
+        let (entity, time, condition) = match row % 5 {
+            0 => (Some(row % 5), Some(ts), None),
+            1 => (Some(1_000 + row), Some(ts), Some("unknown_entity")),
+            2 => (None, Some(ts), Some("null_entity")),
+            3 => (Some(row % 5), None, Some("null_timestamp")),
+            _ => (None, None, Some("null_entity,null_timestamp")),
+        };
+        entities.push(entity);
+        times.push(time);
+        if let Some(condition) = condition {
+            expected.push((entity, time, condition.to_string()));
+        }
+    }
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("ENTITY1", DataType::Int64, true),
+        Field::new(
+            "TIMESTAMP",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        ),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(entities)),
+            Arc::new(TimestampNanosecondArray::from(times)),
+        ],
+    )
+    .unwrap();
+    let pq = dir.path().join("rows.parquet");
+    let props = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(100))
+        .build();
+    let mut writer = ArrowWriter::try_new(fs::File::create(&pq).unwrap(), schema, Some(props))
+        .unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let mut plan = make_custom_tt_target_only_node_plan();
+    plan.is_prediction = true;
+    let out_dir = tempfile::tempdir().unwrap();
+    let output = execute_tt_pass_with_source(
+        &plan,
+        &index,
+        out_dir.path(),
+        Some(source(&pq, IngestOnError::SkipRowOnError)),
+    )
+    .unwrap();
+    assert_eq!(output.rows_written, 400);
+    assert_eq!(output.row_failures.unwrap().skipped_rows, 1_600);
+
+    let skipped = output.tt_parquet_path.parent().unwrap().join("skipped");
+    let parts: Vec<_> = fs::read_dir(&skipped).unwrap().collect();
+    assert_eq!(parts.len(), 20);
+    let mut written = Vec::new();
+    for part in parts {
+        for batch in read_parquet_batches(&part.unwrap().path()) {
+            let entity = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+            let time = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<TimestampNanosecondArray>()
+                .unwrap();
+            let condition = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                written.push((
+                    entity.is_valid(row).then(|| entity.value(row)),
+                    time.is_valid(row).then(|| time.value(row)),
+                    condition.value(row).to_string(),
+                ));
+            }
+        }
+    }
+    written.sort();
+    expected.sort();
+    assert_eq!(written, expected);
+}
+
+#[test]
+fn test_training_writes_no_skipped_rows() {
+    let mut rows = NodeRows::good();
+    rows.entity[2] = Some(9);
+    let output = run_node_rows(&rows, false, false, IngestOnError::SkipRowOnError).unwrap();
+    assert!(!output.tt_parquet_path.parent().unwrap().join("skipped").exists());
 }
 
 #[test]

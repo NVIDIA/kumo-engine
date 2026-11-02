@@ -25,7 +25,6 @@ _TITLES = {'null_rate': 'null rate', 'num_unique': 'distinct≈',
            'avg_tokens': 'avg tokens≈', 'max_tokens': 'max tokens≈',
            'top': 'top values≈'}
 _TOP_CATEGORIES = 10
-_TARGET_BINS = 50  # as DiskGraph's node-regression histogram
 _QUARTILES = ('target_min', 'target_percentile_25', 'target_median',
               'target_percentile_75', 'target_max')
 _EDGE_STATS = {'FRAC_SRC_NONZERO_DEGREE': 'src_match_frac',
@@ -95,21 +94,16 @@ def _train_target(staging_dir: Path) -> Mapping[str, Any]:
 
 def _target_bins(target: Mapping[str, Any]) -> Tuple[Tuple[float, ...], str]:
     bins = (target.get('histogram') or {}).get('bins') or ()
+    if len(bins) < 2:
+        return (), ''
     source = f"the training target's {len(bins) - 1} histogram bins"
-    low, high = (_number(target.get(key))
-                 for key in ('target_min', 'target_max'))
-    if not bins and low is not None and high is not None and high > low:
-        bins = [low + (high - low) * i / _TARGET_BINS
-                for i in range(_TARGET_BINS + 1)]
-        source = f'{_TARGET_BINS} equal bins'
     edges = {*bins, *(target[key] for key in _QUARTILES
                       if _number(target.get(key)) is not None)}
-    parts = [source] if bins else []
+    parts = [source]
     extra = len(edges) - len(set(bins))
     if extra:
         parts.append(f"{extra} quartile edge{'s' * (extra > 1)}")
-    return ((tuple(sorted(edges)), ' + '.join(parts)) if len(edges) > 1
-            else ((), ''))
+    return tuple(sorted(edges)), ' + '.join(parts)
 
 
 def _bins_note(target: Mapping[str, Any]) -> Optional[str]:

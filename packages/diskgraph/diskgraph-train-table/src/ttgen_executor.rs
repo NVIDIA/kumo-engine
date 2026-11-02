@@ -1330,12 +1330,19 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     mut fact_pseudo_time: Option<&mut crate::pseudo_time::FactPseudoTime>,
 ) -> TTGenResult<PassAOutputs<U>> {
     let pass_a_result = if let Some(source) = custom_tt_source {
+        let skipped_dir = resolved.is_prediction.then(|| {
+            tt_parquet_path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(crate::skipped_rows::SKIPPED_ROWS_DIR)
+        });
         run_pass_a_custom_tt::<U, D>(
             resolved,
             &sender,
             shared_target_counts,
             &decider_template,
             source,
+            skipped_dir.as_deref(),
         )
     } else {
         run_pass_a::<U, D>(
@@ -1598,6 +1605,7 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     shared_target_counts: Option<&Arc<SharedColumnCounts>>,
     decider_template: &D,
     source: &CustomTtSource,
+    skipped_dir: Option<&Path>,
 ) -> TTGenResult<(u64, StatsMerger<U>, D)> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -1635,6 +1643,7 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 decider_template,
                 shared_target_counts.cloned(),
                 source,
+                skipped_dir,
             )
         })
         .collect();
@@ -1659,8 +1668,9 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
         }
     }
     // A source that keeps nothing trains on nothing and would report success.
-    // Both modes refuse it; the skip counts say why.
-    if total_rows == 0 {
+    // Both modes refuse it; the skip counts say why. A prediction returns the
+    // empty table with its row_failures so the caller can say why.
+    if total_rows == 0 && !resolved.is_prediction {
         stats.source_rows.failures.report(source.on_error).warn_if_any(0);
         return Err(empty_source_error(&stats.source_rows));
     }

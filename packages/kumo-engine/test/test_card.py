@@ -2,6 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import replace
+
 from kumo_core.summaries import Note, Table
 
 from kumo.engine import _card
@@ -213,3 +215,24 @@ def test_data_preparation_marks_a_snapshot_built_by_another_process(
 def test_a_cell_with_a_newline_stays_on_its_row():
     table = Table('data/columns', ('column', 'top values'), (('BIO', 'a\nb|c'),))
     assert _card.table_text(table).splitlines()[-1] == '| BIO | a b\\|c |'
+
+
+def test_the_lineage_ends_a_fit_at_its_model_and_starts_a_prediction_there():
+    tags = {**MODEL, 'kumo.bundle_id': 'b' * 64}
+    chain = Note('lineage/model', '`users` v3 → graph snapshot g → '
+                 'training table t')
+
+    def block(kind, *notes):
+        text = _card.run_card({**tags, 'kumo.kind': kind}, {}, {}, {}, None,
+                              notes).text([])
+        return text.split('**Lineage**\n\n')[1].split('\n\n')[0]
+
+    assert block('fit', chain) == (
+        '- `users` v3 → graph snapshot g → training table t → model '
+        '`bbbbbbbb` (`kumo-demo-churn` v6)')
+    assert block('prediction', replace(chain, text='training table t ← '
+                                       'graph snapshot g ← `users` v3'),
+                 Note('lineage', 'Scored: graph snapshot h ← `users` v4')) == (
+        '- Model: `bbbbbbbb` (`kumo-demo-churn` v6) ← training table t ← '
+        'graph snapshot g ← `users` v3\n'
+        '- Scored: graph snapshot h ← `users` v4')

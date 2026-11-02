@@ -185,6 +185,7 @@ use diskgraph_engine::state::{SamplingState, StatePool};
 mod artifact_helpers;
 mod bp_col_stats;
 mod bp_evaluate;
+mod exact_quantiles;
 mod col_stats_export;
 mod custom_tt_entry;
 mod index_metadata;
@@ -1426,6 +1427,8 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 ///         columns, ``histograms=False`` and ``summary_stats_by_class=False``.
 ///     fixed_edges: column -> increasing bin edges; emits ``FIXED_HISTOGRAM``
 ///         counts.
+///     quantiles: column -> quantiles in [0, 1]; emits ``QUANTILES``, the
+///         exact ``np.quantile`` of the column's finite values.
 ///     _category_count_limit_for_testing: keyword-only test hook that lowers
 ///         the retained category limit. ``None`` preserves the production
 ///         1,000,000-category limit; a supplied value must be greater than 0.
@@ -1444,6 +1447,7 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
     histograms=true,
     max_per=None,
     fixed_edges=None,
+    quantiles=None,
     _category_count_limit_for_testing=None,
 ))]
 #[tracing::instrument(level = "debug", skip(py, kumo_column_specs_json))]
@@ -1456,6 +1460,7 @@ fn compute_col_stats_for_parquet(
     histograms: bool,
     max_per: Option<Vec<String>>,
     fixed_edges: Option<HashMap<String, Vec<f64>>>,
+    quantiles: Option<HashMap<String, Vec<f64>>>,
     _category_count_limit_for_testing: Option<u64>,
 ) -> PyResult<(String, String)> {
     use diskgraph_ingest::config_converter::{
@@ -1530,6 +1535,7 @@ fn compute_col_stats_for_parquet(
         histograms,
         max_per: max_per.unwrap_or_default(),
         fixed_edges: fixed_edges.unwrap_or_default(),
+        quantiles: quantiles.unwrap_or_default(),
     };
 
     py.detach(|| -> anyhow::Result<(String, String)> {
