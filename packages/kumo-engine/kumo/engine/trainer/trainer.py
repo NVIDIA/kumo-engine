@@ -729,7 +729,6 @@ def _require_publisher(export_config: ModelOutputConfig) -> None:
 
 def _target_window(parsed: Any,
                    plan: Any) -> Optional[Tuple[int, int, int, str]]:
-    r"""A temporal query's target window, step and unit; None if static."""
     aggregations = parsed.query.get_all_target_aggregations()
     if not aggregations or any(aggregation.aggr_time_range is None
                                for aggregation in aggregations):
@@ -744,7 +743,6 @@ def _target_window(parsed: Any,
 
 def _unlogged(summaries: Sequence[Summary], metrics: Mapping[str, float],
               refit_full: bool = False) -> Tuple[Summary, ...]:
-    r"""Model scalars under their logged names, less those metrics logs."""
     logged = set(logged_names(metrics, refit_full))
     split = 'before_refit' if refit_full else 'test'
     summaries = (*(replace(summary, name=f'{split}/{summary.name}')
@@ -953,7 +951,6 @@ def _materialize_prediction(prediction_table: PredictionTable,
                             snapshot: GraphSnapshot, parsed: Any,
                             native_graph: Any, run_id: str,
                             run_dir: Path) -> Tuple[Any, Any, Any]:
-    r"""The materialized task, its anchor timestamps and forecast options."""
     from kumo_core.prediction import (
         GeneratedPredictionTable,
         PredictionTableRequest,

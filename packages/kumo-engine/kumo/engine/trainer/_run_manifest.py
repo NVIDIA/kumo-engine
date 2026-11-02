@@ -178,7 +178,6 @@ def _local_skipped(result: Any) -> Optional[Path]:
 
 
 def _keep_skipped(prediction_table: Any, run_dir: Path) -> Optional[Path]:
-    r"""Copies the skipped rows beside the run's manifest."""
     source = prediction_table.skipped_dir
     if source is None or not source.is_dir():
         return None
@@ -189,7 +188,6 @@ def _keep_skipped(prediction_table: Any, run_dir: Path) -> Optional[Path]:
 
 
 def _rows(directory: Path) -> int:
-    r"""Rows in a directory of Parquet parts, from their footers."""
     from pyarrow import parquet
 
     return sum(parquet.ParquetFile(part).metadata.num_rows

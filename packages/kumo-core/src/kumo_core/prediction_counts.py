@@ -76,8 +76,7 @@ def count_top_scores(counts: Counts, scores: Any) -> None:
 
 
 def count_recommendations(counts: Counts, items: Any, catalogue: int) -> None:
-    r"""Adds each entity's recommended item indices; out-of-range ones are
-    padding."""
+    r"""Adds each entity's recommended items; out-of-range ones are padding."""
     items = np.asarray(items, dtype=np.int64)
     counts.total(ENTITIES, len(items))
     dtype = tally_dtype(float(counts.arrays[ENTITIES]))

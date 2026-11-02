@@ -298,7 +298,6 @@ def _connections_toml_identity(entry: Dict[str, str]) -> SnowflakeIdentity:
 
 
 def _for_model_monitor(files: List[str], directory: Path) -> List[str]:
-    r"""The files with TARGET as 0/1 and UTC times without a zone."""
     import pyarrow as pa
     import pyarrow.parquet as parquet
 

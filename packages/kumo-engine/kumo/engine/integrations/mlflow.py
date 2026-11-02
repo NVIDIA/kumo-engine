@@ -450,7 +450,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             for summary in record.summaries))
 
     def _fold(self, run_id: str, record: RunRecord) -> None:
-        r"""Adds a monitoring record to a finished run and its card."""
         routed = route(record.summaries, charts=True)
         self._log_routed(routed, run_id)
         self._update_card(
@@ -574,7 +573,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
 
     def _update_card(self, run_id: str, block: Optional[str] = None,
                      summaries: Sequence[Summary] = ()) -> None:
-        r"""Regenerates the card's heading and, given block, that part."""
         self._client = self._client or self.target.client()
         with self.target.scope():
             run = self._client.get_run(run_id)
@@ -631,7 +629,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                            '%s: %s', self._parent, format_error(error))
 
     def _editable(self, run: Any, first: bool) -> Optional[Tuple[str, str]]:
-        r"""The card and the user's text after it; None once edited."""
         tags = run.data.tags
         if tags.get('kumo.card_frozen') == 'true':
             return None
@@ -654,7 +651,6 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                   render: Callable[[Sequence[Summary], Sequence[str]], str],
                   minimal: Callable[[Sequence[str]], str],
                   items: Sequence[Summary], user: str, budget: int) -> None:
-        r"""Writes the card within budget, moving big tables to files."""
         run_id = run.info.run_id
         files = [entry['path'] for entry in json.loads(
             run.data.tags.get('mlflow.loggedArtifacts', '[]'))]
@@ -912,7 +908,6 @@ _MONITORING_BYTES = 800
 
 
 def _card_hash(card: str) -> str:
-    r"""SHA-256 prefix of the card, stable under an unchanged editor save."""
     lines = card.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     text = '\n'.join(line.rstrip() for line in lines).strip('\n')
     return hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -927,12 +922,10 @@ def _size(card: str) -> int:
 
 
 def _budget(user: str) -> int:
-    r"""Bytes for the card: MLflow guarantees 5000 per tag value."""
     return min(4500, 5000 - len(user.encode()))
 
 
 def _free_name(client: Any, experiment_id: str, name: str) -> str:
-    r"""name, else the first free name-2, name-3, ..."""
     candidate, suffix = name, 1
     while True:
         quote_char = "'" if "'" not in candidate else '"'
@@ -955,7 +948,6 @@ def _part(name: str, text: str) -> str:
 
 
 def _with_block(card: str, name: str, text: str) -> str:
-    r"""The card with its kumo:<name> part set to text."""
     part = _part(name, text)
     existing = re.compile(f'<!-- kumo:{name} -->.*?<!-- /kumo:{name} -->',
                           re.DOTALL)
@@ -1359,7 +1351,6 @@ def _version_text(metrics: Mapping[str, float], tune: Optional[str],
 
 def _describe_version(target: Any, client: Any, published: PublishedModel,
                       text: str) -> None:
-    r"""Puts text, sealed, at the start of the version's description."""
     name, version = published.name, published.version
     with target.scope():
         current = client.get_model_version(name, version).description or ''

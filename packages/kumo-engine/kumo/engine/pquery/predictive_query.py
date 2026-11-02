@@ -346,7 +346,6 @@ class PredictiveQuery:
     def _label_parts(
             self, snapshot: GraphSnapshot, timestamps: tuple[int, ...],
             plan: Optional[TrainingTableGenerationPlan]) -> Iterator[list]:
-        r"""Yields this query's label parts at timestamps, removed on exit."""
         import shutil
 
         from kumo_core.io.json import from_json_dict

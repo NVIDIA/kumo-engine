@@ -121,7 +121,6 @@ class Connector(ABC):
 
     def _monitored_files(self, destination: str, files: List[str],
                          directory: Path) -> List[str]:
-        r"""``files`` typed for this platform's model monitor."""
         return files
 
     def table(self, table_name: str):

@@ -268,8 +268,7 @@ _SKIP_REASONS = {
 
 def skipped_entities(report: Optional[Mapping[str, Any]], rows_path: Path,
                      scored: int) -> Dict[str, Any]:
-    r"""Skipped-row fields from DiskGraph's row_failures; warns once, or
-    raises when no row can be scored."""
+    r"""Skipped-row fields; warns, or raises when no row can be scored."""
     skipped = int((report or {}).get('skipped_rows') or 0)
     if not skipped:
         return {}

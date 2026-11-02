@@ -327,7 +327,6 @@ def _now() -> datetime:
 
 
 def _model_param(record: RunRecord) -> Dict[str, str]:
-    r"""The scoring version as kumo.model=<model>/<version>."""
     tags = record.tags
     if (tags.get('kumo.kind') != 'prediction' or not tags.get('kumo.model_name')
             or not tags.get('kumo.model_version')):

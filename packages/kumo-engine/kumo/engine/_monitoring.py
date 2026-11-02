@@ -374,7 +374,6 @@ _EMITTED = {
 
 
 def _ks(trainer: Any, task_type: str) -> List[int]:
-    r"""The fit's ranking cutoffs, else the default plan's."""
     from kumo_core.resolved_task import default_metrics
     from kumo_core.types import TaskType
 
@@ -385,7 +384,6 @@ def _ks(trainer: Any, task_type: str) -> List[int]:
 
 
 def _by_horizon(sums: Mapping[str, List[float]], timeframe: Any) -> Table:
-    r"""Realized error by forecast step, as the holdout's table."""
     from kumo_core.evaluation_counts import horizon_table
 
     return horizon_table('realized/by_horizon', {
@@ -472,7 +470,6 @@ _STATISTICS = ('psi', 'ks', 'wasserstein')
 
 def _drift(counts: Optional[Counts], reference: Optional[Counts], side: str,
            reasons: Dict[str, str]) -> Dict[str, float]:
-    r"""Drift of counts from reference; empty, with why in reasons[side]."""
     name = _REFERENCES[side].name
     if counts is None:
         reasons[side] = 'the run records no score counts'
@@ -496,7 +493,6 @@ def _drift_fields(drifts: Mapping[str, Mapping[str, float]]
 
 def _comparisons(report: 'DriftReport'
                  ) -> Dict[str, Dict[str, Optional[float]]]:
-    r"""The report's score drift per reference, as _drift_fields stored it."""
     return {side: {statistic: getattr(report, reference.prefix + statistic)
                    for statistic in _STATISTICS}
             for side, reference in _REFERENCES.items()}
@@ -758,7 +754,6 @@ _INPUT_HEADER = ('column', 'type', 'psi', 'shift', 'mean Δ sd', 'null Δ pp',
 
 
 def _input_row(column: str, change: Mapping[str, Any]) -> Tuple[Any, ...]:
-    r"""A drift/inputs row, blank where a measure does not apply."""
     if 'type_changed' in change:
         return (column, ' → '.join(map(str, change['type_changed'])),
                 *[''] * (len(_INPUT_HEADER) - 2))
@@ -781,7 +776,6 @@ def _input_row(column: str, change: Mapping[str, Any]) -> Tuple[Any, ...]:
 def _count_changes(before: Mapping[str, Mapping[str, int]],
                    after: Mapping[str, Mapping[str, int]],
                    links: Mapping[str, str]) -> Dict[str, Tuple[Any, Any]]:
-    r"""The tables, then the ``links``, whose row or edge count changed."""
     changes = {}
     for kind in ('rows', 'edges'):
         old, new = before.get(kind) or {}, after.get(kind) or {}
@@ -792,7 +786,6 @@ def _count_changes(before: Mapping[str, Mapping[str, int]],
 
 
 def _links(config: Any) -> Dict[str, str]:
-    r"""DiskGraph's edge names as table.fkey → target."""
     tables = (config.get('tables') if isinstance(config, dict) else None) or ()
     keys = {table.get('name'): table.get('primary_key') for table in tables}
     return {
@@ -1026,7 +1019,6 @@ def _column_change(old: Mapping[str, Any],
 
 def _binned_psi(training: Optional[List[List[float]]],
                 scoring: Optional[List[List[float]]]) -> Optional[float]:
-    r"""Psi of value_bins counts over groups cut at the training deciles."""
     if not training or not scoring:
         return None
     starts = {start: i for i, start in enumerate(

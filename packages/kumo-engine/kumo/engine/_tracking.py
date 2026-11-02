@@ -324,7 +324,6 @@ def _started(manifest: 'PredictionManifest') -> datetime:
 
 
 def _as_of(manifest: 'PredictionManifest') -> str:
-    r"""The anchor date (UTC), or the scored snapshot's creation date."""
     dates = sorted({_utc(anchor).date().isoformat()
                     for anchor in manifest.prediction_table.anchors})
     if not dates:
@@ -335,7 +334,6 @@ def _as_of(manifest: 'PredictionManifest') -> str:
 
 
 def _tune_metric(model: Any) -> Optional[str]:
-    r"""The metric ``model``, a `TrainingResult`, was tuned on, if known."""
     plan = getattr(getattr(model, '_trainer', None), 'model_plan', None)
     metric = getattr(getattr(plan, 'training_job', None), 'tune_metric', None)
     text = None if metric is None else str(getattr(metric, 'value', metric))
@@ -564,7 +562,6 @@ class _Search:
                    lower=MetricStore.tune_mode(metric) == 'min')
 
     def best_epoch(self, events: Sequence[Event]) -> Optional[int]:
-        r"""The first epoch with the best validation metric."""
         points = [(event.epoch, event.metrics[self.metric])
                   for event in events if event.name == 'epoch_ended'
                   and event.epoch and self.metric in event.metrics]
@@ -678,7 +675,6 @@ class TrackingSession:
 
     def _once_a_line(self, key: Any, event: Event,
                      item: Any) -> List[Any]:
-        r"""An epoch held until its series' second, then both."""
         if event.name != 'epoch_ended':
             return [item]
         if key not in self._first_epoch:

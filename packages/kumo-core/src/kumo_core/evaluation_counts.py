@@ -73,8 +73,6 @@ def _floats(*columns: np.ndarray) -> Tuple[np.ndarray, ...]:
 
 
 class _Steps:
-    r"""Each row's forecast step, entity by entity in row order."""
-
     def __init__(self, rows: int, steps: int) -> None:
         self.rows, self.steps = rows, steps
 
@@ -83,7 +81,6 @@ class _Steps:
 
 
 def _in_chunks(count: Any, *columns: np.ndarray) -> Counts:
-    r"""``count`` over bounded row chunks, merged."""
     rows = len(columns[0])
     step = max(1, _CHUNK // max(1, columns[0][:1].size))
     return reduce(Counts.merge, (
@@ -188,7 +185,6 @@ def _binary_summaries(counts: Counts,
 
 
 def _threshold(value: float) -> str:
-    r"""Two decimals for hundredths, else 4 significant digits."""
     return f'{value:.2f}' if round(value, 2) == value else f'{value:.4g}'
 
 
@@ -217,7 +213,6 @@ def _multiclass(prob: np.ndarray, target: np.ndarray) -> Counts:
 
 def _multiclass_summaries(counts: Counts,
                           classes: Sequence[Any]) -> List[Summary]:
-    r"""Without accuracy, which equals f1_micro."""
     arrays = counts.arrays
     size = len(arrays['classes'])
     names = [str(name) for name in classes] or [str(i) for i in range(size)]
@@ -282,7 +277,6 @@ def _regression(pred: np.ndarray, target: np.ndarray,
 
 
 def _regression_summaries(counts: Counts) -> List[Summary]:
-    r"""With mae and rmse, replaced by the trainer's own."""
     arrays = counts.arrays
     rows = float(arrays['rows'])
     total = float(arrays['target'])
