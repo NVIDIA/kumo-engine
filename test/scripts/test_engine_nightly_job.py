@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise the managed job's trust, capacity, and cleanup boundaries."""
+"""Exercise nightly artifact, capacity, and cleanup boundaries."""
 
 import importlib.util
 import json
@@ -29,34 +29,6 @@ def config():
                  key='engine/nightly/' + key, sha256='b' * 64)
             for key in ('inputs', 'reference', 'policy')
         })
-
-
-@pytest.mark.parametrize('ref,head,accepted', [
-    ('refs/heads/main', None, True),
-    ('refs/heads/pull-request/137', 'a' * 40, True),
-    ('refs/heads/pull-request/137', 'b' * 40, False),
-    ('refs/heads/feature', 'a' * 40, False),
-    ('refs/pull/137/merge', 'a' * 40, False),
-])
-def test_only_main_or_the_current_approved_copy_can_reach_private_work(
-        ref, head, accepted):
-    if accepted:
-        job.trusted_ref(ref, 'a' * 40, head, state='open',
-                        target='NVIDIA/kumo-engine')
-    else:
-        with pytest.raises(ValueError):
-            job.trusted_ref(ref, 'a' * 40, head, state='open',
-                            target='NVIDIA/kumo-engine')
-
-
-@pytest.mark.parametrize('state,target', [('closed', 'NVIDIA/kumo-engine'),
-                                          ('open', 'somewhere/else'),
-                                          (None, None)])
-def test_copied_ref_also_requires_an_open_pr_targeting_this_repository(
-        state, target):
-    with pytest.raises(ValueError):
-        job.trusted_ref('refs/heads/pull-request/137', 'a' * 40, 'a' * 40,
-                        state=state, target=target)
 
 
 def test_configuration_rejects_missing_and_unsafe_object_bindings():

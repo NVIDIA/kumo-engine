@@ -5,23 +5,15 @@ Each task has one normal fit and one fit with scrambled answers, for sixteen
 fits total. The same models supply full, repeated, partial, and reloaded
 predictions. The suite requires real CUDA work and useful learning.
 
-## Execution and permissions
+## Execution scope
 
-The workflow accepts pushes to `main` and NVIDIA's approved
-`pull-request/<N>` branches. The copied commit must still match the PR head.
-It has no cron or arbitrary-branch manual trigger. Wheel building and GPU
-execution are deliberately disabled, including approved copied-PR pushes.
-Enabling qualification requires a separate reviewed activation change.
-Public source checks remain available while execution is on hold.
+This change provides the nightly harness and public CPU checks. It adds no GPU
+workflow, runner group, copied-PR trigger, cloud credential setup, or schedule.
+Runner integration requires a separate future change. The full sixteen-case
+candidate run and its runtime budget remain unverified.
 
-The draft separates public source checks and wheel builds from private GPU work.
-The disabled GPU job targets NVIDIA's `nv-gpu-amd64-rtxpro6000-1gpu` group and
-`gha-kumo-workflow-tests` environment, as in the Engine PR check. Only the data
-download step receives AWS credentials. It reads the finished wheel from the
-build artifact and the immutable data objects from shared S3 storage.
-
-The job installs the candidate wheel with its own requirements in a fresh
-environment. It runs `pip check` and compares installed wheel files with the
+Install the candidate wheel with its own requirements in a fresh environment.
+Run `pip check`. The harness compares installed wheel files with the
 finished archive once before fitting. The frozen dependency profile applies
 only to reference execution. Candidate dependency additions and upgrades do not
 require a new input archive.
@@ -31,8 +23,8 @@ require a new input archive.
 The [input descriptor](../../packages/kumo-engine/test/nightly/inputs.json)
 selects shared objects under `diskgraph-profiles/engine-nightly/100m/v1/` in
 `kumo-unit-test`, in `us-west-2`. Each object has a SHA-256 checksum. The descriptor
-also binds the input manifest and required free disk space.
-`KUMO_ENGINE_NIGHTLY_CONFIG` can override the descriptor with the same schema.
+also binds the input manifest and proposed free disk space. It contains data
+locations and checksums, not a runner binding or permission to execute.
 
 The input archive contains data and metadata, not executable workers. It covers
 all eight tasks, both answer arms, their full prediction populations, and the
@@ -58,8 +50,8 @@ The current historical reference does not satisfy all proposed learning bounds.
 Its static-link normal score is below its baseline. Its forecasting control
 also differs substantially from its baseline. The temporal-link control also
 exceeds the proposed drift bound. These remain failures. The
-proposal does not weaken the bounds to accept them, and no full run on NVIDIA
-runners qualifies the proposal yet.
+proposal does not weaken the bounds to accept them. No full candidate run
+qualifies the proposal yet.
 
 ## Required behavior
 
@@ -91,23 +83,18 @@ required. Later cases retain their results when an earlier case fails.
 
 ## Capacity, evidence, and cleanup
 
-Before installation or extraction, the job checks free disk space. The proposed
-256-GiB allowance is operational headroom, not a measured requirement. The job
-also records CPU count and system memory. If the workload does not fit the
-managed runner, raise its measured capacity requirements on PR42. Do not add a
-separate VM transport.
+The artifact helper checks free disk space before creating work and extracting
+inputs. The proposed 256-GiB allowance is headroom, not a measured requirement.
+It records CPU count and system memory. No capacity or full-runtime claim is
+approved by a passing CPU test.
 
-The disabled CPU build has a 60-minute limit. The disabled GPU job has a
-180-minute limit and reserves time for artifact upload and cleanup. Setup, graph
-preparation, all sixteen cases, and evidence handling need one complete measured run before the
-suite can be scheduled. Per-case samples cannot prove that deadline.
-
-The result artifact contains logs, model bundles, canonical predictions, and
-raw outputs. It is retained for fourteen days. Each job creates its own marked
-temporary directory. After upload, cleanup removes that job's environments,
-installer cache, generated indexes, scratch, and local evidence. An upload
-failure preserves the evidence directory while temporary execution work is
-removed. Shared inputs, original references, and earlier evidence stay intact.
+The harness writes model bundles, canonical predictions, raw outputs, and case
+results. Preserve the process log with that evidence. Keep scratch outside the
+input and evidence trees. The artifact helper creates a marked temporary
+directory and removes only owned work when cleanup is requested. Evidence is
+removed only when the caller confirms successful upload. Otherwise it remains.
+This change provides no automatic upload, retention policy, or GPU job timeout.
+Shared inputs, original references, and earlier evidence stay intact.
 
 Elapsed times remain observations. The suite has no slowdown gate, nested
 process-memory samplers, or historical performance percentages. It keeps

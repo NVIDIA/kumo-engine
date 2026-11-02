@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Prepare immutable data and remove one managed runner's temporary work."""
+"""Prepare immutable nightly data and remove owned temporary work."""
 
 import argparse
 import hashlib
@@ -10,22 +10,9 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
-
-
-def trusted_ref(ref, sha, copied_head=None, *, state=None, target=None):
-    if not re.fullmatch('[0-9a-f]{40}', sha):
-        raise ValueError('Expected a complete source revision')
-    if ref == 'refs/heads/main':
-        return
-    if (not re.fullmatch(r'refs/heads/pull-request/[1-9][0-9]*', ref)
-            or copied_head != sha or state != 'open'
-            or target != 'NVIDIA/kumo-engine'):
-        raise ValueError(
-            'Private work requires main or the current approved PR copy')
 
 
 def configuration(raw):
@@ -107,33 +94,9 @@ def prepare(value, work):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',
-                        choices=('admit', 'create', 'prepare', 'cleanup'))
+    parser.add_argument('command', choices=('create', 'prepare', 'cleanup'))
     args = parser.parse_args()
     root = Path(os.environ['RUNNER_TEMP'])
-    if args.command == 'admit':
-        if (os.environ.get('GITHUB_EVENT_NAME') != 'push'
-                or os.environ.get('GITHUB_REPOSITORY') != 'NVIDIA/kumo-engine'):
-            raise ValueError('Use an approved push in the NVIDIA repository')
-        ref, sha = os.environ['GITHUB_REF'], os.environ['GITHUB_SHA']
-        copied, state, target = None, None, None
-        if re.fullmatch(r'refs/heads/pull-request/[1-9][0-9]*', ref):
-            number = ref.rsplit('/', 1)[1]
-            metadata = json.loads(
-                subprocess.check_output([
-                    'gh', 'api', 'repos/' + os.environ['GITHUB_REPOSITORY'] +
-                    '/pulls/' + number
-                ], text=True))
-            copied, state = metadata['head']['sha'], metadata['state']
-            target = metadata['base']['repo']['full_name']
-        trusted_ref(ref, sha, copied, state=state, target=target)
-        raw = os.environ.get('NIGHTLY_CONFIGURATION') or (
-            Path(__file__).resolve().parents[1] /
-            'test/nightly/inputs.json').read_text()
-        value = configuration(raw)
-        with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
-            stream.write('configuration=' + json.dumps(value) + '\n')
-        return
     if args.command == 'cleanup':
         work = os.environ.get('NIGHTLY_JOB_ROOT')
         if work:
