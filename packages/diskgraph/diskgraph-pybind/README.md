@@ -262,7 +262,12 @@ finally:
 ```
 
 Omitting `sampling_endpoints` uses the existing local native index. Both paths
-share manifest resolution and argument normalization. The remote backend owns
+share manifest resolution, argument normalization and minibatch export. Local
+sampling and the server convert native batches into `diskgraph_runtime::ArrowBatch`;
+the remote client receives that same representation. One Python exporter restores
+the task/graph/feature structure through the Arrow C Data Interface. Local
+iteration builds components in memory without IPC or JSON serialization or a
+transport byte limit. The remote backend owns
 connections, epoch sharding, one-batch native prefetch, round-robin merging and
 cancellation; Python only exports the selected complete batch. Closing the remote
 epoch leaves its index available for later stages/epochs. Closing the index is

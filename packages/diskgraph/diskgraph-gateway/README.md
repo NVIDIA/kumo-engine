@@ -3,7 +3,10 @@
 `diskgraph-gateway` serves complete task batches from `diskgraph-runtime` without
 loading Python. It owns epoch/shard iteration over prepared local artifacts,
 Arrow serialization, bounded production, cancellation, health counters, and
-structured lifecycle/progress logs.
+structured lifecycle/progress logs. Minibatch component construction and layout
+reference resolution live in `diskgraph-runtime`: the server sends its
+`ArrowBatch`, and the client reassembles that same representation. Local and
+remote Python iterators use one shared Arrow C Data exporter.
 
 ```bash
 cargo run --release -p diskgraph-gateway -- \

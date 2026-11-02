@@ -2,22 +2,54 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Encode native task batches without constructing Python objects.
+//! Transport-independent Arrow components shared by native and Python consumers.
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{Field, Schema};
 use diskgraph_engine::output::{GraphChannel, RuntimeBatch};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+/// A complete minibatch represented by Arrow components and their output layout.
+///
+/// Local consumers construct this directly from RuntimeBatch. Flight transports
+/// the same components and layout; its client validates references before
+/// returning this representation. Neither construction nor reference resolution
+/// serializes Arrow data or applies a transport byte limit.
+#[derive(Debug)]
+pub struct ArrowBatch {
+    /// Native output structure, with Arrow values replaced by column/range references.
+    pub layout: Value,
+    /// Record batches with independent schemas and row counts, in layout order.
+    pub components: Vec<RecordBatch>,
+}
+
+impl TryFrom<RuntimeBatch> for ArrowBatch {
+    type Error = anyhow::Error;
+
+    /// Consume a native batch, moving owned vectors into Arrow arrays.
+    ///
+    /// Feature and target buffers are shared. Returns an error when fields
+    /// grouped into one component disagree on their row counts.
+    fn try_from(batch: RuntimeBatch) -> anyhow::Result<Self> {
+        let mut encoder = BatchEncoder::default();
+        let layout = encoder.batch(batch)?;
+        Ok(Self {
+            layout,
+            components: encoder.parts,
+        })
+    }
+}
+
 #[derive(Default)]
-pub(crate) struct BatchEncoder {
-    pub(crate) parts: Vec<RecordBatch>,
+struct BatchEncoder {
+    parts: Vec<RecordBatch>,
 }
 impl BatchEncoder {
-    fn record_batch(&mut self, batch: &RecordBatch) -> Value {
+    fn record_batch(&mut self, batch: RecordBatch) -> Value {
         let slot = self.parts.len();
-        self.parts.push(batch.clone());
-        json!({"component":slot,"columns":[0,batch.num_columns()]})
+        let num_columns = batch.num_columns();
+        self.parts.push(batch);
+        json!({"component":slot,"columns":[0,num_columns]})
     }
     fn array(&mut self, array: impl Into<ArrayRef>) -> anyhow::Result<Value> {
         let array = array.into();
@@ -66,7 +98,7 @@ impl BatchEncoder {
         self.parts.push(RecordBatch::try_new(schema, arrays)?);
         Ok(references)
     }
-    pub(crate) fn batch(&mut self, batch: RuntimeBatch) -> anyhow::Result<Value> {
+    fn batch(&mut self, batch: RuntimeBatch) -> anyhow::Result<Value> {
         use arrow_array::{BooleanArray, Float32Array, Int64Array, UInt32Array, UInt64Array};
         let task = batch.task;
         let mut seeds = vec![
@@ -142,12 +174,20 @@ impl BatchEncoder {
         }
         let mut features = serde_json::Map::new();
         for (name, bank) in batch.raw_features {
-            let records = bank
+            let num_rows = bank
                 .batches
                 .iter()
-                .map(|b| self.record_batch(b))
+                .map(RecordBatch::num_rows)
+                .sum::<usize>();
+            let records = bank
+                .batches
+                .into_iter()
+                .map(|batch| self.record_batch(batch))
                 .collect::<Vec<_>>();
-            features.insert(name.clone(), json!({"key":name,"num_rows":bank.batches.iter().map(RecordBatch::num_rows).sum::<usize>(),"record_batches":records}));
+            features.insert(
+                name.clone(),
+                json!({"key":name,"num_rows":num_rows,"record_batches":records}),
+            );
         }
         Ok(json!({"task":t,"graphs":graphs,"raw_features":features}))
     }
@@ -213,8 +253,6 @@ impl BatchEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paths::resolve_beneath;
-    use crate::runtime::TaskOptions;
     use arrow_array::Int64Array;
     use diskgraph_engine::output::{RawFeatureBank, TaskBag};
     use std::collections::HashMap;
@@ -254,14 +292,16 @@ mod tests {
                 batches: vec![target.clone()],
             },
         );
-        let mut encoder = BatchEncoder::default();
-        let value = encoder.batch(batch).unwrap();
+        let ArrowBatch {
+            layout: value,
+            components: parts,
+        } = ArrowBatch::try_from(batch).unwrap();
         assert_eq!(value["task"]["num_positives"], 1);
         assert!(value["task"]["lp_pos_counts"].is_object());
         assert!(value["graphs"]["main"]["node_ids"]["users"].is_object());
         assert_eq!(value["raw_features"]["users"]["num_rows"], 1);
         let crate::ArrowValue::RecordBatch(decoded) =
-            crate::resolve_reference(&value["task"]["target"], &encoder.parts)
+            crate::resolve_reference(&value["task"]["target"], &parts)
                 .unwrap()
                 .unwrap()
         else {
@@ -330,15 +370,17 @@ mod tests {
             )]
             .into(),
         };
-        let mut encoder = BatchEncoder::default();
-        let layout = encoder.batch(batch).unwrap();
-        assert_eq!(encoder.parts.len(), 7);
+        let ArrowBatch {
+            layout,
+            components: parts,
+        } = ArrowBatch::try_from(batch).unwrap();
+        assert_eq!(parts.len(), 7);
         assert_eq!(
             layout["task"]["target"],
             json!({"component":0,"columns":[5,7]})
         );
         let crate::ArrowValue::RecordBatch(decoded) =
-            crate::resolve_reference(&layout["task"]["target"], &encoder.parts)
+            crate::resolve_reference(&layout["task"]["target"], &parts)
                 .unwrap()
                 .unwrap()
         else {
@@ -360,7 +402,7 @@ mod tests {
             graph["num_sampled_nodes_dict"]["users"]["component"],
             graph["num_sampled_edges_dict"][0]["counts"]["component"]
         );
-        crate::layout::validate_layout(&layout, &encoder.parts).unwrap();
+        crate::layout::validate_layout(&layout, &parts).unwrap();
     }
 
     #[test]
@@ -384,18 +426,16 @@ mod tests {
             },
             ..Default::default()
         };
-        let mut encoder = BatchEncoder::default();
-        let layout = encoder.batch(batch).unwrap();
+        let ArrowBatch {
+            layout,
+            components: parts,
+        } = ArrowBatch::try_from(batch).unwrap();
         assert_eq!(
-            encoder
-                .parts
-                .iter()
-                .map(RecordBatch::num_rows)
-                .collect::<Vec<_>>(),
+            parts.iter().map(RecordBatch::num_rows).collect::<Vec<_>>(),
             vec![2, 4, 3, 1]
         );
-        assert_eq!(encoder.parts[0].num_columns(), 5);
-        assert_eq!(encoder.parts[2].num_columns(), 4);
+        assert_eq!(parts[0].num_columns(), 5);
+        assert_eq!(parts[2].num_columns(), 4);
         let task = &layout["task"];
         assert_eq!(
             task["lp_pos_counts"]["component"],
@@ -413,7 +453,7 @@ mod tests {
         ] {
             assert_eq!(task[name]["component"], 2);
         }
-        crate::layout::validate_layout(&layout, &encoder.parts).unwrap();
+        crate::layout::validate_layout(&layout, &parts).unwrap();
     }
 
     #[test]
@@ -455,31 +495,58 @@ mod tests {
             .to_string()
             .contains("Edge endpoint"));
     }
-
     #[test]
-    fn task_options_reject_unknown_fields() {
-        let options = json!({"stage_table":"train_seeds","sampling_plan_json":"{}","num_workers":1,"worker_id":0,"shuffle":false,"epoch":0,"batch_size":2});
-        let parsed: TaskOptions = serde_json::from_value(options.clone()).unwrap();
-        assert!(parsed.disjoint);
-        assert!(parsed.swap_edge_direction);
-        assert!(parsed.use_seed_timestamps);
-        assert!(!parsed.replace);
-        let mut unsupported = options;
-        unsupported["ignore_me"] = json!(true);
-        assert!(serde_json::from_value::<TaskOptions>(unsupported).is_err());
-    }
-
-    #[test]
-    fn paths_cannot_escape_the_served_graph() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join("task")).unwrap();
-        assert!(resolve_beneath(root.path(), "task").is_ok());
-        assert!(resolve_beneath(root.path(), "../task").is_err());
-        assert!(resolve_beneath(root.path(), "/task").is_err());
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink("/", root.path().join("outside")).unwrap();
-            assert!(resolve_beneath(root.path(), "outside").is_err());
+    fn conversion_moves_vectors_and_shares_feature_chunks() {
+        use arrow_array::UInt64Array;
+        let seed_ids = vec![10_u64, 20];
+        let seed_buffer = seed_ids.as_ptr();
+        let feature_chunk = RecordBatch::try_from_iter([(
+            "age",
+            Arc::new(Int64Array::from(vec![30, 40])) as ArrayRef,
+        )])
+        .unwrap();
+        let feature_buffer = feature_chunk.column(0).clone();
+        let batch = RuntimeBatch {
+            task: TaskBag {
+                input_ids: vec![0, 1],
+                tt_stage_node_ids: vec![100, 101],
+                seed_node_ids: seed_ids,
+                ..Default::default()
+            },
+            raw_features: [(
+                "users".into(),
+                RawFeatureBank {
+                    schema: Some(feature_chunk.schema()),
+                    batches: vec![feature_chunk.clone(), feature_chunk],
+                },
+            )]
+            .into(),
+            ..Default::default()
+        };
+        let batch = ArrowBatch::try_from(batch).unwrap();
+        crate::validate_layout(&batch.layout, &batch.components).unwrap();
+        let Some(crate::ArrowValue::Array(seeds)) =
+            crate::resolve_reference(&batch.layout["task"]["seed_node_ids"], &batch.components)
+                .unwrap()
+        else {
+            panic!("Expected seed array")
+        };
+        let seeds = seeds.as_any().downcast_ref::<UInt64Array>().unwrap();
+        assert_eq!(seeds.values().as_ptr(), seed_buffer);
+        assert!(batch.layout["task"].get("target").is_none());
+        assert!(batch.layout["task"].get("weight").is_none());
+        assert_eq!(batch.layout["raw_features"]["users"]["num_rows"], 4);
+        let chunks = batch.layout["raw_features"]["users"]["record_batches"]
+            .as_array()
+            .unwrap();
+        assert_eq!(chunks.len(), 2);
+        for chunk in chunks {
+            let Some(crate::ArrowValue::RecordBatch(chunk)) =
+                crate::resolve_reference(chunk, &batch.components).unwrap()
+            else {
+                panic!("Expected feature record batch")
+            };
+            assert!(Arc::ptr_eq(chunk.column(0), &feature_buffer));
         }
     }
 }

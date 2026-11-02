@@ -122,4 +122,17 @@ mod tests {
         std::os::unix::fs::symlink(root.path().join("outside"), extension.join("sidecar")).unwrap();
         assert!(resolve_beneath(&extension, "sidecar").is_err());
     }
+    #[test]
+    fn paths_cannot_escape_the_served_graph() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("task")).unwrap();
+        assert!(resolve_beneath(root.path(), "task").is_ok());
+        assert!(resolve_beneath(root.path(), "../task").is_err());
+        assert!(resolve_beneath(root.path(), "/task").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/", root.path().join("outside")).unwrap();
+            assert!(resolve_beneath(root.path(), "outside").is_err());
+        }
+    }
 }

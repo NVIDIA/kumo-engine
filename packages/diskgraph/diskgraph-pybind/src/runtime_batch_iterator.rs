@@ -2,256 +2,12 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::batch::export_batch;
 use crate::{DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError};
-use arrow::pyarrow::ToPyArrow;
-use arrow_array::{Array, Int64Array, RecordBatch, UInt32Array, UInt64Array};
+use diskgraph_runtime::ArrowBatch;
 #[cfg(test)]
 pub(crate) use diskgraph_runtime::PseudoTimeSeed;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
-fn py_record_batch_list<'py>(
-    py: Python<'py>,
-    batches: &[RecordBatch],
-) -> PyResult<Bound<'py, PyList>> {
-    let out = PyList::empty(py);
-    for batch in batches {
-        out.append(batch.to_pyarrow(py)?)?;
-    }
-    Ok(out)
-}
-
-fn py_array<'py>(py: Python<'py>, array: &dyn Array) -> PyResult<Bound<'py, PyAny>> {
-    array.to_data().to_pyarrow(py)
-}
-
-fn py_u64_array<'py>(py: Python<'py>, values: Vec<u64>) -> PyResult<Bound<'py, PyAny>> {
-    UInt64Array::from(values).to_data().to_pyarrow(py)
-}
-
-fn py_u32_array<'py>(py: Python<'py>, values: Vec<u32>) -> PyResult<Bound<'py, PyAny>> {
-    UInt32Array::from(values).to_data().to_pyarrow(py)
-}
-
-fn py_bool_array<'py>(py: Python<'py>, values: Vec<bool>) -> PyResult<Bound<'py, PyAny>> {
-    arrow_array::BooleanArray::from(values)
-        .to_data()
-        .to_pyarrow(py)
-}
-
-// ---------------------------------------------------------------------------
-// RuntimeBatchIterator — merged-reader path (replaces the legacy
-// dual-engine `TaskBatchIterator`).
-//
-// Iterator over runtime batches matching PR-28765's
-// `runtime_batch_to_hetero` contract. One engine over the merged
-// (parent + seed-table extension) catalog; per-seed parent-row resolution is
-// done by Phase-1 ingest, so this hot loop is just:
-//
-//   1. Pick the next `batch_size` row offsets for this worker shard.
-//   2. `engine.sample_runtime_batch(...)` — walks `seed.edges.bin` to
-//      recover parent row ids, reads seed rowpack, calls `engine.sample`,
-//      and returns a `RuntimeBatch`.
-//   3. `runtime_batch_to_pydict(...)` — converts the Rust struct to the
-//      PyDict shape the trainer adapter expects, zero-copy where possible
-//      (via `to_data().to_pyarrow` and `RecordBatch.to_pyarrow`).
-// ---------------------------------------------------------------------------
-
-use diskgraph_engine::output::{GraphChannel, RawFeatureBank, RuntimeBatch, TaskBag};
-
-/// Convert our Rust `RuntimeBatch` to PR-28765's PyDict shape. All Arrow
-/// payloads cross the FFI boundary via Arrow C Data Interface (zero-copy);
-/// the only allocations are the Python dict scaffolding itself.
-fn runtime_batch_to_pydict<'py>(
-    py: Python<'py>,
-    batch: &RuntimeBatch,
-) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-
-    // task ----
-    let task = PyDict::new(py);
-    let TaskBag {
-        input_ids,
-        tt_stage_node_ids,
-        seed_node_ids,
-        seed_timestamps,
-        target,
-        weight,
-        amount_m,
-        num_positives,
-        rhs_seed_type,
-        neg_mask,
-        lp_pos_counts,
-        lp_pos_rhs_global,
-        lp_pos_mask,
-        lp_pos_weight,
-        lp_pos_local,
-        lp_exclude_counts,
-        lp_exclude_rhs_global,
-    } = &batch.task;
-    task.set_item("input_ids", py_u32_array(py, input_ids.clone())?)?;
-    task.set_item(
-        "tt_stage_node_ids",
-        py_u64_array(py, tt_stage_node_ids.clone())?,
-    )?;
-    task.set_item("seed_node_ids", py_u64_array(py, seed_node_ids.clone())?)?;
-    if let Some(ts) = seed_timestamps {
-        let arr = Int64Array::from(ts.clone());
-        task.set_item("seed_timestamps", py_array(py, &arr)?)?;
-    }
-    if let Some(tb) = target {
-        task.set_item("target", tb.to_pyarrow(py)?)?;
-    }
-    if let Some(w) = weight {
-        let arr = arrow_array::Float32Array::from(w.clone());
-        task.set_item("weight", py_array(py, &arr)?)?;
-    }
-    // Negative-sampling shape (M, B, rhs type). Scalars convert directly.
-    task.set_item("amount_m", *amount_m)?;
-    task.set_item("num_positives", *num_positives)?;
-    match rhs_seed_type {
-        Some(t) => task.set_item("rhs_seed_type", t)?,
-        None => task.set_item("rhs_seed_type", py.None())?,
-    }
-    // `neg_mask` is a bool array of length `B*amount_m`, anchor-major and
-    // parallel to the `[B:B+B*M]` rhs negative slots in
-    // graphs.main.node_ids[rhs_seed_type]. `true` = use the slot in the loss;
-    // `false` = the slot holds a dense placeholder id (temporal-resample budget
-    // exhausted) that the loss must ignore. Because masked slots keep a dense
-    // placeholder, the `[B, M]` layout / `dst_neg_index` reshape is unaffected —
-    // the loss applies the mask. Empty when no negative sampling was requested.
-    task.set_item("neg_mask", py_bool_array(py, neg_mask.clone())?)?;
-    // Ragged multi-positive LP label payload (FK-free resolution, design §S5).
-    // Anchor-major. `lp_pos_counts` is `[B]` (per-anchor positive count);
-    // `lp_pos_rhs_global` / `lp_pos_mask` are `[ΣP]`. Emitted only when non-empty
-    // — the LP label path populates them; every non-LP path leaves the keys
-    // absent. `lp_pos_weight` / `lp_pos_local` are emitted only when Some.
-    if !lp_pos_counts.is_empty() {
-        task.set_item("lp_pos_counts", py_u32_array(py, lp_pos_counts.clone())?)?;
-        let rhs = Int64Array::from(lp_pos_rhs_global.clone());
-        task.set_item("lp_pos_rhs_global", py_array(py, &rhs)?)?;
-        task.set_item("lp_pos_mask", py_bool_array(py, lp_pos_mask.clone())?)?;
-    }
-    if let Some(w) = lp_pos_weight {
-        let arr = arrow_array::Float32Array::from(w.clone());
-        task.set_item("lp_pos_weight", py_array(py, &arr)?)?;
-    }
-    if let Some(local) = lp_pos_local {
-        task.set_item("lp_pos_local", py_u32_array(py, local.clone())?)?;
-    }
-    // STATIC LP past-visit exclusion (eval-only). Emitted only when non-empty,
-    // so train / predict batches leave the keys absent (the adapter's contract).
-    if !lp_exclude_counts.is_empty() {
-        task.set_item(
-            "lp_exclude_counts",
-            py_u32_array(py, lp_exclude_counts.clone())?,
-        )?;
-        let exclude_rhs = Int64Array::from(lp_exclude_rhs_global.clone());
-        task.set_item("lp_exclude_rhs_global", py_array(py, &exclude_rhs)?)?;
-    }
-    dict.set_item("task", task)?;
-
-    // graphs ----
-    let graphs = PyDict::new(py);
-    for (channel_name, channel) in &batch.graphs {
-        graphs.set_item(channel_name, graph_channel_to_pydict(py, channel)?)?;
-    }
-    dict.set_item("graphs", graphs)?;
-
-    // raw_features ----
-    let raw_features = PyDict::new(py);
-    for (ns, bank) in &batch.raw_features {
-        raw_features.set_item(ns, raw_feature_bank_to_pydict(py, ns, bank)?)?;
-    }
-    dict.set_item("raw_features", raw_features)?;
-
-    Ok(dict)
-}
-
-fn graph_channel_to_pydict<'py>(
-    py: Python<'py>,
-    channel: &GraphChannel,
-) -> PyResult<Bound<'py, PyDict>> {
-    let ch = PyDict::new(py);
-
-    // node_ids (per type)
-    let node_ids = PyDict::new(py);
-    for (nt, ids) in &channel.node_ids {
-        node_ids.set_item(nt, py_u64_array(py, ids.clone())?)?;
-    }
-    ch.set_item("node_ids", node_ids)?;
-
-    // batch_dict (per type)
-    let batch_dict = PyDict::new(py);
-    for (nt, idxs) in &channel.batch_dict {
-        batch_dict.set_item(nt, py_u32_array(py, idxs.clone())?)?;
-    }
-    ch.set_item("batch_dict", batch_dict)?;
-
-    // edge_index_dict — grouped by (src, rel, dst). Each entry: {edge_type:{src,rel,dst}, src:[u32], dst:[u32]}.
-    let edge_index_dict = PyList::empty(py);
-    for (rel_idx, (srcs, dsts)) in channel.edges.iter().enumerate() {
-        if srcs.is_empty() {
-            continue;
-        }
-        let rel_id = rel_idx as u16;
-        let (src, rel, dst) = channel
-            .rel_id_to_names
-            .get(&rel_id)
-            .cloned()
-            .unwrap_or_else(|| ("?".to_string(), format!("rel_{rel_id}"), "?".to_string()));
-        let key = PyDict::new(py);
-        key.set_item("src", src)?;
-        key.set_item("rel", rel)?;
-        key.set_item("dst", dst)?;
-        let entry = PyDict::new(py);
-        entry.set_item("edge_type", key)?;
-        entry.set_item("src", py_u32_array(py, srcs.clone())?)?;
-        entry.set_item("dst", py_u32_array(py, dsts.clone())?)?;
-        edge_index_dict.append(entry)?;
-    }
-    ch.set_item("edge_index_dict", edge_index_dict)?;
-
-    // num_sampled_nodes_dict — per-type per-hop counts: {name: [hop0, hop1, ...]}.
-    let num_sampled_nodes = PyDict::new(py);
-    for (nt, counts) in &channel.num_sampled_nodes {
-        num_sampled_nodes.set_item(nt, py_u64_array(py, counts.clone())?)?;
-    }
-    ch.set_item("num_sampled_nodes_dict", num_sampled_nodes)?;
-
-    // num_sampled_edges_dict — per-edge-type per-hop counts. Mirrors the
-    // edge_index_dict entry shape ({edge_type:{src,rel,dst}, counts:[...]}) but
-    // emits EVERY edge type the plan can reach, INCLUDING all-zero ones (no
-    // `is_empty` skip), so the adapter can materialize every schema edge store
-    // for layer-wise / explainer indexing — matching PyG NeighborLoader.
-    let num_sampled_edges = PyList::empty(py);
-    for (names, counts) in &channel.num_sampled_edges {
-        let (src, rel, dst) = names;
-        let key = PyDict::new(py);
-        key.set_item("src", src)?;
-        key.set_item("rel", rel)?;
-        key.set_item("dst", dst)?;
-        let entry = PyDict::new(py);
-        entry.set_item("edge_type", key)?;
-        entry.set_item("counts", py_u64_array(py, counts.clone())?)?;
-        num_sampled_edges.append(entry)?;
-    }
-    ch.set_item("num_sampled_edges_dict", num_sampled_edges)?;
-
-    Ok(ch)
-}
-
-fn raw_feature_bank_to_pydict<'py>(
-    py: Python<'py>,
-    namespace: &str,
-    bank: &RawFeatureBank,
-) -> PyResult<Bound<'py, PyDict>> {
-    let block = PyDict::new(py);
-    block.set_item("key", namespace)?;
-    let num_rows: usize = bank.batches.iter().map(|b| b.num_rows()).sum();
-    block.set_item("num_rows", num_rows)?;
-    block.set_item("record_batches", py_record_batch_list(py, &bank.batches)?)?;
-    Ok(block)
-}
 
 #[pyclass]
 pub struct RuntimeIndex {
@@ -520,10 +276,16 @@ impl RuntimeBatchIterator {
     }
     pub fn next_batch(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let batch = py
-            .detach(|| self.inner.next_batch())
+            .detach(|| {
+                self.inner
+                    .next_batch()?
+                    .map(ArrowBatch::try_from)
+                    .transpose()
+                    .map_err(|error| diskgraph_runtime::RuntimeError::data(error.to_string()))
+            })
             .map_err(map_runtime_err)?;
         batch
-            .map(|batch| runtime_batch_to_pydict(py, &batch).map(|d| d.into()))
+            .map(|batch| export_batch(py, &batch).map(|value| value.unbind()))
             .transpose()
     }
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {

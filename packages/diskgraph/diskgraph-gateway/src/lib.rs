@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Native epoch sampling over prepared worker-local graph and task artifacts.
+#[cfg(test)]
 use arrow_array::RecordBatch;
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
@@ -10,7 +11,7 @@ use arrow_flight::{
     SchemaResult, Ticket,
 };
 use arrow_ipc::writer::{CompressionContext, DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
-use diskgraph_runtime::RuntimeIndex;
+use diskgraph_runtime::{ArrowBatch, RuntimeIndex};
 use futures::Stream;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -29,16 +30,12 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 mod client;
-mod encoding;
-mod layout;
 mod paths;
 mod protocol;
 mod remote;
 mod runtime;
 mod server;
-pub use client::{DecodedBatch, SamplingClient, SamplingStream};
-use encoding::BatchEncoder;
-pub use layout::{resolve_reference, ArrowValue};
+pub use client::{SamplingClient, SamplingStream};
 use paths::task_path;
 pub use protocol::VERSION as SAMPLING_PROTOCOL_VERSION;
 use protocol::{BatchMetadata, ComponentMetadata, ControlKind, MAX_BATCH_BYTES, VERSION};
@@ -141,9 +138,12 @@ impl Output {
         &mut self,
         permit: mpsc::OwnedPermit<Result<FlightData, Status>>,
         batch_id: u64,
-        value: Value,
-        parts: Vec<RecordBatch>,
+        batch: ArrowBatch,
     ) -> Result<(), Status> {
+        let ArrowBatch {
+            layout: value,
+            components: parts,
+        } = batch;
         if self.tx.is_closed() || *self.stop.borrow() {
             return Err(Status::cancelled("Consumer closed"));
         }
@@ -310,11 +310,9 @@ fn epoch(
                 .ok_or_else(|| {
                     Status::internal("Native shard ended before its declared batch count")
                 })?;
-            let mut encoder = BatchEncoder::default();
-            let value = encoder
-                .batch(batch)
+            let batch = ArrowBatch::try_from(batch)
                 .map_err(|error| Status::resource_exhausted(error.to_string()))?;
-            output.components(permit, lease.count, value, encoder.parts)?;
+            output.components(permit, lease.count, batch)?;
             lease.count += 1;
             let total = state.batches.fetch_add(1, Ordering::Relaxed) + 1;
             if total == 1 || total.is_multiple_of(100) {
@@ -547,8 +545,10 @@ mod tests {
                 .components(
                     permit,
                     0,
-                    json!({"task":{},"graphs":{},"raw_features":{}}),
-                    vec![batch],
+                    ArrowBatch {
+                        layout: json!({"task":{},"graphs":{},"raw_features":{}}),
+                        components: vec![batch],
+                    },
                 )
                 .unwrap();
         });
@@ -594,10 +594,12 @@ mod tests {
                 .components(
                     permit,
                     0,
-                    json!({}),
-                    vec![RecordBatch::new_empty(std::sync::Arc::new(
-                        arrow_schema::Schema::empty(),
-                    ))],
+                    ArrowBatch {
+                        layout: json!({}),
+                        components: vec![RecordBatch::new_empty(std::sync::Arc::new(
+                            arrow_schema::Schema::empty(),
+                        ))],
+                    },
                 )
                 .unwrap();
         });

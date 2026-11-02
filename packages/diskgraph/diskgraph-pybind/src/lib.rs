@@ -186,6 +186,7 @@ use diskgraph_engine::output::OutputHandler;
 use diskgraph_engine::state::{SamplingState, StatePool};
 
 mod artifact_helpers;
+mod batch;
 mod sampling_server;
 mod sampling_client;
 mod remote_runtime;

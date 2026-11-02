@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Native replica ownership and bounded round-robin epoch prefetch.
-use crate::{DecodedBatch, SamplingClient, SamplingStream, TaskRequest};
+use crate::{SamplingClient, SamplingStream, TaskRequest};
 use anyhow::{anyhow, ensure};
+use diskgraph_runtime::ArrowBatch;
 use parking_lot::Mutex;
 use std::{
     collections::{HashSet, VecDeque},
@@ -17,7 +18,7 @@ use std::{
 };
 use tonic::Status;
 
-type ReplicaResult = anyhow::Result<Option<DecodedBatch>>;
+type ReplicaResult = anyhow::Result<Option<ArrowBatch>>;
 type Pending = VecDeque<(usize, mpsc::Receiver<ReplicaResult>)>;
 
 /// One epoch, with exactly one demanded minibatch per replica at a time.
@@ -74,7 +75,7 @@ impl RemoteBatchIterator {
     }
 
     /// Return the next replica's complete batch, preserving deterministic order.
-    pub fn next_batch(&self) -> anyhow::Result<Option<DecodedBatch>> {
+    pub fn next_batch(&self) -> anyhow::Result<Option<ArrowBatch>> {
         if self.stopped.load(Ordering::Acquire) {
             return Ok(None);
         }

@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Reusable native Flight client with schema-aware component assembly.
-use crate::layout::validate_layout;
 use crate::protocol::{
     BatchMetadata, ComponentMetadata, ControlKind, StreamMetadata, MAX_BATCH_BYTES, VERSION,
 };
 use crate::TaskRequest;
 use anyhow::{anyhow, ensure, Context};
+#[cfg(test)]
 use arrow_array::RecordBatch;
 use arrow_flight::{
     decode::{DecodedFlightData, DecodedPayload, FlightDataDecoder},
@@ -16,8 +16,10 @@ use arrow_flight::{
     flight_service_client::FlightServiceClient,
     FlightData, Ticket,
 };
+use diskgraph_runtime::{validate_layout, ArrowBatch};
 use futures::StreamExt;
 use parking_lot::Mutex;
+#[cfg(test)]
 use serde_json::Value;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -49,12 +51,6 @@ struct Connection {
 pub struct SamplingClient {
     connection: Mutex<Option<Connection>>,
     stop: watch::Sender<bool>,
-}
-
-/// A complete logical minibatch, using native Arrow components and a small layout.
-pub struct DecodedBatch {
-    pub layout: Value,
-    pub components: Vec<RecordBatch>,
 }
 
 struct Reader {
@@ -211,7 +207,7 @@ impl Drop for SamplingClient {
 
 impl SamplingStream {
     /// Read one complete minibatch; successful EOF must match the advertised count.
-    pub fn next_batch(&self) -> anyhow::Result<Option<DecodedBatch>> {
+    pub fn next_batch(&self) -> anyhow::Result<Option<ArrowBatch>> {
         let mut state = self.reader.lock();
         let Some(reader) = state.as_mut() else {
             return Ok(None);
@@ -282,7 +278,7 @@ impl SamplingStream {
                         if parts.len() == metadata.num_components {
                             validate_layout(&layout, &parts)?;
                             reader.batch_id += 1;
-                            return Ok(Some(DecodedBatch {
+                            return Ok(Some(ArrowBatch {
                                 layout,
                                 components: parts,
                             }));

@@ -3,17 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Schema-aware native Flight client handles and Arrow C Data Interface export.
-use arrow::pyarrow::ToPyArrow;
-use arrow_array::RecordBatch;
-use diskgraph_gateway::{
-    resolve_reference, ArrowValue, SamplingClient, SamplingStream, TaskOptions, TaskRequest,
-};
-use pyo3::{
-    exceptions::PyValueError,
-    prelude::*,
-    types::{PyBool, PyDict, PyList},
-};
-use serde_json::Value;
+use crate::batch::export_batch;
+use diskgraph_gateway::{SamplingClient, SamplingStream, TaskOptions, TaskRequest};
+use pyo3::{exceptions::PyValueError, prelude::*, types::PyBool};
 use std::collections::HashMap;
 
 pub(crate) fn client_error(py: Python<'_>, error: anyhow::Error) -> PyErr {
@@ -37,49 +29,6 @@ pub(crate) fn client_error(py: Python<'_>, error: anyhow::Error) -> PyErr {
         };
     }
     PyValueError::new_err(format!("{error:#}"))
-}
-
-pub(crate) fn export_layout<'py>(
-    py: Python<'py>,
-    value: &Value,
-    components: &[RecordBatch],
-) -> PyResult<Bound<'py, PyAny>> {
-    if let Some(value) = resolve_reference(value, components)
-        .map_err(|error| PyValueError::new_err(format!("{error:#}")))?
-    {
-        return match value {
-            ArrowValue::Array(array) => array.to_data().to_pyarrow(py),
-            ArrowValue::RecordBatch(batch) => batch.to_pyarrow(py),
-        };
-    }
-    match value {
-        Value::Object(values) => {
-            let result = PyDict::new(py);
-            for (key, value) in values {
-                result.set_item(key, export_layout(py, value, components)?)?;
-            }
-            Ok(result.into_any())
-        }
-        Value::Array(values) => {
-            let result = PyList::empty(py);
-            for value in values {
-                result.append(export_layout(py, value, components)?)?;
-            }
-            Ok(result.into_any())
-        }
-        Value::Null => Ok(py.None().into_bound(py)),
-        Value::Bool(value) => Ok(value.into_pyobject(py)?.to_owned().into_any()),
-        Value::String(value) => Ok(value.into_pyobject(py)?.into_any()),
-        Value::Number(value) => {
-            if let Some(value) = value.as_u64() {
-                return Ok(value.into_pyobject(py)?.into_any());
-            }
-            if let Some(value) = value.as_i64() {
-                return Ok(value.into_pyobject(py)?.into_any());
-            }
-            Ok(value.as_f64().unwrap().into_pyobject(py)?.into_any())
-        }
-    }
 }
 
 /// Immutable native epoch request; the extension owns Flight ticket serialization.
@@ -303,7 +252,7 @@ impl PySamplingStream {
         let Some(batch) = result else {
             return Ok(None);
         };
-        match export_layout(py, &batch.layout, &batch.components) {
+        match export_batch(py, &batch) {
             Ok(value) => Ok(Some(value)),
             Err(error) => {
                 self.stream.close();

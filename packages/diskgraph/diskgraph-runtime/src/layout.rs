@@ -88,7 +88,10 @@ pub fn resolve_reference(
         .transpose()
 }
 
-pub(crate) fn validate_layout(value: &Value, components: &[RecordBatch]) -> anyhow::Result<()> {
+/// Validate every positional Arrow reference in a layout, including nested containers.
+///
+/// Returns an error for invalid component IDs, columns or half-open ranges.
+pub fn validate_layout(value: &Value, components: &[RecordBatch]) -> anyhow::Result<()> {
     if reference(value, components)?.is_some() {
         return Ok(());
     }

@@ -1864,6 +1864,9 @@ dependencies = [
 name = "diskgraph-runtime"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "arrow-array",
+ "arrow-schema",
  "diskgraph-core",
  "diskgraph-engine",
  "diskgraph-index",

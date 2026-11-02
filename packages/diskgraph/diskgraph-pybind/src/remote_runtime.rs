@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Python handles for native replica orchestration and epoch lifetime.
-use crate::sampling_client::{client_error, export_layout, PySamplingRequest};
+use crate::batch::export_batch;
+use crate::sampling_client::{client_error, PySamplingRequest};
 use diskgraph_gateway::{RemoteBatchIterator, RemoteRuntimeIndex};
 use pyo3::prelude::*;
 use std::{path::Path, sync::Arc};
@@ -72,7 +73,7 @@ impl PyRemoteBatchIterator {
             .detach(|| self.iterator.next_batch())
             .map_err(|error| client_error(py, error))?;
         let Some(batch) = result else { return Ok(None) };
-        match export_layout(py, &batch.layout, &batch.components) {
+        match export_batch(py, &batch) {
             Ok(value) => Ok(Some(value)),
             Err(error) => {
                 self.iterator

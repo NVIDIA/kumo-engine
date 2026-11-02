@@ -54,7 +54,7 @@
 //!
 //! # Grouping and reconstructing a minibatch
 //!
-//! `encoding.rs` groups fields that share a row domain: seed fields and target
+//! `diskgraph-runtime/src/batch.rs` groups fields that share a row domain: seed fields and target
 //! columns; node IDs and seed assignments for one node type; source/destination
 //! endpoints for one edge type; and compatible flattened positive-label fields.
 //! Other domains, such as negative masks, per-hop counts and flattened exclusions,
@@ -99,7 +99,7 @@
 //!   raw_features.orders.record_batches = [{"component": 5, "columns": [0, 3]}]
 //! ```
 //!
-//! `layout.rs` validates these references and projects the selected arrays or
+//! `diskgraph-runtime/src/layout.rs` validates these references and projects the selected arrays or
 //! record batches while sharing their Arrow buffers. The PyO3 client recursively
 //! replaces references with PyArrow objects through the Arrow C Data Interface,
 //! restoring the native `task`/`graphs`/`raw_features` structure for Python.

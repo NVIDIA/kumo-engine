@@ -219,4 +219,16 @@ mod tests {
             assert!(TaskRequest::new("train_tables/task".into(), options, None, threads).is_err());
         }
     }
+    #[test]
+    fn task_options_reject_unknown_fields() {
+        let options = json!({"stage_table":"train_seeds","sampling_plan_json":"{}","num_workers":1,"worker_id":0,"shuffle":false,"epoch":0,"batch_size":2});
+        let parsed: TaskOptions = serde_json::from_value(options.clone()).unwrap();
+        assert!(parsed.disjoint);
+        assert!(parsed.swap_edge_direction);
+        assert!(parsed.use_seed_timestamps);
+        assert!(!parsed.replace);
+        let mut unsupported = options;
+        unsupported["ignore_me"] = json!(true);
+        assert!(serde_json::from_value::<TaskOptions>(unsupported).is_err());
+    }
 }

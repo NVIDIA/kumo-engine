@@ -152,7 +152,9 @@ on a restricted network.
 
 Use `diskgraph.RuntimeIndex(manifest, sampling_endpoints=endpoints)` for remote
 sampling or omit the endpoint argument for local sampling. Both modes reuse the
-same manifest and option normalization. Rust owns remote connections, replica
+same manifest and option normalization. Both use the runtime's `ArrowBatch`
+representation and one Python minibatch exporter; local sampling performs no IPC
+serialization. Rust owns remote connections, replica
 sharding, weighted-sidecar path translation and iterator lifetime. Close an epoch
 to cancel its prefetch while retaining shared connections; close the index at
 job teardown to cancel all epochs and release those connections. A closed index
