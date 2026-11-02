@@ -139,7 +139,7 @@ run = kumo.PredictionResult.load_from_connector(cfg, path=f"predictions/{run_id}
 table = kumo.TrainingTable.load_from_connector(cfg, path=f"training_tables/{table_id}", pquery=pquery, snapshot=snapshot)
 ```
 
-`location=` loads the version an alias (or `version=`) names from the tracker's registry, one way on every platform. A loaded model is a `Trainer`; its `result` is the `TrainingResult` (`.id`, `.manifest`, `.metrics`, `.scoring_defaults`, `.holdout_df()`, `.holdout_evaluation()`).
+`location=` loads the version an alias (or `version=`) names from the tracker's registry, one way on every platform. A loaded model is a `Trainer`; its `result` is the `TrainingResult` (`.id`, `.manifest`, `.metrics`, `.scoring_defaults`, `.holdout_df()`).
 
 ## Train and register
 
@@ -358,7 +358,7 @@ On a stage root, `LIST @DB.SCHEMA.STAGE/kumo/predictions/` names the same direct
 
 ### Warehouse model monitors
 
-Both platforms monitor the evaluated rows exported to a table with `write_mode=WriteMode.APPEND` (required for both: it adds `PREDICTION_ID` and `BUNDLE_ID`, so the table keeps every evaluation); neither monitors link prediction, ranking, multilabel or forecasting outputs. The recipes below cover binary classification and regression: for multiclass, `holdout_evaluation` raises, so there is no holdout baseline (no Snowflake drift; Databricks drift only day over day), and Snowflake needs string `CLASS` and `TARGET` columns (untested).
+Both platforms monitor the evaluated rows exported to a table with `write_mode=WriteMode.APPEND` (required for both: it adds `PREDICTION_ID` and `BUNDLE_ID`, so the table keeps every evaluation); neither monitors link prediction, ranking, multilabel or forecasting outputs. The recipes below cover binary classification and regression; for multiclass, Snowflake needs string `CLASS` and `TARGET` columns (untested). They have no baseline table: drift against training comes from kumo's `score_drift` (`drift/*` on the prediction run), so Databricks drifts day over day and Snowflake reports realized quality only. Both recipes are untested until re-run without a baseline.
 
 **Databricks (Data Quality Monitoring, inference log; the `databricks` extra installs a databricks-sdk with this API).** The classification monitor reads `TARGET_PRED`, so the run needs a threshold (passed or stored):
 
@@ -369,9 +369,6 @@ from databricks.sdk.service.dataquality import (AggregationGranularity, DataProf
 from kumoapi.jobs import WriteMode
 
 evaluation.export(kumo.PredictionOutputConfig(dbx, path="churn_evaluated", write_mode=WriteMode.APPEND))   # each day
-threshold = latest.manifest.scoring.binary_classification_threshold
-champion.result.holdout_evaluation(binary_classification_threshold=threshold).export(
-    kumo.PredictionOutputConfig(dbx, path="churn_holdout_evaluated", write_mode=WriteMode.APPEND))     # once per model
 
 w = WorkspaceClient()
 table_id = w.tables.get("main.ml.churn_evaluated").table_id
@@ -380,7 +377,6 @@ w.data_quality.create_monitor(monitor=Monitor(                                  
     data_profiling_config=DataProfilingConfig(
         output_schema_id=w.schemas.get("main.ml").schema_id,
         assets_dir="/Workspace/Users/<you>/monitoring",
-        baseline_table_name="main.ml.churn_holdout_evaluated",
         inference_log=InferenceLogConfig(
             problem_type=InferenceProblemType.INFERENCE_PROBLEM_TYPE_CLASSIFICATION,
             prediction_column="TARGET_PRED", label_column="TARGET", model_id_column="BUNDLE_ID",
@@ -389,20 +385,17 @@ w.data_quality.create_refresh(object_type="table", object_id=table_id,
                               refresh=Refresh(object_type="table", object_id=table_id))                # after each export
 ```
 
-Without `APPEND` the refresh fails with `MISSING_REQUIRED_METADATA`. The monitor writes `<table>_profile_metrics` and `<table>_drift_metrics`: one window per day, per `BUNDLE_ID` and over all models (`'*'`), with drift against the day before and the baseline. It has no probability column, so no ROC AUC or log loss (`evaluate` reports AUROC). Later labels are picked up by the next refresh. Verified for binary classification.
+Without `APPEND` the refresh fails with `MISSING_REQUIRED_METADATA`. The monitor writes `<table>_profile_metrics` and `<table>_drift_metrics`: one window per day, per `BUNDLE_ID` and over all models (`'*'`), with drift against the day before. It has no probability column, so no ROC AUC or log loss (`evaluate` reports AUROC). Later labels are picked up by the next refresh. Untested until re-run without a baseline (the version with one was verified for binary classification).
 
-**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` writes `TARGET` as a number and timestamps as `TIMESTAMP_NTZ`, as the monitor needs; give table paths in upper case to refer to them unquoted. Pass the monitored runs' threshold so both sides' `TARGET_PRED` match:
+**Snowflake (Model Monitor)**, on a version `MLOps(registry=)` registered. `evaluation.export` writes `TARGET` as a number and timestamps as `TIMESTAMP_NTZ`, as the monitor needs; give table paths in upper case to refer to them unquoted. Untested until re-run without a baseline:
 
 ```python
-evaluation.export(kumo.PredictionOutputConfig(sf, path="CHURN_EVALUATED", write_mode=WriteMode.APPEND))
-threshold = latest.manifest.scoring.binary_classification_threshold      # None if the runs had none
-champion.result.holdout_evaluation(binary_classification_threshold=threshold).export(
-    kumo.PredictionOutputConfig(sf, path="CHURN_HOLDOUT_EVALUATED", write_mode=WriteMode.APPEND))
+evaluation.export(kumo.PredictionOutputConfig(sf, path="CHURN_EVALUATED", write_mode=WriteMode.APPEND))   # each day
 ```
 
 ```sql
 CREATE MODEL MONITOR CHURN_MONITOR WITH MODEL=CHURN_GNN VERSION=<version> FUNCTION=predict
-  SOURCE=CHURN_EVALUATED BASELINE=CHURN_HOLDOUT_EVALUATED WAREHOUSE=WH REFRESH_INTERVAL='1 day'
+  SOURCE=CHURN_EVALUATED WAREHOUSE=WH REFRESH_INTERVAL='1 day'
   AGGREGATION_WINDOW='1 day' TIMESTAMP_COLUMN=ANCHOR_TIMESTAMP ID_COLUMNS=('ENTITY')
   PREDICTION_SCORE_COLUMNS=('True_PROB') ACTUAL_CLASS_COLUMNS=('TARGET');
 ```
@@ -558,7 +551,7 @@ table is diluted.
 ### Warehouse monitor columns
 
 - Databricks keys the monitor on `EVALUATED_AT` (anchors are older than its lookback by the label window). For regression use `INFERENCE_PROBLEM_TYPE_REGRESSION`. `True_PROB` is profiled as an ordinary column.
-- Snowflake: binary classification uses `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; regression `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`. Prediction, timestamp and ID columns must have no nulls, NaN or infinities and be used once; a null `TARGET` is accepted (performance stays null until labels arrive). Columns are string literals in their stored case, `('True_PROB')`. Without `BASELINE` there is no drift.
+- Snowflake: binary classification uses `PREDICTION_SCORE_COLUMNS` (in [0, 1]) with `ACTUAL_CLASS_COLUMNS`; regression `PREDICTION_SCORE_COLUMNS=(TARGET_PRED)` with `ACTUAL_SCORE_COLUMNS`. Prediction, timestamp and ID columns must have no nulls, NaN or infinities and be used once; a null `TARGET` is accepted (performance stays null until labels arrive). Columns are string literals in their stored case, `('True_PROB')`. Without `BASELINE` it reports realized quality only, no drift; kumo's `score_drift` covers drift against training.
 
 ### Custom trackers
 
