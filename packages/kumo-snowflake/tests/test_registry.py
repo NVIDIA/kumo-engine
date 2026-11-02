@@ -471,7 +471,10 @@ def _publishing_sink(monkeypatch, versions, calls):
         def get_model(_):
             if versions is None:
                 raise ValueError('no such model')
-            return SimpleNamespace(versions=lambda: versions)
+            return SimpleNamespace(
+                versions=lambda: versions,
+                version=lambda name: next(v for v in versions
+                                          if v.version_name == name))
 
         yield SimpleNamespace(log_model=log_model, get_model=get_model)
 
@@ -513,6 +516,27 @@ def test_a_registered_bundle_is_returned_rather_than_logged_again(
     assert len(calls) == (0 if reused else 1)
     assert ('already holds bundle b1; reused it' in caplog.text) == bool(
         reused)
+
+
+@pytest.mark.parametrize('requested, reused', [('V1', 'V1'), ('V2', None)])
+def test_a_named_version_is_reused_only_if_it_holds_the_bundle(
+        tmp_path, monkeypatch, requested, reused):
+    versions = [
+        SimpleNamespace(version_name='V1', model_name='CHURN',
+                        fully_qualified_model_name='DB.S.CHURN',
+                        show_metrics=lambda: {
+                            'kumo_engine': '1', 'kumo_bundle_id': 'b1'})
+    ]
+    calls = []
+    sink = _publishing_sink(monkeypatch, versions, calls)
+    monkeypatch.setattr(registry_module, '_model_args', lambda *_: {})
+    published = sink.publish_model(
+        SimpleNamespace(), str(_bundle(tmp_path)),
+        location=ModelRegistryLocation('CHURN', version=requested),
+        metadata={'kumo_bundle_id': 'b1'})
+    assert published.version == (reused or 'V9')
+    logged = [call['version_name'] for call in calls]
+    assert logged == ([] if reused else [requested])
 
 
 def test_engine_model_arguments_reach_log_model(tmp_path, monkeypatch):

@@ -233,14 +233,17 @@ def _serving(args: Mapping[str, Any]) -> Optional[str]:
                    default=str).encode()).hexdigest()[:16]
 
 
-def _version_holding(registry: "Registry", model_name: str,
+def _version_holding(registry: "Registry", location: ModelRegistryLocation,
                      bundle_id: Optional[str],
                      serving: Optional[str]) -> Optional["ModelVersion"]:
     r"""The Kumo version holding ``bundle_id`` for ``serving``."""
     if not bundle_id:
         return None
+    model_name = location.model_name
     try:
-        versions = registry.get_model(model_name).versions()
+        model = registry.get_model(model_name)
+        versions = ([model.version(location.version)]
+                    if location.version else model.versions())
     except Exception:
         return None
     for version in versions:
@@ -482,7 +485,7 @@ class SnowflakeModelRegistryMixin:
 
         The database and schema are the connector's, as they are for a table,
         so only the model name is given here. A version already holding
-        this ``kumo_bundle_id`` is returned instead.
+        this ``kumo_bundle_id`` (the named one, if any) is returned instead.
 
         Args:
             connector: The Snowflake target whose schema holds the registry.
@@ -520,7 +523,7 @@ class SnowflakeModelRegistryMixin:
             serving = _serving(args)
             if serving is not None:
                 record[SERVING_KEY] = serving
-            version = _version_holding(registry, location.model_name,
+            version = _version_holding(registry, location,
                                        metadata.get(BUNDLE_ID_KEY), serving)
             if version is not None:
                 _LOG.info('%s version %s already holds bundle %s; reused it',
