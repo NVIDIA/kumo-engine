@@ -5,6 +5,7 @@
 //! Diskgraph ingest: convert raw CSV/Parquet sources into index-ready artifacts.
 
 pub mod binary_label;
+pub mod append;
 pub mod coercion;
 pub mod col_stats;
 pub mod col_stats_export;
@@ -15,7 +16,9 @@ pub mod consts;
 pub mod diagnostics;
 pub mod disk_manager;
 pub mod errors;
+mod expansion;
 pub mod graph_config;
+pub mod incremental;
 pub mod index_metadata;
 pub mod io;
 pub mod mapping;
@@ -734,6 +737,9 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     // Validate the exact graph-feature statistics contract at the common
     // public-ingest boundary, before source normalization or output writes.
     validate_exact_category_count_options(&options)?;
+    if let Some(config) = &options.incremental {
+        config.validate_output(Path::new(output))?;
+    }
     let wall_start = std::time::Instant::now();
     // Reject the markerless-mirror config at the API boundary.
     // `output_dataplane_dir.is_some() + success_marker_content.is_none()`
@@ -944,6 +950,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     if let Some(rfp) = resume_from_phase {
         if rfp > IngestPhase::Encode {
             ctx.restore_encode_state()?;
+            ctx.restore_incremental_plan()?;
             ctx.repopulate_table_contexts_from_source()?;
             ctx.repopulate_node_stats_from_meta()?;
         }
@@ -1079,6 +1086,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
             },
         )?;
         drop(edge_ctx);
+        ctx.save_edge_cache()?;
         edges_map_wall = edges_map_start.elapsed();
         tracing::info!(
             stage = "edges_map",
@@ -1123,6 +1131,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         tracing::info!(stage = "index", "resume: skipped (marker present)");
     }
     ctx.set_peak_stage(Some(5));
+    ctx.save_index_commits()?;
     let finalize_start = std::time::Instant::now();
     let (index_metadata, source_config) = ctx.finalize_metadata(index_metadata)?;
     // TT-NG timestamp grouping: merge the per-shard spills into per-stage
@@ -1223,7 +1232,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         .write_bytes("ingest_stats.json", serde_json::to_vec_pretty(&report)?)?;
 
     // Write kumo-format edge stats if kumo metadata is available.
-    if let Some(edge_stats_bytes) = ctx.build_edge_stats_json(&index_metadata)? {
+    if let Some(edge_stats_bytes) = IngestContext::build_edge_stats_json(&ctx.source, &ctx.relationships, &ctx.edge_counts, &ctx.edge_dst_nonzero_counts, &index_metadata)? {
         ctx.target
             .write_bytes(col_stats_export::EDGE_STATS_FILENAME, edge_stats_bytes)?;
         tracing::info!("wrote {}", col_stats_export::EDGE_STATS_FILENAME);
@@ -1829,6 +1838,11 @@ mod tests_repopulate_helpers {
         num_shards: usize,
     ) -> IngestContext {
         IngestContext {
+            incremental: None,
+            cache_manifest: None,
+            reused_tables: HashSet::new(),
+            reused_relations: HashSet::new(),
+            inherited_encoders: HashMap::new(),
             source,
             target,
             profile_dir: None,
@@ -2626,6 +2640,11 @@ mod dst_degree_bitmap_budget_tests {
 }
 
 struct IngestContext {
+    incremental: Option<incremental::IncrementalConfig>,
+    cache_manifest: Option<incremental::CacheManifest>,
+    reused_tables: HashSet<String>,
+    reused_relations: HashSet<String>,
+    inherited_encoders: HashMap<String, Vec<u8>>,
     source: GraphConfig,
     target: std::sync::Arc<OutputTarget>,
     profile_dir: Option<PathBuf>,
@@ -7277,6 +7296,11 @@ impl IngestContext {
             row_subsample: options.row_subsample,
             text_sample_stats: HashMap::new(),
             parent_index_path: options.parent_index_path,
+            incremental: options.incremental,
+            cache_manifest: None,
+            reused_tables: HashSet::new(),
+            reused_relations: HashSet::new(),
+            inherited_encoders: HashMap::new(),
             resolve_columns: options.resolve_columns,
         })
     }
@@ -7289,7 +7313,10 @@ impl IngestContext {
 
     /// Resolve every physical schema before the Encode marker/timer begins.
     fn prepare_input_schemas(&mut self) -> Result<()> {
-        visit_source_schemas(&self.source, |table, schema| {
+        self.prepare_incremental()?;
+        let mut source = self.source.clone();
+        source.tables.retain(|table| !self.reused_tables.contains(&table.name));
+        visit_source_schemas(&source, |table, schema| {
             let synthetic_columns = self
                 .resolve_columns
                 .iter()
@@ -7389,7 +7416,12 @@ impl IngestContext {
         // replay and all later batches may be encoded by any worker.
         {
             for table in &mut tables {
+                if self.reused_tables.contains(&table.name) {
+                    tracing::info!(phase = "encode", table = %table.name, "reused encoded table");
+                    continue;
+                }
                 let table_encode_start = std::time::Instant::now();
+                let trimmed_before = self.trimmed_strings.load(Ordering::Relaxed);
                 tracing::info!(phase = "encode", table = %table.name, "table started");
                 let synthetic_columns = resolve_columns
                     .iter()
@@ -7644,7 +7676,10 @@ impl IngestContext {
                         self.pk_sampled_max_key_len
                             .insert(table.name.clone(), pk_max_key_len);
                     }
-                    let node_context = context_builder.finish()?;
+                    let node_context = match self.inherited_encoders.get(&table.name) {
+                        Some(bytes) => diskgraph_rowpack::RowPackContext::from_bytes(bytes)?,
+                        None => context_builder.finish()?,
+                    };
                     let context_bytes = node_context.to_bytes()?;
                     self.target
                         .write_bytes(&temp_node_context_path(&table.name), context_bytes.clone())?;
@@ -7771,6 +7806,10 @@ impl IngestContext {
                     }
                 }
                 validation.finish()?;
+                if let Some(manifest) = &mut self.cache_manifest {
+                    manifest.trimmed_strings.insert(table.name.clone(),
+                        self.trimmed_strings.load(Ordering::Relaxed) - trimmed_before);
+                }
                 let source_rows = validation.rows_seen();
                 if source_rows == 0 && self.parent_index_path.is_none() {
                     return Err(anyhow!(
@@ -7867,10 +7906,12 @@ impl IngestContext {
         self.write_consolidated_meta(&node_stats, &edge_stats, &dest_key_stats)?;
         self.refresh_shard_rows_from_stats(&node_stats);
         self.table_rows = table_rows;
+        self.restore_incremental_counts()?;
         // High-water tracks the source working set only; category-map memory is
         // bounded by the per-column unique cap and not metered here.
         self.encode_memory_high_water_bytes = source_budget.high_water_bytes();
         self.persist_encode_state()?;
+        self.save_encode_cache()?;
         Ok(())
     }
 
@@ -8209,6 +8250,9 @@ impl IngestContext {
         dest_key_stats: &DestKeyWriterStats,
     ) -> Result<()> {
         for table in &self.source.tables {
+            if self.reused_tables.contains(&table.name) {
+                continue;
+            }
             if table.edge_table.is_some() {
                 continue;
             }
@@ -10435,6 +10479,7 @@ impl IngestContext {
         self.edge_dst_nonzero_counts.clear();
         self.pk_duplicate_drops.clear();
         self.edge_null_timestamp_drops.clear();
+        self.restore_cached_edges()?;
 
         let pool = self.make_pool::<EdgeMapScratch>(self.edges_map_threads);
         {
@@ -10499,6 +10544,10 @@ impl IngestContext {
             let mut totals = HashMap::new();
 
             for rel in &self.relationships {
+                if self.reused_relations.contains(&rel.name_forward) {
+                    tracing::info!(relation = %rel.name_forward, "reused forward and reverse edges");
+                    continue;
+                }
                 let rel = rel.clone();
                 let progress = progress.clone();
                 let shard_offsets = shard_offsets.clone();
@@ -11761,6 +11810,7 @@ impl IngestContext {
         let mut metadata_writer = BufWriter::new(metadata_file);
         serde_json::to_writer_pretty(&mut metadata_writer, builder.metadata())?;
         metadata_writer.flush()?;
+        self.restore_cached_index_shards()?;
         let prepared = builder.prepare_resumable_jobs_with_pool(edge_buffer_pool)?;
         let adapter = self
             .progress
@@ -12061,14 +12111,16 @@ impl IngestContext {
     /// available on the tables — i.e., the config was not produced by
     /// `convert_kumo_to_diskgraph` and we're running outside the kumo pipeline.
     fn build_edge_stats_json(
-        &self,
+        source: &GraphConfig,
+        relationships: &[RelationshipRuntime],
+        edge_counts: &HashMap<String, u64>,
+        edge_dst_nonzero_counts: &HashMap<String, u64>,
         metadata: &diskgraph_core::metadata::DatasetMetadata,
     ) -> Result<Option<Vec<u8>>> {
         use serde_json::{json, Map, Value};
 
         // Build table name → TableSpec lookup
-        let table_map: HashMap<&str, &crate::graph_config::TableSpec> = self
-            .source
+        let table_map: HashMap<&str, &crate::graph_config::TableSpec> = source
             .tables
             .iter()
             .map(|t| (t.name.as_str(), t))
@@ -12089,8 +12141,7 @@ impl IngestContext {
         }
 
         // Check that kumo metadata is available on at least one table
-        let has_kumo_metadata = self
-            .source
+        let has_kumo_metadata = source
             .tables
             .iter()
             .any(|t| t.kumo_connector_id.is_some());
@@ -12100,7 +12151,7 @@ impl IngestContext {
 
         let mut stats_map = Map::new();
 
-        for rel in &self.relationships {
+        for rel in relationships {
             let src_table = match table_map.get(rel.src_table.as_str()) {
                 Some(t) => t,
                 None => continue,
@@ -12127,8 +12178,7 @@ impl IngestContext {
             };
             let data_version = src_table.data_version.as_deref().unwrap_or("");
 
-            let edge_count = self
-                .edge_counts
+            let edge_count = edge_counts
                 .get(&rel.name_forward)
                 .copied()
                 .unwrap_or(0);
@@ -12146,8 +12196,7 @@ impl IngestContext {
 
             // Unique destinations reduced from the EdgesMap bitvec before the
             // phase snapshot is serialized.
-            let num_dst_nonzero = self
-                .edge_dst_nonzero_counts
+            let num_dst_nonzero = edge_dst_nonzero_counts
                 .get(&rel.name_forward)
                 .copied()
                 .unwrap_or(0);

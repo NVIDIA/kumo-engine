@@ -6,15 +6,18 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from kumo.engine.graph import Graph
 
 
 def _fake_table(dest_writes: bool = True, credentials=None):
-    def prepare_ingest(connector, table_name, dest_dir, *, dtypes, sql=None):
+    def prepare_ingest(connector, table_name, dest_dir, *, dtypes, sql=None,
+                       data_version=None):
         if dest_writes:
-            Path(dest_dir, 'part.parquet').write_bytes(b'data')
+            pq.write_table(pa.table({'id': [1]}), Path(dest_dir, 'part.parquet'))
         return SimpleNamespace(credentials=credentials, version='v1',
                                source={'path': dest_dir})
 

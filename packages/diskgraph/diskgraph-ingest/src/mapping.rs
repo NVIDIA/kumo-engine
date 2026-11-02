@@ -555,6 +555,7 @@ pub struct RefResolver {
     /// a blind MPH, so resolution must reject false-positive hits for keys
     /// absent from the parent (cross-graph TT reuse).
     verifier: PkMembershipVerifier,
+    delta_tables: std::collections::HashSet<String>,
 }
 
 /// Outcome of a membership-verified resolution ([`RefResolver::resolve_verified_in_shard`]).
@@ -588,6 +589,8 @@ impl RefResolver {
 
         let mut shards = std::collections::HashMap::new();
         let mut offsets = std::collections::HashMap::new();
+        let deltas = diskgraph_index::delta::DeltaManifest::load(parent_index_path)?;
+        let mut delta_tables = std::collections::HashSet::new();
         let mut seen = std::collections::HashSet::new();
         for dst_table in dst_tables {
             if !seen.insert(dst_table.clone()) {
@@ -610,7 +613,11 @@ impl RefResolver {
                         parent_index_path.display()
                     )
                 })?;
-            let table_offsets: Vec<u64> = node.shards.iter().map(|s| s.min_id).collect();
+            let mut table_offsets: Vec<u64> = node.shards.iter().map(|s| s.min_id).collect();
+            if let Some(delta) = deltas.as_ref().and_then(|m| m.tables.get(dst_table)) {
+                table_offsets.truncate(delta.base_shards);
+                delta_tables.insert(dst_table.clone());
+            }
             if table_offsets.len() != loaded.len() {
                 return Err(anyhow!(
                     "RefResolver: dst_table `{dst_table}` shard offset count {} != pkmap shard count {}",
@@ -626,6 +633,7 @@ impl RefResolver {
             shards,
             offsets,
             verifier,
+            delta_tables,
         })
     }
 
@@ -660,6 +668,13 @@ impl RefResolver {
         shard: usize,
         key: &Key,
     ) -> Result<ResolveVerified> {
+        // The table reader resolves both base keys and appended key logs.
+        if self.delta_tables.contains(dst_table) {
+            return Ok(match self.verifier.tables[dst_table].node_id_from_pk(&to_index_key(key.clone()))? {
+                Some(id) => ResolveVerified::Resolved(id),
+                None => ResolveVerified::Miss,
+            });
+        }
         let Some(node_id) = self.resolve_in_shard(dst_table, shard, key) else {
             return Ok(ResolveVerified::Miss);
         };
@@ -739,20 +754,20 @@ impl PkMembershipVerifier {
             .tables
             .get(dst_table)
             .ok_or_else(|| anyhow!("membership verifier: table `{dst_table}` not loaded"))?;
-        table.validate_pk_at_node(global_node_id, &to_index_key(key))
+        table.validate_pk_at_node(global_node_id, &to_index_key(key.clone()))
     }
 }
 
 /// The ingest-side [`Key`] and `diskgraph_index::pkmap::Key` are structurally
 /// identical but distinct types; bridge them for verification.
-fn to_index_key(key: &Key) -> diskgraph_index::pkmap::Key {
+pub(crate) fn to_index_key(key: Key) -> diskgraph_index::pkmap::Key {
     use diskgraph_index::pkmap::Key as IndexKey;
     match key {
-        Key::Int(v) => IndexKey::Int(*v),
-        Key::Bytes(b) => IndexKey::Bytes(b.clone()),
-        Key::Uuid(b) => IndexKey::Uuid(*b),
-        Key::Uuid256(b) => IndexKey::Uuid256(*b),
-        Key::Ip(b) => IndexKey::Ip(*b),
+        Key::Int(v) => IndexKey::Int(v),
+        Key::Bytes(b) => IndexKey::Bytes(b),
+        Key::Uuid(b) => IndexKey::Uuid(b),
+        Key::Uuid256(b) => IndexKey::Uuid256(b),
+        Key::Ip(b) => IndexKey::Ip(b),
     }
 }
 

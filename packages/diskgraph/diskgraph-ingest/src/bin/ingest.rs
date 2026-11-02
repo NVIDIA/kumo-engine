@@ -96,6 +96,9 @@ struct Args {
     /// (fresh ingest, run all phases from scratch).
     #[arg(long, value_enum, value_name = "PHASE")]
     resume_from_phase: Option<PhaseArg>,
+    /// Retain encoded tables and optionally reuse a previous snapshot.
+    #[arg(long)]
+    incremental_config: Option<PathBuf>,
     /// Override concurrent source loaders/downloads during Encode.
     /// Default: four loaders per cgroup-aware worker, capped at 512.
     #[arg(long)]
@@ -210,6 +213,13 @@ fn main() -> Result<()> {
         println!("{}", diskgraph_ingest::default_worker_threads());
         return Ok(());
     }
+    let incremental: Option<diskgraph_ingest::incremental::IncrementalConfig> =
+        args.incremental_config.as_ref().map(|path| {
+            serde_json::from_slice(&std::fs::read(path)?).map_err(anyhow::Error::from)
+        }).transpose()?;
+    if let Some(config) = &incremental {
+        config.validate_output(std::path::Path::new(args.output.as_deref().unwrap()))?;
+    }
     tracing_subscriber::fmt()
         .with_env_filter("info,pprof=warn")
         .init();
@@ -251,7 +261,7 @@ fn main() -> Result<()> {
         remove_diagnostic(path);
     }
     let worker_output = args.output.as_deref().map(PathBuf::from);
-    match run_worker(args) {
+    match run_worker(args, incremental) {
         Ok(()) => {
             if let Some(path) = &worker_diagnostic_path {
                 remove_diagnostic(path);
@@ -280,7 +290,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_worker(args: Args) -> Result<()> {
+fn run_worker(args: Args, incremental: Option<diskgraph_ingest::incremental::IncrementalConfig>) -> Result<()> {
     // `source`/`output` are required unless --print-resolved-threads (handled above).
     let source = args.source.clone().expect("source is required");
     let output = args.output.clone().expect("output is required");
@@ -324,6 +334,7 @@ fn run_worker(args: Args) -> Result<()> {
     };
     let peak_tracker = PeakMemTracker::start();
     let options = IngestOptions {
+        incremental,
         profile_dir: args.profile.clone(),
         progress: build_progress(),
         parallel: args.parallel,

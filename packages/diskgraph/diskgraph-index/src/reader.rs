@@ -23,6 +23,10 @@ pub struct ShardReader {
     layouts: Arc<Vec<RelationLayout>>,
     edge_count: u64,
     has_node_data: bool,
+    deltas: Vec<Arc<crate::delta::DeltaLog>>,
+    delta_layouts: Arc<Vec<RelationLayout>>,
+    first_node: u64,
+    features: Option<Arc<crate::delta::FeatureReplacements>>,
 }
 
 impl ShardReader {
@@ -70,10 +74,28 @@ impl ShardReader {
             edges,
             header,
             header_len,
+            delta_layouts: layouts.clone(),
             layouts,
             edge_count,
             has_node_data,
+            deltas: Vec::new(),
+            first_node: 0,
+            features: None,
         })
+    }
+
+    pub fn with_deltas(mut self, first_node: u64,
+                       logs: Vec<Arc<crate::delta::DeltaLog>>,
+                       layouts: Arc<Vec<RelationLayout>>) -> Self {
+        self.first_node = first_node;
+        self.deltas = logs;
+        self.delta_layouts = layouts;
+        self
+    }
+
+    pub fn with_features(mut self, features: Option<Arc<crate::delta::FeatureReplacements>>) -> Self {
+        self.features = features;
+        self
     }
 
     pub fn header(&self) -> &OffsetFileHeader {
@@ -93,7 +115,7 @@ impl ShardReader {
     }
 
     /// Lookup a node's edge list by index within the shard.
-    pub fn edges_for_node(&self, node_idx: u64) -> Result<EdgeListView<'_>> {
+    pub fn base_for_node(&self, node_idx: u64) -> Result<EdgeListView<'_>> {
         if node_idx + 1 >= self.header.total_offsets {
             return Err(DiskgraphError::InvalidMetadata("node index out of range".into()).into());
         }
@@ -117,12 +139,31 @@ impl ShardReader {
             );
         }
         let raw = &self.edges[start_byte..end_byte];
-        Ok(EdgeListView {
-            raw,
+        let view = EdgeListView {
+            raw: raw.into(),
             layouts: self.layouts.clone(),
             has_node_data: self.has_node_data,
             node_data_len_bytes: self.header.node_data_len_bytes,
-        })
+        };
+        Ok(view)
+    }
+
+    pub fn features_for_node(&self, node_idx: u64) -> Result<EdgeListView<'_>> {
+        let mut view = self.base_for_node(node_idx)?;
+        if let Some(features) = self.features.as_ref().and_then(|map| map.get(&(self.first_node + node_idx))) {
+            view = view.with_node_data(features)?;
+        }
+        Ok(view)
+    }
+
+    pub fn edges_for_node(&self, node_idx: u64) -> Result<EdgeListView<'_>> {
+        let view = self.features_for_node(node_idx)?;
+        if self.deltas.is_empty() && self.layouts.len() == self.delta_layouts.len() { return Ok(view); }
+        let node = self.first_node.checked_add(node_idx)
+            .ok_or_else(|| DiskgraphError::InvalidMetadata("node id overflow".into()))?;
+        let additions: Vec<_> = self.deltas.iter().flat_map(|log| log.for_node(node)).collect();
+        if additions.is_empty() && self.layouts.len() == self.delta_layouts.len() { return Ok(view); }
+        crate::delta::merge(view, &additions, self.delta_layouts.clone())
     }
 }
 

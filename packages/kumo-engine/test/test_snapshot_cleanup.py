@@ -53,6 +53,8 @@ def test_snapshot_warns_when_invalid_primary_keys_drop_rows(tmp_path):
 
 @pytest.mark.parametrize('failure', [None, 'stage', 'ingest', 'cached'])
 def test_snapshot_discards_only_owned_staging(tmp_path, monkeypatch, failure):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
     import kumo_core.diskgraph.ingest as ingest
     import kumo_core.diskgraph.snapshot as snapshots
     import kumo_core.sources.transfer as transfer
@@ -82,7 +84,7 @@ def test_snapshot_discards_only_owned_staging(tmp_path, monkeypatch, failure):
     class Source:
         def prepare_ingest(self, connector, table_name, destination, **kwargs):
             dest = Path(destination)
-            (dest / 'part.parquet').write_bytes(b'staged')
+            pq.write_table(pa.table({'id': [1]}), dest / 'part.parquet')
             calls.append(table_name)
             if failure == 'stage' and table_name == 'second':
                 raise ValueError('source failure')
