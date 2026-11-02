@@ -135,7 +135,8 @@ def test_entities_missing_from_the_snapshot_are_recorded_as_skipped(
     rows = kumo.FileConnector(root_dir=str(tmp_path))['rows.parquet']
 
     with pytest.warns(UserWarning, match=r'^Prediction skipped 4 of 14 '
-                      r'requested entities \(28\.6%\): not in snapshot$'):
+                      r'requested entities \(28\.6%\), found while building the '
+                      r'prediction table: not in snapshot$'):
         result = trainer.predict(snapshot, entities=rows,
                                  binary_classification_threshold=0.5)
     assert sorted(result.frame['ENTITY']) == list(range(10))
@@ -154,8 +155,9 @@ def test_entities_missing_from_the_snapshot_are_recorded_as_skipped(
     summaries = prediction_record(result.manifest).summaries
     logged = {s.name: s.value for s in summaries if isinstance(s, Scalar)}
     assert logged['pred/skipped_share'] == pytest.approx(4 / 14)
-    assert '4 requested rows were not scored: not in snapshot (1000, 1001, ' \
-        '1002, 1003); full list: skipped/.' in [
+    assert '4 requested rows were not scored, found while building the ' \
+        'prediction table: not in snapshot (1000, 1001, 1002, 1003); full ' \
+        'list: skipped/.' in [
             s.text for s in summaries if isinstance(s, Note)]
 
     full = trainer.predict(snapshot, binary_classification_threshold=0.5)
@@ -240,7 +242,8 @@ def test_predict_refuses_rows_that_none_can_be_scored(fitted, tmp_path, ids,
         trainer.predict(snapshot, entities=rows,
                         binary_classification_threshold=0.5)
     assert str(raised.value) == (
-        f'None of the 14 requested entities can be scored: {message}')
+        f'None of the 14 requested entities can be scored, found while '
+        f'building the prediction table: {message}')
 
 
 def test_training_rows_that_none_can_be_kept_keep_their_error(

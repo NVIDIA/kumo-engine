@@ -88,5 +88,6 @@ def test_predict_refuses_static_rows_that_none_can_be_scored(fitted):
         PredictionTable.from_source_table(connector['unknown.parquet'],
                                           pq=pquery, snapshot=snapshot)
     assert str(raised.value) == (
-        'None of the 4 requested entities can be scored: not in snapshot '
+        'None of the 4 requested entities can be scored, found while building '
+        'the prediction table: not in snapshot '
         '(sample: 1000, 1001, 1002, …)')

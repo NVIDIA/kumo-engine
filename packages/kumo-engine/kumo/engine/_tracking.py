@@ -400,7 +400,8 @@ def _prediction_summaries(manifest: 'PredictionManifest', baseline: Any,
         summaries.append(Scalar('pred/skipped_share', table.skipped_rows /
                                 requested if requested else 0.0))
         if table.skipped_rows:
-            reason = f': {table.skip_reason}' if table.skip_reason else ''
+            reason = (', found while building the prediction table'
+                      + (f': {table.skip_reason}' if table.skip_reason else ''))
             sample = ', '.join(map(str, table.skipped_sample or ()))
             full = '; full list: skipped/' if table.skipped_location else ''
             summaries.append(Note(

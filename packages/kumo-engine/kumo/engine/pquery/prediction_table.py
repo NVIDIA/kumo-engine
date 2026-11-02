@@ -257,6 +257,7 @@ def _compile_prediction_table(
 
 
 SKIPPED_SAMPLE = 20
+_FOUND = ', found while building the prediction table'
 _SKIP_REASONS = {
     'unknown_entity': 'not in snapshot',
     'non_canonical_entity': 'not a canonical node in the snapshot',
@@ -285,11 +286,12 @@ def skipped_entities(report: Optional[Mapping[str, Any]], rows_path: Path,
         ids = [str(value) for value in sample if value is not None]
         shown = ', '.join(ids[:3]) + (', …' if len(ids) > 3 else '')
         raise ValueError(
-            f'None of the {requested:,} requested entities can be scored: '
-            f'{reason}' + (f' (sample: {shown})' if ids else ''))
+            f'None of the {requested:,} requested entities can be scored'
+            f'{_FOUND}: {reason}' + (f' (sample: {shown})' if ids else ''))
     warnings.warn(
         f'Prediction skipped {skipped:,} of {requested:,} requested entities '
-        f'({skipped / requested if requested else 1:.1%}): {reason}',
+        f'({skipped / requested if requested else 1:.1%}){_FOUND}: '
+        f'{reason}',
         UserWarning, stacklevel=3)
     return {
         'skipped_rows': skipped,

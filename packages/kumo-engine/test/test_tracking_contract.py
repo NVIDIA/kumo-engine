@@ -722,7 +722,8 @@ def test_prediction_record_of_a_partial_manifest():
     assert record.params['num_classes_to_return'] == '3'
     assert record.summaries == (
         Scalar('pred/rows', 50), Scalar('pred/skipped_share', 5 / 55),
-        Note('notes', '5 requested rows were not scored: no history.'))
+        Note('notes', '5 requested rows were not scored, found while '
+             'building the prediction table: no history.'))
     assert record.tags['kumo.error'] == 'RuntimeError: disk full'
 
 
