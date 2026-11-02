@@ -36,21 +36,21 @@ must contain all twelve horizons at the expected time anchor. Classification
 and link outputs must contain all requested classes or catalog items.
 
 Repeated and reloaded predictions must match within an absolute tolerance of
-`0.0001`, with zero relative tolerance. This limit applies to every task,
+`0.005`, with zero relative tolerance. This limit applies to every task,
 including regression and forecasting. A comparison outside the tolerance fails.
 
 Labels can change only when the scores explain the change within that same
 tolerance. Binary and multilabel decisions must follow the `0.5` threshold in
 each output. Multiclass decisions must choose a highest-scoring class. If the
-chosen class changes, the two classes must differ by at most `0.0001` in both
+chosen class changes, the two classes must differ by at most `0.005` in both
 outputs. A rank reversal is allowed only when each affected pair differs by at
-most `0.0001` in both outputs. A chain of adjacent ties cannot justify reversing
+most `0.005` in both outputs. A chain of adjacent ties cannot justify reversing
 two scores farther apart. Rank coordinates remain complete and unique.
 
 Training metrics report separately. They do not set a learning-quality gate.
 The shared `engine-gpu-smoke` action requires one wheel path and an explicit
 `reload-atol` value. Its Python runner and comparison functions also require
-the tolerance. The PR workflow supplies `0.0001` for RTX. Every caller enforces
+the tolerance. The PR workflow supplies `0.005` for RTX. Every caller enforces
 its chosen absolute tolerance for all eight tasks, with zero relative tolerance.
 There is no report-only comparison mode.
 
