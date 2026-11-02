@@ -41,7 +41,7 @@ class Routed:
 
 
 def route(summaries: Sequence[Summary], charts: bool) -> Routed:
-    r"""Sorts summaries by how a tracker writes them."""
+    r"""Sorts summaries by how a tracker writes them; skips unknown types."""
     routed, tables = Routed(), []
     series: Dict[str, Tuple[str, Dict[str, Dict[int, float]]]] = {}
     histograms: Dict[str, List[Histogram]] = {}
@@ -74,8 +74,6 @@ def route(summaries: Sequence[Summary], charts: bool) -> Routed:
             tables.append(confusion_table(summary))
         elif isinstance(summary, Table):
             tables.append(summary)
-        else:
-            raise TypeError(f'No route for {type(summary).__name__}')
     routed.tables = [
         *(_series_table(name, x_label, columns)
           for name, (x_label, columns) in series.items()),

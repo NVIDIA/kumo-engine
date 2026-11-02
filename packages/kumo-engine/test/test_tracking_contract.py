@@ -769,6 +769,12 @@ def test_a_failing_summary_is_a_tracking_failure_not_a_predict_one():
     assert isinstance(failure, OSError) and recorder.calls == []
 
 
+def test_a_summary_type_no_tracker_knows_is_skipped():
+    from kumo.engine._summary_tables import Routed, route
+
+    assert route([object()], True) == Routed()
+
+
 def test_every_summary_type_is_routed():
     from kumo_core.summaries import (
         BarChart,
