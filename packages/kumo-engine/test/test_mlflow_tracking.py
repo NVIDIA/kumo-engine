@@ -875,7 +875,7 @@ def test_a_prediction_run_spans_its_work_and_links_its_model(tracking_uri):
     track_prediction(PREDICTION_MANIFEST, tracking, model=trained,
                      summaries=lambda: [
                          Dataset(name, INPUTS['ents'], {}, {}, context)
-                         for name, context in (('snapshot', 'scoring'),
+                         for name, context in (('snapshot', 'scoring graph'),
                                                ('predictions', 'output'))])
 
     run = client.get_run(tracking.run_id)

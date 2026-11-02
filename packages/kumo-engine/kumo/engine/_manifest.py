@@ -220,6 +220,8 @@ Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
 
 FIT_ROLES = {'snapshot': 'graph context', 'training_table':
              'training examples', 'source_table': 'source table'}
+SCORING_ROLES = {'snapshot': 'scoring graph',
+                 'source_table': 'scoring source table'}
 
 
 def artifact_summaries(manifest: Manifest, roles: Mapping[str, str],

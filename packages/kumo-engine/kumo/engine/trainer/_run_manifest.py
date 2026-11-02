@@ -118,15 +118,14 @@ def finish(result: Any, manifest: Optional[PredictionManifest],
 def _scoring_summaries(manifest: Optional[PredictionManifest],
                        snapshot: Any) -> List[Summary]:
     from kumo.engine._data_summaries import snapshot_summaries, table_details
-    from kumo.engine._manifest import artifact_summaries
+    from kumo.engine._manifest import SCORING_ROLES, artifact_summaries
 
     if manifest is None:
         return []
     index = Path(snapshot.index_path)
     return [
         *snapshot_summaries(index, snapshot.graph_config),
-        *artifact_summaries(manifest, {'snapshot': 'scoring',
-                                       'source_table': 'scoring'},
+        *artifact_summaries(manifest, SCORING_ROLES,
                             table_details(index, snapshot.id)),
     ]
 

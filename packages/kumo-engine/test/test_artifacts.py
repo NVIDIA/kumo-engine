@@ -12,6 +12,7 @@ import kumo.engine as kumo
 from kumo.engine._deps import Dependencies, FileAsset
 from kumo.engine._manifest import (
     FIT_ROLES,
+    SCORING_ROLES,
     Artifact,
     Dependency,
     Manifest,
@@ -191,8 +192,7 @@ def test_a_prediction_run_reads_its_snapshot_and_writes_its_outputs():
                                  location='"DB"."S"."EMB"')),
         ], status='succeeded', timings=None, stats=None)
 
-    assert artifact_summaries(run, {'snapshot': 'scoring',
-                                    'source_table': 'scoring'}) == [
+    assert artifact_summaries(run, SCORING_ROLES) == [
         Tag('kumo.bundle_uri', 's3://root/models/m'),
         Tag('kumo.output_uri', 's3://out/p'),
         Tag('kumo.output_table', '"DB"."S"."EMB"'),
@@ -205,7 +205,7 @@ def test_a_prediction_run_reads_its_snapshot_and_writes_its_outputs():
               brief=True),
         Dataset('orders', {'connector': 'S3', 'location': 's3://data/orders',
                            'version': '7', 'version_kind': 'exact'}, {}, {},
-                'scoring'),
+                'scoring source table'),
         Dataset('predictions', {'connector': 'S3', 'location': 's3://out/p',
                                 'version': None, 'version_kind': None},
                 {}, {}, 'output'),
