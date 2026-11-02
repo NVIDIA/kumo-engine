@@ -307,7 +307,8 @@ def test_recommendations_count_items_and_top_scores_across_workers(tmp_path):
     assert {path.suffix for path in tmp_path.iterdir()} == {'.json', '.npy'}
 
     total = item_counts(reduce(Counts.merge, parts))
-    summaries = prediction_summaries(total, threshold=None, baseline=holdout)
+    summaries = prediction_summaries(total, threshold=None, baseline=holdout,
+                                     as_of='2026-11-01')
     logged = _by_name(summaries)
     valid = items[(items >= 0) & (items < catalogue)]
     per_item = np.bincount(valid, minlength=catalogue)
@@ -333,6 +334,14 @@ def test_recommendations_count_items_and_top_scores_across_workers(tmp_path):
         tuple((rank, float(n)) for rank, n in
               enumerate(np.sort(per_item)[::-1][:100], 1) if n),
         'item_rank', chart=True)
+    coverage = logged['pred/item_coverage'].value
+    top_share = logged['pred/top_1pct_items_share'].value
+    assert _charts(summaries) == {'pred/item_popularity': BarChart(
+        'pred/item_popularity',
+        f'Item popularity, 2026-11-01: {coverage:.0%} of items recommended, '
+        f'top 1% get {top_share:.0%} of recommendations',
+        ('item rank', 'times recommended'), tuple(map(float, range(101))),
+        tuple(np.sort(per_item)[::-1][:100].astype(float)))}
     assert logged['drift/ks'] == Scalar(
         'drift/ks', score_drift(total, holdout)['ks'])
     assert 'so compare PSI with the previous run.' in summaries[-1].text
