@@ -28,8 +28,22 @@ Invoke `weekly_b9.py` directly with the selected wheel's isolated Python
 interpreter. Supply `--input-root`, `--manifest-sha256`, `--reference-root`,
 `--reference-sha256`, `--output`, `--scratch`, `--host-lock`, `--wheel`,
 `--wheel-sha256`, and `--version`. Keep scratch outside the evidence, input, and reference
-trees. Scratch must use the native graph's filesystem. Expose exactly two matching GPUs. The reference is the reviewed eleven-case
-bundle described in [the weekly guide](engine-weekly-ci.md).
+trees. Scratch must use the native graph's filesystem. Expose exactly two matching GPUs.
+
+B9 uses a data-only `manifest.json` with format `kumo-engine-weekly-p2-input-v1`.
+It contains only `P2-fixed`. Its case fields and file checksums follow
+[the weekly input schema](engine-weekly-ci.md#inputs-and-reference-approval).
+It does not require the other ten cases on the B9 host. The main weekly runner
+still requires all eleven cases and rejects this P2-only format.
+
+Import the retained model with `weekly_reference.py --retained-p2` and the approved
+legacy bundle checksum. Supply its usual input and output arguments. The importer
+audits the complete original eleven-case evidence, then copies only P2's model,
+prediction coordinates, and source-case record. It preserves the checkpoint and
+original fit ID. It imports data without loading a model or fitting one.
+The output `reference.json` uses format `kumo-engine-weekly-p2-reference-v1`.
+The main weekly runner rejects this narrower reference. Review the imported
+reference and prediction tolerance before approving its checksum for B9.
 
 The shared host lock covers input hashing, runtime setup, both calls, and the final input audit. The runner
 keeps original models, raw outputs, canonical predictions, device receipts, and
