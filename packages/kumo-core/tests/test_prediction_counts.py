@@ -180,6 +180,14 @@ def test_regression_counts_on_the_target_bins_and_drift():
     assert logged['pred/histogram/predicted'].counts == _brute_histogram(
         values, edges)
     assert not any(isinstance(summary, Series) for summary in summaries)
+    bins = _brute_histogram(values, edges)
+    assert _charts(summaries) == {'pred/prediction_histogram': BarChart(
+        'pred/prediction_histogram', 'Predictions for 500 entities vs holdout',
+        ("predicted value, on the training target's bins", 'entities'),
+        (min(values.min(), holdout.min()), *edges,
+         max(values.max(), holdout.max())), bins,
+        tuple(np.array(_brute_histogram(holdout, edges)) * 500 / 300),
+        ('this run', 'holdout, scaled to the same total'))}
     assert logged['pred/summary'].rows == (_summary_row('predicted', values),)
     assert {name: logged[f'drift/{name}'].value
             for name in ('psi', 'ks', 'wasserstein')} == score_drift(

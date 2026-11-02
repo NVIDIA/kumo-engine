@@ -7,7 +7,7 @@ import json
 import math
 import re
 from pathlib import Path
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 from kumo_core.evaluation_counts import (
@@ -152,6 +152,9 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
         if counts.edges[axis(name)] == PROBABILITY_EDGES:
             summaries += _score_histogram(name, counts, baseline, entity,
                                           as_of)
+    if 'TARGET_PRED' in counts.extents:
+        summaries.append(_prediction_histogram(counts, baseline, entity,
+                                               as_of))
     summaries += [
         counts.summary(name, 'target', 'pred/histogram/predicted, ' +
                        horizon_label(int(name.removeprefix('TARGET_PRED_h'))
@@ -241,24 +244,55 @@ def _score_histogram(column: str, counts: Counts,
                      baseline: Optional[Counts], entity: str,
                      as_of: Optional[str]) -> List[Summary]:
     per_pct = _per_pct(counts.arrays[column])
-    holdout = (baseline.arrays.get(column) if baseline is not None and
-               baseline.edges.get(axis(column)) == PROBABILITY_EDGES else None)
-    line = () if holdout is None or not holdout.sum() else tuple(
-        (_per_pct(holdout) * per_pct.sum() / holdout.sum()).tolist())
+    holdout = _holdout(baseline, column, PROBABILITY_EDGES)
     name, label = 'pred/score_histogram', ''
     if column != 'True_PROB':
         label = _label(column).removesuffix('_PROB')
         name += '/' + re.sub(r'[^\w.-]', '_', label)
     title = (f'Scores of {int(per_pct.sum()):,} {entity}' +
-             (f' ({label})' if label else '') +
-             (f', {as_of}' if as_of else '') + (' vs holdout' if line else ''))
+             (f' ({label})' if label else ''))
     return [
         Series(name, tuple(enumerate(per_pct.tolist())), 'score_pct',
                chart=True),
-        BarChart(name, title, ('score', entity), PROBABILITY_EDGES,
-                 tuple(per_pct.tolist()), line,
-                 ('this run', 'holdout, scaled to the same total')),
+        _chart(name, title, ('score', entity), PROBABILITY_EDGES, per_pct,
+               None if holdout is None else _per_pct(holdout), as_of),
     ]
+
+
+def _prediction_histogram(counts: Counts, baseline: Optional[Counts],
+                          entity: str, as_of: Optional[str]) -> BarChart:
+    edges = counts.edges['target']
+    bins = counts.arrays['TARGET_PRED']
+    holdout = _holdout(baseline, 'TARGET_PRED', edges)
+    lows, highs = zip(*(
+        side.extents['TARGET_PRED'] for side in (counts, baseline)
+        if side is not None and 'TARGET_PRED' in side.extents and
+        (side is counts or holdout is not None)))
+    return _chart(
+        'pred/prediction_histogram',
+        f'Predictions for {int(bins.sum()):,} {entity}',
+        ("predicted value, on the training target's bins", entity),
+        (min(*edges, *lows), *edges, max(*edges, *highs)), bins, holdout,
+        as_of)
+
+
+def _holdout(baseline: Optional[Counts], column: str,
+             edges: Sequence[float]) -> Optional[np.ndarray]:
+    if baseline is None or baseline.edges.get(axis(column)) != edges:
+        return None
+    holdout = baseline.arrays.get(column)
+    return holdout if holdout is not None and holdout.sum() else None
+
+
+def _chart(name: str, title: str, axes: Tuple[str, str],
+           edges: Sequence[float], counts: np.ndarray,
+           holdout: Optional[np.ndarray], as_of: Optional[str]) -> BarChart:
+    line = () if holdout is None else tuple(
+        (holdout * counts.sum() / holdout.sum()).tolist())
+    title += (f', {as_of}' if as_of else '') + (' vs holdout' if line else '')
+    return BarChart(name, title, axes, tuple(edges),
+                    tuple(counts.astype(np.float64).tolist()), line,
+                    ('this run', 'holdout, scaled to the same total'))
 
 
 def _per_pct(counts: np.ndarray) -> np.ndarray:
