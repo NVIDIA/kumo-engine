@@ -37,7 +37,8 @@ It does not require the other ten cases on the B9 host. The main weekly runner
 still requires all eleven cases and rejects this P2-only format.
 
 Import the retained model with `weekly_reference.py --retained-p2` and the approved
-legacy bundle checksum. Supply its usual input and output arguments. The importer
+legacy bundle checksum. Supply `--legacy-root`, `--legacy-sha256`, `--input-root`,
+`--manifest-sha256`, and a fresh `--output` directory. The importer
 audits the complete original eleven-case evidence, then copies only P2's model,
 prediction coordinates, and source-case record. It preserves the checkpoint and
 original fit ID. It imports data without loading a model or fitting one.
@@ -45,7 +46,9 @@ The output `reference.json` uses format `kumo-engine-weekly-p2-reference-v1`.
 The main weekly runner rejects this narrower reference. Review the imported
 reference and prediction tolerance before approving its checksum for B9.
 
-The shared host lock covers input hashing, runtime setup, both calls, and the final input audit. The runner
+The shared host lock covers input hashing, runtime setup, both calls, and the final input audit.
+Before it imports the model runtime, the runner rejects active GPU work anywhere
+on that host. The runner
 keeps original models, raw outputs, canonical predictions, device receipts, and
 failures. It removes only its fresh scratch directory.
 
