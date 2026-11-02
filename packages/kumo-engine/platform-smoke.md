@@ -31,7 +31,12 @@ WSL retains the wheel's existing Linux x86-64 Faiss dependency.
 performs real snapshot ingestion, and selects CPU through the public
 `Trainer(..., accelerator='cpu')` API. Acceptance requires four optimizer
 steps with finite CPU gradients, finite training metrics, and all 100 expected
-finite predictions. Synchronous DataLoader execution limits Windows coverage
+finite predictions. It reloads the same fit's saved bundle with the public
+`Trainer.load(..., accelerator='cpu')` API and predicts the same population and
+snapshot. Reloaded entity IDs and counts must match, and prediction values must
+match within `atol=1e-4` and NumPy's default relative tolerance. The optimizer
+hook stays active throughout, requiring no additional training steps during
+either prediction. Synchronous DataLoader execution limits Windows coverage
 to zero worker processes; Unix worker pools and native Windows GPU execution
 are outside this qualification. Subprocess diagnostics are printed only for
 this generated fixture, preserving production error privacy.

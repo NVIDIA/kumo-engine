@@ -85,24 +85,36 @@ def test_platform_train_predict(tmp_path, tmp_path_factory, monkeypatch):
         try:
             fitted = trainer.fit(query.generate_training_table(snapshot),
                                  snapshot=snapshot)
+            assert len(optimizer_steps) == 4, 'Expected four CPU optimizer steps'
+            assert fitted.metrics
+            assert all(math.isfinite(value) for value in fitted.metrics.values())
+            assert any(name.startswith('train_') for name in fitted.metrics)
+
+            population = query.generate_prediction_table(snapshot)
+            predictions = trainer.predict(population, snapshot=snapshot)
+            frame = predictions.frame.sort_values('ENTITY').reset_index(drop=True)
+            prediction_count = row_count - labeled_count
+            assert predictions.num_rows == prediction_count
+            assert len(frame) == prediction_count
+            assert set(frame['ENTITY']) == set(range(labeled_count, row_count))
+            assert np.isfinite(frame['TARGET_PRED'].to_numpy()).all()
+
+            restored = kumo.Trainer.load(fitted.bundle_dir, accelerator='cpu')
+            reloaded = restored.predict(population, snapshot=snapshot)
+            reloaded_frame = reloaded.frame.sort_values('ENTITY').reset_index(
+                drop=True)
+            assert reloaded.num_rows == prediction_count
+            assert len(reloaded_frame) == prediction_count
+            np.testing.assert_array_equal(reloaded_frame['ENTITY'], frame['ENTITY'])
+            assert np.isfinite(reloaded_frame['TARGET_PRED'].to_numpy()).all()
+            np.testing.assert_allclose(reloaded_frame['TARGET_PRED'],
+                                       frame['TARGET_PRED'], atol=1e-4)
+            assert len(optimizer_steps) == 4, 'Prediction unexpectedly trained'
         finally:
             hook.remove()
-        assert len(optimizer_steps) == 4, 'Expected four CPU optimizer steps'
-        assert fitted.metrics
-        assert all(math.isfinite(value) for value in fitted.metrics.values())
-        assert any(name.startswith('train_') for name in fitted.metrics)
-
-        predictions = trainer.predict(
-            query.generate_prediction_table(snapshot), snapshot=snapshot)
-        frame = predictions.frame
-        prediction_count = row_count - labeled_count
-        assert predictions.num_rows == prediction_count
-        assert len(frame) == prediction_count
-        assert set(frame['ENTITY']) == set(range(labeled_count, row_count))
-        assert np.isfinite(frame['TARGET_PRED'].to_numpy()).all()
         print(f'Platform smoke completed: {len(optimizer_steps)} '
               f'{device} optimizer steps, '
-              f'{len(frame)} finite predictions',
+              f'{len(frame)} finite predictions and matching bundle reload',
               flush=True)
     except DiskgraphIngestError as error:
         # This test uses only generated fixture data; expose its subprocess
