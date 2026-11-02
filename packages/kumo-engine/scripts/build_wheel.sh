@@ -160,6 +160,7 @@ command -v "${PYTHON}" >/dev/null 2>&1 || die "no ${PYTHON} on PATH"
 "${PYTHON}" -m pip --version >/dev/null 2>&1 \
     || die "${PYTHON} has no pip; set PYTHON to an interpreter that does\
  (a virtualenv works)"
+command -v cargo >/dev/null 2>&1 || die "cargo is required to build DiskGraph"
 
 [ -d "${KUMO_REPO}/packages" ] \
     || die "no kumo monorepo at ${KUMO_REPO} (pass --kumo-repo)"
@@ -246,7 +247,12 @@ for pkg_dir in "${KUMO_REPO}"/packages/*/; do
     [ -f "${pkg_dir}pyproject.toml" ] || [ -f "${pkg_dir}setup.py" ] || continue
     dist_glob="${pkg_name//-/_}-*.whl"
     log "building ${pkg_name} from ${pkg_dir}"
-    "${PYTHON}" -m pip wheel --no-deps -q -w "${WHEELS}" "${pkg_dir}"
+    component_args=()
+    if [ "${pkg_name}" = "kumo-engine" ]; then
+        component_args+=(--config-settings=kumo-component=true)
+    fi
+    "${PYTHON}" -m pip wheel --no-deps -q "${component_args[@]}" \
+        -w "${WHEELS}" "${pkg_dir}"
     record "${dist_glob}" kumo-first-party \
         "${KUMO_REPO}/packages/${pkg_name} @ ${KUMO_REPO_HEAD}${KUMO_REPO_DIRTY}"
 done
@@ -255,8 +261,6 @@ done
 #    serves every CPython at or above its floor, and it is not linked against
 #    torch, so it is torch-version-independent.
 # --------------------------------------------------------------------------
-command -v cargo >/dev/null 2>&1 || die "cargo is required to build DiskGraph"
-
 ZIG_ENV=(DISKGRAPH_BUILD_ZIG=0)
 if [ "${USE_ZIG}" = "1" ]; then
     # Probe for the binary, not `cargo zigbuild --version`: the zigbuild

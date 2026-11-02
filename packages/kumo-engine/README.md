@@ -23,6 +23,11 @@ Kumo Engine uses a GPU when one is available: an NVIDIA GPU through CUDA, or an 
 pip install kumo-engine
 ```
 
+To install a Git branch or a local checkout, see
+[source installation](https://github.com/NVIDIA/kumo-engine/blob/main/docs/development/releasing-kumo-engine.md#install-from-source).
+Source installs compile the bundled runtime and require Rust and native build
+tools.
+
 Linux x86_64 requires GPU Faiss, which also handles CPU retrieval. macOS keeps
 CPU Faiss and its existing Metal retrieval support. Faiss is optional on ARM64
 Linux and native Windows: without it, affected link-prediction retrieval raises

@@ -149,6 +149,50 @@ rejects local versions anyway.
 
 ## Build locally
 
+### Install from source
+
+From a full repository checkout, install the complete engine bundle with:
+
+```bash
+python -m pip install ./packages/kumo-engine
+```
+
+To select a Git branch or commit directly:
+
+```bash
+python -m pip install "git+https://github.com/NVIDIA/kumo-engine.git@<branch-or-commit>#subdirectory=packages/kumo-engine"
+```
+
+These builds require CPython 3.11+, Bash, a Rust toolchain including Cargo,
+a C/C++ build toolchain and CMake. They compile DiskGraph from the selected
+checkout; installing a released engine wheel first is unnecessary. Provider
+extras work with source installs too, for example
+`python -m pip install './packages/kumo-engine[databricks]'`.
+
+The package's PEP 517 backend calls the same `build_wheel.sh` assembler used
+for releases. It builds every bundled component from the checkout and merges
+their external requirements, entry points and legal notices into one wheel.
+The assembler selects the backend's internal `kumo-component=true` mode for
+its engine input wheel to avoid recursively assembling another bundle.
+
+Source installs build natively for the host: Linux wheels use a `linux_*`
+platform tag and check their glibc requirement against the build host. macOS
+uses DiskGraph's native wheel tag and deployment target. Release builds retain
+the existing Zig and manylinux checks. Source builds do not install Rust or
+other system tools automatically.
+
+The complete checkout is required; copying only `packages/kumo-engine` or
+building a standalone engine source distribution is not supported. Editable
+installs retain the existing component behavior for the uv workspace; they
+do not install the complete bundle.
+
+On Databricks, run the install with `%pip` and restart Python with
+`dbutils.library.restartPython()` afterward. The driver needs the native build
+prerequisites above. Source-install packaging tests do not establish a tested
+Databricks runtime or GPU profile.
+
+### Build a distributable wheel
+
 ```bash
 packages/kumo-engine/scripts/build_wheel.sh --help
 packages/kumo-engine/scripts/build_wheel.sh --offline-report   # <version>+<sha>
