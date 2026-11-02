@@ -227,3 +227,13 @@ def test_a_file_only_sink_refuses_a_table(connector, tmp_path):
     with pytest.raises(NotImplementedError, match='outside its files'):
         connector.sink_backend.publish_model(connector, str(tmp_path),
                                              path='DB.SCHEMA.T')
+
+
+def test_a_file_store_export_keeps_its_sidecars(tmp_path, connector):
+    part = tmp_path / 'part-0.parquet'
+    pd.DataFrame({'x': range(3)}).to_parquet(part)
+    connector.sink_backend.write_files(
+        connector, '@stage/tt/', [str(part)],
+        sidecars={'_provenance.json': b'{}'})
+    assert connector.sink_backend.store.objects[
+        '@stage/tt/_provenance.json'] == b'{}'

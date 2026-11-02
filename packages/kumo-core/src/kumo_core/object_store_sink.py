@@ -513,12 +513,15 @@ class FileStoreRouting:
 
     def write_files(self, connector, table_name, files,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
-                    export_id=None, extra_columns=None):
-        sink = FilesystemSink(self) if self.holds_files(
-            connector, table_name) else self._rest('write_files')
-        return sink.write_files(connector, table_name, files, write_mode,
-                                project_id, export_id=export_id,
-                                extra_columns=extra_columns)
+                    export_id=None, extra_columns=None, sidecars={}):
+        if self.holds_files(connector, table_name):
+            return FilesystemSink(self).write_files(
+                connector, table_name, files, write_mode, project_id,
+                export_id=export_id, extra_columns=extra_columns,
+                sidecars=sidecars)
+        return self._rest('write_files').write_files(
+            connector, table_name, files, write_mode, project_id,
+            export_id=export_id, extra_columns=extra_columns)
 
     def publish_model(self, connector, bundle_dir, *, path=None, location=None,
                       metadata={}, metrics={}, project_id=None):
