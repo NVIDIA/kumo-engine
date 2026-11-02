@@ -5,6 +5,8 @@
 from dataclasses import replace
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 import kumo.engine as kumo
@@ -142,6 +144,9 @@ def test_entities_missing_from_the_snapshot_are_recorded_as_skipped(
     table = result.manifest.prediction_table
     assert sorted(table.skipped_sample) == [1000, 1001, 1002, 1003]
     assert table.skip_reason == 'not in snapshot'
+    skipped = pq.read_table(table.skipped_location).to_pydict()
+    assert sorted(skipped['ENTITY1']) == [1000, 1001, 1002, 1003]
+    assert set(skipped['condition']) == {'unknown_entity'}
 
     from kumo_core.summaries import Note, Scalar
 
@@ -149,13 +154,68 @@ def test_entities_missing_from_the_snapshot_are_recorded_as_skipped(
     summaries = prediction_record(result.manifest).summaries
     logged = {s.name: s.value for s in summaries if isinstance(s, Scalar)}
     assert logged['pred/skipped_share'] == pytest.approx(4 / 14)
-    assert any(isinstance(s, Note) and s.text.startswith('4 requested rows')
-               for s in summaries)
+    assert '4 requested rows were not scored: not in snapshot (1000, 1001, ' \
+        '1002, 1003); full list: skipped/.' in [
+            s.text for s in summaries if isinstance(s, Note)]
 
     full = trainer.predict(snapshot, binary_classification_threshold=0.5)
     assert full.skipped_rows == 0
     assert full.requested_rows == full.scored_rows == 50
     assert full.manifest.prediction_table.skipped_sample == []
+    assert full.manifest.prediction_table.skipped_location is None
+
+
+class _Recorder:
+    def __init__(self):
+        self.records = []
+
+    def log_prediction_run(self, record):
+        self.records.append(record)
+
+
+def test_mlops_stores_and_tracks_every_skipped_row(fitted, tmp_path):
+    trainer, graph_table, snapshot = fitted
+    ids = [*range(10), *range(1000, 1004), None, None]
+    pq.write_table(
+        pa.table({
+            'ENTITY1': pa.array(ids, pa.int64()),
+            'TIMESTAMP': [pd.Timestamp(graph_table.timestamps[0])] * 16,
+        }), tmp_path / 'rows.parquet', row_group_size=4)
+    rows = kumo.FileConnector(root_dir=str(tmp_path))['rows.parquet']
+    tracker = _Recorder()
+
+    with pytest.warns(UserWarning, match='skipped 6 of 16'):
+        result = trainer.predict(
+            snapshot, entities=rows, binary_classification_threshold=0.5,
+            mlops=kumo.MLOps(str(tmp_path / 'root'), tracking=tracker))
+
+    stored = tmp_path / 'root' / 'predictions' / result.id / 'skipped'
+    assert (stored / '_SUCCESS').is_file()
+    assert result.manifest.prediction_table.skipped_location == str(stored)
+    skipped = pq.read_table(stored).to_pydict()
+    assert sorted(zip(skipped['ENTITY1'], skipped['condition']),
+                  key=str) == sorted(
+                      [*((id, 'unknown_entity') for id in range(1000, 1004)),
+                       (None, 'null_entity'), (None, 'null_entity')], key=str)
+    [record] = tracker.records
+    assert pq.read_table(record.files['skipped']).num_rows == 6
+
+
+def test_a_run_that_scores_nothing_publishes_nothing(fitted, tmp_path):
+    trainer, graph_table, snapshot = fitted
+    pd.DataFrame({
+        'ENTITY1': range(1000, 1004),
+        'TIMESTAMP': [pd.Timestamp(graph_table.timestamps[0])] * 4,
+    }).to_parquet(tmp_path / 'rows.parquet')
+    rows = kumo.FileConnector(root_dir=str(tmp_path))['rows.parquet']
+    tracker = _Recorder()
+
+    with pytest.raises(ValueError, match='None of the 4'):
+        trainer.predict(
+            snapshot, entities=rows, binary_classification_threshold=0.5,
+            mlops=kumo.MLOps(str(tmp_path / 'root'), tracking=tracker))
+    assert not (tmp_path / 'root' / 'predictions').exists()
+    assert tracker.records == []
 
 
 @pytest.mark.parametrize('ids, times, message', [
@@ -206,9 +266,6 @@ def test_training_rows_that_none_can_be_kept_keep_their_error(
 
 
 def test_skipped_samples_count_rows_from_the_chunks_first_row_group(tmp_path):
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
     from kumo.engine.pquery.prediction_table import _sample_ids
 
     pq.write_table(pa.table({'ENTITY1': [10, 11, 12, 13, 14]}),
