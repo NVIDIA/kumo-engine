@@ -367,7 +367,7 @@ jobs:
         timeout-minutes: 12
         with:
           packages: lld
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           # Pinned: a new stable clippy adds lints that fail unchanged code.
           toolchain: 1.98.1
@@ -403,7 +403,7 @@ jobs:
         timeout-minutes: 12
         with:
           packages: lld
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           # Pinned: a new stable clippy adds lints that fail unchanged code.
           toolchain: 1.98.1
