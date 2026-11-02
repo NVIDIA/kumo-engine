@@ -66,9 +66,11 @@ assert connector.table_names(), 'Connector reached no tables.'
 
 **A service principal** only when the user asks for one: `DatabricksIdentity(host=...,
 client_id=..., client_secret=...)`, with the id and secret read at run time by
-`dbutils.secrets.get(scope=SECRET_SCOPE, key=...)` and the scope and key names as config-cell
-constants the user confirmed. Never a literal, never a value asked for in chat, and never call
-`dbutils.secrets.get` yourself during intake.
+`dbutils.secrets.get(scope=SECRET_SCOPE, key=...)` and the workspace URL, scope and key names as
+config-cell constants the user confirmed. Never a literal, never a value asked for in chat, and
+never call `dbutils.secrets.get` yourself during intake. Read the three values once, in this cell,
+into one dict `SP` (`host`, `client_id`, `client_secret`), and build
+`identity = kumo.DatabricksIdentity(**SP)`; §3 reuses `SP`.
 
 ---
 
@@ -77,14 +79,16 @@ constants the user confirmed. Never a literal, never a value asked for in chat, 
 Population staging and read-back run SQL on the confirmed warehouse with the statement API, which
 the cluster's Databricks SDK provides. Define the helper once, after the config cell.
 `wait_timeout` is at most `'50s'` — Databricks rejects more — so it polls until the statement
-finishes. Every identifier in a statement goes through `q`; never interpolate a bare name:
+finishes. Every identifier in a statement goes through `q`; never interpolate a bare name.
+`ws` runs as the connectors' identity: the notebook's own by default, the §2 service principal
+when there is one, so that one identity makes every read, write and statement in the run:
 
 ```python
 import time
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementState
 
-ws = WorkspaceClient()
+ws = WorkspaceClient()        # with a service principal (§2): WorkspaceClient(**SP)
 
 def q(*parts):
     """`catalog`.`schema`.`table`: Unity Catalog names may contain hyphens."""
