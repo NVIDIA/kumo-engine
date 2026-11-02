@@ -153,6 +153,31 @@ def test_stamped_columns_keep_the_source_types(tmp_path):
             pa.field('BUNDLE_ID', pa.string()))
 
 
+def test_stamping_builds_arrow_columns_not_python_lists(tmp_path, monkeypatch):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from kumo_core.artifact_export import prepared_artifact_file
+
+    source = tmp_path / 'scores.parquet'
+    pq.write_table(pa.table({'ENTITY': np.arange(200000, dtype=np.int64)}),
+                   source)
+    real_array = pa.array
+
+    def guarded(values, *args, **kwargs):
+        assert not isinstance(values, list) or len(values) < 1000
+        return real_array(values, *args, **kwargs)
+
+    monkeypatch.setattr(pa, 'array', guarded)
+    extra = {'BUNDLE_ID': 'b', 'RANK': 7, 'FLAG': True}
+    with prepared_artifact_file(str(source), extra) as staged:
+        got = pq.read_table(staged)
+    assert got.schema.types[1:] == [pa.string(), pa.int64(), pa.bool_()]
+    assert got.num_rows == 200000
+    assert got['BUNDLE_ID'].unique().to_pylist() == ['b']
+    assert got['RANK'].unique().to_pylist() == [7]
+    assert got['FLAG'].unique().to_pylist() == [True]
+
+
 @pytest.mark.parametrize('existing_empty', [False, True])
 def test_multipart_failure_and_failed_recopy_remain_retryable(
         tmp_path, monkeypatch, existing_empty):
