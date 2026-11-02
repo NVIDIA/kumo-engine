@@ -26,64 +26,18 @@ from typing import Optional, Sequence
 
 import pandas as pd
 from databricks.sql.client import Connection
+from kumo_core.object_store_sink import FileStoreRouting
 from kumo_databricks.registry import DatabricksModelRegistryMixin
 from kumo_databricks.session import _target_config
+from kumo_databricks.volume import is_volume_path, volume_filesystem
 from kumo_databricks.write import RunVolume
 from kumoapi.data_source import DataSourceType
 from kumoapi.jobs import WriteMode
 from kumoapi.plugin import SourceConnector
+from pyarrow.fs import FileSystem
 
 
-class DatabricksSinkBackend(DatabricksModelRegistryMixin):
-    r"""Writes a produced artifact to a Databricks Delta table.
-
-    Registered by default beside
-    :class:`~kumo_databricks.backend.DatabricksSourceBackend`, so a
-    run that read its graph from a catalog exports its predictions back to one
-    with no further setup. Installed as
-    ``pip install 'kumoai-studio[databricks]'``.
-
-    A destination names its schema and its table in one string, joined by
-    ``__kumo__``, because that is the only field a Databricks output has --
-    :func:`kumoai_studio.databricks.to_db_table_name` builds it from the
-    ``(schema, table)`` tuple an :class:`~kumoai_studio.artifact_export.OutputConfig`
-    takes. The schema must be the connector's own, which
-    :func:`kumo_databricks.output.within_schema` checks and the
-    hosted connector checks through as well.
-
-    Every write stages through the connector's managed volume,
-    ``<catalog>.<schema>._kumo_staging``, created on first use. That is not a
-    local choice: ``COPY INTO`` is how a Delta table is loaded, and hosted
-    states the alternatives -- S3, ADLS, an arbitrary volume, inline cloud
-    credentials -- are unsupported on purpose. The volume is emptied of what
-    this export put there once the table has landed.
-
-    Args:
-        identity: A fallback identity, used only for connectors that name none
-            themselves. As with the reader, leaving it unset is the common
-            case, since a bound
-            :class:`~kumoai_studio.connector.DatabricksConnector` records the
-            identity it was created with. That identity needs ``CREATE TABLE``
-            on the connector's schema and ``READ``/``WRITE VOLUME`` on its
-            staging volume, which a read-only role used for ingest will not
-            have.
-
-    Example:
-        >>> import kumoai_studio as kumo  # doctest: +SKIP
-        >>> from kumo_databricks import (  # doctest: +SKIP
-        ...     DatabricksSinkBackend)
-        >>> kumo.set_backend(kumo.LocalBackend(  # doctest: +SKIP
-        ...     storage=paths,
-        ...     sinks={kumo.DataSourceType.DATABRICKS:
-        ...            DatabricksSinkBackend(identity='prod-dbx')},
-        ... ))
-    """
-
-    source_type = DataSourceType.DATABRICKS
-
-    _default_hint = ('LocalBackend(sinks={DataSourceType.DATABRICKS: '
-                     'DatabricksSinkBackend(identity=identity)})')
-
+class _DatabricksTables(DatabricksModelRegistryMixin):
     def write_table(
         self,
         connector: SourceConnector,
@@ -153,7 +107,7 @@ class DatabricksSinkBackend(DatabricksModelRegistryMixin):
     def write_files(self, connector, table_name, files,
                     write_mode=WriteMode.OVERWRITE, project_id=None, *,
                     export_id=None, extra_columns=None):
-        """Pass selected Parquet directly to the existing hosted COPY owner."""
+        """COPY selected Parquet into a table."""
         del project_id, export_id
         from functools import partial
 
@@ -186,6 +140,32 @@ class DatabricksSinkBackend(DatabricksModelRegistryMixin):
                     replace=write_mode == WriteMode.OVERWRITE,
                     prepare_file=prepare)
         return sql.qualified_name(config.catalog, schema, table)
+
+
+class DatabricksSinkBackend(FileStoreRouting, _DatabricksTables):
+    """Writes artifacts to Delta tables, staged through the schema's volume.
+
+    Args:
+        identity: Fallback identity for connectors that name none.
+    """
+
+    source_type = DataSourceType.DATABRICKS
+
+    _default_hint = ('LocalBackend(sinks={DataSourceType.DATABRICKS: '
+                     'DatabricksSinkBackend(identity=identity)})')
+
+    def holds_files(self, connector: SourceConnector, path: str) -> bool:
+        """Volume paths hold files; anything else is a table."""
+        return is_volume_path(path)
+
+    def filesystem(self, connector: SourceConnector,
+                   path: str) -> tuple[FileSystem, str]:
+        """A volume path's filesystem, as the connector's identity."""
+        if not self.holds_files(connector, path):
+            raise ValueError(
+                f"{path!r} is not a Unity Catalog volume path; Databricks "
+                f"artifacts go under /Volumes/<catalog>/<schema>/<volume>/.")
+        return volume_filesystem(self._client(connector)), path.rstrip('/')
 
     def __repr__(self) -> str:
         return f'DatabricksSinkBackend(identity={self._identity!r})'
