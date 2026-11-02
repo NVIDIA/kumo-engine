@@ -46,7 +46,7 @@ For example, to predict whether a customer will order in the next 30 days, Kumo 
 
 ## Quick Tour
 
-Watch an agent-executed notebook install Kumo Engine, connect customer and order tables, and render their schema.
+See how to install Kumo Engine in a notebook, connect customer and order tables, and render their schema.
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="assets/kumo-notebook-demo.png">
@@ -54,7 +54,7 @@ Watch an agent-executed notebook install Kumo Engine, connect customer and order
   <img src="assets/kumo-notebook-demo.gif" width="960" alt="A notebook installs the Kumo Engine development wheel with pip, defines customer and order tables, connects their foreign keys, and renders the table schema in a cell.">
 </picture>
 
-*Development preview ([PR #134](https://github.com/NVIDIA/kumo-engine/pull/134)): a 30-second edited walkthrough with prepared dependencies. Native visualization uses the pinned development wheel.* [Static image](assets/kumo-notebook-demo.png) · [Full-size GIF](assets/kumo-notebook-demo.gif)
+[Static image](assets/kumo-notebook-demo.png) · [Full-size GIF](assets/kumo-notebook-demo.gif)
 
 Predict which customers will order in the next 30 days using their connected order history. Try the [Python quickstart](packages/kumo-engine/README.md#quickstart) with the bundled sample dataset.
 
