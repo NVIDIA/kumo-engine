@@ -100,6 +100,7 @@ def test_source_build_reuses_assembler_with_native_tags(
         "--python",
         "/isolated-build/bin/python",
         "install",
+        "--ignore-installed",
         "--no-deps",
         "pip>=25",
     ]
@@ -256,6 +257,7 @@ def test_pip_frontend_installs_the_assembled_wheel(tmp_path: Path) -> None:
         "set -eu\n"
         'test "$1" = --no-zig\n'
         'test "$2" = --output-dir\n'
+        '"$PYTHON" -m pip --version\n'
         '"$PYTHON" -c '
         + shlex.quote(
             "from pathlib import Path; import sysconfig; "
@@ -291,6 +293,7 @@ def test_pip_frontend_installs_the_assembled_wheel(tmp_path: Path) -> None:
                 PIP_DISABLE_PIP_VERSION_CHECK="1",
                 PIP_NO_INDEX="1",
                 PIP_FIND_LINKS=str(build_tools),
+                PYTHONPATH=sysconfig.get_path("purelib"),
             ),
             check=True,
             capture_output=True,

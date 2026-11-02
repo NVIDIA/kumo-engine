@@ -109,6 +109,7 @@ def build_wheel(
                     "--python",
                     python,
                     "install",
+                    "--ignore-installed",
                     "--no-deps",
                     "pip>=25",
                 ],
