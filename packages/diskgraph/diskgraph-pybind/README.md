@@ -137,7 +137,11 @@ and nanosecond counters for traversal, decode/selection, sequence assembly,
 aggregation, and the full native call. `stats.rows_decoded` counts rows sent to
 the rowpack decoder. When the final relation has a matching lossless timestamp
 sort key, bounded frames discard out-of-window edges before decoding their row
-attributes; other relations retain the rowpack timestamp path. This API does
+attributes. A matching coarse clock also filters conservatively: its upward-rounded
+bucket represents `(bucket_end - step, bucket_end]`. Only buckets that cannot
+overlap the requested window are discarded, and retained rows still undergo
+exact rowpack-clock filtering. Clipped floor/ceiling codes remain candidates;
+mismatched clocks and unsafe encoding ranges retain the full rowpack path. This API does
 not build training tables, fit encoders, tokenize values, or choose model layouts.
 
 For a one-hop, time-windowed frame with one bounded sequence and no aggregate
@@ -181,6 +185,12 @@ filtering decodes the timestamp already packed beside each edge. Otherwise it
 decodes only the destination rowpack's timestamp column. `timings_ns` separates
 traversal and filtering;
 `stats` reports which timestamp path ran.
+
+For matching coarse clocks, the length query also discards non-overlapping
+buckets before decoding the retained row clocks. `rows_considered` remains the
+reached candidate count, while `rowpack_timestamps` records the reduced refinement
+work. Coarse clocks do not enable early sequence-limit selection. Both APIs
+still scan the reached adjacency; this filtering reduces decoding, not edge scanning.
 
 ### Flat token packing for RDL
 
