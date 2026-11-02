@@ -21,6 +21,7 @@ from typing import (
     Mapping,
     NamedTuple,
     Optional,
+    Sequence,
     Tuple,
 )
 from uuid import uuid4
@@ -62,7 +63,6 @@ class EvaluationResult:
     matured: Optional[bool]
     bundle_matches: Optional[bool]
     reasons: Mapping[str, str] = field(default_factory=dict)
-    by_horizon: Mapping[str, List[Any]] = field(default_factory=dict)
     actuals: Optional[str] = None
     tracking: Optional[TrackingRef] = None
 
@@ -145,20 +145,23 @@ class DriftReport:
     tracking: Optional[TrackingRef] = None
 
 
-def evaluate(trainer: Any, run: Any, snapshot: Any) -> EvaluationResult:
+def evaluate(trainer: Any, run: Any,
+             snapshot: Any) -> Tuple[EvaluationResult, Tuple[Table, ...]]:
+    r"""The run's evaluation, and its tables for the tracker."""
     query = trainer._training_query
     if query is None:
         raise RuntimeError('Fit or load the Trainer before evaluate()')
     reasons: Dict[str, str] = {}
     out: Dict[str, Any] = dict(task_type=None, anchors=(), metrics={},
                                rows=0, labelled=0, matured=None,
-                               reasons=reasons, by_horizon={}, actuals=None,
-                               step='importing')
+                               reasons=reasons, actuals=None,
+                               tables=(), step='importing')
     try:
         _evaluate(out, trainer, run, snapshot, query)
     except Exception as error:
         reasons['metrics'] = f"{out['step']} failed: {error}"
     out.pop('step')
+    tables = out.pop('tables')
     if out['matured'] is False:
         warnings.warn(
             f'Prediction run {run.id}: labels are not mature yet, so the '
@@ -172,7 +175,7 @@ def evaluate(trainer: Any, run: Any, snapshot: Any) -> EvaluationResult:
                            out['rows'] if out['rows'] else None),
         bundle_matches=_same(run.bundle_id, _bundle_id(trainer)),
         **out,
-    )
+    ), tables
 
 
 def holdout_evaluation(result: Any,
@@ -268,8 +271,8 @@ def _evaluate(out: Dict[str, Any], trainer: Any, run: Any, snapshot: Any,
     if 'by_horizon' in joined:
         from kumo.engine.trainer.trainer import _target_window
 
-        out['by_horizon'] = _by_horizon(joined['by_horizon'], _target_window(
-            parsed, trainer.training_table_generation_plan))
+        out['tables'] = (_by_horizon(joined['by_horizon'], _target_window(
+            parsed, trainer.training_table_generation_plan)), )
 
 
 def _unfiltered_query(snapshot: Any, query: str) -> Any:
@@ -420,15 +423,12 @@ def _ks(trainer: Any, task_type: str) -> List[int]:
                    if '@' in name})
 
 
-def _by_horizon(sums: Mapping[str, List[float]],
-                timeframe: Any) -> Dict[str, List[Any]]:
-    r"""Realized error by forecast step, in the holdout's columns."""
+def _by_horizon(sums: Mapping[str, List[float]], timeframe: Any) -> Table:
+    r"""Realized error by forecast step, as the holdout's table."""
     from kumo_core.evaluation_counts import horizon_table
 
-    table = horizon_table('realized/by_horizon', {
+    return horizon_table('realized/by_horizon', {
         name: np.asarray(values) for name, values in sums.items()}, timeframe)
-    return {column: [row[i] for row in table.rows]
-            for i, column in enumerate(table.columns)}
 
 
 def _prediction_time(manifest: PredictionManifest) -> int:
@@ -542,7 +542,8 @@ def _comparisons(report: 'DriftReport'
 
 
 def track(report: Any, run: Any, settings: Any, trainer: Any,
-          started: datetime, labels: Any = None, previous: Any = None) -> Any:
+          started: datetime, labels: Any = None, previous: Any = None,
+          tables: Sequence[Table] = ()) -> Any:
     r"""Tracks a monitoring call, following on_error on failure."""
     tracker = as_tracking(None if settings is None else settings.tracking)
     if tracker is None:
@@ -552,7 +553,7 @@ def track(report: Any, run: Any, settings: Any, trainer: Any,
 
     try:
         record = _record(report, run, tracker, trainer, started, labels,
-                         previous)
+                         previous, tables)
     except Exception as error:
         if settings.on_error == 'warn':
             warn_failure(
@@ -575,7 +576,8 @@ _IDENTITY = ('kumo.prediction_id', 'kumo.bundle_id', 'kumo.as_of',
 
 
 def _record(report: Any, run: Any, tracking: Any, trainer: Any,
-            started: datetime, labels: Any, previous: Any) -> Any:
+            started: datetime, labels: Any, previous: Any,
+            tables: Sequence[Table]) -> Any:
     from kumo.engine._tracking import RunSpec, prediction_record, run_record
 
     evaluating = isinstance(report, EvaluationResult)
@@ -596,7 +598,7 @@ def _record(report: Any, run: Any, tracking: Any, trainer: Any,
     record = run_record(RunSpec(
         kind='monitoring',
         parents={'monitor': 'evaluate' if evaluating else 'drift'},
-        summaries=(_evaluation_summaries(report, labels, model)
+        summaries=(_evaluation_summaries(report, labels, model, tables)
                    if evaluating else _drift_summaries(report, (
                        earlier.run_name if earlier is not None
                        and earlier.platform == platform else None),
@@ -655,7 +657,8 @@ def _drift_summaries(report: 'DriftReport', previous_name: Optional[str],
 
 
 def _evaluation_summaries(result: EvaluationResult, labels: Any,
-                          model: Any = None) -> List[Summary]:
+                          model: Any = None,
+                          tables: Sequence[Table] = ()) -> List[Summary]:
     from kumo.engine._manifest import artifact_summaries
 
     manifest = getattr(labels, 'manifest', None)
@@ -683,10 +686,7 @@ def _evaluation_summaries(result: EvaluationResult, labels: Any,
                 'realized/metrics', ('metric', 'realized', 'holdout'),
                 tuple((metric, value, holdout.get(metric))
                       for metric, value in metrics.items()), brief=True))
-        if result.by_horizon:
-            summaries.append(Table(
-                'realized/by_horizon', tuple(result.by_horizon),
-                tuple(zip(*result.by_horizon.values()))))
+        summaries += tables
         summaries.append(Note('notes', (
             f'{number(result.labelled_fraction * 100)} % labelled '
             f'({result.labelled:,} of {result.rows:,} scored rows)'

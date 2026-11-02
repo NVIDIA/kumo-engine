@@ -1832,8 +1832,9 @@ class Trainer:
 
         settings = resolve(mlops)
         started = datetime.now(timezone.utc)
-        result = evaluate(self, run, labels_snapshot)
-        return track(result, run, settings, self, started, labels_snapshot)
+        result, tables = evaluate(self, run, labels_snapshot)
+        return track(result, run, settings, self, started, labels_snapshot,
+                     tables=tables)
 
     def score_drift(
         self,

@@ -185,7 +185,7 @@ def test_a_forecast_is_evaluated_per_step_once_its_last_frame_matures(
         'TIMESTAMP': ANCHOR + pd.to_timedelta(np.tile([7, 0], 60), unit='D'),
         'TARGET_PRED': 10.0,
     })
-    result = _evaluate(
+    result, tables = _evaluate(
         snapshots, 'PREDICT SUM(orders.AMT, 0, 7, days) FORECAST 2 TIMEFRAMES '
         'FOR EACH users.ID', frame, [ANCHOR])
     assert result.task_type == 'forecasting'
@@ -200,8 +200,11 @@ def test_a_forecast_is_evaluated_per_step_once_its_last_frame_matures(
     assert result.metrics['mae'] == pytest.approx(error.abs().mean())
     assert result.metrics['rmse'] == pytest.approx(
         math.sqrt((error**2).mean()))
-    assert result.by_horizon['window'] == ['(0, 7] days', '(7, 14] days']
-    assert result.by_horizon['mae'] == pytest.approx(
+    by_horizon, = tables
+    assert by_horizon.name == 'realized/by_horizon'
+    assert [row[1] for row in by_horizon.rows] == [
+        '(0, 7] days', '(7, 14] days']
+    assert [row[3] for row in by_horizon.rows] == pytest.approx(
         [step.abs().mean() for step in errors])
     rows = pd.read_parquet(result.actuals).sort_values(
         ['ENTITY', 'TIMESTAMP'])
@@ -241,7 +244,7 @@ def test_a_multilabel_query_is_evaluated_per_class(categories, monkeypatch,
     frame = pd.DataFrame({'ENTITY': np.repeat(np.arange(60), 4),
                           'CLASS': list('abcd') * 60, 'SCORE': score,
                           'PREDICTED': score > 0.5})
-    result = _evaluate(
+    result, _ = _evaluate(
         categories, 'PREDICT LIST_DISTINCT(orders.CAT, 0, 7, days) CLASSIFY '
         'FOR EACH users.ID', frame, [ANCHOR])
     assert result.task_type == 'multilabel_classification'
@@ -297,9 +300,9 @@ def test_evaluate_joins_several_anchors(snapshots, classifier, monkeypatch):
 
 def test_evaluate_regression_and_static_queries(snapshots):
     frame = pd.DataFrame({'ENTITY': np.arange(60), 'TARGET_PRED': 10.0})
-    result = _evaluate(snapshots,
-                       'PREDICT SUM(orders.AMT, 0, 7, days) FOR EACH users.ID',
-                       frame, [ANCHOR])
+    result, _ = _evaluate(
+        snapshots, 'PREDICT SUM(orders.AMT, 0, 7, days) FOR EACH users.ID',
+        frame, [ANCHOR])
     sums = _window(snapshots.orders, ANCHOR)['AMT'].sum()
     error = 10.0 - pd.Series({user: sums.get(user, 0.0) for user in range(60)})
     assert result.matured and result.labelled_fraction == 1.0
@@ -308,8 +311,8 @@ def test_evaluate_regression_and_static_queries(snapshots):
         math.sqrt((error**2).mean()), rel=1e-5)
 
     frame = pd.DataFrame({'ENTITY': np.arange(12), 'True_PROB': .5})
-    result = _evaluate(snapshots, 'PREDICT users.FLAG FOR EACH users.ID',
-                       frame)
+    result, _ = _evaluate(snapshots, 'PREDICT users.FLAG FOR EACH users.ID',
+                          frame)
     assert (result.matured, result.anchors) == (None, ())
     assert result.rows == 12 and result.labelled_fraction == 1.0
     rows = pd.read_parquet(result.actuals).set_index('ENTITY')
@@ -319,8 +322,8 @@ def test_evaluate_regression_and_static_queries(snapshots):
     assert (rows['True_PROB'] == .5).all()
 
     unknown = pd.DataFrame({'ENTITY': np.arange(1000, 1012), 'True_PROB': .5})
-    result = _evaluate(snapshots, 'PREDICT users.FLAG FOR EACH users.ID',
-                       unknown)
+    result, _ = _evaluate(snapshots, 'PREDICT users.FLAG FOR EACH users.ID',
+                          unknown)
     assert (result.rows, result.labelled, result.actuals) == (12, 0, None)
     assert result.reasons['metrics'] == 'no prediction has a label'
     with pytest.raises(ValueError, match='No evaluated rows'):
@@ -331,7 +334,7 @@ def test_evaluate_regression_and_static_queries(snapshots):
 def test_evaluate_labels_the_scored_cohort_not_the_training_one(
         snapshots, scored):
     frame = pd.DataFrame({'ENTITY': list(scored), 'TARGET_PRED': 10.0})
-    result = _evaluate(
+    result, _ = _evaluate(
         snapshots, 'PREDICT SUM(orders.AMT, 0, 7, days) FOR EACH users.ID '
         'WHERE users.ID < 10', frame, [ANCHOR])
     sums = _window(snapshots.orders, ANCHOR)['AMT'].sum()
@@ -617,11 +620,12 @@ def test_realized_forecast_metrics_match_the_fit(tmp_path):
         TaskType.FORECASTING, counts, timeframe=timeframe)
         if summary.name == 'holdout/by_horizon')
     realized = _by_horizon(joined['by_horizon'], timeframe)
-    assert list(realized) == list(holdout.columns)
+    assert realized.columns == holdout.columns
     for i, column in enumerate(holdout.columns):
-        values = [row[i] for row in holdout.rows]
-        assert realized[column] == (
-            values if column == 'window' else pytest.approx(values))
+        values = [row[i] for row in realized.rows]
+        expected = [row[i] for row in holdout.rows]
+        assert values == (
+            expected if column == 'window' else pytest.approx(expected))
 
 
 def _counted(scores, edges=(0.0, 0.5, 1.0), id='r'):
@@ -1017,13 +1021,10 @@ def test_evaluation_summaries_name_the_labels_snapshot(tmp_path):
              'after the snapshot data.'),
         Note('notes', 'Realized metrics: a metric is undefined for these '
              'labels.')]
-    forecast = replace(result, task_type='forecasting',
-                       metrics={'mae': 2.0}, reasons={}, by_horizon={
-                           'horizon': [1, 2], 'rows': [3, 3],
-                           'mae': [1.0, 3.0]})
-    assert _evaluation_summaries(forecast, None)[4] == Table(
-        'realized/by_horizon', ('horizon', 'rows', 'mae'),
-        ((1, 3, 1.0), (2, 3, 3.0)))
+    by_horizon = Table('realized/by_horizon', ('horizon', 'rows', 'mae'),
+                       ((1, 3, 1.0), (2, 3, 3.0)))
+    assert by_horizon in _evaluation_summaries(result, None, None,
+                                               (by_horizon, ))
 
 
 def test_a_monitoring_tracking_failure_warns_or_raises(classifier, tmp_path,
