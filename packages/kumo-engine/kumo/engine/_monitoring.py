@@ -66,13 +66,6 @@ class EvaluationResult:
     actuals: Optional[str] = None
     tracking: Optional[TrackingRef] = None
 
-    @property
-    def frame(self) -> pd.DataFrame:
-        r"""The evaluated rows as a DataFrame."""
-        if self.actuals is None:
-            raise ValueError(f'No evaluated rows: {dict(self.reasons)}')
-        return pd.read_parquet(self.actuals)
-
     def export(self, output_config: Any) -> None:
         r"""Copy the evaluated rows to a predictions destination."""
         import tempfile

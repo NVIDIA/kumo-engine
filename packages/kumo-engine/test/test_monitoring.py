@@ -203,7 +203,8 @@ def test_a_forecast_is_evaluated_per_step_once_its_last_frame_matures(
     assert result.by_horizon['window'] == ['(0, 7] days', '(7, 14] days']
     assert result.by_horizon['mae'] == pytest.approx(
         [step.abs().mean() for step in errors])
-    rows = result.frame.sort_values(['ENTITY', 'TIMESTAMP'])
+    rows = pd.read_parquet(result.actuals).sort_values(
+        ['ENTITY', 'TIMESTAMP'])
     assert rows['TARGET'].tolist() == pytest.approx(
         [10.0 - errors[h][user] for user in range(60) for h in range(2)])
 
@@ -250,7 +251,7 @@ def test_a_multilabel_query_is_evaluated_per_class(categories, monkeypatch,
     window = _window(categories.orders, ANCHOR)['CAT'].agg(set)
     actual = {(user, c): c in window.get(user, set())
               for user in range(60) for c in 'abcd'}
-    rows = result.frame
+    rows = pd.read_parquet(result.actuals)
     assert dict(zip(zip(rows.ENTITY, rows.CLASS), rows.TARGET)) == actual
     hits = sum(actual[user, c] for user in range(60) for c in 'ab')
     assert result.metrics['precision_micro'] == pytest.approx(hits / 120)
@@ -350,7 +351,8 @@ def test_evaluation_exports_its_rows(snapshots, classifier, tmp_path):
                                     output_paths={'predictions': 'evaluated/'})
     result.export(output)
     pd.testing.assert_frame_equal(
-        pd.read_parquet(tmp_path / 'evaluated'), result.frame)
+        pd.read_parquet(tmp_path / 'evaluated'),
+        pd.read_parquet(result.actuals))
 
     loaded = EvaluationResult.load_from_connector(connector,
                                                   path='evaluated/')
