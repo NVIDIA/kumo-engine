@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-r"""Bar charts as SVG images."""
+r"""Bar charts as SVG images, one equal-width bar per bin."""
 
 import math
 from html import escape
@@ -11,7 +11,7 @@ from kumo_core.summaries import BarChart
 
 from kumo.engine._text import number
 
-_WIDTH, _HEIGHT, _LEFT, _RIGHT, _TOP, _BOTTOM = 720, 400, 72, 24, 72, 48
+_WIDTH, _HEIGHT, _LEFT, _RIGHT, _TOP, _BOTTOM = 720, 400, 72, 32, 72, 48
 _BARS, _LINE, _INK, _MUTED, _GRID = (
     '#2a78d6', '#eb6834', '#0b0b0b', '#52514e', '#e4e3df')
 
@@ -19,12 +19,12 @@ _BARS, _LINE, _INK, _MUTED, _GRID = (
 def bar_chart(chart: BarChart) -> str:
     width = _WIDTH - _LEFT - _RIGHT
     height = _HEIGHT - _TOP - _BOTTOM
-    low, high = chart.edges[0], chart.edges[-1]
+    bins = len(chart.counts)
     step = _step(max(*chart.counts, *chart.line, 1.0))
     peak = 4 * step
 
-    def x(value: float) -> float:
-        return _LEFT + (value - low) / (high - low) * width
+    def x(edge: float) -> float:
+        return _LEFT + edge / bins * width
 
     def y(value: float) -> float:
         return _TOP + height * (1 - value / peak)
@@ -33,23 +33,22 @@ def bar_chart(chart: BarChart) -> str:
         f'<rect width="{_WIDTH}" height="{_HEIGHT}" fill="#fcfcfb"/>',
         _text(_LEFT, 28, chart.title, 'start', _INK, 15)]
     for tick in range(5):
-        level, at = y(step * tick), low + (high - low) * tick / 4
+        level = y(step * tick)
         parts += [
             f'<line x1="{_LEFT}" x2="{_LEFT + width}" y1="{level:.1f}" '
             f'y2="{level:.1f}" stroke="{_GRID}"/>',
-            _text(_LEFT - 8, level + 4, number(step * tick), 'end'),
-            _text(x(at), _TOP + height + 18, f'{at:g}', 'middle')]
+            _text(_LEFT - 8, level + 4, number(step * tick), 'end')]
+    parts += [_text(x(edge), _TOP + height + 18, number(chart.edges[edge]),
+                    'middle')
+              for edge in sorted({round(bins * tick / 4) for tick in range(5)})]
     parts += [
-        f'<rect x="{x(left) + 0.5:.1f}" y="{y(count):.1f}" '
-        f'width="{max(x(right) - x(left) - 1, 0.5):.1f}" '
+        f'<rect x="{x(index) + 0.5:.1f}" y="{y(count):.1f}" '
+        f'width="{max(x(1) - x(0) - 1, 0.5):.1f}" '
         f'height="{_TOP + height - y(count):.1f}" fill="{_BARS}"/>'
-        for left, right, count in zip(chart.edges, chart.edges[1:],
-                                      chart.counts) if count]
+        for index, count in enumerate(chart.counts) if count]
     if chart.line:
-        points = ' '.join(
-            f'{x((left + right) / 2):.1f},{y(value):.1f}'
-            for left, right, value in zip(chart.edges, chart.edges[1:],
-                                          chart.line))
+        points = ' '.join(f'{x(index + 0.5):.1f},{y(value):.1f}'
+                          for index, value in enumerate(chart.line))
         parts.append(f'<polyline points="{points}" fill="none" '
                      f'stroke="{_LINE}" stroke-width="2"/>')
         left = _LEFT
