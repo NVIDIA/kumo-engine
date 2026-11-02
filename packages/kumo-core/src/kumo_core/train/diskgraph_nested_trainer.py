@@ -1184,7 +1184,7 @@ class DiskgraphNestedTrainer(Trainer):
         """Run PL validate/test, then build the formatted EvalOutput
         (``_build_eval_df`` reconstructs the per-row df from ``pl_model.outputs``).
         """
-        from kumo_core.top_scores import TopScoreSpill, top_score_counts
+        from kumo_core.top_scores import TopScoreSpill
         from kumo_core.train.output import EvalOutput
         from kumoapi.train import TrainingStage
         assert stage in {
@@ -1202,7 +1202,7 @@ class DiskgraphNestedTrainer(Trainer):
                 'DiskgraphNestedTrainer.')
 
         self.pl_model.eval_top_k = None
-        top_scores = None
+        spill = None
 
         with suppress_iterable_len_warning(), \
                 suppress_lightning_leafspec_warning():
@@ -1213,8 +1213,9 @@ class DiskgraphNestedTrainer(Trainer):
                     ckpt_path=fsspec_mangle(self.best_ckpt),
                 )
             else:
-                spill = TopScoreSpill(
-                    osp.join(self.log_dir, 'test_top_scores.parquet'))
+                spill = TopScoreSpill(osp.join(
+                    self.log_dir, f'test_top_scores-{self.pl_trainer.global_rank}'
+                    '.parquet'))
                 self.pl_model.top_score_spill = spill
                 try:
                     metric_results = self.pl_trainer.test(
@@ -1224,7 +1225,6 @@ class DiskgraphNestedTrainer(Trainer):
                     )
                 finally:
                     self.pl_model.top_score_spill = None
-                    top_scores = spill.close()
 
         if metric_results:
             metrics = metric_results[0]
@@ -1249,8 +1249,8 @@ class DiskgraphNestedTrainer(Trainer):
         save_csv(metrics, path, overwrite=True)
 
         if self.task.task_type.is_link_pred:
-            return EvalOutput(metrics, None, None, None if top_scores is None
-                              else top_score_counts(top_scores))
+            return EvalOutput(metrics, None, None,
+                              None if spill is None else spill.counts())
 
         df = self._build_eval_df(outputs)
         counts = None

@@ -35,15 +35,16 @@ def test_spilled_counts_equal_the_in_memory_ones(tmp_path, scores):
     for rows in np.array_split(np.arange(scores.size), 7):
         spill.write(rows, scores[rows])
 
-    counts, expected = top_score_counts(spill.close()), _in_memory(scores)
+    counts, expected = spill.counts(), _in_memory(scores)
 
     assert counts.edges == expected.edges
     assert counts.arrays['top_score'].tolist() == \
         expected.arrays['top_score'].tolist()
     assert counts.extents == expected.extents
+    assert not (tmp_path / 'top.parquet').exists()
 
 
 def test_nothing_spilled_is_no_counts(tmp_path):
     spill = TopScoreSpill(str(tmp_path / 'top.parquet'))
-    assert spill.close() is None
+    assert spill.counts() is None
     assert top_score_counts(None).arrays['top_score'].tolist() == [0]

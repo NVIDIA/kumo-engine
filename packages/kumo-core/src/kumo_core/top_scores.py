@@ -4,6 +4,7 @@
 r"""Holdout top scores, spilled to Parquet and counted by DiskGraph."""
 
 import json
+import os
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -36,6 +37,16 @@ class TopScoreSpill:
             return None
         self._writer.close()
         return self.path
+
+    def counts(self) -> Optional[Counts]:
+        r"""The written scores' counts; the file is removed."""
+        path = self.close()
+        if path is None:
+            return None
+        try:
+            return top_score_counts(path)
+        finally:
+            os.remove(path)
 
 
 def top_score_counts(path: Optional[str]) -> Counts:
