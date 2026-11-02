@@ -9,8 +9,8 @@ from collections.abc import Generator
 from typing import Any
 from unittest.mock import MagicMock
 
-import diskgraph
 import pytest
+from kumo_core.diskgraph import runtime_owner
 from kumo_core.diskgraph.runtime_owner import RuntimeOwner
 
 
@@ -36,7 +36,7 @@ def test_module_owns_stream_lifetime_across_stage_loaders(
     reopened = MagicMock()
     source.iter.side_effect = lambda **_: (({"task": {}} for _ in range(1)), 1)
     factory = MagicMock(side_effect=[source, reopened])
-    monkeypatch.setattr(diskgraph, "RuntimeIndex", factory)
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", factory)
     module = object.__new__(DiskgraphLightningDataModule)
     module._runtime_owner = RuntimeOwner(
         "manifest.json", 42, sampling_endpoints=endpoints
@@ -112,7 +112,7 @@ def test_epoch_cleanup_discards_prefetch_without_closing_shared_streams(
             lambda *_: [(1, 3)],
         )
     owner = RuntimeOwner("manifest.json", 42)
-    monkeypatch.setattr(diskgraph, "RuntimeIndex", MagicMock(return_value=source))
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", MagicMock(return_value=source))
     dataset = DiskgraphTaskBatchIterable(
         manifest_path="manifest.json",
         stage="train",

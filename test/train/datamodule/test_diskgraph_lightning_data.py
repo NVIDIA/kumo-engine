@@ -25,6 +25,7 @@ import pyarrow as pa
 import pytest
 import pytorch_lightning as pl
 import torch
+from kumo_core.diskgraph import runtime_owner
 from kumo_core.diskgraph.lightning_data import (
     DiskgraphLightningDataModule,
     DiskgraphTaskBatchIterable,
@@ -501,6 +502,7 @@ def _install_fake_diskgraph(
             """Release the fake runtime without native resources."""
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", _StubRuntimeIndex)
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
     return calls
 
@@ -3165,6 +3167,7 @@ def _install_grouped_fake_diskgraph(
             """Release the fake runtime without native resources."""
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", _StubRuntimeIndex)
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
     # Grouping is gated on a TEMPORAL RHS (see ``_rhs_is_temporal``). These
     # grouping tests use a fake manifest with no index metadata, so force the
@@ -3233,6 +3236,7 @@ def _install_grouped_fake_diskgraph_per_stage(
             """Release the fake runtime without native resources."""
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", _StubRuntimeIndex)
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
     # See _install_grouped_fake_diskgraph: force the RHS-temporal gate True.
     monkeypatch.setattr(DiskgraphLightningDataModule, "_rhs_is_temporal",
@@ -3396,6 +3400,7 @@ def _install_plain_fake_diskgraph(
             """Release the fake runtime without native resources."""
 
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", _StubRuntimeIndex)
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
     return calls
 

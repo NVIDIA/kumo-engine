@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import diskgraph
 import orjson
 import pytest
+from kumo_core.diskgraph import runtime_owner
 from kumo_core.diskgraph.lightning_data import (
     DiskgraphTaskBatchIterable,
     _ShuffleStreamState,
@@ -135,7 +136,7 @@ def test_iterable_cancels_remote_streams_on_early_exit(
     batch_iterator.__next__.side_effect = [{"task": {}}] * 3
     source.iter.return_value = (batch_iterator, 3)
     source_factory = MagicMock(return_value=source)
-    monkeypatch.setattr(diskgraph, "RuntimeIndex", source_factory)
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", source_factory)
     options: dict[str, Any] = {}
     if mode == "capped":
         options["max_batches"] = 1

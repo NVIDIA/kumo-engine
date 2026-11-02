@@ -8,7 +8,6 @@ from __future__ import annotations
 import pickle
 from unittest.mock import MagicMock
 
-import diskgraph
 import pytest
 from kumo_core.diskgraph import runtime_owner
 from kumo_core.diskgraph.lightning_data import (
@@ -31,7 +30,7 @@ def test_lazy_reuse_and_reopen(
     """Both backends share a lazy handle until explicit owner shutdown."""
     first, second = MagicMock(), MagicMock()
     factory = MagicMock(side_effect=[first, second])
-    monkeypatch.setattr(diskgraph, "RuntimeIndex", factory)
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", factory)
     owner = RuntimeOwner("manifest.json", 42, sampling_endpoints=endpoints)
     owner.close()
     factory.assert_not_called()
@@ -53,7 +52,7 @@ def test_pickle_drops_native_handle(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pickling never serializes or closes a live native handle."""
     source, restored_source = MagicMock(), MagicMock()
     monkeypatch.setattr(
-        diskgraph, "RuntimeIndex", MagicMock(side_effect=[source, restored_source])
+        runtime_owner, "RuntimeIndex", MagicMock(side_effect=[source, restored_source])
     )
     owner = RuntimeOwner("manifest.json", 42)
     assert owner.get() is source
@@ -72,7 +71,7 @@ def test_pid_change_discards_inherited_handle(
     """A child process neither uses nor explicitly closes its parent's index."""
     parent, child = MagicMock(), MagicMock()
     monkeypatch.setattr(
-        diskgraph, "RuntimeIndex", MagicMock(side_effect=[parent, child])
+        runtime_owner, "RuntimeIndex", MagicMock(side_effect=[parent, child])
     )
     monkeypatch.setattr(runtime_owner.os, "getpid", lambda: 1)
     owner = RuntimeOwner("manifest.json", 42)
@@ -93,7 +92,7 @@ def test_standalone_dataset_shares_index_across_epochs_and_pickle(
     source, restored_source = MagicMock(), MagicMock()
     source.iter.side_effect = lambda **_: (({"task": {}} for _ in range(1)), 1)
     factory = MagicMock(side_effect=[source, restored_source])
-    monkeypatch.setattr(diskgraph, "RuntimeIndex", factory)
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", factory)
     dataset = DiskgraphTaskBatchIterable(
         manifest_path="manifest.json",
         stage="train",

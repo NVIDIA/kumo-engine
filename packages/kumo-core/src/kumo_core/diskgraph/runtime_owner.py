@@ -7,10 +7,8 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from diskgraph.runtime_batch_iterator import RuntimeIndex
+from diskgraph import RuntimeIndex
 
 
 class RuntimeOwner:
@@ -54,8 +52,6 @@ class RuntimeOwner:
         Raises:
             ValueError: If replica identities are invalid.
         """
-        from diskgraph import RuntimeIndex
-
         pid = os.getpid()
         if self._pid != pid:
             self._index = None
