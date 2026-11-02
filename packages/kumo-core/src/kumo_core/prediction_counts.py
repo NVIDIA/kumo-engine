@@ -29,6 +29,9 @@ from kumo_core.summaries import (
 from kumo_core.types import TaskType
 
 ITEMS = 'items'
+ENTITIES = 'items/entities'
+_UINT32 = np.iinfo(np.uint32).max
+_CHUNK = 1 << 24
 RANKED_ITEMS = 100
 MAX_CLASS_HISTOGRAMS = 100
 _SCORES = ('confidence', 'top_score', 'TARGET_PRED')
@@ -73,36 +76,58 @@ def count_top_scores(counts: Counts, scores: Any) -> None:
 
 
 def count_recommendations(counts: Counts, items: Any, catalogue: int) -> None:
-    r"""Adds recommended item indices; out-of-range ones are padding."""
-    items = np.asarray(items, dtype=np.int64).reshape(-1)
-    counts.tally(ITEMS, items[(items >= 0) & (items < catalogue)], catalogue)
+    r"""Adds each entity's recommended item indices; out-of-range ones are
+    padding."""
+    items = np.asarray(items, dtype=np.int64)
+    counts.total(ENTITIES, len(items))
+    dtype = tally_dtype(float(counts.arrays[ENTITIES]))
+    tally = counts.arrays.get(ITEMS)
+    if tally is None:
+        tally = counts.arrays[ITEMS] = np.zeros(catalogue, dtype)
+    if tally.size != catalogue:
+        raise ValueError(f'{ITEMS} has {tally.size} items, not {catalogue}')
+    if tally.dtype != dtype:
+        tally = counts.arrays[ITEMS] = tally.astype(dtype)
+    items = items.reshape(-1)
+    np.add.at(tally, items[(items >= 0) & (items < catalogue)], 1)
+
+
+def tally_dtype(entities: float) -> type:
+    r"""uint32 while no item can be recommended more often."""
+    return np.uint32 if entities <= _UINT32 else np.uint64
 
 
 def item_counts(counts: Counts) -> Counts:
     r"""The items tally as small frequency and rank counts."""
     arrays = dict(counts.arrays)
     tally = arrays.pop(ITEMS)
-    top = max(1, math.ceil(tally.size / 100))
+    arrays.pop(ENTITIES, None)
+    most = int(tally.max(initial=0))
     edges = tuple(2.0**power for power in range(
-        int(np.log2(max(tally.max(initial=1), 1))) + 1))
+        int(np.log2(max(most, 1))) + 1))
     summary = Counts({**counts.edges, 'recommendations': edges}, arrays,
                      dict(counts.extents))
-    summary.histogram('item_frequency', 'recommendations', tally)
-    summary.histogram('item_frequency/sum', 'recommendations', tally,
-                      weights=tally)
-    ranks = min(RANKED_ITEMS, tally.size)
-    ranked = (np.partition(tally, tally.size - ranks)[tally.size - ranks:]
-              if ranks else tally)
+    top = max(1, math.ceil(tally.size / 100))
+    ranked = top1pct = np.zeros(0, tally.dtype)
+    for start in range(0, max(tally.size, 1), _CHUNK):
+        chunk = tally[start:start + _CHUNK]
+        summary.histogram('item_frequency', 'recommendations', chunk)
+        summary.histogram('item_frequency/sum', 'recommendations', chunk,
+                          weights=chunk)
+        ranked = _largest(np.concatenate([ranked, chunk]), RANKED_ITEMS)
+        top1pct = _largest(np.concatenate([top1pct, chunk]), top)
     summary.arrays['items_by_rank'] = np.sort(ranked)[::-1]
     for name, value in (('catalogue', tally.size),
                         ('items_recommended', np.count_nonzero(tally)),
                         ('recommendations', tally.sum()),
-                        ('most_recommendations', tally.max(initial=0)),
-                        ('top1pct_recommendations',
-                         np.partition(tally, tally.size - top)[-top:].sum()
-                         if tally.size else 0)):
+                        ('most_recommendations', most),
+                        ('top1pct_recommendations', top1pct.sum())):
         summary.total(name, value)
     return summary
+
+
+def _largest(values: np.ndarray, k: int) -> np.ndarray:
+    return values if values.size <= k else np.partition(values, -k)[-k:]
 
 
 def save_counts(counts: Counts, path: Path) -> None:
@@ -113,13 +138,6 @@ def save_counts(counts: Counts, path: Path) -> None:
         np.save(path.with_suffix('.npy'), items)
     path.write_text(json.dumps(
         Counts(counts.edges, arrays, counts.extents).to_dict()))
-
-
-def load_counts(path: Path) -> Counts:
-    counts = Counts.from_dict(json.loads(path.read_text()))
-    if path.with_suffix('.npy').exists():
-        counts.arrays[ITEMS] = np.load(path.with_suffix('.npy'))
-    return counts
 
 
 def _column(counts: Counts, name: str, edges: str, values: Any) -> None:

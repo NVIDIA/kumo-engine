@@ -7,13 +7,14 @@ from functools import reduce
 import numpy as np
 import pytest
 from kumo_core.evaluation_counts import baseline, evaluation_counts
+from kumo_core.prediction import COUNTS_DIR, COUNTS_FILE, _merge_counts
 from kumo_core.prediction_counts import (
+    ITEMS,
     MAX_CLASS_HISTOGRAMS,
     count_predictions,
     count_recommendations,
     count_top_scores,
     item_counts,
-    load_counts,
     prediction_summaries,
     save_counts,
 )
@@ -297,17 +298,19 @@ def test_recommendations_count_items_and_top_scores_across_workers(
         str(tmp_path_factory.mktemp('holdout') / 'top.parquet'))
     spill.write(np.arange(300), rng.normal(size=300))
     holdout = top_score_counts(spill.close())
-    parts = []
+    workers = tmp_path / COUNTS_DIR
+    workers.mkdir()
     for worker, rows in enumerate(np.array_split(np.arange(500), 3)):
         counts = Counts({'top_score': holdout.edges['top_score']})
         for batch in np.array_split(rows, 4):
             count_recommendations(counts, items[batch], catalogue)
             count_top_scores(counts, scores[batch])
-        save_counts(counts, tmp_path / f'{worker}.json')
-        parts.append(load_counts(tmp_path / f'{worker}.json'))
-    assert {path.suffix for path in tmp_path.iterdir()} == {'.json', '.npy'}
+        assert counts.arrays[ITEMS].dtype == np.uint32
+        save_counts(counts, workers / f'run-{worker}.json')
+    assert {path.suffix for path in workers.iterdir()} == {'.json', '.npy'}
 
-    total = item_counts(reduce(Counts.merge, parts))
+    _merge_counts(tmp_path, 'run', 3)
+    total = Counts.from_dict(json.loads((tmp_path / COUNTS_FILE).read_text()))
     summaries = prediction_summaries(total, threshold=None, baseline=holdout,
                                      as_of='2026-11-01')
     logged = _by_name(summaries)
@@ -359,3 +362,24 @@ def test_forecast_horizons_are_named_by_their_window():
         if name.startswith('pred/histogram/predicted, ')]
     assert names == ['pred/histogram/predicted, (0, 7] days',
                      'pred/histogram/predicted, (7, 14] days']
+
+
+def test_item_counts_do_not_depend_on_the_chunk_size(monkeypatch):
+    tally = np.random.default_rng(9).zipf(1.3, 5_003).astype(np.uint32) - 1
+    whole = item_counts(Counts({}, {ITEMS: tally}))
+    monkeypatch.setattr('kumo_core.prediction_counts._CHUNK', 64)
+    chunked = item_counts(Counts({}, {ITEMS: tally}))
+    assert chunked.edges == whole.edges
+    assert chunked.arrays.keys() == whole.arrays.keys()
+    for name, array in whole.arrays.items():
+        assert chunked.arrays[name].tolist() == array.tolist(), name
+
+
+def test_the_items_tally_widens_when_counts_could_overflow(monkeypatch):
+    monkeypatch.setattr('kumo_core.prediction_counts._UINT32', 3)
+    counts = Counts({})
+    count_recommendations(counts, [[0, 1], [1, -1], [1, 5]], 4)
+    assert counts.arrays[ITEMS].dtype == np.uint32
+    count_recommendations(counts, [[1, 2]], 4)
+    assert counts.arrays[ITEMS].dtype == np.uint64
+    assert counts.arrays[ITEMS].tolist() == [1, 4, 1, 0]
