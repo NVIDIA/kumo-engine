@@ -19,7 +19,7 @@ from typing import Any
 
 import orjson
 import pyarrow as pa
-from diskgraph import SAMPLING_PROTOCOL_VERSION, SamplingClient, SamplingStream
+from diskgraph import SamplingClient, SamplingRequest, SamplingStream
 from diskgraph.runtime_batch_iterator import RuntimeIndex
 from pyarrow import flight
 
@@ -60,7 +60,7 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
 
     Args:
         endpoint: Flight URI of the gateway serving the immutable graph.
-        request: Versioned native iterator request.
+        request: Native epoch request; DiskGraph owns its wire encoding.
         client: Optional shared native connection; the caller retains ownership.
 
     Raises:
@@ -71,7 +71,7 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
     def __init__(
         self,
         endpoint: str,
-        request: dict[str, Any],
+        request: SamplingRequest,
         *,
         client: SamplingClient | None = None,
     ) -> None:
@@ -82,8 +82,7 @@ class RemoteTaskIterator(Iterator[dict[str, Any]]):
         self._closed = False
         self._owner: RemoteRuntimeIndex | None = None
         try:
-            payload = orjson.dumps(request, option=orjson.OPT_SERIALIZE_NUMPY)
-            self._reader = self._client.open(payload)
+            self._reader = self._client.open(request)
             self._num_samples = self._reader.num_samples
         except BaseException:
             self.close()
@@ -171,14 +170,12 @@ class RemotePushIterator(Iterator[dict[str, Any]]):
                     "worker_id": options["worker_id"]
                     + options["num_workers"] * replica,
                 }
-                request = {
-                    "kind": "epoch",
-                    "version": SAMPLING_PROTOCOL_VERSION,
-                    "extension_ref": extension_ref,
-                    "engine_seed": owner._rnd_seed,
-                    "num_threads": owner._num_threads or 1,
-                    "options": shard,
-                }
+                request = SamplingRequest(
+                    extension_ref,
+                    engine_seed=owner._rnd_seed,
+                    num_threads=owner._num_threads or 1,
+                    **shard,
+                )
                 stream = RemoteTaskIterator(
                     endpoint,
                     request,

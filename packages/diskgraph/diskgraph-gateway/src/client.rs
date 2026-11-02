@@ -7,6 +7,7 @@ use crate::layout::validate_layout;
 use crate::protocol::{
     BatchMetadata, ComponentMetadata, ControlKind, StreamMetadata, MAX_BATCH_BYTES, VERSION,
 };
+use crate::TaskRequest;
 use anyhow::{anyhow, ensure, Context};
 use arrow_array::RecordBatch;
 use arrow_flight::{
@@ -151,17 +152,18 @@ impl SamplingClient {
     }
 
     /// Open one DoGet epoch request and validate the initial descriptor schema.
-    pub fn open(&self, request: Vec<u8>) -> anyhow::Result<SamplingStream> {
-        ensure!(
-            request.len() <= MAX_BATCH_BYTES,
-            "Epoch ticket exceeds the byte budget"
-        );
+    pub fn open(&self, request: &TaskRequest) -> anyhow::Result<SamplingStream> {
         let connection = self
             .connection
             .lock()
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow!(Status::cancelled("Sampling client closed")))?;
+        let request = serde_json::to_vec(request)?;
+        ensure!(
+            request.len() <= MAX_BATCH_BYTES,
+            "Epoch ticket exceeds the byte budget"
+        );
         let runtime = connection.runtime.clone();
         runtime.0.as_ref().unwrap().block_on(async {
             let mut client_stop = self.stop.subscribe();

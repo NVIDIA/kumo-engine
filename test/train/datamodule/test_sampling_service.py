@@ -63,11 +63,12 @@ def test_service_rejects_unsafe_paths(prepared_task: str, relative: str) -> None
         SamplingServiceConfig(Path(prepared_task).parent / "graph")
     )
     try:
-        request = {
-            "kind": "epoch",
-            "version": diskgraph.SAMPLING_PROTOCOL_VERSION,
-            "extension_ref": relative,
-        }
+        request = diskgraph.SamplingRequest(
+            relative,
+            stage_table="train_seeds",
+            sampling_plan_json='{"layers":[]}',
+            batch_size=2,
+        )
         with pytest.raises((flight.FlightServerError, pa.ArrowInvalid)):
             RemoteTaskIterator(service.endpoint(), request)
         assert service.health()["active_streams"] == 0
@@ -157,19 +158,15 @@ def test_service_rejects_invalid_engine_seeds(prepared_task: str, seed: int) -> 
     service = SamplingService(
         SamplingServiceConfig(Path(prepared_task).parent / "graph")
     )
-    request = {
-        "kind": "epoch",
-        "version": diskgraph.SAMPLING_PROTOCOL_VERSION,
-        "extension_ref": "train_tables/remote_test",
-        "engine_seed": seed,
-    }
     try:
-        expected = (
-            TypeError if seed == 2**64 else (flight.FlightServerError, pa.ArrowInvalid)
-        )
-        message = "64-bit range" if seed == 2**64 else "u64|unsigned 64-bit"
-        with pytest.raises(expected, match=message):
-            RemoteTaskIterator(service.endpoint(), request)
+        with pytest.raises(ValueError if seed is True else OverflowError):
+            diskgraph.SamplingRequest(
+                "train_tables/remote_test",
+                stage_table="train_seeds",
+                sampling_plan_json='{"layers":[]}',
+                batch_size=2,
+                engine_seed=seed,
+            )
         assert service.health()["active_streams"] == 0
     finally:
         service.close()

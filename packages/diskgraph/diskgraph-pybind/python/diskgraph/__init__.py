@@ -5,6 +5,7 @@
 from ._c import (
     SamplingServer,
     SamplingClient,
+    SamplingRequest,
     SamplingStream,
     SAMPLING_PROTOCOL_VERSION,
     export_tt_artifacts,
@@ -116,6 +117,7 @@ def __getattr__(name):
 __all__ = [
     "SamplingServer",
     "SamplingClient",
+    "SamplingRequest",
     "SamplingStream",
     "SAMPLING_PROTOCOL_VERSION",
     "export_tt_artifacts",

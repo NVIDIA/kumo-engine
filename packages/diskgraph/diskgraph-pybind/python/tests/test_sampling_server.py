@@ -113,7 +113,14 @@ def test_native_client_close_is_idempotent_and_prevents_new_requests() -> None:
     client.close()
     client.close()
     with pytest.raises(flight.FlightCancelledError, match="closed"):
-        client.open(b"{}")
+        client.open(
+            diskgraph.SamplingRequest(
+                "train_tables/task",
+                stage_table="train_seeds",
+                sampling_plan_json='{"layers":[]}',
+                batch_size=2,
+            )
+        )
 
 
 def test_native_client_preserves_server_argument_errors(graph: Path) -> None:
@@ -124,6 +131,64 @@ def test_native_client_preserves_server_argument_errors(graph: Path) -> None:
         client = diskgraph.SamplingClient(server.endpoint())
         try:
             with pytest.raises(pa.ArrowInvalid):
-                client.open(b"{")
+                client.open(
+                    diskgraph.SamplingRequest(
+                        "../escape",
+                        stage_table="train_seeds",
+                        sampling_plan_json='{"layers":[]}',
+                        batch_size=2,
+                    )
+                )
         finally:
             client.close()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"batch_size": 0},
+        {"num_threads": 0},
+        {"num_workers": 0},
+        {"num_workers": 1, "worker_id": 1},
+        {"engine_seed": True},
+    ],
+)
+def test_native_request_rejects_invalid_settings(
+    options: dict[str, int | bool],
+) -> None:
+    """Invalid shard and resource settings fail before any connection is opened."""
+    kwargs = {"batch_size": 2, **options}
+    with pytest.raises(ValueError):
+        diskgraph.SamplingRequest(
+            "train_tables/task",
+            stage_table="train_seeds",
+            sampling_plan_json='{"layers":[]}',
+            **kwargs,
+        )
+
+
+def test_native_request_is_immutable_and_owns_wire_fields() -> None:
+    """Callers cannot override request kind/version or mutate a validated request."""
+    for key in ["kind", "version", "unknown_option"]:
+        with pytest.raises(TypeError):
+            diskgraph.SamplingRequest(
+                "train_tables/task",
+                stage_table="train_seeds",
+                sampling_plan_json='{"layers":[]}',
+                batch_size=2,
+                **{key: 1},
+            )
+    request = diskgraph.SamplingRequest(
+        "train_tables/task",
+        stage_table="train_seeds",
+        sampling_plan_json='{"layers":[]}',
+        batch_size=2,
+    )
+    with pytest.raises(AttributeError):
+        request.epoch = 9
+    client = diskgraph.SamplingClient("grpc://127.0.0.1:1")
+    try:
+        with pytest.raises(TypeError):
+            client.open(b"{}")
+    finally:
+        client.close()

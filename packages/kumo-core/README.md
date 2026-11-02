@@ -117,7 +117,9 @@ Training-table extensions live at the same relative `train_tables/<id>` or
 register artifacts; missing task metadata fails with a preparation error.
 
 Epoch requests carry sampling, projection, seed, and shard settings in a `DoGet`
-ticket. The server reserves a
+ticket. Python constructs a native `diskgraph.SamplingRequest` and passes it to
+`SamplingClient.open()`; Rust sets the wire identity and serializes the ticket.
+Sampling-plan JSON retains the existing native iterator interface. The server reserves a
 slot in its bounded output queue before sampling a batch, and the client
 prefetches one decoded batch per server. gRPC flow control propagates a paused
 trainer back to the producer; additional transport buffers and native working

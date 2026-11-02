@@ -1576,6 +1576,7 @@ fn validated_index_resume_progress(output_dir: &str) -> PyResult<Option<Vec<Stri
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<sampling_server::PySamplingServer>()?;
+    m.add_class::<sampling_client::PySamplingRequest>()?;
     m.add_class::<sampling_client::PySamplingClient>()?;
     m.add_class::<sampling_client::PySamplingStream>()?;
     m.add("SAMPLING_PROTOCOL_VERSION", diskgraph_gateway::SAMPLING_PROTOCOL_VERSION)?;

@@ -256,6 +256,7 @@ def test_close_interrupts_a_blocked_push_reader(
     monkeypatch.setattr(
         remote_sampling, "RemoteTaskIterator", MagicMock(return_value=stream)
     )
+    monkeypatch.setattr(remote_sampling, "SamplingRequest", MagicMock())
     owner = MagicMock()
     owner.endpoints = ("grpc://unused:1",)
     owner._epoch_only = set()
@@ -347,25 +348,17 @@ def test_replicas_produce_concurrently(prepared_task: str) -> None:
         cleanup.callback(second.close)
         client = diskgraph.SamplingClient(first.endpoint())
         cleanup.callback(client.close)
-        request = {
-            "kind": "epoch",
-            "version": diskgraph.SAMPLING_PROTOCOL_VERSION,
-            "extension_ref": "train_tables/remote_test",
-            "engine_seed": 42,
-            "num_threads": 1,
-            "options": {
-                "stage_table": "train_seeds",
-                "sampling_plan_json": '{"layers":[]}',
-                "num_workers": 1,
-                "worker_id": 0,
-                "shuffle": False,
-                "epoch": 0,
-                "batch_size": 2,
-                "entity_node_type": "users",
-                "fused": False,
-            },
-        }
-        reader = client.open(orjson.dumps(request))
+        request = diskgraph.SamplingRequest(
+            "train_tables/remote_test",
+            engine_seed=42,
+            num_threads=1,
+            stage_table="train_seeds",
+            sampling_plan_json='{"layers":[]}',
+            batch_size=2,
+            entity_node_type="users",
+            fused=False,
+        )
+        reader = client.open(request)
         assert (reader.num_samples, reader.num_batches) == (6, 3)
         assert set(next(reader)) == {"task", "graphs", "raw_features"}
         runtime = RemoteRuntimeIndex(prepared_task, second.endpoint(), 42, 1)
@@ -377,3 +370,34 @@ def test_replicas_produce_concurrently(prepared_task: str) -> None:
             assert second.health()["batches"] == 3
         finally:
             reader.close()
+
+
+def test_native_request_supports_numpy_seed_selection(prepared_task: str) -> None:
+    """Native extraction and ticket serialization preserve NumPy-selected seeds."""
+    import numpy as np
+
+    graph = Path(prepared_task).parent / "graph"
+    with ExitStack() as cleanup:
+        service = SamplingService(SamplingServiceConfig(graph))
+        cleanup.callback(service.close)
+        client = diskgraph.SamplingClient(service.endpoint())
+        cleanup.callback(client.close)
+        request = diskgraph.SamplingRequest(
+            "train_tables/remote_test",
+            stage_table="train_seeds",
+            sampling_plan_json='{"layers":[]}',
+            batch_size=2,
+            engine_seed=np.uint64(42),
+            selected_stage_node_ids=np.array([1, 3, 5], dtype=np.uint64),
+            entity_node_type="users",
+            fused=False,
+        )
+        stream = client.open(request)
+        cleanup.callback(stream.close)
+        assert (stream.num_samples, stream.num_batches) == (3, 2)
+        batches = list(stream)
+        assert [
+            value
+            for batch in batches
+            for value in batch["task"]["tt_stage_node_ids"].to_pylist()
+        ] == [1, 3, 5]

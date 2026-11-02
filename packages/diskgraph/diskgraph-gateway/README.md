@@ -19,7 +19,10 @@ it does not upload or register them. Missing extension metadata returns
 `FailedPrecondition` so the caller can finish materialization before retrying.
 
 Protocol version 9 streams native Arrow component record batches. A `DoGet`
-ticket contains one normalized epoch/shard request. Protocol metadata always
+ticket contains one normalized epoch/shard request. Python builds an immutable
+`diskgraph.SamplingRequest`; the native client owns JSON ticket serialization and
+sets the request kind and protocol version. Typed constructor arguments reject
+invalid shards or resource settings before opening an RPC. Protocol metadata always
 lives in Flight `app_metadata`:
 
 - The initial empty schema carries `kind: "stream"`, `version`, `num_samples`

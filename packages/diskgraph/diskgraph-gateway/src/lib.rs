@@ -41,7 +41,8 @@ pub use layout::{resolve_reference, ArrowValue};
 use paths::task_path;
 pub use protocol::VERSION as SAMPLING_PROTOCOL_VERSION;
 use protocol::{BatchMetadata, ComponentMetadata, ControlKind, MAX_BATCH_BYTES, VERSION};
-use runtime::{runtime_error, TaskRequest};
+use runtime::runtime_error;
+pub use runtime::{TaskOptions, TaskRequest};
 pub use server::{SamplingServer, ServerConfig};
 
 type RpcStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;

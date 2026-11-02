@@ -30,6 +30,15 @@ def auto_setup_kumo_backend() -> bool:
     return False
 
 
+def _request() -> remote.SamplingRequest:
+    return remote.SamplingRequest(
+        "train_tables/task",
+        stage_table="train_seeds",
+        sampling_plan_json='{"layers":[]}',
+        batch_size=2,
+    )
+
+
 def _install_transport(
     monkeypatch: pytest.MonkeyPatch,
     batches: list[dict[str, Any] | Exception],
@@ -60,7 +69,9 @@ def test_complete_batches_preserve_arrow_types(monkeypatch: pytest.MonkeyPatch) 
         "raw_features": {"u": {"record_batches": [features]}},
     }
     client, reader = _install_transport(monkeypatch, [value, StopIteration()])
-    iterator = remote.RemoteTaskIterator("grpc://sampler:50051", {})
+    request = _request()
+    iterator = remote.RemoteTaskIterator("grpc://sampler:50051", request)
+    client.open.assert_called_once_with(request)
     batches = list(iterator)
     assert iterator.num_samples() == 3
     assert batches[0] is value
@@ -82,7 +93,7 @@ def test_observes_final_rpc_error(
     client, reader = _install_transport(
         monkeypatch, [*batches, OSError("connection lost")]
     )
-    iterator = remote.RemoteTaskIterator("grpc://sampler:50051", {})
+    iterator = remote.RemoteTaskIterator("grpc://sampler:50051", _request())
     with pytest.raises(OSError, match="connection lost"):
         list(iterator)
     assert reader.__next__.call_count == num_batches + 1
@@ -92,7 +103,7 @@ def test_observes_final_rpc_error(
 def test_empty_shard_completes_at_flight_eof(monkeypatch: pytest.MonkeyPatch) -> None:
     """A schema and successful EOF suffice for an empty shard."""
     client, reader = _install_transport(monkeypatch, [StopIteration()], num_samples=0)
-    iterator = remote.RemoteTaskIterator("grpc://sampler:50051", {})
+    iterator = remote.RemoteTaskIterator("grpc://sampler:50051", _request())
     assert iterator.num_samples() == 0
     assert list(iterator) == []
     reader.__next__.assert_called_once()
@@ -135,6 +146,8 @@ def test_normalizes_options_for_remote_epoch(
     stream.num_samples.return_value = 3
     stream_factory = MagicMock(return_value=stream)
     monkeypatch.setattr(remote, "RemoteTaskIterator", stream_factory)
+    request_factory = MagicMock()
+    monkeypatch.setattr(remote, "SamplingRequest", request_factory)
     client, _ = _install_transport(monkeypatch, [])
     index = remote.RemoteRuntimeIndex("portable.json", "grpc://sampler:50051", 42, 1)
     iterator, count = index.iter(
@@ -151,10 +164,11 @@ def test_normalizes_options_for_remote_epoch(
     )
     assert count == 3
     factory.assert_not_called()
-    request = stream_factory.call_args.args[1]
-    assert request["kind"] == "epoch"
-    assert request["version"] == remote.SAMPLING_PROTOCOL_VERSION
-    options = request["options"]
+    assert stream_factory.call_args.args[1] is request_factory.return_value
+    assert request_factory.call_args.args == ("train_tables/task",)
+    options = request_factory.call_args.kwargs
+    assert options["engine_seed"] == 42
+    assert options["num_threads"] == 1
     assert options["worker_id"] == 1
     assert options["epoch"] == 7
     assert options["replace"] is True
@@ -228,14 +242,14 @@ def test_request_failure_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _install_transport(monkeypatch, [])
     client.open.side_effect = OSError("unreachable")
     with pytest.raises(OSError, match="unreachable"):
-        remote.RemoteTaskIterator("grpc://sampler:50051", {})
+        remote.RemoteTaskIterator("grpc://sampler:50051", _request())
     client.close.assert_called_once()
 
 
 def test_midstream_failure_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """A transport failure propagates without reconnecting or replaying rows."""
     client, reader = _install_transport(monkeypatch, [OSError("broken")])
-    iterator = remote.RemoteTaskIterator("grpc://sampler:50051", {})
+    iterator = remote.RemoteTaskIterator("grpc://sampler:50051", _request())
     with pytest.raises(OSError, match="broken"):
         next(iterator)
     client.open.assert_called_once()
@@ -249,10 +263,10 @@ def test_source_closes_all_streams_when_cancellation_fails(
     """A cleanup error on one stream must not leak the remaining streams."""
     source = remote.RemoteRuntimeIndex("portable.json", "grpc://sampler:50051")
     first_client, first_reader = _install_transport(monkeypatch, [])
-    first = remote.RemoteTaskIterator(source.endpoint, {})
+    first = remote.RemoteTaskIterator(source.endpoint, _request())
     first_reader.close.side_effect = OSError("cancel failed")
     second_client, _ = _install_transport(monkeypatch, [])
-    second = remote.RemoteTaskIterator(source.endpoint, {})
+    second = remote.RemoteTaskIterator(source.endpoint, _request())
     source._streams.update([first, second])
     first._owner = source
     second._owner = source

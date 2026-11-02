@@ -200,11 +200,37 @@ GIL. Dropping a handle signals asynchronous shutdown; use explicit close or the
 context manager for deterministic cleanup. Configure Python logging before
 starting the server to receive native lifecycle and progress events.
 
-`diskgraph.SamplingClient(endpoint).open(ticket_bytes)` opens an epoch shard and
-returns a `SamplingStream` with `num_samples`, `num_batches`, iteration and
+`diskgraph.SamplingClient(endpoint).open(request)` accepts an immutable native
+`SamplingRequest`, serializes its Flight ticket in Rust, and returns a `SamplingStream` with `num_samples`, `num_batches`, iteration and
 `close()`. The Rust client accepts component schema changes and exports complete
 native batches through the Arrow C Data Interface. Column references return
 arrays; column-range references return record batches, including grouped targets. Closing a client cancels its
 streams; closing a stream interrupts blocked reads. Network reads release the
 GIL. The standard PyArrow Flight reader assumes one schema and cannot consume
 this component protocol. See the [gateway contract](../diskgraph-gateway/README.md).
+
+
+```python
+request = diskgraph.SamplingRequest(
+    "train_tables/churn",
+    stage_table="train_seeds",
+    sampling_plan_json='{"layers":[]}',
+    batch_size=512,
+    epoch=0,
+    engine_seed=42,
+    num_threads=1,
+)
+client = diskgraph.SamplingClient(endpoint)
+try:
+    for batch in client.open(request):
+        consume(batch)
+finally:
+    client.close()
+```
+
+The native constructor accepts keyword iterator settings, validates batch/thread
+budgets and shard bounds, and owns the request kind and protocol version.
+`open()` accepts only a `SamplingRequest`; Python does not construct a wire
+dictionary or serialize ticket bytes. Sampling-plan and weighted-sampling JSON
+strings retain the existing native iterator interface. Requests can be reused
+without cloning their native seed-selection arrays during serialization.

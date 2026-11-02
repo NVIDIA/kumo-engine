@@ -8,9 +8,9 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, path::Path, sync::Arc};
 use tonic::Status;
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct TaskRequest {
+pub struct TaskRequest {
     pub kind: String,
     pub version: u32,
     pub extension_ref: String,
@@ -18,9 +18,9 @@ pub(crate) struct TaskRequest {
     pub num_threads: Option<usize>,
     pub options: TaskOptions,
 }
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct TaskOptions {
+pub struct TaskOptions {
     pub stage_table: String,
     pub sampling_plan_json: String,
     pub num_workers: u64,
@@ -84,6 +84,34 @@ pub(crate) fn runtime_error(error: RuntimeError) -> Status {
     }
 }
 
+impl TaskRequest {
+    /// Build an epoch request with the native wire version and validate its shard.
+    pub fn new(
+        extension_ref: String,
+        options: TaskOptions,
+        engine_seed: Option<u64>,
+        num_threads: usize,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(num_threads > 0, "Sampling thread count must be positive");
+        anyhow::ensure!(
+            options.batch_size > 0,
+            "Sampling batch size must be positive"
+        );
+        anyhow::ensure!(
+            options.num_workers > 0 && options.worker_id < options.num_workers,
+            "Sampling worker_id must be less than positive num_workers"
+        );
+        Ok(Self {
+            kind: "epoch".into(),
+            version: crate::protocol::VERSION,
+            extension_ref,
+            engine_seed,
+            num_threads: Some(num_threads),
+            options,
+        })
+    }
+}
+
 impl TaskOptions {
     pub(crate) fn open(
         mut self,
@@ -137,5 +165,58 @@ impl TaskOptions {
                 self.projections,
             )
             .map_err(runtime_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn options() -> TaskOptions {
+        serde_json::from_value(json!({
+            "stage_table":"train_seeds", "sampling_plan_json":"{\"layers\":[]}",
+            "num_workers":2, "worker_id":1, "shuffle":true, "epoch":7, "batch_size":4,
+            "selected_stage_node_ids":[u64::MAX,0], "projections":{"users":["age"]},
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn native_request_serialization_preserves_options_and_sets_wire_identity() {
+        let request =
+            TaskRequest::new("train_tables/task".into(), options(), Some(u64::MAX), 2).unwrap();
+        let ticket = serde_json::to_vec(&request).unwrap();
+        let decoded: TaskRequest = serde_json::from_slice(&ticket).unwrap();
+        assert_eq!(decoded.kind, "epoch");
+        assert_eq!(decoded.version, crate::protocol::VERSION);
+        assert_eq!(decoded.engine_seed, Some(u64::MAX));
+        assert_eq!(decoded.num_threads, Some(2));
+        assert_eq!(
+            decoded.options.selected_stage_node_ids,
+            Some(vec![u64::MAX, 0])
+        );
+        assert_eq!(decoded.options.projections.unwrap()["users"], vec!["age"]);
+        assert_eq!(
+            (
+                decoded.options.num_workers,
+                decoded.options.worker_id,
+                decoded.options.epoch
+            ),
+            (2, 1, 7)
+        );
+        assert!(decoded.options.disjoint);
+        assert!(decoded.options.swap_edge_direction);
+        assert!(decoded.options.use_seed_timestamps);
+        assert_eq!(decoded.options.sampling_plan_json, "{\"layers\":[]}");
+    }
+    #[test]
+    fn invalid_native_requests_are_rejected_before_serialization() {
+        for (workers, worker_id, batch_size, threads) in
+            [(0, 0, 1, 1), (1, 1, 1, 1), (1, 0, 0, 1), (1, 0, 1, 0)]
+        {
+            let mut options = options();
+            options.num_workers = workers;
+            options.worker_id = worker_id;
+            options.batch_size = batch_size;
+            assert!(TaskRequest::new("train_tables/task".into(), options, None, threads).is_err());
+        }
     }
 }
