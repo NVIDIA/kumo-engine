@@ -22,7 +22,7 @@ use arrow::array::{
 };
 use arrow::pyarrow::ToPyArrow;
 use arrow_array::RecordBatch;
-use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata};
+use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyMetadata, EdgeSortKeyTimestampKind};
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
@@ -546,7 +546,7 @@ fn relation_columns(
     relation_name: &str,
     node_id: u64,
     include_sort_keys: bool,
-    window: Option<(&SortKeyDecoder, Option<i64>, Option<i64>, &str)>,
+    window: Option<(&TimePrefilter, Option<i64>, Option<i64>)>,
     edges_visited: &mut u64,
 ) -> Result<(Vec<u64>, Vec<u64>), String> {
     let relation_id = table
@@ -583,17 +583,12 @@ fn relation_columns(
         if count == 0 {
             break;
         }
-        if let Some((decoder, lower, upper, _)) = window {
+        if let Some((clock, lower, upper)) = window {
             for (&destination, &key) in destination_buffer[..count]
                 .iter()
                 .zip(&sort_key_buffer[..count])
             {
-                // A clipped code is not the row's time; the rowpack check decides it.
-                let admitted = exact_key_time(decoder, key).is_none_or(|timestamp| {
-                    lower.is_none_or(|bound| timestamp > bound)
-                        && upper.is_none_or(|bound| timestamp <= bound)
-                });
-                if admitted {
+                if clock.may_overlap(key, lower, upper) {
                     destinations.push(destination);
                     if include_sort_keys {
                         sort_keys.push(key);
@@ -615,11 +610,15 @@ fn relation_destinations(
     table: &TableReader,
     relation_name: &str,
     node_id: u64,
-    window: Option<(&SortKeyDecoder, Option<i64>, Option<i64>, &str)>,
+    window: Option<(&TimePrefilter, Option<i64>, Option<i64>)>,
     sequence: Option<&SequencePlan>,
     distinct: bool,
     stats: &mut QueryStats,
 ) -> Result<Vec<u64>, String> {
+    // Coarse boundary buckets may contain out-of-window rows. They cannot
+    // count toward a sequence limit before exact row-clock filtering, and
+    // do not need a second buffer of keys for early sequence selection.
+    let sequence = sequence.filter(|_| window.is_some_and(|(clock, ..)| clock.step == 1));
     let (mut destinations, keys) = relation_columns(
         table,
         relation_name,
@@ -628,13 +627,14 @@ fn relation_destinations(
         window,
         &mut stats.edges_visited,
     )?;
-    if let (Some(sequence), Some((decoder, ..))) = (sequence, window) {
+    if let (Some(sequence), Some((clock, ..))) = (sequence, window) {
+        let decoder = &clock.decoder;
         if let Some(limit) = sequence.limit.filter(|&n| n > 0 && n < destinations.len()) {
             // All-one bits decode to the maximum ordered timestamp, regardless
             // of timestamp width or weight bits. Ingestion may clamp later rows
             // there: they must reach the existing rowpack window check before
             // they can count toward the limit.
-            if keys.iter().any(|&key| exact_key_time(decoder, key).is_none()) {
+            if keys.iter().any(|&key| unclipped_key_time(decoder, key).is_none()) {
                 return Ok(destinations);
             }
             let mut seen = HashSet::new();
@@ -668,11 +668,62 @@ fn relation_destinations(
     Ok(destinations)
 }
 
-/// The time a sort key stores exactly. Ingestion clips out-of-range times to the
-/// ceiling code or to the lowest code, which also means NULL; neither is exact.
-fn exact_key_time(decoder: &SortKeyDecoder, key: u64) -> Option<i64> {
+/// A non-sentinel sort key's bucket end; exact only at one-second resolution.
+/// Ingestion clips out-of-range times to the ceiling or the lowest (NULL) code.
+fn unclipped_key_time(decoder: &SortKeyDecoder, key: u64) -> Option<i64> {
     let timestamp = decoder.decode(key).0?;
     (Some(timestamp) != decoder.decode(u64::MAX).0).then_some(timestamp)
+}
+
+/// Conservative first tier; every retained row still gets the exact window check.
+struct TimePrefilter {
+    decoder: SortKeyDecoder,
+    step: i64,
+}
+
+impl TimePrefilter {
+    fn may_overlap(&self, key: u64, lower: Option<i64>, upper: Option<i64>) -> bool {
+        // Floor/NULL and ceiling codes may represent clipped timestamps. Retain
+        // them so row decoding preserves both membership and null-clock errors.
+        unclipped_key_time(&self.decoder, key).is_none_or(|end| {
+            // Ingestion rounds upward: the bucket contains integer row times
+            // [end - step + 1, end]. Use i128 to avoid overflow at epoch extremes.
+            let first = i128::from(end) - i128::from(self.step) + 1;
+            lower.is_none_or(|bound| end > bound)
+                && upper.is_none_or(|bound| first <= i128::from(bound))
+        })
+    }
+}
+
+fn matching_time_prefilter(
+    metadata: Option<&EdgeSortKeyMetadata>,
+    destination: &str,
+    clock: &str,
+) -> Option<TimePrefilter> {
+    let metadata = metadata?;
+    let timestamp = metadata.timestamp.as_ref()?;
+    let encoding = &timestamp.encoding;
+    if timestamp.table != destination || timestamp.column != clock || encoding.step < 1 {
+        return None;
+    }
+    if encoding.step > 1 {
+        let bits = match encoding.kind {
+            EdgeSortKeyTimestampKind::Int8 => 8,
+            EdgeSortKeyTimestampKind::Int16 => 16,
+            EdgeSortKeyTimestampKind::Int32 => 32,
+        };
+        // Fall back if decoder arithmetic could saturate even an interior code.
+        // The product must itself fit, since decoding multiplies before adding.
+        for delta in [-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1] {
+            delta
+                .checked_mul(encoding.step)?
+                .checked_add(encoding.anchor)?;
+        }
+    }
+    Some(TimePrefilter {
+        decoder: SortKeyDecoder::new(metadata),
+        step: encoding.step,
+    })
 }
 
 fn matching_time_decoder(
@@ -818,7 +869,7 @@ fn materialize_frame(
                 && (plan.start_seconds.is_some() || plan.stop_seconds.is_some())
             {
                 plan.time_column.as_deref().and_then(|clock| {
-                    matching_time_decoder(
+                    matching_time_prefilter(
                         relation.dest_sort_key.as_ref(),
                         &step.destination_type,
                         clock,
@@ -834,7 +885,6 @@ fn materialize_frame(
                         .map(|seconds| cutoffs[anchor].saturating_add(seconds)),
                     plan.stop_seconds
                         .map(|seconds| cutoffs[anchor].saturating_add(seconds)),
-                    plan.name.as_str(),
                 )
             });
             let mut next = Vec::new();
@@ -1466,6 +1516,24 @@ fn count_frame(
 
     let filter_started = Instant::now();
     let has_bounds = plan.start_seconds.is_some() || plan.stop_seconds.is_some();
+    if has_bounds {
+        if let Some(clock) = plan.time_column.as_deref().and_then(|column| {
+            matching_time_prefilter(final_sort_key.as_ref(), &destination, column)
+                .filter(|clock| clock.step > 1)
+        }) {
+            // Preserve rows_considered as the reached distinct candidate count;
+            // rowpack_timestamps measures the smaller exact-refinement work.
+            for (anchor, rows) in rows_by_anchor.iter_mut().enumerate() {
+                let lower = plan
+                    .start_seconds
+                    .map(|offset| cutoffs[anchor].saturating_add(offset));
+                let upper = plan
+                    .stop_seconds
+                    .map(|offset| cutoffs[anchor].saturating_add(offset));
+                rows.retain(|&(_, key)| clock.may_overlap(key, lower, upper));
+            }
+        }
+    }
     let mut lengths = rows_by_anchor.iter().map(Vec::len).collect::<Vec<_>>();
     if has_bounds {
         let time_column = plan
@@ -1478,7 +1546,7 @@ fn count_frame(
                     rows_by_anchor
                         .iter()
                         .flatten()
-                        .all(|&(_, key)| exact_key_time(decoder, key).is_some())
+                        .all(|&(_, key)| unclipped_key_time(decoder, key).is_some())
                 });
         if let Some(decoder) = sort_decoder {
             for (anchor, rows) in rows_by_anchor.iter().enumerate() {
@@ -1490,7 +1558,7 @@ fn count_frame(
                     .map(|value| cutoffs[anchor].saturating_add(value));
                 let mut selected = 0;
                 for &(_, raw_sort_key) in rows {
-                    let timestamp = exact_key_time(&decoder, raw_sort_key)
+                    let timestamp = unclipped_key_time(&decoder, raw_sort_key)
                         .expect("ambiguous sort keys select the rowpack path");
                     stats.sort_key_timestamps += 1;
                     if lower.is_none_or(|bound| timestamp > bound)
@@ -1852,6 +1920,81 @@ pub(crate) fn config_error(error: String) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn coarse_metadata(step: i64, anchor: i64) -> EdgeSortKeyMetadata {
+        use diskgraph_core::metadata::{EdgeSortKeyTimestampEncoding, EdgeSortKeyTimestampMetadata};
+        EdgeSortKeyMetadata {
+            width_bits: 8,
+            timestamp: Some(EdgeSortKeyTimestampMetadata {
+                table: "events".into(),
+                column: "time".into(),
+                encoding: EdgeSortKeyTimestampEncoding {
+                    kind: EdgeSortKeyTimestampKind::Int8,
+                    anchor,
+                    step,
+                },
+            }),
+            weight: None,
+        }
+    }
+
+    #[test]
+    fn coarse_buckets_never_drop_an_in_window_time() {
+        for step in [1, 60, 3600, 86400] {
+            for anchor in [-1_700_000_003, 0, 1_700_000_003] {
+                let meta = coarse_metadata(step, anchor);
+                let clock = matching_time_prefilter(Some(&meta), "events", "time").unwrap();
+                // Include both clipped endpoints, negative deltas, and every
+                // exact/before/after bucket boundary in the interior.
+                for bucket in -130i64..=130 {
+                    for remainder in [-1, 0, 1, step - 1] {
+                        let time = anchor + bucket * step + remainder;
+                        let diff = time.saturating_sub(anchor);
+                        let delta = diff.div_euclid(step) + i64::from(diff.rem_euclid(step) > 0);
+                        let key = ((delta.clamp(-128, 127) as i8 as u8) ^ 128) as u64;
+                        for width in [1, step, step + 1] {
+                            assert!(clock.may_overlap(key, Some(time - width), Some(time)));
+                            assert!(clock.may_overlap(key, None, Some(time)));
+                            assert!(clock.may_overlap(key, Some(time - 1), None));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn coarse_window_endpoints_and_ambiguous_codes() {
+        let meta = coarse_metadata(60, 0);
+        let clock = matching_time_prefilter(Some(&meta), "events", "time").unwrap();
+        let key = 129; // Bucket (0, 60], or integer times [1, 60].
+        assert!(!clock.may_overlap(key, Some(60), None));
+        assert!(!clock.may_overlap(key, None, Some(0)));
+        assert!(clock.may_overlap(key, Some(59), Some(60)));
+        assert!(clock.may_overlap(key, Some(0), Some(1)));
+        for key in [0, 255] {
+            assert!(clock.may_overlap(key, Some(100_000), Some(100_001)));
+            assert!(clock.may_overlap(key, Some(-100_001), Some(-100_000)));
+        }
+    }
+
+    #[test]
+    fn coarse_clock_mismatch_and_overflow_fall_back() {
+        for (step, anchor) in [
+            (0, 0),
+            (-1, 0),
+            (i64::MAX, 0),
+            (60, i64::MAX),
+            (60, i64::MIN),
+        ] {
+            let meta = coarse_metadata(step, anchor);
+            assert!(matching_time_prefilter(Some(&meta), "events", "time").is_none());
+        }
+        let meta = coarse_metadata(60, 0);
+        assert!(matching_time_prefilter(Some(&meta), "other", "time").is_none());
+        assert!(matching_time_prefilter(Some(&meta), "events", "other").is_none());
+        assert!(matching_time_decoder(Some(&meta), "events", "time").is_none());
+    }
 
     #[test]
     fn frame_sort_keeps_existing_tie_order_for_every_scalar_kind() {
