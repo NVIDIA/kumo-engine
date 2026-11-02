@@ -136,6 +136,9 @@ before the write, as `kumoai-reference/references/outputs.md` says:
 
 ```python
 def count_output():
+    # 0 before the first APPEND, which creates the table.
+    if not ws.tables.exists(f'{OUTPUT_CATALOG}.{OUTPUT_SCHEMA}.{OUTPUT_TABLE}').table_exists:
+        return 0
     return int(run_sql(f'SELECT COUNT(*) FROM {q(OUTPUT_CATALOG, OUTPUT_SCHEMA, OUTPUT_TABLE)}')[0][0])
 
 before = count_output() if WRITE_MODE == WriteMode.APPEND else 0   # before the predict call
