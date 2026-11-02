@@ -88,3 +88,45 @@ def test_cleanup_checks_job_ownership_before_removing_any_evidence(tmp_path):
         capture_output=True, text=True)
     assert result.returncode != 0
     assert (evidence / 'valuable.json').read_text() == 'keep'
+
+
+@pytest.mark.parametrize('uploaded', [False, True])
+def test_cli_removes_job_artifacts_and_keeps_evidence_until_upload(
+        tmp_path, uploaded):
+    environment_file = tmp_path / 'environment'
+    environment = dict(os.environ, RUNNER_TEMP=str(tmp_path),
+                       GITHUB_ENV=str(environment_file),
+                       NIGHTLY_CONFIGURATION=json.dumps(config()))
+    created = subprocess.run(
+        [sys.executable, str(SOURCE), 'create'], env=environment,
+        capture_output=True, text=True)
+    assert created.returncode == 0, created.stderr
+    environment.update(
+        line.split('=', 1)
+        for line in environment_file.read_text().splitlines())
+    work = Path(environment['NIGHTLY_JOB_ROOT'])
+    evidence = Path(environment['NIGHTLY_EVIDENCE_ROOT'])
+    for relative in ('env/package', 'cache/wheel', 'scratch/graph1/index',
+                     'scratch/graph2/index', 'scratch/graph3/index'):
+        artifact = work / relative
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text('temporary work')
+    for relative in ('models/checkpoint', 'predictions/output.parquet'):
+        artifact = evidence / relative
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text('retained result')
+    previous = tmp_path / 'engine-nightly-prior-evidence'
+    previous.mkdir()
+    (previous / 'keep').write_text('earlier evidence')
+    cleaned = subprocess.run(
+        [sys.executable, str(SOURCE), 'cleanup'],
+        env=dict(environment, NIGHTLY_EVIDENCE_UPLOADED=str(uploaded).lower()),
+        capture_output=True, text=True)
+    assert cleaned.returncode == 0, cleaned.stderr
+    assert not work.exists()
+    assert evidence.exists() is not uploaded
+    if not uploaded:
+        assert (evidence / 'models/checkpoint').read_text() == 'retained result'
+        assert (evidence /
+                'predictions/output.parquet').read_text() == 'retained result'
+    assert (previous / 'keep').read_text() == 'earlier evidence'

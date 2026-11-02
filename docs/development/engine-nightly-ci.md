@@ -9,8 +9,16 @@ predictions. The suite requires real CUDA work and useful learning.
 
 This change provides the nightly harness and public CPU checks. It adds no GPU
 workflow, runner group, copied-PR trigger, cloud credential setup, or schedule.
-Runner integration requires a separate future change. The full sixteen-case
-candidate run and its runtime budget remain unverified.
+Automation on the owner's AWS virtual machine is a separate task. The full
+sixteen-case candidate run and its runtime budget remain unverified.
+
+That task includes credential permissions, VM access and lifecycle, evidence
+delivery, and automatic cleanup. Its security requirements are recorded in the
+[permission review](https://github.com/NVIDIA/kumo-engine/pull/137#issuecomment-6585440181).
+No AWS permissions or infrastructure are changed by this PR.
+
+The current runtime gate requires Linux x86_64, Python 3.12, and an RTX PRO 6000.
+Selecting and qualifying the AWS target is deferred to that task.
 
 Install the candidate wheel with its own requirements in a fresh environment.
 Run `pip check`. The harness compares installed wheel files with the

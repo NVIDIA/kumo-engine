@@ -26,6 +26,18 @@ def test_completed_training_allows_partial_batches_and_actual_early_stopping():
         nightly.check_training(dict(work, early_stopping={}), 40)
 
 
+def test_candidate_ignores_reference_profile_but_keeps_host_requirement(
+        monkeypatch):
+    import kumo.engine as kumo
+
+    monkeypatch.setattr(nightly.platform, 'machine', lambda: 'unsupported-host')
+    profile = {'nightly-reference-only-test-package': '0.0'}
+    with pytest.raises(ValueError, match='one actual CUDA GPU'):
+        nightly.verify_runtime(kumo.__version__, profile)
+    with pytest.raises(ValueError, match='selected profile'):
+        nightly.verify_runtime(kumo.__version__, profile, reference_only=True)
+
+
 @pytest.mark.parametrize('method', ['predict_v2', 'test'])
 @pytest.mark.parametrize('recover', [False, True])
 def test_nightly_keeps_product_oom_recovery(monkeypatch, tmp_path, method,
