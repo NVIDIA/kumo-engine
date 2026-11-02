@@ -174,19 +174,170 @@ def test_evaluate_immature_run_returns_metrics_and_warns(
 
 
 @pytest.mark.parametrize('days,matured', [(14, True), (13, False)])
-def test_a_forecast_matures_after_its_last_frame(snapshots, monkeypatch, days,
-                                                 matured):
+def test_a_forecast_is_evaluated_per_step_once_its_last_frame_matures(
+        snapshots, monkeypatch, days, matured):
     import kumo_core.pquery
 
     monkeypatch.setattr(kumo_core.pquery, '_target_maximum',
                         lambda *args: ANCHOR + pd.Timedelta(days=days))
-    frame = pd.DataFrame({'ENTITY': np.arange(60), 'TARGET_PRED': 10.0})
-    result = _evaluate(
+    frame = pd.DataFrame({
+        'ENTITY': np.repeat(np.arange(60), 2),
+        'TIMESTAMP': ANCHOR + pd.to_timedelta(np.tile([7, 0], 60), unit='D'),
+        'TARGET_PRED': 10.0,
+    })
+    result, tables = _evaluate(
         snapshots, 'PREDICT SUM(orders.AMT, 0, 7, days) FORECAST 2 TIMEFRAMES '
         'FOR EACH users.ID', frame, [ANCHOR])
     assert result.task_type == 'forecasting'
     assert result.matured is matured
-    assert result.reasons['metrics'] == 'forecasting metrics are not supported'
+    assert result.rows == result.labelled == 60 and result.reasons == {}
+
+    errors = [10.0 - pd.Series({
+        user: _window(snapshots.orders, ANCHOR + pd.Timedelta(days=7 * h))[
+            'AMT'].sum().get(user, 0.0) for user in range(60)})
+        for h in range(2)]
+    error = pd.concat(errors)
+    assert result.metrics['mae'] == pytest.approx(error.abs().mean())
+    assert result.metrics['rmse'] == pytest.approx(
+        math.sqrt((error**2).mean()))
+    by_horizon, = tables
+    assert by_horizon.name == 'realized/by_horizon'
+    assert [row[1] for row in by_horizon.rows] == [
+        '(0, 7] days', '(7, 14] days']
+    assert [row[3] for row in by_horizon.rows] == pytest.approx(
+        [step.abs().mean() for step in errors])
+    rows = pd.read_parquet(result.actuals).sort_values(
+        ['ENTITY', 'TIMESTAMP'])
+    assert rows['TARGET'].tolist() == pytest.approx(
+        [10.0 - errors[h][user] for user in range(60) for h in range(2)])
+
+
+@pytest.fixture(scope='module')
+def categories(snapshots, tmp_path_factory):
+    data = tmp_path_factory.mktemp('categories')
+    orders = snapshots.orders.assign(
+        CAT=np.array(list('abcd'))[snapshots.orders.EID % 4])
+    pd.DataFrame({'ID': np.arange(60)}).to_parquet(data / 'users.parquet')
+    orders.to_parquet(data / 'orders.parquet')
+    connector = kumo.FileConnector(root_dir=str(data))
+    users = kumo.Table.from_source_table(connector['users.parquet'],
+                                         primary_key='ID').infer_metadata()
+    events = kumo.Table.from_source_table(
+        connector['orders.parquet'], primary_key='EID',
+        time_column='TS').infer_metadata().with_column(
+            'USER_ID', stype=Stype.ID).with_column('CAT',
+                                                   stype=Stype.categorical)
+    graph = kumo.Graph(
+        tables={'users': users, 'orders': events},
+        edges=[Edge(src_table='orders', fkey='USER_ID', dst_table='users')])
+    return SimpleNamespace(after=graph.snapshot(), orders=orders)
+
+
+@pytest.mark.parametrize('days,matured', [(7, True), (6, False)])
+def test_a_multilabel_query_is_evaluated_per_class(categories, monkeypatch,
+                                                   days, matured):
+    import kumo_core.pquery
+
+    monkeypatch.setattr(kumo_core.pquery, '_target_maximum',
+                        lambda *args: ANCHOR + pd.Timedelta(days=days))
+    score = np.tile([0.9, 0.6, 0.4, 0.1], 60)
+    frame = pd.DataFrame({'ENTITY': np.repeat(np.arange(60), 4),
+                          'CLASS': list('abcd') * 60, 'SCORE': score,
+                          'PREDICTED': score > 0.5})
+    result, _ = _evaluate(
+        categories, 'PREDICT LIST_DISTINCT(orders.CAT, 0, 7, days) CLASSIFY '
+        'FOR EACH users.ID', frame, [ANCHOR])
+    assert result.task_type == 'multilabel_classification'
+    assert result.matured is matured
+    assert result.rows == result.labelled == 60
+
+    window = _window(categories.orders, ANCHOR)['CAT'].agg(set)
+    actual = {(user, c): c in window.get(user, set())
+              for user in range(60) for c in 'abcd'}
+    rows = pd.read_parquet(result.actuals)
+    assert dict(zip(zip(rows.ENTITY, rows.CLASS), rows.TARGET)) == actual
+    hits = sum(actual[user, c] for user in range(60) for c in 'ab')
+    assert result.metrics['precision_micro'] == pytest.approx(hits / 120)
+    assert result.metrics['recall_micro'] == pytest.approx(
+        hits / sum(actual.values()))
+
+
+@pytest.fixture(scope='module')
+def every_task(categories, tmp_path_factory):
+    data = tmp_path_factory.mktemp('every-task')
+    rng = np.random.default_rng(3)
+    categories.orders.assign(ITEM_ID=rng.integers(0, 30, 1500)).to_parquet(
+        data / 'orders.parquet')
+    pd.DataFrame({
+        'ID': np.arange(60), 'FLAG': rng.integers(0, 2, 60).astype(bool),
+        'AGE': rng.integers(18, 80, 60).astype(float),
+        'REGION': rng.choice(list('xyz'), 60),
+        'TAGS': ['|'.join(rng.choice(list('pqrs'), 2)) for _ in range(60)],
+    }).to_parquet(data / 'users.parquet')
+    pd.DataFrame({'IID': np.arange(30)}).to_parquet(data / 'items.parquet')
+    pd.DataFrame({'LID': np.arange(200), 'USER_ID': rng.integers(0, 60, 200),
+                  'ITEM_ID': rng.integers(0, 30, 200)}).to_parquet(
+                      data / 'likes.parquet')
+    connector = kumo.FileConnector(root_dir=str(data))
+
+    def table(name, key, time=None, **stypes):
+        table = kumo.Table.from_source_table(
+            connector[f'{name}.parquet'], primary_key=key,
+            time_column=time).infer_metadata()
+        for column, stype in stypes.items():
+            table = table.with_column(column, stype=stype)
+        return table
+
+    tables = {
+        'users': table('users', 'ID', REGION=Stype.categorical,
+                       TAGS=Stype.multicategorical),
+        'orders': table('orders', 'EID', 'TS', USER_ID=Stype.ID,
+                        ITEM_ID=Stype.ID, CAT=Stype.categorical),
+        'items': table('items', 'IID'),
+        'likes': table('likes', 'LID', USER_ID=Stype.ID, ITEM_ID=Stype.ID),
+    }
+
+    def graph(*facts):
+        graph = kumo.Graph(
+            tables={name: tables[name] for name in ('users', 'items', *facts)},
+            edges=[Edge(src_table=fact, fkey=key, dst_table=target)
+                   for fact in facts for key, target in (('USER_ID', 'users'),
+                                                         ('ITEM_ID', 'items'))])
+        return graph, graph.snapshot()
+
+    # Static link prediction needs a graph without time columns.
+    return {'orders': graph('orders', 'likes'), 'likes': graph('likes')}
+
+
+@pytest.mark.parametrize('query', [
+    'COUNT(orders.*, 0, 7, days) > 0', 'users.FLAG',
+    'SUM(orders.AMT, 0, 7, days)', 'users.AGE',
+    'SUM(orders.AMT, 0, 7, days) FORECAST 3 TIMEFRAMES',
+    'FIRST(orders.CAT, 0, 7, days)', 'users.REGION',
+    'LIST_DISTINCT(orders.CAT, 0, 7, days) CLASSIFY', 'users.TAGS CLASSIFY',
+    'LIST_DISTINCT(orders.CAT, 0, 7, days) RANK TOP 2', 'users.TAGS RANK TOP 2',
+    'LIST_DISTINCT(orders.ITEM_ID, 0, 7, days) RANK TOP 3',
+    'LIST_DISTINCT(likes.ITEM_ID) RANK TOP 3',
+])
+def test_evaluate_labels_are_the_fit_tables_rows_at_its_anchors(
+        every_task, query):
+    graph, snapshot = every_task['likes' if 'likes' in query else 'orders']
+    pquery = kumo.PredictiveQuery(graph=graph,
+                                  query=f'PREDICT {query} FOR EACH users.ID')
+    fit = pquery.generate_training_table(snapshot)
+    rows = pd.read_parquet(fit.train_table_path)
+    anchors = ()
+    if pquery._parsed.query_type != 'static':
+        anchors = tuple(sorted(rows['TIMESTAMP'].unique().astype('int64')))[-2:]
+        rows = rows[rows['TIMESTAMP'].astype('int64').isin(anchors)]
+    with pquery._label_parts(snapshot, anchors, fit.generation_plan) as parts:
+        labels = pd.concat(pd.read_parquet(part) for part in parts)
+
+    def ordered(frame):
+        keys = [key for key in ('ENTITY1', 'TIMESTAMP') if key in frame]
+        return frame.sort_values(keys).reset_index(drop=True).astype(str)
+
+    pd.testing.assert_frame_equal(ordered(labels), ordered(rows))
 
 
 def test_evaluate_joins_several_anchors(snapshots, classifier, monkeypatch):
@@ -227,9 +378,9 @@ def test_evaluate_joins_several_anchors(snapshots, classifier, monkeypatch):
 
 def test_evaluate_regression_and_static_queries(snapshots):
     frame = pd.DataFrame({'ENTITY': np.arange(60), 'TARGET_PRED': 10.0})
-    result = _evaluate(snapshots,
-                       'PREDICT SUM(orders.AMT, 0, 7, days) FOR EACH users.ID',
-                       frame, [ANCHOR])
+    result, _ = _evaluate(
+        snapshots, 'PREDICT SUM(orders.AMT, 0, 7, days) FOR EACH users.ID',
+        frame, [ANCHOR])
     sums = _window(snapshots.orders, ANCHOR)['AMT'].sum()
     error = 10.0 - pd.Series({user: sums.get(user, 0.0) for user in range(60)})
     assert result.matured and result.labelled_fraction == 1.0
@@ -238,8 +389,8 @@ def test_evaluate_regression_and_static_queries(snapshots):
         math.sqrt((error**2).mean()), rel=1e-5)
 
     frame = pd.DataFrame({'ENTITY': np.arange(12), 'True_PROB': .5})
-    result = _evaluate(snapshots, 'PREDICT users.FLAG FOR EACH users.ID',
-                       frame)
+    result, _ = _evaluate(snapshots, 'PREDICT users.FLAG FOR EACH users.ID',
+                          frame)
     assert (result.matured, result.anchors) == (None, ())
     assert result.rows == 12 and result.labelled_fraction == 1.0
     rows = pd.read_parquet(result.actuals).set_index('ENTITY')
@@ -249,8 +400,8 @@ def test_evaluate_regression_and_static_queries(snapshots):
     assert (rows['True_PROB'] == .5).all()
 
     unknown = pd.DataFrame({'ENTITY': np.arange(1000, 1012), 'True_PROB': .5})
-    result = _evaluate(snapshots, 'PREDICT users.FLAG FOR EACH users.ID',
-                       unknown)
+    result, _ = _evaluate(snapshots, 'PREDICT users.FLAG FOR EACH users.ID',
+                          unknown)
     assert (result.rows, result.labelled, result.actuals) == (12, 0, None)
     assert result.reasons['metrics'] == 'no prediction has a label'
     with pytest.raises(ValueError, match='No evaluated rows'):
@@ -261,7 +412,7 @@ def test_evaluate_regression_and_static_queries(snapshots):
 def test_evaluate_labels_the_scored_cohort_not_the_training_one(
         snapshots, scored):
     frame = pd.DataFrame({'ENTITY': list(scored), 'TARGET_PRED': 10.0})
-    result = _evaluate(
+    result, _ = _evaluate(
         snapshots, 'PREDICT SUM(orders.AMT, 0, 7, days) FOR EACH users.ID '
         'WHERE users.ID < 10', frame, [ANCHOR])
     sums = _window(snapshots.orders, ANCHOR)['AMT'].sum()
@@ -281,7 +432,8 @@ def test_evaluation_exports_its_rows(snapshots, classifier, tmp_path):
                                     output_paths={'predictions': 'evaluated/'})
     result.export(output)
     pd.testing.assert_frame_equal(
-        pd.read_parquet(tmp_path / 'evaluated'), result.frame)
+        pd.read_parquet(tmp_path / 'evaluated'),
+        pd.read_parquet(result.actuals))
 
     loaded = EvaluationResult.load_from_connector(connector,
                                                   path='evaluated/')
@@ -390,7 +542,7 @@ def test_the_holdout_baseline_loads_with_the_evaluated_rows_types(
         [pd.NA] * len(holdout))
 
 
-def _join(tmp_path, task, predictions, labels):
+def _join(tmp_path, task, predictions, labels, **options):
     import json
 
     import diskgraph
@@ -400,7 +552,8 @@ def _join(tmp_path, task, predictions, labels):
     labels.to_parquet(tmp_path / 'labels.parquet', row_group_size=89)
     spec = {'task': task, 'prediction_keys': ['ENTITY'],
             'label_keys': ['ENTITY1'], 'label_target': 'TARGET1',
-            'spill_dir': str(tmp_path / 'spill'), 'partition_rows': 500}
+            'spill_dir': str(tmp_path / 'spill'), 'partition_rows': 500,
+            **options}
     return json.loads(diskgraph.evaluate_prediction_parquet(
         [str(tmp_path / 'predictions.parquet')],
         [str(tmp_path / 'labels.parquet')], json.dumps(spec)))
@@ -412,7 +565,12 @@ def test_realized_metrics_match_fit_time_definitions(tmp_path):
         BinaryAUROC,
         BinaryAveragePrecision,
     )
-    from torch_geometric.metrics import LinkPredMAP, LinkPredPrecision
+    from torch_geometric.metrics import (
+        LinkPredF1,
+        LinkPredMAP,
+        LinkPredPrecision,
+        LinkPredRecall,
+    )
 
     rng = np.random.default_rng(0)
     n = 2000
@@ -434,21 +592,118 @@ def test_realized_metrics_match_fit_time_definitions(tmp_path):
                         for _ in range(entities)])
     truth = [rng.choice(items, rng.integers(0, 4), replace=False)
              for _ in range(entities)]
-    joined = _join(
-        tmp_path, 'link',
-        pd.DataFrame({'ENTITY': np.repeat(np.arange(entities), k),
-                      'CLASS': classes.ravel(), 'SCORE': ranked.ravel()}),
-        pd.DataFrame({'ENTITY1': np.arange(entities),
-                      'TARGET1': [list(t) for t in truth]}))
     index = torch.tensor(np.stack([
         np.repeat(np.arange(entities), [len(t) for t in truth]),
         np.concatenate(truth)]))
-    for name, metric in ((f'map@{k}', LinkPredMAP(k)),
-                         (f'precision@{k}', LinkPredPrecision(k))):
-        metric.update(torch.tensor(classes), index)
-        assert joined['metrics'][name] == pytest.approx(
-            float(metric.compute()), abs=1e-6)
+    expected = {}
+    for at in (1, k):
+        for name, metric in (('map', LinkPredMAP(at)),
+                             ('precision', LinkPredPrecision(at)),
+                             ('recall', LinkPredRecall(at)),
+                             ('f1', LinkPredF1(at))):
+            metric.update(torch.tensor(classes[:, :at]), index)
+            expected[f'{name}@{at}'] = float(metric.compute())
+    for target in ([list(t) for t in truth],
+                   ['|'.join(map(str, t)) for t in truth]):
+        joined = _join(
+            tmp_path, 'ranking',
+            pd.DataFrame({'ENTITY': np.repeat(np.arange(entities), k),
+                          'CLASS': classes.ravel(), 'SCORE': ranked.ravel()}),
+            pd.DataFrame({'ENTITY1': np.arange(entities), 'TARGET1': target}),
+            ks=[1, k, 2 * k])
+        assert joined['metrics'] == pytest.approx(expected, abs=1e-6)
+        assert joined['labelled'] == entities
+
+
+def test_realized_multilabel_metrics_match_the_fit(tmp_path):
+    import torch
+    from kumo_core.evaluation.classification import (
+        MultilabelAUPRC,
+        MultilabelAUROC,
+        MultilabelAveragePrecision,
+    )
+    from kumo_core.evaluation_counts import (
+        evaluation_counts,
+        evaluation_summaries,
+    )
+    from kumo_core.types import TaskType
+
+    rng = np.random.default_rng(1)
+    entities, names = 500, np.array([f'c{i}' for i in range(6)])
+    prob = np.round(rng.random((entities, names.size)), 2).astype(np.float32)
+    target = rng.random(prob.shape) < prob
+    pred = prob > 0.5
+    joined = _join(
+        tmp_path, 'multilabel',
+        pd.DataFrame({'ENTITY': np.repeat(np.arange(entities), names.size),
+                      'CLASS': np.tile(names, entities),
+                      'SCORE': prob.ravel(), 'PREDICTED': pred.ravel()}),
+        pd.DataFrame({'ENTITY1': np.arange(entities),
+                      'TARGET1': ['|'.join(names[row]) for row in target]}))
+
+    expected = {}
+    for name, metric in (('auroc', MultilabelAUROC),
+                         ('ap', MultilabelAveragePrecision),
+                         ('auprc', MultilabelAUPRC)):
+        for average in ('macro', 'micro'):
+            fit = metric(num_labels=names.size, average=average)
+            fit.update(torch.tensor(prob), torch.tensor(target).long())
+            expected[f'{name}_{average}'] = float(fit.compute())
+    counts = evaluation_counts(TaskType.MULTILABEL_CLASSIFICATION, prob=prob,
+                               pred=pred, target=target)
+    expected.update({
+        summary.name: summary.value for summary in evaluation_summaries(
+            TaskType.MULTILABEL_CLASSIFICATION, counts, classes=names)
+        if isinstance(summary, Scalar)})
+    assert joined['metrics'] == pytest.approx(expected, abs=1e-6)
     assert joined['labelled'] == entities
+
+
+def test_realized_forecast_metrics_match_the_fit(tmp_path):
+    import torch
+    import torchmetrics
+    from kumo_core.evaluation_counts import (
+        evaluation_counts,
+        evaluation_summaries,
+    )
+    from kumo_core.types import TaskType
+
+    from kumo.engine._monitoring import _by_horizon
+
+    rng = np.random.default_rng(2)
+    entities, steps = 300, 4
+    pred, target = rng.gamma(2.0, 10.0, (2, entities, steps))
+    joined = _join(
+        tmp_path, 'forecasting',
+        pd.DataFrame({
+            'ENTITY': np.repeat(np.arange(entities), steps),
+            'TIMESTAMP': ANCHOR + pd.to_timedelta(
+                np.tile(np.arange(steps) * 7, entities), unit='D'),
+            'TARGET_PRED': pred.ravel(),
+        }).sample(frac=1, random_state=0),
+        pd.DataFrame({'ENTITY1': np.arange(entities),
+                      'future_labels': list(target)}),
+        label_target='future_labels')
+    for name, metric in (('mae', torchmetrics.MeanAbsoluteError()),
+                         ('rmse', torchmetrics.MeanSquaredError(
+                             squared=False))):
+        metric.update(torch.tensor(pred.ravel()), torch.tensor(target.ravel()))
+        assert joined['metrics'][name] == pytest.approx(float(metric.compute()))
+
+    timeframe = (0, 7, 7, 'days')
+    counts = evaluation_counts(
+        TaskType.FORECASTING, pred=pred.ravel(), target=target.ravel(),
+        target_edges=(0.0, 100.0), horizon=np.tile(np.arange(steps), entities))
+    holdout, = (summary for summary in evaluation_summaries(
+        TaskType.FORECASTING, counts, timeframe=timeframe)
+        if summary.name == 'holdout/by_horizon')
+    realized = _by_horizon(joined['by_horizon'], timeframe)
+    assert realized.columns == holdout.columns
+    for i, column in enumerate(holdout.columns):
+        values = [row[i] for row in realized.rows]
+        expected = [row[i] for row in holdout.rows]
+        assert values == (
+            expected if column == 'window' else pytest.approx(expected))
 
 
 def _counted(scores, edges=(0.0, 0.5, 1.0), id='r'):
@@ -844,14 +1099,10 @@ def test_evaluation_summaries_name_the_labels_snapshot(tmp_path):
              'after the snapshot data.'),
         Note('notes', 'Realized metrics: a metric is undefined for these '
              'labels.')]
-    assert _evaluation_summaries(replace(
-        result, task_type='forecasting', metrics={}, rows=0, labelled=0,
-        labelled_fraction=None, matured=None,
-        reasons={'metrics': 'forecasting metrics are not supported'}), None,
-        scored=2000) == [
-        Tag('kumo.labels_snapshot_id', 'g@023b25a5'),
-        Note('notes', "Realized quality isn't computed for forecasting yet "
-             '(2,000 rows scored).')]
+    by_horizon = Table('realized/by_horizon', ('horizon', 'rows', 'mae'),
+                       ((1, 3, 1.0), (2, 3, 3.0)))
+    assert by_horizon in _evaluation_summaries(result, None, None,
+                                               (by_horizon, ))
 
 
 def test_a_monitoring_tracking_failure_warns_or_raises(classifier, tmp_path,

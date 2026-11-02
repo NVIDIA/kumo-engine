@@ -246,7 +246,7 @@ Every value comes from exact counts over all rows, with no sampling. Numbers you
 |---|---|
 | fit | `holdout/by_threshold` (binary: threshold, share at or above, tp, fp, fn, tn, precision, recall, fpr), `holdout/at_threshold_<t>` (binary: the 2x2 matrix, actual × predicted, at the threshold), `holdout/calibration`, `holdout/confusion` (multiclass), `holdout/by_class` or `holdout/by_label`, `holdout/by_k`, `holdout/by_label_count` (multilabel), `holdout/by_horizon` (forecast), `holdout/histogram` and `holdout/residuals` (regression, forecast) |
 | fit, prediction | `data/health` (each table and link: rows, dropped rows, duplicate keys, matched rows, failed lookups), `data/columns` (column statistics; `≈` marks approximate ones) |
-| prediction | `pred/histogram`, `pred/by_class` (multiclass, multilabel), `pred/by_label_count` (multilabel), `pred/item_frequency` (ranking, link prediction); after `score_drift`, `drift/inputs/<table>` (one per source table: its encoded columns, most shifted first), `drift/table_rows` and `drift/link_edges` (each table's rows and each link's edges at training and now, for those whose size changed; in the card up to 12 rows) |
+| prediction | `pred/histogram`, `pred/by_class` (multiclass, multilabel), `pred/by_label_count` (multilabel), `pred/item_frequency` (ranking, link prediction); after `evaluate`, `realized/by_horizon` (forecast: horizon, window, rows, mae, rmse, bias, r2); after `score_drift`, `drift/inputs/<table>` (one per source table: its encoded columns, most shifted first), `drift/table_rows` and `drift/link_edges` (each table's rows and each link's edges at training and now, for those whose size changed; in the card up to 12 rows) |
 
 A histogram table has a row per bin with `from` and `to` (the end bins are open), then a count and a cumulative share per column.
 
@@ -322,7 +322,7 @@ with kumo.mlops(cfg):
 ```
 
 - Inside a block, the training and scoring snapshots come from the manifests and the artifact root (only their column statistics are fetched); outside one, pass `snapshot=` and `training_snapshot=`. Missing inputs leave a field `None` with a `reasons` entry.
-- `evaluate` returns the metrics the fit reports (`auroc`/`ap`, `mae`/`rmse`, `acc`, `map@k`), `matured=False` while the label window is still open, and the evaluated rows: `evaluation.frame` as a DataFrame, `evaluation.actuals` as a local Parquet directory. `evaluation.export(PredictionOutputConfig(...))` writes them to a table or directory for a warehouse monitor.
+- `evaluate` returns the fit's holdout metrics, with the same names and definitions: `auroc` and `ap` (binary), `mae` and `rmse` (regression, forecasting), `acc` (multiclass), `ap`, `auroc` and `auprc` with `_macro` and `_micro`, `f1_micro`, `precision_micro`, `recall_micro` and `f1_macro` (multilabel classification), and `map`, `precision`, `recall` and `f1` at each of the fit's k up to the number of classes each entity was scored on (ranking, link prediction). With tracking on, a forecast also logs `realized/by_horizon`, error by step as in the fit's `holdout/by_horizon`. It returns `matured=False` while the label window is still open, and the evaluated rows (one per forecast step, and one per class for multilabel classification) in `evaluation.actuals`, a local Parquet directory. `evaluation.export(PredictionOutputConfig(...))` writes them to a table or directory for a warehouse monitor.
 
 A later job finds the champion's runs by tag and reads them from the root:
 

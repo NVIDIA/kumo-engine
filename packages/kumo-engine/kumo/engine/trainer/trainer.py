@@ -737,16 +737,17 @@ def _require_publisher(export_config: ModelOutputConfig) -> None:
     check_model_location(export_config)
 
 
-def _target_window(workflow: Any) -> Optional[Tuple[int, int, int, str]]:
+def _target_window(parsed: Any,
+                   plan: Any) -> Optional[Tuple[int, int, int, str]]:
     r"""A temporal query's target window, step and unit; None if static."""
-    aggregations = workflow.query.query.get_all_target_aggregations()
+    aggregations = parsed.query.get_all_target_aggregations()
     if not aggregations or any(aggregation.aggr_time_range is None
                                for aggregation in aggregations):
         return None
-    offset = workflow.query.query.get_combined_date_offset_range()
+    offset = parsed.query.get_combined_date_offset_range()
     start, end = int(offset.start or 0), int(offset.end)
     step = inferred_or_missing_type_to_none(
-        workflow.training_table_generation_plan.timeframe_step)
+        getattr(plan, 'timeframe_step', None))
     return (start, end, end - start if step is None else int(step),
             str(getattr(offset.unit, 'value', offset.unit)))
 
@@ -1392,7 +1393,8 @@ class Trainer:
                 tracking=tracking.pointer(),
                 holdout_truncated=training_result.holdout_truncated,
                 holdout_counts=holdout_counts,
-                holdout_window=_target_window(workflow)),
+                holdout_window=_target_window(
+                    workflow.query, workflow.training_table_generation_plan)),
             deps=deps,
         )
 
@@ -1494,7 +1496,9 @@ class Trainer:
                       TaskType(workflow.query.task_type),
                       result.published_counts, threshold,
                       class_names(result.best_trainer.target_encoder),
-                      _target_window(workflow))),
+                      _target_window(
+                          workflow.query,
+                          workflow.training_table_generation_plan))),
                 *at_k_summaries(result.metrics)), result.metrics,
                 refit_full=fit_mode == 'refit_full'),
         )
@@ -1828,8 +1832,9 @@ class Trainer:
 
         settings = resolve(mlops)
         started = datetime.now(timezone.utc)
-        result = evaluate(self, run, labels_snapshot)
-        return track(result, run, settings, self, started, labels_snapshot)
+        result, tables = evaluate(self, run, labels_snapshot)
+        return track(result, run, settings, self, started, labels_snapshot,
+                     tables=tables)
 
     def score_drift(
         self,

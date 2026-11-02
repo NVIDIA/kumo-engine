@@ -1017,7 +1017,8 @@ def _temporal_timestamps(
     if error is not None:
         raise PredictiveQueryPlanError(f"{error.title}. {error.message}")
     if explicit:
-        return tuple(_timestamp_ns(value) for value in explicit), False
+        return (tuple(_timestamp_ns(value) for value in explicit),
+                "flexible_boundaries" in split)
     minimum, maximum, filter_buffer = _temporal_target_time_range(
         query, index_path)
 

@@ -371,6 +371,20 @@ def _forecasting(pred: np.ndarray, target: np.ndarray,
 def _horizon_summaries(counts: Counts,
                        timeframe: Optional[Timeframe]) -> List[Summary]:
     arrays = counts.arrays
+    return [
+        horizon_table('holdout/by_horizon', arrays, timeframe),
+        *(counts.summary(f'TARGET_PRED_h{h + 1}', 'target',
+                         f'holdout/histogram/predicted, '
+                         f'{horizon_label(h, timeframe)}')
+          for h in sorted(int(name.removeprefix('TARGET_PRED_h')) - 1
+                          for name in arrays
+                          if name.startswith('TARGET_PRED_h'))),
+    ]
+
+
+def horizon_table(name: str, arrays: Mapping[str, np.ndarray],
+                  timeframe: Optional[Timeframe]) -> Table:
+    r"""Error by forecast step from its ``horizon_*`` sums."""
     rows = np.maximum(arrays['horizon_rows'], 1)
     spread = (arrays['horizon_target_squared'] -
               arrays['horizon_target']**2 / rows)
@@ -386,20 +400,12 @@ def _horizon_summaries(counts: Counts,
     }
     steps = np.flatnonzero(arrays['horizon_rows'])
     window = () if timeframe is None else ('window',)
-    return [
-        Table('holdout/by_horizon', ('horizon', *window, *columns),
-              tuple((int(h) + 1,
-                     *(() if timeframe is None else
-                       (horizon_label(int(h), timeframe),)),
-                     *(values[h].item() for values in columns.values()))
-                    for h in steps)),
-        *(counts.summary(f'TARGET_PRED_h{h + 1}', 'target',
-                         f'holdout/histogram/predicted, '
-                         f'{horizon_label(h, timeframe)}')
-          for h in sorted(int(name.removeprefix('TARGET_PRED_h')) - 1
-                          for name in arrays
-                          if name.startswith('TARGET_PRED_h'))),
-    ]
+    return Table(name, ('horizon', *window, *columns),
+                 tuple((int(h) + 1,
+                        *(() if timeframe is None else
+                          (horizon_label(int(h), timeframe),)),
+                        *(values[h].item() for values in columns.values()))
+                       for h in steps))
 
 
 def horizon_label(h: int, timeframe: Optional[Timeframe] = None) -> str:

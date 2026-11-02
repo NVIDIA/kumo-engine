@@ -350,7 +350,6 @@ class PredictiveQuery:
         import shutil
 
         from kumo_core.io.json import from_json_dict
-        from kumo_core.training.export import read_spec, stage_parts
 
         # The fit's split ranges would not cover later anchors.
         options = CoreGenerationPlan()
@@ -366,11 +365,8 @@ class PredictiveQuery:
                                              timestamps=timestamps,
                                              validate_targets=False)
             staging = Path(generated.staging_dir)
-            yield [
-                str(staging / part)
-                for parts in stage_parts(read_spec(str(staging))).values()
-                for part in parts
-            ]
+            yield sorted(str(part) for part in Path(
+                generated.train_table_path).glob('*.parquet'))
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
