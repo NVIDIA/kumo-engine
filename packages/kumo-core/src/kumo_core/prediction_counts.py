@@ -180,7 +180,7 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
             tuple((int(n), float(per_row[n])) for n in np.flatnonzero(per_row)),
             'labels'))
     if 'item_frequency' in counts.arrays:
-        summaries += _item_summaries(counts)
+        summaries += _item_summaries(counts, as_of)
     drift = None if baseline is None else score_drift(counts, baseline)
     if drift is not None:
         summaries += [Scalar(f'drift/{name}', value)
@@ -216,11 +216,17 @@ def _by_class(counts: Counts, ranked: str, order: Sequence[int],
                *stats(columns[i] if columns else None)) for i in order))
 
 
-def _item_summaries(counts: Counts) -> List[Summary]:
+def _item_summaries(counts: Counts, as_of: Optional[str]) -> List[Summary]:
     arrays = counts.arrays
     total = {name: float(arrays[name])
              for name in ('catalogue', 'items_recommended', 'recommendations',
                           'most_recommendations', 'top1pct_recommendations')}
+    coverage = total['items_recommended'] / max(total['catalogue'], 1)
+    top_share = (total['top1pct_recommendations'] /
+                 max(total['recommendations'], 1))
+    title = (f"Item popularity{f', {as_of}' if as_of else ''}: "
+             f'{_percent(coverage)} of items recommended, top 1% get '
+             f'{_percent(top_share)} of recommendations')
     edges = counts.edges['recommendations']
     bounds = [0, *(int(edge) for edge in edges),
               int(total['most_recommendations']) + 1]
@@ -232,11 +238,9 @@ def _item_summaries(counts: Counts) -> List[Summary]:
                      float(arrays['item_frequency/sum'][b] /
                            max(total['recommendations'], 1)))
                     for b in range(len(edges) + 1))),
-        Scalar('pred/item_coverage',
-               total['items_recommended'] / max(total['catalogue'], 1)),
-        Scalar('pred/top_1pct_items_share', total['top1pct_recommendations'] /
-               max(total['recommendations'], 1)),
-        *_by_item_rank(arrays.get('items_by_rank', ())),
+        Scalar('pred/item_coverage', coverage),
+        Scalar('pred/top_1pct_items_share', top_share),
+        *_item_popularity(arrays.get('items_by_rank', ()), title),
     ]
 
 
@@ -302,11 +306,24 @@ def _per_pct(counts: np.ndarray) -> np.ndarray:
     return per_pct
 
 
-def _by_item_rank(ranked: Sequence[float]) -> List[Series]:
+def _item_popularity(ranked: Sequence[float], title: str) -> List[Summary]:
     points = tuple((rank, float(count))
                    for rank, count in enumerate(ranked, 1) if count)
-    return [Series('pred/recommendations_by_item_rank', points, 'item_rank',
-                   chart=True)] if len(points) > 1 else []
+    if len(points) < 2:
+        return []
+    return [
+        Series('pred/item_popularity', points, 'item_rank', chart=True),
+        BarChart('pred/item_popularity', title,
+                 ('item rank', 'times recommended'),
+                 tuple(float(edge) for edge in range(len(ranked) + 1)),
+                 tuple(float(count) for count in ranked)),
+    ]
+
+
+def _percent(share: float) -> str:
+    if share >= 0.01 or not share:
+        return f'{share:.0%}'
+    return f'{100 * share:.1g}%'
 
 
 def _range(low: int, high: int) -> str:

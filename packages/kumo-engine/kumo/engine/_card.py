@@ -237,8 +237,8 @@ def charts(metrics: Mapping[str, float]) -> List[Note]:
                 else 'pred/score_histogram/<class>')
         steps.append(f'`{name}`: step = score × 100 (step 37 = scores '
                      '0.37–0.38)')
-    if 'pred/recommendations_by_item_rank' in metrics:
-        steps.append('`pred/recommendations_by_item_rank`: step = item rank '
+    if 'pred/item_popularity' in metrics:
+        steps.append('`pred/item_popularity`: step = item rank '
                      '(1 = most recommended)')
     return [Note('notes', f"Charts: {'; '.join(steps)}.")] if steps else []
 
