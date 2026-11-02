@@ -277,17 +277,6 @@ class TrainingResult:
             self._trainer = trainer
         return trainer
 
-    def holdout_evaluation(
-        self, binary_classification_threshold: Optional[float] = None
-    ) -> 'EvaluationResult':
-        r"""The holdout as evaluated rows, a warehouse monitor's baseline."""
-        from kumo.engine._monitoring import holdout_evaluation
-
-        if binary_classification_threshold is None:
-            binary_classification_threshold = (
-                self.scoring_defaults.binary_classification_threshold)
-        return holdout_evaluation(self, binary_classification_threshold)
-
     def holdout_df(self) -> pd.DataFrame:
         r"""Read the holdout predictions as a pandas DataFrame.
 
