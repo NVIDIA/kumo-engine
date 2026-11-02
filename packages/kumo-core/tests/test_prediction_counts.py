@@ -23,7 +23,14 @@ from kumo_core.prediction_counts import (
 )
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.score_drift import score_drift
-from kumo_core.summaries import Histogram, Note, Scalar, Series, Table
+from kumo_core.summaries import (
+    BarChart,
+    Histogram,
+    Note,
+    Scalar,
+    Series,
+    Table,
+)
 from kumo_core.types import TaskType
 
 
@@ -50,7 +57,12 @@ def _batches(task_type, edges, columns, prob=None, pred=None, values=None):
 
 def _by_name(summaries):
     return {summary.name: summary for summary in summaries
-            if not isinstance(summary, Note)}
+            if not isinstance(summary, (Note, BarChart))}
+
+
+def _charts(summaries):
+    return {summary.name: summary for summary in summaries
+            if isinstance(summary, BarChart)}
 
 
 def _summary_row(column, values):
@@ -75,6 +87,13 @@ def test_binary_counts_match_brute_force():
     assert logged['pred/score_histogram'] == Series(
         'pred/score_histogram',
         tuple(enumerate(per_pct.astype(float))), 'score_pct', chart=True)
+    assert _charts(prediction_summaries(
+        counts, threshold=0.4, baseline=None, entity='users',
+        as_of='2026-11-01')) == {'pred/score_histogram': BarChart(
+            'pred/score_histogram', 'Scores of 301 users, 2026-11-01',
+            ('score', 'users'), PROBABILITY_EDGES,
+            tuple(per_pct.astype(float)), (),
+            ('this run', 'holdout, scaled to the same total'))}
     assert logged['pred/histogram/True_PROB'] == Histogram(
         'pred/histogram/True_PROB', PROBABILITY_EDGES,
         _brute_histogram(true, PROBABILITY_EDGES), (true.min(), true.max()))
@@ -97,8 +116,8 @@ def test_multiclass_summarizes_each_class_and_the_most_predicted():
         TaskType.MULTICLASS_CLASSIFICATION, prob=tested,
         target=rng.integers(0, 25, 200)))
 
-    logged = _by_name(
-        prediction_summaries(counts, threshold=None, baseline=holdout))
+    summaries = prediction_summaries(counts, threshold=None, baseline=holdout)
+    logged, charts = _by_name(summaries), _charts(summaries)
     top = np.bincount(prob.argmax(axis=1), minlength=25)
     at_holdout = np.bincount(tested.argmax(axis=1), minlength=25)
     order = sorted(range(25), key=lambda index: -top[index])
@@ -109,6 +128,12 @@ def test_multiclass_summarizes_each_class_and_the_most_predicted():
             if name.startswith('pred/score_histogram')] == [
         'pred/score_histogram/confidence',
         *(f'pred/score_histogram/c{index}' for index in order[:20])]
+    assert list(charts) == [name for name in logged
+                            if name.startswith('pred/score_histogram')]
+    confidence = charts['pred/score_histogram/confidence']
+    assert confidence.title == 'Scores of 400 entities (confidence) vs holdout'
+    assert sum(confidence.line) == pytest.approx(400)
+    assert charts[f'pred/score_histogram/c{order[0]}'].line == ()
     assert logged['pred/histogram/confidence'].counts == _brute_histogram(
         prob.max(axis=1), PROBABILITY_EDGES)
     assert logged['pred/by_class'].columns == (

@@ -18,7 +18,14 @@ from kumo_core.evaluation_counts import (
 )
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.score_drift import PSI_SHIFTS, axis, drift_column, score_drift
-from kumo_core.summaries import Note, Scalar, Series, Summary, Table
+from kumo_core.summaries import (
+    BarChart,
+    Note,
+    Scalar,
+    Series,
+    Summary,
+    Table,
+)
 from kumo_core.types import TaskType
 
 ITEMS = 'items'
@@ -124,8 +131,9 @@ def _column(counts: Counts, name: str, edges: str, values: Any) -> None:
 
 def prediction_summaries(counts: Counts, *, threshold: Optional[float],
                          baseline: Optional[Counts],
-                         timeframe: Optional[Timeframe] = None
-                         ) -> List[Summary]:
+                         timeframe: Optional[Timeframe] = None,
+                         entity: str = 'entities',
+                         as_of: Optional[str] = None) -> List[Summary]:
     r"""Score histograms, shares and drift vs the holdout."""
     summaries: List[Summary] = []
     scores = [name for name in counts.extents if name in _SCORES]
@@ -140,9 +148,10 @@ def prediction_summaries(counts: Counts, *, threshold: Optional[float],
         counts.summary(name, axis(name), f'pred/histogram/{_label(name)}')
         for name in (*scores, *columns)
     ]
-    summaries += [_by_score_pct(name, counts.arrays[name])
-                  for name in (*scores, *columns)
-                  if counts.edges[axis(name)] == PROBABILITY_EDGES]
+    for name in (*scores, *columns):
+        if counts.edges[axis(name)] == PROBABILITY_EDGES:
+            summaries += _score_histogram(name, counts, baseline, entity,
+                                          as_of)
     summaries += [
         counts.summary(name, 'target', 'pred/histogram/predicted, ' +
                        horizon_label(int(name.removeprefix('TARGET_PRED_h'))
@@ -228,20 +237,35 @@ def _item_summaries(counts: Counts) -> List[Summary]:
     ]
 
 
-def _by_score_pct(column: str, counts: np.ndarray) -> Series:
-    r"""Counts per hundredth of score, clipped to [0, 1]."""
+def _score_histogram(column: str, counts: Counts,
+                     baseline: Optional[Counts], entity: str,
+                     as_of: Optional[str]) -> List[Summary]:
+    per_pct = _per_pct(counts.arrays[column])
+    holdout = (baseline.arrays.get(column) if baseline is not None and
+               baseline.edges.get(axis(column)) == PROBABILITY_EDGES else None)
+    line = () if holdout is None or not holdout.sum() else tuple(
+        (_per_pct(holdout) * per_pct.sum() / holdout.sum()).tolist())
+    name, label = 'pred/score_histogram', ''
+    if column != 'True_PROB':
+        label = _label(column).removesuffix('_PROB')
+        name += '/' + re.sub(r'[^\w.-]', '_', label)
+    title = (f'Scores of {int(per_pct.sum()):,} {entity}' +
+             (f' ({label})' if label else '') +
+             (f', {as_of}' if as_of else '') + (' vs holdout' if line else ''))
+    return [
+        Series(name, tuple(enumerate(per_pct.tolist())), 'score_pct',
+               chart=True),
+        BarChart(name, title, ('score', entity), PROBABILITY_EDGES,
+                 tuple(per_pct.tolist()), line,
+                 ('this run', 'holdout, scaled to the same total')),
+    ]
+
+
+def _per_pct(counts: np.ndarray) -> np.ndarray:
     per_pct = counts[1:-1].astype(np.float64)
     per_pct[0] += counts[0]
     per_pct[-1] += counts[-1]
-    return Series(_score_histogram(column),
-                  tuple(enumerate(per_pct.tolist())), 'score_pct', chart=True)
-
-
-def _score_histogram(column: str) -> str:
-    if column == 'True_PROB':
-        return 'pred/score_histogram'
-    name = re.sub(r'[^\w.-]', '_', column.removesuffix('_PROB'))
-    return f'pred/score_histogram/{name}'
+    return per_pct
 
 
 def _by_item_rank(ranked: Sequence[float]) -> List[Series]:

@@ -19,6 +19,7 @@ from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.prediction_counts import count_predictions
 from kumo_core.score_counts import PROBABILITY_EDGES, Counts
 from kumo_core.summaries import (
+    BarChart,
     Confusion,
     Dataset,
     Histogram,
@@ -646,14 +647,18 @@ def test_prediction_record_of_the_recorded_run():
         'threshold_source': 'argument',
     }
     assert record.metrics == {}
+    per_pct = tuple(np.bincount((SCORES * 100).astype(int),
+                                minlength=100).astype(float).tolist())
     assert record.summaries == (
         Scalar('pred/rows', 50),
         Histogram('pred/histogram/True_PROB', PROBABILITY_EDGES, tuple(
             np.bincount(np.searchsorted(PROBABILITY_EDGES, SCORES, 'right'),
                         minlength=102).tolist()), (min(SCORES), max(SCORES))),
-        Series('pred/score_histogram', tuple(enumerate(
-            np.bincount((SCORES * 100).astype(int), minlength=100).astype(
-                float).tolist())), 'score_pct', chart=True),
+        Series('pred/score_histogram', tuple(enumerate(per_pct)), 'score_pct',
+               chart=True),
+        BarChart('pred/score_histogram', 'Scores of 50 entities, 2024-04-29',
+                 ('score', 'entities'), PROBABILITY_EDGES, per_pct, (),
+                 ('this run', 'holdout, scaled to the same total')),
         Table('pred/summary', ('column', 'mean', 'min', 'max'),
               (('True_PROB', SCORES.sum() / 50, 0.2, 0.6),), brief=True),
         Scalar('pred/positive_rate', 0.62))
