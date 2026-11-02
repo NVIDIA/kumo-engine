@@ -172,7 +172,7 @@ def test_an_occupied_volume_directory_is_refused_before_scoring(tmp_path):
     pq.write_table(pa.table({'users': [1]}), part)
     sink.write_files(SimpleNamespace(), target, [str(part)], export_id='r1')
 
-    for mode in (None, WriteMode.OVERWRITE):
+    for mode in (None, WriteMode.APPEND):
         with pytest.raises(ArtifactDestinationConflict, match='/predictions/'):
             sink.preflight_write_files(SimpleNamespace(), target,
                                        write_mode=mode)
