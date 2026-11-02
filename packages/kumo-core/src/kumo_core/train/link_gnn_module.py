@@ -466,7 +466,7 @@ class LinkGNNLightningModule(BaseLinkLightningModule):
             return dict(pkey=lhs_pkey, id=lhs_index, time=time, target=target,
                         score=score, label=label)
 
-        return self.holdout_top_scores(stage, score)
+        return self.holdout_top_scores(stage, batch, score)
 
     def evaluation_epoch_end(
         self,

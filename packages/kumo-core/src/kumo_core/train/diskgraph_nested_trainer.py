@@ -1184,6 +1184,7 @@ class DiskgraphNestedTrainer(Trainer):
         """Run PL validate/test, then build the formatted EvalOutput
         (``_build_eval_df`` reconstructs the per-row df from ``pl_model.outputs``).
         """
+        from kumo_core.top_scores import TopScoreSpill, top_score_counts
         from kumo_core.train.output import EvalOutput
         from kumoapi.train import TrainingStage
         assert stage in {
@@ -1201,6 +1202,7 @@ class DiskgraphNestedTrainer(Trainer):
                 'DiskgraphNestedTrainer.')
 
         self.pl_model.eval_top_k = None
+        top_scores = None
 
         with suppress_iterable_len_warning(), \
                 suppress_lightning_leafspec_warning():
@@ -1211,11 +1213,18 @@ class DiskgraphNestedTrainer(Trainer):
                     ckpt_path=fsspec_mangle(self.best_ckpt),
                 )
             else:
-                metric_results = self.pl_trainer.test(
-                    model=self.pl_model,
-                    datamodule=self.datamodule,
-                    ckpt_path=fsspec_mangle(self.best_ckpt),
-                )
+                spill = TopScoreSpill(
+                    osp.join(self.log_dir, 'test_top_scores.parquet'))
+                self.pl_model.top_score_spill = spill
+                try:
+                    metric_results = self.pl_trainer.test(
+                        model=self.pl_model,
+                        datamodule=self.datamodule,
+                        ckpt_path=fsspec_mangle(self.best_ckpt),
+                    )
+                finally:
+                    self.pl_model.top_score_spill = None
+                    top_scores = spill.close()
 
         if metric_results:
             metrics = metric_results[0]
@@ -1240,10 +1249,8 @@ class DiskgraphNestedTrainer(Trainer):
         save_csv(metrics, path, overwrite=True)
 
         if self.task.task_type.is_link_pred:
-            from kumo_core.evaluation_counts import top_score_counts
-            top = (outputs or {}).get('top_score')
-            return EvalOutput(metrics, None, None, None if top is None else
-                              top_score_counts(top.numpy()))
+            return EvalOutput(metrics, None, None, None if top_scores is None
+                              else top_score_counts(top_scores))
 
         df = self._build_eval_df(outputs)
         counts = None

@@ -2112,6 +2112,8 @@ class Trainer(PortableConfigMixin):
         from kumo_core.evaluation_counts import evaluation_counts
 
         task_type = self.task.task_type
+        if task_type == TaskType.MULTILABEL_RANKING:
+            return self._top_score_counts(outputs['prob'])
         if task_type not in (TaskType.REGRESSION, TaskType.FORECASTING):
             return evaluation_counts(task_type, prob=outputs.get('prob'),
                                      pred=outputs.get('pred'),
@@ -2128,6 +2130,16 @@ class Trainer(PortableConfigMixin):
         return evaluation_counts(task_type, pred=df[f'{column}_PRED'],
                                  target=target, target_edges=edges,
                                  horizon=horizon)
+
+    def _top_score_counts(self, prob: Any) -> Any:
+        from kumo_core.top_scores import TopScoreSpill, top_score_counts
+
+        prob = np.asarray(prob)
+        spill = TopScoreSpill(osp.join(self.log_dir, 'test_top_scores.parquet'))
+        for start in range(0, len(prob), 1 << 16):
+            rows = prob[start:start + (1 << 16)]
+            spill.write(np.arange(start, start + len(rows)), rows.max(axis=1))
+        return top_score_counts(spill.close())
 
     @trace()
     def validate(

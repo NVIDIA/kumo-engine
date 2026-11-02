@@ -274,22 +274,6 @@ def test_forecasting_summaries_are_per_horizon(timeframe, windows):
         np.abs(pred - target).mean())
 
 
-def test_ranking_top_scores_are_counted_on_their_percentiles():
-    rng = np.random.default_rng(5)
-    prob = rng.normal(size=(500, 30))
-
-    counts = evaluation_counts(TaskType.MULTILABEL_RANKING, prob=prob,
-                               target=None)
-
-    top = prob.max(axis=1)
-    edges = tuple(np.unique(np.quantile(top, np.linspace(0, 1, 101))))
-    assert counts.edges['top_score'] == edges
-    assert counts.arrays['top_score'].tolist() == np.bincount(
-        [_bin(v, edges) for v in top], minlength=len(edges) + 1).tolist()
-    assert counts.extents['top_score'] == (top.min(), top.max())
-    assert evaluation_summaries(TaskType.MULTILABEL_RANKING, counts) == []
-
-
 def test_ranking_metrics_become_at_k_columns():
     assert at_k_summaries({'test_map@10': 0.2, 'test_map@1': 0.5,
                            'test_loss': 1.0, 'val_map@10': 0.3}) == [
@@ -372,19 +356,6 @@ def test_counts_allocate_far_less_than_their_input(task_type, columns):
     peak = tracemalloc.get_traced_memory()[1]
     tracemalloc.stop()
     assert peak < columns.get('prob', columns.get('pred')).nbytes / 2
-
-
-def test_top_score_counts_copy_the_scores_once():
-    import tracemalloc
-
-    from kumo_core.evaluation_counts import top_score_counts
-    scores = np.random.default_rng(8).normal(size=4_000_000)
-
-    tracemalloc.start()
-    top_score_counts(scores)
-    peak = tracemalloc.get_traced_memory()[1]
-    tracemalloc.stop()
-    assert peak < 1.5 * scores.nbytes
 
 
 def test_numerical_holdout_counts_are_skipped_without_target_bins():

@@ -24,7 +24,6 @@ _TOP_K = 5
 TOP_CLASSES = 20
 _RESIDUAL_BINS = 40
 _HORIZONS = 12
-_TOP_SCORE_BINS = 100
 _CHUNK = 1 << 18
 BASELINE = ('True_PROB', 'confidence', 'top_score', 'classes', 'TARGET_PRED')
 Timeframe = Tuple[int, int, int, str]
@@ -50,8 +49,6 @@ def evaluation_counts(task_type: TaskType, *, target: Any,
         return _multilabel(np.asarray(prob, dtype=np.float64),
                            np.asarray(pred).astype(bool),
                            np.asarray(target).astype(bool))
-    if task_type is TaskType.MULTILABEL_RANKING:
-        return top_score_counts(np.asarray(prob, dtype=np.float64).max(axis=1))
     if task_type in (TaskType.REGRESSION, TaskType.FORECASTING):
         values = (np.asarray(pred, dtype=np.float64).reshape(-1),
                   np.asarray(target, dtype=np.float64).reshape(-1))
@@ -70,21 +67,6 @@ def _in_chunks(count: Any, *columns: np.ndarray) -> Counts:
     return reduce(Counts.merge, (
         count(*(column[start:start + step] for column in columns))
         for start in range(0, max(rows, 1), step)))
-
-
-def top_score_counts(scores: Any) -> Counts:
-    r"""Top scores on bins cut at their own exact percentiles."""
-    scores = np.asarray(scores, dtype=np.float64)
-    scores = scores[np.isfinite(scores)]
-    edges = () if not scores.size else tuple(np.unique(np.quantile(
-        scores, np.linspace(0, 1, _TOP_SCORE_BINS + 1),
-        overwrite_input=True)).tolist())
-    scores.sort()
-    counts = Counts({'top_score': edges}, {'top_score': np.diff(
-        np.searchsorted(scores, edges), prepend=0, append=scores.size)})
-    if scores.size:
-        counts.extents['top_score'] = (float(scores[0]), float(scores[-1]))
-    return counts
 
 
 def baseline(counts: Counts) -> Counts:

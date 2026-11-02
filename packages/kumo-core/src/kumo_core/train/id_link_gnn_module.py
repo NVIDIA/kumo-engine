@@ -279,7 +279,7 @@ class IDLinkGNNLightningModule(BaseLinkLightningModule):
         if stage != TrainingStage.TEST:
             return {}
         size = batch[self.lhs_name].batch_size
-        return self.holdout_top_scores(stage, torch.full(
+        return self.holdout_top_scores(stage, batch, torch.full(
             (size, 1), float('nan'), device=logits.device).scatter_reduce(
                 0, lhs_pred_batch.view(-1, 1), logits.sigmoid().view(-1, 1),
                 'amax', include_self=False))

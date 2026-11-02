@@ -6,11 +6,7 @@ from functools import reduce
 
 import numpy as np
 import pytest
-from kumo_core.evaluation_counts import (
-    baseline,
-    evaluation_counts,
-    top_score_counts,
-)
+from kumo_core.evaluation_counts import baseline, evaluation_counts
 from kumo_core.prediction_counts import (
     MAX_CLASS_HISTOGRAMS,
     count_predictions,
@@ -31,6 +27,7 @@ from kumo_core.summaries import (
     Series,
     Table,
 )
+from kumo_core.top_scores import TopScoreSpill, top_score_counts
 from kumo_core.types import TaskType
 
 
@@ -289,13 +286,17 @@ def test_multilabel_counts_each_labels_predicted_rows_and_top_score():
         'labels')
 
 
-def test_recommendations_count_items_and_top_scores_across_workers(tmp_path):
+def test_recommendations_count_items_and_top_scores_across_workers(
+        tmp_path, tmp_path_factory):
     rng = np.random.default_rng(6)
     catalogue = 1000
     items = np.minimum(rng.zipf(1.5, size=(500, 5)) - 1, catalogue)
     items[::7, -1] = -1
     scores = rng.normal(size=500)
-    holdout = top_score_counts(rng.normal(size=300))
+    spill = TopScoreSpill(
+        str(tmp_path_factory.mktemp('holdout') / 'top.parquet'))
+    spill.write(np.arange(300), rng.normal(size=300))
+    holdout = top_score_counts(spill.close())
     parts = []
     for worker, rows in enumerate(np.array_split(np.arange(500), 3)):
         counts = Counts({'top_score': holdout.edges['top_score']})

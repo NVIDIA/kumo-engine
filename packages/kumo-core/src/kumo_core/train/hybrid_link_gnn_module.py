@@ -641,7 +641,7 @@ class HybridLinkGNNLightningModule(ShallowRHSLinkGNNLightningModule):
             return dict(pkey=lhs_pkey, id=lhs_index, time=time, target=index,
                         score=score, label=label)
 
-        return self.holdout_top_scores(stage, score)
+        return self.holdout_top_scores(stage, batch, score)
 
     # Prediction Callbacks ####################################################
 
