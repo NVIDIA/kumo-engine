@@ -25,7 +25,7 @@ class Routed:
 
 
 def route(summaries: Sequence[Summary]) -> Routed:
-    r"""Sorts summaries by how a tracker writes them."""
+    r"""Sorts summaries by how a tracker writes them; skips unknown types."""
     routed, tables = Routed(), []
     for summary in summaries:
         if isinstance(summary, Scalar):
@@ -39,8 +39,6 @@ def route(summaries: Sequence[Summary]) -> Routed:
             routed.card.append(summary)
         elif isinstance(summary, Table):
             tables.append(summary)
-        else:
-            raise TypeError(f'No route for {type(summary).__name__}')
     routed.tables = tables
     return routed
 
