@@ -6,8 +6,9 @@
 //! metrics. Both sides are hash-partitioned on their key into Arrow IPC
 //! spill files of about `partition_rows` rows each, and at most
 //! `MAX_CONCURRENT_JOINS` partitions are joined at once. Metrics follow the
-//! fit-time definitions: exact AUROC and AP as in torchmetrics, MAE/RMSE,
-//! top-1 accuracy, and MAP@k / precision@k as in PyG.
+//! fit-time definitions: exact AUROC, AP and AUPRC as in torchmetrics (per
+//! label and pooled for multilabel), MAE/RMSE overall and per forecast step,
+//! top-1 accuracy, and MAP, precision, recall and F1 at k as in PyG.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
@@ -19,10 +20,11 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use arrow::array::{
-    Array, AsArray, BooleanArray, FixedSizeBinaryArray, TimestampNanosecondArray, UInt32Array,
+    Array, AsArray, BooleanArray, FixedSizeBinaryArray, Float64Array, ListBuilder, StringBuilder,
+    TimestampNanosecondArray, UInt32Array,
 };
-use arrow::compute::{cast, filter, interleave, take_record_batch};
-use arrow::datatypes::Float64Type;
+use arrow::compute::{cast, interleave, take, take_record_batch};
+use arrow::datatypes::{Float64Type, TimestampNanosecondType};
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::FileWriter;
 use arrow::row::{RowConverter, SortField};
@@ -41,13 +43,33 @@ use crate::bp_col_stats::row_group_batches;
 pub enum EvaluateTask {
     Binary,
     Regression,
+    Forecasting,
     Multiclass,
-    Link,
+    Multilabel,
+    Ranking,
 }
 
 impl EvaluateTask {
     fn grouped(self) -> bool {
-        matches!(self, Self::Multiclass | Self::Link)
+        !matches!(self, Self::Binary | Self::Regression)
+    }
+
+    /// Labels are sets of classes.
+    fn sets(self) -> bool {
+        matches!(self, Self::Multilabel | Self::Ranking)
+    }
+
+    /// One evaluated row per matched prediction row, not per label.
+    fn exploded(self) -> bool {
+        matches!(self, Self::Forecasting | Self::Multilabel)
+    }
+
+    fn score(self) -> &'static str {
+        match self {
+            Self::Binary => "True_PROB",
+            Self::Regression | Self::Forecasting => "TARGET_PRED",
+            Self::Multiclass | Self::Multilabel | Self::Ranking => "SCORE",
+        }
     }
 }
 
@@ -69,6 +91,9 @@ pub struct EvaluateSpec {
     /// (output column, UTC nanoseconds) pairs written as constant timestamps.
     #[serde(default)]
     pub constant_timestamps: Vec<(String, i64)>,
+    /// Ranking cutoffs; those above the returned count are skipped.
+    #[serde(default)]
+    pub ks: Vec<usize>,
     pub spill_dir: PathBuf,
     #[serde(default = "default_partition_rows")]
     pub partition_rows: usize,
@@ -80,6 +105,7 @@ fn default_partition_rows() -> usize {
 
 const MAX_CONCURRENT_JOINS: usize = 8;
 const KEY: &str = "__key";
+const LABEL_SEPARATOR: char = '|';
 
 type Batches = Box<dyn Iterator<Item = Result<RecordBatch>> + Send>;
 
@@ -152,14 +178,19 @@ fn keys(batch: &RecordBatch) -> Result<impl Iterator<Item = u128> + '_> {
     Ok((0..keys.len()).map(|row| u128::from_le_bytes(keys.value(row).try_into().unwrap())))
 }
 
-/// Sorted, distinct class hashes of each label.
-fn label_classes(target: &ArrayRef, link: bool, class: &DataType) -> Result<Vec<Option<Vec<u64>>>> {
-    if !link {
+/// Sorted, distinct class hashes of each label: its class, or its set of
+/// classes as a list or a `|`-separated string.
+fn label_classes(target: &ArrayRef, sets: bool, class: &DataType) -> Result<Vec<Option<Vec<u64>>>> {
+    if !sets {
         let classes = classes(target, class)?;
         return Ok(classes.into_iter().map(|c| c.map(|c| vec![c])).collect());
     }
+    let target = match target.data_type() {
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => split(target)?,
+        _ => target.clone(),
+    };
     let item = Field::new_list_field(class.clone(), true);
-    let list = cast(target, &DataType::List(Arc::new(item)))?;
+    let list = cast(&target, &DataType::List(Arc::new(item)))?;
     let list = list.as_list::<i32>();
     let items = classes(list.values(), class)?;
     let offsets = list.value_offsets();
@@ -171,6 +202,38 @@ fn label_classes(target: &ArrayRef, link: bool, class: &DataType) -> Result<Vec<
                 row.sort_unstable();
                 row.dedup();
                 row
+            })
+        })
+        .collect())
+}
+
+fn split(strings: &ArrayRef) -> Result<ArrayRef> {
+    let strings = cast(strings, &DataType::Utf8)?;
+    let mut lists = ListBuilder::new(StringBuilder::new());
+    for value in strings.as_string::<i32>() {
+        for item in value.into_iter().flat_map(|v| v.split(LABEL_SEPARATOR)) {
+            if !item.is_empty() {
+                lists.values().append_value(item);
+            }
+        }
+        lists.append(value.is_some());
+    }
+    Ok(Arc::new(lists.finish()))
+}
+
+/// Each label's value per forecast step.
+fn label_steps(target: &ArrayRef) -> Result<Vec<Option<Vec<Option<f64>>>>> {
+    let item = Field::new_list_field(DataType::Float64, true);
+    let list = cast(target, &DataType::List(Arc::new(item)))?;
+    let list = list.as_list::<i32>();
+    let values = list.values().as_primitive::<Float64Type>();
+    let offsets = list.value_offsets();
+    Ok((0..list.len())
+        .map(|row| {
+            list.is_valid(row).then(|| {
+                (offsets[row] as usize..offsets[row + 1] as usize)
+                    .map(|i| values.is_valid(i).then(|| values.value(i)))
+                    .collect()
             })
         })
         .collect())
@@ -250,6 +313,17 @@ fn scatter(
     })
 }
 
+/// A forecast step's sums, named as the holdout's horizon counts.
+type Step = [f64; 6];
+const STEP_NAMES: [&str; 6] = [
+    "rows",
+    "abs_error",
+    "squared_error",
+    "error",
+    "target",
+    "target_squared",
+];
+
 #[derive(Default)]
 struct Accumulator {
     rows: u64,
@@ -259,8 +333,12 @@ struct Accumulator {
     count: u64,
     sum: f64,
     squares: f64,
-    /// Link: MAP numerators by label count.
-    map_by_labels: BTreeMap<usize, f64>,
+    steps: Vec<Step>,
+    /// Multilabel, per class: `pairs`, and true positive, false positive and
+    /// false negative counts at the predicted labels.
+    classes: BTreeMap<u64, (Vec<u64>, [u64; 3])>,
+    /// Ranking, per `ks`: MAP, precision, recall and F1 sums.
+    at_k: Vec<[f64; 4]>,
     k: usize,
 }
 
@@ -272,11 +350,86 @@ impl Accumulator {
         self.count += other.count;
         self.sum += other.sum;
         self.squares += other.squares;
-        for (labels, value) in other.map_by_labels {
-            *self.map_by_labels.entry(labels).or_default() += value;
+        add(&mut self.steps, &other.steps);
+        for (class, (mut pairs, counts)) in other.classes {
+            let (all, total) = self.classes.entry(class).or_default();
+            all.append(&mut pairs);
+            total.iter_mut().zip(counts).for_each(|(t, c)| *t += c);
         }
+        add(&mut self.at_k, &other.at_k);
         self.k = self.k.max(other.k);
         self
+    }
+
+    fn error(&mut self, prediction: f64, label: f64) {
+        let error = prediction - label;
+        self.count += 1;
+        self.sum += error.abs();
+        self.squares += error * error;
+    }
+
+    fn step(&mut self, step: usize, prediction: f64, label: f64) {
+        self.error(prediction, label);
+        if self.steps.len() <= step {
+            self.steps.resize(step + 1, [0.0; 6]);
+        }
+        let error = prediction - label;
+        let values = [1.0, error.abs(), error * error, error, label, label * label];
+        self.steps[step]
+            .iter_mut()
+            .zip(values)
+            .for_each(|(s, v)| *s += v);
+    }
+
+    fn label(&mut self, entry: &Entry, label: bool) {
+        let Some(class) = entry.class else { return };
+        let (pairs, counts) = self.classes.entry(class).or_default();
+        if let Some(score) = entry.score.filter(|s| s.is_finite()) {
+            pairs.push(order_key(score) << 1 | u64::from(label));
+        }
+        match (entry.predicted, label) {
+            (true, true) => counts[0] += 1,
+            (true, false) => counts[1] += 1,
+            (false, true) => counts[2] += 1,
+            (false, false) => {}
+        }
+    }
+
+    /// PyG's metrics at each of `ks` over `ranked` against `items`.
+    fn rank(&mut self, ranked: &[Entry], items: &[u64], ks: &[usize]) {
+        let labels = items.len() as f64;
+        let (mut hits, mut numerator, mut at) = (0.0, 0.0, Vec::with_capacity(ranked.len()));
+        for (rank, entry) in ranked.iter().enumerate() {
+            if entry.class.is_some_and(|c| items.binary_search(&c).is_ok()) {
+                hits += 1.0;
+                numerator += hits / (rank + 1) as f64;
+            }
+            at.push((hits, numerator));
+        }
+        if self.at_k.len() < ks.len() {
+            self.at_k.resize(ks.len(), [0.0; 4]);
+        }
+        for (sums, &k) in self.at_k.iter_mut().zip(ks) {
+            let (hits, numerator) = at[k.min(at.len()) - 1];
+            let (precision, recall) = (hits / k as f64, hits / labels);
+            let f1 = if hits > 0.0 {
+                2.0 * precision * recall / (precision + recall)
+            } else {
+                0.0
+            };
+            let values = [numerator / labels.min(k as f64), precision, recall, f1];
+            sums.iter_mut().zip(values).for_each(|(s, v)| *s += v);
+        }
+        self.count += 1;
+    }
+}
+
+fn add<const N: usize>(sums: &mut Vec<[f64; N]>, other: &[[f64; N]]) {
+    if sums.len() < other.len() {
+        sums.resize(other.len(), [0.0; N]);
+    }
+    for (sum, values) in sums.iter_mut().zip(other) {
+        sum.iter_mut().zip(values).for_each(|(s, v)| *s += v);
     }
 }
 
@@ -289,8 +442,54 @@ fn order_key(score: f64) -> u64 {
     })
 }
 
-/// A grouped prediction row: score, class and (batch, row).
-type Ranked = (f64, Option<u64>, (usize, usize));
+/// A grouped prediction row.
+struct Entry {
+    score: Option<f64>,
+    class: Option<u64>,
+    /// Forecasting: the step's timestamp.
+    time: i64,
+    predicted: bool,
+    at: (usize, usize),
+}
+
+fn grouped_entries(
+    batch: &RecordBatch,
+    index: usize,
+    task: EvaluateTask,
+    class: &DataType,
+) -> Result<Vec<Entry>> {
+    let rows = batch.num_rows();
+    let scores = floats(column(batch, task.score())?)?;
+    let classes = match task {
+        EvaluateTask::Forecasting => vec![None; rows],
+        _ => classes(column(batch, "CLASS")?, class)?,
+    };
+    let times: Vec<i64> = match task {
+        EvaluateTask::Forecasting => {
+            let time = cast(
+                column(batch, "TIMESTAMP")?,
+                &DataType::Timestamp(TimeUnit::Nanosecond, None),
+            )?;
+            time.as_primitive::<TimestampNanosecondType>()
+                .values()
+                .to_vec()
+        }
+        _ => vec![0; rows],
+    };
+    let predicted = match task {
+        EvaluateTask::Multilabel => floats(column(batch, "PREDICTED")?)?,
+        _ => vec![None; rows],
+    };
+    Ok((0..rows)
+        .map(|row| Entry {
+            score: scores[row],
+            class: classes[row],
+            time: times[row],
+            predicted: predicted[row].is_some_and(|p| p != 0.0),
+            at: (index, row),
+        })
+        .collect())
+}
 
 /// Score each label row against the predictions with its key; the first
 /// label of a key counts.
@@ -298,12 +497,12 @@ fn join(
     predictions: Batches,
     labels: Batches,
     spec: &EvaluateSpec,
-    (score, class): (&str, &DataType),
+    class: &DataType,
     actuals: Option<PathBuf>,
 ) -> Result<Accumulator> {
-    let grouped = spec.task.grouped();
+    let task = spec.task;
     let mut first = HashMap::new();
-    let mut groups: HashMap<u128, Vec<Ranked>> = HashMap::new();
+    let mut groups: HashMap<u128, Vec<Entry>> = HashMap::new();
     let mut kept: Vec<Vec<ArrayRef>> = Vec::new();
     for (index, batch) in predictions.enumerate() {
         let batch = batch?;
@@ -313,20 +512,16 @@ fn join(
                 .map(|(name, _)| column(&batch, name).cloned())
                 .collect::<Result<_>>()?,
         );
-        let scores = floats(column(&batch, score)?)?;
-        if !grouped {
+        if !task.grouped() {
+            let scores = floats(column(&batch, task.score())?)?;
             for (row, (key, score)) in keys(&batch)?.zip(scores).enumerate() {
                 first.entry(key).or_insert((score, (index, row)));
             }
             continue;
         }
-        let classes = classes(column(&batch, "CLASS")?, class)?;
-        for (row, ((key, score), class)) in keys(&batch)?.zip(scores).zip(classes).enumerate() {
-            let score = score.unwrap_or(f64::NEG_INFINITY);
-            groups
-                .entry(key)
-                .or_default()
-                .push((score, class, (index, row)));
+        let entries = grouped_entries(&batch, index, task, class)?;
+        for (key, entry) in keys(&batch)?.zip(entries) {
+            groups.entry(key).or_default().push(entry);
         }
     }
     let mut acc = Accumulator {
@@ -339,72 +534,97 @@ fn join(
     for batch in labels {
         let batch = batch?;
         let target = column(&batch, &spec.label_target)?;
-        let mut matched = vec![false; batch.num_rows()];
-        let mut picked = Vec::new();
-        if !grouped {
+        let (mut rows, mut picked, mut values) = (Vec::new(), Vec::new(), Vec::new());
+        if !task.grouped() {
             for ((row, key), label) in keys(&batch)?.enumerate().zip(floats(target)?) {
                 let Some(label) = label else { continue };
                 let Some((score, at)) = first.remove(&key) else {
                     continue;
                 };
-                matched[row] = true;
+                acc.labelled += 1;
+                rows.push(row as u32);
                 picked.push(at);
                 match score {
-                    Some(score) if spec.task == EvaluateTask::Binary => {
+                    Some(score) if task == EvaluateTask::Binary => {
                         if score.is_finite() {
                             acc.pairs
                                 .push(order_key(score) << 1 | u64::from(label != 0.0));
                         }
                     }
-                    Some(prediction) => {
-                        let error = prediction - label;
-                        acc.count += 1;
-                        acc.sum += error.abs();
-                        acc.squares += error * error;
-                    }
+                    Some(prediction) => acc.error(prediction, label),
                     None => {}
                 }
             }
+        } else if task == EvaluateTask::Forecasting {
+            for ((row, key), steps) in keys(&batch)?.enumerate().zip(label_steps(target)?) {
+                let Some(steps) = steps else { continue };
+                let Some(mut entries) = groups.remove(&key) else {
+                    continue;
+                };
+                acc.labelled += 1;
+                entries.sort_by_key(|entry| entry.time);
+                for (step, (entry, label)) in entries.iter().zip(steps).enumerate() {
+                    if let (Some(prediction), Some(label)) = (entry.score, label) {
+                        acc.step(step, prediction, label);
+                    }
+                    rows.push(row as u32);
+                    picked.push(entry.at);
+                    values.push(label);
+                }
+            }
         } else {
-            let link = spec.task == EvaluateTask::Link;
-            let labels = label_classes(target, link, class)?;
+            let labels = label_classes(target, task.sets(), class)?;
             for ((row, key), items) in keys(&batch)?.enumerate().zip(labels) {
                 let Some(items) = items else { continue };
                 let Some(mut ranked) = groups.remove(&key) else {
                     continue;
                 };
-                matched[row] = true;
+                acc.labelled += 1;
                 // Highest score first; ties keep their order.
-                ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
-                picked.push(ranked[0].2);
+                ranked.sort_by(|a, b| {
+                    let score = |entry: &Entry| entry.score.unwrap_or(f64::NEG_INFINITY);
+                    score(b).total_cmp(&score(a))
+                });
                 let hit =
-                    |class: Option<u64>| class.is_some_and(|c| items.binary_search(&c).is_ok());
-                if !link {
-                    acc.count += 1;
-                    acc.sum += f64::from(u8::from(hit(ranked[0].1)));
-                } else if !items.is_empty() {
-                    let (mut hits, mut numerator) = (0usize, 0.0);
-                    for (rank, (_, class, _)) in ranked.iter().enumerate() {
-                        if hit(*class) {
-                            hits += 1;
-                            numerator += hits as f64 / (rank + 1) as f64;
-                        }
+                    |entry: &Entry| entry.class.is_some_and(|c| items.binary_search(&c).is_ok());
+                match task {
+                    EvaluateTask::Multiclass => {
+                        acc.count += 1;
+                        acc.sum += f64::from(u8::from(hit(&ranked[0])));
                     }
-                    acc.count += 1;
-                    acc.sum += hits as f64;
-                    *acc.map_by_labels.entry(items.len()).or_default() += numerator;
+                    EvaluateTask::Ranking if !items.is_empty() => {
+                        acc.rank(&ranked, &items, &spec.ks)
+                    }
+                    _ => {}
+                }
+                if task != EvaluateTask::Multilabel {
+                    rows.push(row as u32);
+                    picked.push(ranked[0].at);
+                    continue;
+                }
+                for entry in &ranked {
+                    acc.label(entry, hit(entry));
+                    rows.push(row as u32);
+                    picked.push(entry.at);
+                    values.push(Some(f64::from(u8::from(hit(entry)))));
                 }
             }
         }
-        let matched = BooleanArray::from(matched);
-        acc.labelled += matched.true_count() as u64;
-        let Some(path) = actuals.as_ref().filter(|_| matched.true_count() > 0) else {
+        let Some(path) = actuals.as_ref().filter(|_| !rows.is_empty()) else {
             continue;
         };
+        let rows = UInt32Array::from(rows);
         let mut out = spec
             .actual_columns
             .iter()
-            .map(|(name, out)| Ok((out.as_str(), filter(column(&batch, name)?, &matched)?, true)))
+            .map(|(name, out)| {
+                let array = if task.exploded() && *name == spec.label_target {
+                    exploded_target(task, &values)
+                } else {
+                    take(column(&batch, name)?, &rows, None)?
+                };
+                Ok((out.as_str(), array, true))
+            })
             .collect::<Result<Vec<_>>>()?;
         for (name, ns) in &spec.constant_timestamps {
             let values = vec![*ns; picked.len()];
@@ -431,13 +651,23 @@ fn join(
     Ok(acc)
 }
 
-/// Exact AUROC and average precision from (score, label) order keys.
-fn ranking_metrics(mut pairs: Vec<u64>) -> (Option<f64>, Option<f64>) {
+/// A forecast step's actual value, or whether a multilabel class is a label.
+fn exploded_target(task: EvaluateTask, values: &[Option<f64>]) -> ArrayRef {
+    if task == EvaluateTask::Multilabel {
+        let hits: BooleanArray = values.iter().map(|v| v.map(|v| v != 0.0)).collect();
+        return Arc::new(hits);
+    }
+    Arc::new(Float64Array::from(values.to_vec()))
+}
+
+/// Exact AUROC, average precision and AUPRC from (score, label) order keys;
+/// None unless both labels occur.
+fn ranking_metrics(pairs: &mut [u64]) -> [Option<f64>; 3] {
     pairs.par_sort_unstable();
     let positives = pairs.iter().filter(|pair| *pair & 1 == 1).count() as f64;
     let negatives = pairs.len() as f64 - positives;
     if positives == 0.0 || negatives == 0.0 {
-        return (None, None);
+        return [None; 3];
     }
     let groups: Vec<(f64, f64)> = pairs
         .chunk_by(|a, b| a >> 1 == b >> 1)
@@ -451,45 +681,97 @@ fn ranking_metrics(mut pairs: Vec<u64>) -> (Option<f64>, Option<f64>) {
         area += positive * (below + negative / 2.0);
         below += negative;
     }
-    let (mut true_positive, mut false_positive, mut previous_recall, mut precision_sum) =
-        (0.0, 0.0, 0.0, 0.0);
+    let (mut true_positive, mut false_positive) = (0.0, 0.0);
+    let (mut previous_recall, mut previous_precision) = (0.0, 1.0);
+    let (mut precision_sum, mut trapezoids) = (0.0, 0.0);
     for &(positive, negative) in groups.iter().rev() {
         true_positive += positive;
         false_positive += negative;
         let recall = true_positive / positives;
-        precision_sum +=
-            (recall - previous_recall) * true_positive / (true_positive + false_positive);
-        previous_recall = recall;
+        let precision = true_positive / (true_positive + false_positive);
+        precision_sum += (recall - previous_recall) * precision;
+        trapezoids += (recall - previous_recall) * (precision + previous_precision) / 2.0;
+        (previous_recall, previous_precision) = (recall, precision);
     }
-    (Some(area / (positives * negatives)), Some(precision_sum))
+    [
+        Some(area / (positives * negatives)),
+        Some(precision_sum),
+        Some(trapezoids),
+    ]
 }
 
-fn metrics(acc: Accumulator, task: EvaluateTask) -> JsonValue {
+fn metrics(mut acc: Accumulator, spec: &EvaluateSpec) -> JsonValue {
     let ratio = |num: f64| (acc.count > 0).then(|| num / acc.count as f64);
-    match task {
+    match spec.task {
         EvaluateTask::Binary => {
-            let (auroc, ap) = ranking_metrics(acc.pairs);
+            let [auroc, ap, _] = ranking_metrics(&mut acc.pairs);
             json!({"auroc": auroc, "ap": ap})
         }
-        EvaluateTask::Regression => {
+        EvaluateTask::Regression | EvaluateTask::Forecasting => {
             json!({"mae": ratio(acc.sum), "rmse": ratio(acc.squares).map(f64::sqrt)})
         }
         EvaluateTask::Multiclass => json!({"acc": ratio(acc.sum)}),
-        EvaluateTask::Link => {
-            let k = acc.k.max(1);
-            let map: f64 = acc
-                .map_by_labels
-                .iter()
-                .map(|(labels, numerator)| numerator / (*labels).min(k) as f64)
-                .sum();
-            let precision = ratio(acc.sum / k as f64);
-            json!({format!("map@{k}"): ratio(map), format!("precision@{k}"): precision})
+        EvaluateTask::Multilabel => multilabel_metrics(acc.classes),
+        EvaluateTask::Ranking => {
+            let mut out = serde_json::Map::new();
+            for (i, &k) in spec.ks.iter().enumerate().filter(|(_, &k)| k <= acc.k) {
+                let sums = acc.at_k.get(i).copied().unwrap_or_default();
+                for (name, sum) in ["map", "precision", "recall", "f1"].iter().zip(sums) {
+                    out.insert(format!("{name}@{k}"), json!(ratio(sum)));
+                }
+            }
+            JsonValue::Object(out)
         }
     }
 }
 
+/// torchmetrics' per-class (macro, over classes with both labels) and pooled
+/// (micro) curves, and the holdout's F1, precision and recall at the
+/// predicted labels.
+fn multilabel_metrics(classes: BTreeMap<u64, (Vec<u64>, [u64; 3])>) -> JsonValue {
+    let (mut pooled, mut per_class, mut f1, mut total) =
+        (Vec::new(), Vec::new(), Vec::new(), [0u64; 3]);
+    for (_, (mut pairs, counts)) in classes {
+        let [tp, fp, fn_] = counts.map(|c| c as f64);
+        if tp + fp + fn_ > 0.0 {
+            f1.push(2.0 * tp / (2.0 * tp + fp + fn_));
+        }
+        total.iter_mut().zip(counts).for_each(|(t, c)| *t += c);
+        per_class.push(ranking_metrics(&mut pairs));
+        pooled.append(&mut pairs);
+    }
+    let mean = |values: Vec<f64>| {
+        (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
+    };
+    let macro_ = |i: usize| mean(per_class.iter().filter_map(|m| m[i]).collect());
+    let [auroc, ap, auprc] = ranking_metrics(&mut pooled);
+    let [tp, fp, fn_] = total.map(|c| c as f64);
+    let share = |num: f64, den: f64| if den > 0.0 { num / den } else { 0.0 };
+    json!({
+        "auroc_macro": macro_(0), "auroc_micro": auroc,
+        "ap_macro": macro_(1), "ap_micro": ap,
+        "auprc_macro": macro_(2), "auprc_micro": auprc,
+        "f1_micro": share(2.0 * tp, 2.0 * tp + fp + fn_),
+        "precision_micro": share(tp, tp + fp),
+        "recall_micro": share(tp, tp + fn_),
+        "f1_macro": mean(f1).unwrap_or(0.0),
+    })
+}
+
+/// Per-step sums under the names of the holdout's horizon counts.
+fn by_horizon(steps: &[Step]) -> JsonValue {
+    let columns = STEP_NAMES.iter().enumerate().map(|(i, name)| {
+        (
+            format!("horizon_{name}"),
+            json!(steps.iter().map(|step| step[i]).collect::<Vec<_>>()),
+        )
+    });
+    JsonValue::Object(columns.collect())
+}
+
 /// Join `prediction_paths` with `label_paths` and compute the realized
-/// metrics; returns `{"rows", "labelled", "metrics"}`.
+/// metrics; returns `{"rows", "labelled", "metrics"}` and, for a forecast,
+/// `"by_horizon"`.
 pub fn evaluate_prediction_parquet(
     prediction_paths: &[&Path],
     label_paths: &[&Path],
@@ -511,34 +793,35 @@ pub fn evaluate_prediction_parquet(
             ))
         })
         .collect::<Result<Vec<_>>>()?;
-    let score = match spec.task {
-        EvaluateTask::Binary => "True_PROB",
-        EvaluateTask::Regression => "TARGET_PRED",
-        EvaluateTask::Multiclass | EvaluateTask::Link => "SCORE",
-    };
-    let mut prediction_columns = vec![score.to_string()];
+    let mut prediction_columns = vec![spec.task.score().to_string()];
     prediction_columns.extend(spec.prediction_columns.iter().map(|(name, _)| name.clone()));
-    let class = if spec.task.grouped() {
-        prediction_columns.push("CLASS".to_string());
-        let mut target = label_schema
-            .field_with_name(&spec.label_target)?
-            .data_type();
-        if spec.task == EvaluateTask::Link {
-            let (DataType::List(item)
-            | DataType::LargeList(item)
-            | DataType::FixedSizeList(item, _)) = target
-            else {
-                bail!("link-prediction labels must be lists, got {target}");
-            };
-            target = item.data_type();
+    let class = match spec.task {
+        EvaluateTask::Multiclass | EvaluateTask::Multilabel | EvaluateTask::Ranking => {
+            prediction_columns.push("CLASS".to_string());
+            let mut target = label_schema
+                .field_with_name(&spec.label_target)?
+                .data_type();
+            if spec.task.sets() {
+                target = match target {
+                    DataType::List(item)
+                    | DataType::LargeList(item)
+                    | DataType::FixedSizeList(item, _) => item.data_type(),
+                    DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => &DataType::Utf8,
+                    _ => bail!("label sets must be lists or strings, got {target}"),
+                };
+            }
+            common_type(
+                prediction_schema.field_with_name("CLASS")?.data_type(),
+                target,
+            )
         }
-        common_type(
-            prediction_schema.field_with_name("CLASS")?.data_type(),
-            target,
-        )
-    } else {
-        DataType::Null
+        _ => DataType::Null,
     };
+    match spec.task {
+        EvaluateTask::Forecasting => prediction_columns.push("TIMESTAMP".to_string()),
+        EvaluateTask::Multilabel => prediction_columns.push("PREDICTED".to_string()),
+        _ => {}
+    }
     prediction_columns.sort();
     prediction_columns.dedup();
     let mut label_columns = vec![spec.label_target.clone()];
@@ -597,7 +880,7 @@ pub fn evaluate_prediction_parquet(
                     unspill(predictions)?,
                     unspill(labels)?,
                     spec,
-                    (score, &class),
+                    &class,
                     actuals,
                 )
             })
@@ -605,7 +888,12 @@ pub fn evaluate_prediction_parquet(
     })?;
     let _ = std::fs::remove_dir_all(&spec.spill_dir);
     let (rows, labelled) = (acc.rows, acc.labelled);
-    Ok(json!({"rows": rows, "labelled": labelled, "metrics": metrics(acc, spec.task)}))
+    let mut out = json!({"rows": rows, "labelled": labelled});
+    if spec.task == EvaluateTask::Forecasting {
+        out["by_horizon"] = by_horizon(&acc.steps);
+    }
+    out["metrics"] = metrics(acc, spec);
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -642,6 +930,7 @@ mod tests {
             ],
             prediction_columns: vec![],
             constant_timestamps: Vec::new(),
+            ks: Vec::new(),
             spill_dir: dir.join("spill"),
             partition_rows,
         }
@@ -779,22 +1068,25 @@ mod tests {
     }
 
     #[test]
-    fn average_precision_matches_step_definition() {
-        // Scores 0.9(+), 0.8(-), 0.8(+), 0.1(-): thresholds 0.9, 0.8, 0.1.
-        let pairs = vec![
+    fn average_precision_and_auprc_match_step_and_trapezoid_definitions() {
+        // Scores 0.9(+), 0.8(-), 0.8(+), 0.1(-): (recall, precision) at the
+        // thresholds 0.9, 0.8, 0.1 is (0.5, 1), (1, 2/3), (1, 1/2).
+        let mut pairs = vec![
             order_key(0.9) << 1 | 1,
             order_key(0.8) << 1,
             order_key(0.8) << 1 | 1,
             order_key(0.1) << 1,
         ];
-        let (auroc, ap) = ranking_metrics(pairs);
+        let [auroc, ap, auprc] = ranking_metrics(&mut pairs);
         assert!((auroc.unwrap() - 0.875).abs() < 1e-12);
         assert!((ap.unwrap() - (0.5 * 1.0 + 0.5 * 2.0 / 3.0)).abs() < 1e-12);
-        assert_eq!(ranking_metrics(vec![order_key(0.5) << 1 | 1]), (None, None));
+        let trapezoids = 0.5 * (1.0 + 1.0) / 2.0 + 0.5 * (1.0 + 2.0 / 3.0) / 2.0;
+        assert!((auprc.unwrap() - trapezoids).abs() < 1e-12);
+        assert_eq!(ranking_metrics(&mut [order_key(0.5) << 1 | 1]), [None; 3]);
     }
 
     #[test]
-    fn regression_multiclass_and_link_metrics() {
+    fn regression_multiclass_and_ranking_metrics() {
         let dir = tempdir().unwrap();
         let mut spec_ = spec(EvaluateTask::Regression, dir.path(), 1_000_000);
         spec_.prediction_keys.truncate(1);
@@ -908,7 +1200,8 @@ mod tests {
             (json!(3), json!(3))
         );
 
-        spec_ = spec(EvaluateTask::Link, dir.path(), 1_000_000);
+        spec_ = spec(EvaluateTask::Ranking, dir.path(), 1_000_000);
+        spec_.ks = vec![1, 2, 3];
         let mut targets = ListBuilder::new(Int64Builder::new());
         for items in [vec![11, 13], vec![], vec![11]] {
             for item in items {
@@ -932,11 +1225,323 @@ mod tests {
             3,
         );
         // (1, 0) ranks 10, 11 and hits 11 at rank 2 of two labels; (1, 1)
-        // has no labels and is skipped; entity 2 hits 11 at rank 1.
+        // has no labels and is skipped; entity 2 hits 11 at rank 1. Only two
+        // classes are returned, so there is no k = 3.
+        let expected = json!({
+            "map@1": 0.5, "precision@1": 0.5, "recall@1": 0.5, "f1@1": 0.5,
+            "map@2": (0.5 / 2.0 + 1.0) / 2.0, "precision@2": 0.5, "recall@2": 0.75,
+            "f1@2": (0.5 + 2.0 / 3.0) / 2.0,
+        });
+        assert_eq!(evaluate(dir.path(), &spec_)["metrics"], expected);
+        write(
+            &dir.path().join("labels.parquet"),
+            vec![
+                (
+                    "ENTITY1",
+                    Arc::new(Int64Array::from(vec![1, 1, 2])) as ArrayRef,
+                ),
+                (
+                    "TIMESTAMP",
+                    Arc::new(TimestampNanosecondArray::from(vec![0, 1000, 0])) as ArrayRef,
+                ),
+                (
+                    "TARGET1",
+                    Arc::new(StringArray::from(vec!["11|13", "", "11"])) as ArrayRef,
+                ),
+            ],
+            3,
+        );
+        assert_eq!(evaluate(dir.path(), &spec_)["metrics"], expected);
+    }
+
+    fn brute_ap_and_auprc(scores: &[f32], labels: &[bool]) -> (f64, f64) {
+        let mut thresholds = scores.to_vec();
+        thresholds.sort_by(|a, b| b.total_cmp(a));
+        thresholds.dedup();
+        let positives = labels.iter().filter(|l| **l).count() as f64;
+        let (mut ap, mut auprc, mut previous) = (0.0, 0.0, (0.0, 1.0));
+        for t in thresholds {
+            let above = |positive: bool| {
+                (0..scores.len())
+                    .filter(|&i| scores[i] >= t && labels[i] == positive)
+                    .count() as f64
+            };
+            let (tp, fp) = (above(true), above(false));
+            let (recall, precision) = (tp / positives, tp / (tp + fp));
+            ap += (recall - previous.0) * precision;
+            auprc += (recall - previous.0) * (precision + previous.1) / 2.0;
+            previous = (recall, precision);
+        }
+        (ap, auprc)
+    }
+
+    #[test]
+    fn multilabel_join_matches_brute_force() {
+        let (entities, classes) = (400usize, 6usize);
+        let score = |e: usize, c: usize| ((e * 7919 + c * 104_729) % 97) as f32 / 96.0;
+        let label = |e: usize, c: usize| (e * 31 + c * 17 + e / 5) % 7 < 2 + c % 3;
+        let mut entity = Vec::new();
+        let (mut class, mut scores, mut predicted) = (Vec::new(), Vec::new(), Vec::new());
+        for e in 0..entities {
+            for c in 0..classes {
+                entity.push(e as i64);
+                class.push(format!("c{c}"));
+                scores.push(score(e, c));
+                predicted.push(score(e, c) > 0.5);
+            }
+        }
+        let dir = tempdir().unwrap();
+        write(
+            &dir.path().join("predictions.parquet"),
+            vec![
+                ("ENTITY", Arc::new(Int64Array::from(entity)) as ArrayRef),
+                ("CLASS", Arc::new(StringArray::from(class)) as ArrayRef),
+                (
+                    "SCORE",
+                    Arc::new(arrow::array::Float32Array::from(scores)) as ArrayRef,
+                ),
+                (
+                    "PREDICTED",
+                    Arc::new(BooleanArray::from(predicted)) as ArrayRef,
+                ),
+            ],
+            500,
+        );
+        // Entity 0 has no label row; the class "c9" is never scored.
+        let labelled: Vec<usize> = (1..entities).collect();
+        let sets: Vec<String> = labelled
+            .iter()
+            .map(|&e| {
+                let mut set: Vec<String> = (0..classes)
+                    .filter(|&c| label(e, c))
+                    .map(|c| format!("c{c}"))
+                    .collect();
+                set.push("c9".into());
+                set.join("|")
+            })
+            .collect();
+        write(
+            &dir.path().join("labels.parquet"),
+            vec![
+                (
+                    "ENTITY1",
+                    Arc::new(Int64Array::from(
+                        labelled.iter().map(|&e| e as i64).collect::<Vec<_>>(),
+                    )) as ArrayRef,
+                ),
+                ("TARGET1", Arc::new(StringArray::from(sets)) as ArrayRef),
+            ],
+            150,
+        );
+        let mut spec_ = spec(EvaluateTask::Multilabel, dir.path(), 900);
+        spec_.prediction_keys.truncate(1);
+        spec_.label_keys.truncate(1);
+        spec_.actual_columns = vec![
+            ("ENTITY1".into(), "ENTITY".into()),
+            ("TARGET1".into(), "TARGET".into()),
+        ];
+        spec_.prediction_columns = vec![("CLASS".into(), "CLASS".into())];
         let out = evaluate(dir.path(), &spec_);
         assert_eq!(
-            out["metrics"],
-            json!({"map@2": (0.5 / 2.0 + 1.0) / 2.0, "precision@2": 0.5})
+            (out["rows"].clone(), out["labelled"].clone()),
+            (json!(entities), json!(entities - 1))
         );
+
+        let scored = |c: Option<usize>| -> (Vec<f32>, Vec<bool>, Vec<bool>) {
+            let pairs = labelled.iter().flat_map(|&e| {
+                (0..classes)
+                    .filter(move |&x| c.is_none_or(|c| c == x))
+                    .map(move |x| (e, x))
+            });
+            let s: Vec<f32> = pairs.clone().map(|(e, x)| score(e, x)).collect();
+            let p = s.iter().map(|s| *s > 0.5).collect();
+            (s, p, pairs.map(|(e, x)| label(e, x)).collect())
+        };
+        let (mut per_class, mut f1s) = (Vec::new(), Vec::new());
+        for c in 0..classes {
+            let (s, p, l) = scored(Some(c));
+            let (ap, auprc) = brute_ap_and_auprc(&s, &l);
+            per_class.push([brute_auroc(&s, &l), ap, auprc]);
+            let count = |want: (bool, bool)| {
+                p.iter().zip(&l).filter(|(p, l)| (**p, **l) == want).count() as f64
+            };
+            let (tp, fp, fn_) = (
+                count((true, true)),
+                count((true, false)),
+                count((false, true)),
+            );
+            f1s.push(2.0 * tp / (2.0 * tp + fp + fn_));
+        }
+        let (s, p, l) = scored(None);
+        let (ap, auprc) = brute_ap_and_auprc(&s, &l);
+        let tp = p.iter().zip(&l).filter(|(p, l)| **p && **l).count() as f64;
+        let predicted = p.iter().filter(|p| **p).count() as f64;
+        let actual = l.iter().filter(|l| **l).count() as f64;
+        let mean = |i: usize| per_class.iter().map(|m| m[i]).sum::<f64>() / classes as f64;
+        let expected = [
+            ("auroc_macro", mean(0)),
+            ("ap_macro", mean(1)),
+            ("auprc_macro", mean(2)),
+            ("auroc_micro", brute_auroc(&s, &l)),
+            ("ap_micro", ap),
+            ("auprc_micro", auprc),
+            ("f1_micro", 2.0 * tp / (predicted + actual)),
+            ("precision_micro", tp / predicted),
+            ("recall_micro", tp / actual),
+            ("f1_macro", f1s.iter().sum::<f64>() / classes as f64),
+        ];
+        for (name, value) in expected {
+            assert!(
+                (out["metrics"][name].as_f64().unwrap() - value).abs() < 1e-12,
+                "{name}"
+            );
+        }
+        let rows = actuals(dir.path());
+        let targets: Vec<bool> = rows
+            .iter()
+            .flat_map(|batch| column_bools(batch, "TARGET"))
+            .collect();
+        let classes_out: Vec<String> = rows
+            .iter()
+            .flat_map(|batch| {
+                let array = column(batch, "CLASS").unwrap().as_string::<i32>().clone();
+                array
+                    .iter()
+                    .map(|c| c.unwrap().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let entities_out = actual_column::<arrow::datatypes::Int64Type>(dir.path(), "ENTITY");
+        assert_eq!(targets.len(), (entities - 1) * classes);
+        for ((e, c), target) in entities_out.iter().zip(&classes_out).zip(&targets) {
+            assert_eq!(*target, label(*e as usize, c[1..].parse().unwrap()));
+        }
+    }
+
+    fn column_bools(batch: &RecordBatch, name: &str) -> Vec<bool> {
+        column(batch, name)
+            .unwrap()
+            .as_boolean()
+            .iter()
+            .map(Option::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn forecast_join_matches_brute_force_per_step() {
+        let (entities, steps) = (300i64, 4usize);
+        let day = 86_400_000_000_000i64;
+        let prediction = |e: i64, h: usize| (e * 13 + h as i64 * 7) as f64 % 50.0;
+        let actual = |e: i64, h: usize| ((e * 29 + h as i64 * 11) % 41) as f64;
+        let (mut entity, mut anchor, mut time, mut value) = (vec![], vec![], vec![], vec![]);
+        for e in 0..entities {
+            // Steps written newest first; the join orders them by TIMESTAMP.
+            for h in (0..steps).rev() {
+                entity.push(e);
+                anchor.push(e % 2 * 30 * day);
+                time.push(e % 2 * 30 * day + h as i64 * 7 * day);
+                value.push(prediction(e, h));
+            }
+        }
+        let dir = tempdir().unwrap();
+        write(
+            &dir.path().join("predictions.parquet"),
+            vec![
+                ("ENTITY", Arc::new(Int64Array::from(entity)) as ArrayRef),
+                (
+                    "ANCHOR_TIMESTAMP",
+                    Arc::new(TimestampNanosecondArray::from(anchor)) as ArrayRef,
+                ),
+                (
+                    "TIMESTAMP",
+                    Arc::new(TimestampMicrosecondArray::from(
+                        time.iter().map(|t| t / 1000).collect::<Vec<_>>(),
+                    )) as ArrayRef,
+                ),
+                (
+                    "TARGET_PRED",
+                    Arc::new(Float64Array::from(value)) as ArrayRef,
+                ),
+            ],
+            200,
+        );
+        // Entity 0 has a label row with three of the four steps.
+        let mut futures = ListBuilder::new(arrow::array::Float64Builder::new());
+        for e in 0..entities {
+            for h in 0..if e == 0 { steps - 1 } else { steps } {
+                futures.values().append_value(actual(e, h));
+            }
+            futures.append(true);
+        }
+        write(
+            &dir.path().join("labels.parquet"),
+            vec![
+                (
+                    "ENTITY1",
+                    Arc::new(Int64Array::from((0..entities).collect::<Vec<_>>())) as ArrayRef,
+                ),
+                (
+                    "TIMESTAMP",
+                    Arc::new(TimestampNanosecondArray::from(
+                        (0..entities).map(|e| e % 2 * 30 * day).collect::<Vec<_>>(),
+                    )) as ArrayRef,
+                ),
+                ("future_labels", Arc::new(futures.finish()) as ArrayRef),
+            ],
+            70,
+        );
+        let mut spec_ = spec(EvaluateTask::Forecasting, dir.path(), 400);
+        spec_.label_target = "future_labels".into();
+        spec_.actual_columns[2].0 = "future_labels".into();
+        spec_.prediction_columns = vec![
+            ("TIMESTAMP".into(), "TIMESTAMP".into()),
+            ("TARGET_PRED".into(), "TARGET_PRED".into()),
+        ];
+        let out = evaluate(dir.path(), &spec_);
+        assert_eq!(
+            (out["rows"].clone(), out["labelled"].clone()),
+            (json!(entities), json!(entities))
+        );
+
+        let mut sums = vec![[0.0f64; 6]; steps];
+        for e in 0..entities {
+            for (h, sum) in sums
+                .iter_mut()
+                .enumerate()
+                .take(if e == 0 { steps - 1 } else { steps })
+            {
+                let (p, a) = (prediction(e, h), actual(e, h));
+                let values = [1.0, (p - a).abs(), (p - a) * (p - a), p - a, a, a * a];
+                sum.iter_mut().zip(values).for_each(|(s, v)| *s += v);
+            }
+        }
+        for (i, name) in STEP_NAMES.iter().enumerate() {
+            let column: Vec<f64> = sums.iter().map(|s| s[i]).collect();
+            assert_eq!(
+                out["by_horizon"][format!("horizon_{name}")],
+                json!(column),
+                "{name}"
+            );
+        }
+        let rows: f64 = sums.iter().map(|s| s[0]).sum();
+        let mae = sums.iter().map(|s| s[1]).sum::<f64>() / rows;
+        let rmse = (sums.iter().map(|s| s[2]).sum::<f64>() / rows).sqrt();
+        assert!((out["metrics"]["mae"].as_f64().unwrap() - mae).abs() < 1e-12);
+        assert!((out["metrics"]["rmse"].as_f64().unwrap() - rmse).abs() < 1e-12);
+
+        let entities_out = actual_column::<arrow::datatypes::Int64Type>(dir.path(), "ENTITY");
+        let times =
+            actual_column::<arrow::datatypes::TimestampNanosecondType>(dir.path(), "TIMESTAMP");
+        let targets = actual_column::<arrow::datatypes::Float64Type>(dir.path(), "TARGET");
+        let predictions = actual_column::<arrow::datatypes::Float64Type>(dir.path(), "TARGET_PRED");
+        assert_eq!(targets.len(), rows as usize);
+        for i in 0..targets.len() {
+            let e = entities_out[i];
+            let h = ((times[i] - e % 2 * 30 * day) / (7 * day)) as usize;
+            assert_eq!(
+                (targets[i], predictions[i]),
+                (actual(e, h), prediction(e, h))
+            );
+        }
     }
 }

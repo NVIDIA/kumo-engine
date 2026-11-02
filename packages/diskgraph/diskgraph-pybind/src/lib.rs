@@ -1557,18 +1557,19 @@ fn compute_col_stats_for_parquet(
 ///     prediction_paths: the run's prediction Parquet files.
 ///     label_paths: the label Parquet parts.
 ///     spec_json: JSON object with ``task`` (``"binary"``, ``"regression"``,
-///         ``"multiclass"`` or ``"link"``), ``prediction_keys`` and
-///         ``label_keys`` (paired by position), ``label_target``,
-///         ``spill_dir``, and optional ``actuals_dir`` with
-///         ``actual_columns`` (``[label name, output name]`` pairs) to write
-///         the matched label rows, ``prediction_columns`` (pairs copied
-///         from the matched prediction), ``constant_timestamps``
-///         (``[output name, UTC nanoseconds]`` pairs written on every row),
-///         and ``partition_rows``.
+///         ``"forecasting"``, ``"multiclass"``, ``"multilabel"`` or
+///         ``"ranking"``), ``prediction_keys`` and ``label_keys`` (paired by
+///         position), ``label_target``, ``spill_dir``, and optional
+///         ``actuals_dir`` with ``actual_columns`` (``[label name, output
+///         name]`` pairs) to write the matched label rows,
+///         ``prediction_columns`` (pairs copied from the matched prediction),
+///         ``constant_timestamps`` (``[output name, UTC nanoseconds]`` pairs
+///         written on every row), ``ks`` (ranking cutoffs) and
+///         ``partition_rows``.
 ///
 /// Returns a JSON string ``{"rows", "labelled", "metrics"}``: distinct
 /// predictions, those with a label, and the metric values (``null`` when
-/// undefined).
+/// undefined); a forecast adds ``"by_horizon"``, its sums per step.
 #[pyfunction]
 #[pyo3(signature = (prediction_paths, label_paths, spec_json))]
 fn evaluate_prediction_parquet(
