@@ -433,7 +433,7 @@ SUMMARIES = (
     Scalar('test/brier', 0.25),
     Table('graph/col_stats', ('table', 'rows'), (('ents', 400),)),
     Dataset('ents', INPUTS['ents'], {'ID': {'stype': 'id', 'dtype': 'int64'}},
-            {'rows': 400}, 'training'),
+            {'rows': 400}, 'source table'),
 )
 
 
@@ -463,7 +463,7 @@ def test_adapter_logs_each_summary_type(adapter, mlflow_adapter):
     assert (dataset.dataset.name, dataset.dataset.digest,
             dataset.tags[0].value) == ('ents', hashlib.sha256(json.dumps(
                 ['ents', INPUTS['ents'], SUMMARIES[-1].schema],
-                sort_keys=True).encode()).hexdigest()[:8], 'training')
+                sort_keys=True).encode()).hexdigest()[:8], 'source table')
     assert json.loads(dataset.dataset.schema) == {
         'mlflow_colspec': [{'name': 'ID', 'type': 'long'}]}
     assert json.loads(dataset.dataset.profile) == {'rows': 400}

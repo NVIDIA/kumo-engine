@@ -11,6 +11,7 @@ from kumo_core.summaries import Dataset, Table, Tag
 import kumo.engine as kumo
 from kumo.engine._deps import Dependencies, FileAsset
 from kumo.engine._manifest import (
+    FIT_ROLES,
     Artifact,
     Dependency,
     Manifest,
@@ -21,6 +22,7 @@ from kumo.engine._manifest import (
     SnapshotParents,
     SourceTableEntry,
     TrainingTableManifest,
+    TrainingTableParents,
     artifact_summaries,
     artifacts,
     read_manifest,
@@ -61,15 +63,17 @@ def test_a_new_kind_names_its_artifacts_without_other_changes():
 
     assert artifacts(report) == [
         Artifact('report', 'r', 's3://root/reports/r', True,
-                 version='r', version_kind='exact'),
+                 version='r', version_kind='exact', label='report r'),
         Artifact('snapshot', 'g@d', 's3://root/snapshots/g/d', True,
-                 version='g@d', version_kind='exact'),
+                 version='g@d', version_kind='exact',
+                 label='graph snapshot g@d'),
         Artifact('source_table', 'orders', 's3://data/orders', True,
                  connector='S3', version='7', version_kind='exact'),
         Artifact('model', 'm', 's3://root/models/m', False,
-                 'kumo.bundle_uri', version='m', version_kind='exact'),
+                 'kumo.bundle_uri', version='m', version_kind='exact',
+                 label='model m'),
         Artifact('snapshot', 'p', None, True, version='p',
-                 version_kind='exact'),
+                 version_kind='exact', label='graph snapshot p'),
     ]
 
 
@@ -108,7 +112,7 @@ def test_a_new_kind_and_asset_reach_tags_and_datasets(tmp_path):
 
     assert dependency.location == f'{root}/assets/dummy/{dependency.sha256}'
     assert ReportManifest.from_dict(report.to_dict()) == report
-    assert artifact_summaries(report, 'training', {
+    assert artifact_summaries(report, FIT_ROLES, {
         'orders': ({'ID': {'stype': 'ID', 'dtype': 'int64'}}, {'rows': 3})
     }) == [
         Tag('kumo.bundle_uri', f'{root}/models/m'),
@@ -118,15 +122,38 @@ def test_a_new_kind_and_asset_reach_tags_and_datasets(tmp_path):
             ('source_table', 'orders', 's3://data/orders'),
             ('model', 'm', f'{root}/models/m'),
             ('asset', dependency.sha256, dependency.location)), brief=True),
-        Dataset('g@d', {'connector': 'LOCAL_FILE',
-                        'location': f'{root}/snapshots/g/d',
-                        'version': 'g@d', 'version_kind': 'exact'}, {}, {},
-                'training'),
+        Dataset('graph snapshot g@d', {
+            'connector': 'LOCAL_FILE', 'location': f'{root}/snapshots/g/d',
+            'version': 'g@d', 'version_kind': 'exact'}, {}, {},
+            'graph context'),
         Dataset('orders', {'connector': 'S3', 'location': 's3://data/orders',
                            'version': '7', 'version_kind': 'exact'},
                 {'ID': {'stype': 'ID', 'dtype': 'int64'}}, {'rows': 3},
-                'training'),
-        Dataset('r', {'connector': 'LOCAL_FILE',
-                      'location': f'{root}/reports/r', 'version': 'r',
-                      'version_kind': 'exact'}, {}, {}, 'training'),
+                'source table'),
+        Dataset('report r', {'connector': 'LOCAL_FILE',
+                             'location': f'{root}/reports/r', 'version': 'r',
+                             'version_kind': 'exact'}, {}, {}, 'report'),
+    ]
+
+
+def test_a_fits_datasets_are_named_and_labelled_by_role():
+    users = SourceTableEntry(connector='S3', location='s3://data/users',
+                             version='3', version_kind='exact')
+    snapshot = SnapshotManifest(
+        id='g@5ac245', created_at='2026-11-01T09:00:00+00:00',
+        location='s3://root/snapshots/g/5ac245',
+        parents=SnapshotParents(source_tables={'users': users}))
+    model = ModelManifest(id='m', parents=ModelParents(
+        training_table=TrainingTableManifest(
+            id='tt-fadf04', created_at='2026-11-01T10:00:00+00:00',
+            location='s3://root/training_tables/tt-fadf04',
+            parents=TrainingTableParents(snapshot=snapshot))))
+
+    assert [(s.name, s.context, s.source['version'])
+            for s in artifact_summaries(model, FIT_ROLES)
+            if isinstance(s, Dataset)] == [
+        ('graph snapshot 2026-11-01-5ac245', 'graph context', 'g@5ac245'),
+        ('training table 2026-11-01-fadf04', 'training examples',
+         'tt-fadf04'),
+        ('users', 'source table', '3'),
     ]

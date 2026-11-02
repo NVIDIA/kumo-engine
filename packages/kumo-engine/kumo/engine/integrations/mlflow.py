@@ -729,7 +729,7 @@ def log_model(
             none.
         target: as in `MlflowTracking`.
     """
-    from kumo.engine._manifest import artifact_summaries
+    from kumo.engine._manifest import FIT_ROLES, artifact_summaries
     from kumo.engine._mlops import snapshot_uri
     from kumo.engine.trainer._provenance import bundle_manifest
     from kumo.engine.trainer._run_spec import registry_metrics
@@ -754,7 +754,7 @@ def log_model(
                 tracking._experiment_for(client)).info.run_id
         experiment_id = client.get_run(run_id).info.experiment_id
     summaries = [] if result.manifest is None else artifact_summaries(
-        result.manifest, 'training')
+        result.manifest, FIT_ROLES)
     try:
         tracking._log_inputs(
             run_id, [s for s in summaries if isinstance(s, Dataset)])
