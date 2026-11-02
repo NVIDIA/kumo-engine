@@ -4,10 +4,13 @@
 
 import hashlib
 import json
+import os
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional
 
 from kumo_core.artifacts import PROVENANCE_FILE
 from kumo_core.model_plan import TrainingTableGenerationPlan
@@ -105,18 +108,23 @@ class TrainingTable:
 
         from kumo.engine.connector import is_file_destination
 
-        manifest = self.staging_dir / PROVENANCE_FILE
         name = output_config.table_name.rstrip('/')
+        if (not is_file_destination(connector, output_config.table_name)
+                or layout.file_type(name) == layout.CSV):
+            return {}
+        sidecars = self._sidecars()
+        return {'sidecars': sidecars} if sidecars else {}
+
+    def _sidecars(self) -> Dict[str, bytes]:
+        manifest = self.staging_dir / PROVENANCE_FILE
         try:
-            if (not is_file_destination(connector, output_config.table_name)
-                    or layout.file_type(name) == layout.CSV
-                    or not manifest.is_file()):
+            if not manifest.is_file():
                 return {}
-            return {'sidecars': {PROVENANCE_FILE: manifest.read_bytes()}}
+            return {PROVENANCE_FILE: manifest.read_bytes()}
         except Exception as error:
             warnings.warn(
                 f"Exporting without {PROVENANCE_FILE}: {error}",
-                UserWarning, stacklevel=3)
+                UserWarning, stacklevel=4)
             return {}
 
     @classmethod
@@ -135,7 +143,6 @@ class TrainingTable:
         from pyarrow.fs import FileType
 
         from kumo.engine.connector import file_store
-        from kumo.engine.trainer.output_config import TrainingTableOutputConfig
 
         path = settings.root.location(f'training_tables/{self.id}/')
         try:
@@ -144,12 +151,34 @@ class TrainingTable:
             filesystem, root = file_store(settings.root.connector, path)
             if filesystem.get_file_info(
                     f'{root}/_SUCCESS').type is not FileType.File:
-                self.export(
-                    TrainingTableOutputConfig(settings.root.connector, path))
+                self._upload(filesystem, f'{root}/')
         except Exception as error:
             raise RuntimeError(
                 f"Could not store training table {self.id} under the "
                 f"artifact root: {error}") from error
+
+    def _upload(self, filesystem: Any, path: str) -> None:
+        import tempfile
+
+        from kumo_core.artifact_export import export_selected_files
+        from kumo_core.object_store_sink import _ArrowExportFiles
+        from kumo_core.training.export import (
+            identity,
+            iter_export_parts,
+            read_spec,
+        )
+
+        from kumo.engine._scratch import get_scratch_dir
+
+        root = get_scratch_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as spill:
+            export_selected_files(
+                iter_export_parts(str(self.staging_dir), spill), path,
+                fs=_ArrowExportFiles(filesystem, None),
+                identity=identity(read_spec(str(self.staging_dir))),
+                copy_parquet=partial(_move_each, filesystem),
+                sidecars=self._sidecars())
 
     @classmethod
     def from_source_table(
@@ -289,6 +318,23 @@ class TrainingTable:
                 source_table.sql, version,
                 record_sources=_record_sources(snapshot)),
             source_version=version, started=started)
+
+
+def _move_each(filesystem: Any, parts: Iterator[str], output: str) -> None:
+    from kumo_core.object_store_sink import upload_file
+
+    def move(part: str) -> None:
+        upload_file(filesystem, part, output + os.path.basename(part))
+        os.remove(part)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = []
+        for part in parts:
+            pending.append(pool.submit(move, part))
+            if len(pending) > 1:
+                pending.pop(0).result()
+        for upload in pending:
+            upload.result()
 
 
 def _record_sources(snapshot: GraphSnapshot) -> bool:
