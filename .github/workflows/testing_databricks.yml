@@ -87,6 +87,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       # uv.lock is deliberately excluded: a lock-only dependency bump must
       # still run the real install + test suite (see testing.yml).

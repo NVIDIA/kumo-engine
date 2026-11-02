@@ -173,6 +173,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       # This enables us to skip the minimal python tests.
       # Note, it's not possible use the standard `on.pull_request` method to
@@ -443,6 +444,7 @@ jobs:
         with:
           python-version: '3.11'
           activate-environment: true
+          prune-cache: true
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: diskgraph-wheel
@@ -528,6 +530,7 @@ jobs:
         with:
           python-version: '3.12'
           activate-environment: true
+          prune-cache: true
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: diskgraph-wheel
@@ -808,6 +811,7 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          prune-cache: true
 
       - name: Install dependencies
         run: uv pip install -q 'coverage[toml]'
@@ -880,6 +884,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           activate-environment: true
+          prune-cache: true
       - name: Build and install in-tree wheels
         run: |
           uv build --wheel --out-dir dist packages/kumo-api

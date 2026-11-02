@@ -46,6 +46,7 @@ jobs:
           # set (including NumPy 2.3.x) is not installable on Python 3.10.
           python-version: '3.14'
           activate-environment: true
+          prune-cache: true
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
