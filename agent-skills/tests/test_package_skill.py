@@ -40,7 +40,7 @@ def test_build_stamps_the_marker(tmp_path: Path) -> None:
     built = (package_skill.build('coco', tmp_path) / 'SKILL.md').read_text()
     marker = package_skill.MARKER.findall(built)
     assert marker == [f'SKILL-BUILD: {package_skill.build_id()}']
-    assert re.fullmatch(r'SKILL-BUILD: (\d{4}-\d{2}-\d{2}-[0-9a-f]+(-dirty)?|unknown)', marker[0])
+    assert re.fullmatch(r'SKILL-BUILD: (\d{4}-\d{2}-\d{2}-[0-9a-f]{8}(-dirty)?|unknown)', marker[0])
 
 
 def test_broken_references_are_reported(tmp_path: Path) -> None:

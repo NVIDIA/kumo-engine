@@ -379,6 +379,18 @@ def test_no_agent_forwards_the_snowflake_destination(home: Path) -> None:
     assert root.startswith('snow://workspace/"USER$ME".PUBLIC."WS"/')
 
 
+def test_no_agent_sends_account_scopes_to_coco_alone(home: Path, monkeypatch) -> None:
+    (home / '.claude').mkdir()
+    (home / '.snowflake' / 'cortex').mkdir(parents=True)
+    assert skills.install_skills(scope='extension', session=FakeSession(), extension='MY_EXT',
+                                 stage='MY_STAGE') == ['MY_EXT']
+    assert not (home / '.claude' / 'skills').exists()
+    # In a Snowflake notebook, detection refuses; a named account scope does not need it.
+    monkeypatch.setattr(skills, '_detect', lambda: pytest.fail('detected'))
+    [root] = skills.install_skills(scope='workspace', session=FakeSession(), workspace='WS')
+    assert root.startswith('snow://workspace/"USER$ME".PUBLIC."WS"/')
+
+
 def test_coco_workspace(home: Path) -> None:
     session = FakeSession()
     [root] = skills.install_skills('coco', scope='workspace', session=session, workspace='MY_WS')

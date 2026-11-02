@@ -98,7 +98,10 @@ def build_id() -> str:
                               text=True).stdout.strip()
 
     try:
-        stamp = git('log', '-1', '--format=%cd-%h', '--date=format:%Y-%m-%d')
+        # A fixed 8 characters: %h's length depends on the clone, so a shallow CI checkout and a
+        # full one would stamp the same commit differently.
+        date, sha = git('log', '-1', '--format=%cd %H', '--date=format:%Y-%m-%d').split()
+        stamp = f'{date}-{sha[:8]}'
         dirty = git('status', '--porcelain', '--', str(SKILLS))
     except (OSError, subprocess.CalledProcessError):
         return 'unknown'

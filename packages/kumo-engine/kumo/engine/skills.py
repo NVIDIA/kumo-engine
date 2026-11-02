@@ -219,8 +219,11 @@ def install_skills(
         with skill_package(host) as pkg:
             return [str(_copy(pkg, Path(path)))]
     if agent is None:
+        # Only coco has account scopes, so they name it; detection would try
+        # every local agent first, or refuse inside a Snowflake notebook.
+        names = ['coco'] if scope in COCO_ACCOUNT_SCOPES else _detect()
         return [
-            target for name in _detect() for target in install_skills(
+            target for name in names for target in install_skills(
                 name, scope=scope, session=session, workspace=workspace,
                 extension=extension, stage=stage, client=client)
         ]
