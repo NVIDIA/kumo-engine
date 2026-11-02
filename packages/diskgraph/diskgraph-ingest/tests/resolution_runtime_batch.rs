@@ -179,6 +179,7 @@ fn ingest_parent_users_orders(parent_root: &Path, n_users: i64) -> Result<()> {
     };
 
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "users_orders_parent".to_string(),
         tables: vec![users, orders],
         rowpack: None,
@@ -318,6 +319,7 @@ fn build_fixture_to(
 
     let table = stage_table_spec(stage_parquet.to_str().unwrap());
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "resolve_run".to_string(),
         tables: vec![table],
         rowpack: None,
@@ -794,6 +796,7 @@ fn build_fixture_with_exclude(
     table.columns.push(typed_col("exclude_target_keys", IngestedType::Int64Array));
     table.columns.push(typed_col("exclude_node_ids", IngestedType::Int64Array));
     let config = GraphConfig {
+        timestamp_unit: Default::default(),
         dataset_name: "resolve_exclude_run".to_string(),
         tables: vec![table],
         rowpack: None,
