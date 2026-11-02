@@ -122,11 +122,12 @@ slot in its bounded output queue before sampling a batch, and the client
 prefetches one decoded batch per server. gRPC flow control propagates a paused
 trainer back to the producer; additional transport buffers and native working
 memory are separate from these queue limits. No application credits are sent.
-The initial Flight schema carries the protocol version and sample/batch counts
-in `kumo.sampling` metadata. Each component streams its own Arrow schema,
-dictionaries and native record batch; task, graph and feature components can
-have different schemas and row counts. Flight application metadata carries
-component coordinates and the minibatch layout. `diskgraph.SamplingClient`
+The initial empty Flight schema carries the protocol version and sample/batch
+counts in `app_metadata`. Each minibatch starts with a metadata-only FlightData
+message carrying its ID, component count and layout. Each component then streams
+its own Arrow schema, dictionaries and native record batch; task, graph and
+feature components can have different schemas and row counts. Component
+application metadata carries only the minibatch and component IDs. `diskgraph.SamplingClient`
 handles schema changes in Rust and exposes assembled Arrow objects to Python
 through the C Data Interface, without nested IPC streams or Python decoding.
 Each logical minibatch is limited to 64 MiB across all component messages.

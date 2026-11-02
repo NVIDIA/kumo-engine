@@ -4,7 +4,7 @@
 
 //! Reusable native Flight client with schema-aware component assembly.
 use crate::protocol::{
-    ComponentMetadata, StreamMetadata, MAX_BATCH_BYTES, STREAM_METADATA_KEY, VERSION,
+    BatchMetadata, ComponentMetadata, ControlKind, StreamMetadata, MAX_BATCH_BYTES, VERSION,
 };
 use anyhow::{anyhow, ensure, Context};
 use arrow_array::RecordBatch;
@@ -88,22 +88,17 @@ fn measure_message(message: &FlightData, budget: &AtomicUsize) -> Result<(), Fli
     Ok(())
 }
 
-fn stream_metadata(payload: DecodedPayload) -> anyhow::Result<StreamMetadata> {
-    let DecodedPayload::Schema(schema) = payload else {
+fn stream_metadata(header: DecodedFlightData) -> anyhow::Result<StreamMetadata> {
+    let DecodedPayload::Schema(schema) = header.payload else {
         return Err(anyhow!("Missing sampling stream schema"));
     };
     ensure!(
         schema.fields().is_empty(),
         "Invalid sampling descriptor schema"
     );
-    let metadata: StreamMetadata = serde_json::from_str(
-        schema
-            .metadata()
-            .get(STREAM_METADATA_KEY)
-            .context("Missing sampling schema metadata")?,
-    )?;
+    let metadata: StreamMetadata = serde_json::from_slice(&header.inner.app_metadata)?;
     ensure!(
-        metadata.version == VERSION,
+        metadata.kind == ControlKind::Stream && metadata.version == VERSION,
         "Unsupported sampling schema version"
     );
     Ok(metadata)
@@ -191,7 +186,7 @@ impl SamplingClient {
             };
             let header = next_message(&mut reader, &mut local_stop, &mut client_stop).await?
                 .context("Missing sampling stream schema")?;
-            let metadata = stream_metadata(header.payload)?;
+            let metadata = stream_metadata(header)?;
             Ok(SamplingStream {
                 reader: Mutex::new(Some(reader)), stop, client_stop: self.stop.clone(),
                 num_samples: metadata.num_samples, num_batches: metadata.num_batches,
@@ -223,64 +218,65 @@ impl SamplingStream {
         let mut client_stop = self.client_stop.subscribe();
         let result = runtime.0.as_ref().unwrap().block_on(async {
             reader.budget.store(0, Ordering::Relaxed);
+            let Some(start) = next_message(reader, &mut stop, &mut client_stop).await? else {
+                ensure!(
+                    reader.batch_id == self.num_batches,
+                    "Incomplete sampling stream: expected {} batches, received {}",
+                    self.num_batches,
+                    reader.batch_id
+                );
+                return Ok(None);
+            };
+            ensure!(
+                reader.batch_id < self.num_batches,
+                "Unexpected data after advertised batch count"
+            );
+            ensure!(
+                matches!(start.payload, DecodedPayload::None) && start.inner.data_body.is_empty(),
+                "Missing minibatch-start metadata"
+            );
+            let metadata: BatchMetadata = serde_json::from_slice(&start.inner.app_metadata)
+                .context("Invalid minibatch-start metadata")?;
+            ensure!(
+                metadata.kind == ControlKind::Minibatch
+                    && metadata.batch_id == reader.batch_id
+                    && metadata.num_components > 0,
+                "Invalid minibatch sequence or component count"
+            );
+            let layout = metadata.layout;
+            ensure!(
+                layout.as_object().is_some_and(|value| value.len() == 3
+                    && value.contains_key("task")
+                    && value.contains_key("graphs")
+                    && value.contains_key("raw_features")),
+                "Invalid minibatch layout"
+            );
             let mut parts = Vec::new();
-            let mut layout = None;
-            let mut count = None;
             let mut pending_schema = false;
             loop {
-                let Some(message) = next_message(reader, &mut stop, &mut client_stop).await? else {
-                    ensure!(
-                        parts.is_empty() && !pending_schema && reader.batch_id == self.num_batches,
-                        "Incomplete sampling stream: expected {} batches, received {}",
-                        self.num_batches,
-                        reader.batch_id
-                    );
-                    return Ok(None);
-                };
+                let message = next_message(reader, &mut stop, &mut client_stop)
+                    .await?
+                    .context("Incomplete sampling minibatch")?;
                 ensure!(
-                    reader.batch_id < self.num_batches,
-                    "Unexpected data after advertised batch count"
+                    !matches!(message.payload, DecodedPayload::None),
+                    "Unexpected minibatch-start before completion"
                 );
                 let tag: ComponentMetadata = serde_json::from_slice(&message.inner.app_metadata)
                     .context("Invalid sampling component metadata")?;
                 ensure!(
-                    tag.batch_id == reader.batch_id
-                        && tag.component_id == parts.len()
-                        && tag.num_components > 0,
+                    tag.batch_id == reader.batch_id && tag.component_id == parts.len(),
                     "Invalid sampling component sequence"
                 );
-                ensure!(
-                    count.is_none_or(|count| count == tag.num_components),
-                    "Inconsistent component count"
-                );
-                count = Some(tag.num_components);
                 match message.payload {
                     DecodedPayload::Schema(_) => {
-                        ensure!(
-                            !pending_schema && tag.value.is_none(),
-                            "Unexpected component schema"
-                        );
+                        ensure!(!pending_schema, "Unexpected component schema");
                         pending_schema = true;
                     }
                     DecodedPayload::RecordBatch(batch) => {
                         ensure!(pending_schema, "Component batch has no matching schema");
-                        if parts.is_empty() {
-                            let value = tag.value.context("Missing minibatch layout")?;
-                            ensure!(
-                                value.as_object().is_some_and(|value| value.len() == 3
-                                    && value.contains_key("task")
-                                    && value.contains_key("graphs")
-                                    && value.contains_key("raw_features")),
-                                "Invalid minibatch layout"
-                            );
-                            layout = Some(value);
-                        } else {
-                            ensure!(tag.value.is_none(), "Repeated minibatch layout");
-                        }
                         parts.push(batch);
                         pending_schema = false;
-                        if parts.len() == tag.num_components {
-                            let layout = layout.unwrap();
+                        if parts.len() == metadata.num_components {
                             validate_layout(&layout, &parts)?;
                             reader.batch_id += 1;
                             return Ok(Some(DecodedBatch {
@@ -375,8 +371,6 @@ mod tests {
         let tag = ComponentMetadata {
             batch_id,
             component_id,
-            num_components: count,
-            value: None,
         };
         let metadata = serde_json::to_vec(&tag).unwrap();
         let options = IpcWriteOptions::default();
@@ -394,16 +388,23 @@ mod tests {
                 &mut CompressionContext::default(),
             )
             .unwrap();
-        let mut result = vec![Ok(schema)];
+        let mut result = Vec::new();
+        if let Some(layout) = value {
+            result.push(Ok(crate::protocol::batch_header(&BatchMetadata {
+                kind: ControlKind::Minibatch,
+                batch_id,
+                num_components: count,
+                layout,
+            })));
+        }
+        result.push(Ok(schema));
         for dictionary in dictionaries {
             let mut frame: FlightData = dictionary.into();
             frame.app_metadata = metadata.clone().into();
             result.push(Ok(frame));
         }
         let mut frame: FlightData = data.into();
-        frame.app_metadata = serde_json::to_vec(&ComponentMetadata { value, ..tag })
-            .unwrap()
-            .into();
+        frame.app_metadata = metadata.into();
         result.push(Ok(frame));
         result
     }
@@ -469,7 +470,7 @@ mod tests {
             (
                 frames(0, 0, 1, &batch(), None),
                 1,
-                "Missing minibatch layout",
+                "Missing minibatch-start",
             ),
             (
                 frames(0, 0, 1, &batch(), Some(json!({}))),
@@ -517,6 +518,43 @@ mod tests {
             .to_string()
             .contains("Incomplete"));
     }
+    #[test]
+    fn minibatch_boundaries_are_required_and_cannot_interrupt_components() {
+        let header = || {
+            crate::protocol::batch_header(&BatchMetadata {
+                kind: ControlKind::Minibatch,
+                batch_id: 0,
+                num_components: 1,
+                layout: layout(),
+            })
+        };
+        let mut double_header = vec![Ok(header())];
+        double_header.extend(frames(0, 0, 1, &batch(), Some(layout())));
+        let mut interrupted_schema = frames(0, 0, 1, &batch(), Some(layout()));
+        interrupted_schema.insert(2, Ok(header()));
+        for wire in [double_header, interrupted_schema] {
+            let stream = reader(stream::iter(wire), 1);
+            assert!(stream
+                .next_batch()
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("before completion"));
+        }
+        assert!(reader(stream::iter(vec![Ok(header())]), 1)
+            .next_batch()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Incomplete"));
+        let mut wire = frames(0, 0, 1, &batch(), Some(layout()));
+        wire.extend(frames(1, 0, 1, &batch(), Some(layout())));
+        let stream = reader(stream::iter(wire), 2);
+        assert_eq!(stream.next_batch().unwrap().unwrap().layout, layout());
+        assert_eq!(stream.next_batch().unwrap().unwrap().layout, layout());
+        assert!(stream.next_batch().unwrap().is_none());
+    }
+
     #[test]
     fn final_rpc_error_is_observed_even_after_all_advertised_batches() {
         for count in [0, 1] {
@@ -592,14 +630,33 @@ mod validation_tests {
             json!({"version":7.0,"num_samples":3,"num_batches":1}),
             json!({"version":VERSION,"num_samples":3,"num_batches":1,"extra":0}),
         ] {
-            let schema = Schema::empty()
-                .with_metadata([(STREAM_METADATA_KEY.to_owned(), metadata.to_string())].into());
-            assert!(stream_metadata(DecodedPayload::Schema(Arc::new(schema))).is_err());
+            let mut metadata = metadata;
+            if let Some(fields) = metadata.as_object_mut() {
+                fields.insert("kind".into(), json!("stream"));
+            }
+            let message = FlightData {
+                app_metadata: serde_json::to_vec(&metadata).unwrap().into(),
+                ..Default::default()
+            };
+            assert!(stream_metadata(DecodedFlightData::new_schema(
+                message,
+                Arc::new(Schema::empty())
+            ))
+            .is_err());
         }
-        assert!(stream_metadata(DecodedPayload::Schema(Arc::new(Schema::empty()))).is_err());
-        assert!(stream_metadata(DecodedPayload::RecordBatch(super::tests::batch())).is_err());
-        let metadata =
-            stream_metadata(DecodedPayload::Schema(crate::protocol::stream_schema(3, 2))).unwrap();
+        assert!(stream_metadata(DecodedFlightData::new_schema(
+            FlightData::default(),
+            Arc::new(Schema::empty())
+        ))
+        .is_err());
+        assert!(stream_metadata(DecodedFlightData::new_record_batch(
+            FlightData::default(),
+            super::tests::batch()
+        ))
+        .is_err());
+        let message = crate::protocol::stream_header(3, 2);
+        let schema = Arc::new(Schema::try_from(&message).unwrap());
+        let metadata = stream_metadata(DecodedFlightData::new_schema(message, schema)).unwrap();
         assert_eq!((metadata.num_samples, metadata.num_batches), (3, 2));
     }
     #[test]

@@ -7,7 +7,7 @@ use arrow_array::RecordBatch;
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
     FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PollInfo, PutResult,
-    SchemaAsIpc, SchemaResult, Ticket,
+    SchemaResult, Ticket,
 };
 use arrow_ipc::writer::{CompressionContext, DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
 use diskgraph_runtime::RuntimeIndex;
@@ -38,7 +38,7 @@ pub use client::{DecodedBatch, SamplingClient, SamplingStream};
 use encoding::BatchEncoder;
 use paths::task_path;
 pub use protocol::VERSION as SAMPLING_PROTOCOL_VERSION;
-use protocol::{ComponentMetadata, MAX_BATCH_BYTES, VERSION};
+use protocol::{BatchMetadata, ComponentMetadata, ControlKind, MAX_BATCH_BYTES, VERSION};
 use runtime::{runtime_error, TaskRequest};
 pub use server::{SamplingServer, ServerConfig};
 
@@ -143,15 +143,26 @@ impl Output {
             return Err(Status::cancelled("Consumer closed"));
         }
         let num_components = parts.len();
-        let mut value = Some(value);
-        let mut permit = Some(permit);
-        let mut size = 0;
+        if num_components == 0 {
+            return Err(Status::internal("Sampling minibatch has no components"));
+        }
+        let header = protocol::batch_header(&BatchMetadata {
+            kind: ControlKind::Minibatch,
+            batch_id,
+            num_components,
+            layout: value,
+        });
+        let mut size = header.data_header.len() + header.app_metadata.len();
+        if size > MAX_BATCH_BYTES {
+            return Err(Status::resource_exhausted(
+                "Minibatch metadata exceeds 64 MiB",
+            ));
+        }
+        permit.send(Ok(header));
         for (component_id, batch) in parts.into_iter().enumerate() {
             let tag = ComponentMetadata {
                 batch_id,
                 component_id,
-                num_components,
-                value: None,
             };
             let metadata = serde_json::to_vec(&tag).unwrap();
             let options = IpcWriteOptions::default();
@@ -180,12 +191,7 @@ impl Output {
                 frame
             }));
             let mut frame: FlightData = data.into();
-            frame.app_metadata = serde_json::to_vec(&ComponentMetadata {
-                value: value.take(),
-                ..tag
-            })
-            .unwrap()
-            .into();
+            frame.app_metadata = metadata.into();
             messages.push(frame);
             for message in messages {
                 size += message.data_header.len()
@@ -196,11 +202,7 @@ impl Output {
                         "Task batch exceeds 64 MiB; reduce batch size or fanout",
                     ));
                 }
-                if let Some(permit) = permit.take() {
-                    permit.send(Ok(message));
-                } else {
-                    self.send(message)?;
-                }
+                self.send(message)?;
             }
         }
         Ok(())
@@ -290,8 +292,10 @@ fn epoch(
         };
         let mut iterator = request.options.open(index, &extension)?;
         let expected = iterator.worker_batch_count() as u64;
-        let schema = protocol::stream_schema(iterator.num_samples() as u64, expected);
-        output.send(SchemaAsIpc::new(&schema, &IpcWriteOptions::default()).into())?;
+        output.send(protocol::stream_header(
+            iterator.num_samples() as u64,
+            expected,
+        ))?;
         while lease.count < expected {
             // Reserve before sampling: a full queue must not create another native batch.
             let permit = output.reserve()?;
@@ -546,17 +550,23 @@ mod tests {
         let mut decoder = FlightDataDecoder::new(
             ReceiverStream::new(rx).map(|message| message.map_err(Into::into)),
         );
+        let start = decoder.next().await.unwrap().unwrap();
+        assert!(matches!(start.payload, DecodedPayload::None));
+        let metadata: BatchMetadata = serde_json::from_slice(&start.inner.app_metadata).unwrap();
+        assert_eq!((metadata.batch_id, metadata.num_components), (0, 1));
+        assert!(metadata.layout.is_object());
         assert!(matches!(
             decoder.next().await.unwrap().unwrap().payload,
             DecodedPayload::Schema(_)
         ));
         let data = decoder.next().await.unwrap().unwrap();
         let tag: ComponentMetadata = serde_json::from_slice(&data.inner.app_metadata).unwrap();
-        assert_eq!(
-            (tag.batch_id, tag.component_id, tag.num_components),
-            (0, 0, 1)
-        );
-        assert!(tag.value.is_some());
+        assert_eq!((tag.batch_id, tag.component_id), (0, 0));
+        assert!(!serde_json::from_slice::<Value>(&data.inner.app_metadata)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("layout"));
         let DecodedPayload::RecordBatch(batch) = data.payload else {
             panic!("Expected native Arrow batch")
         };
@@ -596,6 +606,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        rx.recv().await.unwrap().unwrap();
         rx.recv().await.unwrap().unwrap();
         rx.recv().await.unwrap().unwrap();
         producer.await.unwrap();

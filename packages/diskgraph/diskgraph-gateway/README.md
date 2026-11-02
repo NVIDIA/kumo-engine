@@ -18,17 +18,36 @@ verification belong to the preparation layer. This gateway reads those files;
 it does not upload or register them. Missing extension metadata returns
 `FailedPrecondition` so the caller can finish materialization before retrying.
 
-Protocol version 7 streams native Arrow component record batches. A `DoGet`
-ticket contains one normalized epoch/shard request. The initial empty Arrow
-schema carries JSON metadata under `kumo.sampling`: `version`, `num_samples`,
-and `num_batches`. Each component then sends its own schema, optional dictionaries,
-and record batch, allowing task arrays, targets, graph arrays and feature tables
-to have different schemas and row counts. Flight `app_metadata` identifies the
-logical batch, component position and component count; the first component's
-record batch also carries the small JSON layout that assembles the native batch.
-There are no binary wrapper columns, nested IPC streams, or iterator/end control
-record batches. Flight EOF completes the stream, and the client validates its
-received count and final RPC status. The server also verifies native counts.
+Protocol version 8 streams native Arrow component record batches. A `DoGet`
+ticket contains one normalized epoch/shard request. Protocol metadata always
+lives in Flight `app_metadata`:
+
+- The initial empty schema carries `kind: "stream"`, `version`, `num_samples`
+  and `num_batches`.
+- Each minibatch starts with a metadata-only FlightData message carrying
+  `kind: "minibatch"`, `batch_id`, `num_components` and the full `layout`.
+  Its IPC message type is NONE and it has no Arrow data body.
+- Each component sends its own schema, optional dictionaries and record batch.
+  Those messages carry only `batch_id` and `component_id` in application metadata.
+
+Components can have different schemas and row counts. The client reads the
+minibatch layout before any component and yields only after all declared
+components arrive. Missing starts, repeated starts within a minibatch, invalid
+IDs and partial minibatches fail the stream. There are no binary wrapper columns,
+nested IPC streams, or iterator/end control record batches. Flight EOF completes
+the stream, and the client validates its received count and final RPC status.
+The server also verifies native counts.
+
+```text
+Empty schema + stream metadata
+Metadata-only minibatch 0 start + layout
+  Component 0 schema / dictionaries / record batch
+  Component 1 schema / dictionaries / record batch
+Metadata-only minibatch 1 start + layout
+  Component 0 schema / dictionaries / record batch
+  ...
+Successful EOF
+```
 
 `diskgraph.SamplingClient` uses Rust's low-level `FlightDataDecoder`, which
 supports schema changes and resets dictionaries between schemas. The ordinary
