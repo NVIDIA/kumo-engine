@@ -10,7 +10,7 @@ inputs:
     required: true
   reload-atol:
     description: Absolute prediction tolerance enforced for every task
-    default: '0.00001'
+    required: true
 runs:
   using: composite
   steps:
@@ -19,7 +19,9 @@ runs:
       with:
         version: '0.11.28'
         enable-cache: true
-        prune-cache: false
+        prune-cache: true
+        cache-suffix: engine-smoke-py312
+        save-cache: ${{ github.ref == 'refs/heads/main' }}
         cache-dependency-glob: 'packages/**/pyproject.toml'
     - name: Install only the finished wheel
       shell: bash
@@ -30,9 +32,8 @@ runs:
         uv_cache="${UV_CACHE_DIR:-$RUNNER_TEMP/setup-uv-cache}"
         for name in ${!PIP_@} ${!UV_@}; do unset "$name"; done
         export PIP_CONFIG_FILE=/dev/null
-        mkdir -p "$RUNNER_TEMP/engine-gpu-smoke"
         python -m venv "$RUNNER_TEMP/engine-smoke-venv"
-        python - <<'PY'
+        wheel="$(python - <<'PY'
         import email, glob, os, zipfile
         from pathlib import Path
         wheels = glob.glob(os.environ['WHEEL_PATTERN'])
@@ -47,9 +48,10 @@ runs:
         if metadata['Name'].replace('_', '-') != 'kumo-engine':
             raise SystemExit('Expected the finished kumo-engine wheel')
         with open(os.environ['GITHUB_ENV'], 'a') as stream:
-            stream.write(f'ENGINE_SMOKE_WHEEL={wheel}\nENGINE_SMOKE_VERSION={metadata["Version"]}\n')
+            stream.write(f'ENGINE_SMOKE_VERSION={metadata["Version"]}\n')
+        print(wheel)
         PY
-        wheel="$(python -c 'import glob,os; print(glob.glob(os.environ["WHEEL_PATTERN"])[0])')"
+        )"
         uv --no-config pip install --python "$RUNNER_TEMP/engine-smoke-venv/bin/python" \
           --cache-dir "$uv_cache" --default-index https://pypi.org/simple \
           "$wheel" 'boto3>=1.34,<2'

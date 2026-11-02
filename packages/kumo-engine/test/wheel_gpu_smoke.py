@@ -150,7 +150,7 @@ def prediction_values(task, frame, ids, *, classes=(), anchor=None,
 
 
 def prediction_decisions(task, frame, ids, *, classes=()):
-    """Retain labels and published ranks independently of numeric tolerance."""
+    """Align chosen labels and published ranks with the score coordinates."""
     if task in ('regression', 'forecasting'):
         return None
     if task == 'binary':
@@ -165,9 +165,9 @@ def prediction_decisions(task, frame, ids, *, classes=()):
                        values=column).loc[ids, list(classes)].to_numpy()
 
 
-def compare_predictions(before, after, *, atol=1e-5, before_decisions=None,
+def compare_predictions(before, after, *, task, atol, before_decisions=None,
                         after_decisions=None):
-    """Enforce the same absolute score bound and exact decisions for every task."""
+    """Bound every score and allow only tolerance-sized decision ambiguities."""
     import numpy as np
 
     if not math.isfinite(atol) or atol < 0:
@@ -185,16 +185,57 @@ def compare_predictions(before, after, *, atol=1e-5, before_decisions=None,
         max_relative_difference=float(
             (difference / np.maximum(np.abs(left), 1e-12)).max()),
         within_tolerance=bool(np.allclose(left, right, atol=atol, rtol=0.)))
-    if not result['decisions_equal']:
-        raise ValueError('Prediction decisions changed after repeat or reload')
     if not result['within_tolerance']:
         raise ValueError(
             f'Prediction difference exceeds atol={atol}, rtol=0: {result}')
+    if task in ('regression', 'forecasting'):
+        if before_decisions is not None or after_decisions is not None:
+            raise ValueError('Scalar prediction decisions must be absent')
+        return result
+    choices = [np.asarray(v) for v in (before_decisions, after_decisions)]
+    for values, selected in zip((left, right), choices):
+        if task in ('binary', 'multilabel', 'multiclass'):
+            expected_shape = (len(values),) if task == 'binary' else values.shape
+            if selected.shape != expected_shape or selected.dtype != np.bool_:
+                raise ValueError('Prediction decisions have invalid label coordinates')
+            if task == 'multiclass':
+                if (not (selected.sum(axis=1) == 1).all() or not np.array_equal(
+                        values[selected], values.max(axis=1))):
+                    raise ValueError('Prediction decisions must choose a highest score')
+            elif not np.array_equal(
+                    selected, (values[:, 1] if task == 'binary' else values) > .5):
+                raise ValueError('Prediction decisions must follow the threshold')
+        elif task in ('multilabel_ranking', 'static_link', 'temporal_link'):
+            if (selected.shape != values.shape or not np.issubdtype(
+                    selected.dtype, np.number) or not np.isfinite(selected).all()):
+                raise ValueError('Prediction decisions have invalid rank coordinates')
+            ranks = np.sort(selected, axis=1)
+            if (not np.isin(ranks[:, 0], [0, 1]).all() or not np.array_equal(
+                    ranks, ranks[:, :1] + np.arange(values.shape[1]))):
+                raise ValueError('Prediction decisions must contain unique contiguous ranks')
+        else:
+            raise ValueError('Unknown prediction decisions task')
+    if task == 'multiclass':
+        rows = np.arange(len(left))
+        old, new = [selected.argmax(axis=1) for selected in choices]
+        if any((np.abs(values[rows, old] - values[rows, new]) > atol).any()
+               for values in (left, right)):
+            raise ValueError('Prediction decisions changed outside a near tie')
+    elif task in ('multilabel_ranking', 'static_link', 'temporal_link'):
+        if not np.array_equal(np.sort(choices[0], axis=1),
+                              np.sort(choices[1], axis=1)):
+            raise ValueError('Prediction decisions changed the rank convention')
+        # A prefix minimum checks every inverted pair, including tie chains.
+        for values in (left, right):
+            for selected in choices:
+                ordered = np.take_along_axis(values, selected.argsort(axis=1), axis=1)
+                if (ordered - np.minimum.accumulate(ordered, axis=1) > atol).any():
+                    raise ValueError('Prediction decisions changed outside a near tie')
     return result
 
 
 def make_plan(task):
-    """Keep the existing normal seed-zero recipe, without quality controls."""
+    """Use one seed-zero model with no refits or hyperparameter search."""
     from kumoapi.encoder import Index, MultiCategorical, Numerical
     from kumoapi.model_plan import (
         GNNModelPlan,
@@ -323,7 +364,7 @@ def prepare_task(task, root, metadata, directory, graphs):
     if query.get_task_type().value != spec['task_type']:
         raise ValueError(f'{task} resolved to a different task type')
     if task == 'static_link':
-        # Native random link splitting replaces the former quality/control payload.
+        # Split links natively into training, validation and evaluation rows.
         generation = TrainingTableGenerationPlan(
             split='RandomLinkSplit([0.6, 0.2, 0.2])')
     else:
@@ -443,7 +484,7 @@ def verify_training_work(state, checkpoint_steps):
             'Training completed no optimizer updates or CUDA batches')
 
 
-def run_task(task, prepared, directory, *, reload_atol=1e-5):
+def run_task(task, prepared, directory, *, reload_atol):
     import numpy as np
     import torch
     from kumo_core.io.filesystem import local_path
@@ -519,14 +560,16 @@ def run_task(task, prepared, directory, *, reload_atol=1e-5):
 
         before, before_decisions = predict(trainer, 'predict')
         repeated, repeat_decisions = predict(trainer, 'repeat')
-        repeat_delta = compare_predictions(before, repeated, atol=reload_atol,
+        repeat_delta = compare_predictions(before, repeated, task=task,
+                                           atol=reload_atol,
                                            before_decisions=before_decisions,
                                            after_decisions=repeat_decisions)
         del trainer
         gc.collect()
         trainer = kumo.Trainer.load(saved, accelerator='gpu')
         after, after_decisions = predict(trainer, 'reload')
-        reload_delta = compare_predictions(before, after, atol=reload_atol,
+        reload_delta = compare_predictions(before, after, task=task,
+                                           atol=reload_atol,
                                            before_decisions=before_decisions,
                                            after_decisions=after_decisions)
     if not all(state['prediction_batches'].values()):
@@ -553,7 +596,7 @@ def main():
     parser.add_argument('--graph-metadata', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--expected-version', required=True)
-    parser.add_argument('--reload-atol', type=float, default=1e-5)
+    parser.add_argument('--reload-atol', type=float, required=True)
     args = parser.parse_args()
     if not math.isfinite(args.reload_atol) or args.reload_atol < 0:
         parser.error('--reload-atol must be finite and nonnegative')
