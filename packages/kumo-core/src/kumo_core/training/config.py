@@ -18,7 +18,7 @@ from kumoapi.model_plan import (
     RHSEmbeddingMode,
     WeightMode,
 )
-from pydantic import ConfigDict, model_validator
+from pydantic import ConfigDict, Field, model_validator
 from pydantic.dataclasses import dataclass
 from pydantic_core import ArgsKwargs
 from torch_geometric.sampler.base import NumNeighbors, SubgraphType
@@ -210,6 +210,8 @@ class SamplerKwargs(CastMixin):
     temporal_strategy: Literal['uniform', 'last'] = 'last'
     subgraph_type: SubgraphType = SubgraphType.directional
     adaptive_sampling: bool = False
+    remote_sampling_endpoint: str | list[str] | None = None
+    remote_sampling_num_threads: int = Field(default=1, ge=1)
 
     @model_validator(mode='before')
     @classmethod

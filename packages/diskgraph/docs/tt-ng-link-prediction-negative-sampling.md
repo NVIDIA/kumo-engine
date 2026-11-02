@@ -240,7 +240,7 @@ DiskGraphEngine::sample_runtime_batch(reader, …, negatives: Option<&NegativeSa
   8. set task.{amount_m, num_positives, rhs_seed_type}; task.seed_node_ids = snapshot
         │
         ▼
-runtime_batch_to_pydict → batch["task"][...], batch["graphs"]["main"]["node_ids"][rhs]
+ArrowBatch::try_from → shared Python export_batch → batch["task"][...], batch["graphs"]["main"]["node_ids"][rhs]
         │
         ▼
 kumo adapter (Task 2.x): dst_pos_index=arange(B), dst_neg_index=arange(B,B+B·M).view(B,M)

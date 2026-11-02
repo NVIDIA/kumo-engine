@@ -264,7 +264,7 @@ class Trainer:
         embedding_models: Optional[EmbeddingModelStore] = None,
         *,
         accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
-    ):
+    ) -> None:
         if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
             raise ValueError(
                 "accelerator must be one of 'cpu', 'gpu', 'mps', or 'auto'")
@@ -479,7 +479,8 @@ class Trainer:
             bindings=local_training_bindings(
                 training_input, run_name=run_id,
                 embedding_models=self._embedding_models,
-                accelerator=self._accelerator),
+                accelerator=self._accelerator,
+                sampling=None),
             options=CallableTrainingOptions(),
         )
 

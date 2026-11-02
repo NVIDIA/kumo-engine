@@ -83,3 +83,108 @@ Run commands from the repository worktree after installing the normal Kumo devel
 On a CUDA-capable development machine, `make test-kumo-core-gpu` selects the retained device-parametrized package cases. The focused, non-required Kumo Core GPU workflow runs on manual dispatch and, for trusted in-repository PRs, when the existing `ml-algorithms` component label triggers a workflow event or a labeled PR is subsequently updated; bot-applied labels may require that subsequent update because `GITHUB_TOKEN` events do not launch workflows. The retired Triton workflow is not part of this package.
 
 Kumo is not yet a uv workspace. These commands operate on `packages/kumo-core` explicitly and do not rely on workspace discovery.
+
+## Remote batch sampling over Arrow Flight
+
+`diskgraph.SamplingServer` embeds the Rust Flight gateway inside its owning
+Python process. Rust calls `diskgraph-runtime` directly and owns
+sampling, Arrow encoding, flow control, and cancellation. Python manages the
+server handle and consumes Arrow batches through the shared `RuntimeIndex`
+wrapper with `sampling_endpoints` selecting its Rust remote backend.
+
+A sampling actor starts the listener over its completed local graph replica:
+
+```python
+from pathlib import Path
+from kumo_core.diskgraph.sampling_service import SamplingService, SamplingServiceConfig
+
+service = SamplingService(
+    SamplingServiceConfig(Path("/local/graph"), host="0.0.0.0", max_threads=2)
+)
+endpoint = service.endpoint("10.0.0.5")
+# Retain service for the actor's lifetime; call service.close() during teardown.
+```
+
+Remote sampling always uses `DataLoader(num_workers=0)` for training, refit,
+evaluation, prediction, and explanation. Configured DataLoader workers apply
+only to local sampling; there is no remote override. Rust reader threads prefetch
+one complete batch per replica, while batch conversion runs in the training
+process without a subprocess result queue.
+
+`max_streams` defaults to three, covering overlapping train/validation/test
+streams for one training process. Paused streams retain their permits while
+backpressure blocks their producers. For multiple training processes sharing a
+server, budget overlapping stages times concurrent training processes: two
+processes need four streams for train/validation refit or six for full refit.
+Each additional stream can
+retain a native producer and its buffers; `max_threads` remains a per-index
+thread budget.
+
+Remote training rejects flat epochs with no native batches before exposing a
+positive loader length. If replica sharding and `drop_last=True` leave no full
+batches, reduce the batch size or replica count, or disable `drop_last`.
+
+The wrapper starts the native listener during construction. Its `health()`
+returns native readiness and request/batch counters; its process ID matches the
+actor. `close()` cancels waiting streams and joins Rust serving threads without
+holding the GIL. Native lifecycle/progress messages use the existing Python
+logging bridge and appear in the actor's configured logs.
+
+Before opening epoch streams, the caller must materialize and verify graph and
+training-table artifacts on every worker through the artifact distribution path.
+Training-table extensions live at the same relative `train_tables/<id>` or
+`pred_tables/<id>` path beneath each graph replica. Sampling does not upload or
+register artifacts; missing task metadata fails with a preparation error.
+
+Epoch requests carry sampling, projection, seed, and shard settings in a `DoGet`
+ticket. Python constructs a native `diskgraph.SamplingRequest` and passes it to
+`SamplingClient.open()`; Rust sets the wire identity and serializes the ticket.
+Sampling-plan JSON retains the existing native iterator interface. The server reserves a
+slot in its bounded output queue before sampling a batch. The Rust remote
+backend prefetches one native decoded batch per server and merges them in
+round-robin order, with no Python thread pool. gRPC flow control propagates a paused
+trainer back to the producer; additional transport buffers and native working
+memory are separate from these queue limits. No application credits are sent.
+The initial empty Flight schema carries the protocol version and sample/batch
+counts in `app_metadata`. Each minibatch starts with a metadata-only FlightData
+message carrying its ID, component count and layout. Each component then streams
+its own Arrow schema, dictionaries and native record batch; task, graph and
+feature components can have different schemas and row counts. Component
+application metadata carries only the minibatch and component IDs. `diskgraph.SamplingClient`
+handles schema changes in Rust and exposes assembled Arrow objects to Python
+through the C Data Interface, without nested IPC streams or Python decoding.
+Seed fields and target columns share one record batch; node IDs/seed assignments
+and edge endpoints are grouped by channel and type. The layout selects an array
+with `column` or a record batch with a half-open `columns` range, preserving the
+existing trainer batch structure without target struct columns or `as` markers.
+Feature tables and payloads with different row alignment remain separate.
+Each logical minibatch is limited to 64 MiB across all component messages.
+The native client validates sequence numbers, the received count at Flight EOF, and the
+final RPC status; failures propagate without replaying an incomplete epoch. Closing an iterator cancels its
+outstanding streams, and data-module teardown closes shared connections. Ordered
+RHS catalog scans use one replica to preserve MIPS embedding order.
+
+The standalone `diskgraph-gateway` CLI uses the same Rust server implementation.
+Graph preparation belongs to the caller. Use the transport between trusted peers
+on a restricted network.
+
+
+Use `diskgraph.RuntimeIndex(manifest, sampling_endpoints=endpoints)` for remote
+sampling or omit the endpoint argument for local sampling. Both modes reuse the
+same manifest and option normalization. Both use the runtime's `ArrowBatch`
+representation and one Python minibatch exporter; local sampling performs no IPC
+serialization. Rust owns remote connections, replica
+sharding, weighted-sidecar path translation and iterator lifetime. Close an epoch
+to cancel its prefetch while retaining shared connections; close the index at
+job teardown to cancel all epochs and release those connections. A closed index
+cannot be reopened. A process-local `RuntimeOwner` lazily creates one index for
+all stage datasets, for both backends. The data module passes that owner explicitly
+to its datasets and closes it at job teardown. Later use creates a fresh index.
+Forked or pickled workers open their own index. Epoch cleanup closes only epoch
+iterators. A standalone dataset owns its runtime and releases it with
+`dataset.close()`; borrowed dataset owners remain open until module teardown.
+
+
+Runtime iterators always provide `close()`. Loader scopes register that method
+directly for both backends; local synchronous iterators use a no-op hook and
+remote iterators cancel their pending prefetch.

@@ -3,6 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from ._c import (
+    SamplingServer,
+    SamplingClient,
+    SamplingRequest,
+    RemoteRuntimeIndex,
+    RemoteBatchIterator,
+    SamplingStream,
+    SAMPLING_PROTOCOL_VERSION,
     export_tt_artifacts,
     convert_kumo_config,
     ingest,
@@ -110,6 +117,13 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
+    "SamplingServer",
+    "SamplingClient",
+    "SamplingRequest",
+    "RemoteRuntimeIndex",
+    "RemoteBatchIterator",
+    "SamplingStream",
+    "SAMPLING_PROTOCOL_VERSION",
     "export_tt_artifacts",
     "convert_kumo_config",
     "ingest",

@@ -176,3 +176,114 @@ Handles table type detection, FK resolution, timestamp format inference, num_sha
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EDGE_BATCH_SIZE_ROWS` | 65536 | Rows per edge batch sent to Python |
+
+### Embedded native sampling server
+
+`diskgraph.SamplingServer` starts the Rust Flight gateway on native background
+threads inside the Python process. No sampling subprocess is required. The caller
+must materialize and verify training-table extensions beneath the local graph
+before requesting epochs; the sampling transport only reads prepared artifacts.
+
+```python
+import diskgraph
+
+with diskgraph.SamplingServer(
+    "/local/graph", host="0.0.0.0", max_streams=6, max_threads=2
+) as server:
+    endpoint = server.endpoint("10.0.0.5")
+    # Keep the handle alive while remote trainers use this endpoint.
+```
+
+`max_streams` defaults to three for overlapping train/validation/test streams
+from one loader worker. Size it as overlapping stages times concurrent loader
+workers using this server, across all trainers; the example budgets three stages
+for two workers. Paused streams still hold their permits under backpressure.
+
+`port` reports the actual bound port; `health()` reports native counters and
+readiness. `close()` cancels streams and joins the listener while releasing the
+GIL. Dropping a handle signals asynchronous shutdown; use explicit close or the
+context manager for deterministic cleanup. Configure Python logging before
+starting the server to receive native lifecycle and progress events.
+
+`diskgraph.SamplingClient(endpoint).open(request)` accepts an immutable native
+`SamplingRequest`, serializes its Flight ticket in Rust, and returns a `SamplingStream` with `num_samples`, `num_batches`, iteration and
+`close()`. The Rust client accepts component schema changes and exports complete
+native batches through the Arrow C Data Interface. Column references return
+arrays; column-range references return record batches, including grouped targets. Closing a client cancels its
+streams; closing a stream interrupts blocked reads. Network reads release the
+GIL. The standard PyArrow Flight reader assumes one schema and cannot consume
+this component protocol. See the [gateway contract](../diskgraph-gateway/README.md).
+
+
+```python
+request = diskgraph.SamplingRequest(
+    "train_tables/churn",
+    stage_table="train_seeds",
+    sampling_plan_json='{"layers":[]}',
+    batch_size=512,
+    epoch=0,
+    engine_seed=42,
+    num_threads=1,
+)
+client = diskgraph.SamplingClient(endpoint)
+try:
+    for batch in client.open(request):
+        consume(batch)
+finally:
+    client.close()
+```
+
+The native constructor accepts keyword iterator settings, validates batch/thread
+budgets and shard bounds, and owns the request kind and protocol version.
+`open()` accepts only a `SamplingRequest`; Python does not construct a wire
+dictionary or serialize ticket bytes. Sampling-plan and weighted-sampling JSON
+strings retain the existing native iterator interface. Requests can be reused
+without cloning their native seed-selection arrays during serialization.
+
+
+### Shared local and remote runtime interface
+
+The public manifest wrapper uses composition to select its native backend:
+
+```python
+index = diskgraph.RuntimeIndex(
+    "runtime_manifest.json",
+    rnd_seed=42,
+    num_threads=1,
+    sampling_endpoints=["grpc://worker-a:8815", "grpc://worker-b:8815"],
+)
+try:
+    batches, count = index.iter(
+        stage="train", sampling_plan={"layers": []},
+        num_workers=1, worker_id=0, shuffle=False, epoch=0, batch_size=512,
+    )
+    try:
+        for batch in batches:
+            consume(batch)
+    finally:
+        batches.close()
+finally:
+    index.close()
+```
+
+Omitting `sampling_endpoints` uses the existing local native index. Both paths
+share manifest resolution, argument normalization and minibatch export. Local
+sampling and the server convert native batches into `diskgraph_runtime::ArrowBatch`;
+the remote client receives that same representation. One Python exporter restores
+the task/graph/feature structure through the Arrow C Data Interface. Local
+iteration builds components in memory without IPC or JSON serialization or a
+transport byte limit. The remote backend owns
+connections, epoch sharding, one-batch native prefetch, round-robin merging and
+cancellation; Python only exports the selected complete batch. Closing the remote
+epoch leaves its index available for later stages/epochs. Closing the index is
+terminal. The lower-level `diskgraph.RemoteRuntimeIndex(endpoints)` class accepts
+`iter(SamplingRequest, graph_root)` directly and returns `RemoteBatchIterator`.
+Both handles expose `close()`; garbage collection signals asynchronous cleanup
+without joining while holding the GIL.
+
+
+All iterators returned by `RuntimeIndex.iter()` expose an idempotent `close()`.
+Remote iteration cancels pending readers and joins its prefetch threads. Local
+iteration is synchronous and implements a no-op close; normal iterator/index
+ownership releases its resources. Callers can register `iterator.close` directly
+for scope cleanup, without probing for an optional method.

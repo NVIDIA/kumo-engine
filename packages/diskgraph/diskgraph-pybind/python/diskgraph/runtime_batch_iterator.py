@@ -26,6 +26,37 @@ from ._exceptions import DiskgraphConfigError
 
 TaskDatasetRef = str
 
+_NATIVE_ARGUMENTS = (
+    "stage_table",
+    "sampling_plan_json",
+    "num_workers",
+    "worker_id",
+    "shuffle",
+    "rnd_seed",
+    "epoch",
+    "batch_size",
+    "drop_last",
+    "fused",
+    "swap_edge_direction",
+    "neg_rhs_node_type",
+    "neg_amount_m",
+    "neg_rnd_seed",
+    "replace",
+    "disjoint",
+    "adaptive",
+    "entity_node_type",
+    "target_node_type",
+    "rhs_seed_node_type",
+    "rhs_seed_time",
+    "group_by_timestamp",
+    "weighted_seed_sampling_json",
+    "selected_stage_node_ids",
+    "use_seed_timestamps",
+    "pseudo_seed_time",
+    "disable_pseudo_time",
+    "projections",
+)
+
 
 def _load_json(path: str) -> dict[str, Any]:
     with open(path) as f:
@@ -287,6 +318,11 @@ class RuntimeIndex:
     dynamically). Measured on a 343 GB graph: the first construction still
     costs ~1.55 s, every one after costs ~0.1 ms.
 
+    ``sampling_endpoints`` selects the native remote backend; omission uses
+    the native local index. Both modes share manifest resolution and iterator
+    normalization. Remote mode needs no trainer-local graph or training-table
+    files beyond the portable manifest.
+
     ``rnd_seed`` and ``num_threads`` are fixed at open time because the
     engine is built from them. ``num_threads`` especially is not a
     performance-only knob -- the engine's parallel neighbour sampling
@@ -300,7 +336,20 @@ class RuntimeIndex:
         dataset_ref: TaskDatasetRef,
         rnd_seed: Optional[int] = None,
         num_threads: Optional[int] = None,
+        *,
+        sampling_endpoints: str | list[str] | None = None,
     ) -> None:
+        """Initialize shared manifest handling and select a native backend.
+
+        Args:
+            dataset_ref: Portable runtime manifest path.
+            rnd_seed: Optional engine and default shuffle seed.
+            num_threads: Optional native sampling thread count.
+            sampling_endpoints: Flight replica URI(s), or None for local sampling.
+
+        Raises:
+            ValueError: If replica identities are empty or duplicated.
+        """
         # Resolved lazily, on first iter(). Reading the manifest in the
         # constructor would put file I/O ahead of argument validation, and a
         # caller who passes an out-of-range worker_id should get a config
@@ -315,6 +364,17 @@ class RuntimeIndex:
         # Keyed here so a dataset whose stages differ still works, and still
         # opens each extension only once.
         self._indexes: dict = {}
+        self._closed = False
+        self._remote_backend = None
+        if sampling_endpoints is not None:
+            from ._c import RemoteRuntimeIndex
+
+            endpoints = (
+                [sampling_endpoints]
+                if isinstance(sampling_endpoints, str)
+                else sampling_endpoints
+            )
+            self._remote_backend = RemoteRuntimeIndex(endpoints)
 
     def _resolve(self) -> None:
         if self._resolved is not None:
@@ -409,6 +469,8 @@ class RuntimeIndex:
             batch_size=batch_size, num_workers=num_workers, worker_id=worker_id,
             shuffle=shuffle, rnd_seed=seed, epoch=epoch,
         )
+        if self._closed:
+            raise DiskgraphConfigError("RuntimeIndex is closed")
         self._resolve()
         ref = self._tables.get(stage)
         if ref is None:
@@ -420,7 +482,7 @@ class RuntimeIndex:
 
         extension_ref = _extension_ref_from_stage_path(
             self._parent_root, ref["index_path"])
-        iterator = self._index_for(extension_ref).iter(
+        arguments = (
             ref["table_name"],
             _sampling_plan_json(sampling_plan),
             int(num_workers),
@@ -450,6 +512,31 @@ class RuntimeIndex:
             bool(disable_pseudo_time),
             projections,
         )
+        if self._remote_backend is None:
+            iterator = self._index_for(extension_ref).iter(*arguments)
+        else:
+            from ._c import SamplingRequest
+
+            request = SamplingRequest(
+                extension_ref,
+                engine_seed=self._rnd_seed,
+                num_threads=self._num_threads or 1,
+                **dict(zip(_NATIVE_ARGUMENTS, arguments, strict=True)),
+            )
+            iterator = self._remote_backend.iter(request, self._parent_root)
         return iterator, iterator.num_samples()
 
+    def close(self) -> None:
+        """Cancel remote epochs and release cached native indexes; safe to repeat.
 
+        Raises:
+            ValueError: If a native replica reader failed during shutdown.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self._remote_backend is not None:
+                self._remote_backend.close()
+        finally:
+            self._indexes.clear()

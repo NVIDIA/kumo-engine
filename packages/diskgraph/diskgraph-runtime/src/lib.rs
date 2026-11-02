@@ -11,8 +11,12 @@ use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use serde::Deserialize;
 use std::{collections::VecDeque, sync::Arc};
 
+mod batch;
 mod errors;
+mod layout;
+pub use batch::ArrowBatch;
 pub use errors::{Result, RuntimeError};
+pub use layout::{resolve_reference, validate_layout, ArrowValue};
 
 fn splitmix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);

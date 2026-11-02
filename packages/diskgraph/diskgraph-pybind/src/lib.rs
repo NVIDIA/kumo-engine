@@ -50,6 +50,9 @@ use std::sync::Arc;
 use std::thread;
 use tracing::{error, info};
 
+pub(crate) static PYTHON_LOGGER: std::sync::OnceLock<pyo3_log::ResetHandle> =
+    std::sync::OnceLock::new();
+
 fn get_current_rss_mb() -> usize {
     #[cfg(target_os = "linux")]
     {
@@ -183,6 +186,10 @@ use diskgraph_engine::output::OutputHandler;
 use diskgraph_engine::state::{SamplingState, StatePool};
 
 mod artifact_helpers;
+mod batch;
+mod sampling_server;
+mod sampling_client;
+mod remote_runtime;
 mod bp_col_stats;
 mod col_stats_export;
 mod custom_tt_entry;
@@ -1570,7 +1577,16 @@ fn validated_index_resume_progress(output_dir: &str) -> PyResult<Option<Vec<Stri
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    let _ = pyo3_log::try_init();
+    m.add_class::<sampling_server::PySamplingServer>()?;
+    m.add_class::<remote_runtime::PyRemoteRuntimeIndex>()?;
+    m.add_class::<remote_runtime::PyRemoteBatchIterator>()?;
+    m.add_class::<sampling_client::PySamplingRequest>()?;
+    m.add_class::<sampling_client::PySamplingClient>()?;
+    m.add_class::<sampling_client::PySamplingStream>()?;
+    m.add("SAMPLING_PROTOCOL_VERSION", diskgraph_gateway::SAMPLING_PROTOCOL_VERSION)?;
+    if let Ok(handle) = pyo3_log::try_init() {
+        let _ = PYTHON_LOGGER.set(handle);
+    }
     let _ = tracing_log::LogTracer::init();
     // Cap otherwise-global rayon users (col stats, TT-gen, pass-B) to
     // cpu.max. Ignore the error only when another owner initialized the

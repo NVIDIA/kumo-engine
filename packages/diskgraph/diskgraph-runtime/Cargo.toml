@@ -9,6 +9,9 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
 diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-engine = { path = "../diskgraph-engine" }
 diskgraph-index = { path = "../diskgraph-index" }

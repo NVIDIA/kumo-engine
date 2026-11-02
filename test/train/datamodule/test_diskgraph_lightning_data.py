@@ -15,6 +15,9 @@ import threading
 import time
 import types
 import warnings
+import weakref
+from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +28,7 @@ import pyarrow as pa
 import pytest
 import pytorch_lightning as pl
 import torch
+from kumo_core.diskgraph import runtime_owner
 from kumo_core.diskgraph.lightning_data import (
     DiskgraphLightningDataModule,
     DiskgraphTaskBatchIterable,
@@ -356,6 +360,9 @@ class _FakeTaskIterator:
         for _ in range(self.num_batches):
             yield _runtime_batch()
 
+    def close(self) -> None:
+        """Match the synchronous local iterator's no-op lifecycle hook."""
+
 
 def _backpressure_runtime_iter(*, worker_id: int, **_kwargs: Any):
     """Yield large prediction batches until the parent stops requesting them."""
@@ -483,7 +490,8 @@ def _install_fake_diskgraph(
         Delegates to the fake factory above so each test's expectations about
         Remembers what moved to open-time and puts it back.
         """
-        def __init__(self, dataset_ref, rnd_seed=None, num_threads=None):
+        def __init__(self, dataset_ref, rnd_seed=None, num_threads=None,
+                     sampling_endpoints=None):
             self._ref = dataset_ref
             self._rnd_seed = rnd_seed
             self._num_threads = num_threads
@@ -494,7 +502,11 @@ def _install_fake_diskgraph(
                 kwargs.setdefault("num_threads", self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
 
+        def close(self) -> None:
+            """Release the fake runtime without native resources."""
+
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", _StubRuntimeIndex)
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
     return calls
 
@@ -879,6 +891,99 @@ def test_train_iter_replays_wheel_when_natural_lt_max_batches(
     # order changes rather than repeating verbatim.
     epochs = [call["kwargs"]["epoch"] for call in calls["history"]]
     assert epochs == [0, 1, 2]
+
+
+@pytest.mark.parametrize("mode", ["flat", "grouped", "interleaved", "natural"])
+@pytest.mark.parametrize("termination", ["exhaustion", "close", "error"])
+def test_task_iterators_release_completed_passes(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    termination: str,
+) -> None:
+    """Bound replay retention and close active passes on every exit path."""
+    live_iterators: weakref.WeakSet[Iterator[dict[str, str]]] = weakref.WeakSet()
+    close_counts: list[int] = []
+    last_opened: dict[str, int] = {}
+    next_calls = 0
+
+    class TaskIterator(Iterator[dict[str, str]]):
+        """Model a local iterator whose close does not free its allocations."""
+
+        def __init__(self, stage: str) -> None:
+            """Record the stage and allocate a close counter for this pass."""
+            self.stage = stage
+            self.identifier = len(close_counts)
+            self.remaining = 1
+            close_counts.append(0)
+
+        def __next__(self) -> dict[str, str]:
+            """Return one batch, or raise the injected sampling error."""
+            nonlocal next_calls
+            next_calls += 1
+            if termination == "error" and next_calls == 3:
+                raise ValueError("sampling failed")
+            if not self.remaining:
+                raise StopIteration
+            self.remaining -= 1
+            return {"stage": self.stage}
+
+        def close(self) -> None:
+            """Record cleanup without releasing any iterator state."""
+            close_counts[self.identifier] += 1
+
+    def open_iterator(**options: object) -> tuple[TaskIterator, int]:
+        """Open a pass only after its predecessor has been closed."""
+        stage = options["stage"]
+        assert isinstance(stage, str)
+        if stage in last_opened:
+            assert close_counts[last_opened[stage]] == 1
+        iterator = TaskIterator(stage)
+        live_iterators.add(iterator)
+        last_opened[stage] = iterator.identifier
+        return iterator, 1
+
+    index = types.SimpleNamespace(iter=open_iterator)
+    monkeypatch.setattr(
+        DiskgraphTaskBatchIterable, "_runtime_index", lambda self: index
+    )
+    dataset = DiskgraphTaskBatchIterable(
+        manifest_path="unused",
+        stage=("train", "val"),
+        sampling_plan={},
+        batch_size=1,
+        shuffle=True,
+        drop_last=False,
+        base_seed=0,
+        shuffle_state=_ShuffleStreamState(),
+        max_batches=None if mode == "natural" else 200,
+        min_steps_per_epoch=200,
+        group_by_timestamp=mode == "grouped",
+        stage_batch_targets=(
+            {"train": 100, "val": 100} if mode == "interleaved" else None
+        ),
+    )
+    dataset._grouped_stage_batch_counts = {"train": 1, "val": 1}
+
+    batches = iter(dataset)
+    assert isinstance(batches, types.GeneratorType)
+    with closing(batches):
+        if termination == "error":
+            with pytest.raises(ValueError, match="sampling failed"):
+                list(batches)
+        elif termination == "close":
+            next(batches)
+            next(batches)
+            if mode == "interleaved":
+                assert close_counts == [0, 0]
+        else:
+            batch_count = 0
+            for batch_count, _ in enumerate(batches, start=1):
+                assert len(live_iterators) <= 3
+            assert batch_count == (2 if mode == "natural" else 200)
+
+    assert close_counts
+    assert all(count >= 1 for count in close_counts)
+    assert not live_iterators
 
 
 def test_val_dataloader_does_not_replay_wheel_iterator(
@@ -1605,8 +1710,114 @@ def test_dataloader_passes_through_loader_kwargs(
     assert loader.persistent_workers is True
 
 
+@pytest.mark.parametrize("endpoints", ["grpc://a:1", ["grpc://a:1", "grpc://b:1"]])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "train",
+        "refit_trainval",
+        "refit_full",
+        "val",
+        "test",
+        "predict",
+        "explain",
+        "grouped",
+    ],
+)
+def test_remote_dataloaders_always_run_in_training_process(
+    monkeypatch: pytest.MonkeyPatch,
+    endpoints: str | list[str],
+    mode: str,
+) -> None:
+    """Ignore requested subprocesses and their queue settings for remote sampling."""
+    calls = _install_fake_diskgraph(monkeypatch, batches_per_iterator=2)
+    count = 2 if mode == "grouped" else 8
+    monkeypatch.setattr(
+        DiskgraphTaskManifest,
+        "stage_counts",
+        property(
+            lambda self: dict.fromkeys(("train", "val", "test", "predict"), count)
+        ),
+    )
+    if mode == "grouped":
+        monkeypatch.setattr(
+            DiskgraphLightningDataModule, "_is_link_pred", property(lambda self: True)
+        )
+        monkeypatch.setattr(
+            DiskgraphLightningDataModule,
+            "_rhs_is_temporal",
+            property(lambda self: True),
+        )
+        monkeypatch.setattr(dldm, "_stage_bucket_counts", lambda *_: [(0, 1), (1, 1)])
+    dm = DiskgraphLightningDataModule(
+        _manifest(),
+        _mapper_bank(),
+        sampling_plan={"layers": []},
+        train_batch_size=4,
+        eval_batch_size=4,
+        num_workers=4,
+        persistent_workers=True,
+        prefetch_factor=4,
+        drop_last_train=True,
+        use_lhs_node_loader=mode == "grouped",
+        runtime_options={"remote_sampling_endpoint": endpoints},
+    )
+    if mode == "explain":
+        loader = dm.explain_dataloader("test", torch.tensor([10, 12]))
+    else:
+        stages_by_mode: dict[str, str | tuple[str, ...]] = {
+            "refit_trainval": ("train", "val"),
+            "refit_full": ("train", "val", "test"),
+            "grouped": "train",
+        }
+        stage = stages_by_mode.get(mode, mode)
+        loader = dm._make_dataloader(
+            stage, is_train=mode in {"train", "refit_trainval", "refit_full", "grouped"}
+        )
+
+    assert dm.num_workers == loader.num_workers == 0
+    assert not isinstance(loader, dldm._WorkerPoolDataLoader)
+    assert isinstance(loader.dataset, DiskgraphTaskBatchIterable)
+    assert loader.dataset.dataloader_num_workers == 1
+    assert loader.persistent_workers is False
+    assert loader.prefetch_factor is None
+    assert dm.active_dataloader_worker_pids == ()
+    list(loader)
+    assert calls["history"]
+    assert all(call["kwargs"]["num_workers"] == 1 for call in calls["history"])
+
+
+@pytest.mark.parametrize("num_seeds,drop_last", [(0, False), (2, True)])
+def test_remote_training_rejects_empty_native_epochs(
+    monkeypatch: pytest.MonkeyPatch,
+    num_seeds: int,
+    drop_last: bool,
+) -> None:
+    """A minimum epoch target cannot make empty replica shards yield batches."""
+    monkeypatch.setattr(
+        DiskgraphTaskManifest,
+        "stage_counts",
+        property(lambda self: {"train": num_seeds}),
+    )
+    dm = DiskgraphLightningDataModule(
+        _manifest(),
+        _mapper_bank(),
+        sampling_plan={"layers": []},
+        train_batch_size=2,
+        eval_batch_size=2,
+        num_workers=2,
+        drop_last_train=drop_last,
+        min_steps_per_epoch=10,
+        runtime_options={"remote_sampling_endpoint": ["grpc://a:1", "grpc://b:1"]},
+    )
+
+    with pytest.raises(ValueError, match="Remote training produces no native batches"):
+        dm.train_dataloader()
+
+
 def test_dataloader_passes_through_prefetch_factor(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _install_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
         _manifest(),
@@ -1633,7 +1844,7 @@ def _worker_pool_loader(
         registry=registry,
         batch_size=None,
         num_workers=2,
-        multiprocessing_context='fork',
+        multiprocessing_context="fork",
         persistent_workers=persistent_workers,
         prefetch_factor=1,
     )
@@ -2871,8 +3082,8 @@ def test_rhs_test_and_predict_dataloader_seed_times(
     list(dm.rhs_test_dataloader())
     assert calls["kwargs"]["rhs_seed_time"] == 7
 
-    calls = _install_fake_diskgraph(monkeypatch)
     list(dm.rhs_predict_dataloader())
+    assert len(calls["history"]) == 2
     # predict falls back to test_time when no dedicated predict range exists.
     assert calls["kwargs"]["rhs_seed_time"] == 7
 
@@ -3155,7 +3366,11 @@ def _install_grouped_fake_diskgraph(
                 kwargs.setdefault("num_threads", self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
 
+        def close(self) -> None:
+            """Release the fake runtime without native resources."""
+
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", _StubRuntimeIndex)
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
     # Grouping is gated on a TEMPORAL RHS (see ``_rhs_is_temporal``). These
     # grouping tests use a fake manifest with no index metadata, so force the
@@ -3220,7 +3435,11 @@ def _install_grouped_fake_diskgraph_per_stage(
                 kwargs.setdefault("num_threads", self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
 
+        def close(self) -> None:
+            """Release the fake runtime without native resources."""
+
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", _StubRuntimeIndex)
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
     # See _install_grouped_fake_diskgraph: force the RHS-temporal gate True.
     monkeypatch.setattr(DiskgraphLightningDataModule, "_rhs_is_temporal",
@@ -3380,7 +3599,11 @@ def _install_plain_fake_diskgraph(
                 kwargs.setdefault("num_threads", self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
 
+        def close(self) -> None:
+            """Release the fake runtime without native resources."""
+
     stub.RuntimeIndex = _StubRuntimeIndex  # type: ignore[attr-defined]
+    monkeypatch.setattr(runtime_owner, "RuntimeIndex", _StubRuntimeIndex)
     monkeypatch.setitem(sys.modules, "diskgraph", stub)
     return calls
 
