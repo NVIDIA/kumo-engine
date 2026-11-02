@@ -219,14 +219,20 @@ def _serving_target(connector: SourceConnector) -> Dict[str, Optional[str]]:
     }
 
 
-def _serving(args: Mapping[str, Any]) -> Optional[str]:
-    r"""A digest of the serving environment; `None` if it does not score."""
+def _serving(args: Mapping[str, Any], metadata: Mapping[str, str],
+             connector: SourceConnector) -> Optional[str]:
+    r"""A digest of what the version serves; `None` if it does not score."""
     if 'pip_requirements' not in args:
         return None
     environment = {
         name: args.get(name)
         for name in ('python_version', 'options', 'pip_requirements',
                      'artifact_repository_map')
+    }
+    environment['target'] = _serving_target(connector)
+    environment['metadata'] = {
+        key: value
+        for key, value in metadata.items() if key.startswith('kumo.serving')
     }
     return hashlib.sha256(
         json.dumps(environment, sort_keys=True,
@@ -520,7 +526,7 @@ class SnowflakeModelRegistryMixin:
         with tempfile.TemporaryDirectory() as workdir, \
                 self._registry(connector) as registry:
             args = _model_args(bundle, metadata, connector, workdir)
-            serving = _serving(args)
+            serving = _serving(args, metadata, connector)
             if serving is not None:
                 record[SERVING_KEY] = serving
             version = _version_holding(registry, location,

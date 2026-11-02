@@ -577,22 +577,24 @@ def test_a_serving_environment_that_cannot_work_fails_registration(
     assert calls == []
 
 
-def test_a_bundle_registered_for_another_environment_gets_a_new_version(
+def test_a_bundle_registered_to_serve_otherwise_gets_a_new_version(
         tmp_path, monkeypatch, caplog):
-    environments = iter([['torch>=2.15,<2.16'], ['torch>=2.12,<2.13'],
-                         ['torch>=2.15,<2.16']])
+    torch = {}
     monkeypatch.setattr(
         registry_module, '_model_args', lambda *_: {
-            'model': 'runnable', 'pip_requirements': next(environments)})
+            'model': 'runnable', 'pip_requirements': [torch['pin']]})
     versions, calls = [], []
     sink = _publishing_sink(monkeypatch, versions, calls)
     bundle = str(_bundle(tmp_path))
+    connector = SimpleNamespace(config=SnowflakeConnectorResourceConfig(
+        warehouse='WH', database='DB', schema_name='ML'))
 
-    def publish():
-        logged = len(calls)
-        sink.publish_model(SimpleNamespace(), bundle,
+    def publish(pin, snapshot):
+        torch['pin'], logged = pin, len(calls)
+        sink.publish_model(connector, bundle,
                            location=ModelRegistryLocation('CHURN'),
-                           metadata={'kumo_bundle_id': 'b1'})
+                           metadata={'kumo_bundle_id': 'b1',
+                                     'kumo.serving_snapshot': snapshot})
         if len(calls) > logged:
             versions.append(SimpleNamespace(
                 version_name=f'V{len(versions) + 1}', model_name='CHURN',
@@ -601,7 +603,12 @@ def test_a_bundle_registered_for_another_environment_gets_a_new_version(
         return len(calls) > logged
 
     with caplog.at_level('WARNING', logger=registry_module.__name__):
-        assert [publish(), publish(), publish()] == [True, True, False]
+        assert [
+            publish('torch>=2.15,<2.16', '@ST/a'),
+            publish('torch>=2.12,<2.13', '@ST/a'),
+            publish('torch>=2.15,<2.16', '@ST/b'),
+            publish('torch>=2.15,<2.16', '@ST/a'),
+        ] == [True, True, True, False]
     assert 'V1 holds bundle b1 for another serving environment' in caplog.text
 
 
