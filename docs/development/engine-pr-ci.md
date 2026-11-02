@@ -72,6 +72,7 @@ Cargo then invalidates dependencies despite a successful cache restore.
 
 A CPU-only job on `main` seeds the same uv installer cache used on the GPU
 runner. It installs the candidate wheel without importing models or training.
+It uses Ubuntu 24.04 to match the RTX runner's platform in the uv cache key.
 PR jobs restore this cache without saving branch-specific copies. Before saving,
 uv prunes the cache for CI. Cache hits alone do not establish a build speedup.
 Measure complete builds with and without restored caches on the same runner.
